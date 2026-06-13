@@ -86,3 +86,5 @@ temp/
 *.orig
 
 AGENTS.md
+.codex/
+openspec/
