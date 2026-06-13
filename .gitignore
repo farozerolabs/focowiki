@@ -84,3 +84,5 @@ temp/
 *.tmp
 *.bak
 *.orig
+
+AGENTS.md
