@@ -1,0 +1,86 @@
+# Local reference material
+ReferenceDocs/
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+.envrc
+.direnv/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+.pnp.cjs
+
+# Build outputs and caches
+dist/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+.netlify/
+.cache/
+.parcel-cache/
+.turbo/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+
+# Rust and Tauri
+target/
+src-tauri/target/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
