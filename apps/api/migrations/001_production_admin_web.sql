@@ -1,0 +1,174 @@
+CREATE SCHEMA IF NOT EXISTS focowiki;
+
+CREATE TABLE IF NOT EXISTS focowiki.knowledge_bases (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  active_release_id text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz,
+  CHECK (id ~ '^[a-z0-9][a-z0-9-]*[a-z0-9]$')
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.upload_tasks (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  started_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  source_count integer NOT NULL DEFAULT 0 CHECK (source_count >= 0),
+  result_release_id text,
+  internal_error_code text,
+  internal_error_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (ended_at IS NULL OR ended_at >= started_at)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.upload_task_events (
+  id text PRIMARY KEY,
+  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
+  phase_key text NOT NULL,
+  message_key text NOT NULL,
+  started_at timestamptz,
+  ended_at timestamptz,
+  severity text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (task_id, phase_key),
+  CHECK (phase_key IN (
+    'upload_storage',
+    'metadata_resolution',
+    'okf_validation',
+    'bundle_generation',
+    'index_publication',
+    'release_activation'
+  )),
+  CHECK (severity IN ('info', 'warning', 'error')),
+  CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_files (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
+  original_name text NOT NULL,
+  object_key text NOT NULL,
+  content_type text NOT NULL,
+  size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
+  checksum_sha256 text NOT NULL,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.releases (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
+  bundle_root_key text NOT NULL,
+  generated_at timestamptz NOT NULL,
+  published_at timestamptz,
+  file_count integer NOT NULL DEFAULT 0 CHECK (file_count >= 0),
+  manifest_checksum_sha256 text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  release_id text NOT NULL REFERENCES focowiki.releases(id),
+  logical_path text NOT NULL,
+  object_key text NOT NULL,
+  content_type text NOT NULL,
+  size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
+  checksum_sha256 text NOT NULL,
+  okf_type text,
+  title text,
+  description text,
+  tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  frontmatter_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (release_id, logical_path)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.bundle_tree_entries (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  release_id text NOT NULL REFERENCES focowiki.releases(id),
+  parent_path text NOT NULL DEFAULT '',
+  name text NOT NULL,
+  logical_path text NOT NULL,
+  entry_type text NOT NULL,
+  bundle_file_id text REFERENCES focowiki.bundle_files(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (release_id, parent_path, name),
+  CHECK (entry_type IN ('directory', 'file')),
+  CHECK (
+    (entry_type = 'directory' AND bundle_file_id IS NULL)
+    OR (entry_type = 'file' AND bundle_file_id IS NOT NULL)
+  )
+);
+
+DO $$
+BEGIN
+  ALTER TABLE focowiki.knowledge_bases
+    ADD CONSTRAINT knowledge_bases_active_release_id_fkey
+    FOREIGN KEY (active_release_id)
+    REFERENCES focowiki.releases(id);
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE focowiki.upload_tasks
+    ADD CONSTRAINT upload_tasks_result_release_id_fkey
+    FOREIGN KEY (result_release_id)
+    REFERENCES focowiki.releases(id);
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS knowledge_bases_name_active_unique
+  ON focowiki.knowledge_bases(lower(name))
+  WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS source_files_object_key_unique
+  ON focowiki.source_files(object_key);
+
+CREATE UNIQUE INDEX IF NOT EXISTS bundle_files_object_key_unique
+  ON focowiki.bundle_files(object_key);
+
+CREATE INDEX IF NOT EXISTS knowledge_bases_list_cursor_idx
+  ON focowiki.knowledge_bases(deleted_at, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS upload_tasks_kb_started_cursor_idx
+  ON focowiki.upload_tasks(knowledge_base_id, started_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_files_kb_task_created_cursor_idx
+  ON focowiki.source_files(knowledge_base_id, task_id, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_files_kb_created_cursor_idx
+  ON focowiki.source_files(knowledge_base_id, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_files_task_idx
+  ON focowiki.source_files(task_id);
+
+CREATE INDEX IF NOT EXISTS upload_task_events_task_created_cursor_idx
+  ON focowiki.upload_task_events(task_id, created_at, id);
+
+CREATE INDEX IF NOT EXISTS upload_task_events_task_phase_unique_idx
+  ON focowiki.upload_task_events(task_id, phase_key);
+
+CREATE INDEX IF NOT EXISTS releases_kb_published_cursor_idx
+  ON focowiki.releases(knowledge_base_id, published_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS bundle_files_release_logical_cursor_idx
+  ON focowiki.bundle_files(release_id, logical_path, id);
+
+CREATE INDEX IF NOT EXISTS bundle_files_kb_release_logical_cursor_idx
+  ON focowiki.bundle_files(knowledge_base_id, release_id, logical_path, id);
+
+CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_cursor_idx
+  ON focowiki.bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id);
+
+CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_logical_cursor_idx
+  ON focowiki.bundle_tree_entries(release_id, logical_path, id);

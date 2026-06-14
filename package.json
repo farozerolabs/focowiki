@@ -1,0 +1,30 @@
+{
+  "name": "focowiki",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --parallel --filter @focowiki/api --filter @focowiki/admin dev",
+    "dev:api": "pnpm --filter @focowiki/api dev",
+    "dev:admin": "pnpm --filter @focowiki/admin dev",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test",
+    "validate:cleaned-markdown:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
+    "validate:cleaned-markdown:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
+    "validate:cleaned-markdown:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
+    "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "eslint": "^10.5.0",
+    "jsdom": "^29.1.1",
+    "playwright": "^1.60.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

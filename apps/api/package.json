@@ -1,0 +1,26 @@
+{
+  "name": "@focowiki/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "dev": "tsx src/main.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1068.0",
+    "@focowiki/okf": "workspace:*",
+    "@hono/node-server": "^2.0.4",
+    "hono": "^4.12.25",
+    "postgres": "3.4.9",
+    "redis": "6.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "node-pg-migrate": "8.0.4"
+  }
+}

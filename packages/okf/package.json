@@ -1,0 +1,20 @@
+{
+  "name": "@focowiki/okf",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "openai": "^6.42.0",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,1126 @@
+import { randomUUID } from "node:crypto";
+import type { SourceMetadata } from "@focowiki/okf";
+import type { DatabaseClient } from "./client.js";
+
+export type CursorPage<T> = {
+  items: T[];
+  nextCursor: string | null;
+};
+
+export type KnowledgeBaseRecord = {
+  id: string;
+  name: string;
+  description: string | null;
+  activeReleaseId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateKnowledgeBaseInput = {
+  name: string;
+  description: string | null;
+};
+
+export type KnowledgeBaseRepository = {
+  listKnowledgeBases: (request: {
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<KnowledgeBaseRecord>>;
+  createKnowledgeBase: (input: CreateKnowledgeBaseInput) => Promise<KnowledgeBaseRecord>;
+  getKnowledgeBase: (id: string) => Promise<KnowledgeBaseRecord | null>;
+};
+
+export type BundleTreeEntryRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  releaseId: string;
+  parentPath: string;
+  name: string;
+  logicalPath: string;
+  entryType: "directory" | "file";
+  bundleFileId: string | null;
+};
+
+export type BundleFileRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  releaseId: string;
+  logicalPath: string;
+  objectKey: string;
+  contentType: string;
+  sizeBytes: number;
+  checksumSha256: string;
+  okfType: string | null;
+  title: string | null;
+  description: string | null;
+  tags: string[];
+  frontmatter: Record<string, unknown>;
+};
+
+export type SourceFileRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  taskId: string;
+  originalName: string;
+  objectKey: string;
+  contentType: string;
+  sizeBytes: number;
+  checksumSha256: string;
+  metadata: SourceMetadata;
+  createdAt: string;
+};
+
+export type SourceFileDraft = Omit<SourceFileRecord, "createdAt">;
+
+export type ReleaseRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  taskId: string;
+  bundleRootKey: string;
+  generatedAt: string;
+  publishedAt: string | null;
+  fileCount: number;
+  manifestChecksumSha256: string;
+  createdAt: string;
+};
+
+export type ReleaseDraft = Omit<ReleaseRecord, "createdAt">;
+
+export type UploadTaskRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  startedAt: string;
+  endedAt: string | null;
+  sourceCount: number;
+  resultReleaseId: string | null;
+  internalErrorCode: string | null;
+  internalErrorMessage: string | null;
+  createdAt: string;
+};
+
+export type UploadTaskEventRecord = {
+  id: string;
+  taskId: string;
+  phaseKey: string;
+  messageKey: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  severity: "info" | "warning" | "error";
+  createdAt: string;
+};
+
+export type UploadTaskEventDraft = Omit<UploadTaskEventRecord, "id" | "createdAt">;
+
+export type BundleFileRepository = {
+  createSourceFiles?: (files: SourceFileDraft[]) => Promise<void>;
+  createRelease?: (release: ReleaseDraft) => Promise<void>;
+  createBundleFiles?: (files: BundleFileRecord[]) => Promise<void>;
+  createBundleTreeEntries?: (entries: BundleTreeEntryRecord[]) => Promise<void>;
+  activateRelease?: (input: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    taskId: string;
+    publishedAt: string;
+    fileCount: number;
+    manifestChecksumSha256: string;
+  }) => Promise<void>;
+  listSourceFilesForTask?: (request: {
+    knowledgeBaseId: string;
+    taskId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<SourceFileRecord>>;
+  listBundleTreeEntries: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    parentPath: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<BundleTreeEntryRecord>>;
+  getBundleFile: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    logicalPath: string;
+  }) => Promise<BundleFileRecord | null>;
+  listSourceFiles: (request: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<SourceFileRecord>>;
+  listReleases: (request: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<ReleaseRecord>>;
+  listBundleFiles: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<BundleFileRecord>>;
+};
+
+export type AdminRepositories = {
+  knowledgeBases: KnowledgeBaseRepository;
+  files?: BundleFileRepository;
+  tasks?: {
+    createUploadTask: (input: {
+      knowledgeBaseId: string;
+      sourceCount: number;
+    }) => Promise<UploadTaskRecord>;
+    completeUploadTask?: (input: {
+      knowledgeBaseId: string;
+      taskId: string;
+      endedAt: string;
+      resultReleaseId: string | null;
+      internalErrorCode?: string | null;
+      internalErrorMessage?: string | null;
+    }) => Promise<UploadTaskRecord>;
+    createUploadTaskEvent?: (input: UploadTaskEventDraft) => Promise<UploadTaskEventRecord>;
+    getUploadTask?: (input: {
+      knowledgeBaseId: string;
+      taskId: string;
+    }) => Promise<UploadTaskRecord | null>;
+    getLatestUploadTask?: (knowledgeBaseId: string) => Promise<UploadTaskRecord | null>;
+    listUploadTasks?: (request: {
+      knowledgeBaseId: string;
+      limit: number;
+      cursor: string | null;
+    }) => Promise<CursorPage<UploadTaskRecord>>;
+    listUploadTaskEvents?: (request: {
+      knowledgeBaseId: string;
+      taskId: string;
+      limit: number;
+      cursor: string | null;
+    }) => Promise<CursorPage<UploadTaskEventRecord>>;
+  };
+};
+
+type KnowledgeBaseRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  active_release_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+type BundleTreeEntryRow = {
+  id: string;
+  knowledge_base_id: string;
+  release_id: string;
+  parent_path: string;
+  name: string;
+  logical_path: string;
+  entry_type: "directory" | "file";
+  bundle_file_id: string | null;
+};
+
+type BundleFileRow = {
+  id: string;
+  knowledge_base_id: string;
+  release_id: string;
+  logical_path: string;
+  object_key: string;
+  content_type: string;
+  size_bytes: string | number;
+  checksum_sha256: string;
+  okf_type: string | null;
+  title: string | null;
+  description: string | null;
+  tags_json: unknown;
+  frontmatter_json: unknown;
+};
+
+type SourceFileRow = {
+  id: string;
+  knowledge_base_id: string;
+  task_id: string;
+  original_name: string;
+  object_key: string;
+  content_type: string;
+  size_bytes: string | number;
+  checksum_sha256: string;
+  metadata_json: unknown;
+  created_at: Date;
+};
+
+type ReleaseRow = {
+  id: string;
+  knowledge_base_id: string;
+  task_id: string;
+  bundle_root_key: string;
+  generated_at: Date;
+  published_at: Date | null;
+  file_count: number;
+  manifest_checksum_sha256: string;
+  created_at: Date;
+};
+
+type UploadTaskRow = {
+  id: string;
+  knowledge_base_id: string;
+  started_at: Date;
+  ended_at: Date | null;
+  source_count: number;
+  result_release_id: string | null;
+  internal_error_code: string | null;
+  internal_error_message: string | null;
+  created_at: Date;
+};
+
+type UploadTaskEventRow = {
+  id: string;
+  task_id: string;
+  phase_key: string;
+  message_key: string;
+  started_at: Date | null;
+  ended_at: Date | null;
+  severity: "info" | "warning" | "error";
+  created_at: Date;
+};
+
+export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepositories {
+  return {
+    knowledgeBases: {
+      async listKnowledgeBases({ limit, cursor }) {
+        const cursorValue = cursor ? parseKnowledgeBaseCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<KnowledgeBaseRow[]>`
+              SELECT id, name, description, active_release_id, created_at, updated_at
+              FROM focowiki.knowledge_bases
+              WHERE deleted_at IS NULL
+                AND (
+                  created_at < ${cursorValue.createdAt}
+                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<KnowledgeBaseRow[]>`
+              SELECT id, name, description, active_release_id, created_at, updated_at
+              FROM focowiki.knowledge_bases
+              WHERE deleted_at IS NULL
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+
+        return {
+          items: pageRows.map(mapKnowledgeBaseRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeKnowledgeBaseCursor({
+                  createdAt: lastRow.created_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async createKnowledgeBase(input) {
+        const rows = await sql<KnowledgeBaseRow[]>`
+          INSERT INTO focowiki.knowledge_bases (id, name, description)
+          VALUES (${createKnowledgeBaseId()}, ${input.name}, ${input.description})
+          RETURNING id, name, description, active_release_id, created_at, updated_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Knowledge base creation did not return a row");
+        }
+
+        return mapKnowledgeBaseRow(row);
+      },
+      async getKnowledgeBase(id) {
+        const rows = await sql<KnowledgeBaseRow[]>`
+          SELECT id, name, description, active_release_id, created_at, updated_at
+          FROM focowiki.knowledge_bases
+          WHERE id = ${id} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapKnowledgeBaseRow(row) : null;
+      }
+    },
+    files: {
+      async createSourceFiles(files) {
+        for (const file of files) {
+          await sql`
+            INSERT INTO focowiki.source_files (
+              id,
+              knowledge_base_id,
+              task_id,
+              original_name,
+              object_key,
+              content_type,
+              size_bytes,
+              checksum_sha256,
+              metadata_json
+            )
+            VALUES (
+              ${file.id},
+              ${file.knowledgeBaseId},
+              ${file.taskId},
+              ${file.originalName},
+              ${file.objectKey},
+              ${file.contentType},
+              ${file.sizeBytes},
+              ${file.checksumSha256},
+              ${sql.json(file.metadata as never)}
+            )
+          `;
+        }
+      },
+      async createRelease(release) {
+        await sql`
+          INSERT INTO focowiki.releases (
+            id,
+            knowledge_base_id,
+            task_id,
+            bundle_root_key,
+            generated_at,
+            published_at,
+            file_count,
+            manifest_checksum_sha256
+          )
+          VALUES (
+            ${release.id},
+            ${release.knowledgeBaseId},
+            ${release.taskId},
+            ${release.bundleRootKey},
+            ${release.generatedAt},
+            ${release.publishedAt},
+            ${release.fileCount},
+            ${release.manifestChecksumSha256}
+          )
+        `;
+      },
+      async createBundleFiles(files) {
+        for (const file of files) {
+          await sql`
+            INSERT INTO focowiki.bundle_files (
+              id,
+              knowledge_base_id,
+              release_id,
+              logical_path,
+              object_key,
+              content_type,
+              size_bytes,
+              checksum_sha256,
+              okf_type,
+              title,
+              description,
+              tags_json,
+              frontmatter_json
+            )
+            VALUES (
+              ${file.id},
+              ${file.knowledgeBaseId},
+              ${file.releaseId},
+              ${file.logicalPath},
+              ${file.objectKey},
+              ${file.contentType},
+              ${file.sizeBytes},
+              ${file.checksumSha256},
+              ${file.okfType},
+              ${file.title},
+              ${file.description},
+              ${sql.json(file.tags as never)},
+              ${sql.json(file.frontmatter as never)}
+            )
+          `;
+        }
+      },
+      async createBundleTreeEntries(entries) {
+        for (const entry of entries) {
+          await sql`
+            INSERT INTO focowiki.bundle_tree_entries (
+              id,
+              knowledge_base_id,
+              release_id,
+              parent_path,
+              name,
+              logical_path,
+              entry_type,
+              bundle_file_id
+            )
+            VALUES (
+              ${entry.id},
+              ${entry.knowledgeBaseId},
+              ${entry.releaseId},
+              ${entry.parentPath},
+              ${entry.name},
+              ${entry.logicalPath},
+              ${entry.entryType},
+              ${entry.bundleFileId}
+            )
+          `;
+        }
+      },
+      async activateRelease(input) {
+        await sql.begin(async (transaction) => {
+          await transaction`
+            UPDATE focowiki.releases
+            SET
+              published_at = ${input.publishedAt},
+              file_count = ${input.fileCount},
+              manifest_checksum_sha256 = ${input.manifestChecksumSha256}
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND id = ${input.releaseId}
+              AND task_id = ${input.taskId}
+          `;
+          await transaction`
+            UPDATE focowiki.knowledge_bases
+            SET
+              active_release_id = ${input.releaseId},
+              updated_at = now()
+            WHERE id = ${input.knowledgeBaseId}
+              AND deleted_at IS NULL
+          `;
+          await transaction`
+            UPDATE focowiki.upload_tasks
+            SET result_release_id = ${input.releaseId}
+            WHERE id = ${input.taskId}
+              AND knowledge_base_id = ${input.knowledgeBaseId}
+          `;
+        });
+      },
+      async listSourceFilesForTask({ knowledgeBaseId, taskId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<SourceFileRow[]>`
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              FROM focowiki.source_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND task_id = ${taskId}
+                AND (
+                  created_at < ${cursorValue.createdAt}
+                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<SourceFileRow[]>`
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              FROM focowiki.source_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND task_id = ${taskId}
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapSourceFileRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({ createdAt: lastRow.created_at.toISOString(), id: lastRow.id })
+              : null
+        };
+      },
+      async listBundleTreeEntries({ knowledgeBaseId, releaseId, parentPath, limit, cursor }) {
+        const cursorValue = cursor ? parseTreeCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<BundleTreeEntryRow[]>`
+              SELECT id, knowledge_base_id, release_id, parent_path, name, logical_path, entry_type, bundle_file_id
+              FROM focowiki.bundle_tree_entries
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND release_id = ${releaseId}
+                AND parent_path = ${parentPath}
+                AND (name > ${cursorValue.name} OR (name = ${cursorValue.name} AND id > ${cursorValue.id}))
+              ORDER BY name ASC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<BundleTreeEntryRow[]>`
+              SELECT id, knowledge_base_id, release_id, parent_path, name, logical_path, entry_type, bundle_file_id
+              FROM focowiki.bundle_tree_entries
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND release_id = ${releaseId}
+                AND parent_path = ${parentPath}
+              ORDER BY name ASC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+
+        return {
+          items: pageRows.map(mapBundleTreeEntryRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTreeCursor({ name: lastRow.name, id: lastRow.id })
+              : null
+        };
+      },
+      async getBundleFile({ knowledgeBaseId, releaseId, logicalPath }) {
+        const rows = await sql<BundleFileRow[]>`
+          SELECT
+            id,
+            knowledge_base_id,
+            release_id,
+            logical_path,
+            object_key,
+            content_type,
+            size_bytes,
+            checksum_sha256,
+            okf_type,
+            title,
+            description,
+            tags_json,
+            frontmatter_json
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND release_id = ${releaseId}
+            AND logical_path = ${logicalPath}
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapBundleFileRow(row) : null;
+      },
+      async listSourceFiles({ knowledgeBaseId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<SourceFileRow[]>`
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              FROM focowiki.source_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND (
+                  created_at < ${cursorValue.createdAt}
+                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<SourceFileRow[]>`
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              FROM focowiki.source_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapSourceFileRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({ createdAt: lastRow.created_at.toISOString(), id: lastRow.id })
+              : null
+        };
+      },
+      async listReleases({ knowledgeBaseId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<ReleaseRow[]>`
+              SELECT id, knowledge_base_id, task_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
+              FROM focowiki.releases
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND (
+                  published_at < ${cursorValue.createdAt}
+                  OR (published_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
+              ORDER BY published_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<ReleaseRow[]>`
+              SELECT id, knowledge_base_id, task_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
+              FROM focowiki.releases
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+              ORDER BY published_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapReleaseRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: (lastRow.published_at ?? lastRow.created_at).toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async listBundleFiles({ knowledgeBaseId, releaseId, limit, cursor }) {
+        const cursorValue = cursor ? parseLogicalPathCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<BundleFileRow[]>`
+              SELECT id, knowledge_base_id, release_id, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              FROM focowiki.bundle_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND release_id = ${releaseId}
+                AND (logical_path > ${cursorValue.logicalPath} OR (logical_path = ${cursorValue.logicalPath} AND id > ${cursorValue.id}))
+              ORDER BY logical_path ASC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<BundleFileRow[]>`
+              SELECT id, knowledge_base_id, release_id, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              FROM focowiki.bundle_files
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND release_id = ${releaseId}
+              ORDER BY logical_path ASC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapBundleFileRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeLogicalPathCursor({ logicalPath: lastRow.logical_path, id: lastRow.id })
+              : null
+        };
+      }
+    },
+    tasks: {
+      async createUploadTask({ knowledgeBaseId, sourceCount }) {
+        const rows = await sql<UploadTaskRow[]>`
+          INSERT INTO focowiki.upload_tasks (id, knowledge_base_id, started_at, source_count)
+          VALUES (${createUploadTaskId()}, ${knowledgeBaseId}, now(), ${sourceCount})
+          RETURNING
+            id,
+            knowledge_base_id,
+            started_at,
+            ended_at,
+            source_count,
+            result_release_id,
+            internal_error_code,
+            internal_error_message,
+            created_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Upload task creation did not return a row");
+        }
+
+        return mapUploadTaskRow(row);
+      },
+      async completeUploadTask({
+        knowledgeBaseId,
+        taskId,
+        endedAt,
+        resultReleaseId,
+        internalErrorCode,
+        internalErrorMessage
+      }) {
+        const rows = await sql<UploadTaskRow[]>`
+          UPDATE focowiki.upload_tasks
+          SET
+            ended_at = ${endedAt},
+            result_release_id = ${resultReleaseId},
+            internal_error_code = ${internalErrorCode ?? null},
+            internal_error_message = ${internalErrorMessage ?? null}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${taskId}
+          RETURNING
+            id,
+            knowledge_base_id,
+            started_at,
+            ended_at,
+            source_count,
+            result_release_id,
+            internal_error_code,
+            internal_error_message,
+            created_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Upload task completion did not return a row");
+        }
+
+        return mapUploadTaskRow(row);
+      },
+      async createUploadTaskEvent(input) {
+        const rows = await sql<UploadTaskEventRow[]>`
+          INSERT INTO focowiki.upload_task_events (
+            id,
+            task_id,
+            phase_key,
+            message_key,
+            started_at,
+            ended_at,
+            severity
+          )
+          VALUES (
+            ${createUploadTaskEventId()},
+            ${input.taskId},
+            ${input.phaseKey},
+            ${input.messageKey},
+            ${input.startedAt},
+            ${input.endedAt},
+            ${input.severity}
+          )
+          ON CONFLICT (task_id, phase_key)
+          DO UPDATE SET
+            message_key = EXCLUDED.message_key,
+            started_at = COALESCE(focowiki.upload_task_events.started_at, EXCLUDED.started_at),
+            ended_at = EXCLUDED.ended_at,
+            severity = EXCLUDED.severity
+          RETURNING
+            id,
+            task_id,
+            phase_key,
+            message_key,
+            started_at,
+            ended_at,
+            severity,
+            created_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Upload task event creation did not return a row");
+        }
+
+        return mapUploadTaskEventRow(row);
+      },
+      async getUploadTask({ knowledgeBaseId, taskId }) {
+        const rows = await sql<UploadTaskRow[]>`
+          SELECT
+            id,
+            knowledge_base_id,
+            started_at,
+            ended_at,
+            source_count,
+            result_release_id,
+            internal_error_code,
+            internal_error_message,
+            created_at
+          FROM focowiki.upload_tasks
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${taskId}
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapUploadTaskRow(row) : null;
+      },
+      async getLatestUploadTask(knowledgeBaseId) {
+        const rows = await sql<UploadTaskRow[]>`
+          SELECT
+            id,
+            knowledge_base_id,
+            started_at,
+            ended_at,
+            source_count,
+            result_release_id,
+            internal_error_code,
+            internal_error_message,
+            created_at
+          FROM focowiki.upload_tasks
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY started_at DESC, id ASC
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapUploadTaskRow(row) : null;
+      },
+      async listUploadTasks({ knowledgeBaseId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<UploadTaskRow[]>`
+              SELECT
+                id,
+                knowledge_base_id,
+                started_at,
+                ended_at,
+                source_count,
+                result_release_id,
+                internal_error_code,
+                internal_error_message,
+                created_at
+              FROM focowiki.upload_tasks
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND (started_at < ${cursorValue.createdAt} OR (started_at = ${cursorValue.createdAt} AND id > ${cursorValue.id}))
+              ORDER BY started_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<UploadTaskRow[]>`
+              SELECT
+                id,
+                knowledge_base_id,
+                started_at,
+                ended_at,
+                source_count,
+                result_release_id,
+                internal_error_code,
+                internal_error_message,
+                created_at
+              FROM focowiki.upload_tasks
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+              ORDER BY started_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapUploadTaskRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: lastRow.started_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async listUploadTaskEvents({ knowledgeBaseId, taskId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<UploadTaskEventRow[]>`
+              SELECT
+                event.id,
+                event.task_id,
+                event.phase_key,
+                event.message_key,
+                event.started_at,
+                event.ended_at,
+                event.severity,
+                event.created_at
+              FROM focowiki.upload_task_events event
+              JOIN focowiki.upload_tasks task ON task.id = event.task_id
+              WHERE task.knowledge_base_id = ${knowledgeBaseId}
+                AND event.task_id = ${taskId}
+                AND (event.created_at > ${cursorValue.createdAt} OR (event.created_at = ${cursorValue.createdAt} AND event.id > ${cursorValue.id}))
+              ORDER BY event.created_at ASC, event.id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<UploadTaskEventRow[]>`
+              SELECT
+                event.id,
+                event.task_id,
+                event.phase_key,
+                event.message_key,
+                event.started_at,
+                event.ended_at,
+                event.severity,
+                event.created_at
+              FROM focowiki.upload_task_events event
+              JOIN focowiki.upload_tasks task ON task.id = event.task_id
+              WHERE task.knowledge_base_id = ${knowledgeBaseId}
+                AND event.task_id = ${taskId}
+              ORDER BY event.created_at ASC, event.id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapUploadTaskEventRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: lastRow.created_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      }
+    }
+  };
+}
+
+export function createKnowledgeBaseId(): string {
+  return `kb-${randomUUID()}`;
+}
+
+export function createUploadTaskId(): string {
+  return `task-${randomUUID()}`;
+}
+
+export function createUploadTaskEventId(): string {
+  return `task-event-${randomUUID()}`;
+}
+
+function mapKnowledgeBaseRow(row: KnowledgeBaseRow): KnowledgeBaseRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    activeReleaseId: row.active_release_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
+  };
+}
+
+function serializeKnowledgeBaseCursor(cursor: { createdAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function parseKnowledgeBaseCursor(cursor: string): { createdAt: string; id: string } {
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid knowledge base cursor");
+  }
+
+  const candidate = parsed as Record<string, unknown>;
+
+  if (typeof candidate.createdAt !== "string" || typeof candidate.id !== "string") {
+    throw new Error("Invalid knowledge base cursor");
+  }
+
+  return {
+    createdAt: candidate.createdAt,
+    id: candidate.id
+  };
+}
+
+function mapBundleTreeEntryRow(row: BundleTreeEntryRow): BundleTreeEntryRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    releaseId: row.release_id,
+    parentPath: row.parent_path,
+    name: row.name,
+    logicalPath: row.logical_path,
+    entryType: row.entry_type,
+    bundleFileId: row.bundle_file_id
+  };
+}
+
+function mapBundleFileRow(row: BundleFileRow): BundleFileRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    releaseId: row.release_id,
+    logicalPath: row.logical_path,
+    objectKey: row.object_key,
+    contentType: row.content_type,
+    sizeBytes: Number(row.size_bytes),
+    checksumSha256: row.checksum_sha256,
+    okfType: row.okf_type,
+    title: row.title,
+    description: row.description,
+    tags: readStringArray(row.tags_json),
+    frontmatter: readRecord(row.frontmatter_json)
+  };
+}
+
+function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    taskId: row.task_id,
+    originalName: row.original_name,
+    objectKey: row.object_key,
+    contentType: row.content_type,
+    sizeBytes: Number(row.size_bytes),
+    checksumSha256: row.checksum_sha256,
+    metadata: readRecord(row.metadata_json) as SourceMetadata,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+function mapReleaseRow(row: ReleaseRow): ReleaseRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    taskId: row.task_id,
+    bundleRootKey: row.bundle_root_key,
+    generatedAt: row.generated_at.toISOString(),
+    publishedAt: row.published_at?.toISOString() ?? null,
+    fileCount: row.file_count,
+    manifestChecksumSha256: row.manifest_checksum_sha256,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    startedAt: row.started_at.toISOString(),
+    endedAt: row.ended_at?.toISOString() ?? null,
+    sourceCount: row.source_count,
+    resultReleaseId: row.result_release_id,
+    internalErrorCode: row.internal_error_code,
+    internalErrorMessage: row.internal_error_message,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    phaseKey: row.phase_key,
+    messageKey: row.message_key,
+    startedAt: row.started_at?.toISOString() ?? null,
+    endedAt: row.ended_at?.toISOString() ?? null,
+    severity: row.severity,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function serializeTimedCursor(cursor: { createdAt: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function parseTimedCursor(cursor: string): { createdAt: string; id: string } {
+  const candidate = parseCursorRecord(cursor);
+
+  if (typeof candidate.createdAt !== "string" || typeof candidate.id !== "string") {
+    throw new Error("Invalid timed cursor");
+  }
+
+  return {
+    createdAt: candidate.createdAt,
+    id: candidate.id
+  };
+}
+
+function serializeLogicalPathCursor(cursor: { logicalPath: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function parseLogicalPathCursor(cursor: string): { logicalPath: string; id: string } {
+  const candidate = parseCursorRecord(cursor);
+
+  if (typeof candidate.logicalPath !== "string" || typeof candidate.id !== "string") {
+    throw new Error("Invalid logical path cursor");
+  }
+
+  return {
+    logicalPath: candidate.logicalPath,
+    id: candidate.id
+  };
+}
+
+function serializeTreeCursor(cursor: { name: string; id: string }): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function parseTreeCursor(cursor: string): { name: string; id: string } {
+  const candidate = parseCursorRecord(cursor);
+
+  if (typeof candidate.name !== "string" || typeof candidate.id !== "string") {
+    throw new Error("Invalid tree cursor");
+  }
+
+  return {
+    name: candidate.name,
+    id: candidate.id
+  };
+}
+
+function parseCursorRecord(cursor: string): Record<string, unknown> {
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid cursor");
+  }
+
+  return parsed as Record<string, unknown>;
+}

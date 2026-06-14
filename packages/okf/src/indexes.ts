@@ -1,0 +1,186 @@
+import matter from "gray-matter";
+
+export type BundleFileForIndex = {
+  path: string;
+  content: string;
+};
+
+export type SearchIndexSource = {
+  path: string;
+  title: string;
+  description?: string;
+  tags: string[];
+  keywords?: string[];
+};
+
+export type ManifestIndex = {
+  generated_at: string;
+  files: Array<{
+    path: string;
+    content_type: string;
+    title?: string;
+  }>;
+};
+
+export type SearchIndex = {
+  generated_at: string;
+  items: Array<{
+    path: string;
+    title: string;
+    description?: string;
+    tags: string[];
+    keywords: string[];
+  }>;
+};
+
+export type LinkIndex = {
+  generated_at: string;
+  links: Array<{
+    from: string;
+    to: string;
+    label: string;
+  }>;
+};
+
+const MARKDOWN_LINK_PATTERN = /\[([^\]]+)]\((\/?[^)\s]+)\)/g;
+
+export function buildManifestIndex(
+  files: BundleFileForIndex[],
+  generatedAt: string
+): ManifestIndex {
+  return {
+    generated_at: generatedAt,
+    files: files
+      .map((file) => {
+        const title = readMarkdownTitle(file);
+        const entry = {
+          path: file.path,
+          content_type: contentTypeForPath(file.path)
+        };
+
+        return title ? { ...entry, title } : entry;
+      })
+      .sort((left, right) => left.path.localeCompare(right.path))
+  };
+}
+
+export function buildSearchIndex(
+  sources: SearchIndexSource[],
+  generatedAt: string
+): SearchIndex {
+  return {
+    generated_at: generatedAt,
+    items: sources
+      .map((source) => {
+        const entry = {
+          path: source.path,
+          title: source.title,
+          tags: source.tags,
+        keywords: buildKeywords(source)
+        };
+
+        return source.description ? { ...entry, description: source.description } : entry;
+      })
+      .sort((left, right) => left.path.localeCompare(right.path))
+  };
+}
+
+export function buildLinkIndex(files: BundleFileForIndex[], generatedAt: string): LinkIndex {
+  const publicPaths = new Set(files.map((file) => file.path));
+  const links = files.flatMap((file) => {
+    if (!file.path.endsWith(".md")) {
+      return [];
+    }
+
+    return extractMarkdownLinks(file.content)
+      .map((link) => ({
+        from: file.path,
+        to: normalizeLinkTarget(link.target),
+        label: link.label
+      }))
+      .filter((link) => publicPaths.has(link.to));
+  });
+
+  return {
+    generated_at: generatedAt,
+    links: links.sort((left, right) =>
+      `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
+        `${right.from}\u0000${right.to}\u0000${right.label}`
+      )
+    )
+  };
+}
+
+export function stringifyIndex(index: ManifestIndex | SearchIndex | LinkIndex): string {
+  return `${JSON.stringify(index, null, 2)}\n`;
+}
+
+function readMarkdownTitle(file: BundleFileForIndex): string | undefined {
+  if (!file.path.endsWith(".md")) {
+    return undefined;
+  }
+
+  if (file.path === "index.md") {
+    return undefined;
+  }
+
+  const parsed = matter(file.content);
+  const title = parsed.data.title;
+  return typeof title === "string" ? title : undefined;
+}
+
+function contentTypeForPath(path: string): string {
+  if (path.endsWith(".json")) {
+    return "application/json; charset=utf-8";
+  }
+
+  return "text/markdown; charset=utf-8";
+}
+
+function buildKeywords(source: SearchIndexSource): string[] {
+  return unique([
+    ...tokenize(source.title),
+    ...tokenize(source.description ?? ""),
+    ...source.tags.flatMap(tokenize),
+    ...(source.keywords ?? []).flatMap(tokenize)
+  ]);
+}
+
+function tokenize(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+}
+
+function extractMarkdownLinks(content: string): Array<{ label: string; target: string }> {
+  return Array.from(content.matchAll(MARKDOWN_LINK_PATTERN), (match) => ({
+    label: match[1] ?? "",
+    target: match[2] ?? ""
+  }));
+}
+
+function normalizeLinkTarget(target: string): string {
+  let normalized = target.replace(/^\/+/, "").replace(/#.*$/, "");
+
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const next = decodeURIComponent(normalized);
+
+      if (next === normalized) {
+        break;
+      }
+
+      normalized = next;
+    } catch {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
