@@ -92,6 +92,12 @@ Focowiki SHALL provide deterministic lifecycle commands and checks for building,
 - **AND** external S3-compatible storage MUST be validated by upload/openAPI release-gate flows using the configured endpoint
 - **AND** failures MUST be visible through `docker compose ps`, logs, or validation scripts without requiring shell access inside containers
 
+#### Scenario: Cleanup removes local Compose leftovers
+- **WHEN** an operator needs a clean local Compose rebuild or pre-release reset
+- **THEN** documented commands MUST remove deployment containers, named volumes, orphan containers, and local Compose-built images
+- **AND** documented development cleanup commands MUST remove development infrastructure containers, named volumes, and orphan containers
+- **AND** documentation MUST state that cleanup commands are destructive for local PostgreSQL and Redis data
+
 #### Scenario: Deployment validation covers product flow
 - **WHEN** deployment validation runs against the Compose stack
 - **THEN** it MUST verify Admin UI is reachable, Admin API authentication behavior works, public OpenAPI is reachable, migrations have run, Redis is used for coordination, PostgreSQL is the durable source of truth, and S3-compatible storage persists raw and generated file bodies

@@ -8,6 +8,7 @@ const deploymentComposeTemplatePath = resolve(rootDir, "docker-compose.yml.examp
 const dockerfilePath = resolve(rootDir, "Dockerfile");
 const dockerignorePath = resolve(rootDir, ".dockerignore");
 const gitignorePath = resolve(rootDir, ".gitignore");
+const packageJsonPath = resolve(rootDir, "package.json");
 const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
 
@@ -112,6 +113,19 @@ describe("Docker Compose infrastructure", () => {
     expect(gitignore).toContain("docker-compose.dev.yml");
     expect(existsSync(deploymentComposeTemplatePath)).toBe(true);
     expect(existsSync(devComposeTemplatePath)).toBe(true);
+  });
+
+  it("defines explicit Compose cleanup scripts for local leftovers", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.["compose:clean"]).toBe(
+      "docker compose -f docker-compose.yml down --volumes --remove-orphans --rmi local"
+    );
+    expect(packageJson.scripts?.["compose:dev:clean"]).toBe(
+      "docker compose -f docker-compose.dev.yml down --volumes --remove-orphans"
+    );
   });
 
   it("documents separate dev and deployment environment templates", () => {

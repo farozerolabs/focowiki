@@ -87,16 +87,21 @@ pnpm compose:up
 pnpm compose:ps
 pnpm compose:logs
 pnpm compose:down
+pnpm compose:clean
+pnpm compose:dev:clean
 ```
+
+`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local Compose-built images before a fresh deployment rebuild. `pnpm compose:dev:clean` removes development infrastructure containers, named volumes, and orphans. Both commands are destructive for local PostgreSQL and Redis data.
 
 For public deployment behind a reverse proxy, replace every placeholder in `.env.example`, use HTTPS public origins, set `ALLOWED_HOSTS`, set `ADMIN_TRUSTED_ORIGINS`, enable `TRUSTED_PROXY_MODE` only for trusted proxies, and keep PostgreSQL, Redis, and external S3-compatible storage private. Expose only the Admin UI, Admin API, and public OpenAPI routes that your deployment requires.
 
 For a pre-release destructive deployment reset, stop the deployment stack, remove its volumes, rerun migrations, and re-upload Markdown files:
 
 ```bash
-docker compose -f docker-compose.yml down -v
-docker compose -f docker-compose.yml run --rm migrate
-docker compose -f docker-compose.yml up -d
+pnpm compose:clean
+pnpm compose:build
+pnpm compose:migrate
+pnpm compose:up
 ```
 
 ## Environment Variables
