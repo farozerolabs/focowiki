@@ -120,6 +120,41 @@ describe("Redis coordination helpers", () => {
     expect(await client.get("focowiki:test:pagination-invalid:kb-list")).toBe("changed");
   });
 
+  it("stores rate-limit counters in Redis-backed state", async () => {
+    const client = new FakeRedisClient();
+    const coordinator = createRedisCoordinator(client, { keyPrefix: "focowiki:test" });
+
+    await expect(
+      coordinator.hitRateLimit("admin-login", "client-1", {
+        max: 2,
+        windowSeconds: 60
+      })
+    ).resolves.toMatchObject({
+      allowed: true,
+      remaining: 1
+    });
+    await expect(
+      coordinator.hitRateLimit("admin-login", "client-1", {
+        max: 2,
+        windowSeconds: 60
+      })
+    ).resolves.toMatchObject({
+      allowed: true,
+      remaining: 0
+    });
+    await expect(
+      coordinator.hitRateLimit("admin-login", "client-1", {
+        max: 2,
+        windowSeconds: 60
+      })
+    ).resolves.toMatchObject({
+      allowed: false,
+      remaining: 0
+    });
+
+    expect(client.values.has("focowiki:test:rate-limits:admin-login:client-1")).toBe(true);
+  });
+
   it("does not keep session state in coordinator memory", async () => {
     const client = new FakeRedisClient();
     const firstCoordinator = createRedisCoordinator(client, { keyPrefix: "focowiki:test" });

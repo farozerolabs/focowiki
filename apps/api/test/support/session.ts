@@ -5,6 +5,15 @@ import {
   type RedisCoordinator
 } from "../../src/redis/coordination.js";
 
+export const TRUSTED_ADMIN_ORIGIN = "http://localhost:43100";
+
+export function withTrustedAdminOrigin(headers: Record<string, string> = {}): Record<string, string> {
+  return {
+    origin: TRUSTED_ADMIN_ORIGIN,
+    ...headers
+  };
+}
+
 export class MemoryRedisCommandClient implements RedisCommandClient {
   public readonly values = new Map<string, string>();
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
@@ -7,7 +7,8 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   listKnowledgeBases,
-  loginAdmin
+  loginAdmin,
+  setAdminAuthFailureHandler
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
@@ -54,6 +55,7 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   loginAdmin: vi.fn(async () => true),
   logoutAdmin: vi.fn(async () => undefined),
+  setAdminAuthFailureHandler: vi.fn(),
   renderPreview: vi.fn(),
   uploadKnowledgeBaseSources: vi.fn(),
   uploadSources: vi.fn()
@@ -119,6 +121,33 @@ describe("Admin knowledge base home", () => {
     expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
     expect(screen.queryByLabelText("Username")).toBeNull();
     expect(loginAdmin).not.toHaveBeenCalled();
+  });
+
+  it("clears protected home content when the admin session becomes invalid", async () => {
+    vi.mocked(checkAdminSession).mockResolvedValueOnce(true);
+    vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
+      items: [
+        {
+          id: "kb-docs",
+          name: "Developer docs",
+          description: "Markdown product knowledge",
+          activeReleaseId: null
+        }
+      ],
+      nextCursor: null
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
+    const handler = vi.mocked(setAdminAuthFailureHandler).mock.calls[0]?.[0];
+
+    await act(async () => {
+      handler?.();
+    });
+
+    expect(await screen.findByLabelText("Username")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Developer docs" })).toBeNull();
   });
 
   it("opens the create dialog and appends the created knowledge base card", async () => {

@@ -3,7 +3,7 @@ import {
   type OpenAIResponsesClient
 } from "@focowiki/okf";
 import { Hono } from "hono";
-import { type RuntimeConfig } from "./config.js";
+import { resolveSecurityConfig, type RuntimeConfig } from "./config.js";
 import {
   createAdminSessionManager,
   type AdminSessionManager
@@ -13,6 +13,7 @@ import type { RedisCoordinator } from "./redis/coordination.js";
 import { registerAdminApiRoutes } from "./admin/routes.js";
 import { registerPublicOpenApiRoutes } from "./public-openapi/routes.js";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage/s3.js";
+import { applySecurityHeaders } from "./security/headers.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -33,7 +34,7 @@ type ApiAppServices = {
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp();
+  const app = createBaseApp(services.config);
 
   registerAdminApiRoutes(app, services);
 
@@ -42,7 +43,7 @@ export function createAdminApiApp(options: ApiAppOptions): Hono {
 
 export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp();
+  const app = createBaseApp(services.config);
 
   registerPublicOpenApiRoutes(app, services);
 
@@ -51,7 +52,7 @@ export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
 
 export function createApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp();
+  const app = createBaseApp(services.config);
 
   registerAdminApiRoutes(app, services);
   registerPublicOpenApiRoutes(app, services);
@@ -73,16 +74,21 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
           })
         : null),
     sessionManager: options.redis
-      ? createAdminSessionManager(options.config.admin, options.redis)
+      ? createAdminSessionManager(
+          options.config.admin,
+          options.redis,
+          resolveSecurityConfig(options.config).session
+        )
       : null,
     redis: options.redis ?? null,
     repositories: options.repositories ?? null
   };
 }
 
-function createBaseApp(): Hono {
+function createBaseApp(config: RuntimeConfig): Hono {
   const app = new Hono();
 
+  app.use("*", applySecurityHeaders(config));
   app.use("*", async (context, next) => {
     if (containsTraversal(context.req.raw.url)) {
       return context.json(

@@ -36,6 +36,22 @@ export type RedisCoordinator = {
   ) => Promise<void>;
   getPageCache: <T = unknown>(scope: string, pageId: string) => Promise<T | null>;
   markPaginationInvalid: (scope: string, reason: string, ttlSeconds: number) => Promise<void>;
+  hitRateLimit: (
+    scope: string,
+    id: string,
+    limit: { max: number; windowSeconds: number }
+  ) => Promise<RateLimitResult>;
+};
+
+export type RateLimitResult = {
+  allowed: boolean;
+  remaining: number;
+  resetAt: string;
+};
+
+type RateLimitRecord = {
+  count: number;
+  resetAtMs: number;
 };
 
 export function createRedisConnectionOptions(
@@ -122,8 +138,69 @@ export function createRedisCoordinator(
       await client.set(buildKey("pagination-invalid", scope), reason, {
         EX: ttlSeconds
       });
+    },
+    async hitRateLimit(scope, id, limit) {
+      const key = buildKey("rate-limits", scope, id);
+      const nowMs = Date.now();
+      const current = await readRateLimitRecord(client, key);
+      const resetAtMs =
+        current && current.resetAtMs > nowMs
+          ? current.resetAtMs
+          : nowMs + limit.windowSeconds * 1_000;
+      const currentCount = current && current.resetAtMs > nowMs ? current.count : 0;
+      const nextCount = currentCount + 1;
+      const allowed = nextCount <= limit.max;
+      const storedCount = allowed ? nextCount : currentCount;
+
+      await client.set(
+        key,
+        JSON.stringify({
+          count: storedCount,
+          resetAtMs
+        } satisfies RateLimitRecord),
+        {
+          EX: Math.max(1, Math.ceil((resetAtMs - nowMs) / 1_000))
+        }
+      );
+
+      return {
+        allowed,
+        remaining: Math.max(0, limit.max - storedCount),
+        resetAt: new Date(resetAtMs).toISOString()
+      };
     }
   };
+}
+
+async function readRateLimitRecord(
+  client: RedisCommandClient,
+  key: string
+): Promise<RateLimitRecord | null> {
+  const raw = await client.get(key);
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RateLimitRecord>;
+
+    if (
+      typeof parsed.count !== "number" ||
+      typeof parsed.resetAtMs !== "number" ||
+      parsed.count < 0 ||
+      parsed.resetAtMs <= 0
+    ) {
+      return null;
+    }
+
+    return {
+      count: parsed.count,
+      resetAtMs: parsed.resetAtMs
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeKeyPart(value: string): string {

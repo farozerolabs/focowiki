@@ -11,7 +11,8 @@ import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import {
   loginAndReadSessionCookie,
-  MemoryRedisCommandClient
+  MemoryRedisCommandClient,
+  withTrustedAdminOrigin
 } from "./support/session.js";
 
 const now = "2026-06-14T00:00:00.000Z";
@@ -464,7 +465,7 @@ describe("Admin resource deletion API", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const deleted = await app.request("/admin/api/knowledge-bases/kb-001", {
       method: "DELETE",
-      headers: { cookie }
+      headers: withTrustedAdminOrigin({ cookie })
     });
     const detail = await app.request("/admin/api/knowledge-bases/kb-001", {
       headers: { cookie }
@@ -535,7 +536,7 @@ describe("Admin resource deletion API", () => {
       "/admin/api/knowledge-bases/kb-001/files/detail?path=pages/intro.md",
       {
         method: "DELETE",
-        headers: { cookie }
+        headers: withTrustedAdminOrigin({ cookie })
       }
     );
     const body = (await response.json()) as { task: Record<string, unknown> };
@@ -615,7 +616,7 @@ describe("Admin resource deletion API", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/files/detail?path=index.md", {
       method: "DELETE",
-      headers: { cookie }
+      headers: withTrustedAdminOrigin({ cookie })
     });
 
     await expect(response.json()).resolves.toEqual({
@@ -644,7 +645,7 @@ describe("Admin resource deletion API", () => {
       "/admin/api/knowledge-bases/kb-001/files/detail?path=pages/intro.md",
       {
         method: "DELETE",
-        headers: { cookie }
+        headers: withTrustedAdminOrigin({ cookie })
       }
     );
 

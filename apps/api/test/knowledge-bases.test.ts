@@ -5,7 +5,8 @@ import { createRedisCoordinator } from "../src/redis/coordination.js";
 import {
   createTestRedisCoordinator,
   loginAndReadSessionCookie,
-  MemoryRedisCommandClient
+  MemoryRedisCommandClient,
+  withTrustedAdminOrigin
 } from "./support/session.js";
 
 type KnowledgeBaseRecord = {
@@ -137,10 +138,10 @@ describe("Knowledge base Admin API", () => {
     const { app, cookie } = await createAuthenticatedKnowledgeBaseApp();
     const create = await app.request("/admin/api/knowledge-bases", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({
         name: "Developer docs",
         description: "Internal markdown knowledge"
@@ -170,10 +171,10 @@ describe("Knowledge base Admin API", () => {
     const { app, cookie } = await createAuthenticatedKnowledgeBaseApp();
     const response = await app.request("/admin/api/knowledge-bases", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
-      },
+      }),
       body: JSON.stringify({ name: " " })
     });
 

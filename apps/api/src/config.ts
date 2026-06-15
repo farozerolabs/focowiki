@@ -6,6 +6,41 @@ const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
 const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
+const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
+const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
+
+export type RateLimitConfig = {
+  max: number;
+  windowSeconds: number;
+};
+
+export type RuntimeSecurityConfig = {
+  environment: "development" | "production";
+  adminTrustedOrigins: string[];
+  allowedHosts: string[];
+  trustedProxy: boolean;
+  origins: {
+    adminUi: string;
+    adminApi: string;
+    publicOpenApi: string;
+  };
+  session: {
+    ttlSeconds: number;
+    secretMinLength: number;
+    cookieSecure: boolean;
+    cookieSameSite: "Lax" | "Strict" | "None";
+  };
+  rateLimits: {
+    adminLogin: RateLimitConfig;
+    adminApi: RateLimitConfig;
+    upload: RateLimitConfig;
+    publicOpenApi: RateLimitConfig;
+  };
+  audit: {
+    retentionDays: number;
+  };
+};
 
 export type RuntimeConfig = {
   admin: {
@@ -65,6 +100,7 @@ export type RuntimeConfig = {
         enabled: false;
       };
   corsOrigins: string[];
+  security?: RuntimeSecurityConfig;
 };
 
 export class ConfigValidationError extends ValidationError {
@@ -117,6 +153,20 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const pagination = parsePaginationConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model = parseModelConfig(env, issues);
+  const security = parseSecurityConfig(
+    env,
+    {
+      adminPassword,
+      adminSessionSecret,
+      ports,
+      publicBaseUrl,
+      publicApiAuthRequired,
+      publicApiKey,
+      storageCredentials: [accessKeyId, secretAccessKey],
+      model
+    },
+    issues
+  );
 
   if (publicApiAuthRequired && !publicApiKey) {
     issues.push("PUBLIC_API_KEY is required when PUBLIC_API_AUTH_REQUIRED is true");
@@ -162,12 +212,21 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       fileProcessingConcurrency
     },
     model,
-    corsOrigins
+    corsOrigins,
+    security
   };
 }
 
 export function loadRuntimeConfig(env: RuntimeEnv = process.env): RuntimeConfig {
   return parseRuntimeConfig(env);
+}
+
+export function resolveSecurityConfig(
+  config: Pick<RuntimeConfig, "ports" | "publicApi"> & {
+    security?: RuntimeSecurityConfig;
+  }
+): RuntimeSecurityConfig {
+  return config.security ?? createDefaultSecurityConfig(config);
 }
 
 function optionalString(env: RuntimeEnv, field: string): string | null {
@@ -440,6 +499,321 @@ function parseModelConfig(
     requestIdleTimeoutMs,
     suggestionConcurrency
   };
+}
+
+function parseSecurityConfig(
+  env: RuntimeEnv,
+  input: {
+    adminPassword: string;
+    adminSessionSecret: string;
+    ports: RuntimeConfig["ports"];
+    publicBaseUrl: string;
+    publicApiAuthRequired: boolean;
+    publicApiKey: string | null;
+    storageCredentials: string[];
+    model: RuntimeConfig["model"];
+  },
+  issues: string[]
+): RuntimeSecurityConfig {
+  const environment = parseEnvironment(env, issues);
+  const sessionSecretMinLength = optionalPositiveInteger(
+    env,
+    "ADMIN_SESSION_SECRET_MIN_LENGTH",
+    DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH,
+    issues
+  );
+  const cookieSecure = optionalBoolean(
+    env,
+    "ADMIN_SESSION_COOKIE_SECURE",
+    environment === "production",
+    issues
+  );
+  const cookieSameSite = parseCookieSameSite(env, issues);
+  const adminUiOrigin = optionalOrigin(
+    env,
+    "ADMIN_PUBLIC_ORIGIN",
+    `http://localhost:${input.ports.adminUi}`,
+    issues
+  );
+  const adminApiOrigin = optionalOrigin(
+    env,
+    "ADMIN_API_PUBLIC_ORIGIN",
+    `http://localhost:${input.ports.adminApi}`,
+    issues
+  );
+  const publicOpenApiOrigin = optionalOrigin(
+    env,
+    "PUBLIC_OPENAPI_PUBLIC_ORIGIN",
+    input.publicBaseUrl,
+    issues
+  );
+  const configuredTrustedOrigins = parseOriginList(env, "ADMIN_TRUSTED_ORIGINS", issues);
+  const adminTrustedOrigins =
+    configuredTrustedOrigins.length > 0
+      ? configuredTrustedOrigins
+      : uniqueStrings([
+          `http://localhost:${input.ports.adminUi}`,
+          `http://127.0.0.1:${input.ports.adminUi}`,
+          adminUiOrigin
+        ]);
+  const allowedHosts = parseStringList(env, "ALLOWED_HOSTS").map((value) => value.toLowerCase());
+  const trustedProxy = optionalBoolean(env, "TRUSTED_PROXY_MODE", false, issues);
+
+  if (input.adminSessionSecret.length < sessionSecretMinLength) {
+    issues.push("ADMIN_SESSION_SECRET is shorter than ADMIN_SESSION_SECRET_MIN_LENGTH");
+  }
+
+  if (cookieSameSite === "None" && !cookieSecure) {
+    issues.push("ADMIN_SESSION_COOKIE_SAME_SITE=None requires ADMIN_SESSION_COOKIE_SECURE=true");
+  }
+
+  if (environment === "production") {
+    validateProductionSecurity({
+      adminPassword: input.adminPassword,
+      adminSessionSecret: input.adminSessionSecret,
+      publicApiAuthRequired: input.publicApiAuthRequired,
+      publicApiKey: input.publicApiKey,
+      storageCredentials: input.storageCredentials,
+      model: input.model,
+      cookieSecure,
+      origins: [adminUiOrigin, adminApiOrigin, publicOpenApiOrigin],
+      allowedHosts,
+      issues
+    });
+  }
+
+  return {
+    environment,
+    adminTrustedOrigins,
+    allowedHosts,
+    trustedProxy,
+    origins: {
+      adminUi: adminUiOrigin,
+      adminApi: adminApiOrigin,
+      publicOpenApi: publicOpenApiOrigin
+    },
+    session: {
+      ttlSeconds: optionalPositiveInteger(
+        env,
+        "ADMIN_SESSION_TTL_SECONDS",
+        DEFAULT_ADMIN_SESSION_TTL_SECONDS,
+        issues
+      ),
+      secretMinLength: sessionSecretMinLength,
+      cookieSecure,
+      cookieSameSite
+    },
+    rateLimits: {
+      adminLogin: parseRateLimit(env, "ADMIN_LOGIN", 8, 900, issues),
+      adminApi: parseRateLimit(env, "ADMIN_API", 600, 60, issues),
+      upload: parseRateLimit(env, "UPLOAD", 20, 3_600, issues),
+      publicOpenApi: parseRateLimit(env, "PUBLIC_OPENAPI", 1_200, 60, issues)
+    },
+    audit: {
+      retentionDays: optionalPositiveInteger(
+        env,
+        "SECURITY_AUDIT_RETENTION_DAYS",
+        DEFAULT_SECURITY_AUDIT_RETENTION_DAYS,
+        issues
+      )
+    }
+  };
+}
+
+function createDefaultSecurityConfig(
+  config: Pick<RuntimeConfig, "ports" | "publicApi">
+): RuntimeSecurityConfig {
+  return {
+    environment: "development",
+    adminTrustedOrigins: [
+      `http://localhost:${config.ports.adminUi}`,
+      `http://127.0.0.1:${config.ports.adminUi}`
+    ],
+    allowedHosts: [],
+    trustedProxy: false,
+    origins: {
+      adminUi: `http://localhost:${config.ports.adminUi}`,
+      adminApi: `http://localhost:${config.ports.adminApi}`,
+      publicOpenApi: config.publicApi.baseUrl
+    },
+    session: {
+      ttlSeconds: DEFAULT_ADMIN_SESSION_TTL_SECONDS,
+      secretMinLength: DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH,
+      cookieSecure: false,
+      cookieSameSite: "Lax"
+    },
+    rateLimits: {
+      adminLogin: {
+        max: 8,
+        windowSeconds: 900
+      },
+      adminApi: {
+        max: 600,
+        windowSeconds: 60
+      },
+      upload: {
+        max: 20,
+        windowSeconds: 3_600
+      },
+      publicOpenApi: {
+        max: 1_200,
+        windowSeconds: 60
+      }
+    },
+    audit: {
+      retentionDays: DEFAULT_SECURITY_AUDIT_RETENTION_DAYS
+    }
+  };
+}
+
+function parseEnvironment(
+  env: RuntimeEnv,
+  issues: string[]
+): RuntimeSecurityConfig["environment"] {
+  const value = optionalString(env, "APP_ENV") ?? "development";
+
+  if (value === "development" || value === "production") {
+    return value;
+  }
+
+  issues.push("APP_ENV must be development or production");
+  return "development";
+}
+
+function parseCookieSameSite(
+  env: RuntimeEnv,
+  issues: string[]
+): RuntimeSecurityConfig["session"]["cookieSameSite"] {
+  const value = (optionalString(env, "ADMIN_SESSION_COOKIE_SAME_SITE") ?? "Lax").toLowerCase();
+
+  if (value === "lax") {
+    return "Lax";
+  }
+
+  if (value === "strict") {
+    return "Strict";
+  }
+
+  if (value === "none") {
+    return "None";
+  }
+
+  issues.push("ADMIN_SESSION_COOKIE_SAME_SITE must be Lax, Strict, or None");
+  return "Lax";
+}
+
+function parseRateLimit(
+  env: RuntimeEnv,
+  prefix: string,
+  fallbackMax: number,
+  fallbackWindowSeconds: number,
+  issues: string[]
+): RateLimitConfig {
+  return {
+    max: optionalPositiveInteger(env, `${prefix}_RATE_LIMIT_MAX`, fallbackMax, issues),
+    windowSeconds: optionalPositiveInteger(
+      env,
+      `${prefix}_RATE_LIMIT_WINDOW_SECONDS`,
+      fallbackWindowSeconds,
+      issues
+    )
+  };
+}
+
+function optionalOrigin(
+  env: RuntimeEnv,
+  field: string,
+  fallback: string,
+  issues: string[]
+): string {
+  return validateOrigin(field, optionalString(env, field) ?? fallback, issues);
+}
+
+function parseOriginList(env: RuntimeEnv, field: string, issues: string[]): string[] {
+  return parseStringList(env, field).map((value) => validateOrigin(field, value, issues));
+}
+
+function validateOrigin(field: string, value: string, issues: string[]): string {
+  try {
+    const url = new URL(value);
+
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      issues.push(`${field} must use http or https`);
+      return value;
+    }
+
+    return url.origin;
+  } catch {
+    issues.push(`${field} must be a valid URL origin`);
+    return value;
+  }
+}
+
+function validateProductionSecurity(input: {
+  adminPassword: string;
+  adminSessionSecret: string;
+  publicApiAuthRequired: boolean;
+  publicApiKey: string | null;
+  storageCredentials: string[];
+  model: RuntimeConfig["model"];
+  cookieSecure: boolean;
+  origins: string[];
+  allowedHosts: string[];
+  issues: string[];
+}) {
+  const placeholderChecks: Array<[string, string | null]> = [
+    ["ADMIN_PASSWORD", input.adminPassword],
+    ["ADMIN_SESSION_SECRET", input.adminSessionSecret],
+    ["PUBLIC_API_KEY", input.publicApiAuthRequired ? input.publicApiKey : null],
+    ["S3_ACCESS_KEY_ID", input.storageCredentials[0] ?? null],
+    ["S3_SECRET_ACCESS_KEY", input.storageCredentials[1] ?? null],
+    ["MODEL_API_KEY", input.model.enabled ? input.model.apiKey : null]
+  ];
+
+  for (const [field, value] of placeholderChecks) {
+    if (value && isPlaceholderSecret(value)) {
+      input.issues.push(`${field} must not use a placeholder value in production`);
+    }
+  }
+
+  if (!input.cookieSecure) {
+    input.issues.push("ADMIN_SESSION_COOKIE_SECURE must be true in production");
+  }
+
+  if (input.allowedHosts.length === 0) {
+    input.issues.push("ALLOWED_HOSTS is required in production");
+  }
+
+  for (const origin of input.origins) {
+    if (!origin.startsWith("https://")) {
+      input.issues.push("Production public origins must use https");
+      break;
+    }
+  }
+}
+
+function isPlaceholderSecret(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+
+  return (
+    normalized === "dev" ||
+    normalized === "secret" ||
+    normalized === "password" ||
+    normalized === "change-me" ||
+    normalized === "changeme" ||
+    normalized === "replace-me" ||
+    normalized === "admin-password" ||
+    normalized === "public-secret" ||
+    normalized === "model-secret" ||
+    normalized === "s3-access-key" ||
+    normalized === "s3-secret-key" ||
+    normalized.includes("change-this") ||
+    normalized.includes("placeholder")
+  );
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function parseUrlList(env: RuntimeEnv, field: string, issues: string[]): string[] {

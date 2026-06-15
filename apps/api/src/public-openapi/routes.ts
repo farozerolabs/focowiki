@@ -3,18 +3,57 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import type { RedisCoordinator } from "../redis/coordination.js";
+import { recordSecurityAudit } from "../security/audit.js";
+import { requireRateLimit } from "../security/rate-limit.js";
+import {
+  applyPublicCors,
+  invalidPath,
+  isAllowedPublicLogicalPath,
+  publicResponseHeaders,
+  unsupportedPublicMethod
+} from "./security.js";
 
 export type PublicOpenApiRouteServices = {
   config: RuntimeConfig;
   storage: StorageAdapter;
   repositories: AdminRepositories | null;
+  redis: RedisCoordinator | null;
 };
 
 export function registerPublicOpenApiRoutes(
   app: Hono,
   services: PublicOpenApiRouteServices
 ): void {
-  const { config, storage, repositories } = services;
+  const { config, storage, repositories, redis } = services;
+
+  app.use("/kb/*", applyPublicCors(config));
+  app.use("/kb/*", async (context, next) => {
+    const limited = await requireRateLimit({
+      config,
+      redis,
+      context,
+      scope: "public-openapi",
+      limit: config.security?.rateLimits.publicOpenApi ?? {
+        max: 1_200,
+        windowSeconds: 60
+      }
+    });
+
+    if (limited) {
+      await recordSecurityAudit({
+        repositories,
+        config,
+        context,
+        eventType: "public_openapi_rate_limited",
+        result: "blocked",
+        errorCode: "RATE_LIMITED"
+      });
+      return limited;
+    }
+
+    await next();
+  });
 
   app.get("/kb/:knowledgeBaseId/tasks/latest", requirePublicAuth(config), async (context) =>
     servePublicLatestTaskStatus(context, repositories)
@@ -30,6 +69,9 @@ export function registerPublicOpenApiRoutes(
   );
   app.get("/kb/:knowledgeBaseId/_index/*", requirePublicAuth(config), async (context) =>
     serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
+  );
+  app.on(["POST", "PUT", "PATCH", "DELETE"], "/kb/:knowledgeBaseId/*", (context) =>
+    unsupportedPublicMethod(context)
   );
 }
 
@@ -70,8 +112,8 @@ async function serveScopedPublicFile(
 
   const knowledgeBaseId = context.req.param("knowledgeBaseId");
 
-  if (!knowledgeBaseId) {
-    return notFound(context);
+  if (!knowledgeBaseId || !isAllowedPublicLogicalPath(logicalPath)) {
+    return invalidPath(context);
   }
 
   const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
@@ -174,30 +216,6 @@ function decodeScopedPublicPath(path: string): string {
   }
 
   return decoded;
-}
-
-function publicResponseHeaders(
-  path: string,
-  context: Parameters<MiddlewareHandler>[0],
-  config: RuntimeConfig
-): Headers {
-  const headers = new Headers({
-    "content-type": contentTypeForPath(path)
-  });
-  const origin = context.req.header("origin");
-
-  if (origin && config.corsOrigins.includes(origin)) {
-    headers.set("access-control-allow-origin", origin);
-    headers.set("vary", "Origin");
-  }
-
-  return headers;
-}
-
-function contentTypeForPath(path: string): string {
-  return path.endsWith(".json")
-    ? "application/json; charset=utf-8"
-    : "text/markdown; charset=utf-8";
 }
 
 function readBearerToken(authorization: string | undefined): string | null {

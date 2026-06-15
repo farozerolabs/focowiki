@@ -56,6 +56,7 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   loginAdmin: vi.fn(async () => true),
   logoutAdmin: vi.fn(async () => undefined),
+  setAdminAuthFailureHandler: vi.fn(),
   renderPreview: vi.fn(),
   uploadKnowledgeBaseSources: vi.fn(),
   uploadSources: vi.fn()

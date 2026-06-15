@@ -1,9 +1,8 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { RuntimeConfig } from "../config.js";
+import type { RuntimeConfig, RuntimeSecurityConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 
 export const ADMIN_SESSION_COOKIE_NAME = "focowiki_admin_session";
-const ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 
 export type AdminSessionRecord = {
   username: string;
@@ -20,7 +19,8 @@ export type AdminSessionManager = {
 
 export function createAdminSessionManager(
   config: RuntimeConfig["admin"],
-  redis: RedisCoordinator
+  redis: RedisCoordinator,
+  sessionConfig: RuntimeSecurityConfig["session"]
 ): AdminSessionManager {
   return {
     authenticate(credentials) {
@@ -37,11 +37,13 @@ export function createAdminSessionManager(
           username,
           createdAt: new Date().toISOString()
         } satisfies AdminSessionRecord,
-        ADMIN_SESSION_TTL_SECONDS
+        sessionConfig.ttlSeconds
       );
 
       return serializeSessionCookie(signSessionId(sessionId, config.sessionSecret), {
-        maxAge: ADMIN_SESSION_TTL_SECONDS
+        maxAge: sessionConfig.ttlSeconds,
+        secure: sessionConfig.cookieSecure,
+        sameSite: sessionConfig.cookieSameSite
       });
     },
     async verifyCookieHeader(cookieHeader) {
@@ -63,7 +65,9 @@ export function createAdminSessionManager(
     },
     createClearedSessionCookie() {
       return serializeSessionCookie("", {
-        maxAge: 0
+        maxAge: 0,
+        secure: sessionConfig.cookieSecure,
+        sameSite: sessionConfig.cookieSameSite
       });
     }
   };
@@ -118,14 +122,27 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
   return null;
 }
 
-function serializeSessionCookie(value: string, options: { maxAge: number }): string {
-  return [
+function serializeSessionCookie(
+  value: string,
+  options: {
+    maxAge: number;
+    secure: boolean;
+    sameSite: RuntimeSecurityConfig["session"]["cookieSameSite"];
+  }
+): string {
+  const parts = [
     `${ADMIN_SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${options.sameSite}`,
     `Max-Age=${options.maxAge}`
-  ].join("; ");
+  ];
+
+  if (options.secure) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
 }
 
 function secureEquals(value: string, expected: string): boolean {

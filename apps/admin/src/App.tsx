@@ -9,6 +9,7 @@ import {
   deleteKnowledgeBase,
   listKnowledgeBases,
   logoutAdmin,
+  setAdminAuthFailureHandler,
   type ApiFailure,
   type KnowledgeBase
 } from "@/lib/admin-api";
@@ -21,6 +22,15 @@ export function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
+
+  useEffect(() => {
+    setAdminAuthFailureHandler(() => {
+      clearProtectedState();
+      setAuthState("anonymous");
+    });
+
+    return () => setAdminAuthFailureHandler(null);
+  }, []);
 
   useEffect(() => {
     let isActive = true;
@@ -66,9 +76,14 @@ export function App() {
   async function handleLogout() {
     await logoutAdmin();
     setAuthState("anonymous");
+    clearProtectedState();
+  }
+
+  function clearProtectedState() {
     setKnowledgeBases([]);
     setNextCursor(null);
     setSelectedKnowledgeBase(null);
+    setIsLoadingKnowledgeBases(false);
   }
 
   async function loadKnowledgeBases(input: { replace: boolean }) {

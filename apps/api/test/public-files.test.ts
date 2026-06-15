@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createPublicOpenApiApp } from "../src/server.js";
-import type { RuntimeConfig } from "../src/config.js";
+import { resolveSecurityConfig, type RuntimeConfig } from "../src/config.js";
+import { createTestRedisCoordinator } from "./support/session.js";
 
 function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeConfig {
   return {
@@ -84,6 +85,53 @@ describe("Public file API compatibility boundary", () => {
     });
 
     expect(response.status).toBe(404);
+  });
+
+  it("rejects unsupported public OpenAPI methods with a stable error", async () => {
+    const app = createPublicOpenApiApp({ config: createConfig() });
+    const response = await app.request("/kb/kb-001/index.md", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer public-secret"
+      }
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "METHOD_NOT_ALLOWED"
+      }
+    });
+    expect(response.status).toBe(405);
+  });
+
+  it("rate-limits public OpenAPI reads before repository work", async () => {
+    const baseConfig = createConfig({
+      authRequired: false,
+      apiKey: null
+    });
+    const security = resolveSecurityConfig(baseConfig);
+    const app = createPublicOpenApiApp({
+      config: {
+        ...baseConfig,
+        security: {
+          ...security,
+          rateLimits: {
+            ...security.rateLimits,
+            publicOpenApi: {
+              max: 1,
+              windowSeconds: 60
+            }
+          }
+        }
+      },
+      redis: createTestRedisCoordinator()
+    });
+
+    const first = await app.request("/kb/kb-001/index.md");
+    const second = await app.request("/kb/kb-001/index.md");
+
+    expect(first.status).toBe(503);
+    expect(second.status).toBe(429);
   });
 
   it("rejects unsafe paths before any public route lookup", async () => {

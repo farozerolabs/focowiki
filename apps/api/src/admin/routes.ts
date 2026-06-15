@@ -4,13 +4,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { type RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
 import type {
-  AdminRepositories,
-  BundleFileRecord,
-  BundleTreeEntryRecord,
-  ReleaseRecord,
-  SourceFileRecord,
-  UploadTaskEventRecord,
-  UploadTaskRecord
+  AdminRepositories
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import {
@@ -20,12 +14,31 @@ import {
 import {
   hasDuplicateUploadFileNames,
   hasExistingSourceFileName,
+  hasUnsafeUploadFileNames,
   isUploadFile
 } from "./upload-input.js";
 import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
 import { createDeletionService } from "./deletion-service.js";
+import {
+  adminUnauthorized,
+  createAdminAuthMiddleware,
+  createAdminWriteProtectionMiddleware,
+  limitAdminLoginRequest,
+  limitAdminUploadRequest,
+  missingSessionBackend,
+  recordAdminAudit,
+  registerAdminSecurityMiddlewares
+} from "./security.js";
+import {
+  toAdminBundleFile,
+  toAdminBundleTreeEntry,
+  toAdminRelease,
+  toAdminSourceFile,
+  toAdminUploadTaskEvent,
+  toUploadTaskLifecycle
+} from "./serializers.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -39,6 +52,22 @@ export type AdminApiServices = {
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
   const { config, storage, modelClient, sessionManager, redis, repositories } = services;
   const adminTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
+  const requireAuth = createAdminAuthMiddleware({
+    config,
+    sessionManager,
+    redis,
+    repositories
+  });
+  const requireWriteProtection = createAdminWriteProtectionMiddleware({
+    config,
+    repositories
+  });
+
+  registerAdminSecurityMiddlewares(app, {
+    config,
+    redis,
+    repositories
+  });
 
   app.post("/admin/api/login", async (context) => {
     if (containsCredentialQuery(context.req.raw.url)) {
@@ -59,30 +88,65 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     const body = await readJsonBody(context.req.raw);
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
+    const loginLimited = await limitAdminLoginRequest({
+      config,
+      redis,
+      repositories,
+      context,
+      username
+    });
+
+    if (loginLimited) {
+      return loginLimited;
+    }
 
     if (!sessionManager.authenticate({ username, password })) {
-      return unauthorized(context);
+      await recordAdminAudit({
+        repositories,
+        config,
+        context,
+        eventType: "admin_login",
+        result: "failure",
+        errorCode: "UNAUTHORIZED",
+        username: username || null
+      });
+      return adminUnauthorized(context, "auth.invalidCredentials");
     }
 
     context.header("set-cookie", await sessionManager.createSessionCookie(username));
+    await recordAdminAudit({
+      repositories,
+      config,
+      context,
+      eventType: "admin_login",
+      result: "success",
+      username
+    });
     return context.json({ authenticated: true });
   });
 
-  app.get("/admin/api/session", requireAdminAuth(sessionManager), (context) =>
+  app.get("/admin/api/session", requireAuth, (context) =>
     context.json({ authenticated: true })
   );
 
-  app.post("/admin/api/logout", async (context) => {
+  app.post("/admin/api/logout", requireAuth, requireWriteProtection, async (context) => {
     if (!sessionManager) {
       return missingSessionBackend(context);
     }
 
     await sessionManager.clearSessionFromCookieHeader(context.req.header("cookie"));
     context.header("set-cookie", sessionManager.createClearedSessionCookie());
+    await recordAdminAudit({
+      repositories,
+      config,
+      context,
+      eventType: "admin_logout",
+      result: "success"
+    });
     return context.json({ authenticated: false });
   });
 
-  app.get("/admin/api/knowledge-bases", requireAdminAuth(sessionManager), async (context) => {
+  app.get("/admin/api/knowledge-bases", requireAuth, async (context) => {
     if (!repositories || !redis) {
       return missingRepositoryBackend(context);
     }
@@ -135,7 +199,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     });
   });
 
-  app.post("/admin/api/knowledge-bases", requireAdminAuth(sessionManager), async (context) => {
+  app.post("/admin/api/knowledge-bases", requireAuth, requireWriteProtection, async (context) => {
     if (!repositories) {
       return missingRepositoryBackend(context);
     }
@@ -160,7 +224,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories) {
         return missingRepositoryBackend(context);
@@ -180,7 +244,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.delete(
     "/admin/api/knowledge-bases/:knowledgeBaseId",
-    requireAdminAuth(sessionManager),
+    requireAuth,
+    requireWriteProtection,
     async (context) => {
       if (!repositories || !redis) {
         return missingRepositoryBackend(context);
@@ -208,7 +273,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/tree",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
@@ -276,7 +341,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
@@ -322,7 +387,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.delete(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail",
-    requireAdminAuth(sessionManager),
+    requireAuth,
+    requireWriteProtection,
     async (context) => {
       if (!repositories?.files || !repositories.tasks || !redis) {
         return missingRepositoryBackend(context);
@@ -377,7 +443,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/public-urls",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories) {
         return missingRepositoryBackend(context);
@@ -411,7 +477,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/releases",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
@@ -462,7 +528,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/bundle-files",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
@@ -514,7 +580,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/tasks",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (!repositories?.tasks?.listUploadTasks || !redis) {
         return missingRepositoryBackend(context);
@@ -575,7 +641,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/tasks/:taskId",
-    requireAdminAuth(sessionManager),
+    requireAuth,
     async (context) => {
       if (
         !repositories?.tasks?.getUploadTask ||
@@ -689,7 +755,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/uploads",
-    requireAdminAuth(sessionManager),
+    requireAuth,
+    requireWriteProtection,
     async (context) => {
       if (!repositories?.tasks || !repositories.files || !redis) {
         return missingRepositoryBackend(context);
@@ -725,6 +792,17 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return notFound(context);
       }
 
+      const uploadLimited = await limitAdminUploadRequest({
+        config,
+        redis,
+        repositories,
+        context
+      });
+
+      if (uploadLimited) {
+        return uploadLimited;
+      }
+
       const formData = await context.req.formData();
       const files = formData.getAll("files").filter(isUploadFile);
 
@@ -741,6 +819,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       }
 
       if (files.length > config.upload.maxFiles) {
+        await recordAdminAudit({
+          repositories,
+          config,
+          context,
+          eventType: "upload_rejected",
+          result: "blocked",
+          errorCode: "UPLOAD_FILE_COUNT_LIMIT_EXCEEDED"
+        });
         return context.json(
           {
             error: {
@@ -752,7 +838,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         );
       }
 
-      if (files.some((file) => !file.name.toLowerCase().endsWith(".md"))) {
+      if (hasUnsafeUploadFileNames(files)) {
         return context.json(
           {
             error: {
@@ -799,6 +885,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       const totalBytes = loadedFiles.reduce((sum, file) => sum + file.bytes.byteLength, 0);
 
       if (totalBytes > config.upload.maxBytes) {
+        await recordAdminAudit({
+          repositories,
+          config,
+          context,
+          eventType: "upload_rejected",
+          result: "blocked",
+          errorCode: "UPLOAD_BYTE_LIMIT_EXCEEDED"
+        });
         return context.json(
           {
             error: {
@@ -840,24 +934,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
 }
 
-function requireAdminAuth(sessionManager: AdminSessionManager | null): MiddlewareHandler {
-  return async (context, next) => {
-    if (containsCredentialQuery(context.req.raw.url)) {
-      return unauthorized(context);
-    }
-
-    if (!sessionManager) {
-      return missingSessionBackend(context);
-    }
-
-    if (!(await sessionManager.verifyCookieHeader(context.req.header("cookie")))) {
-      return unauthorized(context);
-    }
-
-    await next();
-  };
-}
-
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
   try {
     const parsed = (await request.json()) as unknown;
@@ -865,28 +941,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   } catch {
     return {};
   }
-}
-
-function unauthorized(context: Parameters<MiddlewareHandler>[0]): Response {
-  return context.json(
-    {
-      error: {
-        code: "UNAUTHORIZED"
-      }
-    },
-    401
-  );
-}
-
-function missingSessionBackend(context: Parameters<MiddlewareHandler>[0]): Response {
-  return context.json(
-    {
-      error: {
-        code: "SESSION_BACKEND_UNAVAILABLE"
-      }
-    },
-    503
-  );
 }
 
 function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {
@@ -955,89 +1009,6 @@ function readKnowledgeBaseCreateInput(
   return {
     name,
     description
-  };
-}
-
-function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
-  return {
-    id: entry.id,
-    parentPath: entry.parentPath,
-    name: entry.name,
-    logicalPath: entry.logicalPath,
-    entryType: entry.entryType,
-    bundleFileId: entry.bundleFileId,
-    sourceFileId: entry.sourceFileId,
-    fileKind: entry.fileKind,
-    deletable: entry.fileKind === "page" && Boolean(entry.sourceFileId)
-  };
-}
-
-function toAdminBundleFile(file: BundleFileRecord) {
-  return {
-    id: file.id,
-    sourceFileId: file.sourceFileId,
-    fileKind: file.fileKind,
-    logicalPath: file.logicalPath,
-    contentType: file.contentType,
-    sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
-    okfType: file.okfType,
-    title: file.title,
-    description: file.description,
-    tags: file.tags,
-    frontmatter: file.frontmatter,
-    deletable: file.fileKind === "page" && Boolean(file.sourceFileId)
-  };
-}
-
-function toAdminSourceFile(file: SourceFileRecord) {
-  return {
-    id: file.id,
-    taskId: file.taskId,
-    originalName: file.originalName,
-    contentType: file.contentType,
-    sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
-    metadata: file.metadata,
-    createdAt: file.createdAt
-  };
-}
-
-function toAdminRelease(release: ReleaseRecord) {
-  return {
-    id: release.id,
-    taskId: release.taskId,
-    generatedAt: release.generatedAt,
-    publishedAt: release.publishedAt,
-    fileCount: release.fileCount,
-    manifestChecksumSha256: release.manifestChecksumSha256,
-    createdAt: release.createdAt
-  };
-}
-
-function toUploadTaskLifecycle(task: UploadTaskRecord) {
-  return {
-    id: task.id,
-    knowledgeBaseId: task.knowledgeBaseId,
-    operation: task.operation,
-    startedAt: task.startedAt,
-    endedAt: task.endedAt,
-    lifecycle: task.endedAt ? "ended" : "running",
-    sourceCount: task.sourceCount,
-    resultReleaseId: task.resultReleaseId
-  };
-}
-
-function toAdminUploadTaskEvent(event: UploadTaskEventRecord) {
-  return {
-    id: event.id,
-    taskId: event.taskId,
-    phaseKey: event.phaseKey,
-    messageKey: event.messageKey,
-    startedAt: event.startedAt,
-    endedAt: event.endedAt,
-    severity: event.severity,
-    createdAt: event.createdAt
   };
 }
 

@@ -133,6 +133,17 @@ export type UploadTaskEventRecord = {
 
 export type UploadTaskEventDraft = Omit<UploadTaskEventRecord, "id" | "createdAt">;
 
+export type SecurityAuditEventDraft = {
+  eventType: string;
+  result: "success" | "failure" | "blocked";
+  errorCode: string | null;
+  username: string | null;
+  clientIp: string | null;
+  userAgent: string | null;
+  origin: string | null;
+  createdAt?: string;
+};
+
 export type BundleFileRepository = {
   createSourceFiles?: (files: SourceFileDraft[]) => Promise<void>;
   createRelease?: (release: ReleaseDraft) => Promise<void>;
@@ -221,6 +232,9 @@ export type AdminRepositories = {
       limit: number;
       cursor: string | null;
     }) => Promise<CursorPage<UploadTaskEventRecord>>;
+  };
+  securityAudit?: {
+    createSecurityAuditEvent: (input: SecurityAuditEventDraft) => Promise<void>;
   };
 };
 
@@ -313,6 +327,10 @@ type UploadTaskEventRow = {
   severity: "info" | "warning" | "error";
   created_at: Date;
 };
+
+export function createSecurityAuditEventId(): string {
+  return `audit-${randomUUID()}`;
+}
 
 export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepositories {
   return {
@@ -990,6 +1008,34 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                 })
               : null
         };
+      }
+    },
+    securityAudit: {
+      async createSecurityAuditEvent(input) {
+        await sql`
+          INSERT INTO focowiki.admin_audit_events (
+            id,
+            event_type,
+            result,
+            error_code,
+            username,
+            client_ip,
+            user_agent,
+            origin,
+            created_at
+          )
+          VALUES (
+            ${createSecurityAuditEventId()},
+            ${input.eventType},
+            ${input.result},
+            ${input.errorCode},
+            ${input.username},
+            ${input.clientIp},
+            ${input.userAgent},
+            ${input.origin},
+            ${input.createdAt ?? new Date().toISOString()}
+          )
+        `;
       }
     }
   };

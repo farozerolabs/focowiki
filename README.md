@@ -54,18 +54,25 @@ pnpm --filter @focowiki/api db:migrate
 
 Required admin configuration:
 
+- `APP_ENV`: `development` or `production`. Production enables stricter secret, HTTPS origin, host, and cookie validation.
 - `ADMIN_USERNAME`: admin login username.
 - `ADMIN_PASSWORD`: admin login password.
-- `ADMIN_SESSION_SECRET`: signing secret for HTTP-only admin session cookies.
+- `ADMIN_SESSION_SECRET`: signing secret for HTTP-only admin session cookies. Generate a unique high-entropy value for each deployment.
+- `ADMIN_SESSION_TTL_SECONDS`, `ADMIN_SESSION_SECRET_MIN_LENGTH`, `ADMIN_SESSION_COOKIE_SECURE`, `ADMIN_SESSION_COOKIE_SAME_SITE`: session lifetime and cookie safety controls. Production requires secure cookies.
 - `ADMIN_API_PORT`: internal Admin API listen port. Defaults to `43000` when omitted.
 - `ADMIN_UI_HOST`: local Vite admin UI listen host. Defaults to `::` so `localhost` and `127.0.0.1` both work on local machines that support dual-stack loopback.
 - `ADMIN_UI_PORT`: local Vite admin UI listen port. Defaults to `43100` when omitted.
 - `ADMIN_API_PROXY_TARGET`: local Admin UI proxy target. Defaults to `http://127.0.0.1:${ADMIN_API_PORT}`.
+- `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN`: externally visible origins used for reverse-proxy deployments and production validation.
+- `ADMIN_TRUSTED_ORIGINS`: comma-separated origins allowed to submit Admin API state-changing browser requests.
+- `ALLOWED_HOSTS`: comma-separated public hosts accepted in production mode.
+- `TRUSTED_PROXY_MODE`: set `true` only when trusted reverse-proxy forwarded headers should be used.
+- `VITE_ADMIN_API_BASE_URL`: optional browser-visible Admin API base URL. Leave empty when the Admin UI proxies `/admin/api`.
 
 Required infrastructure configuration:
 
 - `DATABASE_URL`: PostgreSQL connection URL for production admin records.
-- `REDIS_URL`: Redis connection URL for sessions, coordination, locks, and pagination cursor/cache state.
+- `REDIS_URL`: Redis connection URL for sessions, coordination, locks, pagination cursor/cache state, and security rate-limit counters.
 
 Required public OpenAPI configuration:
 
@@ -89,6 +96,11 @@ Optional:
 
 - `ADMIN_LIST_PAGE_SIZE`, `ADMIN_LIST_MAX_PAGE_SIZE`, `ADMIN_PAGINATION_CURSOR_TTL_SECONDS`: bounded admin pagination defaults and Redis cursor TTL.
 - `CORS_ORIGINS`: comma-separated allowed origins for public file responses.
+- `ADMIN_LOGIN_RATE_LIMIT_MAX`, `ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed admin login throttle.
+- `ADMIN_API_RATE_LIMIT_MAX`, `ADMIN_API_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Admin API request throttle.
+- `UPLOAD_RATE_LIMIT_MAX`, `UPLOAD_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed upload request throttle.
+- `PUBLIC_OPENAPI_RATE_LIMIT_MAX`, `PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed public OpenAPI read throttle.
+- `SECURITY_AUDIT_RETENTION_DAYS`: planned retention window for persisted security audit evidence.
 - `MODEL_BASE_URL`: OpenAI-compatible Responses API base URL. Defaults to `https://api.openai.com/v1` when model assistance is enabled and this value is omitted.
 - `MODEL_API_KEY`: model bearer credential.
 - `MODEL_NAME`: model name for optional assistance.
@@ -137,6 +149,16 @@ GET /kb/{knowledgeBaseId}/tasks/latest
 `PUBLIC_BASE_URL` must point to the public OpenAPI service, for example `http://127.0.0.1:43200`. Admin UI and Admin API URLs are separate. Public URLs are built as `PUBLIC_BASE_URL + /kb/{knowledgeBaseId}/...` and do not expose S3 bucket names, `S3_PREFIX`, release IDs, task IDs used in storage keys, or raw object keys.
 
 Private mode requires `Authorization: Bearer $PUBLIC_API_KEY`. Public mode allows anonymous reads while still enforcing knowledge base scoping and path safety. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
+
+Unsupported public methods return stable JSON errors and do not mutate knowledge bases, source files, tasks, releases, storage objects, or indexes. Public reads are rate-limited through Redis before storage or expensive repository work.
+
+## Security Baseline
+
+The Admin API is the authorization boundary. The Admin UI route guard only controls rendering; every protected Admin API request validates the signed Redis-backed session server-side. Cookie-authenticated state-changing Admin API requests also require a trusted `Origin` or `Referer`.
+
+Production mode rejects placeholder secrets, weak admin session secrets, insecure public origins, insecure session-cookie settings, wildcard private CORS, and missing allowed hosts before serving traffic. Login failures, login throttling, invalid sessions, origin rejection, logout, and selected upload/public rate-limit events write redacted audit evidence without passwords, cookies, API keys, S3 object keys, local paths, or raw Markdown bodies.
+
+When deploying behind a domain reverse proxy, set the public origins, `ALLOWED_HOSTS`, and `TRUSTED_PROXY_MODE` explicitly. The product should be reached through HTTPS in production; internal loopback, database, Redis, and S3 endpoints must not be exposed in rendered UI or public file URLs.
 
 ## Cleaned Markdown Full-Flow Validation
 

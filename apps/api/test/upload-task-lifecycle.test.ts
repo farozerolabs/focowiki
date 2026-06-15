@@ -16,7 +16,8 @@ import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import {
   loginAndReadSessionCookie,
-  MemoryRedisCommandClient
+  MemoryRedisCommandClient,
+  withTrustedAdminOrigin
 } from "./support/session.js";
 
 const knowledgeBase = {
@@ -521,9 +522,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "# Intro\n\nNo frontmatter." },
         { fileName: "setup.md", content: "---\ntype: page\ntitle: Setup\n---\n# Setup" }
@@ -551,7 +552,7 @@ describe("Upload parsing task lifecycle", () => {
       resultReleaseId: null
     });
 
-    await waitForBackgroundUpload(() => records.releases.length === 1);
+    await waitForBackgroundUpload(() => Boolean(records.releases[0]?.publishedAt));
 
     expect(records.sourceFiles).toHaveLength(2);
     expect(records.sourcePageCalls).toEqual([
@@ -630,9 +631,9 @@ describe("Upload parsing task lifecycle", () => {
     const fileName = "外国企业常驻代表机构登记管理条例.md";
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         {
           fileName,
@@ -694,9 +695,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "new.md", content: "---\ntype: page\ntitle: New\n---\n# New" }
       ])
@@ -729,9 +730,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         {
           fileName: "intro.md",
@@ -767,9 +768,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([{ fileName: "notes.txt", content: "# Notes" }])
     });
 
@@ -813,9 +814,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([{ fileName: "INTRO.md", content: "# Intro duplicate" }])
     });
 
@@ -865,9 +866,9 @@ describe("Upload parsing task lifecycle", () => {
     const delayedCookie = await loginAndReadSessionCookie(delayedApp);
     const response = await delayedApp.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie: delayedCookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" }
       ])
@@ -968,9 +969,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" }
       ])
@@ -1041,9 +1042,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" }
       ])
@@ -1077,9 +1078,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(adminApp);
     const upload = await adminApp.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" }
       ])
@@ -1134,9 +1135,9 @@ describe("Upload parsing task lifecycle", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      },
+      }),
       body: uploadForm([
         { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" }
       ])
@@ -1182,9 +1183,9 @@ describe("Upload parsing task lifecycle", () => {
     const countCookie = await loginAndReadSessionCookie(countApp);
     const tooMany = await countApp.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie: countCookie
-      },
+      }),
       body: uploadForm([
         { fileName: "one.md", content: "---\ntype: page\ntitle: One\n---\n# One" },
         { fileName: "two.md", content: "---\ntype: page\ntitle: Two\n---\n# Two" }
@@ -1208,9 +1209,9 @@ describe("Upload parsing task lifecycle", () => {
     const sizeCookie = await loginAndReadSessionCookie(sizeApp);
     const tooLarge = await sizeApp.request("/admin/api/knowledge-bases/kb-001/uploads", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie: sizeCookie
-      },
+      }),
       body: uploadForm([
         { fileName: "large.md", content: "---\ntype: page\ntitle: Large\n---\n# Large" }
       ])

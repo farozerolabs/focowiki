@@ -115,6 +115,109 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/REDIS_URL/);
   });
 
+  it("parses conservative security defaults for local deployments", () => {
+    const config = parseRuntimeConfig(validEnv);
+    const security = config.security;
+
+    expect(security).toMatchObject({
+      environment: "development",
+      adminTrustedOrigins: [
+        "http://localhost:43100",
+        "http://127.0.0.1:43100"
+      ],
+      rateLimits: {
+        adminLogin: {
+          max: 8,
+          windowSeconds: 900
+        },
+        adminApi: {
+          max: 600,
+          windowSeconds: 60
+        },
+        upload: {
+          max: 20,
+          windowSeconds: 3600
+        },
+        publicOpenApi: {
+          max: 1200,
+          windowSeconds: 60
+        }
+      }
+    });
+    expect(security?.session.cookieSecure).toBe(false);
+  });
+
+  it("validates production security settings without echoing secret values", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "change-me",
+        ADMIN_SESSION_SECRET: "short",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com"
+      })
+    ).toThrow(/ADMIN_PASSWORD/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "change-me",
+        ADMIN_SESSION_SECRET: "short",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com"
+      })
+    ).not.toThrow(/change-me/);
+  });
+
+  it("validates trusted origins, CORS, and rate limit settings", () => {
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      ADMIN_TRUSTED_ORIGINS: "https://admin.example.com",
+      ADMIN_LOGIN_RATE_LIMIT_MAX: "4",
+      ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS: "300",
+      PUBLIC_OPENAPI_RATE_LIMIT_MAX: "100",
+      PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS: "60"
+    });
+
+    expect(config.security?.adminTrustedOrigins).toEqual(["https://admin.example.com"]);
+    expect(config.security?.rateLimits.adminLogin).toEqual({
+      max: 4,
+      windowSeconds: 300
+    });
+    expect(config.security?.rateLimits.publicOpenApi).toEqual({
+      max: 100,
+      windowSeconds: 60
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        ADMIN_TRUSTED_ORIGINS: "not-a-url"
+      })
+    ).toThrow(/ADMIN_TRUSTED_ORIGINS/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        CORS_ORIGINS: "*",
+        PUBLIC_API_AUTH_REQUIRED: "true"
+      })
+    ).toThrow(/CORS_ORIGINS/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        ADMIN_LOGIN_RATE_LIMIT_MAX: "0"
+      })
+    ).toThrow(/ADMIN_LOGIN_RATE_LIMIT_MAX/);
+  });
+
   it("validates separated high ports", () => {
     expect(() =>
       parseRuntimeConfig({

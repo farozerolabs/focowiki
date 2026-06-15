@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_tree_entries (
   )
 );
 
+CREATE TABLE IF NOT EXISTS focowiki.admin_audit_events (
+  id text PRIMARY KEY,
+  event_type text NOT NULL,
+  result text NOT NULL,
+  error_code text,
+  username text,
+  client_ip text,
+  user_agent text,
+  origin text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (result IN ('success', 'failure', 'blocked'))
+);
+
 DO $$
 BEGIN
   ALTER TABLE focowiki.knowledge_bases
@@ -192,3 +205,9 @@ CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_cursor_idx
 
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_logical_cursor_idx
   ON focowiki.bundle_tree_entries(release_id, logical_path, id);
+
+CREATE INDEX IF NOT EXISTS admin_audit_events_created_idx
+  ON focowiki.admin_audit_events(created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS admin_audit_events_type_result_idx
+  ON focowiki.admin_audit_events(event_type, result, created_at DESC);

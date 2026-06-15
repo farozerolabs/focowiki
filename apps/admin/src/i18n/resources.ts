@@ -165,7 +165,9 @@ export const resources = {
         duplicateUploadFileName: "Markdown file names must be unique",
         uploadFailed: "Upload request failed",
         deleteFailed: "Delete request failed",
-        fileNotDeletable: "This file cannot be deleted"
+        fileNotDeletable: "This file cannot be deleted",
+        securityRequestRejected: "Request rejected",
+        rateLimited: "Too many requests"
       }
     }
   },
@@ -330,7 +332,9 @@ export const resources = {
         duplicateUploadFileName: "Markdown 文件名不能重复",
         uploadFailed: "上传请求失败",
         deleteFailed: "删除请求失败",
-        fileNotDeletable: "该文件不能删除"
+        fileNotDeletable: "该文件不能删除",
+        securityRequestRejected: "请求已被拒绝",
+        rateLimited: "请求过于频繁"
       }
     }
   }

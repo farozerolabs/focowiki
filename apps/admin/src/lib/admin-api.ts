@@ -113,11 +113,17 @@ export type ApiFailure = {
   messageKey: string;
 };
 
+type AuthFailureHandler = () => void;
+
+let authFailureHandler: AuthFailureHandler | null = null;
+
+export function setAdminAuthFailureHandler(handler: AuthFailureHandler | null) {
+  authFailureHandler = handler;
+}
+
 export async function checkAdminSession(): Promise<boolean> {
   try {
-    const response = await fetch("/admin/api/session", {
-      credentials: "include"
-    });
+    const response = await adminFetch("/admin/api/session");
 
     return response.ok;
   } catch {
@@ -126,7 +132,7 @@ export async function checkAdminSession(): Promise<boolean> {
 }
 
 export async function loginAdmin(input: { username: string; password: string }): Promise<boolean> {
-  const response = await fetch("/admin/api/login", {
+  const response = await fetch(adminApiUrl("/admin/api/login"), {
     method: "POST",
     credentials: "include",
     headers: {
@@ -139,9 +145,8 @@ export async function loginAdmin(input: { username: string; password: string }):
 }
 
 export async function logoutAdmin(): Promise<void> {
-  await fetch("/admin/api/logout", {
-    method: "POST",
-    credentials: "include"
+  await adminFetch("/admin/api/logout", {
+    method: "POST"
   });
 }
 
@@ -158,9 +163,7 @@ export async function listKnowledgeBases(input: {
     params.set("cursor", input.cursor);
   }
 
-  const response = await fetch(`/admin/api/knowledge-bases${params.size ? `?${params}` : ""}`, {
-    credentials: "include"
-  });
+  const response = await adminFetch(`/admin/api/knowledge-bases${params.size ? `?${params}` : ""}`);
 
   if (!response.ok) {
     return {
@@ -176,9 +179,8 @@ export async function createKnowledgeBase(input: {
   name: string;
   description: string;
 }): Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure> {
-  const response = await fetch("/admin/api/knowledge-bases", {
+  const response = await adminFetch("/admin/api/knowledge-bases", {
     method: "POST",
-    credentials: "include",
     headers: {
       "content-type": "application/json"
     },
@@ -201,11 +203,10 @@ export async function createKnowledgeBase(input: {
 export async function deleteKnowledgeBase(input: {
   knowledgeBaseId: string;
 }): Promise<{ deleted: true } | ApiFailure> {
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}`,
     {
-      method: "DELETE",
-      credentials: "include"
+      method: "DELETE"
     }
   );
   const body = (await response.json()) as
@@ -229,11 +230,10 @@ export async function uploadKnowledgeBaseSources(input: {
     formData.append("files", file);
   });
 
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/uploads`,
     {
       method: "POST",
-      credentials: "include",
       body: formData
     }
   );
@@ -262,13 +262,10 @@ export async function fetchKnowledgeBaseFileTree(input: {
     params.set("cursor", input.cursor);
   }
 
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/files/tree${
       params.size ? `?${params}` : ""
-    }`,
-    {
-      credentials: "include"
-    }
+    }`
   );
 
   if (!response.ok) {
@@ -285,13 +282,10 @@ export async function fetchKnowledgeBaseFileDetail(input: {
   knowledgeBaseId: string;
   path: string;
 }): Promise<BundleFileDetail | null> {
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
-    )}/files/detail?path=${encodeURIComponent(input.path)}`,
-    {
-      credentials: "include"
-    }
+    )}/files/detail?path=${encodeURIComponent(input.path)}`
   );
 
   if (!response.ok) {
@@ -305,13 +299,12 @@ export async function deleteKnowledgeBaseFile(input: {
   knowledgeBaseId: string;
   path: string;
 }): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
     )}/files/detail?path=${encodeURIComponent(input.path)}`,
     {
-      method: "DELETE",
-      credentials: "include"
+      method: "DELETE"
     }
   );
   const body = (await response.json()) as
@@ -335,13 +328,10 @@ export async function listUploadTasks(input: {
     params.set("cursor", input.cursor);
   }
 
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/tasks${
       params.size ? `?${params}` : ""
-    }`,
-    {
-      credentials: "include"
-    }
+    }`
   );
 
   if (!response.ok) {
@@ -369,13 +359,10 @@ export async function fetchUploadTaskDetail(input: {
     params.set("sourceCursor", input.sourceCursor);
   }
 
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/tasks/${encodeURIComponent(
       input.taskId
-    )}${params.size ? `?${params}` : ""}`,
-    {
-      credentials: "include"
-    }
+    )}${params.size ? `?${params}` : ""}`
   );
 
   if (!response.ok) {
@@ -388,11 +375,8 @@ export async function fetchUploadTaskDetail(input: {
 export async function fetchKnowledgeBasePublicUrls(input: {
   knowledgeBaseId: string;
 }): Promise<KnowledgeBasePublicUrls | null> {
-  const response = await fetch(
-    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/public-urls`,
-    {
-      credentials: "include"
-    }
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/public-urls`
   );
 
   if (!response.ok) {
@@ -436,13 +420,10 @@ async function fetchKnowledgeBaseList<T>(input: {
     params.set("cursor", input.cursor);
   }
 
-  const response = await fetch(
+  const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/${input.path}${
       params.size ? `?${params}` : ""
-    }`,
-    {
-      credentials: "include"
-    }
+    }`
   );
 
   if (!response.ok) {
@@ -466,4 +447,28 @@ function readFailure(
   return {
     messageKey: "error" in body && body.error?.messageKey ? body.error.messageKey : fallbackMessageKey
   };
+}
+
+async function adminFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(adminApiUrl(path), {
+    ...init,
+    credentials: "include"
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    authFailureHandler?.();
+  }
+
+  return response;
+}
+
+function adminApiUrl(path: string): string {
+  const baseUrl = readAdminApiBaseUrl();
+  return baseUrl ? `${baseUrl}${path}` : path;
+}
+
+function readAdminApiBaseUrl(): string {
+  const meta = import.meta as unknown as { env?: Record<string, string | undefined> };
+  const value = meta.env?.VITE_ADMIN_API_BASE_URL?.trim() ?? "";
+  return value.replace(/\/+$/, "");
 }

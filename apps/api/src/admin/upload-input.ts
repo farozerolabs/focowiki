@@ -17,6 +17,10 @@ export function hasDuplicateUploadFileNames(files: UploadFile[]): boolean {
   return false;
 }
 
+export function hasUnsafeUploadFileNames(files: UploadFile[]): boolean {
+  return files.some((file) => !isSafeUploadFileName(file.name));
+}
+
 export async function hasExistingSourceFileName(input: {
   filesRepository: NonNullable<AdminRepositories["files"]>;
   knowledgeBaseId: string;
@@ -55,5 +59,23 @@ export function isUploadFile(value: FormDataEntryValue): value is UploadFile & F
 }
 
 function normalizeSourceFileName(fileName: string): string {
-  return fileName.trim().toLowerCase();
+  return fileName.normalize("NFC").trim().toLowerCase();
+}
+
+function isSafeUploadFileName(fileName: string): boolean {
+  const normalized = fileName.normalize("NFC").trim();
+
+  if (!normalized || normalized !== fileName || normalized.length > 240) {
+    return false;
+  }
+
+  if (!normalized.toLowerCase().endsWith(".md")) {
+    return false;
+  }
+
+  if (/[\u0000-\u001f\u007f/\\]/u.test(normalized)) {
+    return false;
+  }
+
+  return !normalized.split(".").some((segment) => segment === "..");
 }

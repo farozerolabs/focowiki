@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createAdminApiApp, createApiApp } from "../src/server.js";
-import type { RuntimeConfig } from "../src/config.js";
+import { resolveSecurityConfig, type RuntimeConfig } from "../src/config.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import {
   createTestRedisCoordinator,
   loginAndReadSessionCookie,
-  MemoryRedisCommandClient
+  MemoryRedisCommandClient,
+  withTrustedAdminOrigin
 } from "./support/session.js";
 
 const config: RuntimeConfig = {
@@ -78,7 +79,11 @@ describe("Admin API auth", () => {
     expect(cookie).toContain("focowiki_admin_session=");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Lax");
-    expect(redisClient.values.size).toBe(1);
+    expect(
+      Array.from(redisClient.values.keys()).filter((key) =>
+        key.includes(":sessions:")
+      )
+    ).toHaveLength(1);
   });
 
   it("rejects invalid username, invalid password, and missing credentials", async () => {
@@ -155,9 +160,9 @@ describe("Admin API auth", () => {
     const cookie = await loginAndReadSessionCookie(app);
     const logout = await app.request("/admin/api/logout", {
       method: "POST",
-      headers: {
+      headers: withTrustedAdminOrigin({
         cookie
-      }
+      })
     });
     const session = await app.request("/admin/api/session", {
       headers: {
@@ -168,8 +173,110 @@ describe("Admin API auth", () => {
     await expect(logout.json()).resolves.toEqual({ authenticated: false });
     expect(logout.status).toBe(200);
     expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
-    expect(redisClient.values.size).toBe(0);
+    expect(
+      Array.from(redisClient.values.keys()).some((key) => key.includes(":sessions:"))
+    ).toBe(false);
     expect(session.status).toBe(401);
+  });
+
+  it("rejects cookie-authenticated write requests without a trusted origin", async () => {
+    const app = createApiApp({ config, redis: createTestRedisCoordinator() });
+    const cookie = await loginAndReadSessionCookie(app);
+    const logout = await app.request("/admin/api/logout", {
+      method: "POST",
+      headers: {
+        cookie
+      }
+    });
+
+    await expect(logout.json()).resolves.toEqual({
+      error: {
+        code: "INVALID_ORIGIN",
+        messageKey: "errors.securityRequestRejected"
+      }
+    });
+    expect(logout.status).toBe(403);
+  });
+
+  it("records safe audit evidence for failed login attempts", async () => {
+    const events: unknown[] = [];
+    const app = createApiApp({
+      config,
+      redis: createTestRedisCoordinator(),
+      repositories: {
+        knowledgeBases: {
+          async listKnowledgeBases() {
+            return { items: [], nextCursor: null };
+          },
+          async createKnowledgeBase() {
+            throw new Error("Unused");
+          },
+          async getKnowledgeBase() {
+            return null;
+          }
+        },
+        securityAudit: {
+          async createSecurityAuditEvent(event) {
+            events.push(event);
+          }
+        }
+      }
+    });
+    const response = await app.request("/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ username: "admin", password: "wrong" })
+    });
+
+    expect(response.status).toBe(401);
+    expect(events).toEqual([
+      expect.objectContaining({
+        eventType: "admin_login",
+        result: "failure",
+        errorCode: "UNAUTHORIZED",
+        username: "admin"
+      })
+    ]);
+    expect(JSON.stringify(events)).not.toContain("wrong");
+  });
+
+  it("throttles repeated login attempts through Redis-backed counters", async () => {
+    const security = resolveSecurityConfig(config);
+    const app = createApiApp({
+      config: {
+        ...config,
+        security: {
+          ...security,
+          rateLimits: {
+            ...security.rateLimits,
+            adminLogin: {
+              max: 1,
+              windowSeconds: 60
+            }
+          }
+        }
+      },
+      redis: createTestRedisCoordinator()
+    });
+    const first = await app.request("/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ username: "admin", password: "wrong" })
+    });
+    const second = await app.request("/admin/api/login", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ username: "admin", password: "wrong" })
+    });
+
+    expect(first.status).toBe(401);
+    expect(second.status).toBe(429);
   });
 
   it("does not expose public OpenAPI file routes from the admin API app", async () => {
