@@ -1,0 +1,48 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+!.env.dev.example
+*.local
+.envrc
+
+# Real local Compose files generated from templates
+docker-compose.yml
+docker-compose.dev.yml
+
+# Repository and local planning artifacts
+.git
+.gitignore
+.codex
+openspec
+AGENTS.md
+ReferenceDocs
+
+# Dependencies and package-manager caches
+node_modules
+.pnpm-store
+.pnp
+.pnp.js
+.pnp.cjs
+
+# Build output and test artifacts
+dist
+build
+apps/api/runtime
+out
+coverage
+*.tsbuildinfo
+.turbo
+.vite
+.cache
+tmp
+temp
+*.tmp
+*.log
+
+# OS and editor metadata
+.DS_Store
+.vscode
+.idea
+*.swp
+*.swo

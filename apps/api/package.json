@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "db:migrate": "tsx src/db/migrate.ts",
     "dev": "tsx src/main.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -21,6 +22,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "esbuild": "^0.28.1",
     "node-pg-migrate": "8.0.4"
   }
 }

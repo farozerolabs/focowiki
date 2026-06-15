@@ -8,7 +8,9 @@ This repository uses pnpm and TypeScript.
 
 ```bash
 pnpm install
-docker compose up -d postgres redis
+cp .env.dev.example .env
+cp docker-compose.dev.yml.example docker-compose.dev.yml
+docker compose -f docker-compose.dev.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 pnpm verify
@@ -30,8 +32,9 @@ The root dev script starts the Admin API, public OpenAPI, and admin app in paral
 - Public OpenAPI file reads: `http://127.0.0.1:43200`
 
 ```bash
-cp .env.example .env
-docker compose up -d postgres redis
+cp .env.dev.example .env
+cp docker-compose.dev.yml.example docker-compose.dev.yml
+docker compose -f docker-compose.dev.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
@@ -45,9 +48,55 @@ Real upload parsing publishes source and generated files through S3-compatible A
 For a pre-release destructive local reset, stop the app, remove the Compose volumes, start PostgreSQL and Redis again, then rerun migrations. Pre-release schema changes do not keep compatibility readers or local backfills for stale rows, so re-upload Markdown samples after the reset:
 
 ```bash
-docker compose down -v
-docker compose up -d postgres redis
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
+```
+
+## Docker Compose Deployment
+
+The repository commits Compose templates, not real local Compose files. Copy the templates before running Docker Compose:
+
+```bash
+cp .env.example .env
+cp docker-compose.yml.example docker-compose.yml
+docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml run --rm migrate
+docker compose -f docker-compose.yml up -d
+```
+
+Docker Compose reads the root `.env` file by default. Keep deployment values in that file and do not pass temporary env files for normal runs.
+
+The deployment stack builds two application images:
+
+- `api`: Node runtime for bundled Admin API and public OpenAPI entrypoints.
+- `admin`: static Admin UI runtime served from the production build.
+
+The stack also runs PostgreSQL and Redis with persistent named volumes. S3-compatible storage is external and must be configured through `S3_ENDPOINT`, bucket, region, credentials, prefix, and path-style mode before upload parsing is used. The one-shot `migrate` service runs database migrations explicitly before the API service is considered ready.
+
+Real local `docker-compose.yml` and `docker-compose.dev.yml` are ignored by git. Keep deployment secrets in local `.env` or your runtime secret manager. Do not commit copied Compose files, credentials, local paths, S3 keys, model keys, session secrets, or raw Markdown data.
+
+Useful commands:
+
+```bash
+pnpm compose:config
+pnpm compose:dev:config
+pnpm compose:build
+pnpm compose:migrate
+pnpm compose:up
+pnpm compose:ps
+pnpm compose:logs
+pnpm compose:down
+```
+
+For public deployment behind a reverse proxy, replace every placeholder in `.env.example`, use HTTPS public origins, set `ALLOWED_HOSTS`, set `ADMIN_TRUSTED_ORIGINS`, enable `TRUSTED_PROXY_MODE` only for trusted proxies, and keep PostgreSQL, Redis, and external S3-compatible storage private. Expose only the Admin UI, Admin API, and public OpenAPI routes that your deployment requires.
+
+For a pre-release destructive deployment reset, stop the deployment stack, remove its volumes, rerun migrations, and re-upload Markdown files:
+
+```bash
+docker compose -f docker-compose.yml down -v
+docker compose -f docker-compose.yml run --rm migrate
+docker compose -f docker-compose.yml up -d
 ```
 
 ## Environment Variables
@@ -60,9 +109,9 @@ Required admin configuration:
 - `ADMIN_SESSION_SECRET`: signing secret for HTTP-only admin session cookies. Generate a unique high-entropy value for each deployment.
 - `ADMIN_SESSION_TTL_SECONDS`, `ADMIN_SESSION_SECRET_MIN_LENGTH`, `ADMIN_SESSION_COOKIE_SECURE`, `ADMIN_SESSION_COOKIE_SAME_SITE`: session lifetime and cookie safety controls. Production requires secure cookies.
 - `ADMIN_API_PORT`: internal Admin API listen port. Defaults to `43000` when omitted.
-- `ADMIN_UI_HOST`: local Vite admin UI listen host. Defaults to `::` so `localhost` and `127.0.0.1` both work on local machines that support dual-stack loopback.
-- `ADMIN_UI_PORT`: local Vite admin UI listen port. Defaults to `43100` when omitted.
-- `ADMIN_API_PROXY_TARGET`: local Admin UI proxy target. Defaults to `http://127.0.0.1:${ADMIN_API_PORT}`.
+- `ADMIN_UI_HOST`: local pnpm/Vite admin UI listen host. It is not used by the Docker Admin runtime.
+- `ADMIN_UI_PORT`: local or Docker Admin UI port. Defaults to `43100` when omitted.
+- `ADMIN_API_PROXY_TARGET`: Admin UI proxy target. In Docker deployment it should point to the internal API service, for example `http://api:43000`.
 - `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN`: externally visible origins used for reverse-proxy deployments and production validation.
 - `ADMIN_TRUSTED_ORIGINS`: comma-separated origins allowed to submit Admin API state-changing browser requests.
 - `ALLOWED_HOSTS`: comma-separated public hosts accepted in production mode.
@@ -73,6 +122,7 @@ Required infrastructure configuration:
 
 - `DATABASE_URL`: PostgreSQL connection URL for production admin records.
 - `REDIS_URL`: Redis connection URL for sessions, coordination, locks, pagination cursor/cache state, and security rate-limit counters.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `REDIS_PORT`: bundled Compose service defaults and local host-published development ports. Production deployments should keep PostgreSQL and Redis private behind Compose or private infrastructure.
 
 Required public OpenAPI configuration:
 
@@ -83,7 +133,7 @@ Required public OpenAPI configuration:
 
 Required storage and upload configuration:
 
-- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_PREFIX`: object storage configuration.
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_PREFIX`: external object storage configuration.
 - `S3_PREFIX`: internal object-key namespace, such as `dev`; it is never exposed in public URLs.
 - `S3_FORCE_PATH_STYLE`: set `true` for many S3-compatible local or self-hosted stores.
 - `MAX_UPLOAD_BYTES`: maximum bytes accepted in one upload request.
@@ -146,7 +196,7 @@ GET /kb/{knowledgeBaseId}/_index/links.json
 GET /kb/{knowledgeBaseId}/tasks/latest
 ```
 
-`PUBLIC_BASE_URL` must point to the public OpenAPI service, for example `http://127.0.0.1:43200`. Admin UI and Admin API URLs are separate. Public URLs are built as `PUBLIC_BASE_URL + /kb/{knowledgeBaseId}/...` and do not expose S3 bucket names, `S3_PREFIX`, release IDs, task IDs used in storage keys, or raw object keys.
+`PUBLIC_BASE_URL` must point to the public OpenAPI service. Use HTTPS public origins in production; local development may use `http://127.0.0.1:43200`. Admin UI and Admin API URLs are separate. Public URLs are built as `PUBLIC_BASE_URL + /kb/{knowledgeBaseId}/...` and do not expose S3 bucket names, `S3_PREFIX`, release IDs, task IDs used in storage keys, or raw object keys.
 
 Private mode requires `Authorization: Bearer $PUBLIC_API_KEY`. Public mode allows anonymous reads while still enforcing knowledge base scoping and path safety. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
 
