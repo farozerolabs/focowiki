@@ -1,10 +1,3 @@
-export type MetadataDefaultsInput = {
-  defaultType: string;
-  defaultTitle: string;
-  defaultDescription: string;
-  defaultTags: string;
-};
-
 export type KnowledgeBase = {
   id: string;
   name: string;
@@ -201,18 +194,12 @@ export async function createKnowledgeBase(input: {
 export async function uploadKnowledgeBaseSources(input: {
   knowledgeBaseId: string;
   files: FileList;
-  defaults: MetadataDefaultsInput;
 }): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
   const formData = new FormData();
 
   Array.from(input.files).forEach((file) => {
     formData.append("files", file);
   });
-
-  appendFormValue(formData, "defaultType", input.defaults.defaultType);
-  appendFormValue(formData, "defaultTitle", input.defaults.defaultTitle);
-  appendFormValue(formData, "defaultDescription", input.defaults.defaultDescription);
-  appendFormValue(formData, "defaultTags", input.defaults.defaultTags);
 
   const response = await fetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/uploads`,
@@ -360,17 +347,6 @@ export async function fetchKnowledgeBasePublicUrls(input: {
   return body.publicUrls;
 }
 
-export async function listSourceFiles(input: {
-  knowledgeBaseId: string;
-  cursor?: string | null;
-}): Promise<CursorPage<SourceFileRecord>> {
-  return fetchKnowledgeBaseList<SourceFileRecord>({
-    knowledgeBaseId: input.knowledgeBaseId,
-    path: "source-files",
-    ...(input.cursor !== undefined ? { cursor: input.cursor } : {})
-  });
-}
-
 export async function listReleases(input: {
   knowledgeBaseId: string;
   cursor?: string | null;
@@ -391,12 +367,6 @@ export async function listBundleFiles(input: {
     path: "bundle-files",
     ...(input.cursor !== undefined ? { cursor: input.cursor } : {})
   });
-}
-
-function appendFormValue(formData: FormData, key: string, value: string) {
-  if (value.trim()) {
-    formData.append(key, value.trim());
-  }
 }
 
 async function fetchKnowledgeBaseList<T>(input: {

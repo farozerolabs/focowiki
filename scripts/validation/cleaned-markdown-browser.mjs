@@ -4,21 +4,23 @@ import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
 import { selectSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
 
-const CHANGE_DIR = path.resolve("openspec/changes/validate-cleaned-markdown-upload-flow");
+const CHANGE_ID = "validate-cleaned-legal-upload-flow";
+const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
 loadLocalEnv();
 
 const sampleSelection = selectSamplesFromEnvironment();
 const adminUiBaseUrl =
-  process.env.ADMIN_UI_BASE_URL ?? `http://127.0.0.1:${process.env.ADMIN_UI_PORT ?? "43100"}`;
+  process.env.ADMIN_UI_BASE_URL ?? `http://localhost:${process.env.ADMIN_UI_PORT ?? "43100"}`;
 const adminUsername = requiredEnv("ADMIN_USERNAME");
 const adminPassword = requiredEnv("ADMIN_PASSWORD");
 const knowledgeBaseName = `Focowiki browser validation ${new Date().toISOString()}`;
+const taskTimeoutMs = readValidationTaskTimeoutMs(sampleSelection.samples.length);
 
 const report = {
   kind: "browser",
-  change: "validate-cleaned-markdown-upload-flow",
+  change: CHANGE_ID,
   startedAt: new Date().toISOString(),
   finishedAt: null,
   ok: false,
@@ -83,6 +85,7 @@ try {
 
   await page.getByRole("button", { name: /^Upload$/ }).click();
   const uploadDialog = page.getByRole("dialog");
+  await expectNoMetadataInputs(uploadDialog);
   await uploadDialog.locator("#source-files").setInputFiles(
     sampleSelection.samples.map((sample) => sample.filePath)
   );
@@ -91,7 +94,7 @@ try {
   await page.getByText(/task-/).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("upload-submit", "Upload dialog submitted and task list refreshed."));
 
-  await page.getByText("Upload parsing task ended").waitFor({ timeout: 120_000 });
+  await page.getByText("Upload parsing task ended").waitFor({ timeout: taskTimeoutMs });
   report.checks.push(okCheck("task-ended", "Browser observed ended upload task."));
 
   await page.getByRole("button", { name: "pages" }).waitFor({ timeout: 30_000 });
@@ -161,10 +164,62 @@ function requiredEnv(name) {
 
 function okCheck(name, message) {
   return {
+    layer: "black-box",
     name,
     ok: true,
     message
   };
+}
+
+function readValidationTaskTimeoutMs(sampleCount) {
+  const configured = process.env.FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS?.trim();
+
+  if (configured) {
+    const parsed = Number(configured);
+
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new Error("FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS must be a positive integer.");
+    }
+
+    return parsed;
+  }
+
+  if (!process.env.MODEL_API_KEY?.trim() || !process.env.MODEL_NAME?.trim()) {
+    return 180_000;
+  }
+
+  const concurrency = readPositiveInteger(process.env.MODEL_SUGGESTION_CONCURRENCY, 2);
+  const idleMs = readPositiveInteger(process.env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 30_000);
+  const batches = Math.ceil(sampleCount / concurrency);
+
+  return Math.max(180_000, batches * 2 * idleMs + 120_000);
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number(value ?? fallback);
+
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function expectNoMetadataInputs(dialog) {
+  const metadataLabels = [
+    "Default type",
+    "Default title",
+    "Default description",
+    "Default tags",
+    "默认类型",
+    "默认标题",
+    "默认描述",
+    "默认标签"
+  ];
+
+  for (const label of metadataLabels) {
+    const count = await dialog.getByLabel(label, { exact: true }).count();
+
+    if (count > 0) {
+      throw new Error(`Upload dialog still exposes removed metadata field: ${label}`);
+    }
+  }
 }
 
 function redactUrl(url) {

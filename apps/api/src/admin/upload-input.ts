@@ -51,43 +51,9 @@ export function isUploadFile(value: FormDataEntryValue): value is UploadFile & F
     typeof (value as { name: unknown }).name === "string" &&
     "arrayBuffer" in value &&
     typeof (value as { arrayBuffer: unknown }).arrayBuffer === "function"
-  );
-}
-
-export function readMetadataDefaults(formData: FormData): Record<string, string | string[]> {
-  const defaults: Record<string, string | string[]> = {};
-  const fields = [
-    ["type", "defaultType"],
-    ["title", "defaultTitle"],
-    ["description", "defaultDescription"],
-    ["resource", "defaultResource"]
-  ] as const;
-
-  for (const [metadataField, formField] of fields) {
-    const value = readFormString(formData, formField);
-
-    if (value) {
-      defaults[metadataField] = value;
-    }
-  }
-
-  const tags = readFormString(formData, "defaultTags")
-    ?.split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
-  if (tags && tags.length > 0) {
-    defaults.tags = tags;
-  }
-
-  return defaults;
+      );
 }
 
 function normalizeSourceFileName(fileName: string): string {
   return fileName.trim().toLowerCase();
-}
-
-function readFormString(formData: FormData, field: string): string | null {
-  const value = formData.get(field);
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

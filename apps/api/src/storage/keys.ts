@@ -146,7 +146,7 @@ function normalizeBundlePath(rawPath: string): string {
 
   const [directory, fileName] = segments;
 
-  if (directory === "pages" || directory === "sources") {
+  if (directory === "pages") {
     return `${directory}/${normalizeMarkdownFileName(fileName ?? "", "path")}`;
   }
 

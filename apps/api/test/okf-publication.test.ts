@@ -8,8 +8,8 @@ type SourceRecord = {
   originalName: string;
   objectKey: string;
   metadata: {
-    type: string;
-    title: string;
+    type?: string;
+    title?: string;
   };
 };
 
@@ -74,7 +74,6 @@ describe("publishOkfRelease", () => {
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
-      defaults: {},
       pageSize: 1,
       concurrency: 1,
       storage,
@@ -98,7 +97,7 @@ describe("publishOkfRelease", () => {
       { cursor: "1", limit: 1 }
     ]);
     expect(storage.maxActiveReads).toBeLessThanOrEqual(1);
-    expect(result.fileCount).toBe(9);
+    expect(result.fileCount).toBe(7);
     expect(result.bundleRootKey).toBe("tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/");
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("[intro](/pages/intro.md)");
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
@@ -113,9 +112,7 @@ describe("publishOkfRelease", () => {
       "index.md",
       "pages/intro.md",
       "pages/setup.md",
-      "schema.md",
-      "sources/intro.md",
-      "sources/setup.md"
+      "schema.md"
     ]);
     expect(treeBatches.flat()).toContainEqual(
       expect.objectContaining({
@@ -142,7 +139,6 @@ describe("publishOkfRelease", () => {
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
-      defaults: {},
       pageSize: 50,
       concurrency: 1,
       storage,
@@ -156,10 +152,11 @@ describe("publishOkfRelease", () => {
     });
 
     const pagePath = `pages/${sourceName}`;
-    const sourcePath = `sources/${sourceName}`;
-
     expect(fileBatches.flat().map((file) => file.logicalPath)).toEqual(
-      expect.arrayContaining([pagePath, sourcePath])
+      expect.arrayContaining([pagePath])
+    );
+    expect(fileBatches.flat().map((file) => file.logicalPath)).not.toContain(
+      `sources/${sourceName}`
     );
     expect(treeBatches.flat()).toContainEqual(
       expect.objectContaining({
@@ -192,7 +189,6 @@ describe("publishOkfRelease", () => {
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
-      defaults: {},
       pageSize: 4,
       concurrency: 2,
       storage,
@@ -205,40 +201,44 @@ describe("publishOkfRelease", () => {
     expect(storage.maxActiveReads).toBeLessThanOrEqual(2);
   });
 
-  it("fails before persistence when generated files violate OKF conformance", async () => {
+  it("publishes source records with missing metadata by resolving generic fallback fields", async () => {
     const sources: SourceRecord[] = [
       {
         id: "source-001",
         originalName: "intro.md",
         objectKey: "tenant/demo/source/intro.md",
-        metadata: {
-          type: "",
-          title: ""
-        }
+        metadata: {}
       }
     ];
     const storage = new PublicationStorage(sources);
-    storage.objects.set("tenant/demo/source/intro.md", "# Missing metadata");
+    storage.objects.set("tenant/demo/source/intro.md", "# Missing metadata\n\nBody.");
     const persistedFiles: BundleFileDraft[] = [];
 
-    await expect(
-      publishOkfRelease({
-        knowledgeBaseId: "kb-001",
-        releaseId: "release-001",
-        taskId: "task-001",
-        generatedAt: "2026-06-14T00:00:00.000Z",
-        defaults: {},
-        pageSize: 1,
-        concurrency: 1,
-        storage,
-        fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
-        persistBundleFiles: async (files) => {
-          persistedFiles.push(...files);
-        },
-        persistBundleTreeEntries: async () => undefined
-      })
-    ).rejects.toThrow(/type is required|title is required/i);
+    await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      releaseId: "release-001",
+      taskId: "task-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 1,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async (files) => {
+        persistedFiles.push(...files);
+      },
+      persistBundleTreeEntries: async () => undefined
+    });
 
-    expect(persistedFiles).toEqual([]);
+    expect(persistedFiles).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "pages/intro.md",
+        okfType: "document",
+        title: "Missing metadata",
+        frontmatter: {
+          type: "document",
+          title: "Missing metadata"
+        }
+      })
+    );
   });
 });

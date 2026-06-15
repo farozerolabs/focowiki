@@ -90,7 +90,17 @@ function shouldSkip(file) {
 }
 
 function safeReadText(file) {
-  const buffer = fs.readFileSync(file);
+  let buffer;
+
+  try {
+    buffer = fs.readFileSync(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+
+    throw error;
+  }
 
   if (buffer.includes(0)) {
     return null;

@@ -32,6 +32,9 @@ describe("readModelSuggestions", () => {
             status: "completed",
             output_text: JSON.stringify({
               description: "Suggested",
+              title: "",
+              type: "",
+              tags: [],
               related_links: [],
               keywords: []
             })
@@ -63,6 +66,9 @@ describe("readModelSuggestions", () => {
             status: "completed",
             output_text: JSON.stringify({
               description: "Suggested",
+              title: "",
+              type: "",
+              tags: [],
               related_links: [],
               keywords: []
             })
@@ -102,6 +108,9 @@ describe("readModelSuggestions", () => {
             status: "completed",
             output_text: JSON.stringify({
               description: "Suggested",
+              title: "",
+              type: "",
+              tags: [],
               related_links: [],
               keywords: []
             })

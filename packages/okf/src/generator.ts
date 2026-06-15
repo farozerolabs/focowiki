@@ -20,7 +20,10 @@ export type MarkdownSourceInput = {
 };
 
 export type SourceModelSuggestions = {
+  title: string;
+  type: string;
   description: string;
+  tags: string[];
   related_links: Array<{
     path: string;
     title: string;
@@ -45,9 +48,7 @@ export type GeneratedOkfBundle = {
 };
 
 type GeneratedPage = {
-  sourceFileName: string;
   pagePath: string;
-  sourcePath: string;
   metadata: SourceMetadata;
   body: string;
   suggestions: SourceModelSuggestions | null;
@@ -58,7 +59,8 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
   const pages = input.sources.map((source) => {
     const resolved = resolveSourceMetadata({
       ...source,
-      defaults: input.defaults
+      defaults: input.defaults,
+      suggestions: source.suggestions ?? null
     });
     const publicFileName = normalizePublicMarkdownFileName(source.fileName);
 
@@ -69,14 +71,17 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
     publicFileNames.add(publicFileName);
 
     return {
-      sourceFileName: source.fileName,
       pagePath: `pages/${publicFileName}`,
-      sourcePath: `sources/${publicFileName}`,
       metadata: applyPresentationSuggestions(resolved.metadata, source.suggestions ?? null),
       body: resolved.body,
       suggestions: source.suggestions ?? null
     };
   });
+  const publicPaths = new Set([
+    "index.md",
+    "schema.md",
+    ...pages.map((page) => page.pagePath)
+  ]);
 
   const markdownFiles: OkfBundleFile[] = [
     {
@@ -106,11 +111,7 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
     ...pages.flatMap((page) => [
       {
         path: page.pagePath,
-        content: renderPage(page)
-      },
-      {
-        path: page.sourcePath,
-        content: renderSource(page)
+        content: renderPage(page, publicPaths)
       }
     ])
   ];
@@ -151,52 +152,28 @@ function renderIndex(pages: GeneratedPage[], generatedAt: string): string {
     "",
     "## Pages",
     "",
-    ...pages.map(
-      (page) =>
-        `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)}) - [Source: ${page.sourceFileName}](${toMarkdownHref(page.sourcePath)})`
-    )
+    ...pages.map((page) => `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)})`)
   ].join("\n");
 }
 
-function renderPage(page: GeneratedPage): string {
+function renderPage(page: GeneratedPage, publicPaths: Set<string>): string {
   return renderConceptFile(
     page.metadata,
     [
       page.body,
       "",
-      `[Source: ${page.sourceFileName}](${toMarkdownHref(page.sourcePath)})`,
-      ...renderRelatedLinks(page.suggestions),
-      ...renderCitations(page.metadata)
+      ...renderRelatedLinks(page.suggestions, publicPaths),
+      ...renderCitations(page.metadata, page.body)
     ].join("\n")
   );
 }
 
-function renderSource(page: GeneratedPage): string {
-  const resource = typeof page.metadata.resource === "string" ? page.metadata.resource : undefined;
-  const metadata: SourceMetadata = resource
-    ? {
-        type: "source",
-        title: page.sourceFileName,
-        resource
-      }
-    : {
-        type: "source",
-        title: page.sourceFileName
-      };
-
-  return renderConceptFile(
-    metadata,
-    [
-      `# ${page.sourceFileName}`,
-      "",
-      `[Generated page](${toMarkdownHref(page.pagePath)})`,
-      ...(resource ? ["", "## Resource", "", resource] : [])
-    ].join("\n")
-  );
-}
-
-function renderCitations(metadata: SourceMetadata): string[] {
+function renderCitations(metadata: SourceMetadata, body: string): string[] {
   if (typeof metadata.resource !== "string" || !metadata.resource.trim()) {
+    return [];
+  }
+
+  if (/^#\s+Citations\s*$/im.test(body)) {
     return [];
   }
 
@@ -253,13 +230,16 @@ function applyPresentationSuggestions(
   return description ? { ...metadata, description } : metadata;
 }
 
-function renderRelatedLinks(suggestions: SourceModelSuggestions | null): string[] {
+function renderRelatedLinks(
+  suggestions: SourceModelSuggestions | null,
+  publicPaths: Set<string>
+): string[] {
   const links = (suggestions?.related_links ?? [])
     .map((link) => ({
       path: normalizePublicPathReference(link.path),
       title: link.title.trim()
     }))
-    .filter((link) => link.path && link.title)
+    .filter((link) => link.path && link.title && publicPaths.has(link.path))
     .map((link) => `- [${link.title}](${toMarkdownHref(link.path)})`);
 
   return links.length > 0 ? ["", "## Related", "", ...links] : [];

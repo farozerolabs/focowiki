@@ -296,7 +296,7 @@ describe("Admin upload file picker", () => {
     );
   });
 
-  it("fills default metadata fields from selected Markdown frontmatter", async () => {
+  it("does not render upload metadata inputs when Markdown has frontmatter", async () => {
     render(<App />);
 
     await openKnowledgeBaseDetail();
@@ -326,35 +326,17 @@ describe("Admin upload file picker", () => {
       }
     });
 
-    await waitFor(() => {
-      expect((screen.getByLabelText("Default type") as HTMLInputElement).value).toBe("guide");
-      expect((screen.getByLabelText("Default title") as HTMLInputElement).value).toBe(
-        "Upload Guide"
-      );
-      expect((screen.getByLabelText("Default description") as HTMLInputElement).value).toBe(
-        "How to upload Markdown files."
-      );
-      expect((screen.getByLabelText("Default tags") as HTMLInputElement).value).toBe(
-        "upload, markdown"
-      );
-    });
+    expect(screen.queryByLabelText("Default type")).toBeNull();
+    expect(screen.queryByLabelText("Default title")).toBeNull();
+    expect(screen.queryByLabelText("Default description")).toBeNull();
+    expect(screen.queryByLabelText("Default tags")).toBeNull();
+    expect(screen.getByText("upload-guide.md")).toBeTruthy();
   });
 
-  it("clears default metadata fields when selected Markdown has no frontmatter", async () => {
+  it("does not ask for metadata when selected Markdown has no frontmatter", async () => {
     render(<App />);
 
     await openKnowledgeBaseDetail();
-
-    fireEvent.change(screen.getByLabelText("Default type"), {
-      target: {
-        value: "guide"
-      }
-    });
-    fireEvent.change(screen.getByLabelText("Default title"), {
-      target: {
-        value: "Upload Guide"
-      }
-    });
 
     const input = document.querySelector<HTMLInputElement>("#source-files");
     const file = new File(["# No Frontmatter"], "no-frontmatter.md", {
@@ -367,14 +349,13 @@ describe("Admin upload file picker", () => {
       }
     });
 
-    await waitFor(() => {
-      expect((screen.getByLabelText("Default type") as HTMLInputElement).value).toBe("");
-      expect((screen.getByLabelText("Default title") as HTMLInputElement).value).toBe(
-        "No Frontmatter"
-      );
-      expect((screen.getByLabelText("Default description") as HTMLInputElement).value).toBe("");
-      expect((screen.getByLabelText("Default tags") as HTMLInputElement).value).toBe("");
-    });
+    expect(screen.queryByLabelText("Default type")).toBeNull();
+    expect(screen.queryByLabelText("Default title")).toBeNull();
+    expect(screen.queryByLabelText("Default description")).toBeNull();
+    expect(screen.queryByLabelText("Default tags")).toBeNull();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      false
+    );
   });
 
   it("uses a native file input as the chooser click target", async () => {

@@ -312,6 +312,11 @@ describe("Scoped public file OpenAPI", () => {
         authorization: "Bearer public-secret"
       }
     });
+    const sourceFile = await app.request("/kb/kb-001/sources/intro.md", {
+      headers: {
+        authorization: "Bearer public-secret"
+      }
+    });
     const traversal = await app.request("/kb/kb-001/pages/%252e%252e/secret.md", {
       headers: {
         authorization: "Bearer public-secret"
@@ -327,12 +332,16 @@ describe("Scoped public file OpenAPI", () => {
     await expect(unsupported.json()).resolves.toEqual({
       error: { code: "NOT_FOUND" }
     });
+    await expect(sourceFile.json()).resolves.toEqual({
+      error: { code: "NOT_FOUND" }
+    });
     await expect(traversal.json()).resolves.toEqual({
       error: { code: "INVALID_PATH" }
     });
     expect(missingKnowledgeBase.status).toBe(404);
     expect(missingFile.status).toBe(404);
     expect(unsupported.status).toBe(404);
+    expect(sourceFile.status).toBe(404);
     expect(traversal.status).toBe(400);
   });
 });

@@ -30,9 +30,6 @@ describe("storage key normalization", () => {
     expect(keys.releaseBundleKey("kb-001", "release-001", "pages/intro.md")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md"
     );
-    expect(keys.releaseBundleKey("kb-001", "release-001", "sources/source-a.md")).toBe(
-      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/sources/source-a.md"
-    );
     expect(
       keys.releaseBundleKey(
         "kb-001",
@@ -78,6 +75,9 @@ describe("storage key normalization", () => {
     expect(() =>
       keys.releaseBundleKey("kb-001", "release-001", "pages/%2e%2e/secret.md")
     ).toThrow(/path/);
+    expect(() => keys.releaseBundleKey("kb-001", "release-001", "sources/source-a.md")).toThrow(
+      /path/
+    );
     expect(() => keys.releaseBundleKey("kb-001", "release-001", "pages\\secret.md")).toThrow(
       /path/
     );

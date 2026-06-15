@@ -16,6 +16,9 @@
     "validate:cleaned-markdown:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
     "validate:cleaned-markdown:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
     "validate:cleaned-markdown:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
+    "validate:cleaned-legal:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
+    "validate:cleaned-legal:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
+    "validate:cleaned-legal:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
     "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs"
   },
   "devDependencies": {

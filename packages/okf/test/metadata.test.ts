@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSourceMetadata } from "../src/metadata.js";
+import { parseUploadedMarkdownSource, resolveSourceMetadata } from "../src/metadata.js";
 
 describe("resolveSourceMetadata", () => {
   it("uses Markdown frontmatter metadata", () => {
@@ -15,7 +15,7 @@ describe("resolveSourceMetadata", () => {
         "---",
         "# Body"
       ].join("\n"),
-      defaults: {}
+      metadata: {}
     });
 
     expect(result.metadata).toMatchObject({
@@ -27,41 +27,71 @@ describe("resolveSourceMetadata", () => {
     expect(result.body).toBe("# Body");
   });
 
-  it("uses form defaults when frontmatter omits fields", () => {
-    const result = resolveSourceMetadata({
-      fileName: "overview.md",
-      content: "# Overview",
-      defaults: {
-        type: "page",
-        title: "Overview",
-        description: "Default description",
-        tags: ["docs"]
-      }
+  it("parses Markdown frontmatter without requiring domain-specific metadata", () => {
+    const result = parseUploadedMarkdownSource({
+      fileName: "custom.md",
+      content: [
+        "---",
+        "owner: docs-team",
+        "reviewed: true",
+        "priority: 3",
+        "---",
+        "# Body"
+      ].join("\n")
     });
 
     expect(result.metadata).toMatchObject({
-      type: "page",
-      title: "Overview",
-      description: "Default description",
-      tags: ["docs"]
+      owner: "docs-team",
+      reviewed: true,
+      priority: 3
+    });
+    expect(result.body).toBe("# Body");
+  });
+
+  it("accepts Markdown without frontmatter and persists empty metadata", () => {
+    const result = parseUploadedMarkdownSource({
+      fileName: "plain.md",
+      content: "# Plain document"
+    });
+
+    expect(result.metadata).toEqual({});
+    expect(result.body).toBe("# Plain document");
+  });
+
+  it("rejects malformed YAML frontmatter with a bounded error", () => {
+    expect(() =>
+      parseUploadedMarkdownSource({
+        fileName: "broken.md",
+        content: "---\ntags: [one\n---\n# Broken"
+      })
+    ).toThrow(/frontmatter is invalid/i);
+  });
+
+  it("resolves generic metadata from Markdown and safe defaults", () => {
+    const result = resolveSourceMetadata({
+      fileName: "overview.md",
+      content: "# Overview",
+      metadata: {}
+    });
+
+    expect(result.metadata).toMatchObject({
+      type: "document",
+      title: "Overview"
     });
     expect(result.body).toBe("# Overview");
   });
 
-  it("prefers frontmatter over form defaults", () => {
+  it("uses the original filename stem when Markdown has no H1 title", () => {
     const result = resolveSourceMetadata({
-      fileName: "conflict.md",
-      content: ["---", "type: article", "title: Frontmatter title", "---", "Body"].join(
-        "\n"
-      ),
-      defaults: {
-        type: "page",
-        title: "Default title"
-      }
+      fileName: "reference-notes.md",
+      content: "Body without heading",
+      metadata: {}
     });
 
-    expect(result.metadata.type).toBe("article");
-    expect(result.metadata.title).toBe("Frontmatter title");
+    expect(result.metadata).toMatchObject({
+      type: "document",
+      title: "reference-notes"
+    });
   });
 
   it("preserves unknown metadata keys", () => {
@@ -76,7 +106,7 @@ describe("resolveSourceMetadata", () => {
         "---",
         "Body"
       ].join("\n"),
-      defaults: {}
+      metadata: {}
     });
 
     expect(result.metadata.owner).toBe("docs-team");
@@ -88,26 +118,41 @@ describe("resolveSourceMetadata", () => {
       resolveSourceMetadata({
         fileName: "notes.txt",
         content: "---\ntype: page\ntitle: Notes\n---\nBody",
-        defaults: {}
+        metadata: {}
       })
     ).toThrow(/\.md/);
   });
 
-  it("rejects missing type or title", () => {
-    expect(() =>
-      resolveSourceMetadata({
-        fileName: "missing-type.md",
-        content: "---\ntitle: Missing type\n---\nBody",
-        defaults: {}
-      })
-    ).toThrow(/type/);
+  it("uses schema-valid model suggestions only for missing generic fields", () => {
+    const result = resolveSourceMetadata({
+      fileName: "conflict.md",
+      content: [
+        "---",
+        "type: guide",
+        "title: User title",
+        "resource: https://example.com/source",
+        "status: approved",
+        "---",
+        "# Markdown title"
+      ].join("\n"),
+      metadata: {},
+      suggestions: {
+        title: "Model title",
+        type: "model-type",
+        description: "Suggested description",
+        tags: ["model"],
+        related_links: [],
+        keywords: []
+      }
+    });
 
-    expect(() =>
-      resolveSourceMetadata({
-        fileName: "missing-title.md",
-        content: "---\ntype: page\n---\nBody",
-        defaults: {}
-      })
-    ).toThrow(/title/);
+    expect(result.metadata).toMatchObject({
+      type: "guide",
+      title: "User title",
+      resource: "https://example.com/source",
+      status: "approved",
+      description: "Suggested description",
+      tags: ["model"]
+    });
   });
 });

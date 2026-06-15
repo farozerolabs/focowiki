@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { ModelSuggestionRequest, OpenAIResponsesClient, SourceMetadata } from "@focowiki/okf";
+import type {
+  ModelSuggestionRequest,
+  OpenAIResponsesClient,
+  SourceMetadataDefaults
+} from "@focowiki/okf";
 import { createApiApp, createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
@@ -133,7 +137,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     contentType: string;
     sizeBytes: number;
     checksumSha256: string;
-    metadata: SourceMetadata;
+    metadata: SourceMetadataDefaults;
     createdAt: string;
   }> = [];
   const releases: Array<{
@@ -498,7 +502,7 @@ describe("Upload parsing task lifecycle", () => {
         cookie
       },
       body: uploadForm([
-        { fileName: "intro.md", content: "---\ntype: page\ntitle: Intro\n---\n# Intro" },
+        { fileName: "intro.md", content: "# Intro\n\nNo frontmatter." },
         { fileName: "setup.md", content: "---\ntype: page\ntitle: Setup\n---\n# Setup" }
       ])
     });
@@ -534,13 +538,14 @@ describe("Upload parsing task lifecycle", () => {
     expect(records.sourceFiles[0]?.objectKey).toMatch(
       /^tenant\/demo\/knowledge-bases\/kb-001\/uploads\/task-001\/sources\/source-file-.*\/intro\.md$/
     );
-    expect(storage.objects.get(records.sourceFiles[0]?.objectKey ?? "")).toContain("title: Intro");
+    expect(records.sourceFiles[0]?.metadata).toEqual({});
+    expect(storage.objects.get(records.sourceFiles[0]?.objectKey ?? "")).toContain("# Intro");
     expect(records.releases).toHaveLength(1);
     expect(records.releases[0]).toMatchObject({
       knowledgeBaseId: "kb-001",
       taskId: "task-001",
       publishedAt: expect.any(String),
-      fileCount: 9
+      fileCount: 7
     });
     expect(records.bundleFiles.map((file) => file.logicalPath).sort()).toEqual([
       "_index/links.json",
@@ -549,10 +554,16 @@ describe("Upload parsing task lifecycle", () => {
       "index.md",
       "pages/intro.md",
       "pages/setup.md",
-      "schema.md",
-      "sources/intro.md",
-      "sources/setup.md"
+      "schema.md"
     ]);
+    expect(records.bundleFiles.find((file) => file.logicalPath === "pages/intro.md")).toMatchObject({
+      okfType: "document",
+      title: "Intro",
+      frontmatter: {
+        type: "document",
+        title: "Intro"
+      }
+    });
     expect(records.bundleTreeEntries).toContainEqual(
       expect.objectContaining({
         parentPath: "pages",
@@ -616,7 +627,10 @@ describe("Upload parsing task lifecycle", () => {
       /^tenant\/demo\/knowledge-bases\/kb-001\/uploads\/task-001\/sources\/source-file-.*\/外国企业常驻代表机构登记管理条例\.md$/
     );
     expect(records.bundleFiles.map((file) => file.logicalPath)).toEqual(
-      expect.arrayContaining([`pages/${fileName}`, `sources/${fileName}`])
+      expect.arrayContaining([`pages/${fileName}`])
+    );
+    expect(records.bundleFiles.map((file) => file.logicalPath)).not.toContain(
+      `sources/${fileName}`
     );
   });
 
@@ -673,9 +687,7 @@ describe("Upload parsing task lifecycle", () => {
       "index.md",
       "pages/existing.md",
       "pages/new.md",
-      "schema.md",
-      "sources/existing.md",
-      "sources/new.md"
+      "schema.md"
     ]);
   });
 
@@ -711,6 +723,35 @@ describe("Upload parsing task lifecycle", () => {
       error: {
         code: "DUPLICATE_UPLOAD_FILE_NAME",
         messageKey: "errors.duplicateUploadFileName"
+      }
+    });
+    expect(response.status).toBe(400);
+    expect(createdTasks).toEqual([]);
+  });
+
+  it("rejects non-Markdown source files before creating an upload task", async () => {
+    const { repositories, createdTasks } = createRepositories();
+    const app = createApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      redis: createRedisCoordinator(new MemoryRedisCommandClient(), {
+        keyPrefix: "focowiki-test"
+      }),
+      repositories
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const response = await app.request("/admin/api/knowledge-bases/kb-001/uploads", {
+      method: "POST",
+      headers: {
+        cookie
+      },
+      body: uploadForm([{ fileName: "notes.txt", content: "# Notes" }])
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "UNSUPPORTED_FILE_TYPE",
+        messageKey: "errors.uploadMarkdownOnly"
       }
     });
     expect(response.status).toBe(400);
@@ -845,6 +886,9 @@ describe("Upload parsing task lifecycle", () => {
       status: "completed",
       output_text: JSON.stringify({
         description: "Suggested model description",
+        title: "",
+        type: "",
+        tags: [],
         related_links: [],
         keywords: ["model", "suggestion"]
       })
@@ -864,6 +908,9 @@ describe("Upload parsing task lifecycle", () => {
             status: "completed",
             output_text: JSON.stringify({
               description: "Suggested model description",
+              title: "",
+              type: "",
+              tags: [],
               related_links: [],
               keywords: ["model", "suggestion"]
             })
@@ -935,6 +982,9 @@ describe("Upload parsing task lifecycle", () => {
           status: "completed",
           output_text: JSON.stringify({
             description: 42,
+            title: "",
+            type: "",
+            tags: [],
             related_links: [],
             keywords: []
           })

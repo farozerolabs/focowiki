@@ -22,14 +22,8 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import {
-  emptyMarkdownMetadataDefaults,
-  readMarkdownMetadataDefaults,
-  type MarkdownMetadataDefaults
-} from "@/lib/markdown-metadata";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
 import {
   fetchKnowledgeBaseFileDetail,
@@ -41,7 +35,6 @@ import {
   type BundleTreeEntry,
   type KnowledgeBasePublicUrls,
   type KnowledgeBase,
-  type MetadataDefaultsInput,
   type UploadTaskDetail,
   type UploadTaskLifecycle
 } from "@/lib/admin-api";
@@ -69,14 +62,9 @@ export function KnowledgeBaseDetailPage({
   onLogout
 }: KnowledgeBaseDetailPageProps) {
   const { t } = useTranslation();
-  const metadataReadId = useRef(0);
   const hasRunningTasksRef = useRef(false);
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
-  const [defaultType, setDefaultType] = useState("");
-  const [defaultTitle, setDefaultTitle] = useState("");
-  const [defaultDescription, setDefaultDescription] = useState("");
-  const [defaultTags, setDefaultTags] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [uploadTask, setUploadTask] = useState<UploadTaskLifecycle | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -144,8 +132,7 @@ export function KnowledgeBaseDetailPage({
 
     const result = await uploadKnowledgeBaseSources({
       knowledgeBaseId: knowledgeBase.id,
-      files: selectedFiles,
-      defaults: getMetadataDefaults()
+      files: selectedFiles
     }).catch(() => ({ messageKey: "errors.uploadFailed" }));
 
     if ("messageKey" in result) {
@@ -298,40 +285,8 @@ export function KnowledgeBaseDetailPage({
     setCopiedUrl(url);
   }
 
-  async function handleSourceFilesChange(files: FileList | null) {
-    const readId = metadataReadId.current + 1;
-    metadataReadId.current = readId;
+  function handleSourceFilesChange(files: FileList | null) {
     setSelectedFiles(files);
-
-    const firstFile = files ? Array.from(files)[0] : undefined;
-    if (!firstFile) {
-      applyMetadataDefaults(emptyMarkdownMetadataDefaults());
-      return;
-    }
-
-    const defaults = readMarkdownMetadataDefaults(await firstFile.text());
-
-    if (metadataReadId.current !== readId) {
-      return;
-    }
-
-    applyMetadataDefaults(defaults);
-  }
-
-  function applyMetadataDefaults(defaults: MarkdownMetadataDefaults) {
-    setDefaultType(defaults.defaultType);
-    setDefaultTitle(defaults.defaultTitle);
-    setDefaultDescription(defaults.defaultDescription);
-    setDefaultTags(defaults.defaultTags);
-  }
-
-  function getMetadataDefaults(): MetadataDefaultsInput {
-    return {
-      defaultType,
-      defaultTitle,
-      defaultDescription,
-      defaultTags
-    };
   }
 
   return (
@@ -433,7 +388,7 @@ export function KnowledgeBaseDetailPage({
                     multiple
                     className="absolute inset-0 cursor-pointer opacity-0"
                     aria-describedby="source-files-status"
-                    onChange={(event) => void handleSourceFilesChange(event.target.files)}
+                    onChange={(event) => handleSourceFilesChange(event.target.files)}
                   />
                 </label>
                 <div
@@ -455,40 +410,6 @@ export function KnowledgeBaseDetailPage({
                     <p>{t("upload.noFilesSelected")}</p>
                   )}
                 </div>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="default-type">{t("upload.defaultType")}</FieldLabel>
-                <Input
-                  id="default-type"
-                  value={defaultType}
-                  onChange={(event) => setDefaultType(event.target.value)}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="default-title">{t("upload.defaultTitle")}</FieldLabel>
-                <Input
-                  id="default-title"
-                  value={defaultTitle}
-                  onChange={(event) => setDefaultTitle(event.target.value)}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="default-description">
-                  {t("upload.defaultDescription")}
-                </FieldLabel>
-                <Input
-                  id="default-description"
-                  value={defaultDescription}
-                  onChange={(event) => setDefaultDescription(event.target.value)}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="default-tags">{t("upload.defaultTags")}</FieldLabel>
-                <Input
-                  id="default-tags"
-                  value={defaultTags}
-                  onChange={(event) => setDefaultTags(event.target.value)}
-                />
               </Field>
               {uploadError ? (
                 <Alert variant="destructive">

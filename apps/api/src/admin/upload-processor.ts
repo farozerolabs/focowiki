@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { MetadataValidationError, resolveSourceMetadata } from "@focowiki/okf";
+import {
+  MetadataValidationError,
+  parseUploadedMarkdownSource,
+  resolveSourceMetadata
+} from "@focowiki/okf";
 import type { AdminRepositories, UploadTaskRecord } from "../db/admin-repositories.js";
 import { publishOkfRelease } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
@@ -25,7 +29,6 @@ export type KnowledgeBaseUploadProcessor = {
     knowledgeBaseId: string;
     task: UploadTaskRecord;
     files: LoadedUploadFile[];
-    defaults: Record<string, string | string[]>;
     generatedAt: string;
     batchSize: number;
     cursorTtlSeconds: number;
@@ -81,10 +84,9 @@ export function createUploadProcessor(
 
         const sourceRecords = input.files.map((file) => {
           const sourceFileId = createSourceFileId();
-          const resolved = resolveSourceMetadata({
+          const parsed = parseUploadedMarkdownSource({
             fileName: file.fileName,
-            content: file.content,
-            defaults: input.defaults
+            content: file.content
           });
           const objectKey = storage.keyspace.sourceFileKey(
             input.knowledgeBaseId,
@@ -102,7 +104,7 @@ export function createUploadProcessor(
             contentType: "text/markdown; charset=utf-8",
             sizeBytes: file.bytes.byteLength,
             checksumSha256: sha256Bytes(file.bytes),
-            metadata: resolved.metadata,
+            metadata: parsed.metadata,
             bytes: file.bytes,
             content: file.content
           };
@@ -147,19 +149,19 @@ export function createUploadProcessor(
 
         const modelResult = await readModelSuggestions({
           sources: sourceRecords.map((source) => {
-            const type =
-              typeof source.metadata.type === "string" ? { type: source.metadata.type } : {};
+            const resolved = resolveSourceMetadata({
+              fileName: source.originalName,
+              content: source.content,
+              metadata: source.metadata
+            });
 
             return {
               id: source.id,
               fileName: source.originalName,
-              title:
-                typeof source.metadata.title === "string"
-                  ? source.metadata.title
-                  : source.originalName,
-              ...type,
-              tags: Array.isArray(source.metadata.tags) ? source.metadata.tags : [],
-              body: source.content
+              title: resolved.metadata.title,
+              type: resolved.metadata.type,
+              tags: Array.isArray(resolved.metadata.tags) ? resolved.metadata.tags : [],
+              body: resolved.body
             };
           }),
           modelAssistance
@@ -202,7 +204,6 @@ export function createUploadProcessor(
           releaseId,
           taskId: input.task.id,
           generatedAt: input.generatedAt,
-          defaults: input.defaults,
           pageSize: input.batchSize,
           concurrency: input.fileProcessingConcurrency,
           storage,
@@ -294,7 +295,7 @@ export function createUploadProcessor(
         await recordTaskPhase({
           taskRepository,
           taskId: input.task.id,
-          phaseKey: "bundle_generation",
+          phaseKey: error instanceof MetadataValidationError ? "metadata_resolution" : "bundle_generation",
           startedAt: input.generatedAt,
           endedAt: new Date().toISOString(),
           severity: "error"

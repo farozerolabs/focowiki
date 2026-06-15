@@ -42,12 +42,11 @@ describe("generateOkfBundle", () => {
       "_index/search.json",
       "index.md",
       "pages/intro.md",
-      "schema.md",
-      "sources/intro.md"
+      "schema.md"
     ]);
     expect(files["index.md"]?.startsWith("---")).toBe(false);
     expect(files["index.md"]).toContain("[Getting started](/pages/intro.md)");
-    expect(files["index.md"]).toContain("[Source: intro.md](/sources/intro.md)");
+    expect(files["index.md"]).not.toContain("/sources/");
 
     const schema = matter(files["schema.md"] ?? "");
     expect(schema.data).toMatchObject({
@@ -66,17 +65,9 @@ describe("generateOkfBundle", () => {
     });
     expect(page.content).toContain("# Getting started");
     expect(page.content).toContain("Welcome to the knowledge base.");
-    expect(page.content).toContain("[Source: intro.md](/sources/intro.md)");
+    expect(page.content).not.toContain("/sources/");
     expect(page.content).toContain("# Citations");
     expect(page.content).toContain("- https://example.com/source");
-
-    const source = matter(files["sources/intro.md"] ?? "");
-    expect(source.data).toMatchObject({
-      type: "source",
-      title: "intro.md",
-      resource: "https://example.com/source"
-    });
-    expect(source.content).toContain("[Generated page](/pages/intro.md)");
   });
 
   it("generates manifest, search, and link indexes", () => {
@@ -128,8 +119,7 @@ describe("generateOkfBundle", () => {
       "_index/search.json",
       "index.md",
       "pages/intro.md",
-      "schema.md",
-      "sources/intro.md"
+      "schema.md"
     ]);
     expect(manifest.files).toContainEqual({
       path: "pages/intro.md",
@@ -150,14 +140,63 @@ describe("generateOkfBundle", () => {
       to: "pages/intro.md",
       label: "Getting started"
     });
-    expect(links.links).toContainEqual({
-      from: "pages/intro.md",
-      to: "sources/intro.md",
-      label: "Source: intro.md"
+    expect(links.links).not.toContainEqual(
+      expect.objectContaining({
+        to: "sources/intro.md"
+      })
+    );
+  });
+
+  it("generates OKF metadata from Markdown and generic fallbacks without form defaults", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "plain-source.md",
+          content: "# Plain source\n\nBody without frontmatter."
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const page = matter(files["pages/plain-source.md"] ?? "");
+
+    expect(page.data).toMatchObject({
+      type: "document",
+      title: "Plain source"
+    });
+    expect(page.content).toContain("Body without frontmatter.");
+  });
+
+  it("uses model type suggestions only when source type is missing", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "typed-by-model.md",
+          content: "# Deterministic title",
+          suggestions: {
+            title: "Model title",
+            type: "guide",
+            description: "",
+            tags: [],
+            related_links: [],
+            keywords: []
+          }
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const page = matter(files["pages/typed-by-model.md"] ?? "");
+
+    expect(page.data).toMatchObject({
+      type: "guide",
+      title: "Deterministic title"
     });
   });
 
-  it("keeps original Markdown file names in generated page and source paths", () => {
+  it("keeps original Markdown file names in generated page paths", () => {
     const bundle = generateOkfBundle({
       generatedAt: "2026-06-14T00:00:00.000Z",
       defaults: {
@@ -178,13 +217,11 @@ describe("generateOkfBundle", () => {
     expect(
       bundle.files
         .map((file) => file.path)
-        .filter((path) => path.startsWith("pages/") || path.startsWith("sources/"))
+        .filter((path) => path.startsWith("pages/"))
         .sort()
     ).toEqual([
       "pages/intro!.md",
-      "pages/外国企业常驻代表机构登记管理条例.md",
-      "sources/intro!.md",
-      "sources/外国企业常驻代表机构登记管理条例.md"
+      "pages/外国企业常驻代表机构登记管理条例.md"
     ]);
   });
 
@@ -205,8 +242,11 @@ describe("generateOkfBundle", () => {
             "# Intro"
           ].join("\n"),
           suggestions: {
+            title: "",
+            type: "",
             description: "Suggested description",
             related_links: [{ path: "/pages/related.md", title: "Related" }],
+            tags: [],
             keywords: ["suggested", "agent"]
           }
         },
@@ -231,10 +271,94 @@ describe("generateOkfBundle", () => {
     });
     expect(page.content).toContain("## Related");
     expect(page.content).toContain("- [Related](/pages/related.md)");
+    const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
+      links: Array<{ from: string; to: string; label: string }>;
+    };
+    expect(links.links).toContainEqual({
+      from: "pages/intro.md",
+      to: "pages/related.md",
+      label: "Related"
+    });
     expect(search.items.find((item) => item.path === "pages/intro.md")).toMatchObject({
       description: "Suggested description",
       keywords: ["intro", "suggested", "description", "agent"]
     });
+  });
+
+  it("does not duplicate existing citations sections", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "cited.md",
+          content: [
+            "---",
+            "type: page",
+            "title: Cited",
+            "resource: https://example.com/source",
+            "---",
+            "# Cited",
+            "",
+            "# Citations",
+            "",
+            "- Existing citation"
+          ].join("\n")
+        }
+      ]
+    });
+    const page = matter(filesByPath(bundle.files)["pages/cited.md"] ?? "");
+
+    expect(page.content.match(/^# Citations$/gm)).toHaveLength(1);
+    expect(page.content).toContain("- Existing citation");
+    expect(page.content).not.toContain("- https://example.com/source");
+  });
+
+  it("filters relationship graph suggestions to generated public bundle paths", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "intro.md",
+          content: "---\ntype: page\ntitle: Intro\n---\n# Intro",
+          suggestions: {
+            title: "",
+            type: "",
+            description: "",
+            tags: [],
+            keywords: [],
+            related_links: [
+              { path: "/pages/related.md", title: "Related" },
+              { path: "/pages/missing.md", title: "Missing" },
+              { path: "/sources/raw.md", title: "Raw source" },
+              { path: "tenant/demo/object-key", title: "Object key" }
+            ]
+          }
+        },
+        {
+          fileName: "related.md",
+          content: "---\ntype: page\ntitle: Related\n---\n# Related"
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const page = matter(files["pages/intro.md"] ?? "");
+    const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
+      links: Array<{ from: string; to: string; label: string }>;
+    };
+
+    expect(page.content).toContain("- [Related](/pages/related.md)");
+    expect(page.content).not.toContain("Missing");
+    expect(page.content).not.toContain("Raw source");
+    expect(page.content).not.toContain("Object key");
+    expect(links.links).toContainEqual({
+      from: "pages/intro.md",
+      to: "pages/related.md",
+      label: "Related"
+    });
+    expect(links.links).not.toContainEqual(expect.objectContaining({ to: "pages/missing.md" }));
+    expect(links.links).not.toContainEqual(expect.objectContaining({ to: "sources/raw.md" }));
   });
 
   it("matches the repeatable cleaned Markdown fixture bundle", () => {

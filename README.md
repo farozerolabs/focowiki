@@ -1,6 +1,6 @@
 # Focowiki File Knowledge Base
 
-Focowiki is a minimal OKF-style Markdown knowledge-base generator. Admin users upload cleaned `.md` files with Markdown frontmatter or form default metadata, generate a Markdown file tree, publish it to S3-compatible storage, and expose raw Markdown/JSON files for developers and agents.
+Focowiki is a minimal OKF-style Markdown knowledge-base generator. Admin users upload cleaned `.md` files, the backend parses optional Markdown frontmatter, generates a public OKF-style Markdown tree, publishes it to S3-compatible storage, and exposes scoped Markdown/JSON files for developers and agents.
 
 ## Workspace
 
@@ -100,23 +100,22 @@ If either `MODEL_API_KEY` or `MODEL_NAME` is missing, model assistance is disabl
 
 ## Generated Bundle and Storage
 
-Upload parsing writes source files and generated bundle files under knowledge base scoped internal object keys:
+Upload parsing writes raw source files and generated bundle files under knowledge base scoped internal object keys:
 
 ```text
 S3_PREFIX/
   knowledge-bases/{knowledgeBaseId}/
-    uploads/{taskId}/sources/{sourceFileId}-{safeFileName}.md
+    uploads/{taskId}/sources/{sourceFileId}/{originalFileName}
     releases/{releaseId}/bundle/
       index.md
       schema.md
       pages/*.md
-      sources/*.md
       _index/manifest.json
       _index/search.json
       _index/links.json
 ```
 
-`index.md` is a reserved navigation file and does not include frontmatter. `schema.md`, `pages/*.md`, and `sources/*.md` are concept files with YAML frontmatter, non-empty `type`, and non-empty `title`.
+`index.md` is a reserved navigation file and does not include frontmatter. `schema.md` and `pages/*.md` are public concept files with YAML frontmatter, non-empty `type`, and non-empty `title`. Raw uploaded source objects remain internal under the upload path and are not part of the public bundle tree.
 
 The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object keys. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage.
 
@@ -128,7 +127,6 @@ The public API serves knowledge base scoped raw files without a business JSON en
 GET /kb/{knowledgeBaseId}/index.md
 GET /kb/{knowledgeBaseId}/schema.md
 GET /kb/{knowledgeBaseId}/pages/{file}.md
-GET /kb/{knowledgeBaseId}/sources/{file}.md
 GET /kb/{knowledgeBaseId}/_index/manifest.json
 GET /kb/{knowledgeBaseId}/_index/search.json
 GET /kb/{knowledgeBaseId}/_index/links.json
@@ -156,11 +154,14 @@ Optional model assistance uses the OpenAI Responses API Structured Outputs forma
 
 The schema allows only:
 
+- `title`
+- `type`
 - `description`
+- `tags`
 - `related_links`
 - `keywords`
 
-Every object schema sets `additionalProperties: false`. The implementation validates model output locally before using it. Model suggestions may fill missing presentation metadata, add related Markdown links, and add search keywords. They do not create or override fact metadata such as `type`, `title`, `resource`, `timestamp`, official identifiers, or user-provided fields.
+Every object schema sets `additionalProperties: false`. The implementation validates model output locally before using it. Model suggestions may fill missing generic presentation metadata, add related Markdown links, and add search keywords. They do not create or override fact metadata such as `resource`, `timestamp`, official identifiers, source URLs, legal status, hashes, owner fields, or user-provided fields.
 
 If the first model response refuses, returns incomplete output, fails schema validation, stalls, times out, or the provider call fails, the generator makes one bounded repair attempt with sanitized error context. If the repair attempt also fails, generation continues without model suggestions and returns safe warnings.
 
@@ -180,7 +181,7 @@ Resolved versions are recorded in `pnpm-lock.yaml`. Keep imports and generated c
 
 - Uploaded source files must be `.md`.
 - `.txt`, `.json`, `.yaml`, `.yml`, `.zip`, sidecar metadata files, archives, and upload-to-Markdown conversion are not accepted in this version.
-- Metadata comes from Markdown frontmatter and admin form defaults only.
+- Metadata comes from Markdown frontmatter, deterministic Markdown signals, filename fallback, and optional model suggestions for missing generic fields.
 - PostgreSQL and Redis are required for production admin state, sessions, coordination, and paginated admin reads.
 - There is no CMS workspace, collaboration workflow, vector search, embedding pipeline, or server-side query engine.
 - Search is a generated static `_index/search.json` file.

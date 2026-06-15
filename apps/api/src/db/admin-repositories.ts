@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SourceMetadata } from "@focowiki/okf";
+import type { SourceMetadataDefaults } from "@focowiki/okf";
 import type { DatabaseClient } from "./client.js";
 
 export type CursorPage<T> = {
@@ -66,7 +66,7 @@ export type SourceFileRecord = {
   contentType: string;
   sizeBytes: number;
   checksumSha256: string;
-  metadata: SourceMetadata;
+  metadata: SourceMetadataDefaults;
   createdAt: string;
 };
 
@@ -1008,7 +1008,7 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
     contentType: row.content_type,
     sizeBytes: Number(row.size_bytes),
     checksumSha256: row.checksum_sha256,
-    metadata: readRecord(row.metadata_json) as SourceMetadata,
+    metadata: readRecord(row.metadata_json) as SourceMetadataDefaults,
     createdAt: row.created_at.toISOString()
   };
 }

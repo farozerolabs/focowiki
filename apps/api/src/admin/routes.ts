@@ -20,8 +20,7 @@ import {
 import {
   hasDuplicateUploadFileNames,
   hasExistingSourceFileName,
-  isUploadFile,
-  readMetadataDefaults
+  isUploadFile
 } from "./upload-input.js";
 import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
@@ -322,57 +321,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
             "_index/links.json"
           )
         }
-      });
-    }
-  );
-
-  app.get(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/source-files",
-    requireAdminAuth(sessionManager),
-    async (context) => {
-      if (!repositories?.files || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      const limit = readPageLimit(context.req.query("limit"), config);
-
-      if (!limit) {
-        return invalidPagination(context);
-      }
-
-      const cursorScope = `source-files:${knowledgeBase.id}`;
-      const cursorToken = context.req.query("cursor") ?? null;
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
-
-      if (cursorToken && !repositoryCursor) {
-        return invalidPagination(context);
-      }
-
-      const page = await repositories.files.listSourceFiles({
-        knowledgeBaseId: knowledgeBase.id,
-        limit,
-        cursor: repositoryCursor
-      });
-      const nextCursor = await writeOpaqueCursor({
-        redis,
-        scope: cursorScope,
-        cursor: page.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-
-      return context.json({
-        items: page.items.map(toAdminSourceFile),
-        nextCursor
       });
     }
   );
@@ -779,7 +727,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
             knowledgeBaseId: knowledgeBase.id,
             task,
             files: loadedFiles,
-            defaults: readMetadataDefaults(formData),
             generatedAt: new Date().toISOString(),
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,

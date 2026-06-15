@@ -375,7 +375,7 @@ describe("Knowledge base file Admin API", () => {
     ]);
   });
 
-  it("returns paginated source, release, and bundle file lists without exposing S3 object keys", async () => {
+  it("keeps source file list private and returns release and bundle file lists without storage keys", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const sourceFiles = await app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
       headers: {
@@ -392,17 +392,15 @@ describe("Knowledge base file Admin API", () => {
         cookie
       }
     });
-    const sourceBody = (await sourceFiles.json()) as { items: Array<Record<string, unknown>> };
     const releaseBody = (await releases.json()) as { items: Array<Record<string, unknown>> };
     const bundleBody = (await bundleFiles.json()) as { items: Array<Record<string, unknown>> };
 
-    expect(sourceFiles.status).toBe(200);
+    expect(sourceFiles.status).toBe(404);
     expect(releases.status).toBe(200);
     expect(bundleFiles.status).toBe(200);
-    expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
     expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
-    expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
+    expect(records.sourceCalls).toEqual([]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
   });

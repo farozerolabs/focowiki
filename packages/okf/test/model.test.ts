@@ -52,7 +52,10 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(Object.keys(schema.properties).sort()).toEqual([
       "description",
       "keywords",
-      "related_links"
+      "related_links",
+      "tags",
+      "title",
+      "type"
     ]);
     expect(JSON.stringify(schema)).not.toMatch(/headings/);
     expect(JSON.stringify(schema)).not.toMatch(/resource|timestamp|official|identifier/i);
@@ -65,11 +68,17 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(
       validateModelSuggestions({
         description: "Short summary",
+        title: "",
+        type: "",
+        tags: [],
         related_links: [{ path: "/pages/intro.md", title: "Intro" }],
         keywords: ["overview"]
       })
     ).toEqual({
       description: "Short summary",
+      title: "",
+      type: "",
+      tags: [],
       related_links: [{ path: "/pages/intro.md", title: "Intro" }],
       keywords: ["overview"]
     });
@@ -77,6 +86,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(() =>
       validateModelSuggestions({
         description: "Short summary",
+        title: "",
+        type: "",
+        tags: [],
         related_links: [],
         keywords: [],
         resource: "https://example.com/source"
@@ -86,6 +98,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(() =>
       validateModelSuggestions({
         description: "Short summary",
+        title: "",
+        type: "",
+        tags: [],
         headings: [],
         related_links: [],
         keywords: []
@@ -187,6 +202,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
               status: "completed",
               output_text: JSON.stringify({
                 description: "OK",
+                title: "",
+                type: "",
+                tags: [],
                 related_links: [],
                 keywords: [],
                 timestamp: "2026-06-14T00:00:00.000Z"
@@ -240,6 +258,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
                 status: "completed",
                 output_text: JSON.stringify({
                   description: 42,
+                  title: "",
+                  type: "",
+                  tags: [],
                   related_links: [],
                   keywords: []
                 })
@@ -250,6 +271,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
               status: "completed",
               output_text: JSON.stringify({
                 description: "Repaired",
+                title: "",
+                type: "",
+                tags: [],
                 related_links: [],
                 keywords: ["repair"]
               })
@@ -262,6 +286,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(result).toEqual({
       suggestions: {
         description: "Repaired",
+        title: "",
+        type: "",
+        tags: [],
         related_links: [],
         keywords: ["repair"]
       },

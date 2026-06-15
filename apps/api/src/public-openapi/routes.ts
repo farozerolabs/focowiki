@@ -28,9 +28,6 @@ export function registerPublicOpenApiRoutes(
   app.get("/kb/:knowledgeBaseId/pages/*", requirePublicAuth(config), async (context) =>
     serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
   );
-  app.get("/kb/:knowledgeBaseId/sources/*", requirePublicAuth(config), async (context) =>
-    serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
-  );
   app.get("/kb/:knowledgeBaseId/_index/*", requirePublicAuth(config), async (context) =>
     serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
   );

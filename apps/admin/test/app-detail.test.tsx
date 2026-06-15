@@ -9,7 +9,6 @@ import {
   fetchUploadTaskDetail,
   listBundleFiles,
   listReleases,
-  listSourceFiles,
   listUploadTasks,
   loginAdmin,
 } from "../src/lib/admin-api";
@@ -136,16 +135,6 @@ vi.mock("../src/lib/admin-api", () => ({
     ],
     nextCursor: null
   })),
-  listSourceFiles: vi.fn(async () => ({
-    items: [
-      {
-        id: "source-001",
-        originalName: "intro.md",
-        createdAt: "2026-06-14T00:00:00.000Z"
-      }
-    ],
-    nextCursor: null
-  })),
   loginAdmin: vi.fn(async () => true),
   logoutAdmin: vi.fn(async () => undefined),
   uploadKnowledgeBaseSources: vi.fn(),
@@ -185,7 +174,7 @@ describe("Admin knowledge base detail", () => {
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
   }
 
-  it("loads a paginated file tree and renders a read-only Markdown preview", async () => {
+  it("loads a paginated file tree and renders full read-only Markdown preview", async () => {
     await openDetail();
 
     fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
@@ -201,7 +190,7 @@ describe("Admin knowledge base detail", () => {
       });
     });
     expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
-    expect(screen.queryByText("type: guide")).toBeNull();
+    expect(screen.getByText(/type: guide/)).toBeTruthy();
   });
 
   it("renders upload tasks as one table row with an internal phase summary", async () => {
@@ -411,7 +400,6 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByText("Source files")).toBeNull();
     expect(screen.queryByText("Releases")).toBeNull();
     expect(screen.queryByText("Bundle files")).toBeNull();
-    expect(listSourceFiles).not.toHaveBeenCalled();
     expect(listReleases).not.toHaveBeenCalled();
     expect(listBundleFiles).not.toHaveBeenCalled();
   });

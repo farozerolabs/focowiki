@@ -95,23 +95,18 @@ export const resources = {
       },
       upload: {
         title: "Markdown sources",
-        description: "Upload cleaned Markdown files and optional default metadata.",
+        description: "Upload cleaned Markdown files. Metadata is parsed from frontmatter after upload.",
         selectFiles: "Select Markdown files",
         chooseFiles: "Choose Markdown files",
         noFilesSelected: "No Markdown files selected",
         selectedFiles: "{{count}} selected Markdown file",
         selectedFiles_plural: "{{count}} selected Markdown files",
-        defaultType: "Default type",
-        defaultTitle: "Default title",
-        defaultDescription: "Default description",
-        defaultTags: "Default tags",
         upload: "Upload",
         uploading: "Uploading",
         ready: "Upload ready",
         summary: "{{count}} Markdown file ready for generation",
         summary_plural: "{{count}} Markdown files ready for generation",
-        markdownOnly: "Upload cleaned .md files only",
-        missingMetadata: "Add type and title metadata before generation"
+        markdownOnly: "Upload cleaned .md files only"
       },
       generation: {
         start: "Generate bundle",
@@ -238,23 +233,18 @@ export const resources = {
       },
       upload: {
         title: "Markdown 来源文件",
-        description: "上传清洗后的 Markdown 文件，并可填写默认元数据。",
+        description: "上传清洗后的 Markdown 文件，系统会在上传后解析 frontmatter 元数据。",
         selectFiles: "选择 Markdown 文件",
         chooseFiles: "选择 Markdown 文件",
         noFilesSelected: "尚未选择 Markdown 文件",
         selectedFiles: "已选择 {{count}} 个 Markdown 文件",
         selectedFiles_plural: "已选择 {{count}} 个 Markdown 文件",
-        defaultType: "默认 type",
-        defaultTitle: "默认 title",
-        defaultDescription: "默认描述",
-        defaultTags: "默认标签",
         upload: "上传",
         uploading: "上传中",
         ready: "上传已就绪",
         summary: "{{count}} 个 Markdown 文件可用于生成",
         summary_plural: "{{count}} 个 Markdown 文件可用于生成",
-        markdownOnly: "仅上传清洗后的 .md 文件",
-        missingMetadata: "生成前请补充 type 和 title 元数据"
+        markdownOnly: "仅上传清洗后的 .md 文件"
       },
       generation: {
         start: "生成知识包",

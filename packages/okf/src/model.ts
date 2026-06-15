@@ -12,10 +12,22 @@ export type { ModelReceiveTimeouts } from "./model-receive.js";
 export const MODEL_SUGGESTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["description", "related_links", "keywords"],
+  required: ["title", "type", "description", "tags", "related_links", "keywords"],
   properties: {
+    title: {
+      type: "string"
+    },
+    type: {
+      type: "string"
+    },
     description: {
       type: "string"
+    },
+    tags: {
+      type: "array",
+      items: {
+        type: "string"
+      }
     },
     related_links: {
       type: "array",
@@ -43,7 +55,10 @@ export const MODEL_SUGGESTION_SCHEMA = {
 } as const;
 
 export type ModelSuggestions = {
+  title: string;
+  type: string;
   description: string;
+  tags: string[];
   related_links: Array<{
     path: string;
     title: string;
@@ -97,7 +112,10 @@ export type OpenAIModelClientConfig = {
 
 const modelSuggestionsSchema = z
   .object({
+    title: z.string(),
+    type: z.string(),
     description: z.string(),
+    tags: z.array(z.string()),
     related_links: z.array(
       z
         .object({
@@ -135,8 +153,10 @@ export function buildModelSuggestionRequest(
     model: input.modelName,
     instructions: [
       "Suggest optional presentation metadata for an OKF-style Markdown knowledge bundle.",
-      "Return only description, related_links, and keywords.",
-      "Do not create or modify factual metadata such as resource, timestamp, official identifiers, type, or title."
+      "Return only title, type, description, tags, related_links, and keywords.",
+      "Use an empty string or empty array when no safe suggestion is available.",
+      "Suggest title and type only as generic fallbacks when the source does not provide them.",
+      "Do not create or modify factual metadata such as resource, timestamp, official identifiers, source URLs, hashes, status, owner fields, or other domain-specific frontmatter."
     ].join(" "),
     input: [
       `Title: ${input.title}`,

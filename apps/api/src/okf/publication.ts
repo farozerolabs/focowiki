@@ -17,7 +17,7 @@ export type SourceFileForPublication = {
   id: string;
   originalName: string;
   objectKey: string;
-  metadata: SourceMetadata;
+  metadata: SourceMetadataDefaults;
   suggestions?: SourceModelSuggestions | null;
 };
 
@@ -59,7 +59,6 @@ export type PublishOkfReleaseInput = {
   releaseId: string;
   taskId: string;
   generatedAt: string;
-  defaults: SourceMetadataDefaults;
   pageSize: number;
   concurrency: number;
   storage: OkfPublicationStorage;
@@ -80,16 +79,13 @@ export type PublishOkfReleaseResult = {
 };
 
 type GeneratedPageSummary = {
-  sourceFileName: string;
   pagePath: string;
-  sourcePath: string;
   metadata: SourceMetadata;
   suggestions: SourceModelSuggestions | null;
 };
 
 type GeneratedSourceFiles = {
   page: GeneratedOkfFile;
-  source: GeneratedOkfFile;
   summary: GeneratedPageSummary;
 };
 
@@ -170,10 +166,8 @@ export async function publishOkfRelease(
     for (const generated of generatedFiles) {
       pageIndexEntries.push(generated.summary);
       const pageFile = await writeAndPersistBundleFile(input, nextFileId, generated.page);
-      const sourceFile = await writeAndPersistBundleFile(input, nextFileId, generated.source);
-      fileCount += 2;
+      fileCount += 1;
       await registerPublishedFile(input, treeState, manifestEntries, pageFile);
-      await registerPublishedFile(input, treeState, manifestEntries, sourceFile);
     }
 
     cursor = page.nextCursor;
@@ -227,16 +221,15 @@ async function generateSourceFiles(input: {
   const resolved = resolveSourceMetadata({
     fileName: input.source.originalName,
     content,
-    defaults: input.source.metadata
+    metadata: input.source.metadata,
+    suggestions: input.source.suggestions ?? null
   });
   const metadata = applyPresentationSuggestions(
     resolved.metadata,
     input.source.suggestions ?? null
   );
   const summary: GeneratedPageSummary = {
-    sourceFileName: input.source.originalName,
     pagePath: `pages/${input.publicFileName}`,
-    sourcePath: `sources/${input.publicFileName}`,
     metadata,
     suggestions: input.source.suggestions ?? null
   };
@@ -247,11 +240,6 @@ async function generateSourceFiles(input: {
       logicalPath: summary.pagePath,
       content: renderPageFile(summary, resolved.body),
       metadata
-    },
-    source: {
-      logicalPath: summary.sourcePath,
-      content: renderSourceFile(summary),
-      metadata: buildSourceFileMetadata(summary)
     }
   };
 }
@@ -418,10 +406,7 @@ function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string): Ge
       "",
       "## Pages",
       "",
-      ...pages.map(
-        (page) =>
-          `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)}) - [Source: ${page.sourceFileName}](${toMarkdownHref(page.sourcePath)})`
-      )
+      ...pages.map((page) => `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)})`)
     ].join("\n")
   };
 }
@@ -563,29 +548,12 @@ function buildLinkEntries(pages: GeneratedPageSummary[]): Array<{
   to: string;
   label: string;
 }> {
-  const publicPaths = new Set(
-    pages.flatMap((page) => [page.pagePath, page.sourcePath, "index.md", "schema.md"])
-  );
+  const publicPaths = new Set(pages.flatMap((page) => [page.pagePath, "index.md", "schema.md"]));
   const links = pages.flatMap((page) => [
     {
       from: "index.md",
       to: page.pagePath,
       label: page.metadata.title
-    },
-    {
-      from: "index.md",
-      to: page.sourcePath,
-      label: `Source: ${page.sourceFileName}`
-    },
-    {
-      from: page.pagePath,
-      to: page.sourcePath,
-      label: `Source: ${page.sourceFileName}`
-    },
-    {
-      from: page.sourcePath,
-      to: page.pagePath,
-      label: "Generated page"
     },
     ...buildRelatedLinkEntries(page, publicPaths)
   ]);
@@ -616,43 +584,10 @@ function renderPageFile(page: GeneratedPageSummary, body: string): string {
     [
       body.trim(),
       "",
-      `[Source: ${page.sourceFileName}](${toMarkdownHref(page.sourcePath)})`,
       ...renderRelatedLinks(page.suggestions),
       ...renderCitations(page.metadata)
     ].join("\n")
   );
-}
-
-function renderSourceFile(page: GeneratedPageSummary): string {
-  return renderConceptFile(
-    buildSourceFileMetadata(page),
-    [
-      `# ${page.sourceFileName}`,
-      "",
-      `[Generated page](${toMarkdownHref(page.pagePath)})`,
-      ...renderSourceResource(page.metadata)
-    ].join("\n")
-  );
-}
-
-function buildSourceFileMetadata(page: GeneratedPageSummary): SourceMetadata {
-  const resource = typeof page.metadata.resource === "string" ? page.metadata.resource : undefined;
-
-  return resource
-    ? {
-        type: "source",
-        title: page.sourceFileName,
-        resource
-      }
-    : {
-        type: "source",
-        title: page.sourceFileName
-      };
-}
-
-function renderSourceResource(metadata: SourceMetadata): string[] {
-  const resource = typeof metadata.resource === "string" ? metadata.resource.trim() : "";
-  return resource ? ["", "## Resource", "", resource] : [];
 }
 
 function renderCitations(metadata: SourceMetadata): string[] {
