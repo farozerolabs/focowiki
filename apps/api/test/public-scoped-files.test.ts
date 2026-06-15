@@ -72,7 +72,7 @@ class MemoryStorage implements StorageAdapter {
   public readonly objects = new Map<string, string>([
     [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/index.md",
-      "# Focowiki knowledge base"
+      "# Developer docs"
     ],
     [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json",
@@ -241,7 +241,7 @@ describe("Scoped public file OpenAPI", () => {
 
     expect(markdown.status).toBe(200);
     expect(markdown.headers.get("content-type")).toContain("text/markdown");
-    await expect(markdown.text()).resolves.toBe("# Focowiki knowledge base");
+    await expect(markdown.text()).resolves.toBe("# Developer docs");
     expect(json.status).toBe(200);
     expect(json.headers.get("content-type")).toContain("application/json");
     await expect(json.json()).resolves.toEqual({ items: [] });

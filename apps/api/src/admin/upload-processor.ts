@@ -28,6 +28,7 @@ export type LoadedUploadFile = {
 export type KnowledgeBaseUploadProcessor = {
   process: (input: {
     knowledgeBaseId: string;
+    knowledgeBaseName: string;
     task: UploadTaskRecord;
     files: LoadedUploadFile[];
     generatedAt: string;
@@ -202,6 +203,7 @@ export function createUploadProcessor(
 
         const publication = await publishOkfRelease({
           knowledgeBaseId: input.knowledgeBaseId,
+          knowledgeBaseName: input.knowledgeBaseName,
           releaseId,
           taskId: input.task.id,
           generatedAt: input.generatedAt,

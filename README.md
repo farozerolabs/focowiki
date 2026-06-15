@@ -58,6 +58,7 @@ Required admin configuration:
 - `ADMIN_PASSWORD`: admin login password.
 - `ADMIN_SESSION_SECRET`: signing secret for HTTP-only admin session cookies.
 - `ADMIN_API_PORT`: internal Admin API listen port. Defaults to `43000` when omitted.
+- `ADMIN_UI_HOST`: local Vite admin UI listen host. Defaults to `::` so `localhost` and `127.0.0.1` both work on local machines that support dual-stack loopback.
 - `ADMIN_UI_PORT`: local Vite admin UI listen port. Defaults to `43100` when omitted.
 - `ADMIN_API_PROXY_TARGET`: local Admin UI proxy target. Defaults to `http://127.0.0.1:${ADMIN_API_PORT}`.
 

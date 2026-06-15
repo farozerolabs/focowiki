@@ -91,7 +91,7 @@ class MemoryStorage implements StorageAdapter {
     ],
     [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/index.md",
-      "# Focowiki knowledge base\n\n- [Intro](/pages/intro.md)"
+      "# Developer docs\n\n- [Intro](/pages/intro.md)"
     ]
   ]);
 

@@ -8,6 +8,7 @@ import { defineConfig } from "vite";
 loadLocalEnvFile();
 
 const adminUiPort = readPort("ADMIN_UI_PORT", "43100");
+const adminUiHost = readHost("ADMIN_UI_HOST", "::");
 const adminApiPort = readPort("ADMIN_API_PORT", process.env.PORT ?? "43000");
 const adminApiProxyTarget =
   process.env.ADMIN_API_PROXY_TARGET ?? `http://127.0.0.1:${adminApiPort}`;
@@ -20,6 +21,7 @@ export default defineConfig({
     }
   },
   server: {
+    host: adminUiHost,
     port: adminUiPort,
     strictPort: true,
     proxy: {
@@ -51,4 +53,14 @@ function readPort(field: string, fallback: string): number {
   }
 
   return port;
+}
+
+function readHost(field: string, fallback: string): string {
+  const value = process.env[field]?.trim() || fallback;
+
+  if (!value) {
+    throw new Error(`${field} must be a non-empty host`);
+  }
+
+  return value;
 }

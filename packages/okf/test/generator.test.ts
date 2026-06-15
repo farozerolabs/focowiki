@@ -45,14 +45,18 @@ describe("generateOkfBundle", () => {
       "schema.md"
     ]);
     expect(files["index.md"]?.startsWith("---")).toBe(false);
+    expect(files["index.md"]).toContain("# Knowledge base");
     expect(files["index.md"]).toContain("[Getting started](/pages/intro.md)");
     expect(files["index.md"]).not.toContain("/sources/");
+    expect(files["index.md"]).not.toContain("Focowiki knowledge base");
 
     const schema = matter(files["schema.md"] ?? "");
     expect(schema.data).toMatchObject({
       type: "schema",
-      title: "Focowiki bundle schema"
+      title: "Knowledge base schema"
     });
+    expect(schema.content).toContain("# Knowledge base schema");
+    expect(schema.content).not.toContain("Focowiki bundle schema");
     expect(schema.content).toContain("type");
     expect(schema.content).toContain("title");
 
@@ -68,6 +72,35 @@ describe("generateOkfBundle", () => {
     expect(page.content).not.toContain("/sources/");
     expect(page.content).toContain("# Citations");
     expect(page.content).toContain("- https://example.com/source");
+  });
+
+  it("uses the supplied knowledge base title in reserved files", () => {
+    const bundle = generateOkfBundle({
+      title: "Developer docs",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {
+        type: "page"
+      },
+      sources: [
+        {
+          fileName: "intro.md",
+          content: "# Intro"
+        }
+      ]
+    });
+
+    const files = filesByPath(bundle.files);
+    const schema = matter(files["schema.md"] ?? "");
+
+    expect(files["index.md"]).toContain("# Developer docs");
+    expect(files["index.md"]).not.toContain("Focowiki knowledge base");
+    expect(schema.data).toMatchObject({
+      type: "schema",
+      title: "Developer docs schema",
+      description: "Schema reference for Developer docs"
+    });
+    expect(schema.content).toContain("# Developer docs schema");
+    expect(schema.content).not.toContain("Focowiki bundle schema");
   });
 
   it("generates manifest, search, and link indexes", () => {

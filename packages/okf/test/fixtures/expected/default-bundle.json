@@ -3,11 +3,11 @@
   "files": [
     {
       "path": "index.md",
-      "content": "# Focowiki knowledge base\n\nGenerated at: 2026-06-14T01:00:00.000Z\n\n## Pages\n\n- [Frontend routing](/pages/frontend-routing.md)\n- [Default metadata](/pages/default-metadata.md)"
+      "content": "# Knowledge base\n\nGenerated at: 2026-06-14T01:00:00.000Z\n\n## Pages\n\n- [Frontend routing](/pages/frontend-routing.md)\n- [Default metadata](/pages/default-metadata.md)"
     },
     {
       "path": "schema.md",
-      "content": "---\ntype: schema\ntitle: Focowiki bundle schema\ndescription: Generated schema reference for this OKF-style bundle\n---\n# Focowiki bundle schema\n\nEvery non-reserved Markdown concept file includes parseable YAML frontmatter.\n\nRequired fields:\n\n- type\n- title"
+      "content": "---\ntype: schema\ntitle: Knowledge base schema\ndescription: Schema reference for Knowledge base\n---\n# Knowledge base schema\n\nEvery non-reserved Markdown concept file includes parseable YAML frontmatter.\n\nRequired fields:\n\n- type\n- title"
     },
     {
       "path": "pages/frontend-routing.md",
@@ -19,7 +19,7 @@
     },
     {
       "path": "_index/manifest.json",
-      "content": "{\n  \"generated_at\": \"2026-06-14T01:00:00.000Z\",\n  \"files\": [\n    {\n      \"path\": \"_index/links.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"_index/manifest.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"_index/search.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"index.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\"\n    },\n    {\n      \"path\": \"pages/default-metadata.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Default metadata\"\n    },\n    {\n      \"path\": \"pages/frontend-routing.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Frontend routing\"\n    },\n    {\n      \"path\": \"schema.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Focowiki bundle schema\"\n    }\n  ]\n}\n"
+      "content": "{\n  \"generated_at\": \"2026-06-14T01:00:00.000Z\",\n  \"files\": [\n    {\n      \"path\": \"_index/links.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"_index/manifest.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"_index/search.json\",\n      \"content_type\": \"application/json; charset=utf-8\"\n    },\n    {\n      \"path\": \"index.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\"\n    },\n    {\n      \"path\": \"pages/default-metadata.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Default metadata\"\n    },\n    {\n      \"path\": \"pages/frontend-routing.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Frontend routing\"\n    },\n    {\n      \"path\": \"schema.md\",\n      \"content_type\": \"text/markdown; charset=utf-8\",\n      \"title\": \"Knowledge base schema\"\n    }\n  ]\n}\n"
     },
     {
       "path": "_index/search.json",

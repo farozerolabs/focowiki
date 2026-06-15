@@ -809,6 +809,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         .run(() =>
           uploadProcessor.process({
             knowledgeBaseId: knowledgeBase.id,
+            knowledgeBaseName: knowledgeBase.name,
             task,
             files: loadedFiles,
             generatedAt: new Date().toISOString(),

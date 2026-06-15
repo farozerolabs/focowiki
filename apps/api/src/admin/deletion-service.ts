@@ -205,6 +205,7 @@ export function createDeletionService(
 
         const publication = await publishOkfRelease({
           knowledgeBaseId: input.knowledgeBase.id,
+          knowledgeBaseName: input.knowledgeBase.name,
           releaseId,
           taskId: input.task.id,
           generatedAt: input.generatedAt,

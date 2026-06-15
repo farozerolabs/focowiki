@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   buildSearchIndex,
+  bundleSchemaTitle, knowledgeBaseTitle,
   resolveSourceMetadata,
   stringifyIndex,
   validateOkfBundle,
@@ -66,6 +67,7 @@ export type OkfPublicationStorage = {
 
 export type PublishOkfReleaseInput = {
   knowledgeBaseId: string;
+  knowledgeBaseName: string;
   releaseId: string;
   taskId: string;
   generatedAt: string;
@@ -190,8 +192,8 @@ export async function publishOkfRelease(
   } while (cursor);
 
   const fixedMarkdownFiles = [
-    renderIndexFile(pageIndexEntries, input.generatedAt),
-    renderSchemaFile()
+    renderIndexFile(pageIndexEntries, input.generatedAt, input.knowledgeBaseName),
+    renderSchemaFile(input.knowledgeBaseName)
   ];
 
   for (const file of fixedMarkdownFiles) {
@@ -455,14 +457,14 @@ function createBundleFileDraft(input: {
   };
 }
 
-function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string): GeneratedOkfFile {
+function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string, title: string): GeneratedOkfFile {
   return {
     logicalPath: "index.md",
     sourceFileId: null,
     fileKind: "index",
     metadata: null,
     content: [
-      "# Focowiki knowledge base",
+      `# ${knowledgeBaseTitle(title)}`,
       "",
       `Generated at: ${generatedAt}`,
       "",
@@ -473,11 +475,11 @@ function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string): Ge
   };
 }
 
-function renderSchemaFile(): GeneratedOkfFile {
+function renderSchemaFile(title: string): GeneratedOkfFile {
   const metadata = {
     type: "schema",
-    title: "Focowiki bundle schema",
-    description: "Generated schema reference for this OKF-style bundle"
+    title: bundleSchemaTitle(title),
+    description: `Schema reference for ${knowledgeBaseTitle(title)}`
   };
 
   return {
@@ -488,7 +490,7 @@ function renderSchemaFile(): GeneratedOkfFile {
     content: renderConceptFile(
       metadata,
       [
-        "# Focowiki bundle schema",
+        `# ${bundleSchemaTitle(title)}`,
         "",
         "Every non-reserved Markdown concept file includes parseable YAML frontmatter.",
         "",

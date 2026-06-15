@@ -79,6 +79,7 @@ describe("publishOkfRelease", () => {
 
     const result = await publishOkfRelease({
       knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
@@ -109,9 +110,13 @@ describe("publishOkfRelease", () => {
     expect(storage.maxActiveReads).toBeLessThanOrEqual(1);
     expect(result.fileCount).toBe(7);
     expect(result.bundleRootKey).toBe("tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/");
+    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("# Developer docs");
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("[intro](/pages/intro.md)");
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       "\"pages/intro.md\""
+    );
+    expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
+      "\"Developer docs schema\""
     );
     expect(fileBatches.every((batch) => batch.length <= 1)).toBe(true);
     expect(treeBatches.every((batch) => batch.length <= 1)).toBe(true);
@@ -160,6 +165,7 @@ describe("publishOkfRelease", () => {
 
     const result = await publishOkfRelease({
       knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Legal docs",
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
@@ -193,6 +199,7 @@ describe("publishOkfRelease", () => {
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain(
       `[外国企业常驻代表机构登记管理条例](/pages/${encodeURIComponent(sourceName)})`
     );
+    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("# Legal docs");
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       `"${pagePath}"`
     );
@@ -210,6 +217,7 @@ describe("publishOkfRelease", () => {
 
     await publishOkfRelease({
       knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
@@ -240,6 +248,7 @@ describe("publishOkfRelease", () => {
 
     await publishOkfRelease({
       knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
@@ -288,6 +297,7 @@ describe("publishOkfRelease", () => {
 
     const result = await publishOkfRelease({
       knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       taskId: "task-001",
       generatedAt: "2026-06-14T00:00:00.000Z",

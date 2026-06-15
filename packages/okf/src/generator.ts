@@ -12,6 +12,7 @@ import {
   type SourceMetadata,
   type SourceMetadataDefaults
 } from "./metadata.js";
+import { bundleSchemaTitle, knowledgeBaseTitle } from "./titles.js";
 
 export type MarkdownSourceInput = {
   fileName: string;
@@ -40,6 +41,7 @@ export type GenerateOkfBundleInput = {
   sources: MarkdownSourceInput[];
   defaults: SourceMetadataDefaults;
   generatedAt: string;
+  title?: string;
 };
 
 export type GeneratedOkfBundle = {
@@ -86,18 +88,18 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
   const markdownFiles: OkfBundleFile[] = [
     {
       path: "index.md",
-      content: renderIndex(pages, input.generatedAt)
+      content: renderIndex(pages, input.generatedAt, input.title)
     },
     {
       path: "schema.md",
       content: renderConceptFile(
         {
           type: "schema",
-          title: "Focowiki bundle schema",
-          description: "Generated schema reference for this OKF-style bundle"
+          title: bundleSchemaTitle(input.title),
+          description: `Schema reference for ${knowledgeBaseTitle(input.title)}`
         },
         [
-          "# Focowiki bundle schema",
+          `# ${bundleSchemaTitle(input.title)}`,
           "",
           "Every non-reserved Markdown concept file includes parseable YAML frontmatter.",
           "",
@@ -144,9 +146,9 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
   };
 }
 
-function renderIndex(pages: GeneratedPage[], generatedAt: string): string {
+function renderIndex(pages: GeneratedPage[], generatedAt: string, title?: string): string {
   return [
-    "# Focowiki knowledge base",
+    `# ${knowledgeBaseTitle(title)}`,
     "",
     `Generated at: ${generatedAt}`,
     "",
