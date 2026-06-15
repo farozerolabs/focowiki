@@ -25,6 +25,7 @@ type UploadTaskDataTableProps = {
 type UploadTaskTableRow = {
   id: string;
   taskId: string;
+  operation: UploadTaskLifecycle["operation"];
   lifecycle: UploadTaskLifecycle["lifecycle"];
   fileNames: string;
   detail: string;
@@ -47,6 +48,15 @@ export function UploadTaskDataTable({ tasks, taskDetailsById }: UploadTaskDataTa
         cell: ({ row }) => (
           <span className="font-medium">
             {row.original.lifecycle === "ended" ? t("tasks.ended") : t("tasks.running")}
+          </span>
+        )
+      },
+      {
+        accessorKey: "operation",
+        header: () => t("tasks.table.operation"),
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">
+            {t(`tasks.operation.${row.original.operation ?? "upload"}`)}
           </span>
         )
       },
@@ -143,6 +153,7 @@ function buildTaskRows(
     return {
       id: task.id,
       taskId: task.id,
+      operation: task.operation,
       lifecycle: task.lifecycle,
       fileNames,
       detail: formatPhaseSummary(phases, t),

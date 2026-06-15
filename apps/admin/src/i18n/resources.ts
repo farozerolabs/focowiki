@@ -30,6 +30,17 @@ export const resources = {
       common: {
         cancel: "Cancel"
       },
+      delete: {
+        action: "Delete",
+        confirm: "Delete",
+        deleting: "Deleting",
+        knowledgeBaseMenu: "Knowledge base actions for {{name}}",
+        knowledgeBaseTitle: "Delete knowledge base",
+        knowledgeBaseDescription: "Delete {{name}} from the admin console.",
+        fileMenu: "File actions",
+        fileTitle: "Delete Markdown file",
+        fileDescription: "Delete {{name}} and republish the knowledge base."
+      },
       home: {
         title: "Knowledge bases",
         cardsTitle: "Knowledge bases",
@@ -73,6 +84,7 @@ export const resources = {
         notRecorded: "Not recorded",
         table: {
           status: "Status",
+          operation: "Operation",
           fileName: "File name",
           taskId: "Task ID",
           detail: "Detail",
@@ -81,11 +93,17 @@ export const resources = {
         },
         phase: {
           uploadStorage: "Upload storage",
+          sourceDeletion: "Source deletion",
           metadataResolution: "Metadata resolution",
           okfValidation: "OKF validation",
           bundleGeneration: "Bundle generation",
           indexPublication: "Index publication",
           releaseActivation: "Release activation"
+        },
+        operation: {
+          upload: "Upload",
+          delete_source: "Delete file",
+          delete_knowledge_base: "Delete knowledge base"
         },
         severity: {
           info: "Info",
@@ -138,7 +156,9 @@ export const resources = {
         invalidGenerationRequest: "Generation request is invalid",
         noUploadFiles: "Select at least one Markdown file",
         duplicateUploadFileName: "Markdown file names must be unique",
-        uploadFailed: "Upload request failed"
+        uploadFailed: "Upload request failed",
+        deleteFailed: "Delete request failed",
+        fileNotDeletable: "This file cannot be deleted"
       }
     }
   },
@@ -167,6 +187,17 @@ export const resources = {
       },
       common: {
         cancel: "取消"
+      },
+      delete: {
+        action: "删除",
+        confirm: "删除",
+        deleting: "删除中",
+        knowledgeBaseMenu: "{{name}} 的知识库操作",
+        knowledgeBaseTitle: "删除知识库",
+        knowledgeBaseDescription: "从管理后台删除 {{name}}。",
+        fileMenu: "文件操作",
+        fileTitle: "删除 Markdown 文件",
+        fileDescription: "删除 {{name}} 并重新发布知识库。"
       },
       home: {
         title: "知识库",
@@ -211,6 +242,7 @@ export const resources = {
         notRecorded: "未记录",
         table: {
           status: "状态",
+          operation: "操作",
           fileName: "文件名",
           taskId: "任务 ID",
           detail: "详情",
@@ -219,11 +251,17 @@ export const resources = {
         },
         phase: {
           uploadStorage: "上传存储",
+          sourceDeletion: "来源文件删除",
           metadataResolution: "元数据解析",
           okfValidation: "OKF 校验",
           bundleGeneration: "知识包生成",
           indexPublication: "索引发布",
           releaseActivation: "发布激活"
+        },
+        operation: {
+          upload: "上传",
+          delete_source: "删除文件",
+          delete_knowledge_base: "删除知识库"
         },
         severity: {
           info: "信息",
@@ -276,7 +314,9 @@ export const resources = {
         invalidGenerationRequest: "生成请求无效",
         noUploadFiles: "请至少选择一个 Markdown 文件",
         duplicateUploadFileName: "Markdown 文件名不能重复",
-        uploadFailed: "上传请求失败"
+        uploadFailed: "上传请求失败",
+        deleteFailed: "删除请求失败",
+        fileNotDeletable: "该文件不能删除"
       }
     }
   }

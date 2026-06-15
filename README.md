@@ -42,7 +42,7 @@ Open `http://127.0.0.1:43100/` and log in with `ADMIN_USERNAME` and `ADMIN_PASSW
 
 Real upload parsing publishes source and generated files through S3-compatible APIs. A dummy `S3_ENDPOINT` is enough to verify login and form validation, but upload parsing fails until a compatible object store is available.
 
-For a pre-release destructive local reset, stop the app, remove the Compose volumes, start PostgreSQL and Redis again, then rerun migrations:
+For a pre-release destructive local reset, stop the app, remove the Compose volumes, start PostgreSQL and Redis again, then rerun migrations. Pre-release schema changes do not keep compatibility readers or local backfills for stale rows, so re-upload Markdown samples after the reset:
 
 ```bash
 docker compose down -v

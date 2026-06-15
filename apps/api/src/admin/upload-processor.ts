@@ -12,6 +12,7 @@ import {
   readModelSuggestions,
   type ModelAssistanceOptions
 } from "./model-suggestions.js";
+import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 
 export type UploadFile = {
   name: string;
@@ -282,7 +283,7 @@ export function createUploadProcessor(
           },
           input.cursorTtlSeconds
         );
-        await invalidateKnowledgeBaseAdminPages({
+        await invalidateKnowledgeBaseCaches({
           redis,
           knowledgeBaseId: input.knowledgeBaseId,
           releaseId,
@@ -321,7 +322,7 @@ export function createUploadProcessor(
             input.cursorTtlSeconds
           )
           .catch(() => undefined);
-        await invalidateKnowledgeBaseAdminPages({
+        await invalidateKnowledgeBaseCaches({
           redis,
           knowledgeBaseId: input.knowledgeBaseId,
           releaseId: null,
@@ -384,34 +385,6 @@ function phaseMessageKey(phaseKey: Parameters<typeof recordTaskPhase>[0]["phaseK
   return `tasks.phase.${phaseKey.replace(/_([a-z])/g, (_match, letter: string) =>
     letter.toUpperCase()
   )}`;
-}
-
-async function invalidateKnowledgeBaseAdminPages(options: {
-  redis: RedisCoordinator;
-  knowledgeBaseId: string;
-  releaseId: string | null;
-  taskId: string;
-  ttlSeconds: number;
-}): Promise<void> {
-  const scopes = [
-    "knowledge-bases",
-    `source-files:${options.knowledgeBaseId}`,
-    `releases:${options.knowledgeBaseId}`,
-    `upload-tasks:${options.knowledgeBaseId}`,
-    `upload-task-events:${options.knowledgeBaseId}:${options.taskId}`,
-    ...(options.releaseId
-      ? [
-          `file-tree:${options.knowledgeBaseId}:${options.releaseId}:root`,
-          `bundle-files:${options.knowledgeBaseId}:${options.releaseId}`
-        ]
-      : [])
-  ];
-
-  await Promise.all(
-    scopes.map((scope) =>
-      options.redis.markPaginationInvalid(scope, "changed", options.ttlSeconds)
-    )
-  );
 }
 
 function createSourceFileId(): string {

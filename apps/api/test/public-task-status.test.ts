@@ -84,6 +84,7 @@ function createRepositories(task: { endedAt: string | null } | null) {
           ? {
               id: "task-001",
               knowledgeBaseId,
+              operation: "upload" as const,
               startedAt: "2026-06-14T00:00:00.000Z",
               endedAt: task.endedAt,
               sourceCount: 2,

@@ -25,6 +25,8 @@ export type BundleFileDraft = {
   id: string;
   knowledgeBaseId: string;
   releaseId: string;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind;
   logicalPath: string;
   objectKey: string;
   contentType: string;
@@ -36,6 +38,14 @@ export type BundleFileDraft = {
   tags: string[];
   frontmatter: Record<string, unknown>;
 };
+
+export type BundleFileKind =
+  | "page"
+  | "index"
+  | "schema"
+  | "manifest_index"
+  | "search_index"
+  | "link_index";
 
 export type BundleTreeEntryDraft = {
   id: string;
@@ -89,8 +99,15 @@ type GeneratedSourceFiles = {
   summary: GeneratedPageSummary;
 };
 
+type PublicFilePlans = {
+  bySourceId: Map<string, { publicFileName: string; pagePath: string }>;
+  publicPaths: Set<string>;
+};
+
 type GeneratedOkfFile = {
   logicalPath: string;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind;
   content: string;
   metadata: SourceMetadata | null;
 };
@@ -117,7 +134,6 @@ export async function publishOkfRelease(
     input.knowledgeBaseId,
     input.releaseId
   );
-  const publicFileNames = new Set<string>();
   const pageIndexEntries: GeneratedPageSummary[] = [];
   const manifestEntries: ManifestFileEntry[] = [];
   const treeState: TreePublicationState = {
@@ -128,6 +144,7 @@ export async function publishOkfRelease(
   let fileCount = 0;
   let manifestChecksumSha256 = "";
   let cursor: string | null = null;
+  const publicFilePlans = await collectPublicFilePlans(input);
 
   const nextFileId = (): string => {
     return `bundle-file-${randomUUID()}`;
@@ -139,17 +156,15 @@ export async function publishOkfRelease(
       limit: input.pageSize
     });
     const plannedSources = page.items.map((source) => {
-      const publicFileName = normalizePublicMarkdownFileName(source.originalName);
+      const plan = publicFilePlans.bySourceId.get(source.id);
 
-      if (publicFileNames.has(publicFileName)) {
-        throw new Error(`Duplicate source file name: ${source.originalName}`);
+      if (!plan) {
+        throw new Error(`Source file plan was not found: ${source.id}`);
       }
-
-      publicFileNames.add(publicFileName);
 
       return {
         source,
-        publicFileName
+        publicFileName: plan.publicFileName
       };
     });
     const generatedFiles = await mapWithConcurrency(
@@ -159,6 +174,7 @@ export async function publishOkfRelease(
         generateSourceFiles({
           source,
           publicFileName,
+          publicPaths: publicFilePlans.publicPaths,
           storage: input.storage
         })
     );
@@ -210,6 +226,7 @@ export async function publishOkfRelease(
 async function generateSourceFiles(input: {
   source: SourceFileForPublication;
   publicFileName: string;
+  publicPaths: Set<string>;
   storage: OkfPublicationStorage;
 }): Promise<GeneratedSourceFiles> {
   const content = await input.storage.getObjectText(input.source.objectKey);
@@ -238,10 +255,47 @@ async function generateSourceFiles(input: {
     summary,
     page: {
       logicalPath: summary.pagePath,
-      content: renderPageFile(summary, resolved.body),
+      sourceFileId: input.source.id,
+      fileKind: "page",
+      content: renderPageFile(summary, resolved.body, input.publicPaths),
       metadata
     }
   };
+}
+
+async function collectPublicFilePlans(input: PublishOkfReleaseInput): Promise<PublicFilePlans> {
+  const publicFileNames = new Set<string>();
+  const publicPaths = new Set(["index.md", "schema.md"]);
+  const bySourceId = new Map<string, { publicFileName: string; pagePath: string }>();
+  let cursor: string | null = null;
+
+  do {
+    const page = await input.fetchSourcePage({
+      cursor,
+      limit: input.pageSize
+    });
+
+    for (const source of page.items) {
+      const publicFileName = normalizePublicMarkdownFileName(source.originalName);
+
+      if (publicFileNames.has(publicFileName)) {
+        throw new Error(`Duplicate source file name: ${source.originalName}`);
+      }
+
+      if (bySourceId.has(source.id)) {
+        throw new Error(`Duplicate source file id: ${source.id}`);
+      }
+
+      const pagePath = `pages/${publicFileName}`;
+      publicFileNames.add(publicFileName);
+      publicPaths.add(pagePath);
+      bySourceId.set(source.id, { publicFileName, pagePath });
+    }
+
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  return { bySourceId, publicPaths };
 }
 
 async function writeAndPersistBundleFile(
@@ -268,6 +322,8 @@ async function writeAndPersistBundleFile(
     knowledgeBaseId: input.knowledgeBaseId,
     releaseId: input.releaseId,
     logicalPath: file.logicalPath,
+    sourceFileId: file.sourceFileId,
+    fileKind: file.fileKind,
     objectKey,
     contentType,
     content: file.content,
@@ -370,6 +426,8 @@ function createBundleFileDraft(input: {
   knowledgeBaseId: string;
   releaseId: string;
   logicalPath: string;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind;
   objectKey: string;
   contentType: string;
   content: string;
@@ -382,6 +440,8 @@ function createBundleFileDraft(input: {
     id: input.id,
     knowledgeBaseId: input.knowledgeBaseId,
     releaseId: input.releaseId,
+    sourceFileId: input.sourceFileId,
+    fileKind: input.fileKind,
     logicalPath: input.logicalPath,
     objectKey: input.objectKey,
     contentType: input.contentType,
@@ -398,6 +458,8 @@ function createBundleFileDraft(input: {
 function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string): GeneratedOkfFile {
   return {
     logicalPath: "index.md",
+    sourceFileId: null,
+    fileKind: "index",
     metadata: null,
     content: [
       "# Focowiki knowledge base",
@@ -420,6 +482,8 @@ function renderSchemaFile(): GeneratedOkfFile {
 
   return {
     logicalPath: "schema.md",
+    sourceFileId: null,
+    fileKind: "schema",
     metadata,
     content: renderConceptFile(
       metadata,
@@ -484,16 +548,22 @@ function renderIndexFiles(
   return [
     {
       logicalPath: "_index/manifest.json",
+      sourceFileId: null,
+      fileKind: "manifest_index",
       metadata: null,
       content: stringifyIndex(manifestIndex)
     },
     {
       logicalPath: "_index/search.json",
+      sourceFileId: null,
+      fileKind: "search_index",
       metadata: null,
       content: stringifyIndex(searchIndex)
     },
     {
       logicalPath: "_index/links.json",
+      sourceFileId: null,
+      fileKind: "link_index",
       metadata: null,
       content: stringifyIndex(linkIndex)
     }
@@ -578,13 +648,17 @@ function buildRelatedLinkEntries(
     .filter((link) => link.to && link.label && publicPaths.has(link.to));
 }
 
-function renderPageFile(page: GeneratedPageSummary, body: string): string {
+function renderPageFile(
+  page: GeneratedPageSummary,
+  body: string,
+  publicPaths: Set<string>
+): string {
   return renderConceptFile(
     page.metadata,
     [
       body.trim(),
       "",
-      ...renderRelatedLinks(page.suggestions),
+      ...renderRelatedLinks(page.suggestions, publicPaths),
       ...renderCitations(page.metadata)
     ].join("\n")
   );
@@ -595,13 +669,16 @@ function renderCitations(metadata: SourceMetadata): string[] {
   return resource ? ["", "# Citations", "", `- ${resource}`] : [];
 }
 
-function renderRelatedLinks(suggestions: SourceModelSuggestions | null): string[] {
+function renderRelatedLinks(
+  suggestions: SourceModelSuggestions | null,
+  publicPaths: Set<string>
+): string[] {
   const links = (suggestions?.related_links ?? [])
     .map((link) => ({
       path: normalizePublicPathReference(link.path),
       title: link.title.trim()
     }))
-    .filter((link) => link.path && link.title)
+    .filter((link) => link.path && link.title && publicPaths.has(link.path))
     .map((link) => `- [${link.title}](${toMarkdownHref(link.path)})`);
 
   return links.length > 0 ? ["", "## Related", "", ...links] : [];

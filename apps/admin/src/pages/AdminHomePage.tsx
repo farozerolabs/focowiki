@@ -1,16 +1,34 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { PlusIcon } from "lucide-react";
+import { MoreHorizontalIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -31,6 +49,7 @@ type AdminHomePageProps = {
     name: string;
     description: string;
   }) => Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure>;
+  onDelete: (knowledgeBase: KnowledgeBase) => Promise<{ deleted: true } | ApiFailure>;
   onLoadMore: () => void;
   onLogout: () => void;
   onOpenKnowledgeBase: (knowledgeBase: KnowledgeBase) => void;
@@ -41,6 +60,7 @@ export function AdminHomePage({
   nextCursor,
   isLoading,
   onCreate,
+  onDelete,
   onLoadMore,
   onLogout,
   onOpenKnowledgeBase
@@ -51,6 +71,9 @@ export function AdminHomePage({
   const [description, setDescription] = useState("");
   const [createError, setCreateError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeBase | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,6 +92,24 @@ export function AdminHomePage({
     setName("");
     setDescription("");
     setIsDialogOpen(false);
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setDeleteError("");
+    setIsDeleting(true);
+    const result = await onDelete(deleteTarget);
+    setIsDeleting(false);
+
+    if ("messageKey" in result) {
+      setDeleteError(result.messageKey);
+      return;
+    }
+
+    setDeleteTarget(null);
   }
 
   return (
@@ -133,6 +174,36 @@ export function AdminHomePage({
                   <CardDescription>
                     {knowledgeBase.description || t("home.noDescription")}
                   </CardDescription>
+                  <CardAction className="relative z-10">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("delete.knowledgeBaseMenu", {
+                            name: knowledgeBase.name
+                          })}
+                        >
+                          <MoreHorizontalIcon />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuGroup>
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onSelect={() => {
+                              setDeleteError("");
+                              setDeleteTarget(knowledgeBase);
+                            }}
+                          >
+                            <Trash2Icon />
+                            {t("delete.action")}
+                          </DropdownMenuItem>
+                        </DropdownMenuGroup>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </CardAction>
                 </CardHeader>
                 <button
                   type="button"
@@ -193,6 +264,38 @@ export function AdminHomePage({
           </form>
         </DialogContent>
       </Dialog>
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => !open && !isDeleting && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("delete.knowledgeBaseTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("delete.knowledgeBaseDescription", {
+                name: deleteTarget?.name ?? ""
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError ? (
+            <Alert variant="destructive">
+              <AlertTitle>{t(deleteError)}</AlertTitle>
+            </Alert>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeleting}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDelete();
+              }}
+            >
+              {isDeleting ? t("delete.deleting") : t("delete.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   );
 }

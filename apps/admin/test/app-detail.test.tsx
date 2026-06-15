@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
+  deleteKnowledgeBaseFile,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
@@ -16,12 +17,26 @@ import {
 vi.mock("../src/lib/admin-api", () => ({
   checkAdminSession: vi.fn(async () => false),
   createKnowledgeBase: vi.fn(),
+  deleteKnowledgeBase: vi.fn(),
+  deleteKnowledgeBaseFile: vi.fn(async () => ({
+    task: {
+      id: "task-delete",
+      operation: "delete_source",
+      startedAt: "2026-06-14T00:00:03.000Z",
+      endedAt: null,
+      lifecycle: "running",
+      sourceCount: 1
+    }
+  })),
   fetchKnowledgeBaseFileDetail: vi.fn(async () => ({
     file: {
       id: "file-001",
+      sourceFileId: "source-001",
+      fileKind: "page",
       logicalPath: "pages/intro.md",
       contentType: "text/markdown",
-      title: "Intro"
+      title: "Intro",
+      deletable: true
     },
     content: "---\ntype: guide\ntitle: Intro\n---\n# Intro\n\n[Generated page](/pages/intro.md)",
     readOnly: true
@@ -33,7 +48,10 @@ vi.mock("../src/lib/admin-api", () => ({
         name: "intro.md",
         logicalPath: "pages/intro.md",
         entryType: "file",
-        bundleFileId: "file-001"
+        bundleFileId: "file-001",
+        sourceFileId: "source-001",
+        fileKind: "page",
+        deletable: true
       }
     ],
     nextCursor: null
@@ -51,6 +69,7 @@ vi.mock("../src/lib/admin-api", () => ({
       startedAt: "2026-06-14T00:00:00.000Z",
       endedAt: null,
       lifecycle: "running",
+      operation: "upload",
       sourceCount: 1
     },
     phaseDetails: {
@@ -108,6 +127,7 @@ vi.mock("../src/lib/admin-api", () => ({
         startedAt: "2026-06-14T00:00:00.000Z",
         endedAt: null,
         lifecycle: "running",
+        operation: "upload",
         sourceCount: 1
       }
     ],
@@ -216,6 +236,7 @@ describe("Admin knowledge base detail", () => {
     expect(table).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(2);
     expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Operation" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "File name" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Task ID" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Detail" })).toBeTruthy();
@@ -224,6 +245,7 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByRole("columnheader", { name: "Phase" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Severity" })).toBeNull();
     expect(within(table).getByText("intro.md")).toBeTruthy();
+    expect(within(table).getByText("Upload")).toBeTruthy();
     expect(within(table).getAllByText("task-001")).toHaveLength(1);
     expect(within(table).getByText("Upload storage / Metadata resolution")).toBeTruthy();
     expect(screen.queryByText("Info")).toBeNull();
@@ -353,6 +375,111 @@ describe("Admin knowledge base detail", () => {
       knowledgeBaseId: "kb-docs",
       cursor: "task-cursor-001"
     });
+  });
+
+  it("deletes a source-backed page from the file tree row menu", async () => {
+    vi.mocked(listUploadTasks)
+      .mockResolvedValueOnce({
+        items: [],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "task-delete",
+            operation: "delete_source",
+            startedAt: "2026-06-14T00:00:03.000Z",
+            endedAt: null,
+            lifecycle: "running",
+            sourceCount: 1
+          }
+        ],
+        nextCursor: null
+      });
+    vi.mocked(fetchUploadTaskDetail).mockResolvedValue({
+      task: {
+        id: "task-delete",
+        operation: "delete_source",
+        startedAt: "2026-06-14T00:00:03.000Z",
+        endedAt: null,
+        lifecycle: "running",
+        sourceCount: 1
+      },
+      phaseDetails: {
+        items: [
+          {
+            id: "event-delete",
+            taskId: "task-delete",
+            phaseKey: "source_deletion",
+            messageKey: "tasks.phase.sourceDeletion",
+            startedAt: "2026-06-14T00:00:03.000Z",
+            endedAt: null,
+            severity: "info",
+            createdAt: "2026-06-14T00:00:03.000Z"
+          }
+        ],
+        nextCursor: null
+      },
+      sourceFiles: {
+        items: [],
+        nextCursor: null
+      }
+    });
+
+    await openDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
+    expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "File actions: intro.md" }), {
+      button: 0,
+      ctrlKey: false
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "Delete Markdown file" });
+    expect(dialog).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(deleteKnowledgeBaseFile).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        path: "pages/intro.md"
+      });
+      expect(screen.queryByRole("alertdialog", { name: "Delete Markdown file" })).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
+        "true"
+      );
+      expect(screen.queryByRole("heading", { name: "Intro", level: 1 })).toBeNull();
+    });
+    expect(await screen.findByText("Delete file")).toBeTruthy();
+    expect(fetchKnowledgeBaseFileTree).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      cursor: null
+    });
+  });
+
+  it("does not show file delete actions for generated system files", async () => {
+    vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
+      items: [
+        {
+          id: "tree-index",
+          name: "index.md",
+          logicalPath: "index.md",
+          entryType: "file",
+          bundleFileId: "file-index",
+          sourceFileId: null,
+          fileKind: "index",
+          deletable: false
+        }
+      ],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    expect(await screen.findByRole("button", { name: "index.md" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "File actions: index.md" })).toBeNull();
   });
 
   it("loads a directory page only when the directory is opened", async () => {

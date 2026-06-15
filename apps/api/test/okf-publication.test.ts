@@ -11,6 +11,14 @@ type SourceRecord = {
     type?: string;
     title?: string;
   };
+  suggestions?: {
+    description: string;
+    title: string;
+    type: string;
+    tags: string[];
+    related_links: Array<{ title: string; path: string }>;
+    keywords: string[];
+  } | null;
 };
 
 function sourceRecord(id: string, originalName: string, objectKey: string): SourceRecord {
@@ -94,6 +102,8 @@ describe("publishOkfRelease", () => {
 
     expect(fetchCalls).toEqual([
       { cursor: null, limit: 1 },
+      { cursor: "1", limit: 1 },
+      { cursor: null, limit: 1 },
       { cursor: "1", limit: 1 }
     ]);
     expect(storage.maxActiveReads).toBeLessThanOrEqual(1);
@@ -114,6 +124,20 @@ describe("publishOkfRelease", () => {
       "pages/setup.md",
       "schema.md"
     ]);
+    expect(fileBatches.flat()).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "pages/intro.md",
+        sourceFileId: "source-001",
+        fileKind: "page"
+      })
+    );
+    expect(fileBatches.flat()).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "index.md",
+        sourceFileId: null,
+        fileKind: "index"
+      })
+    );
     expect(treeBatches.flat()).toContainEqual(
       expect.objectContaining({
         parentPath: "pages",
@@ -240,5 +264,47 @@ describe("publishOkfRelease", () => {
         }
       })
     );
+  });
+
+  it("filters generated relationship links to current public bundle paths", async () => {
+    const sources: SourceRecord[] = [
+      {
+        ...sourceRecord("source-001", "intro.md", "tenant/demo/source/intro.md"),
+        suggestions: {
+          description: "",
+          title: "",
+          type: "",
+          tags: [],
+          related_links: [
+            { title: "Setup", path: "pages/setup.md" },
+            { title: "Deleted", path: "pages/deleted.md" }
+          ],
+          keywords: []
+        }
+      },
+      sourceRecord("source-002", "setup.md", "tenant/demo/source/setup.md")
+    ];
+    const storage = new PublicationStorage(sources);
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      releaseId: "release-001",
+      taskId: "task-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 50,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const intro = storage.objects.get(`${result.bundleRootKey}pages/intro.md`) ?? "";
+    const links = storage.objects.get(`${result.bundleRootKey}_index/links.json`) ?? "";
+
+    expect(intro).toContain("[Setup](/pages/setup.md)");
+    expect(intro).not.toContain("deleted.md");
+    expect(links).toContain("pages/setup.md");
+    expect(links).not.toContain("pages/deleted.md");
   });
 });

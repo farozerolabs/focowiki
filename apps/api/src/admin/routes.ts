@@ -25,6 +25,7 @@ import {
 import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
+import { createDeletionService } from "./deletion-service.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -37,7 +38,7 @@ export type AdminApiServices = {
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
   const { config, storage, modelClient, sessionManager, redis, repositories } = services;
-  const uploadTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
+  const adminTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
 
   app.post("/admin/api/login", async (context) => {
     if (containsCredentialQuery(context.req.raw.url)) {
@@ -177,6 +178,34 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
   );
 
+  app.delete(
+    "/admin/api/knowledge-bases/:knowledgeBaseId",
+    requireAdminAuth(sessionManager),
+    async (context) => {
+      if (!repositories || !redis) {
+        return missingRepositoryBackend(context);
+      }
+
+      const deletionService = createDeletionService(repositories, storage, redis);
+
+      if (!deletionService) {
+        return missingRepositoryBackend(context);
+      }
+
+      const deleted = await deletionService.deleteKnowledgeBase({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        deletedAt: new Date().toISOString(),
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+      });
+
+      if (!deleted) {
+        return notFound(context);
+      }
+
+      return context.json({ deleted: true });
+    }
+  );
+
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/tree",
     requireAdminAuth(sessionManager),
@@ -288,6 +317,61 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         content,
         readOnly: true
       });
+    }
+  );
+
+  app.delete(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail",
+    requireAdminAuth(sessionManager),
+    async (context) => {
+      if (!repositories?.files || !repositories.tasks || !redis) {
+        return missingRepositoryBackend(context);
+      }
+
+      const logicalPath = context.req.query("path");
+
+      if (!logicalPath) {
+        return notFound(context);
+      }
+
+      const deletionService = createDeletionService(repositories, storage, redis);
+
+      if (!deletionService) {
+        return missingRepositoryBackend(context);
+      }
+
+      const started = await deletionService.createSourcePageDeletionTask({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        logicalPath
+      });
+
+      if (!started.ok) {
+        return started.reason === "not_deletable" ? fileNotDeletable(context) : notFound(context);
+      }
+
+      const deletedAt = new Date().toISOString();
+
+      void adminTaskRunner
+        .run(() =>
+          deletionService.processSourcePageDeletion({
+            knowledgeBase: started.knowledgeBase,
+            file: started.file,
+            task: started.task,
+            deletedAt,
+            generatedAt: deletedAt,
+            batchSize: config.upload.generationBatchSize,
+            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+            fileProcessingConcurrency: config.upload.fileProcessingConcurrency
+          })
+        )
+        .catch(() => undefined);
+
+      return context.json(
+        {
+          task: toUploadTaskLifecycle(started.task)
+        },
+        202
+      );
     }
   );
 
@@ -721,7 +805,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         sourceCount: files.length
       });
 
-      void uploadTaskRunner
+      void adminTaskRunner
         .run(() =>
           uploadProcessor.process({
             knowledgeBaseId: knowledgeBase.id,
@@ -870,13 +954,18 @@ function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
     name: entry.name,
     logicalPath: entry.logicalPath,
     entryType: entry.entryType,
-    bundleFileId: entry.bundleFileId
+    bundleFileId: entry.bundleFileId,
+    sourceFileId: entry.sourceFileId,
+    fileKind: entry.fileKind,
+    deletable: entry.fileKind === "page" && Boolean(entry.sourceFileId)
   };
 }
 
 function toAdminBundleFile(file: BundleFileRecord) {
   return {
     id: file.id,
+    sourceFileId: file.sourceFileId,
+    fileKind: file.fileKind,
     logicalPath: file.logicalPath,
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
@@ -885,7 +974,8 @@ function toAdminBundleFile(file: BundleFileRecord) {
     title: file.title,
     description: file.description,
     tags: file.tags,
-    frontmatter: file.frontmatter
+    frontmatter: file.frontmatter,
+    deletable: file.fileKind === "page" && Boolean(file.sourceFileId)
   };
 }
 
@@ -918,6 +1008,7 @@ function toUploadTaskLifecycle(task: UploadTaskRecord) {
   return {
     id: task.id,
     knowledgeBaseId: task.knowledgeBaseId,
+    operation: task.operation,
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     lifecycle: task.endedAt ? "ended" : "running",
@@ -967,5 +1058,17 @@ function notFound(context: Parameters<MiddlewareHandler>[0]): Response {
       }
     },
     404
+  );
+}
+
+function fileNotDeletable(context: Parameters<MiddlewareHandler>[0]): Response {
+  return context.json(
+    {
+      error: {
+        code: "FILE_NOT_DELETABLE",
+        messageKey: "errors.fileNotDeletable"
+      }
+    },
+    400
   );
 }

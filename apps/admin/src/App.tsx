@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   checkAdminSession,
   createKnowledgeBase,
+  deleteKnowledgeBase,
   listKnowledgeBases,
   logoutAdmin,
   type ApiFailure,
@@ -92,6 +93,24 @@ export function App() {
     return result;
   }
 
+  async function handleDeleteKnowledgeBase(
+    knowledgeBase: KnowledgeBase
+  ): Promise<ApiFailure | { deleted: true }> {
+    const result = await deleteKnowledgeBase({ knowledgeBaseId: knowledgeBase.id });
+
+    if ("messageKey" in result) {
+      return result;
+    }
+
+    setKnowledgeBases((current) => current.filter((item) => item.id !== knowledgeBase.id));
+
+    if (selectedKnowledgeBase?.id === knowledgeBase.id) {
+      setSelectedKnowledgeBase(null);
+    }
+
+    return result;
+  }
+
   if (authState === "checking") {
     return (
       <TooltipProvider>
@@ -127,6 +146,7 @@ export function App() {
         nextCursor={nextCursor}
         isLoading={isLoadingKnowledgeBases}
         onCreate={handleCreateKnowledgeBase}
+        onDelete={handleDeleteKnowledgeBase}
         onLoadMore={() => void loadKnowledgeBases({ replace: false })}
         onLogout={() => void handleLogout()}
         onOpenKnowledgeBase={setSelectedKnowledgeBase}

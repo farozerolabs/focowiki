@@ -15,6 +15,8 @@ import {
 vi.mock("../src/lib/admin-api", () => ({
   checkAdminSession: vi.fn(async () => false),
   createKnowledgeBase: vi.fn(),
+  deleteKnowledgeBase: vi.fn(),
+  deleteKnowledgeBaseFile: vi.fn(),
   fetchKnowledgeBaseFileDetail: vi.fn(),
   fetchKnowledgeBaseFileTree: vi.fn(async () => ({
     items: [],

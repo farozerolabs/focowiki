@@ -5,6 +5,7 @@ import { initI18n } from "../src/i18n";
 import {
   checkAdminSession,
   createKnowledgeBase,
+  deleteKnowledgeBase,
   listKnowledgeBases,
   loginAdmin
 } from "../src/lib/admin-api";
@@ -19,6 +20,8 @@ vi.mock("../src/lib/admin-api", () => ({
       activeReleaseId: null
     }
   })),
+  deleteKnowledgeBase: vi.fn(async () => ({ deleted: true })),
+  deleteKnowledgeBaseFile: vi.fn(),
   fetchKnowledgeBaseFileDetail: vi.fn(),
   fetchKnowledgeBaseFileTree: vi.fn(async () => ({
     items: [],
@@ -223,5 +226,41 @@ describe("Admin knowledge base home", () => {
     expect(await screen.findByRole("button", { name: "Two docs" })).toBeTruthy();
     expect(listKnowledgeBases).toHaveBeenNthCalledWith(1, {});
     expect(listKnowledgeBases).toHaveBeenNthCalledWith(2, { cursor: "cursor-one" });
+  });
+
+  it("deletes a knowledge base from the card menu without opening the card", async () => {
+    vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
+      items: [
+        {
+          id: "kb-docs",
+          name: "Developer docs",
+          description: "Markdown product knowledge",
+          activeReleaseId: null
+        }
+      ],
+      nextCursor: null
+    });
+    render(<App />);
+
+    await login();
+    fireEvent.pointerDown(
+      await screen.findByRole("button", {
+        name: "Knowledge base actions for Developer docs"
+      }),
+      {
+        button: 0,
+        ctrlKey: false
+      }
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+
+    expect(screen.getByRole("alertdialog", { name: "Delete knowledge base" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(deleteKnowledgeBase).toHaveBeenCalledWith({ knowledgeBaseId: "kb-docs" });
+      expect(screen.queryByRole("button", { name: "Developer docs" })).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   });
 });

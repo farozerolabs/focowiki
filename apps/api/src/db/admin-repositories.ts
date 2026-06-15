@@ -28,6 +28,10 @@ export type KnowledgeBaseRepository = {
   }) => Promise<CursorPage<KnowledgeBaseRecord>>;
   createKnowledgeBase: (input: CreateKnowledgeBaseInput) => Promise<KnowledgeBaseRecord>;
   getKnowledgeBase: (id: string) => Promise<KnowledgeBaseRecord | null>;
+  softDeleteKnowledgeBase?: (input: {
+    id: string;
+    deletedAt: string;
+  }) => Promise<boolean>;
 };
 
 export type BundleTreeEntryRecord = {
@@ -39,12 +43,26 @@ export type BundleTreeEntryRecord = {
   logicalPath: string;
   entryType: "directory" | "file";
   bundleFileId: string | null;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind | null;
 };
+
+export type BundleTreeEntryDraft = Omit<BundleTreeEntryRecord, "sourceFileId" | "fileKind">;
+
+export type BundleFileKind =
+  | "page"
+  | "index"
+  | "schema"
+  | "manifest_index"
+  | "search_index"
+  | "link_index";
 
 export type BundleFileRecord = {
   id: string;
   knowledgeBaseId: string;
   releaseId: string;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind;
   logicalPath: string;
   objectKey: string;
   contentType: string;
@@ -68,9 +86,10 @@ export type SourceFileRecord = {
   checksumSha256: string;
   metadata: SourceMetadataDefaults;
   createdAt: string;
+  deletedAt: string | null;
 };
 
-export type SourceFileDraft = Omit<SourceFileRecord, "createdAt">;
+export type SourceFileDraft = Omit<SourceFileRecord, "createdAt" | "deletedAt">;
 
 export type ReleaseRecord = {
   id: string;
@@ -86,9 +105,12 @@ export type ReleaseRecord = {
 
 export type ReleaseDraft = Omit<ReleaseRecord, "createdAt">;
 
+export type UploadTaskOperation = "upload" | "delete_source" | "delete_knowledge_base";
+
 export type UploadTaskRecord = {
   id: string;
   knowledgeBaseId: string;
+  operation: UploadTaskOperation;
   startedAt: string;
   endedAt: string | null;
   sourceCount: number;
@@ -115,7 +137,7 @@ export type BundleFileRepository = {
   createSourceFiles?: (files: SourceFileDraft[]) => Promise<void>;
   createRelease?: (release: ReleaseDraft) => Promise<void>;
   createBundleFiles?: (files: BundleFileRecord[]) => Promise<void>;
-  createBundleTreeEntries?: (entries: BundleTreeEntryRecord[]) => Promise<void>;
+  createBundleTreeEntries?: (entries: BundleTreeEntryDraft[]) => Promise<void>;
   activateRelease?: (input: {
     knowledgeBaseId: string;
     releaseId: string;
@@ -158,6 +180,11 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<BundleFileRecord>>;
+  softDeleteSourceFile?: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    deletedAt: string;
+  }) => Promise<boolean>;
 };
 
 export type AdminRepositories = {
@@ -167,6 +194,7 @@ export type AdminRepositories = {
     createUploadTask: (input: {
       knowledgeBaseId: string;
       sourceCount: number;
+      operation?: UploadTaskOperation;
     }) => Promise<UploadTaskRecord>;
     completeUploadTask?: (input: {
       knowledgeBaseId: string;
@@ -214,12 +242,16 @@ type BundleTreeEntryRow = {
   logical_path: string;
   entry_type: "directory" | "file";
   bundle_file_id: string | null;
+  source_file_id: string | null;
+  file_kind: BundleFileKind | null;
 };
 
 type BundleFileRow = {
   id: string;
   knowledge_base_id: string;
   release_id: string;
+  source_file_id: string | null;
+  file_kind: BundleFileKind;
   logical_path: string;
   object_key: string;
   content_type: string;
@@ -243,6 +275,7 @@ type SourceFileRow = {
   checksum_sha256: string;
   metadata_json: unknown;
   created_at: Date;
+  deleted_at: Date | null;
 };
 
 type ReleaseRow = {
@@ -260,6 +293,7 @@ type ReleaseRow = {
 type UploadTaskRow = {
   id: string;
   knowledge_base_id: string;
+  operation: UploadTaskOperation;
   started_at: Date;
   ended_at: Date | null;
   source_count: number;
@@ -341,6 +375,16 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         `;
         const row = rows[0];
         return row ? mapKnowledgeBaseRow(row) : null;
+      },
+      async softDeleteKnowledgeBase({ id, deletedAt }) {
+        const rows = await sql<Array<{ id: string }>>`
+          UPDATE focowiki.knowledge_bases
+          SET deleted_at = ${deletedAt}, updated_at = now()
+          WHERE id = ${id}
+            AND deleted_at IS NULL
+          RETURNING id
+        `;
+        return rows.length > 0;
       }
     },
     files: {
@@ -403,6 +447,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               id,
               knowledge_base_id,
               release_id,
+              source_file_id,
+              file_kind,
               logical_path,
               object_key,
               content_type,
@@ -418,6 +464,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${file.id},
               ${file.knowledgeBaseId},
               ${file.releaseId},
+              ${file.sourceFileId},
+              ${file.fileKind},
               ${file.logicalPath},
               ${file.objectKey},
               ${file.contentType},
@@ -490,10 +538,11 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND task_id = ${taskId}
+                AND deleted_at IS NULL
                 AND (
                   created_at < ${cursorValue.createdAt}
                   OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
@@ -502,10 +551,11 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND task_id = ${taskId}
+                AND deleted_at IS NULL
               ORDER BY created_at DESC, id ASC
               LIMIT ${limit + 1}
             `;
@@ -523,22 +573,24 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTreeCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<BundleTreeEntryRow[]>`
-              SELECT id, knowledge_base_id, release_id, parent_path, name, logical_path, entry_type, bundle_file_id
-              FROM focowiki.bundle_tree_entries
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND release_id = ${releaseId}
-                AND parent_path = ${parentPath}
-                AND (name > ${cursorValue.name} OR (name = ${cursorValue.name} AND id > ${cursorValue.id}))
-              ORDER BY name ASC, id ASC
+              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.entry_type, entry.bundle_file_id, file.source_file_id, file.file_kind
+              FROM focowiki.bundle_tree_entries entry
+              LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+              WHERE entry.knowledge_base_id = ${knowledgeBaseId}
+                AND entry.release_id = ${releaseId}
+                AND entry.parent_path = ${parentPath}
+                AND (entry.name > ${cursorValue.name} OR (entry.name = ${cursorValue.name} AND entry.id > ${cursorValue.id}))
+              ORDER BY entry.name ASC, entry.id ASC
               LIMIT ${limit + 1}
             `
           : await sql<BundleTreeEntryRow[]>`
-              SELECT id, knowledge_base_id, release_id, parent_path, name, logical_path, entry_type, bundle_file_id
-              FROM focowiki.bundle_tree_entries
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND release_id = ${releaseId}
-                AND parent_path = ${parentPath}
-              ORDER BY name ASC, id ASC
+              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.entry_type, entry.bundle_file_id, file.source_file_id, file.file_kind
+              FROM focowiki.bundle_tree_entries entry
+              LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+              WHERE entry.knowledge_base_id = ${knowledgeBaseId}
+                AND entry.release_id = ${releaseId}
+                AND entry.parent_path = ${parentPath}
+              ORDER BY entry.name ASC, entry.id ASC
               LIMIT ${limit + 1}
             `;
         const pageRows = rows.slice(0, limit);
@@ -563,6 +615,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             content_type,
             size_bytes,
             checksum_sha256,
+            source_file_id,
+            file_kind,
             okf_type,
             title,
             description,
@@ -581,9 +635,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND deleted_at IS NULL
                 AND (
                   created_at < ${cursorValue.createdAt}
                   OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
@@ -592,9 +647,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND deleted_at IS NULL
               ORDER BY created_at DESC, id ASC
               LIMIT ${limit + 1}
             `;
@@ -646,7 +702,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseLogicalPathCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<BundleFileRow[]>`
-              SELECT id, knowledge_base_id, release_id, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              SELECT id, knowledge_base_id, release_id, source_file_id, file_kind, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
               FROM focowiki.bundle_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND release_id = ${releaseId}
@@ -655,7 +711,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<BundleFileRow[]>`
-              SELECT id, knowledge_base_id, release_id, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              SELECT id, knowledge_base_id, release_id, source_file_id, file_kind, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
               FROM focowiki.bundle_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND release_id = ${releaseId}
@@ -671,16 +727,28 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ? serializeLogicalPathCursor({ logicalPath: lastRow.logical_path, id: lastRow.id })
               : null
         };
+      },
+      async softDeleteSourceFile({ knowledgeBaseId, sourceFileId, deletedAt }) {
+        const rows = await sql<Array<{ id: string }>>`
+          UPDATE focowiki.source_files
+          SET deleted_at = ${deletedAt}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${sourceFileId}
+            AND deleted_at IS NULL
+          RETURNING id
+        `;
+        return rows.length > 0;
       }
     },
     tasks: {
-      async createUploadTask({ knowledgeBaseId, sourceCount }) {
+      async createUploadTask({ knowledgeBaseId, sourceCount, operation }) {
         const rows = await sql<UploadTaskRow[]>`
-          INSERT INTO focowiki.upload_tasks (id, knowledge_base_id, started_at, source_count)
-          VALUES (${createUploadTaskId()}, ${knowledgeBaseId}, now(), ${sourceCount})
+          INSERT INTO focowiki.upload_tasks (id, knowledge_base_id, operation, started_at, source_count)
+          VALUES (${createUploadTaskId()}, ${knowledgeBaseId}, ${operation ?? "upload"}, now(), ${sourceCount})
           RETURNING
             id,
             knowledge_base_id,
+            operation,
             started_at,
             ended_at,
             source_count,
@@ -717,6 +785,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           RETURNING
             id,
             knowledge_base_id,
+            operation,
             started_at,
             ended_at,
             source_count,
@@ -782,6 +851,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           SELECT
             id,
             knowledge_base_id,
+            operation,
             started_at,
             ended_at,
             source_count,
@@ -802,6 +872,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           SELECT
             id,
             knowledge_base_id,
+            operation,
             started_at,
             ended_at,
             source_count,
@@ -811,6 +882,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             created_at
           FROM focowiki.upload_tasks
           WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND operation = 'upload'
           ORDER BY started_at DESC, id ASC
           LIMIT 1
         `;
@@ -824,6 +896,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               SELECT
                 id,
                 knowledge_base_id,
+                operation,
                 started_at,
                 ended_at,
                 source_count,
@@ -841,6 +914,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               SELECT
                 id,
                 knowledge_base_id,
+                operation,
                 started_at,
                 ended_at,
                 source_count,
@@ -976,7 +1050,9 @@ function mapBundleTreeEntryRow(row: BundleTreeEntryRow): BundleTreeEntryRecord {
     name: row.name,
     logicalPath: row.logical_path,
     entryType: row.entry_type,
-    bundleFileId: row.bundle_file_id
+    bundleFileId: row.bundle_file_id,
+    sourceFileId: row.source_file_id,
+    fileKind: row.file_kind
   };
 }
 
@@ -985,6 +1061,8 @@ function mapBundleFileRow(row: BundleFileRow): BundleFileRecord {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
     releaseId: row.release_id,
+    sourceFileId: row.source_file_id,
+    fileKind: row.file_kind,
     logicalPath: row.logical_path,
     objectKey: row.object_key,
     contentType: row.content_type,
@@ -1009,7 +1087,8 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
     sizeBytes: Number(row.size_bytes),
     checksumSha256: row.checksum_sha256,
     metadata: readRecord(row.metadata_json) as SourceMetadataDefaults,
-    createdAt: row.created_at.toISOString()
+    createdAt: row.created_at.toISOString(),
+    deletedAt: row.deleted_at?.toISOString() ?? null
   };
 }
 
@@ -1031,6 +1110,7 @@ function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
+    operation: row.operation,
     startedAt: row.started_at.toISOString(),
     endedAt: row.ended_at?.toISOString() ?? null,
     sourceCount: row.source_count,

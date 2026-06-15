@@ -6,6 +6,11 @@ import type {
 } from "@focowiki/okf";
 import { createApiApp, createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import type {
+  BundleFileKind,
+  BundleTreeEntryDraft,
+  BundleTreeEntryRecord
+} from "../src/db/admin-repositories.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
@@ -139,6 +144,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     checksumSha256: string;
     metadata: SourceMetadataDefaults;
     createdAt: string;
+    deletedAt: string | null;
   }> = [];
   const releases: Array<{
     id: string;
@@ -155,6 +161,8 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     id: string;
     knowledgeBaseId: string;
     releaseId: string;
+    sourceFileId: string | null;
+    fileKind: BundleFileKind;
     logicalPath: string;
     objectKey: string;
     contentType: string;
@@ -166,16 +174,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     tags: string[];
     frontmatter: Record<string, unknown>;
   }> = [];
-  const bundleTreeEntries: Array<{
-    id: string;
-    knowledgeBaseId: string;
-    releaseId: string;
-    parentPath: string;
-    name: string;
-    logicalPath: string;
-    entryType: "directory" | "file";
-    bundleFileId: string | null;
-  }> = [];
+  const bundleTreeEntries: BundleTreeEntryRecord[] = [];
   const taskEvents: Array<{
     id: string;
     taskId: string;
@@ -189,6 +188,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
   const taskRecords = new Map<string, {
     id: string;
     knowledgeBaseId: string;
+    operation: "upload" | "delete_source" | "delete_knowledge_base";
     startedAt: string;
     endedAt: string | null;
     sourceCount: number;
@@ -229,11 +229,14 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
         }
       },
       files: {
-        async createSourceFiles(files: Array<Omit<(typeof sourceFiles)[number], "createdAt">>) {
+        async createSourceFiles(
+          files: Array<Omit<(typeof sourceFiles)[number], "createdAt" | "deletedAt">>
+        ) {
           sourceFiles.push(
             ...files.map((file, index) => ({
               ...file,
-              createdAt: `2026-06-14T00:00:${String(index).padStart(2, "0")}.000Z`
+              createdAt: `2026-06-14T00:00:${String(index).padStart(2, "0")}.000Z`,
+              deletedAt: null
             }))
           );
         },
@@ -243,8 +246,18 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
         async createBundleFiles(files: typeof bundleFiles) {
           bundleFiles.push(...files);
         },
-        async createBundleTreeEntries(entries: typeof bundleTreeEntries) {
-          bundleTreeEntries.push(...entries);
+        async createBundleTreeEntries(entries: BundleTreeEntryDraft[]) {
+          bundleTreeEntries.push(
+            ...entries.map((entry) => {
+              const bundleFile = bundleFiles.find((file) => file.id === entry.bundleFileId);
+
+              return {
+                ...entry,
+                sourceFileId: bundleFile?.sourceFileId ?? null,
+                fileKind: bundleFile?.fileKind ?? null
+              };
+            })
+          );
         },
         async activateRelease(input: {
           knowledgeBaseId: string;
@@ -322,11 +335,19 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
         }
       },
       tasks: {
-        async createUploadTask(input: { knowledgeBaseId: string; sourceCount: number }) {
-          createdTasks.push(input);
+        async createUploadTask(input: {
+          knowledgeBaseId: string;
+          sourceCount: number;
+          operation?: "upload" | "delete_source" | "delete_knowledge_base";
+        }) {
+          createdTasks.push({
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceCount: input.sourceCount
+          });
           const task = {
             id: "task-001",
             knowledgeBaseId: input.knowledgeBaseId,
+            operation: input.operation ?? ("upload" as const),
             startedAt: "2026-06-14T00:00:00.000Z",
             endedAt: null,
             sourceCount: input.sourceCount,
@@ -398,6 +419,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
           return {
             id: "task-001",
             knowledgeBaseId: input.knowledgeBaseId,
+            operation: "upload" as const,
             startedAt: "2026-06-14T00:00:00.000Z",
             endedAt: null,
             sourceCount: 2,
@@ -424,6 +446,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
               {
                 id: input.cursor ? "task-002" : "task-001",
                 knowledgeBaseId: input.knowledgeBaseId,
+                operation: "upload" as const,
                 startedAt: input.cursor
                   ? "2026-06-13T00:00:00.000Z"
                   : "2026-06-14T00:00:00.000Z",
@@ -533,6 +556,7 @@ describe("Upload parsing task lifecycle", () => {
     expect(records.sourceFiles).toHaveLength(2);
     expect(records.sourcePageCalls).toEqual([
       { limit: 200, cursor: null },
+      { limit: 50, cursor: null },
       { limit: 50, cursor: null }
     ]);
     expect(records.sourceFiles[0]?.objectKey).toMatch(
@@ -652,7 +676,8 @@ describe("Upload parsing task lifecycle", () => {
         type: "page",
         title: "Existing"
       },
-      createdAt: "2026-06-13T00:00:00.000Z"
+      createdAt: "2026-06-13T00:00:00.000Z",
+      deletedAt: null
     });
     storage.objects.set(
       existingObjectKey,
@@ -774,7 +799,8 @@ describe("Upload parsing task lifecycle", () => {
         type: "page",
         title: "Intro"
       },
-      createdAt: "2026-06-13T00:00:00.000Z"
+      createdAt: "2026-06-13T00:00:00.000Z",
+      deletedAt: null
     });
     const app = createApiApp({
       config: createConfig(),
@@ -1260,7 +1286,8 @@ describe("Upload parsing task lifecycle", () => {
         type: "page",
         title: "Intro"
       },
-      createdAt: "2026-06-14T00:00:00.000Z"
+      createdAt: "2026-06-14T00:00:00.000Z",
+      deletedAt: null
     });
     const redisClient = new MemoryRedisCommandClient();
     const app = createApiApp({

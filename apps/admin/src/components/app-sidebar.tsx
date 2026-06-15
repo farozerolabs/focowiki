@@ -5,7 +5,9 @@ import {
   FileTextIcon,
   FolderIcon,
   ListChecksIcon,
-  LogOutIcon
+  LogOutIcon,
+  MoreHorizontalIcon,
+  Trash2Icon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +15,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger
 } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -41,6 +50,7 @@ export type AdminSidebarTreeNode = {
   isExpanded: boolean;
   isActive: boolean;
   nextCursor: string | null;
+  deletable: boolean;
 };
 
 export type AdminSidebarTask = {
@@ -59,6 +69,8 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     logout: string;
     running: string;
     ended: string;
+    deleteFile: string;
+    fileActions: string;
   };
   activeView: "file" | "tasks";
   tree: AdminSidebarTreeNode[];
@@ -68,6 +80,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   onLogout: () => void;
   onOpenTasks: () => void;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
+  onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
 };
@@ -84,6 +97,7 @@ export function AppSidebar({
   onLogout,
   onOpenTasks,
   onOpenFile,
+  onDeleteFile,
   onToggleDirectory,
   onLoadMoreTree,
   ...props
@@ -131,6 +145,7 @@ export function AppSidebar({
                   labels={labels}
                   node={node}
                   onOpenFile={onOpenFile}
+                  onDeleteFile={onDeleteFile}
                   onToggleDirectory={onToggleDirectory}
                   onLoadMoreTree={onLoadMoreTree}
                 />
@@ -161,22 +176,53 @@ function TreeNode({
   labels,
   node,
   onOpenFile,
+  onDeleteFile,
   onToggleDirectory,
   onLoadMoreTree
 }: {
   labels: AppSidebarProps["labels"];
   node: AdminSidebarTreeNode;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
+  onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
 }) {
   if (node.entryType === "file") {
     return (
       <SidebarMenuItem>
-        <SidebarMenuButton isActive={node.isActive} onClick={() => onOpenFile(node)}>
-          <FileTextIcon />
-          <span>{node.name}</span>
-        </SidebarMenuButton>
+        <div className="flex items-center gap-1">
+          <SidebarMenuButton isActive={node.isActive} onClick={() => onOpenFile(node)}>
+            <FileTextIcon />
+            <span>{node.name}</span>
+          </SidebarMenuButton>
+          {node.deletable ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`${labels.fileActions}: ${node.name}`}
+                >
+                  <MoreHorizontalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => {
+                      onDeleteFile(node);
+                    }}
+                  >
+                    <Trash2Icon />
+                    {labels.deleteFile}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
       </SidebarMenuItem>
     );
   }
@@ -203,6 +249,7 @@ function TreeNode({
                 labels={labels}
                 node={child}
                 onOpenFile={onOpenFile}
+                onDeleteFile={onDeleteFile}
                 onToggleDirectory={onToggleDirectory}
                 onLoadMoreTree={onLoadMoreTree}
               />

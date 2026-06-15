@@ -54,6 +54,7 @@ describe("database schema migration", () => {
     expect(sql).toContain("unique (release_id, parent_path, name)");
     expect(sql).toContain("unique (task_id, phase_key)");
     expect(sql).toContain("check (phase_key in");
+    expect(sql).toContain("'source_deletion'");
     expect(sql).toContain("check (severity in");
     expect(sql).toContain("check (entry_type in");
   });
@@ -64,15 +65,33 @@ describe("database schema migration", () => {
     for (const index of [
       "knowledge_bases(deleted_at, created_at desc, id)",
       "upload_tasks(knowledge_base_id, started_at desc, id)",
+      "upload_tasks(knowledge_base_id, operation, started_at desc, id)",
       "source_files(knowledge_base_id, task_id, created_at desc, id)",
       "source_files(knowledge_base_id, created_at desc, id)",
+      "source_files(knowledge_base_id, deleted_at, created_at desc, id)",
       "upload_task_events(task_id, created_at, id)",
       "releases(knowledge_base_id, published_at desc, id)",
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
+      "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)"
     ]) {
       expect(sql).toContain(index);
     }
+  });
+
+  it("defines deletion-aware source, bundle, and task metadata", () => {
+    const sql = readMigration();
+
+    expect(sql).toContain("deleted_at timestamptz");
+    expect(sql).toContain("operation text not null default 'upload'");
+    expect(sql).toContain("check (operation in ('upload', 'delete_source', 'delete_knowledge_base'))");
+    expect(sql).toContain("source_file_id text references focowiki.source_files(id)");
+    expect(sql).toContain("file_kind text not null");
+    expect(sql).toContain(
+      "check (file_kind in ('page', 'index', 'schema', 'manifest_index', 'search_index', 'link_index'))"
+    );
+    expect(sql).toContain("(file_kind = 'page' and source_file_id is not null)");
+    expect(sql).toContain("(file_kind <> 'page' and source_file_id is null)");
   });
 
   it("uses URL-safe opaque knowledge base identifiers", () => {
@@ -90,6 +109,9 @@ describe("database schema migration", () => {
     expect(sql).toContain("on focowiki.knowledge_bases(lower(name)) where deleted_at is null");
     expect(repository).toContain("where deleted_at is null");
     expect(repository).toContain("where id = ${id} and deleted_at is null");
+    expect(repository).toContain("and deleted_at is null");
+    expect(repository).not.toContain("legacy");
+    expect(repository).not.toContain("backfill");
   });
 
   it("updates active releases in a database transaction", () => {

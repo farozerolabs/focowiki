@@ -108,6 +108,8 @@ function createRepositories() {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
     releaseId: "release-001",
+    sourceFileId: "source-001",
+    fileKind: "page" as const,
     logicalPath: "pages/intro.md",
     objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
     contentType: "text/markdown; charset=utf-8",
@@ -155,7 +157,9 @@ function createRepositories() {
               name: "pages",
               logicalPath: "pages",
               entryType: "directory" as const,
-              bundleFileId: null
+              bundleFileId: null,
+              sourceFileId: null,
+              fileKind: null
             },
             {
               id: "tree-index",
@@ -165,7 +169,9 @@ function createRepositories() {
               name: "index.md",
               logicalPath: "index.md",
               entryType: "file" as const,
-              bundleFileId: "bundle-file-index"
+              bundleFileId: "bundle-file-index",
+              sourceFileId: null,
+              fileKind: "index" as const
             }
           ];
           const start = request.cursor ? Number(request.cursor) : 0;
@@ -196,7 +202,8 @@ function createRepositories() {
                 sizeBytes: 42,
                 checksumSha256: "checksum",
                 metadata: { type: "page", title: "Intro" },
-                createdAt: "2026-06-14T00:00:00.000Z"
+                createdAt: "2026-06-14T00:00:00.000Z",
+                deletedAt: null
               }
             ].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
             nextCursor: null
@@ -262,7 +269,10 @@ describe("Knowledge base file Admin API", () => {
           name: "pages",
           logicalPath: "pages",
           entryType: "directory",
-          bundleFileId: null
+          bundleFileId: null,
+          sourceFileId: null,
+          fileKind: null,
+          deletable: false
         },
         {
           id: "tree-index",
@@ -270,7 +280,10 @@ describe("Knowledge base file Admin API", () => {
           name: "index.md",
           logicalPath: "index.md",
           entryType: "file",
-          bundleFileId: "bundle-file-index"
+          bundleFileId: "bundle-file-index",
+          sourceFileId: null,
+          fileKind: "index",
+          deletable: false
         }
       ],
       nextCursor: null

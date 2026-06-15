@@ -12,6 +12,7 @@ export type KnowledgeBasePage = {
 
 export type UploadTaskLifecycle = {
   id: string;
+  operation?: "upload" | "delete_source" | "delete_knowledge_base";
   startedAt: string;
   endedAt: string | null;
   lifecycle: "running" | "ended";
@@ -24,6 +25,9 @@ export type BundleTreeEntry = {
   logicalPath: string;
   entryType: "directory" | "file";
   bundleFileId: string | null;
+  sourceFileId?: string | null;
+  fileKind?: "page" | "index" | "schema" | "manifest_index" | "search_index" | "link_index" | null;
+  deletable?: boolean;
 };
 
 export type BundleTreePage = {
@@ -34,9 +38,12 @@ export type BundleTreePage = {
 export type BundleFileDetail = {
   file: {
     id: string;
+    sourceFileId: string | null;
+    fileKind: "page" | "index" | "schema" | "manifest_index" | "search_index" | "link_index";
     logicalPath: string;
     contentType: string;
     title: string | null;
+    deletable: boolean;
   };
   content: string;
   readOnly: true;
@@ -191,6 +198,27 @@ export async function createKnowledgeBase(input: {
   return body as { knowledgeBase: KnowledgeBase };
 }
 
+export async function deleteKnowledgeBase(input: {
+  knowledgeBaseId: string;
+}): Promise<{ deleted: true } | ApiFailure> {
+  const response = await fetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}`,
+    {
+      method: "DELETE",
+      credentials: "include"
+    }
+  );
+  const body = (await response.json()) as
+    | { deleted: true }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.deleteFailed");
+  }
+
+  return body as { deleted: true };
+}
+
 export async function uploadKnowledgeBaseSources(input: {
   knowledgeBaseId: string;
   files: FileList;
@@ -271,6 +299,30 @@ export async function fetchKnowledgeBaseFileDetail(input: {
   }
 
   return (await response.json()) as BundleFileDetail;
+}
+
+export async function deleteKnowledgeBaseFile(input: {
+  knowledgeBaseId: string;
+  path: string;
+}): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
+  const response = await fetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(
+      input.knowledgeBaseId
+    )}/files/detail?path=${encodeURIComponent(input.path)}`,
+    {
+      method: "DELETE",
+      credentials: "include"
+    }
+  );
+  const body = (await response.json()) as
+    | { task: UploadTaskLifecycle }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.deleteFailed");
+  }
+
+  return body as { task: UploadTaskLifecycle };
 }
 
 export async function listUploadTasks(input: {
@@ -403,6 +455,7 @@ function readFailure(
   body:
     | { knowledgeBase: KnowledgeBase }
     | { task: UploadTaskLifecycle }
+    | { deleted: true }
     | { error?: { messageKey?: string } },
   fallbackMessageKey: string
 ): ApiFailure {

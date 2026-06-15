@@ -4,6 +4,16 @@ import { CopyIcon, UploadIcon } from "lucide-react";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { UploadTaskDataTable } from "@/components/task-phase-data-table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -26,6 +36,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
 import {
+  deleteKnowledgeBaseFile,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
@@ -75,6 +86,9 @@ export function KnowledgeBaseDetailPage({
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [selectedFileTitle, setSelectedFileTitle] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
+  const [deleteFileTarget, setDeleteFileTarget] = useState<AdminSidebarTreeNode | null>(null);
+  const [deleteFileError, setDeleteFileError] = useState("");
+  const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [tasks, setTasks] = useState<UploadTaskLifecycle[]>([]);
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [taskDetailsById, setTaskDetailsById] = useState<Record<string, UploadTaskDetail | null>>({});
@@ -99,6 +113,9 @@ export function KnowledgeBaseDetailPage({
     setSelectedFilePath("");
     setSelectedFileTitle("");
     setPreviewHtml("");
+    setDeleteFileTarget(null);
+    setDeleteFileError("");
+    setIsDeletingFile(false);
     setTasks([]);
     setTaskCursor(null);
     setTaskDetailsById({});
@@ -289,6 +306,38 @@ export function KnowledgeBaseDetailPage({
     setSelectedFiles(files);
   }
 
+  async function handleDeleteFile() {
+    if (!deleteFileTarget) {
+      return;
+    }
+
+    setDeleteFileError("");
+    setIsDeletingFile(true);
+    const result = await deleteKnowledgeBaseFile({
+      knowledgeBaseId: knowledgeBase.id,
+      path: deleteFileTarget.logicalPath
+    });
+    setIsDeletingFile(false);
+
+    if ("messageKey" in result) {
+      setDeleteFileError(result.messageKey);
+      return;
+    }
+
+    setTasks((current) => [result.task, ...current.filter((task) => task.id !== result.task.id)]);
+    setActiveView("tasks");
+    setDeleteFileTarget(null);
+
+    if (selectedFilePath === deleteFileTarget.logicalPath) {
+      setSelectedFilePath("");
+      setSelectedFileTitle("");
+      setPreviewHtml("");
+    }
+
+    await loadTasks({ replace: true });
+    await refreshGeneratedFiles();
+  }
+
   return (
     <SidebarProvider>
       <AppSidebar
@@ -301,7 +350,9 @@ export function KnowledgeBaseDetailPage({
           loadMore: t("home.loadMore"),
           logout: t("auth.logout"),
           running: t("tasks.runningShort"),
-          ended: t("tasks.endedShort")
+          ended: t("tasks.endedShort"),
+          deleteFile: t("delete.action"),
+          fileActions: t("delete.fileMenu")
         }}
         activeView={activeView}
         tree={sidebarTree}
@@ -311,6 +362,10 @@ export function KnowledgeBaseDetailPage({
         onLogout={onLogout}
         onOpenTasks={() => setActiveView("tasks")}
         onOpenFile={(node) => void handleSelectFile(node)}
+        onDeleteFile={(node) => {
+          setDeleteFileError("");
+          setDeleteFileTarget(node);
+        }}
         onToggleDirectory={(node, open) => void handleToggleDirectory(node, open)}
         onLoadMoreTree={(parentPath) => void loadFileTree({ parentPath, replace: false })}
       />
@@ -429,6 +484,38 @@ export function KnowledgeBaseDetailPage({
           </form>
         </DialogContent>
       </Dialog>
+      <AlertDialog
+        open={Boolean(deleteFileTarget)}
+        onOpenChange={(open) => !open && !isDeletingFile && setDeleteFileTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("delete.fileTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("delete.fileDescription", {
+                name: deleteFileTarget?.name ?? ""
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteFileError ? (
+            <Alert variant="destructive">
+              <AlertTitle>{t(deleteFileError)}</AlertTitle>
+            </Alert>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingFile}>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeletingFile}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteFile();
+              }}
+            >
+              {isDeletingFile ? t("delete.deleting") : t("delete.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SidebarProvider>
   );
 }
@@ -572,6 +659,7 @@ function buildSidebarTree(
         : [],
     isExpanded: expandedDirectories.has(entry.logicalPath),
     isActive: selectedFilePath === entry.logicalPath,
-    nextCursor: entry.entryType === "directory" ? treePages[entry.logicalPath]?.nextCursor ?? null : null
+    nextCursor: entry.entryType === "directory" ? treePages[entry.logicalPath]?.nextCursor ?? null : null,
+    deletable: Boolean(entry.deletable)
   }));
 }
