@@ -224,12 +224,10 @@ export function AdminHomePage({
       </section>
 
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent aria-describedby="create-knowledge-base-description">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("home.createAction")}</DialogTitle>
-            <DialogDescription id="create-knowledge-base-description">
-              {t("home.createDescription")}
-            </DialogDescription>
+            <DialogDescription>{t("home.createDescription")}</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleCreate}>
             <FieldGroup>

@@ -4,25 +4,24 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadEnvFile } from "node:process";
+import {
+  SAMPLE_SOURCE_ENV,
+  readSampleText,
+  selectSamplesFromEnvironment
+} from "./lib/sample-selector.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-upload-flow";
+export { selectSamples, selectSamplesFromEnvironment } from "./lib/sample-selector.mjs";
+
+const CHANGE_ID = "validate-cleaned-legal-full-flow";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "validation-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "validation-report.md");
-const DEFAULT_SAMPLE_COUNT = 24;
-const SAMPLE_SOURCE_ENV = "FOCOWIKI_VALIDATION_MARKDOWN_DIR";
-const SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_SAMPLE_COUNT";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const WHITE_BOX = "white-box";
 const BLACK_BOX = "black-box";
 const requireFromApiPackage = createRequire(
   pathToFileURL(path.resolve("apps/api/package.json"))
 );
-
-const REQUIRED_SAMPLE_COVERAGE = {
-  statuses: ["有效", "已修改", "尚未生效"],
-  types: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"]
-};
 
 export async function main(argv = process.argv.slice(2)) {
   loadLocalEnv();
@@ -121,6 +120,7 @@ export async function runApiValidation() {
       report
     );
     const taskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedTask.id, report);
+    await validateSingleUploadTaskRow(admin, knowledgeBase.id, completedTask.id, report);
     const adminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report);
     await validatePublicOpenApi(publicApi, knowledgeBase.id, adminFiles, env, report);
     const storageEvidence = await validateDatabaseBoundaries(
@@ -132,10 +132,28 @@ export async function runApiValidation() {
     );
     await validateS3ObjectBoundaries(env, storageEvidence, sampleSelection.samples, report);
     await validateRedisBoundaries(env.REDIS_URL, sampleSelection.samples, report);
+    const deletionEvidence = await validateSourceDeletionFullFlow({
+      admin,
+      publicApi,
+      env,
+      knowledgeBaseId: knowledgeBase.id,
+      pageFile: adminFiles.pageFile,
+      taskTimeoutMs,
+      report
+    });
+    await validateKnowledgeBaseDeletion({
+      admin,
+      publicApi,
+      env,
+      knowledgeBaseId: knowledgeBase.id,
+      report
+    });
 
     report.validationRun = {
       knowledgeBaseId: knowledgeBase.id,
       taskId: completedTask.id,
+      deletionTaskId: deletionEvidence.taskId,
+      deletedPagePath: deletionEvidence.deletedPagePath,
       sourceCount: completedTask.sourceCount,
       phaseCount: taskDetail.phaseDetails.items.length,
       publicBaseUrl: redactUrl(publicBaseUrl),
@@ -159,278 +177,6 @@ export async function runApiValidation() {
     writeJson(report);
     throw error;
   }
-}
-
-export function selectSamplesFromEnvironment() {
-  const sourceDir = process.env[SAMPLE_SOURCE_ENV];
-
-  if (!sourceDir) {
-    throw new Error(`${SAMPLE_SOURCE_ENV} must be set to a local Markdown directory.`);
-  }
-
-  return selectSamples(sourceDir, readSampleCount());
-}
-
-export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
-  const absoluteSourceDir = path.resolve(sourceDir);
-
-  if (!fs.existsSync(absoluteSourceDir) || !fs.statSync(absoluteSourceDir).isDirectory()) {
-    throw new Error(`${SAMPLE_SOURCE_ENV} must point to an existing directory.`);
-  }
-
-  const files = collectMarkdownFiles(absoluteSourceDir).sort(compareCandidatePath);
-  const candidates = files.map(readSampleCandidate).filter(Boolean);
-
-  if (candidates.length < sampleCount) {
-    throw new Error(`Expected at least ${sampleCount} upload-ready Markdown candidates, found ${candidates.length}.`);
-  }
-  const selected = [];
-  const selectedNames = new Set();
-
-  for (const status of REQUIRED_SAMPLE_COVERAGE.statuses) {
-    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.status === status);
-  }
-
-  for (const type of REQUIRED_SAMPLE_COVERAGE.types) {
-    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.type === type);
-  }
-
-  addFirstMatching(selected, selectedNames, candidates, (candidate) =>
-    candidate.basename.includes("__unknown-date__")
-  );
-  addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.title.length >= 80);
-
-  for (const candidate of duplicatedTitleCandidates(candidates)) {
-    addCandidate(selected, selectedNames, candidate);
-
-    if (selected.length >= 14) {
-      break;
-    }
-  }
-
-  for (const candidate of candidates) {
-    addCandidate(selected, selectedNames, candidate, sampleCount);
-
-    if (selected.length >= sampleCount) {
-      break;
-    }
-  }
-
-  if (selected.length !== sampleCount) {
-    throw new Error(`Expected ${sampleCount} samples, selected ${selected.length}.`);
-  }
-
-  const invalid = selected.filter(
-    (sample) => !sample.basename.endsWith(".md") || !sample.type || !sample.title || !sample.body
-  );
-
-  if (invalid.length > 0) {
-    throw new Error(`Selected samples contain invalid Markdown metadata: ${invalid.map((item) => item.basename).join(", ")}`);
-  }
-
-  const coverage = sampleCoverage(selected);
-  const missingStatuses = REQUIRED_SAMPLE_COVERAGE.statuses.filter(
-    (status) => !coverage.statuses.includes(status)
-  );
-  const missingTypes = REQUIRED_SAMPLE_COVERAGE.types.filter((type) => !coverage.types.includes(type));
-
-  if (missingStatuses.length > 0 || missingTypes.length > 0 || !coverage.includesUnknownDate || !coverage.includesLongTitle || !coverage.includesDuplicatedTitle) {
-    throw new Error(
-      `Sample coverage is incomplete: ${JSON.stringify({ missingStatuses, missingTypes, coverage })}`
-    );
-  }
-
-  return {
-    samples: selected,
-    coverage,
-    sampleCount
-  };
-}
-
-function readSampleCount() {
-  const configured = process.env[SAMPLE_COUNT_ENV]?.trim();
-
-  if (!configured) {
-    return DEFAULT_SAMPLE_COUNT;
-  }
-
-  const parsed = Number(configured);
-
-  if (!Number.isSafeInteger(parsed) || parsed < 14) {
-    throw new Error(`${SAMPLE_COUNT_ENV} must be an integer greater than or equal to 14.`);
-  }
-
-  return parsed;
-}
-
-function readSampleCandidate(filePath) {
-  const text = fs.readFileSync(filePath, "utf8");
-  const { frontmatter, body } = splitFrontmatter(text);
-  const metadata = parseFrontmatter(frontmatter);
-  const basename = path.basename(filePath);
-
-  if (!frontmatter || !metadata.title || !metadata.type || !body.trim()) {
-    return null;
-  }
-
-  return {
-    basename,
-    filePath,
-    title: String(metadata.title ?? ""),
-    type: String(metadata.type ?? ""),
-    status: String(metadata.status ?? ""),
-    category: String(metadata.category ?? ""),
-    publicationDate: String(metadata.publicationDate ?? ""),
-    body: body.trim(),
-    sizeBytes: Buffer.byteLength(text, "utf8")
-  };
-}
-
-function collectMarkdownFiles(sourceDir) {
-  const files = [];
-  const stack = [sourceDir];
-
-  while (stack.length > 0) {
-    const currentDir = stack.pop();
-    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const entryPath = path.join(currentDir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (!entry.name.startsWith(".")) {
-          stack.push(entryPath);
-        }
-        continue;
-      }
-
-      if (entry.isFile() && entry.name.endsWith(".md")) {
-        files.push(entryPath);
-      }
-    }
-  }
-
-  return files;
-}
-
-function compareCandidatePath(left, right) {
-  const leftRank = candidatePathRank(left);
-  const rightRank = candidatePathRank(right);
-
-  if (leftRank !== rightRank) {
-    return rightRank - leftRank;
-  }
-
-  return path.basename(left).localeCompare(path.basename(right));
-}
-
-function candidatePathRank(filePath) {
-  const segments = filePath.split(path.sep);
-  let rank = 0;
-
-  if (segments.includes("markdown")) {
-    rank += 10;
-  }
-
-  if (path.basename(filePath).includes("__")) {
-    rank += 5;
-  }
-
-  return rank;
-}
-
-function splitFrontmatter(text) {
-  if (!text.startsWith("---\n")) {
-    return { frontmatter: "", body: text };
-  }
-
-  const end = text.indexOf("\n---\n", 4);
-
-  if (end === -1) {
-    return { frontmatter: "", body: text };
-  }
-
-  return {
-    frontmatter: text.slice(4, end),
-    body: text.slice(end + 5)
-  };
-}
-
-function parseFrontmatter(frontmatter) {
-  const metadata = {};
-
-  for (const line of frontmatter.split("\n")) {
-    const index = line.indexOf(":");
-
-    if (index === -1) {
-      continue;
-    }
-
-    metadata[line.slice(0, index).trim()] = stripYamlValue(line.slice(index + 1));
-  }
-
-  return metadata;
-}
-
-function stripYamlValue(value) {
-  return String(value ?? "")
-    .trim()
-    .replace(/^"(.*)"$/s, "$1")
-    .replace(/^'(.*)'$/s, "$1");
-}
-
-function addFirstMatching(selected, selectedNames, candidates, predicate) {
-  const candidate = candidates.find((item) => !selectedNames.has(item.basename) && predicate(item));
-
-  if (!candidate) {
-    return;
-  }
-
-  addCandidate(selected, selectedNames, candidate);
-}
-
-function addCandidate(selected, selectedNames, candidate, sampleCount = DEFAULT_SAMPLE_COUNT) {
-  if (selectedNames.has(candidate.basename) || selected.length >= sampleCount) {
-    return;
-  }
-
-  selected.push(candidate);
-  selectedNames.add(candidate.basename);
-}
-
-function duplicatedTitleCandidates(candidates) {
-  const groups = new Map();
-
-  for (const candidate of candidates) {
-    if (!candidate.title) {
-      continue;
-    }
-
-    const group = groups.get(candidate.title) ?? [];
-    group.push(candidate);
-    groups.set(candidate.title, group);
-  }
-
-  return Array.from(groups.values())
-    .filter((group) => group.length > 1)
-    .flatMap((group) => group.slice(0, 2))
-    .sort((left, right) => left.basename.localeCompare(right.basename));
-}
-
-function sampleCoverage(samples) {
-  const duplicatedTitles = samples
-    .map((sample) => sample.title)
-    .filter((title, index, titles) => title && titles.indexOf(title) !== index);
-
-  return {
-    statuses: Array.from(new Set(samples.map((sample) => sample.status).filter(Boolean))).sort(),
-    types: Array.from(new Set(samples.map((sample) => sample.type).filter(Boolean))).sort(),
-    categories: Array.from(new Set(samples.map((sample) => sample.category).filter(Boolean))).sort(),
-    includesUnknownDate: samples.some((sample) => sample.basename.includes("__unknown-date__")),
-    includesLongTitle: samples.some((sample) => sample.title.length >= 80),
-    includesDuplicatedTitle: duplicatedTitles.length > 0,
-    totalSizeBytes: samples.reduce((sum, sample) => sum + sample.sizeBytes, 0)
-  };
 }
 
 function createBaseReport(kind, startedAt) {
@@ -879,6 +625,24 @@ async function fetchTaskDetail(admin, knowledgeBaseId, taskId, report) {
   return body;
 }
 
+async function validateSingleUploadTaskRow(admin, knowledgeBaseId, taskId, report) {
+  const body = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks?limit=50`
+  );
+  const uploadTasks = (body.items ?? []).filter((task) => task.operation === "upload");
+
+  if (uploadTasks.length !== 1 || uploadTasks[0]?.id !== taskId) {
+    throw new Error(`Expected one upload task row for one upload action, got ${uploadTasks.length}.`);
+  }
+
+  report.checks.push(
+    okCheck("single-upload-task-row", "One upload action is represented as one task row with one lifecycle status.", {
+      taskId
+    })
+  );
+}
+
 async function validateAdminFileSurfaces(admin, knowledgeBaseId, report) {
   const [releases, bundleFiles, tree, urls] = await Promise.all([
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/releases?limit=10`),
@@ -947,6 +711,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     "_index/search.json",
     "_index/links.json"
   ];
+  const bodies = new Map();
 
   for (const logicalPath of paths) {
     const response = await publicApi.request(
@@ -974,7 +739,15 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     if (logicalPath.endsWith(".md") && !contentType.includes("text/markdown")) {
       throw new Error(`Expected Markdown content type for ${logicalPath}.`);
     }
+
+    bodies.set(logicalPath, body);
   }
+
+  validateOkfPublicArtifactBodies({
+    bodies,
+    pagePath: adminFiles.pageFile.logicalPath,
+    report
+  });
 
   const taskStatus = await readJson(
     publicApi,
@@ -1022,6 +795,333 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
       "public-openapi",
       "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed."
     )
+  );
+}
+
+function validateOkfPublicArtifactBodies({ bodies, pagePath, report }) {
+  const index = bodies.get("index.md") ?? "";
+  const page = bodies.get(pagePath) ?? "";
+  const manifest = parseJsonIndex(bodies.get("_index/manifest.json"), "_index/manifest.json");
+  const search = parseJsonIndex(bodies.get("_index/search.json"), "_index/search.json");
+  const links = parseJsonIndex(bodies.get("_index/links.json"), "_index/links.json");
+
+  if (!index.includes(pagePath) && !index.includes(encodeURIComponent(path.basename(pagePath)))) {
+    throw new Error("Public index.md does not reference the sampled page path.");
+  }
+
+  if (!page.startsWith("---\n") || !/\n#\s+/.test(page)) {
+    throw new Error("Sampled public page does not include expected frontmatter and heading content.");
+  }
+
+  if (!Array.isArray(manifest.files) || !manifest.files.some((file) => file.path === pagePath)) {
+    throw new Error("Manifest index does not include sampled public page path.");
+  }
+
+  if (!Array.isArray(search.items) || !search.items.some((item) => item.path === pagePath && item.title)) {
+    throw new Error("Search index does not include sampled public page metadata.");
+  }
+
+  if (
+    !Array.isArray(links.links) ||
+    !links.links.some((link) => link.to === pagePath || link.from === pagePath)
+  ) {
+    throw new Error("Link index does not include graph link data for the sampled page.");
+  }
+
+  for (const [logicalPath, body] of bodies) {
+    if (body.includes("sources/")) {
+      throw new Error(`Public artifact unexpectedly exposes sources/ path: ${logicalPath}`);
+    }
+  }
+
+  report.checks.push(
+    okCheck("okf-public-artifacts", "Public OKF Markdown, metadata indexes, headings, and graph links are internally consistent.", {
+      pagePath,
+      manifestFiles: manifest.files.length,
+      searchItems: search.items.length,
+      links: links.links.length
+    }, WHITE_BOX)
+  );
+}
+
+async function validateSourceDeletionFullFlow({
+  admin,
+  publicApi,
+  env,
+  knowledgeBaseId,
+  pageFile,
+  taskTimeoutMs,
+  report
+}) {
+  if (!pageFile?.logicalPath || !pageFile.sourceFileId || pageFile.deletable !== true) {
+    throw new Error("Validation did not receive a deletable source-backed page file.");
+  }
+
+  const response = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/detail?path=${encodeURIComponent(pageFile.logicalPath)}`,
+    {
+      method: "DELETE"
+    }
+  );
+
+  if (response.status !== 202) {
+    throw new Error(`Source-backed page deletion failed with HTTP ${response.status}.`);
+  }
+
+  const body = await response.json();
+  const deletionTask = body.task;
+
+  if (!deletionTask?.id || deletionTask.operation !== "delete_source") {
+    throw new Error("Deletion response did not include a source deletion task.");
+  }
+
+  report.checks.push(
+    okCheck("source-page-delete-submit", "Submitted source-backed page deletion through the Admin API.", {
+      operation: deletionTask.operation
+    })
+  );
+
+  const completedDeletionTask = await pollTaskEnded(
+    admin,
+    knowledgeBaseId,
+    deletionTask.id,
+    taskTimeoutMs,
+    report
+  );
+
+  if (completedDeletionTask.operation !== "delete_source") {
+    throw new Error("Deletion task did not keep the delete_source operation.");
+  }
+
+  const deletionDetail = await fetchTaskDetail(admin, knowledgeBaseId, deletionTask.id, report);
+
+  if (deletionDetail.task.operation !== "delete_source") {
+    throw new Error("Deletion task detail did not expose delete_source operation.");
+  }
+
+  await validateDeletionDatabaseBoundaries({
+    databaseUrl: env.DATABASE_URL,
+    knowledgeBaseId,
+    sourceFileId: pageFile.sourceFileId,
+    deletedPagePath: pageFile.logicalPath,
+    deletionTaskId: deletionTask.id,
+    report
+  });
+
+  const postDeleteFiles = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=50`
+  );
+  const remainingPage = postDeleteFiles.items?.find(
+    (file) => String(file.logicalPath).startsWith("pages/") && file.logicalPath !== pageFile.logicalPath
+  );
+
+  if (postDeleteFiles.items?.some((file) => file.logicalPath === pageFile.logicalPath)) {
+    throw new Error("Deleted page still appears in the active admin bundle file list.");
+  }
+
+  if (!remainingPage?.logicalPath) {
+    throw new Error("Deletion validation requires at least one non-deleted source-backed page.");
+  }
+
+  await validatePublicDeletionState({
+    publicApi,
+    env,
+    knowledgeBaseId,
+    deletedPagePath: pageFile.logicalPath,
+    remainingPagePath: remainingPage.logicalPath,
+    report
+  });
+
+  report.checks.push(
+    okCheck("source-page-delete-full-flow", "Source-backed page deletion republished active files without stale page references.", {
+      deletedPagePath: pageFile.logicalPath,
+      remainingPagePath: remainingPage.logicalPath
+    })
+  );
+
+  return {
+    taskId: deletionTask.id,
+    deletedPagePath: pageFile.logicalPath,
+    remainingPagePath: remainingPage.logicalPath
+  };
+}
+
+async function validateDeletionDatabaseBoundaries({
+  databaseUrl,
+  knowledgeBaseId,
+  sourceFileId,
+  deletedPagePath,
+  deletionTaskId,
+  report
+}) {
+  const postgresModule = requireFromApiPackage("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+
+  try {
+    const [shape] = await sql`
+      SELECT
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND id = ${sourceFileId}
+           AND deleted_at IS NOT NULL) AS deleted_sources,
+        (SELECT count(*)::int
+         FROM focowiki.upload_tasks
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND id = ${deletionTaskId}
+           AND operation = 'delete_source'
+           AND ended_at IS NOT NULL) AS ended_deletion_tasks,
+        (SELECT count(*)::int
+         FROM focowiki.upload_task_events
+         WHERE task_id = ${deletionTaskId}) AS deletion_task_events,
+        (SELECT count(*)::int
+         FROM focowiki.releases
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND published_at IS NOT NULL) AS published_releases,
+        (SELECT count(*)::int
+         FROM focowiki.bundle_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND release_id = (
+             SELECT active_release_id
+             FROM focowiki.knowledge_bases
+             WHERE id = ${knowledgeBaseId}
+           )
+           AND logical_path = ${deletedPagePath}) AS stale_active_pages
+    `;
+
+    if (
+      shape.deleted_sources !== 1 ||
+      shape.ended_deletion_tasks !== 1 ||
+      shape.deletion_task_events < 1 ||
+      shape.published_releases < 2 ||
+      shape.stale_active_pages !== 0
+    ) {
+      throw new Error(`Unexpected deletion database state: ${JSON.stringify(shape)}`);
+    }
+
+    report.checks.push(
+      okCheck("deletion-database-boundaries", "PostgreSQL records source deletion, one ended deletion task, task phases, and a replacement active release.", shape, WHITE_BOX)
+    );
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
+async function validatePublicDeletionState({
+  publicApi,
+  env,
+  knowledgeBaseId,
+  deletedPagePath,
+  remainingPagePath,
+  report
+}) {
+  const headers = publicAuthHeaders(env);
+
+  await expectJsonError(
+    publicApi,
+    `/kb/${encodeURIComponent(knowledgeBaseId)}/${encodePublicLogicalPath(deletedPagePath)}`,
+    headers,
+    [404]
+  );
+
+  const remaining = await readPublicText(
+    publicApi,
+    `/kb/${encodeURIComponent(knowledgeBaseId)}/${encodePublicLogicalPath(remainingPagePath)}`,
+    headers
+  );
+
+  if (!remaining.trim()) {
+    throw new Error("Remaining source-backed page became unavailable after deletion republish.");
+  }
+
+  const publicBodies = new Map([
+    [
+      "index.md",
+      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`, headers)
+    ],
+    [
+      "_index/manifest.json",
+      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/manifest.json`, headers)
+    ],
+    [
+      "_index/search.json",
+      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/search.json`, headers)
+    ],
+    [
+      "_index/links.json",
+      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/links.json`, headers)
+    ]
+  ]);
+
+  for (const [logicalPath, body] of publicBodies) {
+    if (body.includes(deletedPagePath) || body.includes(encodeURIComponent(path.basename(deletedPagePath)))) {
+      throw new Error(`Public ${logicalPath} still references deleted page ${deletedPagePath}.`);
+    }
+  }
+
+  const manifest = parseJsonIndex(publicBodies.get("_index/manifest.json"), "_index/manifest.json");
+  const search = parseJsonIndex(publicBodies.get("_index/search.json"), "_index/search.json");
+  const links = parseJsonIndex(publicBodies.get("_index/links.json"), "_index/links.json");
+
+  if (
+    manifest.files.some((file) => file.path === deletedPagePath) ||
+    search.items.some((item) => item.path === deletedPagePath) ||
+    links.links.some((link) => link.from === deletedPagePath || link.to === deletedPagePath)
+  ) {
+    throw new Error("Generated indexes still contain deleted page graph or metadata references.");
+  }
+
+  report.checks.push(
+    okCheck("public-deletion-state", "Public OpenAPI and generated indexes reflect source-backed page deletion.", {
+      deletedPagePath,
+      remainingPagePath
+    })
+  );
+}
+
+async function validateKnowledgeBaseDeletion({ admin, publicApi, env, knowledgeBaseId, report }) {
+  const response = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Knowledge base deletion failed with HTTP ${response.status}.`);
+  }
+
+  const body = await response.json();
+
+  if (body.deleted !== true) {
+    throw new Error("Knowledge base deletion response did not confirm deletion.");
+  }
+
+  const detailResponse = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+  );
+
+  if (detailResponse.status !== 404) {
+    throw new Error("Deleted knowledge base detail route did not return not found.");
+  }
+
+  const list = await readJson(admin, "/admin/api/knowledge-bases?limit=50");
+
+  if (list.items?.some((item) => item.id === knowledgeBaseId)) {
+    throw new Error("Deleted knowledge base still appears in the admin list.");
+  }
+
+  await expectJsonError(
+    publicApi,
+    `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`,
+    publicAuthHeaders(env),
+    [404]
+  );
+
+  report.checks.push(
+    okCheck("knowledge-base-delete", "Knowledge base deletion hides admin and public reads.")
   );
 }
 
@@ -1195,7 +1295,7 @@ async function validateRedisBoundaries(redisUrl, samples, report) {
 
   try {
     const bodySnippets = samples
-      .map((sample) => bodySnippet(sample.body))
+      .map((sample) => bodySnippet(readSampleText(sample)))
       .filter(Boolean);
     let cursor = "0";
     let scanned = 0;
@@ -1260,6 +1360,16 @@ async function readJson(client, pathname, options = {}) {
   return response.json();
 }
 
+async function readPublicText(client, pathname, headers) {
+  const response = await client.request(pathname, { headers });
+
+  if (!response.ok) {
+    throw new Error(`Request ${pathname} failed with HTTP ${response.status}.`);
+  }
+
+  return response.text();
+}
+
 async function expectJsonError(client, pathname, headers, statuses) {
   const response = await client.request(pathname, { headers });
 
@@ -1282,6 +1392,20 @@ async function expectJsonError(client, pathname, headers, statuses) {
 
   if (/bucket|objectKey|object_key|release-[0-9a-f-]|S3_|secret|access/i.test(serialized)) {
     throw new Error(`Public error exposed storage details for ${pathname}.`);
+  }
+}
+
+function publicAuthHeaders(env) {
+  return env.PUBLIC_API_AUTH_REQUIRED === "true" && env.PUBLIC_API_KEY
+    ? { authorization: `Bearer ${env.PUBLIC_API_KEY}` }
+    : {};
+}
+
+function parseJsonIndex(raw, logicalPath) {
+  try {
+    return JSON.parse(String(raw ?? ""));
+  } catch {
+    throw new Error(`Public index is not valid JSON: ${logicalPath}`);
   }
 }
 

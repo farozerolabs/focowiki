@@ -137,6 +137,36 @@ GET /kb/{knowledgeBaseId}/tasks/latest
 
 Private mode requires `Authorization: Bearer $PUBLIC_API_KEY`. Public mode allows anonymous reads while still enforcing knowledge base scoping and path safety. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
 
+## Cleaned Markdown Full-Flow Validation
+
+The validation scripts can exercise a local-only cleaned Markdown dataset without committing the dataset, local paths, or raw document bodies. Configure the dataset only in the local shell or a local `.env` file:
+
+```bash
+FOCOWIKI_VALIDATION_MARKDOWN_DIR=<local-cleaned-markdown-directory>
+FOCOWIKI_VALIDATION_SAMPLE_COUNT=24
+FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS=180000
+```
+
+Run the bounded sample selector first:
+
+```bash
+pnpm validate:cleaned-legal:samples
+```
+
+With PostgreSQL, Redis, S3-compatible storage, Admin API, Admin UI, and public OpenAPI running, validate the API, backend, storage, Redis, OKF files, public reads, source-backed page deletion, republish, and knowledge base deletion:
+
+```bash
+pnpm validate:cleaned-legal:api
+```
+
+Run the browser flow against the admin UI:
+
+```bash
+pnpm validate:cleaned-legal:browser
+```
+
+Validation reports are written under the active OpenSpec change directory, which is ignored by git. Reports must stay redacted: no local absolute paths, credentials, raw S3 object keys, provider secrets, or raw source document bodies.
+
 ## Admin Pagination
 
 Every admin list and file tree read is cursor-paginated through PostgreSQL queries with bounded limits. This includes knowledge base cards, generated file tree directory pages, source files, releases, bundle files, upload tasks, and task phase details.

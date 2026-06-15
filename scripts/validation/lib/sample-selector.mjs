@@ -1,0 +1,313 @@
+import fs from "node:fs";
+import path from "node:path";
+
+export const DEFAULT_SAMPLE_COUNT = 24;
+export const SAMPLE_SOURCE_ENV = "FOCOWIKI_VALIDATION_MARKDOWN_DIR";
+export const SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_SAMPLE_COUNT";
+export const REQUIRED_SAMPLE_COVERAGE = {
+  statuses: ["有效", "已修改", "尚未生效"],
+  types: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"]
+};
+
+const MAX_METADATA_BYTES = 256 * 1024;
+
+export function selectSamplesFromEnvironment(env = process.env) {
+  const sourceDir = env[SAMPLE_SOURCE_ENV];
+
+  if (!sourceDir) {
+    throw new Error(`${SAMPLE_SOURCE_ENV} must be set to a local Markdown directory.`);
+  }
+
+  return selectSamples(sourceDir, readSampleCount(env));
+}
+
+export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
+  const absoluteSourceDir = path.resolve(sourceDir);
+
+  if (!fs.existsSync(absoluteSourceDir) || !fs.statSync(absoluteSourceDir).isDirectory()) {
+    throw new Error(`${SAMPLE_SOURCE_ENV} must point to an existing directory.`);
+  }
+
+  const files = collectMarkdownFiles(absoluteSourceDir).sort(compareCandidatePath);
+  const candidates = files.map(readSampleCandidateProfile).filter(Boolean);
+
+  if (candidates.length < sampleCount) {
+    throw new Error(`Expected at least ${sampleCount} upload-ready Markdown candidates, found ${candidates.length}.`);
+  }
+
+  const selected = [];
+  const selectedNames = new Set();
+
+  for (const status of REQUIRED_SAMPLE_COVERAGE.statuses) {
+    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.status === status);
+  }
+
+  for (const type of REQUIRED_SAMPLE_COVERAGE.types) {
+    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.type === type);
+  }
+
+  addFirstMatching(selected, selectedNames, candidates, (candidate) =>
+    candidate.basename.includes("__unknown-date__")
+  );
+  addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.title.length >= 80);
+
+  for (const candidate of duplicatedTitleCandidates(candidates)) {
+    addCandidate(selected, selectedNames, candidate);
+
+    if (selected.length >= 14) {
+      break;
+    }
+  }
+
+  for (const candidate of candidates) {
+    addCandidate(selected, selectedNames, candidate, sampleCount);
+
+    if (selected.length >= sampleCount) {
+      break;
+    }
+  }
+
+  if (selected.length !== sampleCount) {
+    throw new Error(`Expected ${sampleCount} samples, selected ${selected.length}.`);
+  }
+
+  const invalid = selected.filter(
+    (sample) => !sample.basename.endsWith(".md") || !sample.type || !sample.title || !sample.hasBody
+  );
+
+  if (invalid.length > 0) {
+    throw new Error(`Selected samples contain invalid Markdown metadata: ${invalid.map((item) => item.basename).join(", ")}`);
+  }
+
+  const coverage = sampleCoverage(selected);
+  const missingStatuses = REQUIRED_SAMPLE_COVERAGE.statuses.filter(
+    (status) => !coverage.statuses.includes(status)
+  );
+  const missingTypes = REQUIRED_SAMPLE_COVERAGE.types.filter((type) => !coverage.types.includes(type));
+
+  if (missingStatuses.length > 0 || missingTypes.length > 0 || !coverage.includesUnknownDate || !coverage.includesLongTitle || !coverage.includesDuplicatedTitle) {
+    throw new Error(
+      `Sample coverage is incomplete: ${JSON.stringify({ missingStatuses, missingTypes, coverage })}`
+    );
+  }
+
+  return {
+    samples: selected,
+    coverage,
+    sampleCount
+  };
+}
+
+export function readSampleText(sample) {
+  return fs.readFileSync(sample.filePath, "utf8");
+}
+
+export function sampleCoverage(samples) {
+  const duplicatedTitles = samples
+    .map((sample) => sample.title)
+    .filter((title, index, titles) => title && titles.indexOf(title) !== index);
+
+  return {
+    statuses: Array.from(new Set(samples.map((sample) => sample.status).filter(Boolean))).sort(),
+    types: Array.from(new Set(samples.map((sample) => sample.type).filter(Boolean))).sort(),
+    categories: Array.from(new Set(samples.map((sample) => sample.category).filter(Boolean))).sort(),
+    includesUnknownDate: samples.some((sample) => sample.basename.includes("__unknown-date__")),
+    includesLongTitle: samples.some((sample) => sample.title.length >= 80),
+    includesDuplicatedTitle: duplicatedTitles.length > 0,
+    totalSizeBytes: samples.reduce((sum, sample) => sum + sample.sizeBytes, 0)
+  };
+}
+
+function readSampleCount(env) {
+  const configured = env[SAMPLE_COUNT_ENV]?.trim();
+
+  if (!configured) {
+    return DEFAULT_SAMPLE_COUNT;
+  }
+
+  const parsed = Number(configured);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 14) {
+    throw new Error(`${SAMPLE_COUNT_ENV} must be an integer greater than or equal to 14.`);
+  }
+
+  return parsed;
+}
+
+function readSampleCandidateProfile(filePath) {
+  const basename = path.basename(filePath);
+  const stat = fs.statSync(filePath);
+  const preview = readFilePrefix(filePath, Math.min(stat.size, MAX_METADATA_BYTES));
+  const { frontmatter, bodyOffset, bodyPreview } = splitFrontmatterPreview(preview.text);
+
+  if (!frontmatter) {
+    return null;
+  }
+
+  const metadata = parseFrontmatter(frontmatter);
+  const hasBody = bodyPreview.trim().length > 0 || stat.size > bodyOffset;
+
+  if (!metadata.title || !metadata.type || !hasBody) {
+    return null;
+  }
+
+  return {
+    basename,
+    filePath,
+    title: String(metadata.title ?? ""),
+    type: String(metadata.type ?? ""),
+    status: String(metadata.status ?? ""),
+    category: String(metadata.category ?? ""),
+    publicationDate: String(metadata.publicationDate ?? ""),
+    hasBody,
+    sizeBytes: stat.size
+  };
+}
+
+function readFilePrefix(filePath, byteLength) {
+  const fd = fs.openSync(filePath, "r");
+
+  try {
+    const buffer = Buffer.alloc(byteLength);
+    const bytesRead = fs.readSync(fd, buffer, 0, byteLength, 0);
+    return {
+      text: buffer.toString("utf8", 0, bytesRead),
+      bytesRead
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function collectMarkdownFiles(sourceDir) {
+  const files = [];
+  const stack = [sourceDir];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith(".")) {
+          stack.push(entryPath);
+        }
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  return files;
+}
+
+function compareCandidatePath(left, right) {
+  const leftRank = candidatePathRank(left);
+  const rightRank = candidatePathRank(right);
+
+  if (leftRank !== rightRank) {
+    return rightRank - leftRank;
+  }
+
+  return path.basename(left).localeCompare(path.basename(right));
+}
+
+function candidatePathRank(filePath) {
+  const segments = filePath.split(path.sep);
+  let rank = 0;
+
+  if (segments.includes("markdown")) {
+    rank += 10;
+  }
+
+  if (path.basename(filePath).includes("__")) {
+    rank += 5;
+  }
+
+  return rank;
+}
+
+function splitFrontmatterPreview(text) {
+  if (!text.startsWith("---\n")) {
+    return { frontmatter: "", bodyOffset: 0, bodyPreview: text };
+  }
+
+  const end = text.indexOf("\n---\n", 4);
+
+  if (end === -1) {
+    return { frontmatter: "", bodyOffset: 0, bodyPreview: text };
+  }
+
+  const bodyStart = end + 5;
+  return {
+    frontmatter: text.slice(4, end),
+    bodyOffset: Buffer.byteLength(text.slice(0, bodyStart), "utf8"),
+    bodyPreview: text.slice(bodyStart)
+  };
+}
+
+function parseFrontmatter(frontmatter) {
+  const metadata = {};
+
+  for (const line of frontmatter.split("\n")) {
+    const index = line.indexOf(":");
+
+    if (index === -1) {
+      continue;
+    }
+
+    metadata[line.slice(0, index).trim()] = stripYamlValue(line.slice(index + 1));
+  }
+
+  return metadata;
+}
+
+function stripYamlValue(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^"(.*)"$/s, "$1")
+    .replace(/^'(.*)'$/s, "$1");
+}
+
+function addFirstMatching(selected, selectedNames, candidates, predicate) {
+  const candidate = candidates.find((item) => !selectedNames.has(item.basename) && predicate(item));
+
+  if (!candidate) {
+    return;
+  }
+
+  addCandidate(selected, selectedNames, candidate);
+}
+
+function addCandidate(selected, selectedNames, candidate, sampleCount = DEFAULT_SAMPLE_COUNT) {
+  if (selectedNames.has(candidate.basename) || selected.length >= sampleCount) {
+    return;
+  }
+
+  selected.push(candidate);
+  selectedNames.add(candidate.basename);
+}
+
+function duplicatedTitleCandidates(candidates) {
+  const groups = new Map();
+
+  for (const candidate of candidates) {
+    if (!candidate.title) {
+      continue;
+    }
+
+    const group = groups.get(candidate.title) ?? [];
+    group.push(candidate);
+    groups.set(candidate.title, group);
+  }
+
+  return Array.from(groups.values())
+    .filter((group) => group.length > 1)
+    .flatMap((group) => group.slice(0, 2))
+    .sort((left, right) => left.basename.localeCompare(right.basename));
+}

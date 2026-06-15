@@ -410,7 +410,6 @@ export function KnowledgeBaseDetailPage({
 
       <Dialog open={isUploadDialogOpen} onOpenChange={(open) => !isUploading && setIsUploadDialogOpen(open)}>
         <DialogContent
-          aria-describedby="upload-dialog-description"
           onPointerDownOutside={(event) => {
             if (isUploading) {
               event.preventDefault();
@@ -419,9 +418,7 @@ export function KnowledgeBaseDetailPage({
         >
           <DialogHeader>
             <DialogTitle>{t("upload.title")}</DialogTitle>
-            <DialogDescription id="upload-dialog-description">
-              {t("upload.description")}
-            </DialogDescription>
+            <DialogDescription>{t("upload.description")}</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleUpload}>
             <FieldGroup>

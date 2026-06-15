@@ -4,7 +4,7 @@ import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
 import { selectSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-upload-flow";
+const CHANGE_ID = "validate-cleaned-legal-full-flow";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
@@ -56,10 +56,10 @@ try {
   await page.getByLabel("Username").fill(adminUsername);
   await page.getByLabel("Password").fill(adminPassword);
   await page.getByRole("button", { name: "Log in" }).click();
-  await page.getByRole("button", { name: "Create knowledge base" }).waitFor();
+  await page.getByRole("button", { name: "Create knowledge base" }).first().waitFor();
   report.checks.push(okCheck("login", "Admin login succeeded in browser."));
 
-  await page.getByRole("button", { name: "Create knowledge base" }).click();
+  await page.getByRole("button", { name: "Create knowledge base" }).first().click();
   const createDialog = page.getByRole("dialog");
   await createDialog.getByLabel("Knowledge base name").fill(knowledgeBaseName);
   await createDialog.getByLabel("Description").fill("Cleaned Markdown browser validation");
@@ -100,12 +100,13 @@ try {
   await page.getByRole("button", { name: "pages" }).waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: "pages" }).click();
   const firstSampleName = sampleSelection.samples[0]?.basename;
+  const secondSampleName = sampleSelection.samples.find((sample) => sample.basename !== firstSampleName)?.basename;
 
-  if (!firstSampleName) {
+  if (!firstSampleName || !secondSampleName) {
     throw new Error("No selected sample basename was available for browser preview.");
   }
 
-  await page.getByRole("button", { name: firstSampleName }).click();
+  await page.getByRole("button", { name: firstSampleName, exact: true }).click();
   const previewArticle = page.locator("article");
   await previewArticle.waitFor({ timeout: 30_000 });
   const previewText = await previewArticle.innerText();
@@ -125,6 +126,31 @@ try {
   }
 
   report.checks.push(okCheck("copy-url", "Public URL copy action produced a scoped URL."));
+
+  await page.getByRole("button", { name: `File actions: ${firstSampleName}` }).click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const deleteFileDialog = page.getByRole("alertdialog", { name: "Delete Markdown file" });
+  await deleteFileDialog.waitFor();
+  await deleteFileDialog.getByRole("button", { name: "Delete" }).click();
+  await deleteFileDialog.waitFor({ state: "detached", timeout: 30_000 });
+  await page.getByText("Delete file").waitFor({ timeout: 30_000 });
+  await page.getByText("Upload parsing task ended").waitFor({ timeout: taskTimeoutMs });
+  await expectButtonDetached(page, firstSampleName, taskTimeoutMs);
+  await page.getByRole("button", { name: secondSampleName, exact: true }).waitFor({ timeout: 30_000 });
+  report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));
+
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: knowledgeBaseName, exact: true }).waitFor();
+  await page.getByRole("button", { name: `Knowledge base actions for ${knowledgeBaseName}` }).click();
+  await page.getByRole("menuitem", { name: "Delete" }).click();
+  const deleteKnowledgeBaseDialog = page.getByRole("alertdialog", {
+    name: "Delete knowledge base"
+  });
+  await deleteKnowledgeBaseDialog.waitFor();
+  await deleteKnowledgeBaseDialog.getByRole("button", { name: "Delete" }).click();
+  await deleteKnowledgeBaseDialog.waitFor({ state: "detached", timeout: 30_000 });
+  await expectButtonDetached(page, knowledgeBaseName, 30_000);
+  report.checks.push(okCheck("knowledge-base-delete", "Deleted the validation knowledge base in browser."));
   report.ok = true;
 } catch (error) {
   runError = error;
@@ -220,6 +246,17 @@ async function expectNoMetadataInputs(dialog) {
       throw new Error(`Upload dialog still exposes removed metadata field: ${label}`);
     }
   }
+}
+
+async function expectButtonDetached(page, name, timeout) {
+  await page.waitForFunction(
+    (accessibleName) => {
+      const candidates = Array.from(document.querySelectorAll("button"));
+      return !candidates.some((button) => button.getAttribute("aria-label") === accessibleName || button.textContent?.trim() === accessibleName);
+    },
+    name,
+    { timeout }
+  );
 }
 
 function redactUrl(url) {

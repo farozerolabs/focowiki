@@ -19,7 +19,8 @@
     "validate:cleaned-legal:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
     "validate:cleaned-legal:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
     "validate:cleaned-legal:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
-    "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs"
+    "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs",
+    "test:validation": "node --test scripts/validation/test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
