@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { CopyIcon, UploadIcon } from "lucide-react";
+import { CopyIcon } from "lucide-react";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
-import { UploadTaskDataTable } from "@/components/task-phase-data-table";
+import { TaskProgressPanel } from "@/components/task-progress-panel";
+import { UploadSourceDialog } from "@/components/upload-source-dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,8 +15,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardAction,
@@ -24,14 +25,6 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle
-} from "@/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
@@ -42,7 +35,6 @@ import {
   fetchKnowledgeBasePublicUrls,
   fetchUploadTaskDetail,
   listUploadTasks,
-  uploadKnowledgeBaseSources,
   type BundleTreeEntry,
   type KnowledgeBasePublicUrls,
   type KnowledgeBase,
@@ -75,10 +67,6 @@ export function KnowledgeBaseDetailPage({
   const { t } = useTranslation();
   const hasRunningTasksRef = useRef(false);
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
-  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
-  const [uploadError, setUploadError] = useState("");
-  const [uploadTask, setUploadTask] = useState<UploadTaskLifecycle | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("tasks");
   const [treePages, setTreePages] = useState<Record<string, TreePageState>>({});
@@ -95,7 +83,6 @@ export function KnowledgeBaseDetailPage({
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
   const [copiedUrl, setCopiedUrl] = useState("");
 
-  const selectedFileItems = selectedFiles ? Array.from(selectedFiles) : [];
   const rootTreePage = treePages[ROOT_PARENT_PATH];
   const sidebarTree = useMemo(
     () => buildSidebarTree(treePages, expandedDirectories, selectedFilePath, ROOT_PARENT_PATH),
@@ -103,9 +90,6 @@ export function KnowledgeBaseDetailPage({
   );
 
   useEffect(() => {
-    setSelectedFiles(null);
-    setUploadError("");
-    setUploadTask(null);
     setIsUploadDialogOpen(false);
     setActiveView("tasks");
     setTreePages({});
@@ -135,36 +119,6 @@ export function KnowledgeBaseDetailPage({
 
     return () => window.clearInterval(intervalId);
   }, [knowledgeBase.id]);
-
-  async function handleUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsUploading(true);
-    setUploadError("");
-    setUploadTask(null);
-
-    if (!selectedFiles) {
-      setIsUploading(false);
-      return;
-    }
-
-    const result = await uploadKnowledgeBaseSources({
-      knowledgeBaseId: knowledgeBase.id,
-      files: selectedFiles
-    }).catch(() => ({ messageKey: "errors.uploadFailed" }));
-
-    if ("messageKey" in result) {
-      setIsUploading(false);
-      setUploadError(result.messageKey);
-      return;
-    }
-
-    setUploadTask(result.task);
-    setActiveView("tasks");
-    setIsUploadDialogOpen(false);
-    setSelectedFiles(null);
-    setIsUploading(false);
-    await loadTasks({ replace: true });
-  }
 
   async function loadFileTree(input: { parentPath: string; replace: boolean }) {
     const currentCursor = input.replace ? null : treePages[input.parentPath]?.nextCursor ?? null;
@@ -293,6 +247,45 @@ export function KnowledgeBaseDetailPage({
     }));
   }
 
+  async function loadMoreTaskSourceFiles(taskId: string) {
+    const currentDetail = taskDetailsById[taskId];
+    const sourceCursor = currentDetail?.sourceFiles.nextCursor;
+
+    if (!sourceCursor) {
+      return;
+    }
+
+    const nextDetail = await fetchUploadTaskDetail({
+      knowledgeBaseId: knowledgeBase.id,
+      taskId,
+      sourceCursor
+    });
+
+    if (!nextDetail) {
+      return;
+    }
+
+    setTaskDetailsById((current) => {
+      const previousDetail = current[taskId];
+
+      if (!previousDetail) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [taskId]: {
+          task: nextDetail.task,
+          phaseDetails: previousDetail.phaseDetails,
+          sourceFiles: {
+            items: [...previousDetail.sourceFiles.items, ...nextDetail.sourceFiles.items],
+            nextCursor: nextDetail.sourceFiles.nextCursor
+          }
+        }
+      };
+    });
+  }
+
   async function loadPublicUrls() {
     setPublicUrls(await fetchKnowledgeBasePublicUrls({ knowledgeBaseId: knowledgeBase.id }));
   }
@@ -300,10 +293,6 @@ export function KnowledgeBaseDetailPage({
   async function handleCopy(url: string) {
     await navigator.clipboard.writeText(url);
     setCopiedUrl(url);
-  }
-
-  function handleSourceFilesChange(files: FileList | null) {
-    setSelectedFiles(files);
   }
 
   async function handleDeleteFile() {
@@ -392,6 +381,7 @@ export function KnowledgeBaseDetailPage({
               taskCursor={taskCursor}
               taskDetailsById={taskDetailsById}
               onLoadMore={() => void loadTasks({ replace: false })}
+              onLoadMoreTaskSourceFiles={(taskId) => void loadMoreTaskSourceFiles(taskId)}
               onUpload={() => setIsUploadDialogOpen(true)}
             />
           ) : (
@@ -408,79 +398,15 @@ export function KnowledgeBaseDetailPage({
         </section>
       </SidebarInset>
 
-      <Dialog open={isUploadDialogOpen} onOpenChange={(open) => !isUploading && setIsUploadDialogOpen(open)}>
-        <DialogContent
-          onPointerDownOutside={(event) => {
-            if (isUploading) {
-              event.preventDefault();
-            }
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{t("upload.title")}</DialogTitle>
-            <DialogDescription>{t("upload.description")}</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleUpload}>
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="source-files">{t("upload.selectFiles")}</FieldLabel>
-                <label
-                  htmlFor="source-files"
-                  className={buttonVariants({
-                    variant: "outline",
-                    className: "relative cursor-pointer overflow-hidden"
-                  })}
-                >
-                  <UploadIcon data-icon="inline-start" />
-                  {t("upload.chooseFiles")}
-                  <input
-                    id="source-files"
-                    type="file"
-                    accept=".md"
-                    multiple
-                    className="absolute inset-0 cursor-pointer opacity-0"
-                    aria-describedby="source-files-status"
-                    onChange={(event) => handleSourceFilesChange(event.target.files)}
-                  />
-                </label>
-                <div
-                  id="source-files-status"
-                  className="rounded-lg border bg-muted/40 p-2 text-sm text-muted-foreground"
-                >
-                  {selectedFileItems.length > 0 ? (
-                    <div className="flex flex-col gap-1">
-                      <p>{t("upload.selectedFiles", { count: selectedFileItems.length })}</p>
-                      <ul className="flex flex-col gap-1">
-                        {selectedFileItems.map((file) => (
-                          <li key={`${file.name}-${file.size}`} className="text-foreground">
-                            {file.name}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : (
-                    <p>{t("upload.noFilesSelected")}</p>
-                  )}
-                </div>
-              </Field>
-              {uploadError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>{t(uploadError)}</AlertTitle>
-                </Alert>
-              ) : null}
-              {uploadTask ? (
-                <Alert>
-                  <AlertTitle>{t("tasks.running")}</AlertTitle>
-                  <AlertDescription>{uploadTask.id}</AlertDescription>
-                </Alert>
-              ) : null}
-              <Button type="submit" disabled={!selectedFiles?.length || isUploading}>
-                {isUploading ? t("upload.uploading") : t("upload.upload")}
-              </Button>
-            </FieldGroup>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <UploadSourceDialog
+        knowledgeBaseId={knowledgeBase.id}
+        open={isUploadDialogOpen}
+        onOpenChange={setIsUploadDialogOpen}
+        onAccepted={async () => {
+          setActiveView("tasks");
+          await loadTasks({ replace: true });
+        }}
+      />
       <AlertDialog
         open={Boolean(deleteFileTarget)}
         onOpenChange={(open) => !open && !isDeletingFile && setDeleteFileTarget(null)}
@@ -587,47 +513,6 @@ function FilePreviewPanel({
             {t("detail.noFileSelected")}
           </div>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function TaskProgressPanel({
-  tasks,
-  taskCursor,
-  taskDetailsById,
-  onLoadMore,
-  onUpload
-}: {
-  tasks: UploadTaskLifecycle[];
-  taskCursor: string | null;
-  taskDetailsById: Record<string, UploadTaskDetail | null>;
-  onLoadMore: () => void;
-  onUpload: () => void;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <Card className="min-h-[calc(100svh-5.5rem)] min-w-0">
-      <CardHeader>
-        <CardTitle>{t("tasks.title")}</CardTitle>
-        <CardDescription>{t("tasks.description")}</CardDescription>
-        <CardAction>
-          <Button type="button" variant="outline" onClick={onUpload}>
-            <UploadIcon data-icon="inline-start" />
-            {t("upload.upload")}
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="min-w-0">
-        <div className="flex flex-col gap-3">
-          <UploadTaskDataTable tasks={tasks} taskDetailsById={taskDetailsById} />
-          {taskCursor ? (
-            <Button type="button" variant="outline" onClick={onLoadMore}>
-              {t("home.loadMore")}
-            </Button>
-          ) : null}
-        </div>
       </CardContent>
     </Card>
   );

@@ -619,6 +619,16 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
+      const sourceFilesCursorToken = context.req.query("sourceCursor") ?? null;
+      const sourceFilesCursorScope = `upload-task-source-files:${knowledgeBase.id}:${task.id}`;
+      const sourceFilesRepositoryCursor = sourceFilesCursorToken
+        ? await redis.getPaginationCursor<string>(sourceFilesCursorScope, sourceFilesCursorToken)
+        : null;
+
+      if (sourceFilesCursorToken && !sourceFilesRepositoryCursor) {
+        return invalidPagination(context);
+      }
+
       const phaseDetails = await repositories.tasks.listUploadTaskEvents({
         knowledgeBaseId: knowledgeBase.id,
         taskId: task.id,
@@ -629,7 +639,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         knowledgeBaseId: knowledgeBase.id,
         taskId: task.id,
         limit,
-        cursor: null
+        cursor: sourceFilesRepositoryCursor
       });
       const nextCursor = await writeOpaqueCursor({
         redis,
@@ -639,7 +649,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       });
       const sourceFilesNextCursor = await writeOpaqueCursor({
         redis,
-        scope: `upload-task-source-files:${knowledgeBase.id}:${task.id}`,
+        scope: sourceFilesCursorScope,
         cursor: sourceFiles.nextCursor,
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
@@ -654,10 +664,10 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         config.pagination.cursorTtlSeconds
       );
       await redis.setPageCache(
-        `upload-task-source-files:${knowledgeBase.id}:${task.id}`,
+        sourceFilesCursorScope,
         `page-${randomUUID()}`,
         {
-          cursor: null,
+          cursor: sourceFilesCursorToken,
           itemIds: sourceFiles.items.map((item) => item.id)
         },
         config.pagination.cursorTtlSeconds

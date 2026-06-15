@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-table";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -20,6 +21,7 @@ import type { UploadTaskDetail, UploadTaskLifecycle } from "@/lib/admin-api";
 type UploadTaskDataTableProps = {
   tasks: UploadTaskLifecycle[];
   taskDetailsById: Record<string, UploadTaskDetail | null>;
+  onLoadMoreSourceFiles?: (taskId: string) => void;
 };
 
 type UploadTaskTableRow = {
@@ -28,12 +30,17 @@ type UploadTaskTableRow = {
   operation: UploadTaskLifecycle["operation"];
   lifecycle: UploadTaskLifecycle["lifecycle"];
   fileNames: string;
+  hasMoreSourceFiles: boolean;
   detail: string;
   startedAt: string | null;
   endedAt: string | null;
 };
 
-export function UploadTaskDataTable({ tasks, taskDetailsById }: UploadTaskDataTableProps) {
+export function UploadTaskDataTable({
+  tasks,
+  taskDetailsById,
+  onLoadMoreSourceFiles
+}: UploadTaskDataTableProps) {
   const { i18n, t } = useTranslation();
   const rows = useMemo(
     () => buildTaskRows(tasks, taskDetailsById, t),
@@ -63,7 +70,21 @@ export function UploadTaskDataTable({ tasks, taskDetailsById }: UploadTaskDataTa
       {
         accessorKey: "fileNames",
         header: () => t("tasks.table.fileName"),
-        cell: ({ row }) => <span className="block max-w-64 truncate">{row.original.fileNames}</span>
+        cell: ({ row }) => (
+          <div className="flex max-w-80 items-center gap-2">
+            <span className="min-w-0 truncate">{row.original.fileNames}</span>
+            {row.original.hasMoreSourceFiles && onLoadMoreSourceFiles ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => onLoadMoreSourceFiles(row.original.taskId)}
+              >
+                {t("tasks.loadMoreFiles")}
+              </Button>
+            ) : null}
+          </div>
+        )
       },
       {
         accessorKey: "taskId",
@@ -96,7 +117,7 @@ export function UploadTaskDataTable({ tasks, taskDetailsById }: UploadTaskDataTa
         )
       }
     ],
-    [i18n.language, t]
+    [i18n.language, onLoadMoreSourceFiles, t]
   );
 
   const table = useReactTable({
@@ -156,6 +177,7 @@ function buildTaskRows(
       operation: task.operation,
       lifecycle: task.lifecycle,
       fileNames,
+      hasMoreSourceFiles: Boolean(taskDetailsById[task.id]?.sourceFiles.nextCursor),
       detail: formatPhaseSummary(phases, t),
       startedAt: task.startedAt,
       endedAt: task.endedAt

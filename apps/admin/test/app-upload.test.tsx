@@ -141,10 +141,96 @@ describe("Admin upload file picker", () => {
       expect(screen.getByText("task-new")).toBeTruthy();
     });
     expect(uploadKnowledgeBaseSources).toHaveBeenCalled();
+    expect(uploadKnowledgeBaseSources).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      files: [file]
+    });
     expect(fetchUploadTaskDetail).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
       taskId: "task-new"
     });
+  });
+
+  it("shows a multi-file batch summary before upload", async () => {
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const input = document.querySelector<HTMLInputElement>("#source-files");
+    const intro = new File(["Intro"], "intro.md", { type: "text/markdown" });
+    const setup = new File(["Setup"], "setup.md", { type: "text/markdown" });
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [intro, setup]
+      }
+    });
+
+    expect(screen.getByText("2 selected Markdown files")).toBeTruthy();
+    expect(screen.getByText("Total size: 10 B")).toBeTruthy();
+    expect(screen.getByText("intro.md")).toBeTruthy();
+    expect(screen.getByText("setup.md")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      false
+    );
+  });
+
+  it("removes individual selected files and clears the upload batch", async () => {
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const input = document.querySelector<HTMLInputElement>("#source-files");
+    const intro = new File(["Intro"], "intro.md", { type: "text/markdown" });
+    const setup = new File(["Setup"], "setup.md", { type: "text/markdown" });
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [intro, setup]
+      }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove intro.md" }));
+    expect(screen.queryByText("intro.md")).toBeNull();
+    expect(screen.getByText("setup.md")).toBeTruthy();
+    expect(screen.getByText("1 selected Markdown file")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(screen.queryByText("setup.md")).toBeNull();
+    expect(screen.getByText("No Markdown files selected")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it("warns about duplicate or unsupported selected files before submit", async () => {
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const input = document.querySelector<HTMLInputElement>("#source-files");
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [
+          new File(["One"], "intro.md", { type: "text/markdown" }),
+          new File(["Two"], "INTRO.md", { type: "text/markdown" })
+        ]
+      }
+    });
+
+    expect(screen.getByText("Markdown file names must be unique")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(["Plain text"], "notes.txt", { type: "text/plain" })]
+      }
+    });
+
+    expect(screen.getByText("Upload cleaned .md files only")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
   });
 
   it("refreshes upload tasks on an interval while the detail page is open", async () => {
@@ -367,9 +453,8 @@ describe("Admin upload file picker", () => {
 
     const input = document.querySelector<HTMLInputElement>("#source-files");
     expect(input?.type).toBe("file");
-    expect(input?.hidden).toBe(false);
-    expect(input?.className).toContain("opacity-0");
-    expect(input?.className).toContain("absolute");
+    expect(input?.multiple).toBe(true);
+    expect(input?.accept).toBe(".md");
   });
 
   it("logs out and returns to the credential form", async () => {

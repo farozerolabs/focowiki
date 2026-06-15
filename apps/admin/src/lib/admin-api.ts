@@ -221,11 +221,11 @@ export async function deleteKnowledgeBase(input: {
 
 export async function uploadKnowledgeBaseSources(input: {
   knowledgeBaseId: string;
-  files: FileList;
+  files: File[];
 }): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
   const formData = new FormData();
 
-  Array.from(input.files).forEach((file) => {
+  input.files.forEach((file) => {
     formData.append("files", file);
   });
 
@@ -358,11 +358,15 @@ export async function fetchUploadTaskDetail(input: {
   knowledgeBaseId: string;
   taskId: string;
   cursor?: string | null;
+  sourceCursor?: string | null;
 }): Promise<UploadTaskDetail | null> {
   const params = new URLSearchParams();
 
   if (input.cursor) {
     params.set("cursor", input.cursor);
+  }
+  if (input.sourceCursor) {
+    params.set("sourceCursor", input.sourceCursor);
   }
 
   const response = await fetch(

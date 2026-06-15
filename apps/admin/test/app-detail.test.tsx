@@ -252,6 +252,92 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
   });
 
+  it("loads the next task source-file page inside the same task row", async () => {
+    vi.mocked(listUploadTasks).mockResolvedValueOnce({
+      items: [
+        {
+          id: "task-001",
+          startedAt: "2026-06-14T00:00:00.000Z",
+          endedAt: "2026-06-14T00:00:10.000Z",
+          lifecycle: "ended",
+          operation: "upload",
+          sourceCount: 3
+        }
+      ],
+      nextCursor: null
+    });
+    vi.mocked(fetchUploadTaskDetail)
+      .mockResolvedValueOnce({
+        task: {
+          id: "task-001",
+          startedAt: "2026-06-14T00:00:00.000Z",
+          endedAt: "2026-06-14T00:00:10.000Z",
+          lifecycle: "ended",
+          operation: "upload",
+          sourceCount: 3
+        },
+        phaseDetails: {
+          items: [],
+          nextCursor: null
+        },
+        sourceFiles: {
+          items: [
+            {
+              id: "source-001",
+              originalName: "intro.md",
+              createdAt: "2026-06-14T00:00:00.000Z"
+            },
+            {
+              id: "source-002",
+              originalName: "setup.md",
+              createdAt: "2026-06-14T00:00:00.000Z"
+            }
+          ],
+          nextCursor: "source-cursor-001"
+        }
+      })
+      .mockResolvedValueOnce({
+        task: {
+          id: "task-001",
+          startedAt: "2026-06-14T00:00:00.000Z",
+          endedAt: "2026-06-14T00:00:10.000Z",
+          lifecycle: "ended",
+          operation: "upload",
+          sourceCount: 3
+        },
+        phaseDetails: {
+          items: [],
+          nextCursor: null
+        },
+        sourceFiles: {
+          items: [
+            {
+              id: "source-003",
+              originalName: "advanced.md",
+              createdAt: "2026-06-14T00:00:00.000Z"
+            }
+          ],
+          nextCursor: null
+        }
+      });
+
+    await openDetail();
+
+    const table = screen.getByRole("table");
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getByText("intro.md, setup.md + 1 more")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more files" }));
+
+    expect(await within(table).findByText("intro.md, setup.md, advanced.md")).toBeTruthy();
+    expect(fetchUploadTaskDetail).toHaveBeenLastCalledWith({
+      knowledgeBaseId: "kb-docs",
+      taskId: "task-001",
+      sourceCursor: "source-cursor-001"
+    });
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+  });
+
   it("opens internal Markdown preview links inside the admin file preview", async () => {
     await openDetail();
 

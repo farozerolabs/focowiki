@@ -1345,4 +1345,121 @@ describe("Upload parsing task lifecycle", () => {
       )
     ).toBe(true);
   });
+
+  it("returns task source files through an independent Redis-backed cursor", async () => {
+    const { repositories, records } = createRepositories();
+    records.sourceFiles.push(
+      {
+        id: "source-001",
+        knowledgeBaseId: "kb-001",
+        taskId: "task-001",
+        originalName: "intro.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/uploads/task-001/sources/source-001/intro.md",
+        contentType: "text/markdown",
+        sizeBytes: 32,
+        checksumSha256: "checksum-001",
+        metadata: {
+          type: "page",
+          title: "Intro"
+        },
+        createdAt: "2026-06-14T00:00:00.000Z",
+        deletedAt: null
+      },
+      {
+        id: "source-002",
+        knowledgeBaseId: "kb-001",
+        taskId: "task-001",
+        originalName: "setup.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/uploads/task-001/sources/source-002/setup.md",
+        contentType: "text/markdown",
+        sizeBytes: 32,
+        checksumSha256: "checksum-002",
+        metadata: {
+          type: "page",
+          title: "Setup"
+        },
+        createdAt: "2026-06-14T00:00:01.000Z",
+        deletedAt: null
+      },
+      {
+        id: "source-other-task",
+        knowledgeBaseId: "kb-001",
+        taskId: "task-other",
+        originalName: "other.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/uploads/task-other/sources/source-other/other.md",
+        contentType: "text/markdown",
+        sizeBytes: 32,
+        checksumSha256: "checksum-other",
+        metadata: {
+          type: "page",
+          title: "Other"
+        },
+        createdAt: "2026-06-14T00:00:02.000Z",
+        deletedAt: null
+      }
+    );
+    const redisClient = new MemoryRedisCommandClient();
+    const app = createApiApp({
+      config: createConfig(),
+      redis: createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" }),
+      repositories
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const first = await app.request("/admin/api/knowledge-bases/kb-001/tasks/task-001?limit=1", {
+      headers: {
+        cookie
+      }
+    });
+    const firstBody = (await first.json()) as {
+      sourceFiles: {
+        items: Array<Record<string, unknown>>;
+        nextCursor: string | null;
+      };
+    };
+
+    expect(first.status).toBe(200);
+    expect(firstBody.sourceFiles.items).toEqual([
+      expect.objectContaining({
+        id: "source-001",
+        taskId: "task-001",
+        originalName: "intro.md"
+      })
+    ]);
+    expect(firstBody.sourceFiles.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
+    expect(
+      Array.from(redisClient.values.keys()).some((key) =>
+        key.startsWith("focowiki-test:pagination-cursors:upload-task-source-files:kb-001:task-001")
+      )
+    ).toBe(true);
+
+    const second = await app.request(
+      `/admin/api/knowledge-bases/kb-001/tasks/task-001?limit=1&sourceCursor=${firstBody.sourceFiles.nextCursor}`,
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+    const secondBody = (await second.json()) as {
+      sourceFiles: {
+        items: Array<Record<string, unknown>>;
+        nextCursor: string | null;
+      };
+    };
+
+    expect(second.status).toBe(200);
+    expect(secondBody.sourceFiles.items).toEqual([
+      expect.objectContaining({
+        id: "source-002",
+        taskId: "task-001",
+        originalName: "setup.md"
+      })
+    ]);
+    expect(secondBody.sourceFiles.items).not.toContainEqual(
+      expect.objectContaining({
+        id: "source-other-task"
+      })
+    );
+    expect(secondBody.sourceFiles.nextCursor).toBeNull();
+  });
 });
