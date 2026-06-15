@@ -4,6 +4,8 @@ import path from "node:path";
 export const DEFAULT_SAMPLE_COUNT = 24;
 export const SAMPLE_SOURCE_ENV = "FOCOWIKI_VALIDATION_MARKDOWN_DIR";
 export const SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_SAMPLE_COUNT";
+export const BATCH_SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_BATCH_SAMPLE_COUNT";
+export const SINGLE_SAMPLE_ENV = "FOCOWIKI_VALIDATION_SINGLE_SAMPLE_BASENAME";
 export const REQUIRED_SAMPLE_COVERAGE = {
   statuses: ["有效", "已修改", "尚未生效"],
   types: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"]
@@ -19,6 +21,65 @@ export function selectSamplesFromEnvironment(env = process.env) {
   }
 
   return selectSamples(sourceDir, readSampleCount(env));
+}
+
+export function selectSingleAndBatchSamplesFromEnvironment(env = process.env) {
+  const sourceDir = env[SAMPLE_SOURCE_ENV];
+
+  if (!sourceDir) {
+    throw new Error(`${SAMPLE_SOURCE_ENV} must be set to a local Markdown directory.`);
+  }
+
+  const defaultTotalCount = readSampleCount(env);
+  return selectSingleAndBatchSamples(sourceDir, {
+    batchSampleCount: readBatchSampleCount(env, defaultTotalCount),
+    singleSampleBasename: env[SINGLE_SAMPLE_ENV]?.trim() || ""
+  });
+}
+
+export function selectSingleAndBatchSamples(
+  sourceDir,
+  { batchSampleCount = DEFAULT_SAMPLE_COUNT - 1, singleSampleBasename = "" } = {}
+) {
+  if (!Number.isSafeInteger(batchSampleCount) || batchSampleCount < 2) {
+    throw new Error(`${BATCH_SAMPLE_COUNT_ENV} must be an integer greater than or equal to 2.`);
+  }
+
+  const poolCount = Math.max(batchSampleCount + 1, 14);
+  const selectedPool = selectSamples(sourceDir, poolCount);
+  const singleSample = singleSampleBasename
+    ? selectedPool.samples.find((sample) => sample.basename === singleSampleBasename)
+    : selectedPool.samples[0];
+
+  if (!singleSample) {
+    throw new Error(`${SINGLE_SAMPLE_ENV} did not match a selected Markdown sample.`);
+  }
+
+  const batchSamples = selectedPool.samples
+    .filter((sample) => sample.basename !== singleSample.basename)
+    .slice(0, batchSampleCount);
+
+  if (batchSamples.length !== batchSampleCount) {
+    throw new Error(`Expected ${batchSampleCount} batch samples, selected ${batchSamples.length}.`);
+  }
+
+  const duplicateNames = duplicatedNormalizedBasenames([singleSample, ...batchSamples]);
+
+  if (duplicateNames.length > 0) {
+    throw new Error(`Selected samples contain duplicate normalized filenames: ${duplicateNames.join(", ")}`);
+  }
+
+  const flowSamples = [singleSample, ...batchSamples];
+
+  return {
+    samples: flowSamples,
+    singleSample,
+    batchSamples,
+    sampleCount: flowSamples.length,
+    batchSampleCount,
+    coverage: sampleCoverage(flowSamples),
+    selectionPoolCoverage: selectedPool.coverage
+  };
 }
 
 export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
@@ -132,6 +193,40 @@ function readSampleCount(env) {
   }
 
   return parsed;
+}
+
+function readBatchSampleCount(env, defaultTotalCount) {
+  const configured = env[BATCH_SAMPLE_COUNT_ENV]?.trim();
+
+  if (!configured) {
+    return Math.max(defaultTotalCount - 1, 2);
+  }
+
+  const parsed = Number(configured);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 2) {
+    throw new Error(`${BATCH_SAMPLE_COUNT_ENV} must be an integer greater than or equal to 2.`);
+  }
+
+  return parsed;
+}
+
+function duplicatedNormalizedBasenames(samples) {
+  const seen = new Set();
+  const duplicates = new Set();
+
+  for (const sample of samples) {
+    const normalized = sample.basename.trim().toLowerCase();
+
+    if (seen.has(normalized)) {
+      duplicates.add(sample.basename);
+      continue;
+    }
+
+    seen.add(normalized);
+  }
+
+  return Array.from(duplicates).sort();
 }
 
 function readSampleCandidateProfile(filePath) {

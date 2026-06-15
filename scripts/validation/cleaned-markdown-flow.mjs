@@ -7,12 +7,18 @@ import { loadEnvFile } from "node:process";
 import {
   SAMPLE_SOURCE_ENV,
   readSampleText,
+  selectSingleAndBatchSamplesFromEnvironment,
   selectSamplesFromEnvironment
 } from "./lib/sample-selector.mjs";
 
-export { selectSamples, selectSamplesFromEnvironment } from "./lib/sample-selector.mjs";
+export {
+  selectSamples,
+  selectSamplesFromEnvironment,
+  selectSingleAndBatchSamples,
+  selectSingleAndBatchSamplesFromEnvironment
+} from "./lib/sample-selector.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-full-flow";
+const CHANGE_ID = "validate-cleaned-legal-single-batch-flows";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "validation-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "validation-report.md");
@@ -46,16 +52,26 @@ export async function main(argv = process.argv.slice(2)) {
 
 export async function runSampleValidation() {
   const startedAt = new Date().toISOString();
-  const sampleSelection = selectSamplesFromEnvironment();
+  const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
   const report = createBaseReport("samples", startedAt);
 
   report.samples = sampleSelection.samples.map(redactSampleForReport);
+  report.singleSample = redactSampleForReport(sampleSelection.singleSample);
+  report.batchSamples = sampleSelection.batchSamples.map(redactSampleForReport);
   report.sampleCoverage = sampleSelection.coverage;
   report.checks.push(
     okCheck("sample-directory", "Sample source directory is configured and readable.", {}, WHITE_BOX)
   );
   report.checks.push(
-    okCheck("sample-count", `Selected exactly ${sampleSelection.sampleCount} Markdown samples.`, {}, WHITE_BOX)
+    okCheck(
+      "sample-count",
+      `Selected one single-upload sample and ${sampleSelection.batchSampleCount} batch-upload samples.`,
+      {
+        sampleCount: sampleSelection.sampleCount,
+        batchSampleCount: sampleSelection.batchSampleCount
+      },
+      WHITE_BOX
+    )
   );
   report.checks.push(
     okCheck(
@@ -78,10 +94,15 @@ export async function runApiValidation() {
   const startedAt = new Date().toISOString();
   const report = createBaseReport("api", startedAt);
   try {
-    const sampleSelection = selectSamplesFromEnvironment();
+    const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
     const env = readRuntimeEnv();
+    const singleSamples = [sampleSelection.singleSample];
+    const batchSamples = sampleSelection.batchSamples;
+    const allSamples = sampleSelection.samples;
 
-    report.samples = sampleSelection.samples.map(redactSampleForReport);
+    report.samples = allSamples.map(redactSampleForReport);
+    report.singleSample = redactSampleForReport(sampleSelection.singleSample);
+    report.batchSamples = batchSamples.map(redactSampleForReport);
     report.sampleCoverage = sampleSelection.coverage;
 
     const adminBaseUrl = env.ADMIN_API_BASE_URL ?? `http://127.0.0.1:${env.ADMIN_API_PORT ?? "43000"}`;
@@ -97,10 +118,11 @@ export async function runApiValidation() {
     assertEnvValue(env.S3_ACCESS_KEY_ID, "S3_ACCESS_KEY_ID");
     assertEnvValue(env.S3_SECRET_ACCESS_KEY, "S3_SECRET_ACCESS_KEY");
     assertEnvValue(env.S3_PREFIX, "S3_PREFIX");
-    assertUploadLimit(env.MAX_UPLOAD_FILES, sampleSelection.samples.length);
+    assertUploadLimit(env.MAX_UPLOAD_FILES, Math.max(singleSamples.length, batchSamples.length));
 
     const admin = createHttpClient(adminBaseUrl);
     const publicApi = createHttpClient(publicBaseUrl);
+    const taskTimeoutMs = readValidationTaskTimeoutMs(env, allSamples.length);
 
     await validateDatabaseConnectivity(env.DATABASE_URL, report);
     await validateRedisConnectivity(env.REDIS_URL, report);
@@ -110,34 +132,139 @@ export async function runApiValidation() {
 
     await loginAdmin(admin, env, report);
     const knowledgeBase = await createValidationKnowledgeBase(admin, report);
-    const uploadTask = await uploadSamples(admin, knowledgeBase.id, sampleSelection.samples, report);
-    const taskTimeoutMs = readValidationTaskTimeoutMs(env, sampleSelection.samples.length);
-    const completedTask = await pollTaskEnded(
+
+    const singleUploadTask = await uploadSamples(admin, knowledgeBase.id, singleSamples, report, {
+      checkName: "single-upload-submit",
+      message: "Uploaded one selected sample in a single-file upload action."
+    });
+    const completedSingleTask = await pollTaskEnded(
       admin,
       knowledgeBase.id,
-      uploadTask.id,
+      singleUploadTask.id,
       taskTimeoutMs,
-      report
+      report,
+      {
+        checkName: "single-task-ended",
+        message: "Single-file upload task reached ended lifecycle state."
+      }
     );
-    const taskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedTask.id, report);
-    await validateSingleUploadTaskRow(admin, knowledgeBase.id, completedTask.id, report);
-    const adminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report);
-    await validatePublicOpenApi(publicApi, knowledgeBase.id, adminFiles, env, report);
-    const storageEvidence = await validateDatabaseBoundaries(
+    const singleTaskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedSingleTask.id, report, {
+      checkName: "single-task-detail",
+      message: "Single-file task detail exposes bounded admin-only phase entries."
+    });
+    await validateUploadTaskRows(
+      admin,
+      knowledgeBase.id,
+      [{ id: completedSingleTask.id, sourceCount: 1 }],
+      report,
+      {
+        checkName: "single-upload-task-row",
+        message: "Single-file upload is represented as one task row with one lifecycle status."
+      }
+    );
+    const singleAdminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report, {
+      expectedSamples: singleSamples,
+      checkName: "single-admin-file-surfaces",
+      message: "Admin release, bundle, tree, detail, and public URL surfaces work after single upload."
+    });
+    await validatePublicOpenApi(publicApi, knowledgeBase.id, singleAdminFiles, env, report, {
+      checkName: "single-public-openapi",
+      message: "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed after single upload."
+    });
+    const singleStorageEvidence = await validateDatabaseBoundaries(
       env.DATABASE_URL,
       knowledgeBase.id,
-      completedTask.id,
-      sampleSelection.samples,
+      completedSingleTask.id,
+      singleSamples,
+      singleSamples,
+      report,
+      {
+        checkName: "single-database-boundaries",
+        message:
+          "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns after single upload."
+      }
+    );
+    await validateS3ObjectBoundaries(env, singleStorageEvidence, singleSamples, report, {
+      checkName: "single-s3-object-boundaries",
+      message:
+        "S3 contains internal source objects and generated public page objects without exposing source logical paths after single upload."
+    });
+
+    const batchUploadTask = await uploadSamples(admin, knowledgeBase.id, batchSamples, report, {
+      checkName: "batch-upload-submit",
+      message: "Uploaded selected batch samples in one upload action."
+    });
+    const completedBatchTask = await pollTaskEnded(
+      admin,
+      knowledgeBase.id,
+      batchUploadTask.id,
+      taskTimeoutMs,
+      report,
+      {
+        checkName: "batch-task-ended",
+        message: "Batch upload task reached ended lifecycle state."
+      }
+    );
+    const batchTaskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedBatchTask.id, report, {
+      checkName: "batch-task-detail",
+      message: "Batch task detail exposes bounded admin-only phase entries."
+    });
+    await validateUploadTaskRows(
+      admin,
+      knowledgeBase.id,
+      [
+        { id: completedSingleTask.id, sourceCount: 1 },
+        { id: completedBatchTask.id, sourceCount: batchSamples.length }
+      ],
+      report,
+      {
+        checkName: "single-batch-upload-task-rows",
+        message: "Single and batch upload actions are represented as two task rows with one lifecycle status each."
+      }
+    );
+    await validateTaskSourcePagination(
+      admin,
+      knowledgeBase.id,
+      completedBatchTask.id,
+      batchSamples.length,
       report
     );
-    await validateS3ObjectBoundaries(env, storageEvidence, sampleSelection.samples, report);
-    await validateRedisBoundaries(env.REDIS_URL, sampleSelection.samples, report);
+    const batchAdminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report, {
+      expectedSamples: allSamples,
+      checkName: "batch-admin-file-surfaces",
+      message:
+        "Admin release, bundle, tree, detail, and public URL surfaces include single and batch generated files."
+    });
+    await validatePublicOpenApi(publicApi, knowledgeBase.id, batchAdminFiles, env, report, {
+      checkName: "batch-public-openapi",
+      message:
+        "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed after batch upload."
+    });
+    const batchStorageEvidence = await validateDatabaseBoundaries(
+      env.DATABASE_URL,
+      knowledgeBase.id,
+      completedBatchTask.id,
+      batchSamples,
+      allSamples,
+      report,
+      {
+        checkName: "batch-database-boundaries",
+        message:
+          "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns after batch upload."
+      }
+    );
+    await validateS3ObjectBoundaries(env, batchStorageEvidence, batchSamples, report, {
+      checkName: "batch-s3-object-boundaries",
+      message:
+        "S3 contains internal source objects and generated public page objects without exposing source logical paths after batch upload."
+    });
+    await validateRedisBoundaries(env.REDIS_URL, allSamples, report);
     const deletionEvidence = await validateSourceDeletionFullFlow({
       admin,
       publicApi,
       env,
       knowledgeBaseId: knowledgeBase.id,
-      pageFile: adminFiles.pageFile,
+      pageFile: batchAdminFiles.pageFile,
       taskTimeoutMs,
       report
     });
@@ -151,11 +278,15 @@ export async function runApiValidation() {
 
     report.validationRun = {
       knowledgeBaseId: knowledgeBase.id,
-      taskId: completedTask.id,
+      singleTaskId: completedSingleTask.id,
+      batchTaskId: completedBatchTask.id,
       deletionTaskId: deletionEvidence.taskId,
       deletedPagePath: deletionEvidence.deletedPagePath,
-      sourceCount: completedTask.sourceCount,
-      phaseCount: taskDetail.phaseDetails.items.length,
+      singleSourceCount: completedSingleTask.sourceCount,
+      batchSourceCount: completedBatchTask.sourceCount,
+      totalSourceCount: allSamples.length,
+      singlePhaseCount: singleTaskDetail.phaseDetails.items.length,
+      batchPhaseCount: batchTaskDetail.phaseDetails.items.length,
       publicBaseUrl: redactUrl(publicBaseUrl),
       adminBaseUrl: redactUrl(adminBaseUrl)
     };
@@ -191,9 +322,12 @@ function createBaseReport(kind, startedAt) {
       redactedRoot: `<${SAMPLE_SOURCE_ENV}>`
     },
     samples: [],
+    singleSample: null,
+    batchSamples: [],
     sampleCoverage: null,
     validationRun: null,
     checks: [],
+    bugFixes: [],
     failures: []
   };
 }
@@ -247,11 +381,30 @@ function writeReport(report) {
     "## Sample Coverage",
     "",
     `- Samples: ${report.samples.length}`,
+    `- Single-upload sample: ${report.singleSample?.basename ?? "none"}`,
+    `- Batch-upload samples: ${report.batchSamples.length}`,
     `- Statuses: ${report.sampleCoverage?.statuses.join(", ") ?? "none"}`,
     `- Types: ${report.sampleCoverage?.types.join(", ") ?? "none"}`,
     `- Unknown date sample: ${report.sampleCoverage?.includesUnknownDate ? "yes" : "no"}`,
     `- Long title sample: ${report.sampleCoverage?.includesLongTitle ? "yes" : "no"}`,
     `- Duplicated title sample: ${report.sampleCoverage?.includesDuplicatedTitle ? "yes" : "no"}`,
+    "",
+    "## Single Upload File",
+    "",
+    ...(report.singleSample
+      ? [
+          `- ${report.singleSample.basename}: type=${report.singleSample.type || "none"}, status=${report.singleSample.status || "none"}, date=${report.singleSample.publicationDate}`
+        ]
+      : ["- None recorded."]),
+    "",
+    "## Batch Upload Files",
+    "",
+    ...(report.batchSamples.length
+      ? report.batchSamples.map(
+          (sample) =>
+            `- ${sample.basename}: type=${sample.type || "none"}, status=${sample.status || "none"}, date=${sample.publicationDate}`
+        )
+      : ["- None recorded."]),
     "",
     "## Selected Files",
     "",
@@ -276,6 +429,12 @@ function writeReport(report) {
     "",
     ...(blackBoxChecks.length
       ? blackBoxChecks.map((check) => `- ${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.message}`)
+      : ["- None recorded."]),
+    "",
+    "## Bug Fixes",
+    "",
+    ...(report.bugFixes.length
+      ? report.bugFixes.map((bugFix) => `- ${bugFix}`)
       : ["- None recorded."]),
     "",
     "## Failures",
@@ -533,7 +692,7 @@ async function createValidationKnowledgeBase(admin, report) {
   return knowledgeBase;
 }
 
-async function uploadSamples(admin, knowledgeBaseId, samples, report) {
+async function uploadSamples(admin, knowledgeBaseId, samples, report, options = {}) {
   const formData = new FormData();
 
   for (const sample of samples) {
@@ -562,7 +721,7 @@ async function uploadSamples(admin, knowledgeBaseId, samples, report) {
   }
 
   report.checks.push(
-    okCheck("upload-submit", "Uploaded selected samples in one upload action.", {
+    okCheck(options.checkName ?? "upload-submit", options.message ?? "Uploaded selected samples in one upload action.", {
       sourceCount: task.sourceCount
     })
   );
@@ -570,7 +729,7 @@ async function uploadSamples(admin, knowledgeBaseId, samples, report) {
   return task;
 }
 
-async function pollTaskEnded(admin, knowledgeBaseId, taskId, timeoutMs, report) {
+async function pollTaskEnded(admin, knowledgeBaseId, taskId, timeoutMs, report, options = {}) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -587,7 +746,7 @@ async function pollTaskEnded(admin, knowledgeBaseId, taskId, timeoutMs, report) 
 
     if (task?.endedAt) {
       report.checks.push(
-        okCheck("task-ended", "Upload task reached ended lifecycle state.", {
+        okCheck(options.checkName ?? "task-ended", options.message ?? "Upload task reached ended lifecycle state.", {
           timeoutMs
         })
       );
@@ -600,7 +759,7 @@ async function pollTaskEnded(admin, knowledgeBaseId, taskId, timeoutMs, report) 
   throw new Error(`Timed out waiting for upload task to end after ${timeoutMs}ms.`);
 }
 
-async function fetchTaskDetail(admin, knowledgeBaseId, taskId, report) {
+async function fetchTaskDetail(admin, knowledgeBaseId, taskId, report, options = {}) {
   const response = await admin.request(
     `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks/${encodeURIComponent(taskId)}?limit=50`
   );
@@ -617,7 +776,7 @@ async function fetchTaskDetail(admin, knowledgeBaseId, taskId, report) {
   }
 
   report.checks.push(
-    okCheck("task-detail", "Task detail exposes bounded admin-only phase entries.", {
+    okCheck(options.checkName ?? "task-detail", options.message ?? "Task detail exposes bounded admin-only phase entries.", {
       phaseCount: phases.length,
       sourceCount: body.sourceFiles?.items?.length ?? 0
     })
@@ -625,28 +784,85 @@ async function fetchTaskDetail(admin, knowledgeBaseId, taskId, report) {
   return body;
 }
 
-async function validateSingleUploadTaskRow(admin, knowledgeBaseId, taskId, report) {
+async function validateUploadTaskRows(admin, knowledgeBaseId, expectedTasks, report, options = {}) {
   const body = await readJson(
     admin,
     `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks?limit=50`
   );
   const uploadTasks = (body.items ?? []).filter((task) => task.operation === "upload");
+  const uploadTaskIds = new Set(uploadTasks.map((task) => task.id));
 
-  if (uploadTasks.length !== 1 || uploadTasks[0]?.id !== taskId) {
-    throw new Error(`Expected one upload task row for one upload action, got ${uploadTasks.length}.`);
+  if (uploadTasks.length !== expectedTasks.length) {
+    throw new Error(`Expected ${expectedTasks.length} upload task rows, got ${uploadTasks.length}.`);
+  }
+
+  for (const expectedTask of expectedTasks) {
+    const task = uploadTasks.find((item) => item.id === expectedTask.id);
+
+    if (!task) {
+      throw new Error(`Expected upload task row was missing: ${expectedTask.id}`);
+    }
+
+    if (task.sourceCount !== expectedTask.sourceCount || !task.startedAt || !task.endedAt) {
+      throw new Error(`Upload task row did not expose expected lifecycle data: ${expectedTask.id}`);
+    }
   }
 
   report.checks.push(
-    okCheck("single-upload-task-row", "One upload action is represented as one task row with one lifecycle status.", {
-      taskId
+    okCheck(options.checkName ?? "upload-task-rows", options.message ?? "Upload actions are represented as task rows with one lifecycle status.", {
+      taskIds: Array.from(uploadTaskIds)
     })
   );
 }
 
-async function validateAdminFileSurfaces(admin, knowledgeBaseId, report) {
+async function validateTaskSourcePagination(admin, knowledgeBaseId, taskId, expectedSourceCount, report) {
+  if (expectedSourceCount <= 1) {
+    report.checks.push(
+      okCheck("task-source-pagination", "Batch task has one source file; source pagination is not needed.", {
+        expectedSourceCount
+      })
+    );
+    return;
+  }
+
+  const first = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks/${encodeURIComponent(taskId)}?limit=1`
+  );
+
+  if (first.sourceFiles?.items?.length !== 1 || !first.sourceFiles.nextCursor) {
+    throw new Error("Expected first task source-file page to include one item and a next cursor.");
+  }
+
+  const second = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks/${encodeURIComponent(taskId)}?limit=1&sourceCursor=${encodeURIComponent(first.sourceFiles.nextCursor)}`
+  );
+
+  if (second.sourceFiles?.items?.length !== 1) {
+    throw new Error("Expected second task source-file page to include one item.");
+  }
+
+  if (
+    first.sourceFiles.items[0]?.taskId !== taskId ||
+    second.sourceFiles.items[0]?.taskId !== taskId ||
+    first.sourceFiles.items[0]?.id === second.sourceFiles.items[0]?.id
+  ) {
+    throw new Error("Task source-file cursor did not stay scoped to the selected task.");
+  }
+
+  report.checks.push(
+    okCheck("task-source-pagination", "Task source files are paginated with an independent bounded cursor.", {
+      expectedSourceCount
+    })
+  );
+}
+
+async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options = {}) {
+  const expectedSamples = options.expectedSamples ?? [];
   const [releases, bundleFiles, tree, urls] = await Promise.all([
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/releases?limit=10`),
-    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=50`),
+    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=200`),
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=50`),
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/public-urls`)
   ]);
@@ -658,12 +874,21 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report) {
   }
 
   const pageFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("pages/"));
+  const pageFiles = bundleFiles.items.filter((file) => String(file.logicalPath).startsWith("pages/"));
   const indexFile = bundleFiles.items.find((file) => file.logicalPath === "index.md");
   const searchFile = bundleFiles.items.find((file) => file.logicalPath === "_index/search.json");
   const exposedSourceFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("sources/"));
 
   if (!pageFile || !indexFile || !searchFile || exposedSourceFile) {
     throw new Error("Generated bundle must include page and index files without sources/ files.");
+  }
+
+  for (const sample of expectedSamples) {
+    const found = pageFiles.some((file) => path.basename(file.logicalPath) === sample.basename);
+
+    if (!found) {
+      throw new Error(`Generated page file is missing for selected sample: ${sample.basename}`);
+    }
   }
 
   const detail = await readJson(
@@ -676,21 +901,24 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report) {
   }
 
   report.checks.push(
-    okCheck("admin-file-surfaces", "Admin release, bundle, tree, detail, and public URL surfaces work.", {
+    okCheck(options.checkName ?? "admin-file-surfaces", options.message ?? "Admin release, bundle, tree, detail, and public URL surfaces work.", {
       bundleFiles: bundleFiles.items.length,
-      rootTreeItems: tree.items.length
+      rootTreeItems: tree.items.length,
+      pageFiles: pageFiles.length,
+      expectedSamples: expectedSamples.length
     })
   );
 
   return {
     pageFile,
+    pageFiles,
     indexFile,
     searchFile,
     publicUrls: urls.publicUrls
   };
 }
 
-async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env, report) {
+async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env, report, options = {}) {
   if (env.PUBLIC_API_AUTH_REQUIRED === "true") {
     const missingAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`);
 
@@ -706,7 +934,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   const paths = [
     "index.md",
     "schema.md",
-    adminFiles.pageFile.logicalPath,
+    ...adminFiles.pageFiles.map((file) => file.logicalPath),
     "_index/manifest.json",
     "_index/search.json",
     "_index/links.json"
@@ -745,7 +973,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
   validateOkfPublicArtifactBodies({
     bodies,
-    pagePath: adminFiles.pageFile.logicalPath,
+    pagePaths: adminFiles.pageFiles.map((file) => file.logicalPath),
     report
   });
 
@@ -792,40 +1020,50 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
   report.checks.push(
     okCheck(
-      "public-openapi",
-      "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed."
+      options.checkName ?? "public-openapi",
+      options.message ?? "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed."
     )
   );
 }
 
-function validateOkfPublicArtifactBodies({ bodies, pagePath, report }) {
+function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
   const index = bodies.get("index.md") ?? "";
-  const page = bodies.get(pagePath) ?? "";
   const manifest = parseJsonIndex(bodies.get("_index/manifest.json"), "_index/manifest.json");
   const search = parseJsonIndex(bodies.get("_index/search.json"), "_index/search.json");
   const links = parseJsonIndex(bodies.get("_index/links.json"), "_index/links.json");
 
-  if (!index.includes(pagePath) && !index.includes(encodeURIComponent(path.basename(pagePath)))) {
-    throw new Error("Public index.md does not reference the sampled page path.");
+  for (const pagePath of pagePaths) {
+    const page = bodies.get(pagePath) ?? "";
+
+    if (!index.includes(pagePath) && !index.includes(encodeURIComponent(path.basename(pagePath)))) {
+      throw new Error("Public index.md does not reference the sampled page path.");
+    }
+
+    if (!page.startsWith("---\n") || !/\n#\s+/.test(page)) {
+      throw new Error("Sampled public page does not include expected frontmatter and heading content.");
+    }
+
+    if (!Array.isArray(manifest.files) || !manifest.files.some((file) => file.path === pagePath)) {
+      throw new Error("Manifest index does not include sampled public page path.");
+    }
+
+    if (!Array.isArray(search.items) || !search.items.some((item) => item.path === pagePath && item.title)) {
+      throw new Error("Search index does not include sampled public page metadata.");
+    }
   }
 
-  if (!page.startsWith("---\n") || !/\n#\s+/.test(page)) {
-    throw new Error("Sampled public page does not include expected frontmatter and heading content.");
+  if (!Array.isArray(links.links)) {
+    throw new Error("Link index does not include graph link data.");
   }
 
-  if (!Array.isArray(manifest.files) || !manifest.files.some((file) => file.path === pagePath)) {
-    throw new Error("Manifest index does not include sampled public page path.");
-  }
-
-  if (!Array.isArray(search.items) || !search.items.some((item) => item.path === pagePath && item.title)) {
-    throw new Error("Search index does not include sampled public page metadata.");
-  }
-
-  if (
-    !Array.isArray(links.links) ||
-    !links.links.some((link) => link.to === pagePath || link.from === pagePath)
-  ) {
-    throw new Error("Link index does not include graph link data for the sampled page.");
+  const manifestPaths = new Set((manifest.files ?? []).map((file) => file.path));
+  for (const link of links.links) {
+    if (
+      (link.from && !manifestPaths.has(link.from)) ||
+      (link.to && !manifestPaths.has(link.to))
+    ) {
+      throw new Error("Link index references a path missing from the manifest.");
+    }
   }
 
   for (const [logicalPath, body] of bodies) {
@@ -836,7 +1074,7 @@ function validateOkfPublicArtifactBodies({ bodies, pagePath, report }) {
 
   report.checks.push(
     okCheck("okf-public-artifacts", "Public OKF Markdown, metadata indexes, headings, and graph links are internally consistent.", {
-      pagePath,
+      pagePaths: pagePaths.length,
       manifestFiles: manifest.files.length,
       searchItems: search.items.length,
       links: links.links.length
@@ -1125,7 +1363,15 @@ async function validateKnowledgeBaseDeletion({ admin, publicApi, env, knowledgeB
   );
 }
 
-async function validateDatabaseBoundaries(databaseUrl, knowledgeBaseId, taskId, samples, report) {
+async function validateDatabaseBoundaries(
+  databaseUrl,
+  knowledgeBaseId,
+  taskId,
+  taskSamples,
+  allSamples,
+  report,
+  options = {}
+) {
   const postgresModule = requireFromApiPackage("postgres");
   const postgres = postgresModule.default ?? postgresModule;
   const sql = postgres(databaseUrl, { max: 1 });
@@ -1191,11 +1437,12 @@ async function validateDatabaseBoundaries(databaseUrl, knowledgeBaseId, taskId, 
       ORDER BY logical_path
     `;
     const storageShape = storageShapeRows[0] ?? {};
-    const expectedNames = new Set(samples.map((sample) => sample.basename));
+    const expectedTaskNames = new Set(taskSamples.map((sample) => sample.basename));
+    const expectedAllNames = new Set(allSamples.map((sample) => sample.basename));
     const actualNames = new Set(sourceRows.map((row) => row.original_name));
 
     if (
-      recordCounts.source_files !== samples.length ||
+      recordCounts.source_files !== allSamples.length ||
       recordCounts.upload_tasks !== 1 ||
       recordCounts.releases < 1 ||
       recordCounts.bundle_files < 1 ||
@@ -1209,17 +1456,32 @@ async function validateDatabaseBoundaries(databaseUrl, knowledgeBaseId, taskId, 
     }
 
     if (
-      storageShape.internal_source_objects !== samples.length ||
-      storageShape.public_page_objects < samples.length ||
+      storageShape.internal_source_objects !== taskSamples.length ||
+      storageShape.public_page_objects < allSamples.length ||
       storageShape.exposed_source_bundle_files !== 0 ||
       storageShape.source_metadata_is_object !== true
     ) {
       throw new Error(`Unexpected storage-backed database shape: ${JSON.stringify(storageShape)}`);
     }
 
-    for (const name of expectedNames) {
+    for (const name of expectedTaskNames) {
       if (!actualNames.has(name)) {
         throw new Error(`Database did not preserve uploaded original file name: ${name}`);
+      }
+    }
+
+    const allSourceRows = await sql`
+      SELECT original_name
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND deleted_at IS NULL
+      ORDER BY original_name
+    `;
+    const allActualNames = new Set(allSourceRows.map((row) => row.original_name));
+
+    for (const name of expectedAllNames) {
+      if (!allActualNames.has(name)) {
+        throw new Error(`Database did not preserve active source file name: ${name}`);
       }
     }
 
@@ -1232,13 +1494,15 @@ async function validateDatabaseBoundaries(databaseUrl, knowledgeBaseId, taskId, 
 
     report.checks.push(
       okCheck(
-        "database-boundaries",
-        "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns.",
+        options.checkName ?? "database-boundaries",
+        options.message ?? "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns.",
         {
           ...recordCounts,
           internalSourceObjects: storageShape.internal_source_objects,
           publicPageObjects: storageShape.public_page_objects,
-          exposedSourceBundleFiles: storageShape.exposed_source_bundle_files
+          exposedSourceBundleFiles: storageShape.exposed_source_bundle_files,
+          taskSamples: taskSamples.length,
+          activeSamples: allSamples.length
         },
         WHITE_BOX
       )
@@ -1255,7 +1519,7 @@ async function validateDatabaseBoundaries(databaseUrl, knowledgeBaseId, taskId, 
   }
 }
 
-async function validateS3ObjectBoundaries(env, evidence, samples, report) {
+async function validateS3ObjectBoundaries(env, evidence, samples, report, options = {}) {
   const { GetObjectCommand, S3Client } = requireFromApiPackage("@aws-sdk/client-s3");
   const client = new S3Client(createS3ClientConfigFromEnv(env));
   const sourceText = await getS3ObjectText(client, env.S3_BUCKET, evidence.sourceObjectKey);
@@ -1276,8 +1540,8 @@ async function validateS3ObjectBoundaries(env, evidence, samples, report) {
 
   report.checks.push(
     okCheck(
-      "s3-object-boundaries",
-      "S3 contains internal source objects and generated public page objects without exposing source logical paths.",
+      options.checkName ?? "s3-object-boundaries",
+      options.message ?? "S3 contains internal source objects and generated public page objects without exposing source logical paths.",
       {
         sourceBodyReadable: true,
         pageBodyReadable: true,

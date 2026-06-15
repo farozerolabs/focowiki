@@ -2,15 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
-import { selectSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
+import { selectSingleAndBatchSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-full-flow";
+const CHANGE_ID = "validate-cleaned-legal-single-batch-flows";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
 loadLocalEnv();
 
-const sampleSelection = selectSamplesFromEnvironment();
+const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
+const singleSample = sampleSelection.singleSample;
+const batchSamples = sampleSelection.batchSamples;
 const adminUiBaseUrl =
   process.env.ADMIN_UI_BASE_URL ?? `http://localhost:${process.env.ADMIN_UI_PORT ?? "43100"}`;
 const adminUsername = requiredEnv("ADMIN_USERNAME");
@@ -26,6 +28,20 @@ const report = {
   ok: false,
   adminUiBaseUrl: redactUrl(adminUiBaseUrl),
   samples: sampleSelection.samples.map((sample) => ({
+    basename: sample.basename,
+    type: sample.type,
+    status: sample.status,
+    publicationDate: sample.publicationDate || "unknown-date",
+    sizeBytes: sample.sizeBytes
+  })),
+  singleSample: {
+    basename: singleSample.basename,
+    type: singleSample.type,
+    status: singleSample.status,
+    publicationDate: singleSample.publicationDate || "unknown-date",
+    sizeBytes: singleSample.sizeBytes
+  },
+  batchSamples: batchSamples.map((sample) => ({
     basename: sample.basename,
     type: sample.type,
     status: sample.status,
@@ -83,39 +99,49 @@ try {
   await page.getByRole("button", { name: /^Upload$/ }).waitFor();
   report.checks.push(okCheck("knowledge-base", "Created and opened validation knowledge base."));
 
-  await page.getByRole("button", { name: /^Upload$/ }).click();
-  const uploadDialog = page.getByRole("dialog");
-  await expectNoMetadataInputs(uploadDialog);
-  await uploadDialog.locator("#source-files").setInputFiles(
-    sampleSelection.samples.map((sample) => sample.filePath)
-  );
-  await uploadDialog.getByRole("button", { name: /^Upload$/ }).click();
-  await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
-  await page.getByText(/task-/).waitFor({ timeout: 30_000 });
-  report.checks.push(okCheck("upload-submit", "Upload dialog submitted and task list refreshed."));
-
+  await uploadFilesFromDialog(page, [singleSample], {
+    checkName: "single-upload-submit",
+    message: "Single-file upload dialog submitted and task list refreshed."
+  });
   await page.getByText("Upload parsing task ended").waitFor({ timeout: taskTimeoutMs });
-  report.checks.push(okCheck("task-ended", "Browser observed ended upload task."));
+  report.checks.push(okCheck("single-task-ended", "Browser observed ended single-file upload task."));
 
-  await page.getByRole("button", { name: "pages" }).waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: "pages" }).click();
-  const firstSampleName = sampleSelection.samples[0]?.basename;
-  const secondSampleName = sampleSelection.samples.find((sample) => sample.basename !== firstSampleName)?.basename;
+  const firstSampleName = singleSample.basename;
+  const secondSampleName = batchSamples[0]?.basename;
 
   if (!firstSampleName || !secondSampleName) {
     throw new Error("No selected sample basename was available for browser preview.");
   }
 
+  await openPagesDirectoryIfNeeded(page, firstSampleName);
   await page.getByRole("button", { name: firstSampleName, exact: true }).click();
-  const previewArticle = page.locator("article");
-  await previewArticle.waitFor({ timeout: 30_000 });
-  const previewText = await previewArticle.innerText();
+  await waitForPreviewText(page, singleSample.title);
 
-  if (!previewText.includes(sampleSelection.samples[0].title)) {
-    throw new Error("Generated file preview did not contain the selected Markdown title.");
+  report.checks.push(okCheck("single-file-preview", "Opened generated single-upload file preview in browser."));
+
+  await page.getByRole("button", { name: "Upload tasks" }).click();
+  await uploadFilesFromDialog(page, batchSamples, {
+    checkName: "batch-upload-submit",
+    message: "Batch upload dialog submitted and task list refreshed."
+  });
+  await page.getByText("Upload parsing task ended").nth(1).waitFor({ timeout: taskTimeoutMs });
+  report.checks.push(okCheck("batch-task-ended", "Browser observed ended batch upload task."));
+
+  const loadMoreFiles = page.getByRole("button", { name: "Load more files" });
+  if ((await loadMoreFiles.count()) > 0) {
+    await loadMoreFiles.first().click();
+    report.checks.push(okCheck("task-source-pagination", "Browser loaded another source-file page for a task."));
+  } else {
+    report.checks.push(okCheck("task-source-pagination", "Task source-file page fit within the configured browser page size."));
   }
 
-  report.checks.push(okCheck("file-preview", "Opened generated file preview in browser."));
+  await openPagesDirectoryIfNeeded(page, firstSampleName);
+  await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: secondSampleName, exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: secondSampleName, exact: true }).click();
+  await waitForPreviewText(page, batchSamples[0].title);
+
+  report.checks.push(okCheck("batch-file-preview", "Opened generated batch-upload file preview in browser."));
 
   const copyButton = page.getByRole("button", { name: "Copy index URL" });
   await copyButton.click();
@@ -127,16 +153,15 @@ try {
 
   report.checks.push(okCheck("copy-url", "Public URL copy action produced a scoped URL."));
 
-  await page.getByRole("button", { name: `File actions: ${firstSampleName}` }).click();
+  await page.getByRole("button", { name: `File actions: ${secondSampleName}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   const deleteFileDialog = page.getByRole("alertdialog", { name: "Delete Markdown file" });
   await deleteFileDialog.waitFor();
   await deleteFileDialog.getByRole("button", { name: "Delete" }).click();
   await deleteFileDialog.waitFor({ state: "detached", timeout: 30_000 });
   await page.getByText("Delete file").waitFor({ timeout: 30_000 });
-  await page.getByText("Upload parsing task ended").waitFor({ timeout: taskTimeoutMs });
-  await expectButtonDetached(page, firstSampleName, taskTimeoutMs);
-  await page.getByRole("button", { name: secondSampleName, exact: true }).waitFor({ timeout: 30_000 });
+  await expectButtonDetached(page, secondSampleName, taskTimeoutMs);
+  await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));
 
   await page.getByRole("button", { name: "Back" }).click();
@@ -195,6 +220,49 @@ function okCheck(name, message) {
     ok: true,
     message
   };
+}
+
+async function uploadFilesFromDialog(page, samples, { checkName, message }) {
+  await page.getByRole("button", { name: /^Upload$/ }).click();
+  const uploadDialog = page.getByRole("dialog");
+  await expectNoMetadataInputs(uploadDialog);
+  await uploadDialog.locator("#source-files").setInputFiles(samples.map((sample) => sample.filePath));
+  await uploadDialog.getByText(`${samples.length} selected Markdown file`, { exact: false }).waitFor({
+    timeout: 30_000
+  });
+  await uploadDialog.getByRole("button", { name: /^Upload$/ }).click();
+  await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
+  await page.getByText(/task-/).first().waitFor({ timeout: 30_000 });
+  report.checks.push(okCheck(checkName, message));
+}
+
+async function openPagesDirectoryIfNeeded(page, expectedFileName) {
+  const expectedFileButton = page.getByRole("button", { name: expectedFileName, exact: true });
+
+  if ((await expectedFileButton.count()) > 0) {
+    return;
+  }
+
+  const pagesButton = page.getByRole("button", { name: "pages" });
+  await pagesButton.waitFor({ timeout: 30_000 });
+  await pagesButton.click();
+  await expectedFileButton.waitFor({ timeout: 30_000 });
+}
+
+async function waitForPreviewText(page, expectedText) {
+  await page.locator("article").waitFor({ timeout: 30_000 });
+
+  const found = await page
+    .locator("article")
+    .filter({ hasText: expectedText })
+    .first()
+    .waitFor({ timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!found) {
+    throw new Error("Generated file preview did not contain the selected Markdown title.");
+  }
 }
 
 function readValidationTaskTimeoutMs(sampleCount) {

@@ -5,9 +5,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  BATCH_SAMPLE_COUNT_ENV,
   REQUIRED_SAMPLE_COVERAGE,
   SAMPLE_COUNT_ENV,
   SAMPLE_SOURCE_ENV,
+  SINGLE_SAMPLE_ENV,
+  selectSingleAndBatchSamples,
+  selectSingleAndBatchSamplesFromEnvironment,
   selectSamples,
   selectSamplesFromEnvironment
 } from "../lib/sample-selector.mjs";
@@ -65,6 +69,84 @@ test("selectSamplesFromEnvironment validates local-only input configuration", ()
       }),
     new RegExp(`${SAMPLE_COUNT_ENV} must be an integer`)
   );
+});
+
+test("selectSingleAndBatchSamples chooses non-overlapping single and batch Markdown samples", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-single-batch-"));
+  const markdownDir = path.join(root, "markdown");
+  fs.mkdirSync(markdownDir);
+  writeCoverageFiles(markdownDir);
+  fs.writeFileSync(path.join(markdownDir, "ignored.json"), "{}");
+
+  const originalReadFileSync = fs.readFileSync;
+  fs.readFileSync = () => {
+    throw new Error("full body read should not be used during single and batch selection");
+  };
+
+  try {
+    const result = selectSingleAndBatchSamples(root, { batchSampleCount: 13 });
+    const repeated = selectSingleAndBatchSamples(root, { batchSampleCount: 13 });
+
+    assert.equal(result.sampleCount, 14);
+    assert.equal(result.batchSampleCount, 13);
+    assert.equal(result.batchSamples.length, 13);
+    assert.equal(result.samples[0].basename, result.singleSample.basename);
+    assert.equal(
+      result.batchSamples.some((sample) => sample.basename === result.singleSample.basename),
+      false
+    );
+    assert.deepEqual(
+      result.samples.map((sample) => sample.basename),
+      repeated.samples.map((sample) => sample.basename)
+    );
+    assert.equal(result.samples.some((sample) => sample.basename === "ignored.json"), false);
+    assert.equal(result.samples.some((sample) => Object.hasOwn(sample, "body")), false);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selectSingleAndBatchSamplesFromEnvironment supports explicit single sample and batch count", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-single-batch-env-"));
+  const markdownDir = path.join(root, "markdown");
+  fs.mkdirSync(markdownDir);
+  writeCoverageFiles(markdownDir);
+
+  try {
+    const result = selectSingleAndBatchSamplesFromEnvironment({
+      [SAMPLE_SOURCE_ENV]: root,
+      [SAMPLE_COUNT_ENV]: "14",
+      [BATCH_SAMPLE_COUNT_ENV]: "4",
+      [SINGLE_SAMPLE_ENV]: "03.md"
+    });
+
+    assert.equal(result.singleSample.basename, "03.md");
+    assert.equal(result.batchSamples.length, 4);
+    assert.equal(result.batchSamples.some((sample) => sample.basename === "03.md"), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selectSingleAndBatchSamples rejects invalid flow sample settings", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-single-batch-invalid-"));
+  const markdownDir = path.join(root, "markdown");
+  fs.mkdirSync(markdownDir);
+  writeCoverageFiles(markdownDir);
+
+  try {
+    assert.throws(
+      () => selectSingleAndBatchSamples(root, { batchSampleCount: 1 }),
+      new RegExp(`${BATCH_SAMPLE_COUNT_ENV} must be an integer`)
+    );
+    assert.throws(
+      () => selectSingleAndBatchSamples(root, { batchSampleCount: 13, singleSampleBasename: "missing.md" }),
+      new RegExp(`${SINGLE_SAMPLE_ENV} did not match`)
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function writeCoverageFiles(markdownDir) {
