@@ -10,6 +10,7 @@ import {
   selectSingleAndBatchSamplesFromEnvironment,
   selectSamplesFromEnvironment
 } from "./lib/sample-selector.mjs";
+import { redactPotentialPathText, redactReportText } from "./lib/redaction.mjs";
 
 export {
   selectSamples,
@@ -18,7 +19,7 @@ export {
   selectSingleAndBatchSamplesFromEnvironment
 } from "./lib/sample-selector.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-single-batch-flows";
+const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "validation-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "validation-report.md");
@@ -59,6 +60,8 @@ export async function runSampleValidation() {
   report.singleSample = redactSampleForReport(sampleSelection.singleSample);
   report.batchSamples = sampleSelection.batchSamples.map(redactSampleForReport);
   report.sampleCoverage = sampleSelection.coverage;
+  report.sampleCoverageWarnings = sampleSelection.coverageWarnings ?? [];
+  report.scannedCandidateProfiles = sampleSelection.scannedCandidateProfiles ?? null;
   report.checks.push(
     okCheck("sample-directory", "Sample source directory is configured and readable.", {}, WHITE_BOX)
   );
@@ -82,7 +85,14 @@ export async function runSampleValidation() {
     )
   );
   report.checks.push(
-    okCheck("sample-coverage", "Selected samples cover required statuses and types.", {}, WHITE_BOX)
+    okCheck(
+      "sample-coverage",
+      "Selected samples record available status, type, filename, and metadata coverage.",
+      {
+        warnings: report.sampleCoverageWarnings.length
+      },
+      WHITE_BOX
+    )
   );
   report.finishedAt = new Date().toISOString();
   report.ok = report.checks.every((check) => check.ok);
@@ -96,6 +106,7 @@ export async function runApiValidation() {
   try {
     const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
     const env = readRuntimeEnv();
+    report.modelAssistance = readModelAssistanceMode(env);
     const singleSamples = [sampleSelection.singleSample];
     const batchSamples = sampleSelection.batchSamples;
     const allSamples = sampleSelection.samples;
@@ -104,6 +115,8 @@ export async function runApiValidation() {
     report.singleSample = redactSampleForReport(sampleSelection.singleSample);
     report.batchSamples = batchSamples.map(redactSampleForReport);
     report.sampleCoverage = sampleSelection.coverage;
+    report.sampleCoverageWarnings = sampleSelection.coverageWarnings ?? [];
+    report.scannedCandidateProfiles = sampleSelection.scannedCandidateProfiles ?? null;
 
     const adminBaseUrl = env.ADMIN_API_BASE_URL ?? `http://127.0.0.1:${env.ADMIN_API_PORT ?? "43000"}`;
     const publicBaseUrl = env.PUBLIC_BASE_URL ?? `http://127.0.0.1:${env.PUBLIC_OPENAPI_PORT ?? "43200"}`;
@@ -120,15 +133,19 @@ export async function runApiValidation() {
     assertEnvValue(env.S3_PREFIX, "S3_PREFIX");
     assertUploadLimit(env.MAX_UPLOAD_FILES, Math.max(singleSamples.length, batchSamples.length));
 
-    const admin = createHttpClient(adminBaseUrl);
+    const admin = createHttpClient(adminBaseUrl, {
+      writeOrigin: env.ADMIN_PUBLIC_ORIGIN || `http://localhost:${env.ADMIN_UI_PORT ?? "43100"}`
+    });
     const publicApi = createHttpClient(publicBaseUrl);
     const taskTimeoutMs = readValidationTaskTimeoutMs(env, allSamples.length);
 
     await validateDatabaseConnectivity(env.DATABASE_URL, report);
     await validateRedisConnectivity(env.REDIS_URL, report);
     await validateS3Connectivity(env, report);
+    validateModelAssistanceMode(env, report);
     await expectUnauthorizedAdmin(admin, report);
     await validatePublicApiReachable(publicApi, env, report);
+    await validateSecurityHeaders({ admin, publicApi, env, report });
 
     await loginAdmin(admin, env, report);
     const knowledgeBase = await createValidationKnowledgeBase(admin, report);
@@ -275,6 +292,7 @@ export async function runApiValidation() {
       knowledgeBaseId: knowledgeBase.id,
       report
     });
+    await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
 
     report.validationRun = {
       knowledgeBaseId: knowledgeBase.id,
@@ -325,7 +343,14 @@ function createBaseReport(kind, startedAt) {
     singleSample: null,
     batchSamples: [],
     sampleCoverage: null,
+    sampleCoverageWarnings: [],
+    scannedCandidateProfiles: null,
     validationRun: null,
+    modelAssistance: readModelAssistanceMode(process.env),
+    commandsRun: defaultCommandsRun(kind),
+    testsRun: defaultTestsRun(kind),
+    validationPasses: defaultValidationPasses(kind),
+    manualReviewItems: defaultManualReviewItems(),
     checks: [],
     bugFixes: [],
     failures: []
@@ -369,7 +394,7 @@ function writeReport(report) {
   const whiteBoxChecks = report.checks.filter((check) => check.layer === WHITE_BOX);
   const blackBoxChecks = report.checks.filter((check) => check.layer === BLACK_BOX);
   const lines = [
-    "# Cleaned Legal Upload Validation Report",
+    "# Real Legal Full-Flow Validation Report",
     "",
     `- Change: ${report.change}`,
     `- Kind: ${report.kind}`,
@@ -388,6 +413,33 @@ function writeReport(report) {
     `- Unknown date sample: ${report.sampleCoverage?.includesUnknownDate ? "yes" : "no"}`,
     `- Long title sample: ${report.sampleCoverage?.includesLongTitle ? "yes" : "no"}`,
     `- Duplicated title sample: ${report.sampleCoverage?.includesDuplicatedTitle ? "yes" : "no"}`,
+    `- Non-ASCII basename sample: ${report.sampleCoverage?.includesNonAsciiBasename ? "yes" : "no"}`,
+    `- Unknown metadata sample: ${report.sampleCoverage?.includesUnknownMetadata ? "yes" : "no"}`,
+    `- Scanned candidate profiles: ${report.scannedCandidateProfiles ?? "not-recorded"}`,
+    `- Coverage warnings: ${report.sampleCoverageWarnings.length ? report.sampleCoverageWarnings.join("; ") : "none"}`,
+    "",
+    "## Model Assistance",
+    "",
+    `- Enabled: ${report.modelAssistance?.enabled ? "yes" : "no"}`,
+    `- Model: ${report.modelAssistance?.modelName ?? "none"}`,
+    `- Context window tokens: ${report.modelAssistance?.contextWindowTokens ?? "not-configured"}`,
+    `- Suggestion concurrency: ${report.modelAssistance?.suggestionConcurrency ?? "not-configured"}`,
+    "",
+    "## Validation Passes",
+    "",
+    ...report.validationPasses.map((item) => `- ${item}`),
+    "",
+    "## Commands Run",
+    "",
+    ...report.commandsRun.map((item) => `- ${item}`),
+    "",
+    "## Tests Run",
+    "",
+    ...report.testsRun.map((item) => `- ${item}`),
+    "",
+    "## Manual Review Items",
+    "",
+    ...report.manualReviewItems.map((item) => `- ${item}`),
     "",
     "## Single Upload File",
     "",
@@ -440,12 +492,70 @@ function writeReport(report) {
     "## Failures",
     "",
     ...(report.failures.length
-      ? report.failures.map((failure) => `- ${failure}`)
+      ? report.failures.map((failure) => `- ${redactReportText(failure)}`)
       : ["- None recorded."]),
     ""
   ];
 
   fs.writeFileSync(REPORT_MD, lines.join("\n"));
+}
+
+function defaultCommandsRun(kind) {
+  const commands = [
+    "pnpm validate:real-legal:samples",
+    `pnpm validate:real-legal:${kind}`
+  ];
+
+  if (kind === "api") {
+    commands.push("pnpm validate:real-legal:browser");
+    commands.push("pnpm verify");
+    commands.push("pnpm build");
+    commands.push("pnpm test:validation");
+    commands.push("pnpm validate:no-local-paths");
+    commands.push("openspec validate validate-real-legal-full-flow");
+  }
+
+  return Array.from(new Set(commands));
+}
+
+function defaultTestsRun(kind) {
+  const tests = [
+    "bounded sample selection",
+    "report redaction"
+  ];
+
+  if (kind === "api") {
+    tests.push("Admin API black-box flow");
+    tests.push("public OpenAPI black-box flow");
+    tests.push("PostgreSQL, Redis, S3, and OKF white-box checks");
+    tests.push("Admin UI browser flow");
+    tests.push("repository no-local-path scan");
+    tests.push("lint, typecheck, unit tests, and build");
+  }
+
+  return tests;
+}
+
+function defaultValidationPasses(kind) {
+  const passes = [
+    "Pass 1: bounded sample selection and redacted prerequisite validation.",
+    "Pass 2: real service API, public OpenAPI, persistence, storage, Redis, OKF, model-mode, and deletion validation."
+  ];
+
+  if (kind === "api") {
+    passes.push("Pass 3: Admin UI browser validation plus final repository verification and report leak scan.");
+  } else {
+    passes.push("Pass 3: final repository verification is required before release-gate completion.");
+  }
+
+  return passes;
+}
+
+function defaultManualReviewItems() {
+  return [
+    "Review optional sample coverage warnings to decide whether the configured local dataset should be broadened.",
+    "Review the Vite chunk size warning separately if frontend bundle size becomes a release concern."
+  ];
 }
 
 function writeJson(report) {
@@ -479,6 +589,67 @@ function assertUploadLimit(value, sampleCount) {
   }
 }
 
+function readModelAssistanceMode(env) {
+  const enabled = Boolean(env.MODEL_API_KEY?.trim() && env.MODEL_NAME?.trim());
+
+  return {
+    enabled,
+    modelName: enabled ? env.MODEL_NAME : null,
+    baseUrl: enabled ? redactUrl(env.MODEL_BASE_URL || "https://api.openai.com/v1") : null,
+    contextWindowTokens: enabled ? Number(env.MODEL_CONTEXT_WINDOW_TOKENS || 0) : null,
+    requestMaxTimeoutMs: enabled ? Number(env.MODEL_REQUEST_MAX_TIMEOUT_MS || 120_000) : null,
+    requestIdleTimeoutMs: enabled ? Number(env.MODEL_REQUEST_IDLE_TIMEOUT_MS || 30_000) : null,
+    suggestionConcurrency: enabled ? readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2) : null
+  };
+}
+
+function validateModelAssistanceMode(env, report) {
+  const mode = readModelAssistanceMode(env);
+  report.modelAssistance = mode;
+
+  if (!mode.enabled) {
+    report.checks.push(
+      okCheck(
+        "model-assistance-mode",
+        "Model assistance is disabled; deterministic generation path will be validated.",
+        {},
+        WHITE_BOX
+      )
+    );
+    return;
+  }
+
+  if (
+    !Number.isSafeInteger(mode.contextWindowTokens) ||
+    mode.contextWindowTokens <= 0 ||
+    !Number.isSafeInteger(mode.requestMaxTimeoutMs) ||
+    mode.requestMaxTimeoutMs <= 0 ||
+    !Number.isSafeInteger(mode.requestIdleTimeoutMs) ||
+    mode.requestIdleTimeoutMs <= 0 ||
+    mode.requestIdleTimeoutMs > mode.requestMaxTimeoutMs ||
+    !Number.isSafeInteger(mode.suggestionConcurrency) ||
+    mode.suggestionConcurrency <= 0
+  ) {
+    throw new Error("Model assistance validation requires valid context, timeout, and concurrency settings.");
+  }
+
+  report.checks.push(
+    okCheck(
+      "model-assistance-mode",
+      "Model assistance is enabled with bounded context, timeout, and concurrency settings.",
+      {
+        modelName: mode.modelName,
+        baseUrl: mode.baseUrl,
+        contextWindowTokens: mode.contextWindowTokens,
+        requestMaxTimeoutMs: mode.requestMaxTimeoutMs,
+        requestIdleTimeoutMs: mode.requestIdleTimeoutMs,
+        suggestionConcurrency: mode.suggestionConcurrency
+      },
+      WHITE_BOX
+    )
+  );
+}
+
 function readValidationTaskTimeoutMs(env, sampleCount) {
   const configured = env[TASK_TIMEOUT_ENV]?.trim();
 
@@ -509,7 +680,7 @@ function readPositiveInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function createHttpClient(baseUrl) {
+function createHttpClient(baseUrl, clientOptions = {}) {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
   let cookie = "";
 
@@ -517,18 +688,27 @@ function createHttpClient(baseUrl) {
     get cookie() {
       return cookie;
     },
-    async request(pathname, options = {}) {
-      const headers = new Headers(options.headers ?? {});
+    async request(pathname, requestOptions = {}) {
+      const headers = new Headers(requestOptions.headers ?? {});
+      const method = String(requestOptions.method ?? "GET").toUpperCase();
 
       if (cookie && !headers.has("cookie")) {
         headers.set("cookie", cookie);
+      }
+
+      if (
+        clientOptions.writeOrigin &&
+        !headers.has("origin") &&
+        !["GET", "HEAD", "OPTIONS"].includes(method)
+      ) {
+        headers.set("origin", clientOptions.writeOrigin);
       }
 
       let response;
 
       try {
         response = await fetch(`${normalizedBaseUrl}${pathname}`, {
-          ...options,
+          ...requestOptions,
           headers
         });
       } catch (error) {
@@ -633,6 +813,39 @@ async function validatePublicApiReachable(publicApi, env, report) {
   }
 
   report.checks.push(okCheck("public-openapi-prerequisite", "Public OpenAPI is reachable."));
+}
+
+async function validateSecurityHeaders({ admin, publicApi, env, report }) {
+  const adminResponse = await admin.request("/admin/api/knowledge-bases");
+  assertSecurityHeaders(adminResponse, "Admin API");
+
+  const publicResponse = await publicApi.request("/kb/focowiki-validation-missing/index.md", {
+    headers: publicAuthHeaders(env)
+  });
+  assertSecurityHeaders(publicResponse, "Public OpenAPI");
+
+  report.checks.push(
+    okCheck(
+      "http-security-headers",
+      "Admin API and public OpenAPI return security response headers on validation responses.",
+      {},
+      BLACK_BOX
+    )
+  );
+}
+
+function assertSecurityHeaders(response, surface) {
+  const referrerPolicy = response.headers.get("referrer-policy") ?? "";
+  const contentTypeOptions = response.headers.get("x-content-type-options") ?? "";
+  const frameOptions = response.headers.get("x-frame-options") ?? "";
+
+  if (
+    referrerPolicy.toLowerCase() !== "no-referrer" ||
+    contentTypeOptions.toLowerCase() !== "nosniff" ||
+    frameOptions.toUpperCase() !== "DENY"
+  ) {
+    throw new Error(`${surface} did not return expected security headers.`);
+  }
 }
 
 async function expectUnauthorizedAdmin(admin, report) {
@@ -1017,6 +1230,13 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     authHeaders,
     [404]
   );
+  await expectJsonError(
+    publicApi,
+    `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`,
+    authHeaders,
+    [405],
+    { method: "DELETE" }
+  );
 
   report.checks.push(
     okCheck(
@@ -1363,6 +1583,48 @@ async function validateKnowledgeBaseDeletion({ admin, publicApi, env, knowledgeB
   );
 }
 
+async function validateSecurityAuditEvidence(databaseUrl, startedAt, report) {
+  const postgresModule = requireFromApiPackage("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+
+  try {
+    const rows = await sql`
+      SELECT event_type, result, error_code, username, client_ip, user_agent, origin
+      FROM focowiki.admin_audit_events
+      WHERE created_at >= ${startedAt}
+      ORDER BY created_at DESC
+      LIMIT 50
+    `;
+
+    if (rows.length === 0) {
+      throw new Error("Security audit validation expected at least one audit event for this run.");
+    }
+
+    const serialized = JSON.stringify(rows);
+
+    if (/password|session=|PUBLIC_API_KEY|S3_SECRET|MODEL_API_KEY|Bearer\s+[A-Za-z0-9._-]+/i.test(serialized)) {
+      throw new Error("Security audit records exposed secret-like data.");
+    }
+
+    const eventTypes = Array.from(new Set(rows.map((row) => row.event_type))).sort();
+
+    report.checks.push(
+      okCheck(
+        "security-audit-evidence",
+        "Security audit records were written for the validation run without secret-like values.",
+        {
+          eventCount: rows.length,
+          eventTypes
+        },
+        WHITE_BOX
+      )
+    );
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
 async function validateDatabaseBoundaries(
   databaseUrl,
   knowledgeBaseId,
@@ -1634,8 +1896,8 @@ async function readPublicText(client, pathname, headers) {
   return response.text();
 }
 
-async function expectJsonError(client, pathname, headers, statuses) {
-  const response = await client.request(pathname, { headers });
+async function expectJsonError(client, pathname, headers, statuses, options = {}) {
+  const response = await client.request(pathname, { headers, method: options.method ?? "GET" });
 
   if (!statuses.includes(response.status)) {
     throw new Error(`Expected ${pathname} to return one of ${statuses.join(", ")}, got ${response.status}.`);
@@ -1744,12 +2006,6 @@ function redactUrl(url) {
   } catch {
     return "<invalid-url>";
   }
-}
-
-function redactPotentialPathText(text) {
-  return text
-    .replace(/\/[^"'`\s]*\/[^"'`\s]*/g, "<redacted-path>")
-    .replace(/[A-Z]:\\[^"'`\s]*/g, "<redacted-path>");
 }
 
 function sleep(ms) {

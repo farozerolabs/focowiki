@@ -160,35 +160,36 @@ Production mode rejects placeholder secrets, weak admin session secrets, insecur
 
 When deploying behind a domain reverse proxy, set the public origins, `ALLOWED_HOSTS`, and `TRUSTED_PROXY_MODE` explicitly. The product should be reached through HTTPS in production; internal loopback, database, Redis, and S3 endpoints must not be exposed in rendered UI or public file URLs.
 
-## Cleaned Markdown Full-Flow Validation
+## Real Legal Markdown Release-Gate Validation
 
-The validation scripts can exercise a local-only cleaned Markdown dataset without committing the dataset, local paths, or raw document bodies. Configure the dataset only in the local shell or a local `.env` file:
+The validation scripts can exercise a local-only real cleaned legal Markdown dataset without committing the dataset, local paths, or raw document bodies. The legal dataset is validation input only; product behavior remains domain-agnostic. Configure the dataset only in the local shell or a local `.env` file:
 
 ```bash
 FOCOWIKI_VALIDATION_MARKDOWN_DIR=<local-cleaned-markdown-directory>
 FOCOWIKI_VALIDATION_SAMPLE_COUNT=24
+FOCOWIKI_VALIDATION_BATCH_SAMPLE_COUNT=23
 FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS=180000
 ```
 
-Run the bounded sample selector first:
+Run the bounded sample selector first. It records only basenames, counts, hashes, and coverage metadata:
 
 ```bash
-pnpm validate:cleaned-legal:samples
+pnpm validate:real-legal:samples
 ```
 
-With PostgreSQL, Redis, S3-compatible storage, Admin API, Admin UI, and public OpenAPI running, validate the API, backend, storage, Redis, OKF files, public reads, source-backed page deletion, republish, and knowledge base deletion:
+With PostgreSQL, Redis, S3-compatible storage, Admin API, Admin UI, and public OpenAPI running, validate the API, backend, storage, Redis, OKF files, public reads, security headers, audit evidence, source-backed page deletion, republish, and knowledge base deletion:
 
 ```bash
-pnpm validate:cleaned-legal:api
+pnpm validate:real-legal:api
 ```
 
 Run the browser flow against the admin UI:
 
 ```bash
-pnpm validate:cleaned-legal:browser
+pnpm validate:real-legal:browser
 ```
 
-Validation reports are written under the active OpenSpec change directory, which is ignored by git. Reports must stay redacted: no local absolute paths, credentials, raw S3 object keys, provider secrets, or raw source document bodies.
+The legacy `validate:cleaned-legal:*` aliases remain available and run the same validation scripts. Validation reports are written under the active OpenSpec change directory, which is ignored by git. Reports must stay redacted: no local absolute paths, private dataset names, credentials, raw S3 object keys, provider secrets, model prompts, session cookies, or raw source document bodies.
 
 ## Admin Pagination
 

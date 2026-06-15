@@ -3,8 +3,9 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
 import { selectSingleAndBatchSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
+import { redactReportText } from "./lib/redaction.mjs";
 
-const CHANGE_ID = "validate-cleaned-legal-single-batch-flows";
+const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
@@ -48,6 +49,24 @@ const report = {
     publicationDate: sample.publicationDate || "unknown-date",
     sizeBytes: sample.sizeBytes
   })),
+  scannedCandidateProfiles: sampleSelection.scannedCandidateProfiles ?? null,
+  sampleCoverageWarnings: sampleSelection.coverageWarnings ?? [],
+  commandsRun: ["pnpm validate:real-legal:browser"],
+  testsRun: [
+    "Admin UI browser flow",
+    "single-file upload",
+    "multi-file batch upload",
+    "task source pagination",
+    "preview, copy, source-backed deletion, and knowledge base deletion"
+  ],
+  validationPasses: [
+    "Pass 1: browser login, language switching, and security header validation.",
+    "Pass 2: browser single-upload and batch-upload task validation.",
+    "Pass 3: browser preview, copy, deletion, cleanup, and report redaction validation."
+  ],
+  manualReviewItems: [
+    "Review optional sample coverage warnings to decide whether the configured local dataset should be broadened."
+  ],
   checks: [],
   failures: []
 };
@@ -60,7 +79,9 @@ try {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const page = await context.newPage();
 
-  await page.goto(adminUiBaseUrl, { waitUntil: "domcontentloaded" });
+  const loginResponse = await page.goto(adminUiBaseUrl, { waitUntil: "domcontentloaded" });
+  validateAdminUiSecurityHeaders(loginResponse?.headers() ?? {});
+  report.checks.push(okCheck("admin-ui-security-headers", "Admin UI returned security headers on the login page."));
   await page.getByRole("button", { name: "Language" }).click();
   await page.getByRole("menuitemradio", { name: "Chinese" }).click();
   await page.getByRole("button", { name: "登录" }).waitFor();
@@ -179,7 +200,7 @@ try {
   report.ok = true;
 } catch (error) {
   runError = error;
-  report.failures.push(error instanceof Error ? error.message : String(error));
+  report.failures.push(redactReportText(error instanceof Error ? error.message : String(error)));
 } finally {
   report.finishedAt = new Date().toISOString();
   fs.mkdirSync(CHANGE_DIR, { recursive: true });
@@ -220,6 +241,22 @@ function okCheck(name, message) {
     ok: true,
     message
   };
+}
+
+function validateAdminUiSecurityHeaders(headers) {
+  const referrerPolicy = headers["referrer-policy"] ?? "";
+  const contentTypeOptions = headers["x-content-type-options"] ?? "";
+  const frameOptions = headers["x-frame-options"] ?? "";
+  const csp = headers["content-security-policy"] ?? "";
+
+  if (
+    referrerPolicy.toLowerCase() !== "no-referrer" ||
+    contentTypeOptions.toLowerCase() !== "nosniff" ||
+    frameOptions.toUpperCase() !== "DENY" ||
+    !csp.includes("frame-ancestors 'none'")
+  ) {
+    throw new Error("Admin UI login page did not return expected security headers.");
+  }
 }
 
 async function uploadFilesFromDialog(page, samples, { checkName, message }) {

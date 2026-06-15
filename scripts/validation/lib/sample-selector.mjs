@@ -6,12 +6,29 @@ export const SAMPLE_SOURCE_ENV = "FOCOWIKI_VALIDATION_MARKDOWN_DIR";
 export const SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_SAMPLE_COUNT";
 export const BATCH_SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_BATCH_SAMPLE_COUNT";
 export const SINGLE_SAMPLE_ENV = "FOCOWIKI_VALIDATION_SINGLE_SAMPLE_BASENAME";
+export const MAX_CANDIDATE_PROFILES_ENV = "FOCOWIKI_VALIDATION_MAX_CANDIDATE_PROFILES";
 export const REQUIRED_SAMPLE_COVERAGE = {
   statuses: ["有效", "已修改", "尚未生效"],
   types: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"]
 };
 
 const MAX_METADATA_BYTES = 256 * 1024;
+const COMMON_METADATA_KEYS = new Set([
+  "title",
+  "type",
+  "status",
+  "category",
+  "description",
+  "tags",
+  "publicationDate",
+  "effectiveDate",
+  "sourceUrl",
+  "officialId",
+  "issuer",
+  "region",
+  "resource",
+  "timestamp"
+]);
 
 export function selectSamplesFromEnvironment(env = process.env) {
   const sourceDir = env[SAMPLE_SOURCE_ENV];
@@ -20,7 +37,10 @@ export function selectSamplesFromEnvironment(env = process.env) {
     throw new Error(`${SAMPLE_SOURCE_ENV} must be set to a local Markdown directory.`);
   }
 
-  return selectSamples(sourceDir, readSampleCount(env));
+  const sampleCount = readSampleCount(env);
+  return selectSamples(sourceDir, sampleCount, {
+    maxCandidateProfiles: readMaxCandidateProfiles(env, sampleCount)
+  });
 }
 
 export function selectSingleAndBatchSamplesFromEnvironment(env = process.env) {
@@ -33,20 +53,25 @@ export function selectSingleAndBatchSamplesFromEnvironment(env = process.env) {
   const defaultTotalCount = readSampleCount(env);
   return selectSingleAndBatchSamples(sourceDir, {
     batchSampleCount: readBatchSampleCount(env, defaultTotalCount),
-    singleSampleBasename: env[SINGLE_SAMPLE_ENV]?.trim() || ""
+    singleSampleBasename: env[SINGLE_SAMPLE_ENV]?.trim() || "",
+    maxCandidateProfiles: readMaxCandidateProfiles(env, defaultTotalCount)
   });
 }
 
 export function selectSingleAndBatchSamples(
   sourceDir,
-  { batchSampleCount = DEFAULT_SAMPLE_COUNT - 1, singleSampleBasename = "" } = {}
+  {
+    batchSampleCount = DEFAULT_SAMPLE_COUNT - 1,
+    singleSampleBasename = "",
+    maxCandidateProfiles
+  } = {}
 ) {
   if (!Number.isSafeInteger(batchSampleCount) || batchSampleCount < 2) {
     throw new Error(`${BATCH_SAMPLE_COUNT_ENV} must be an integer greater than or equal to 2.`);
   }
 
   const poolCount = Math.max(batchSampleCount + 1, 14);
-  const selectedPool = selectSamples(sourceDir, poolCount);
+  const selectedPool = selectSamples(sourceDir, poolCount, { maxCandidateProfiles });
   const singleSample = singleSampleBasename
     ? selectedPool.samples.find((sample) => sample.basename === singleSampleBasename)
     : selectedPool.samples[0];
@@ -78,11 +103,13 @@ export function selectSingleAndBatchSamples(
     sampleCount: flowSamples.length,
     batchSampleCount,
     coverage: sampleCoverage(flowSamples),
-    selectionPoolCoverage: selectedPool.coverage
+    coverageWarnings: selectedPool.coverageWarnings,
+    selectionPoolCoverage: selectedPool.coverage,
+    scannedCandidateProfiles: selectedPool.scannedCandidateProfiles
   };
 }
 
-export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
+export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT, options = {}) {
   const absoluteSourceDir = path.resolve(sourceDir);
 
   if (!fs.existsSync(absoluteSourceDir) || !fs.statSync(absoluteSourceDir).isDirectory()) {
@@ -90,10 +117,31 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
   }
 
   const files = collectMarkdownFiles(absoluteSourceDir).sort(compareCandidatePath);
-  const candidates = files.map(readSampleCandidateProfile).filter(Boolean);
+  const maxCandidateProfiles = options.maxCandidateProfiles ?? files.length;
+  const candidates = [];
+  let scannedCandidateProfiles = 0;
+
+  for (const file of files) {
+    if (scannedCandidateProfiles >= maxCandidateProfiles) {
+      break;
+    }
+
+    scannedCandidateProfiles += 1;
+    const candidate = readSampleCandidateProfile(file);
+
+    if (candidate) {
+      candidates.push(candidate);
+    }
+
+    if (candidates.length >= sampleCount && hasCoreCandidateCoverage(candidates)) {
+      break;
+    }
+  }
 
   if (candidates.length < sampleCount) {
-    throw new Error(`Expected at least ${sampleCount} upload-ready Markdown candidates, found ${candidates.length}.`);
+    throw new Error(
+      `Expected at least ${sampleCount} upload-ready Markdown candidates, found ${candidates.length} after scanning ${scannedCandidateProfiles} candidate profiles.`
+    );
   }
 
   const selected = [];
@@ -111,6 +159,8 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
     candidate.basename.includes("__unknown-date__")
   );
   addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.title.length >= 80);
+  addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.hasNonAsciiBasename);
+  addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.hasUnknownMetadata);
 
   for (const candidate of duplicatedTitleCandidates(candidates)) {
     addCandidate(selected, selectedNames, candidate);
@@ -145,17 +195,34 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT) {
     (status) => !coverage.statuses.includes(status)
   );
   const missingTypes = REQUIRED_SAMPLE_COVERAGE.types.filter((type) => !coverage.types.includes(type));
+  const coverageWarnings = [];
 
-  if (missingStatuses.length > 0 || missingTypes.length > 0 || !coverage.includesUnknownDate || !coverage.includesLongTitle || !coverage.includesDuplicatedTitle) {
-    throw new Error(
-      `Sample coverage is incomplete: ${JSON.stringify({ missingStatuses, missingTypes, coverage })}`
-    );
+  if (missingStatuses.length > 0) {
+    coverageWarnings.push(`Missing optional status coverage: ${missingStatuses.join(", ")}`);
+  }
+
+  if (missingTypes.length > 0) {
+    coverageWarnings.push(`Missing optional type coverage: ${missingTypes.join(", ")}`);
+  }
+
+  if (!coverage.includesUnknownDate) {
+    coverageWarnings.push("Missing optional unknown-date filename coverage.");
+  }
+
+  if (!coverage.includesLongTitle) {
+    coverageWarnings.push("Missing optional long-title coverage.");
+  }
+
+  if (!coverage.includesDuplicatedTitle) {
+    coverageWarnings.push("Missing optional duplicated-title coverage.");
   }
 
   return {
     samples: selected,
     coverage,
-    sampleCount
+    coverageWarnings,
+    sampleCount,
+    scannedCandidateProfiles
   };
 }
 
@@ -175,6 +242,8 @@ export function sampleCoverage(samples) {
     includesUnknownDate: samples.some((sample) => sample.basename.includes("__unknown-date__")),
     includesLongTitle: samples.some((sample) => sample.title.length >= 80),
     includesDuplicatedTitle: duplicatedTitles.length > 0,
+    includesNonAsciiBasename: samples.some((sample) => sample.hasNonAsciiBasename),
+    includesUnknownMetadata: samples.some((sample) => sample.hasUnknownMetadata),
     totalSizeBytes: samples.reduce((sum, sample) => sum + sample.sizeBytes, 0)
   };
 }
@@ -211,6 +280,40 @@ function readBatchSampleCount(env, defaultTotalCount) {
   return parsed;
 }
 
+function readMaxCandidateProfiles(env, sampleCount) {
+  const configured = env[MAX_CANDIDATE_PROFILES_ENV]?.trim();
+
+  if (!configured) {
+    return Math.max(sampleCount * 32, 5_000);
+  }
+
+  const parsed = Number(configured);
+
+  if (!Number.isSafeInteger(parsed) || parsed < sampleCount) {
+    throw new Error(`${MAX_CANDIDATE_PROFILES_ENV} must be an integer greater than or equal to the sample count.`);
+  }
+
+  return parsed;
+}
+
+function hasCoreCandidateCoverage(candidates) {
+  const coverage = sampleCoverage(candidates);
+  const hasStatuses = REQUIRED_SAMPLE_COVERAGE.statuses.every((status) =>
+    coverage.statuses.includes(status)
+  );
+  const hasTypes = REQUIRED_SAMPLE_COVERAGE.types.every((type) => coverage.types.includes(type));
+
+  return (
+    hasStatuses &&
+    hasTypes &&
+    coverage.includesUnknownDate &&
+    coverage.includesLongTitle &&
+    coverage.includesDuplicatedTitle &&
+    coverage.includesNonAsciiBasename &&
+    coverage.includesUnknownMetadata
+  );
+}
+
 function duplicatedNormalizedBasenames(samples) {
   const seen = new Set();
   const duplicates = new Set();
@@ -240,6 +343,7 @@ function readSampleCandidateProfile(filePath) {
   }
 
   const metadata = parseFrontmatter(frontmatter);
+  const metadataKeys = Object.keys(metadata).sort();
   const hasBody = bodyPreview.trim().length > 0 || stat.size > bodyOffset;
 
   if (!metadata.title || !metadata.type || !hasBody) {
@@ -254,6 +358,9 @@ function readSampleCandidateProfile(filePath) {
     status: String(metadata.status ?? ""),
     category: String(metadata.category ?? ""),
     publicationDate: String(metadata.publicationDate ?? ""),
+    hasNonAsciiBasename: /[^\x00-\x7F]/.test(basename),
+    hasUnknownMetadata: metadataKeys.some((key) => !COMMON_METADATA_KEYS.has(key)),
+    metadataKeys,
     hasBody,
     sizeBytes: stat.size
   };

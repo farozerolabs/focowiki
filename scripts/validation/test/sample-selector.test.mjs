@@ -42,6 +42,8 @@ test("selectSamples chooses a deterministic bounded Markdown sample without read
     assert.equal(result.coverage.includesUnknownDate, true);
     assert.equal(result.coverage.includesLongTitle, true);
     assert.equal(result.coverage.includesDuplicatedTitle, true);
+    assert.equal(result.coverage.includesNonAsciiBasename, true);
+    assert.equal(result.coverage.includesUnknownMetadata, true);
     for (const status of REQUIRED_SAMPLE_COVERAGE.statuses) {
       assert.equal(result.coverage.statuses.includes(status), true);
     }
@@ -50,6 +52,8 @@ test("selectSamples chooses a deterministic bounded Markdown sample without read
     }
     assert.equal(result.samples.every((sample) => sample.hasBody), true);
     assert.equal(result.samples.some((sample) => Object.hasOwn(sample, "body")), false);
+    assert.equal(result.samples.some((sample) => sample.hasNonAsciiBasename), true);
+    assert.equal(result.samples.some((sample) => sample.hasUnknownMetadata), true);
   } finally {
     fs.readFileSync = originalReadFileSync;
     fs.rmSync(root, { recursive: true, force: true });
@@ -166,13 +170,13 @@ function writeCoverageFiles(markdownDir) {
     ["11.md", "Sample eleven", REQUIRED_SAMPLE_COVERAGE.types[0], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
     ["12.md", "Sample twelve", REQUIRED_SAMPLE_COVERAGE.types[1], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
     ["13.md", "Sample thirteen", REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["14.md", "Sample fourteen", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[1]]
+    ["法规14.md", "Sample fourteen", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[1]]
   ];
 
   for (const [name, title, type, status] of rows) {
     fs.writeFileSync(
       path.join(markdownDir, name),
-      `---\ntitle: "${title}"\ntype: "${type}"\nstatus: "${status}"\ncategory: "Validation"\npublicationDate: "2026-01-01"\n---\n# ${title}\n\nBody ${name}.\n`
+      `---\ntitle: "${title}"\ntype: "${type}"\nstatus: "${status}"\ncategory: "Validation"\npublicationDate: "2026-01-01"\nvalidationOnly: "yes"\n---\n# ${title}\n\nBody ${name}.\n`
     );
   }
 }
