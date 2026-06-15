@@ -177,6 +177,34 @@ describe("publishOkfRelease", () => {
     );
   });
 
+  it("limits source file processing with the configured publication concurrency", async () => {
+    const sources: SourceRecord[] = Array.from({ length: 4 }, (_value, index) =>
+      sourceRecord(
+        `source-${index}`,
+        `source-${index}.md`,
+        `tenant/demo/source/source-${index}.md`
+      )
+    );
+    const storage = new PublicationStorage(sources);
+
+    await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      releaseId: "release-001",
+      taskId: "task-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      pageSize: 4,
+      concurrency: 2,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    expect(storage.maxActiveReads).toBeGreaterThan(1);
+    expect(storage.maxActiveReads).toBeLessThanOrEqual(2);
+  });
+
   it("fails before persistence when generated files violate OKF conformance", async () => {
     const sources: SourceRecord[] = [
       {

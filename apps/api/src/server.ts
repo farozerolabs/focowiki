@@ -68,7 +68,8 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
       (options.config.model.enabled
         ? createOpenAIResponsesClient({
             apiKey: options.config.model.apiKey,
-            baseUrl: options.config.model.baseUrl
+            baseUrl: options.config.model.baseUrl,
+            requestTimeoutMs: options.config.model.requestMaxTimeoutMs
           })
         : null),
     sessionManager: options.redis

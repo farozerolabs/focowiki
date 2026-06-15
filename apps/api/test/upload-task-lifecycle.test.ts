@@ -54,7 +54,9 @@ function createConfig(): RuntimeConfig {
     upload: {
       maxBytes: 1_048_576,
       maxFiles: 8,
-      generationBatchSize: 50
+      generationBatchSize: 50,
+      taskConcurrency: 1,
+      fileProcessingConcurrency: 1
     },
     pagination: {
       defaultPageSize: 50,
@@ -779,7 +781,11 @@ describe("Upload parsing task lifecycle", () => {
           enabled: true,
           apiKey: "model-secret",
           modelName: "gpt-test",
-          baseUrl: "https://api.openai.com/v1"
+          baseUrl: "https://api.openai.com/v1",
+          contextWindowTokens: 200_000,
+          requestMaxTimeoutMs: 120_000,
+          requestIdleTimeoutMs: 30_000,
+          suggestionConcurrency: 2
         }
       },
       storage,
@@ -839,7 +845,6 @@ describe("Upload parsing task lifecycle", () => {
       status: "completed",
       output_text: JSON.stringify({
         description: "Suggested model description",
-        headings: ["Overview"],
         related_links: [],
         keywords: ["model", "suggestion"]
       })
@@ -859,7 +864,6 @@ describe("Upload parsing task lifecycle", () => {
             status: "completed",
             output_text: JSON.stringify({
               description: "Suggested model description",
-              headings: ["Overview"],
               related_links: [],
               keywords: ["model", "suggestion"]
             })
@@ -874,7 +878,11 @@ describe("Upload parsing task lifecycle", () => {
           enabled: true,
           apiKey: "model-secret",
           modelName: "gpt-test",
-          baseUrl: "https://api.openai.com/v1"
+          baseUrl: "https://api.openai.com/v1",
+          contextWindowTokens: 200_000,
+          requestMaxTimeoutMs: 120_000,
+          requestIdleTimeoutMs: 30_000,
+          suggestionConcurrency: 2
         }
       },
       storage,
@@ -911,7 +919,8 @@ describe("Upload parsing task lifecycle", () => {
       },
       store: false
     });
-    expect(requests[0]?.input).toContain("- /pages/intro.md");
+    expect(requests[0]?.input).toContain("Candidate related bundle paths:");
+    expect(requests[0]?.input).not.toContain("- /pages/intro.md");
     expect(storage.objects.get(generatedPage?.objectKey ?? "")).toContain(
       "Suggested model description"
     );
@@ -926,7 +935,6 @@ describe("Upload parsing task lifecycle", () => {
           status: "completed",
           output_text: JSON.stringify({
             description: 42,
-            headings: [],
             related_links: [],
             keywords: []
           })
@@ -940,7 +948,11 @@ describe("Upload parsing task lifecycle", () => {
           enabled: true,
           apiKey: "model-secret",
           modelName: "gpt-test",
-          baseUrl: "https://api.openai.com/v1"
+          baseUrl: "https://api.openai.com/v1",
+          contextWindowTokens: 200_000,
+          requestMaxTimeoutMs: 120_000,
+          requestIdleTimeoutMs: 30_000,
+          suggestionConcurrency: 2
         }
       },
       storage,

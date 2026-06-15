@@ -54,7 +54,9 @@ describe("parseRuntimeConfig", () => {
     expect(config.upload).toEqual({
       maxBytes: 1_048_576,
       maxFiles: 8,
-      generationBatchSize: 50
+      generationBatchSize: 50,
+      taskConcurrency: 1,
+      fileProcessingConcurrency: 1
     });
     expect("i18n" in config).toBe(false);
     expect(config.corsOrigins).toEqual([
@@ -194,36 +196,118 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/MAX_UPLOAD_FILES/);
   });
 
+  it("defaults and validates upload and model concurrency limits", () => {
+    expect(parseRuntimeConfig(validEnv).upload).toMatchObject({
+      taskConcurrency: 1,
+      fileProcessingConcurrency: 1
+    });
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        UPLOAD_TASK_CONCURRENCY: "2",
+        UPLOAD_FILE_PROCESSING_CONCURRENCY: "4"
+      }).upload
+    ).toMatchObject({
+      taskConcurrency: 2,
+      fileProcessingConcurrency: 4
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        UPLOAD_TASK_CONCURRENCY: "0"
+      })
+    ).toThrow(/UPLOAD_TASK_CONCURRENCY/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        UPLOAD_FILE_PROCESSING_CONCURRENCY: "-1"
+      })
+    ).toThrow(/UPLOAD_FILE_PROCESSING_CONCURRENCY/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2",
+        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
+        MODEL_SUGGESTION_CONCURRENCY: "0"
+      })
+    ).toThrow(/MODEL_SUGGESTION_CONCURRENCY/);
+  });
+
   it("enables model assistance when key and model are configured", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
       MODEL_API_KEY: "model-secret",
       MODEL_NAME: "gpt-5.2",
-      MODEL_BASE_URL: "https://models.example.com/v1"
+      MODEL_BASE_URL: "https://models.example.com/v1",
+      MODEL_CONTEXT_WINDOW_TOKENS: "200000",
+      MODEL_REQUEST_MAX_TIMEOUT_MS: "120000",
+      MODEL_REQUEST_IDLE_TIMEOUT_MS: "30000",
+      MODEL_SUGGESTION_CONCURRENCY: "4"
     });
 
     expect(config.model).toEqual({
       enabled: true,
       apiKey: "model-secret",
       modelName: "gpt-5.2",
-      baseUrl: "https://models.example.com/v1"
+      baseUrl: "https://models.example.com/v1",
+      contextWindowTokens: 200_000,
+      requestMaxTimeoutMs: 120_000,
+      requestIdleTimeoutMs: 30_000,
+      suggestionConcurrency: 4
     });
   });
 
-  it("defaults MODEL_BASE_URL to the OpenAI API when omitted", () => {
+  it("defaults model base URL, receive timeouts, and suggestion concurrency when omitted", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
       MODEL_API_KEY: "model-secret",
       MODEL_NAME: "gpt-5.2",
-      MODEL_BASE_URL: ""
+      MODEL_BASE_URL: "",
+      MODEL_CONTEXT_WINDOW_TOKENS: "200000"
     });
 
-    expect(config.model).toEqual({
+    expect(config.model).toMatchObject({
       enabled: true,
       apiKey: "model-secret",
       modelName: "gpt-5.2",
-      baseUrl: "https://api.openai.com/v1"
+      baseUrl: "https://api.openai.com/v1",
+      contextWindowTokens: 200_000,
+      suggestionConcurrency: 2
     });
+    expect(config.model.enabled ? config.model.requestMaxTimeoutMs : 0).toBeGreaterThan(0);
+    expect(config.model.enabled ? config.model.requestIdleTimeoutMs : 0).toBeGreaterThan(0);
+  });
+
+  it("requires and validates model context window and receive timeouts", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2"
+      })
+    ).toThrow(/MODEL_CONTEXT_WINDOW_TOKENS/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2",
+        MODEL_CONTEXT_WINDOW_TOKENS: "0"
+      })
+    ).toThrow(/MODEL_CONTEXT_WINDOW_TOKENS/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2",
+        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
+        MODEL_REQUEST_MAX_TIMEOUT_MS: "1000",
+        MODEL_REQUEST_IDLE_TIMEOUT_MS: "2000"
+      })
+    ).toThrow(/MODEL_REQUEST_IDLE_TIMEOUT_MS/);
   });
 
   it("disables model assistance when either key or model is missing", () => {

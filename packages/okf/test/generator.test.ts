@@ -206,7 +206,6 @@ describe("generateOkfBundle", () => {
           ].join("\n"),
           suggestions: {
             description: "Suggested description",
-            headings: ["Overview"],
             related_links: [{ path: "/pages/related.md", title: "Related" }],
             keywords: ["suggested", "agent"]
           }

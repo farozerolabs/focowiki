@@ -1,22 +1,28 @@
 import {
   requestModelSuggestions,
+  type ModelReceiveTimeouts,
   type ModelSuggestions,
   type OpenAIResponsesClient
 } from "@focowiki/okf";
+import { mapWithConcurrency } from "../runtime/bounded.js";
+import { selectModelCandidatePaths } from "./model-candidates.js";
 
 export type ModelAssistanceOptions = {
   client: OpenAIResponsesClient;
   modelName: string;
+  contextWindowTokens: number;
+  receiveTimeouts: ModelReceiveTimeouts;
+  suggestionConcurrency: number;
 };
 
 export type ModelSuggestionSource = {
   id: string;
   fileName: string;
   title: string;
+  type?: string;
+  tags?: string[];
   body: string;
 };
-
-const MODEL_SUGGESTION_CONCURRENCY = 8;
 
 export async function readModelSuggestions(input: {
   sources: ModelSuggestionSource[];
@@ -36,14 +42,17 @@ export async function readModelSuggestions(input: {
   }
 
   const modelAssistance = input.modelAssistance;
-  const candidatePaths = input.sources.map((source) =>
-    toMarkdownHref(sourceFileNameToPagePath(source.fileName))
-  );
 
-  await mapWithConcurrency(input.sources, MODEL_SUGGESTION_CONCURRENCY, async (source) => {
+  await mapWithConcurrency(input.sources, modelAssistance.suggestionConcurrency, async (source) => {
+    const candidatePaths = selectModelCandidatePaths({
+      source,
+      sources: input.sources
+    });
     const result = await requestModelSuggestions({
       client: modelAssistance.client,
       modelName: modelAssistance.modelName,
+      contextWindowTokens: modelAssistance.contextWindowTokens,
+      receiveTimeouts: modelAssistance.receiveTimeouts,
       title: source.title,
       body: source.body,
       candidatePaths
@@ -60,33 +69,4 @@ export async function readModelSuggestions(input: {
     suggestionsBySourceId,
     warnings
   };
-}
-
-async function mapWithConcurrency<T>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T) => Promise<void>
-): Promise<void> {
-  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
-  let nextIndex = 0;
-
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
-      const item = items[nextIndex];
-      nextIndex += 1;
-      await mapper(item as T);
-    }
-  });
-
-  await Promise.all(workers);
-}
-
-function sourceFileNameToPagePath(fileName: string): string {
-  const normalized = fileName.trim();
-
-  return `pages/${normalized}`;
-}
-
-function toMarkdownHref(path: string): string {
-  return `/${path.split("/").map(encodeURIComponent).join("/")}`;
 }

@@ -29,6 +29,7 @@ export type KnowledgeBaseUploadProcessor = {
     generatedAt: string;
     batchSize: number;
     cursorTtlSeconds: number;
+    fileProcessingConcurrency: number;
   }) => Promise<UploadTaskRecord>;
 };
 
@@ -145,15 +146,22 @@ export function createUploadProcessor(
         });
 
         const modelResult = await readModelSuggestions({
-          sources: sourceRecords.map((source) => ({
-            id: source.id,
-            fileName: source.originalName,
-            title:
-              typeof source.metadata.title === "string"
-                ? source.metadata.title
-                : source.originalName,
-            body: source.content
-          })),
+          sources: sourceRecords.map((source) => {
+            const type =
+              typeof source.metadata.type === "string" ? { type: source.metadata.type } : {};
+
+            return {
+              id: source.id,
+              fileName: source.originalName,
+              title:
+                typeof source.metadata.title === "string"
+                  ? source.metadata.title
+                  : source.originalName,
+              ...type,
+              tags: Array.isArray(source.metadata.tags) ? source.metadata.tags : [],
+              body: source.content
+            };
+          }),
           modelAssistance
         });
 
@@ -196,7 +204,7 @@ export function createUploadProcessor(
           generatedAt: input.generatedAt,
           defaults: input.defaults,
           pageSize: input.batchSize,
-          concurrency: 1,
+          concurrency: input.fileProcessingConcurrency,
           storage,
           fetchSourcePage: ({ cursor, limit }) =>
             listSourceFiles({

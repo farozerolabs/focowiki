@@ -81,6 +81,8 @@ Required storage and upload configuration:
 - `MAX_UPLOAD_BYTES`: maximum bytes accepted in one upload request.
 - `MAX_UPLOAD_FILES`: maximum number of files accepted in one upload request.
 - `GENERATION_BATCH_SIZE`: bounded OKF generation batch size.
+- `UPLOAD_TASK_CONCURRENCY`: active upload parsing and generation tasks per API process. Default `1`.
+- `UPLOAD_FILE_PROCESSING_CONCURRENCY`: per-task Markdown source processing and OKF publication concurrency. Default `1`.
 
 Optional:
 
@@ -89,6 +91,10 @@ Optional:
 - `MODEL_BASE_URL`: OpenAI-compatible Responses API base URL. Defaults to `https://api.openai.com/v1` when model assistance is enabled and this value is omitted.
 - `MODEL_API_KEY`: model bearer credential.
 - `MODEL_NAME`: model name for optional assistance.
+- `MODEL_CONTEXT_WINDOW_TOKENS`: required when model assistance is enabled; examples include `200000` or `2000000`.
+- `MODEL_REQUEST_MAX_TIMEOUT_MS`: hard maximum model request receive timeout. Default `120000`.
+- `MODEL_REQUEST_IDLE_TIMEOUT_MS`: idle no-progress model receive timeout. Default `30000`.
+- `MODEL_SUGGESTION_CONCURRENCY`: concurrent model suggestion requests. Default `2`.
 
 If either `MODEL_API_KEY` or `MODEL_NAME` is missing, model assistance is disabled and generation remains deterministic.
 
@@ -151,13 +157,12 @@ Optional model assistance uses the OpenAI Responses API Structured Outputs forma
 The schema allows only:
 
 - `description`
-- `headings`
 - `related_links`
 - `keywords`
 
 Every object schema sets `additionalProperties: false`. The implementation validates model output locally before using it. Model suggestions may fill missing presentation metadata, add related Markdown links, and add search keywords. They do not create or override fact metadata such as `type`, `title`, `resource`, `timestamp`, official identifiers, or user-provided fields.
 
-If the model refuses, returns incomplete output, fails schema validation, or the provider call fails, generation continues without model suggestions and returns safe warnings.
+If the first model response refuses, returns incomplete output, fails schema validation, stalls, times out, or the provider call fails, the generator makes one bounded repair attempt with sanitized error context. If the repair attempt also fails, generation continues without model suggestions and returns safe warnings.
 
 ## Dependency Policy
 

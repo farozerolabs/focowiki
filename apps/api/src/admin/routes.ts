@@ -15,11 +15,17 @@ import type {
 import type { RedisCoordinator } from "../redis/coordination.js";
 import {
   createUploadProcessor,
-  readBoundedUploadFiles,
-  type UploadFile
+  readBoundedUploadFiles
 } from "./upload-processor.js";
+import {
+  hasDuplicateUploadFileNames,
+  hasExistingSourceFileName,
+  isUploadFile,
+  readMetadataDefaults
+} from "./upload-input.js";
 import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
+import { createBoundedTaskRunner } from "../runtime/task-runner.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -32,6 +38,7 @@ export type AdminApiServices = {
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
   const { config, storage, modelClient, sessionManager, redis, repositories } = services;
+  const uploadTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
 
   app.post("/admin/api/login", async (context) => {
     if (containsCredentialQuery(context.req.raw.url)) {
@@ -653,7 +660,13 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         modelClient && config.model.enabled
           ? {
               client: modelClient,
-              modelName: config.model.modelName
+              modelName: config.model.modelName,
+              contextWindowTokens: config.model.contextWindowTokens,
+              receiveTimeouts: {
+                maxMs: config.model.requestMaxTimeoutMs,
+                idleMs: config.model.requestIdleTimeoutMs
+              },
+              suggestionConcurrency: config.model.suggestionConcurrency
             }
           : null
       );
@@ -760,16 +773,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         sourceCount: files.length
       });
 
-      void uploadProcessor
-        .process({
-          knowledgeBaseId: knowledgeBase.id,
-          task,
-          files: loadedFiles,
-          defaults: readMetadataDefaults(formData),
-          generatedAt: new Date().toISOString(),
-          batchSize: config.upload.generationBatchSize,
-          cursorTtlSeconds: config.pagination.cursorTtlSeconds
-        })
+      void uploadTaskRunner
+        .run(() =>
+          uploadProcessor.process({
+            knowledgeBaseId: knowledgeBase.id,
+            task,
+            files: loadedFiles,
+            defaults: readMetadataDefaults(formData),
+            generatedAt: new Date().toISOString(),
+            batchSize: config.upload.generationBatchSize,
+            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+            fileProcessingConcurrency: config.upload.fileProcessingConcurrency
+          })
+        )
         .catch(() => undefined);
 
       return context.json(
@@ -976,52 +992,6 @@ function toAdminUploadTaskEvent(event: UploadTaskEventRecord) {
   };
 }
 
-function hasDuplicateUploadFileNames(files: UploadFile[]): boolean {
-  const names = new Set<string>();
-
-  for (const file of files) {
-    const name = normalizeSourceFileName(file.name);
-
-    if (names.has(name)) {
-      return true;
-    }
-
-    names.add(name);
-  }
-
-  return false;
-}
-
-async function hasExistingSourceFileName(input: {
-  filesRepository: NonNullable<AdminRepositories["files"]>;
-  knowledgeBaseId: string;
-  fileNames: string[];
-  limit: number;
-}): Promise<boolean> {
-  const names = new Set(input.fileNames.map(normalizeSourceFileName));
-  let cursor: string | null = null;
-
-  do {
-    const page = await input.filesRepository.listSourceFiles({
-      knowledgeBaseId: input.knowledgeBaseId,
-      limit: input.limit,
-      cursor
-    });
-
-    if (page.items.some((file) => names.has(normalizeSourceFileName(file.originalName)))) {
-      return true;
-    }
-
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  return false;
-}
-
-function normalizeSourceFileName(fileName: string): string {
-  return fileName.trim().toLowerCase();
-}
-
 async function writeOpaqueCursor(options: {
   redis: RedisCoordinator;
   scope: string;
@@ -1040,51 +1010,6 @@ async function writeOpaqueCursor(options: {
     options.ttlSeconds
   );
   return cursorId;
-}
-
-function isUploadFile(value: FormDataEntryValue): value is UploadFile & FormDataEntryValue {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "name" in value &&
-    typeof (value as { name: unknown }).name === "string" &&
-    "arrayBuffer" in value &&
-    typeof (value as { arrayBuffer: unknown }).arrayBuffer === "function"
-  );
-}
-
-function readMetadataDefaults(formData: FormData): Record<string, string | string[]> {
-  const defaults: Record<string, string | string[]> = {};
-  const fields = [
-    ["type", "defaultType"],
-    ["title", "defaultTitle"],
-    ["description", "defaultDescription"],
-    ["resource", "defaultResource"]
-  ] as const;
-
-  for (const [metadataField, formField] of fields) {
-    const value = readFormString(formData, formField);
-
-    if (value) {
-      defaults[metadataField] = value;
-    }
-  }
-
-  const tags = readFormString(formData, "defaultTags")
-    ?.split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
-  if (tags && tags.length > 0) {
-    defaults.tags = tags;
-  }
-
-  return defaults;
-}
-
-function readFormString(formData: FormData, field: string): string | null {
-  const value = formData.get(field);
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function notFound(context: Parameters<MiddlewareHandler>[0]): Response {

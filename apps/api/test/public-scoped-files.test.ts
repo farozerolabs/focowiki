@@ -49,7 +49,9 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
     upload: {
       maxBytes: 1_048_576,
       maxFiles: 8,
-      generationBatchSize: 50
+      generationBatchSize: 50,
+      taskConcurrency: 1,
+      fileProcessingConcurrency: 1
     },
     pagination: {
       defaultPageSize: 50,

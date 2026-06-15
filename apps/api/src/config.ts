@@ -1,6 +1,11 @@
 import { ValidationError, redactSecrets } from "./errors.js";
 
 export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS = 120_000;
+const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 30_000;
+const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
+const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
+const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
 
 export type RuntimeConfig = {
   admin: {
@@ -37,6 +42,8 @@ export type RuntimeConfig = {
     maxBytes: number;
     maxFiles: number;
     generationBatchSize: number;
+    taskConcurrency: number;
+    fileProcessingConcurrency: number;
   };
   pagination: {
     defaultPageSize: number;
@@ -49,6 +56,10 @@ export type RuntimeConfig = {
         apiKey: string;
         modelName: string;
         baseUrl: string;
+        contextWindowTokens: number;
+        requestMaxTimeoutMs: number;
+        requestIdleTimeoutMs: number;
+        suggestionConcurrency: number;
       }
     | {
         enabled: false;
@@ -91,6 +102,18 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const maxBytes = requirePositiveInteger(env, "MAX_UPLOAD_BYTES", issues);
   const maxFiles = requirePositiveInteger(env, "MAX_UPLOAD_FILES", issues);
   const generationBatchSize = optionalPositiveInteger(env, "GENERATION_BATCH_SIZE", 50, issues);
+  const taskConcurrency = optionalPositiveInteger(
+    env,
+    "UPLOAD_TASK_CONCURRENCY",
+    DEFAULT_UPLOAD_TASK_CONCURRENCY,
+    issues
+  );
+  const fileProcessingConcurrency = optionalPositiveInteger(
+    env,
+    "UPLOAD_FILE_PROCESSING_CONCURRENCY",
+    DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY,
+    issues
+  );
   const pagination = parsePaginationConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model = parseModelConfig(env, issues);
@@ -134,7 +157,9 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     upload: {
       maxBytes,
       maxFiles,
-      generationBatchSize
+      generationBatchSize,
+      taskConcurrency,
+      fileProcessingConcurrency
     },
     model,
     corsOrigins
@@ -377,12 +402,43 @@ function parseModelConfig(
 
   const rawBaseUrl = optionalString(env, "MODEL_BASE_URL") ?? DEFAULT_MODEL_BASE_URL;
   const baseUrl = validateUrl("MODEL_BASE_URL", rawBaseUrl, issues);
+  const contextWindowTokens = requirePositiveInteger(
+    env,
+    "MODEL_CONTEXT_WINDOW_TOKENS",
+    issues
+  );
+  const requestMaxTimeoutMs = optionalPositiveInteger(
+    env,
+    "MODEL_REQUEST_MAX_TIMEOUT_MS",
+    DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS,
+    issues
+  );
+  const requestIdleTimeoutMs = optionalPositiveInteger(
+    env,
+    "MODEL_REQUEST_IDLE_TIMEOUT_MS",
+    DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS,
+    issues
+  );
+  const suggestionConcurrency = optionalPositiveInteger(
+    env,
+    "MODEL_SUGGESTION_CONCURRENCY",
+    DEFAULT_MODEL_SUGGESTION_CONCURRENCY,
+    issues
+  );
+
+  if (requestIdleTimeoutMs > requestMaxTimeoutMs) {
+    issues.push("MODEL_REQUEST_IDLE_TIMEOUT_MS must be less than or equal to MODEL_REQUEST_MAX_TIMEOUT_MS");
+  }
 
   return {
     enabled: true,
     apiKey,
     modelName,
-    baseUrl
+    baseUrl,
+    contextWindowTokens,
+    requestMaxTimeoutMs,
+    requestIdleTimeoutMs,
+    suggestionConcurrency
   };
 }
 

@@ -21,7 +21,6 @@ export type MarkdownSourceInput = {
 
 export type SourceModelSuggestions = {
   description: string;
-  headings: string[];
   related_links: Array<{
     path: string;
     title: string;
