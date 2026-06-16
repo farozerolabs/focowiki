@@ -10,6 +10,7 @@ const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
 loadLocalEnv();
+normalizeCommand(process.argv[2] ?? "browser");
 
 const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
 const singleSample = sampleSelection.singleSample;
@@ -24,6 +25,7 @@ const taskTimeoutMs = readValidationTaskTimeoutMs(sampleSelection.samples.length
 const report = {
   kind: "browser",
   change: CHANGE_ID,
+  sampleProfile: sampleSelection.profile,
   startedAt: new Date().toISOString(),
   finishedAt: null,
   ok: false,
@@ -51,7 +53,11 @@ const report = {
   })),
   scannedCandidateProfiles: sampleSelection.scannedCandidateProfiles ?? null,
   sampleCoverageWarnings: sampleSelection.coverageWarnings ?? [],
-  commandsRun: ["pnpm validate:real-legal:browser"],
+  commandsRun: [
+    sampleSelection.profile === "large-scale"
+      ? "pnpm validate:real-legal:large:browser"
+      : "pnpm validate:real-legal:browser"
+  ],
   testsRun: [
     "Admin UI browser flow",
     "single-file upload",
@@ -222,6 +228,12 @@ function loadLocalEnv() {
 
   if (fs.existsSync(envFile)) {
     loadEnvFile(envFile);
+  }
+}
+
+function normalizeCommand(rawCommand) {
+  if (rawCommand === "large-browser") {
+    process.env.FOCOWIKI_VALIDATION_PROFILE = "large-scale";
   }
 }
 

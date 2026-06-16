@@ -32,6 +32,9 @@
     "validate:real-legal:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
     "validate:real-legal:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
     "validate:real-legal:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
+    "validate:real-legal:large:samples": "node scripts/validation/cleaned-markdown-flow.mjs large-samples",
+    "validate:real-legal:large:api": "node scripts/validation/cleaned-markdown-flow.mjs large-api",
+    "validate:real-legal:large:browser": "node scripts/validation/cleaned-markdown-browser.mjs large-browser",
     "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs",
     "test:validation": "node --test scripts/validation/test/*.test.mjs"
   },

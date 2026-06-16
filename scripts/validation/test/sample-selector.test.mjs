@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 
 import {
   BATCH_SAMPLE_COUNT_ENV,
+  LARGE_SCALE_MIN_BATCH_FILES_ENV,
+  SAMPLE_PROFILE_ENV,
   REQUIRED_SAMPLE_COVERAGE,
   SAMPLE_COUNT_ENV,
   SAMPLE_SOURCE_ENV,
@@ -133,6 +135,63 @@ test("selectSingleAndBatchSamplesFromEnvironment supports explicit single sample
   }
 });
 
+test("selectSingleAndBatchSamplesFromEnvironment supports a large-scale profile with at least 50 batch files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-large-profile-"));
+  const markdownDir = path.join(root, "markdown");
+  fs.mkdirSync(markdownDir);
+  writeCoverageFiles(markdownDir, 56);
+
+  const originalReadFileSync = fs.readFileSync;
+  fs.readFileSync = () => {
+    throw new Error("full body read should not be used during large-scale selection");
+  };
+
+  try {
+    const result = selectSingleAndBatchSamplesFromEnvironment({
+      [SAMPLE_SOURCE_ENV]: root,
+      [SAMPLE_PROFILE_ENV]: "large-scale"
+    });
+    const repeated = selectSingleAndBatchSamplesFromEnvironment({
+      [SAMPLE_SOURCE_ENV]: root,
+      [SAMPLE_PROFILE_ENV]: "large-scale"
+    });
+
+    assert.equal(result.batchSampleCount, 50);
+    assert.equal(result.batchSamples.length, 50);
+    assert.equal(result.sampleCount, 51);
+    assert.equal(result.profile, "large-scale");
+    assert.deepEqual(
+      result.samples.map((sample) => sample.basename),
+      repeated.samples.map((sample) => sample.basename)
+    );
+    assert.equal(result.samples.every((sample) => sample.basename.endsWith(".md")), true);
+    assert.equal(result.samples.some((sample) => Object.hasOwn(sample, "body")), false);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selectSingleAndBatchSamplesFromEnvironment fails clearly when large-scale profile has fewer than 50 files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-large-profile-small-"));
+  const markdownDir = path.join(root, "markdown");
+  fs.mkdirSync(markdownDir);
+  writeCoverageFiles(markdownDir, 20);
+
+  try {
+    assert.throws(
+      () =>
+        selectSingleAndBatchSamplesFromEnvironment({
+          [SAMPLE_SOURCE_ENV]: root,
+          [SAMPLE_PROFILE_ENV]: "large-scale"
+        }),
+      new RegExp(`${LARGE_SCALE_MIN_BATCH_FILES_ENV} requires at least 50 batch Markdown files`)
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("selectSingleAndBatchSamples rejects invalid flow sample settings", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-single-batch-invalid-"));
   const markdownDir = path.join(root, "markdown");
@@ -153,10 +212,10 @@ test("selectSingleAndBatchSamples rejects invalid flow sample settings", () => {
   }
 });
 
-function writeCoverageFiles(markdownDir) {
+function writeCoverageFiles(markdownDir, count = 14) {
   const longTitle = "Long validation title ".repeat(5).trim();
   const duplicateTitle = "Duplicated validation title";
-  const rows = [
+  const baseRows = [
     ["01__unknown-date__.md", "Sample one", REQUIRED_SAMPLE_COVERAGE.types[0], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
     ["02.md", "Sample two", REQUIRED_SAMPLE_COVERAGE.types[1], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
     ["03.md", "Sample three", REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
@@ -172,6 +231,16 @@ function writeCoverageFiles(markdownDir) {
     ["13.md", "Sample thirteen", REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
     ["法规14.md", "Sample fourteen", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[1]]
   ];
+  const rows = [...baseRows];
+
+  for (let index = rows.length + 1; index <= count; index += 1) {
+    rows.push([
+      `${String(index).padStart(2, "0")}.md`,
+      `Sample ${index}`,
+      REQUIRED_SAMPLE_COVERAGE.types[index % REQUIRED_SAMPLE_COVERAGE.types.length],
+      REQUIRED_SAMPLE_COVERAGE.statuses[index % REQUIRED_SAMPLE_COVERAGE.statuses.length]
+    ]);
+  }
 
   for (const [name, title, type, status] of rows) {
     fs.writeFileSync(

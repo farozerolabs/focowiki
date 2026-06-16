@@ -247,6 +247,22 @@ Run the browser flow against the admin UI:
 pnpm validate:real-legal:browser
 ```
 
+For a large-scale release-gate run, use the separate profile. It keeps the same scripts and services but requires one batch upload action with at least 50 selected Markdown files:
+
+```bash
+FOCOWIKI_VALIDATION_MIN_BATCH_FILES=50
+FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS=900000
+FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS=5000
+FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS=900000
+FOCOWIKI_VALIDATION_MAX_MEMORY_DELTA_MB=512
+
+pnpm validate:real-legal:large:samples
+pnpm validate:real-legal:large:api
+pnpm validate:real-legal:large:browser
+```
+
+The large-scale profile validates black-box Admin API, Admin UI, and public OpenAPI behavior; white-box PostgreSQL, Redis, S3-compatible storage, generated OKF files, JSON indexes, pagination, audit evidence, and deletion state; security behavior for auth, origin checks, upload rejection, path safety, public keys, headers, and redaction; and performance evidence for endpoint timing, task duration, pagination pages, and process memory growth. It records only safe basenames, counts, redacted URLs, metrics, and failure summaries.
+
 The legacy `validate:cleaned-legal:*` aliases remain available and run the same validation scripts. Validation reports are written under the active OpenSpec change directory, which is ignored by git. Reports must stay redacted: no local absolute paths, private dataset names, credentials, raw S3 object keys, provider secrets, model prompts, session cookies, or raw source document bodies.
 
 ## Admin Pagination

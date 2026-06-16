@@ -2,9 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const DEFAULT_SAMPLE_COUNT = 24;
+export const LARGE_SCALE_DEFAULT_BATCH_SAMPLE_COUNT = 50;
 export const SAMPLE_SOURCE_ENV = "FOCOWIKI_VALIDATION_MARKDOWN_DIR";
+export const SAMPLE_PROFILE_ENV = "FOCOWIKI_VALIDATION_PROFILE";
 export const SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_SAMPLE_COUNT";
 export const BATCH_SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_BATCH_SAMPLE_COUNT";
+export const LARGE_SCALE_MIN_BATCH_FILES_ENV = "FOCOWIKI_VALIDATION_MIN_BATCH_FILES";
 export const SINGLE_SAMPLE_ENV = "FOCOWIKI_VALIDATION_SINGLE_SAMPLE_BASENAME";
 export const MAX_CANDIDATE_PROFILES_ENV = "FOCOWIKI_VALIDATION_MAX_CANDIDATE_PROFILES";
 export const REQUIRED_SAMPLE_COVERAGE = {
@@ -50,11 +53,22 @@ export function selectSingleAndBatchSamplesFromEnvironment(env = process.env) {
     throw new Error(`${SAMPLE_SOURCE_ENV} must be set to a local Markdown directory.`);
   }
 
+  const profile = readSampleProfile(env);
+  const largeScaleMinBatchFiles =
+    profile === "large-scale" ? readLargeScaleMinBatchFiles(env) : null;
   const defaultTotalCount = readSampleCount(env);
+  const batchSampleCount = readBatchSampleCount(env, defaultTotalCount, {
+    profile,
+    largeScaleMinBatchFiles
+  });
+  const poolCount = batchSampleCount + 1;
+
   return selectSingleAndBatchSamples(sourceDir, {
-    batchSampleCount: readBatchSampleCount(env, defaultTotalCount),
+    batchSampleCount,
     singleSampleBasename: env[SINGLE_SAMPLE_ENV]?.trim() || "",
-    maxCandidateProfiles: readMaxCandidateProfiles(env, defaultTotalCount)
+    maxCandidateProfiles: readMaxCandidateProfiles(env, poolCount),
+    profile,
+    largeScaleMinBatchFiles
   });
 }
 
@@ -63,15 +77,31 @@ export function selectSingleAndBatchSamples(
   {
     batchSampleCount = DEFAULT_SAMPLE_COUNT - 1,
     singleSampleBasename = "",
-    maxCandidateProfiles
+    maxCandidateProfiles,
+    profile = "default",
+    largeScaleMinBatchFiles = null
   } = {}
 ) {
   if (!Number.isSafeInteger(batchSampleCount) || batchSampleCount < 2) {
     throw new Error(`${BATCH_SAMPLE_COUNT_ENV} must be an integer greater than or equal to 2.`);
   }
 
+  if (
+    profile === "large-scale" &&
+    Number.isSafeInteger(largeScaleMinBatchFiles) &&
+    batchSampleCount < largeScaleMinBatchFiles
+  ) {
+    throw new Error(
+      `${LARGE_SCALE_MIN_BATCH_FILES_ENV} requires at least ${largeScaleMinBatchFiles} batch Markdown files for the large-scale profile.`
+    );
+  }
+
   const poolCount = Math.max(batchSampleCount + 1, 14);
-  const selectedPool = selectSamples(sourceDir, poolCount, { maxCandidateProfiles });
+  const selectedPool = selectSamplesForProfile(sourceDir, poolCount, {
+    maxCandidateProfiles,
+    profile,
+    largeScaleMinBatchFiles
+  });
   const singleSample = singleSampleBasename
     ? selectedPool.samples.find((sample) => sample.basename === singleSampleBasename)
     : selectedPool.samples[0];
@@ -102,11 +132,34 @@ export function selectSingleAndBatchSamples(
     batchSamples,
     sampleCount: flowSamples.length,
     batchSampleCount,
+    profile,
+    largeScaleMinBatchFiles,
     coverage: sampleCoverage(flowSamples),
     coverageWarnings: selectedPool.coverageWarnings,
     selectionPoolCoverage: selectedPool.coverage,
     scannedCandidateProfiles: selectedPool.scannedCandidateProfiles
   };
+}
+
+function selectSamplesForProfile(sourceDir, poolCount, options) {
+  try {
+    return selectSamples(sourceDir, poolCount, {
+      maxCandidateProfiles: options.maxCandidateProfiles
+    });
+  } catch (error) {
+    if (
+      options.profile === "large-scale" &&
+      Number.isSafeInteger(options.largeScaleMinBatchFiles) &&
+      error instanceof Error &&
+      error.message.startsWith("Expected at least")
+    ) {
+      throw new Error(
+        `${LARGE_SCALE_MIN_BATCH_FILES_ENV} requires at least ${options.largeScaleMinBatchFiles} batch Markdown files for the large-scale profile.`
+      );
+    }
+
+    throw error;
+  }
 }
 
 export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT, options = {}) {
@@ -264,10 +317,43 @@ function readSampleCount(env) {
   return parsed;
 }
 
-function readBatchSampleCount(env, defaultTotalCount) {
-  const configured = env[BATCH_SAMPLE_COUNT_ENV]?.trim();
+function readSampleProfile(env) {
+  const profile = env[SAMPLE_PROFILE_ENV]?.trim() || "default";
+
+  if (!["default", "large-scale"].includes(profile)) {
+    throw new Error(`${SAMPLE_PROFILE_ENV} must be either default or large-scale.`);
+  }
+
+  return profile;
+}
+
+function readLargeScaleMinBatchFiles(env) {
+  const configured = env[LARGE_SCALE_MIN_BATCH_FILES_ENV]?.trim();
 
   if (!configured) {
+    return LARGE_SCALE_DEFAULT_BATCH_SAMPLE_COUNT;
+  }
+
+  const parsed = Number(configured);
+
+  if (!Number.isSafeInteger(parsed) || parsed < LARGE_SCALE_DEFAULT_BATCH_SAMPLE_COUNT) {
+    throw new Error(
+      `${LARGE_SCALE_MIN_BATCH_FILES_ENV} must be an integer greater than or equal to ${LARGE_SCALE_DEFAULT_BATCH_SAMPLE_COUNT}.`
+    );
+  }
+
+  return parsed;
+}
+
+function readBatchSampleCount(env, defaultTotalCount, options = {}) {
+  const configured = env[BATCH_SAMPLE_COUNT_ENV]?.trim();
+  const largeScaleMinBatchFiles = options.largeScaleMinBatchFiles;
+
+  if (!configured) {
+    if (options.profile === "large-scale") {
+      return largeScaleMinBatchFiles;
+    }
+
     return Math.max(defaultTotalCount - 1, 2);
   }
 
@@ -275,6 +361,16 @@ function readBatchSampleCount(env, defaultTotalCount) {
 
   if (!Number.isSafeInteger(parsed) || parsed < 2) {
     throw new Error(`${BATCH_SAMPLE_COUNT_ENV} must be an integer greater than or equal to 2.`);
+  }
+
+  if (
+    options.profile === "large-scale" &&
+    Number.isSafeInteger(largeScaleMinBatchFiles) &&
+    parsed < largeScaleMinBatchFiles
+  ) {
+    throw new Error(
+      `${BATCH_SAMPLE_COUNT_ENV} must be greater than or equal to ${LARGE_SCALE_MIN_BATCH_FILES_ENV} for the large-scale profile.`
+    );
   }
 
   return parsed;

@@ -6,10 +6,16 @@ import { pathToFileURL } from "node:url";
 import { loadEnvFile } from "node:process";
 import {
   SAMPLE_SOURCE_ENV,
-  readSampleText,
   selectSingleAndBatchSamplesFromEnvironment,
   selectSamplesFromEnvironment
 } from "./lib/sample-selector.mjs";
+import {
+  createPerformanceEvidence,
+  finalizePerformanceEvidence,
+  recordEndpointTiming,
+  recordPaginationEvidence,
+  recordTaskDuration
+} from "./lib/performance-evidence.mjs";
 import { redactPotentialPathText, redactReportText } from "./lib/redaction.mjs";
 
 export {
@@ -54,7 +60,7 @@ export function hasSecretLikeAuditData(rows) {
 
 export async function main(argv = process.argv.slice(2)) {
   loadLocalEnv();
-  const command = argv[0] ?? "samples";
+  const command = normalizeCommand(argv[0] ?? "samples");
 
   if (command === "samples") {
     const report = await runSampleValidation();
@@ -73,11 +79,26 @@ export async function main(argv = process.argv.slice(2)) {
   throw new Error(`Unknown validation command: ${command}`);
 }
 
+function normalizeCommand(rawCommand) {
+  if (rawCommand === "large-samples") {
+    process.env.FOCOWIKI_VALIDATION_PROFILE = "large-scale";
+    return "samples";
+  }
+
+  if (rawCommand === "large-api") {
+    process.env.FOCOWIKI_VALIDATION_PROFILE = "large-scale";
+    return "api";
+  }
+
+  return rawCommand;
+}
+
 export async function runSampleValidation() {
   const startedAt = new Date().toISOString();
   const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
-  const report = createBaseReport("samples", startedAt);
+  const report = createBaseReport("samples", startedAt, sampleSelection.profile);
 
+  report.sampleProfile = sampleSelection.profile;
   report.samples = sampleSelection.samples.map(redactSampleForReport);
   report.singleSample = redactSampleForReport(sampleSelection.singleSample);
   report.batchSamples = sampleSelection.batchSamples.map(redactSampleForReport);
@@ -124,11 +145,14 @@ export async function runSampleValidation() {
 
 export async function runApiValidation() {
   const startedAt = new Date().toISOString();
-  const report = createBaseReport("api", startedAt);
+  let report = createBaseReport("api", startedAt);
   try {
     const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
     const env = readRuntimeEnv();
+    const performanceEvidence = createPerformanceEvidence(env);
+    report = createBaseReport("api", startedAt, sampleSelection.profile);
     report.modelAssistance = readModelAssistanceMode(env);
+    report.sampleProfile = sampleSelection.profile;
     const singleSamples = [sampleSelection.singleSample];
     const batchSamples = sampleSelection.batchSamples;
     const allSamples = sampleSelection.samples;
@@ -156,9 +180,12 @@ export async function runApiValidation() {
     assertUploadLimit(env.MAX_UPLOAD_FILES, Math.max(singleSamples.length, batchSamples.length));
 
     const admin = createHttpClient(adminBaseUrl, {
-      writeOrigin: env.ADMIN_PUBLIC_ORIGIN || `http://localhost:${env.ADMIN_UI_PORT ?? "43100"}`
+      writeOrigin: env.ADMIN_PUBLIC_ORIGIN || `http://localhost:${env.ADMIN_UI_PORT ?? "43100"}`,
+      onTiming: (timing) => recordEndpointTiming(performanceEvidence, timing)
     });
-    const publicApi = createHttpClient(publicBaseUrl);
+    const publicApi = createHttpClient(publicBaseUrl, {
+      onTiming: (timing) => recordEndpointTiming(performanceEvidence, timing)
+    });
     const taskTimeoutMs = readValidationTaskTimeoutMs(env, allSamples.length);
 
     await validateDatabaseConnectivity(env.DATABASE_URL, report);
@@ -166,12 +193,15 @@ export async function runApiValidation() {
     await validateS3Connectivity(env, report);
     validateModelAssistanceMode(env, report);
     await expectUnauthorizedAdmin(admin, report);
+    await expectInvalidAdminLogin(admin, env, report);
     await validatePublicApiReachable(publicApi, env, report);
     await validateSecurityHeaders({ admin, publicApi, env, report });
 
     await loginAdmin(admin, env, report);
+    await validateAdminOriginProtection(admin, report);
     env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
     const knowledgeBase = await createValidationKnowledgeBase(admin, report);
+    await validateUploadRejection(admin, knowledgeBase.id, report);
 
     const singleUploadTask = await uploadSamples(admin, knowledgeBase.id, singleSamples, report, {
       checkName: "single-upload-submit",
@@ -188,6 +218,7 @@ export async function runApiValidation() {
         message: "Single-file upload task reached ended lifecycle state."
       }
     );
+    recordTaskDuration(performanceEvidence, completedSingleTask);
     const singleTaskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedSingleTask.id, report, {
       checkName: "single-task-detail",
       message: "Single-file task detail exposes bounded admin-only phase entries."
@@ -245,6 +276,7 @@ export async function runApiValidation() {
         message: "Batch upload task reached ended lifecycle state."
       }
     );
+    recordTaskDuration(performanceEvidence, completedBatchTask);
     const batchTaskDetail = await fetchTaskDetail(admin, knowledgeBase.id, completedBatchTask.id, report, {
       checkName: "batch-task-detail",
       message: "Batch task detail exposes bounded admin-only phase entries."
@@ -267,7 +299,8 @@ export async function runApiValidation() {
       knowledgeBase.id,
       completedBatchTask.id,
       batchSamples.length,
-      report
+      report,
+      performanceEvidence
     );
     const batchAdminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report, {
       expectedSamples: allSamples,
@@ -275,6 +308,13 @@ export async function runApiValidation() {
       message:
         "Admin release, bundle, tree, detail, and public URL surfaces include single and batch generated files."
     });
+    await validateAdminPaginationSurfaces(
+      admin,
+      knowledgeBase.id,
+      batchAdminFiles.pageFiles.length,
+      report,
+      performanceEvidence
+    );
     await validatePublicOpenApi(publicApi, knowledgeBase.id, batchAdminFiles, env, report, {
       checkName: "batch-public-openapi",
       message:
@@ -316,6 +356,15 @@ export async function runApiValidation() {
       report
     });
     await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
+    report.performance = finalizePerformanceEvidence(performanceEvidence, {
+      profile: sampleSelection.profile,
+      batchSampleCount: sampleSelection.batchSampleCount,
+      largeScaleMinBatchFiles: sampleSelection.largeScaleMinBatchFiles
+    });
+
+    if (!report.performance.ok) {
+      throw new Error(`Performance validation failed: ${report.performance.budgetFailures.join(", ")}`);
+    }
 
     report.validationRun = {
       knowledgeBaseId: knowledgeBase.id,
@@ -326,6 +375,7 @@ export async function runApiValidation() {
       singleSourceCount: completedSingleTask.sourceCount,
       batchSourceCount: completedBatchTask.sourceCount,
       totalSourceCount: allSamples.length,
+      sampleProfile: sampleSelection.profile,
       singlePhaseCount: singleTaskDetail.phaseDetails.items.length,
       batchPhaseCount: batchTaskDetail.phaseDetails.items.length,
       publicBaseUrl: redactUrl(publicBaseUrl),
@@ -351,10 +401,11 @@ export async function runApiValidation() {
   }
 }
 
-function createBaseReport(kind, startedAt) {
+function createBaseReport(kind, startedAt, sampleProfile = process.env.FOCOWIKI_VALIDATION_PROFILE || "default") {
   return {
     kind,
     change: CHANGE_ID,
+    sampleProfile,
     startedAt,
     finishedAt: null,
     ok: false,
@@ -369,8 +420,9 @@ function createBaseReport(kind, startedAt) {
     sampleCoverageWarnings: [],
     scannedCandidateProfiles: null,
     validationRun: null,
+    performance: null,
     modelAssistance: readModelAssistanceMode(process.env),
-    commandsRun: defaultCommandsRun(kind),
+    commandsRun: defaultCommandsRun(kind, sampleProfile),
     testsRun: defaultTestsRun(kind),
     validationPasses: defaultValidationPasses(kind),
     manualReviewItems: defaultManualReviewItems(),
@@ -421,6 +473,7 @@ function writeReport(report) {
     "",
     `- Change: ${report.change}`,
     `- Kind: ${report.kind}`,
+    `- Sample profile: ${report.sampleProfile ?? "default"}`,
     `- Started at: ${report.startedAt}`,
     `- Finished at: ${report.finishedAt ?? "not-finished"}`,
     `- Source: <${SAMPLE_SOURCE_ENV}>`,
@@ -447,6 +500,19 @@ function writeReport(report) {
     `- Model: ${report.modelAssistance?.modelName ?? "none"}`,
     `- Context window tokens: ${report.modelAssistance?.contextWindowTokens ?? "not-configured"}`,
     `- Suggestion concurrency: ${report.modelAssistance?.suggestionConcurrency ?? "not-configured"}`,
+    "",
+    "## Performance Evidence",
+    "",
+    ...(report.performance
+      ? [
+          `- Result: ${report.performance.ok ? "pass" : "fail"}`,
+          `- Endpoint timings: count=${report.performance.endpointTimings.count}, maxMs=${report.performance.endpointTimings.maxMs}, averageMs=${report.performance.endpointTimings.averageMs}`,
+          `- Task durations: count=${report.performance.taskDurations.count}, maxMs=${report.performance.taskDurations.maxMs}, averageMs=${report.performance.taskDurations.averageMs}`,
+          `- Pagination checks: ${report.performance.pagination.length}`,
+          `- Memory delta MB: ${report.performance.memory.deltaHeapMb}`,
+          `- Budget failures: ${report.performance.budgetFailures.length ? report.performance.budgetFailures.join(", ") : "none"}`
+        ]
+      : ["- Not recorded."]),
     "",
     "## Validation Passes",
     "",
@@ -523,14 +589,15 @@ function writeReport(report) {
   fs.writeFileSync(REPORT_MD, lines.join("\n"));
 }
 
-function defaultCommandsRun(kind) {
+function defaultCommandsRun(kind, sampleProfile = "default") {
+  const prefix = sampleProfile === "large-scale" ? "pnpm validate:real-legal:large" : "pnpm validate:real-legal";
   const commands = [
-    "pnpm validate:real-legal:samples",
-    `pnpm validate:real-legal:${kind}`
+    `${prefix}:samples`,
+    `${prefix}:${kind}`
   ];
 
   if (kind === "api") {
-    commands.push("pnpm validate:real-legal:browser");
+    commands.push(`${prefix}:browser`);
     commands.push("pnpm verify");
     commands.push("pnpm build");
     commands.push("pnpm test:validation");
@@ -714,6 +781,7 @@ function createHttpClient(baseUrl, clientOptions = {}) {
     async request(pathname, requestOptions = {}) {
       const headers = new Headers(requestOptions.headers ?? {});
       const method = String(requestOptions.method ?? "GET").toUpperCase();
+      const startedAt = Date.now();
 
       if (cookie && !headers.has("cookie")) {
         headers.set("cookie", cookie);
@@ -735,9 +803,22 @@ function createHttpClient(baseUrl, clientOptions = {}) {
           headers
         });
       } catch (error) {
+        clientOptions.onTiming?.({
+          method,
+          pathname,
+          status: 0,
+          durationMs: Date.now() - startedAt
+        });
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Request failed for ${redactUrl(normalizedBaseUrl)}${pathname}: ${message}`);
       }
+
+      clientOptions.onTiming?.({
+        method,
+        pathname,
+        status: response.status,
+        durationMs: Date.now() - startedAt
+      });
 
       const setCookie = response.headers.get("set-cookie");
 
@@ -878,6 +959,25 @@ async function expectUnauthorizedAdmin(admin, report) {
   report.checks.push(okCheck("admin-auth-required", "Admin API rejects unauthenticated knowledge base reads."));
 }
 
+async function expectInvalidAdminLogin(admin, env, report) {
+  const response = await admin.request("/admin/api/login", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      username: env.ADMIN_USERNAME,
+      password: `${env.ADMIN_PASSWORD}-invalid`
+    })
+  });
+
+  if (response.status !== 401) {
+    throw new Error(`Invalid admin login expected HTTP 401, got ${response.status}.`);
+  }
+
+  report.checks.push(okCheck("admin-invalid-login", "Admin login rejects invalid credentials."));
+}
+
 async function loginAdmin(admin, env, report) {
   const response = await admin.request("/admin/api/login", {
     method: "POST",
@@ -895,6 +995,26 @@ async function loginAdmin(admin, env, report) {
   }
 
   report.checks.push(okCheck("admin-login", "Admin login succeeded with configured credentials."));
+}
+
+async function validateAdminOriginProtection(admin, report) {
+  const response = await admin.request("/admin/api/knowledge-bases", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://invalid-origin.example"
+    },
+    body: JSON.stringify({
+      name: "Blocked origin validation",
+      description: "This request should be rejected."
+    })
+  });
+
+  if (response.status !== 403) {
+    throw new Error(`Admin origin protection expected HTTP 403, got ${response.status}.`);
+  }
+
+  report.checks.push(okCheck("admin-origin-protection", "Admin API rejects state-changing requests from untrusted origins."));
 }
 
 async function ensureManagedPublicOpenApiKey(admin, report) {
@@ -964,6 +1084,25 @@ async function createValidationKnowledgeBase(admin, report) {
 
   report.checks.push(okCheck("knowledge-base-create", "Created validation knowledge base."));
   return knowledgeBase;
+}
+
+async function validateUploadRejection(admin, knowledgeBaseId, report) {
+  const formData = new FormData();
+  formData.append("files", new Blob(["plain text"], { type: "text/plain" }), "invalid.txt");
+
+  const response = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/uploads`,
+    {
+      method: "POST",
+      body: formData
+    }
+  );
+
+  if (response.status !== 400) {
+    throw new Error(`Non-Markdown upload rejection expected HTTP 400, got ${response.status}.`);
+  }
+
+  report.checks.push(okCheck("upload-rejects-non-markdown", "Admin upload rejects non-Markdown files."));
 }
 
 async function uploadSamples(admin, knowledgeBaseId, samples, report, options = {}) {
@@ -1089,8 +1228,19 @@ async function validateUploadTaskRows(admin, knowledgeBaseId, expectedTasks, rep
   );
 }
 
-async function validateTaskSourcePagination(admin, knowledgeBaseId, taskId, expectedSourceCount, report) {
+async function validateTaskSourcePagination(
+  admin,
+  knowledgeBaseId,
+  taskId,
+  expectedSourceCount,
+  report,
+  performanceEvidence
+) {
   if (expectedSourceCount <= 1) {
+    recordPaginationEvidence(performanceEvidence, "task-source-pagination", {
+      expectedSourceCount,
+      observedPages: 1
+    });
     report.checks.push(
       okCheck("task-source-pagination", "Batch task has one source file; source pagination is not needed.", {
         expectedSourceCount
@@ -1125,6 +1275,11 @@ async function validateTaskSourcePagination(admin, knowledgeBaseId, taskId, expe
     throw new Error("Task source-file cursor did not stay scoped to the selected task.");
   }
 
+  recordPaginationEvidence(performanceEvidence, "task-source-pagination", {
+    expectedSourceCount,
+    observedPages: 2,
+    itemCount: first.sourceFiles.items.length + second.sourceFiles.items.length
+  });
   report.checks.push(
     okCheck("task-source-pagination", "Task source files are paginated with an independent bounded cursor.", {
       expectedSourceCount
@@ -1196,11 +1351,100 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   };
 }
 
+async function validateAdminPaginationSurfaces(
+  admin,
+  knowledgeBaseId,
+  expectedPageCount,
+  report,
+  performanceEvidence
+) {
+  const bundleFirst = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=1`
+  );
+
+  if (bundleFirst.items?.length !== 1 || !bundleFirst.nextCursor) {
+    throw new Error("Expected bundle-file pagination to return one item and a next cursor.");
+  }
+
+  const bundleSecond = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=1&cursor=${encodeURIComponent(bundleFirst.nextCursor)}`
+  );
+
+  if (
+    bundleSecond.items?.length !== 1 ||
+    bundleSecond.items[0]?.logicalPath === bundleFirst.items[0]?.logicalPath
+  ) {
+    throw new Error("Bundle-file cursor did not return the next bounded page.");
+  }
+
+  const treeFirst = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=1`
+  );
+
+  if (treeFirst.items?.length !== 1) {
+    throw new Error("Expected file tree pagination to return one root item.");
+  }
+
+  let treePages = 1;
+
+  if (treeFirst.nextCursor) {
+    const treeSecond = await readJson(
+      admin,
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=1&cursor=${encodeURIComponent(treeFirst.nextCursor)}`
+    );
+
+    if (
+      treeSecond.items?.length !== 1 ||
+      treeSecond.items[0]?.logicalPath === treeFirst.items[0]?.logicalPath
+    ) {
+      throw new Error("File tree cursor did not return the next bounded page.");
+    }
+
+    treePages = 2;
+  }
+
+  recordPaginationEvidence(performanceEvidence, "bundle-file-pagination", {
+    expectedSourceCount: expectedPageCount,
+    observedPages: 2,
+    itemCount: 2
+  });
+  recordPaginationEvidence(performanceEvidence, "file-tree-pagination", {
+    expectedSourceCount: expectedPageCount,
+    observedPages: treePages,
+    itemCount: treePages
+  });
+
+  report.checks.push(
+    okCheck(
+      "admin-pagination-surfaces",
+      "Admin bundle file and file tree reads support bounded cursor pagination.",
+      {
+        expectedPageCount,
+        bundlePages: 2,
+        treePages
+      }
+    )
+  );
+}
+
 async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env, report, options = {}) {
   const missingAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`);
 
   if (missingAuth.status !== 401) {
     throw new Error("Public OpenAPI did not reject missing bearer auth.");
+  }
+
+  const invalidAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`, {
+    headers: {
+      authorization: "Bearer invalid-validation-key"
+    }
+  });
+
+  if (invalidAuth.status !== 401) {
+    throw new Error("Public OpenAPI did not reject an invalid bearer key.");
   }
 
   const authHeaders = publicAuthHeaders(env);
@@ -1288,6 +1532,12 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   await expectJsonError(
     publicApi,
     `/kb/${encodeURIComponent(knowledgeBaseId)}/unsupported.txt`,
+    authHeaders,
+    [404]
+  );
+  await expectJsonError(
+    publicApi,
+    "/admin/api/knowledge-bases",
     authHeaders,
     [404]
   );
@@ -2010,7 +2260,7 @@ async function validateRedisBoundaries(redisUrl, samples, report) {
 
   try {
     const bodySnippets = samples
-      .map((sample) => bodySnippet(readSampleText(sample)))
+      .map((sample) => bodySnippet(readSampleLeakPrefix(sample)))
       .filter(Boolean);
     let cursor = "0";
     let scanned = 0;
@@ -2057,6 +2307,18 @@ function bodySnippet(value) {
   const normalized = normalizeTextForLeakScan(value);
 
   return normalized.length >= 120 ? normalized.slice(0, 120) : "";
+}
+
+function readSampleLeakPrefix(sample) {
+  const fd = fs.openSync(sample.filePath, "r");
+
+  try {
+    const buffer = Buffer.alloc(Math.min(sample.sizeBytes, 64 * 1024));
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function normalizeTextForLeakScan(value) {
