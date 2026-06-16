@@ -9,8 +9,8 @@ This repository uses pnpm and TypeScript.
 ```bash
 pnpm install
 cp .env.dev.example .env
-cp docker-compose.dev.yml.example docker-compose.dev.yml
-docker compose -f docker-compose.dev.yml up -d postgres redis
+cp docker-compose.local.yml.example docker-compose.local.yml
+docker compose -f docker-compose.local.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 pnpm verify
@@ -33,8 +33,8 @@ The root dev script starts the Admin API, public OpenAPI, and admin app in paral
 
 ```bash
 cp .env.dev.example .env
-cp docker-compose.dev.yml.example docker-compose.dev.yml
-docker compose -f docker-compose.dev.yml up -d postgres redis
+cp docker-compose.local.yml.example docker-compose.local.yml
+docker compose -f docker-compose.local.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
@@ -48,50 +48,98 @@ Real upload parsing publishes source and generated files through S3-compatible A
 For a pre-release destructive local reset, stop the app, remove the Compose volumes, start PostgreSQL and Redis again, then rerun migrations. Pre-release schema changes do not keep compatibility readers or local backfills for stale rows, so re-upload Markdown samples after the reset:
 
 ```bash
-docker compose -f docker-compose.dev.yml down -v
-docker compose -f docker-compose.dev.yml up -d postgres redis
+docker compose -f docker-compose.local.yml down -v
+docker compose -f docker-compose.local.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 ```
 
 ## Docker Compose Deployment
 
-The repository commits Compose templates, not real local Compose files. Copy the templates before running Docker Compose:
+The repository commits Compose templates, not real local Compose files. Use the production template when deploying from GitHub Container Registry images:
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml pull
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-Docker Compose reads the root `.env` file by default. Keep deployment values in that file and do not pass temporary env files for normal runs.
+Docker Compose reads the root `.env` file by default. Keep deployment values in that file and do not pass temporary env files for normal runs. The production template pulls these images by default:
 
-The deployment stack builds two application images:
+- `ghcr.io/farozerolabs/focowiki-api:latest`
+- `ghcr.io/farozerolabs/focowiki-admin:latest`
 
-- `api`: Node runtime for bundled Admin API and public OpenAPI entrypoints.
-- `admin`: static Admin UI runtime served from the production build.
+Set `FOCOWIKI_API_IMAGE` and `FOCOWIKI_ADMIN_IMAGE` in `.env` to pin a version tag, pin a `sha-*` tag, use a fork, use a private GHCR package, or use another registry. If GHCR packages are private, run `docker login ghcr.io` before `docker compose pull`.
 
 The stack also runs PostgreSQL and Redis with persistent named volumes. S3-compatible storage is external and must be configured through `S3_ENDPOINT`, bucket, region, credentials, prefix, and path-style mode before upload parsing is used. The one-shot `migrate` service runs database migrations explicitly before the API service is considered ready.
 
-Real local `docker-compose.yml` and `docker-compose.dev.yml` are ignored by git. Keep deployment secrets in local `.env` or your runtime secret manager. Do not commit copied Compose files, credentials, local paths, S3 keys, model keys, session secrets, or raw Markdown data.
+Real local `docker-compose.yml`, `docker-compose.dev.yml`, and `docker-compose.local.yml` are ignored by git. Keep deployment secrets in local `.env` or your runtime secret manager. Do not commit copied Compose files, credentials, local paths, S3 keys, model keys, session secrets, or raw Markdown data.
 
 Useful commands:
 
 ```bash
 pnpm compose:config
-pnpm compose:dev:config
-pnpm compose:build
+pnpm compose:example:config
+pnpm compose:pull
 pnpm compose:migrate
 pnpm compose:up
 pnpm compose:ps
 pnpm compose:logs
 pnpm compose:down
 pnpm compose:clean
+```
+
+`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local copies of images used by the production Compose stack. It is destructive for local PostgreSQL and Redis data.
+
+For a full Docker development runtime that builds local API and Admin images from the Dockerfile:
+
+```bash
+cp .env.dev.example .env
+cp docker-compose.dev.yml.example docker-compose.dev.yml
+pnpm compose:dev:build
+pnpm compose:dev:migrate
+pnpm compose:dev:up
+```
+
+Useful Docker development commands:
+
+```bash
+pnpm compose:dev:config
+pnpm compose:dev:example:config
+pnpm compose:dev:build
+pnpm compose:dev:migrate
+pnpm compose:dev:up
+pnpm compose:dev:ps
+pnpm compose:dev:logs
+pnpm compose:dev:down
 pnpm compose:dev:clean
 ```
 
-`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local Compose-built images before a fresh deployment rebuild. `pnpm compose:dev:clean` removes development infrastructure containers, named volumes, and orphans. Both commands are destructive for local PostgreSQL and Redis data.
+`pnpm compose:dev:clean` removes Docker development containers, named volumes, orphans, and locally built images used by the Docker development Compose stack. It is destructive for local PostgreSQL and Redis data.
+
+For host-based pnpm development, use the local infrastructure template:
+
+```bash
+cp .env.dev.example .env
+cp docker-compose.local.yml.example docker-compose.local.yml
+pnpm compose:local:up
+pnpm --filter @focowiki/api db:migrate
+pnpm dev
+```
+
+Useful local infrastructure commands:
+
+```bash
+pnpm compose:local:config
+pnpm compose:local:example:config
+pnpm compose:local:up
+pnpm compose:local:ps
+pnpm compose:local:down
+pnpm compose:local:clean
+```
+
+`pnpm compose:local:clean` removes local PostgreSQL and Redis containers, named volumes, and orphans. It is destructive for local PostgreSQL and Redis data.
 
 For public deployment behind a reverse proxy, replace every placeholder in `.env.example`, use HTTPS public origins, set `ALLOWED_HOSTS`, set `ADMIN_TRUSTED_ORIGINS`, enable `TRUSTED_PROXY_MODE` only for trusted proxies, and keep PostgreSQL, Redis, and external S3-compatible storage private. Expose only the Admin UI, Admin API, and public OpenAPI routes that your deployment requires.
 
@@ -99,10 +147,16 @@ For a pre-release destructive deployment reset, stop the deployment stack, remov
 
 ```bash
 pnpm compose:clean
-pnpm compose:build
+pnpm compose:pull
 pnpm compose:migrate
 pnpm compose:up
 ```
+
+## GitHub CI/CD
+
+Pull requests and `main` branch pushes run GitHub Actions CI. CI installs with pnpm and the committed lockfile, then runs lint, typecheck, tests, build, local path leak validation, and Compose config validation for the production, Docker development, and local infrastructure templates.
+
+The Docker publishing workflow runs for `main`, `v*` tags, and manual dispatch. It builds the Dockerfile `api` target into `ghcr.io/farozerolabs/focowiki-api` and the Dockerfile `admin` target into `ghcr.io/farozerolabs/focowiki-admin`. `main` publishes `latest`, `main`, and `sha-*` tags. Version tags publish semver tags and `sha-*` tags. Published images include OCI metadata labels and registry-linked build provenance attestations.
 
 ## Environment Variables
 
@@ -122,6 +176,11 @@ Required admin configuration:
 - `ALLOWED_HOSTS`: comma-separated public hosts accepted in production mode.
 - `TRUSTED_PROXY_MODE`: set `true` only when trusted reverse-proxy forwarded headers should be used.
 - `VITE_ADMIN_API_BASE_URL`: optional browser-visible Admin API base URL. Leave empty when the Admin UI proxies `/admin/api`.
+
+Production Compose image configuration:
+
+- `FOCOWIKI_API_IMAGE`: API image used by `docker-compose.yml`. Defaults to `ghcr.io/farozerolabs/focowiki-api:latest` in `.env.example`.
+- `FOCOWIKI_ADMIN_IMAGE`: Admin UI image used by `docker-compose.yml`. Defaults to `ghcr.io/farozerolabs/focowiki-admin:latest` in `.env.example`.
 
 Required infrastructure configuration:
 

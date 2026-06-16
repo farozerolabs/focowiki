@@ -9,6 +9,7 @@
 # Real local Compose files generated from templates
 docker-compose.yml
 docker-compose.dev.yml
+docker-compose.local.yml
 
 # Repository and local planning artifacts
 .git

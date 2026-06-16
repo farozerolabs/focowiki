@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const rootDir = resolve(import.meta.dirname, "../../..");
 const devComposeTemplatePath = resolve(rootDir, "docker-compose.dev.yml.example");
+const localComposeTemplatePath = resolve(rootDir, "docker-compose.local.yml.example");
 const deploymentComposeTemplatePath = resolve(rootDir, "docker-compose.yml.example");
 const dockerfilePath = resolve(rootDir, "Dockerfile");
 const dockerignorePath = resolve(rootDir, ".dockerignore");
@@ -13,8 +14,8 @@ const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
 
 describe("Docker Compose infrastructure", () => {
-  it("defines PostgreSQL and Redis services for local development in the dev template", () => {
-    const compose = readFileSync(devComposeTemplatePath, "utf8");
+  it("defines PostgreSQL and Redis services for local development in the local template", () => {
+    const compose = readFileSync(localComposeTemplatePath, "utf8");
 
     expect(compose).toContain("postgres:");
     expect(compose).toContain("image: postgres:18-alpine");
@@ -24,24 +25,45 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("image: redis:8-alpine");
     expect(compose).toContain("redis-cli");
     expect(compose).toContain("redis-data:");
+    expect(compose).not.toContain("api:");
+    expect(compose).not.toContain("admin:");
+    expect(compose).not.toContain("migrate:");
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
   it("does not define embedded or in-process infrastructure fallbacks", () => {
-    const compose = readFileSync(devComposeTemplatePath, "utf8");
+    const compose = readFileSync(localComposeTemplatePath, "utf8");
 
     expect(compose).not.toMatch(/sqlite|embedded|in-memory|memory-backed/i);
   });
 
-  it("defines the deployment stack as a committed Compose template", () => {
+  it("defines the Docker development stack with local build targets", () => {
+    const compose = readFileSync(devComposeTemplatePath, "utf8");
+
+    for (const service of ["admin:", "api:", "migrate:", "postgres:", "redis:"]) {
+      expect(compose).toContain(service);
+    }
+
+    expect(compose).toContain("image: focowiki-api:dev");
+    expect(compose).toContain("image: focowiki-admin:dev");
+    expect(compose).toContain("target: api");
+    expect(compose).toContain("target: admin");
+    expect(compose).toContain("apps/api/runtime/migrate.mjs");
+    expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
+  });
+
+  it("defines the deployment stack as a committed GHCR Compose template", () => {
     const compose = readFileSync(deploymentComposeTemplatePath, "utf8");
 
     for (const service of ["admin:", "api:", "migrate:", "postgres:", "redis:"]) {
       expect(compose).toContain(service);
     }
 
-    expect(compose).toContain("target: api");
-    expect(compose).toContain("target: admin");
+    expect(compose).toContain("${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}");
+    expect(compose).toContain("${FOCOWIKI_ADMIN_IMAGE:-ghcr.io/farozerolabs/focowiki-admin:latest}");
+    expect(compose).not.toContain("target: api");
+    expect(compose).not.toContain("target: admin");
+    expect(compose).not.toContain("build:");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
     expect(compose).toContain("${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
     expect(compose).toContain("${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}");
@@ -56,7 +78,6 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("- .env");
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
-    expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
     expect(compose).not.toMatch(/sqlite|embedded|in-memory|memory-backed/i);
   });
@@ -95,6 +116,7 @@ describe("Docker Compose infrastructure", () => {
       "!.env.dev.example",
       "docker-compose.yml",
       "docker-compose.dev.yml",
+      "docker-compose.local.yml",
       "node_modules",
       ".git",
       "openspec",
@@ -111,8 +133,10 @@ describe("Docker Compose infrastructure", () => {
 
     expect(gitignore).toContain("docker-compose.yml");
     expect(gitignore).toContain("docker-compose.dev.yml");
+    expect(gitignore).toContain("docker-compose.local.yml");
     expect(existsSync(deploymentComposeTemplatePath)).toBe(true);
     expect(existsSync(devComposeTemplatePath)).toBe(true);
+    expect(existsSync(localComposeTemplatePath)).toBe(true);
   });
 
   it("defines explicit Compose cleanup scripts for local leftovers", () => {
@@ -121,10 +145,13 @@ describe("Docker Compose infrastructure", () => {
     };
 
     expect(packageJson.scripts?.["compose:clean"]).toBe(
-      "docker compose -f docker-compose.yml down --volumes --remove-orphans --rmi local"
+      "docker compose -f docker-compose.yml down --volumes --remove-orphans --rmi all"
     );
     expect(packageJson.scripts?.["compose:dev:clean"]).toBe(
-      "docker compose -f docker-compose.dev.yml down --volumes --remove-orphans"
+      "docker compose -f docker-compose.dev.yml down --volumes --remove-orphans --rmi all"
+    );
+    expect(packageJson.scripts?.["compose:local:clean"]).toBe(
+      "docker compose -f docker-compose.local.yml down --volumes --remove-orphans"
     );
   });
 
@@ -138,6 +165,8 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("DATABASE_URL=postgres://");
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
+    expect(deploymentEnv).toContain("FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:latest");
+    expect(deploymentEnv).toContain("FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:latest");
     expect(deploymentEnv).toContain("ADMIN_SESSION_SECRET=<generate-a-strong-session-secret>");
     expect(deploymentEnv).not.toContain("ADMIN_PASSWORD=change-me");
     expect(devEnv).not.toContain("PUBLIC_API_KEY");
@@ -151,10 +180,14 @@ describe("Docker Compose infrastructure", () => {
     const deploymentEnvKeys = parseEnvKeys(readFileSync(deploymentEnvTemplatePath, "utf8"));
     const deploymentComposeRefs = parseComposeEnvRefs(readFileSync(deploymentComposeTemplatePath, "utf8"));
     const devComposeRefs = parseComposeEnvRefs(readFileSync(devComposeTemplatePath, "utf8"));
+    const localComposeRefs = parseComposeEnvRefs(readFileSync(localComposeTemplatePath, "utf8"));
+    const deploymentOnlyKeys = new Set(["FOCOWIKI_ADMIN_IMAGE", "FOCOWIKI_API_IMAGE"]);
+    const comparableDeploymentKeys = new Set([...deploymentEnvKeys].filter((key) => !deploymentOnlyKeys.has(key)));
 
-    expect([...devEnvKeys].sort()).toEqual([...deploymentEnvKeys].sort());
+    expect([...devEnvKeys].sort()).toEqual([...comparableDeploymentKeys].sort());
     expect([...deploymentComposeRefs].filter((key) => !deploymentEnvKeys.has(key))).toEqual([]);
     expect([...devComposeRefs].filter((key) => !devEnvKeys.has(key))).toEqual([]);
+    expect([...localComposeRefs].filter((key) => !devEnvKeys.has(key))).toEqual([]);
   });
 });
 

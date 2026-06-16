@@ -1,12 +1,73 @@
 services:
+  admin:
+    image: focowiki-admin:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: admin
+    environment:
+      ADMIN_API_PROXY_TARGET: ${ADMIN_API_PROXY_TARGET:?Set ADMIN_API_PROXY_TARGET in .env}
+    ports:
+      - "${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    env_file:
+      - .env
+    ports:
+      - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
+      - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const adminPort=process.env.ADMIN_API_PORT||'43000'; const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200'; Promise.all([fetch('http://127.0.0.1:'+adminPort+'/admin/api/session').then((r)=>r.status===401||r.ok), fetch('http://127.0.0.1:'+publicPort+'/kb/__health__/index.md').then((r)=>r.status===401||r.status===404)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    command: ["node", "apps/api/runtime/migrate.mjs"]
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
   postgres:
     image: postgres:18-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-    ports:
-      - "${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
@@ -19,8 +80,6 @@ services:
   redis:
     image: redis:8-alpine
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:?Set REDIS_PORT in .env}:6379"
     volumes:
       - redis-data:/data
     healthcheck:

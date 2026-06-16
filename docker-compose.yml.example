@@ -1,10 +1,6 @@
 services:
   admin:
-    image: focowiki-admin:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: admin
+    image: ${FOCOWIKI_ADMIN_IMAGE:-ghcr.io/farozerolabs/focowiki-admin:latest}
     environment:
       ADMIN_API_PROXY_TARGET: ${ADMIN_API_PROXY_TARGET:?Set ADMIN_API_PROXY_TARGET in .env}
     ports:
@@ -21,11 +17,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: focowiki-api:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: api
+    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     env_file:
       - .env
     ports:
@@ -47,11 +39,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: focowiki-api:local
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: api
+    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     command: ["node", "apps/api/runtime/migrate.mjs"]
     env_file:
       - .env
