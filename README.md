@@ -1,10 +1,88 @@
-# Focowiki File Knowledge Base
+# Focowiki
 
-Focowiki is a minimal OKF-style Markdown knowledge-base generator. Admin users upload cleaned `.md` files, the backend parses optional Markdown frontmatter, generates a public OKF-style Markdown tree, publishes it to S3-compatible storage, and exposes scoped Markdown/JSON files for developers and agents.
+[中文](./README.zh-CN.md) | English
 
-## Workspace
+Focowiki is a lightweight Markdown knowledge-base system for developers and product managers. It accepts cleaned `.md` files, extracts Markdown frontmatter and document signals, generates an OKF-style public bundle, stores source and generated files in S3-compatible storage, and exposes generated Markdown/JSON files through an Admin UI, Admin API, and public OpenAPI read service.
 
-This repository uses pnpm and TypeScript.
+Focowiki is designed for teams that already have Markdown knowledge assets and want a small self-hosted service that produces file-based knowledge bundles for people, applications, and agents.
+
+## What Focowiki Does
+
+- Upload one or more `.md` files from the Admin UI.
+- Parse YAML frontmatter, Markdown headings, Markdown links, and body content.
+- Preserve safe domain metadata from frontmatter as pass-through metadata.
+- Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, and JSON indexes.
+- Store raw uploaded source files and generated bundle files in S3-compatible storage.
+- Persist knowledge bases, upload tasks, source file records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
+- Serve generated files through public OpenAPI reads protected by Admin-generated bearer keys.
+
+## Open Knowledge Format
+
+[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes OKF as an open, portable, human-readable, and agent-readable way to represent knowledge as Markdown files with YAML frontmatter.
+
+The [OKF specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) defines the field conventions and bundle structure. Core OKF ideas used by Focowiki include:
+
+- Markdown files as the readable knowledge unit.
+- YAML frontmatter for structured metadata.
+- Markdown links for relationships between concepts.
+- A file bundle that can be read by humans, developers, tools, and agents.
+
+## Focowiki and OKF
+
+Focowiki generates an OKF-style public bundle from uploaded Markdown files. The generated bundle follows the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
+
+Focowiki keeps the implementation intentionally small. It focuses on Markdown intake, deterministic bundle generation, optional OpenAI-compatible Structured Outputs assistance, S3-compatible persistence, Admin workflows, and public file reads. The project uses the OKF model as the output convention and links to the Google specification for readers who need formal format details.
+
+## Markdown Upload Format
+
+Uploads accept `.md` files. Each file can include YAML frontmatter followed by Markdown body content.
+
+```md
+---
+type: "page"
+title: "Customer Support Playbook"
+description: "How the support team handles priority customer requests."
+resource: "https://example.com/docs/support-playbook"
+tags:
+  - support
+  - operations
+timestamp: "2026-06-16T00:00:00Z"
+owner: "Support Operations"
+sourceSystem: "company-wiki"
+---
+
+# Customer Support Playbook
+
+Use this playbook when a priority customer request arrives.
+
+## Intake
+
+Record the customer, request summary, severity, and expected response time.
+
+## Related Documents
+
+- [Escalation rules](./escalation-rules.md)
+- [Incident handoff](./incident-handoff.md)
+```
+
+Common OKF-style fields:
+
+- `type`: content kind, such as `page`.
+- `title`: display title for the generated page.
+- `description`: short summary for readers and search.
+- `resource`: source URL or canonical reference when one exists.
+- `tags`: searchable tags.
+- `timestamp`: source, publication, or update timestamp.
+
+Additional safe frontmatter fields can be preserved. Domain-specific fields such as owner, region, product, version, source system, official identifier, status, or category can pass through when they are present in the uploaded Markdown. Focowiki treats those fields as source metadata and keeps the product contract generic.
+
+Markdown links are the primary relationship mechanism. Links in body content help readers and agents move from one generated page to related pages.
+
+Current upload scope accepts `.md` files only. `.txt`, `.json`, `.yaml`, `.yml`, `.zip`, sidecar metadata files, archive uploads, and upload-to-Markdown conversion are outside the current product scope.
+
+## Quick Start
+
+This path runs the API services and Admin UI from pnpm, with PostgreSQL and Redis from the local Compose template.
 
 ```bash
 pnpm install
@@ -13,49 +91,21 @@ cp docker-compose.local.yml.example docker-compose.local.yml
 docker compose -f docker-compose.local.yml up -d postgres redis
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
-pnpm verify
-pnpm build
 ```
 
-Workspace packages:
+Local service URLs:
 
-- `apps/api`: Hono API server, admin endpoints, public file endpoints, runtime config, and S3 storage.
-- `apps/admin`: Vite React admin console with shadcn/ui components and `en-US` / `zh-CN` i18n resources.
-- `packages/okf`: metadata resolution, OKF-style bundle generation, indexes, and optional model assistance helpers.
-
-## Local Development
-
-The root dev script starts the Admin API, public OpenAPI, and admin app in parallel:
-
-- Admin API: `http://127.0.0.1:43000`
 - Admin UI: `http://127.0.0.1:43100`
-- Public OpenAPI file reads: `http://127.0.0.1:43200`
+- Admin API: `http://127.0.0.1:43000`
+- Public OpenAPI reads: `http://127.0.0.1:43200`
 
-```bash
-cp .env.dev.example .env
-cp docker-compose.local.yml.example docker-compose.local.yml
-docker compose -f docker-compose.local.yml up -d postgres redis
-pnpm --filter @focowiki/api db:migrate
-pnpm dev
-```
+Open the Admin UI and log in with `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env`. The Admin UI language switch is in the page header.
 
-Edit `.env` to configure admin auth, public API auth, S3-compatible storage, upload limits, and optional model assistance. The API process loads the root `.env` file automatically. Set `ENV_FILE=/absolute/path/to/.env` to load a different file.
-
-Open `http://127.0.0.1:43100/` and log in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`. Admin UI language is switched from the page and is not configured through environment variables.
-
-Real upload parsing publishes source and generated files through S3-compatible APIs. A dummy `S3_ENDPOINT` is enough to verify login and form validation, but upload parsing fails until a compatible object store is available.
-
-For a pre-release destructive local reset, stop the app, remove the Compose volumes, start PostgreSQL and Redis again, then rerun migrations. Pre-release schema changes do not keep compatibility readers or local backfills for stale rows, so re-upload Markdown samples after the reset:
-
-```bash
-docker compose -f docker-compose.local.yml down -v
-docker compose -f docker-compose.local.yml up -d postgres redis
-pnpm --filter @focowiki/api db:migrate
-```
+Real upload parsing requires S3-compatible storage. The development template gives local PostgreSQL and Redis only; configure `S3_ENDPOINT`, bucket, region, credentials, prefix, and path-style mode in `.env` before testing uploads.
 
 ## Docker Compose Deployment
 
-The repository commits Compose templates, not real local Compose files. Use the production template when deploying from GitHub Container Registry images:
+The repository commits Compose templates. Copy the production template, fill `.env`, pull images from GitHub Container Registry, run migrations, and start the stack.
 
 ```bash
 cp .env.example .env
@@ -65,18 +115,23 @@ docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 ```
 
-Docker Compose reads the root `.env` file by default. Keep deployment values in that file and do not pass temporary env files for normal runs. The production template pulls these images by default:
+Default production images:
 
 - `ghcr.io/farozerolabs/focowiki-api:latest`
 - `ghcr.io/farozerolabs/focowiki-admin:latest`
 
-Set `FOCOWIKI_API_IMAGE` and `FOCOWIKI_ADMIN_IMAGE` in `.env` to pin a version tag, pin a `sha-*` tag, use a fork, use a private GHCR package, or use another registry. If GHCR packages are private, run `docker login ghcr.io` before `docker compose pull`.
+Set `FOCOWIKI_API_IMAGE` and `FOCOWIKI_ADMIN_IMAGE` in `.env` to pin a tag, use a `sha-*` tag, use a fork, or use another registry. For private GHCR packages, run `docker login ghcr.io` before pulling images.
 
-The stack also runs PostgreSQL and Redis with persistent named volumes. S3-compatible storage is external and must be configured through `S3_ENDPOINT`, bucket, region, credentials, prefix, and path-style mode before upload parsing is used. The one-shot `migrate` service runs database migrations explicitly before the API service is considered ready.
+Production deployment requires:
 
-Real local `docker-compose.yml`, `docker-compose.dev.yml`, and `docker-compose.local.yml` are ignored by git. Keep deployment secrets in local `.env` or your runtime secret manager. Do not commit copied Compose files, credentials, local paths, S3 keys, model keys, session secrets, or raw Markdown data.
+- PostgreSQL for product records, tasks, releases, generated file records, OpenAPI key records, and audit evidence.
+- Redis for sessions, rate limits, cursors, coordination, locks, and short-lived task refresh state.
+- External S3-compatible storage for uploaded source files and generated public bundles.
+- HTTPS public origins for Admin UI, Admin API, and public OpenAPI behind your reverse proxy.
 
-Useful commands:
+Docker Compose reads the root `.env` file by default. Real `docker-compose.yml`, `docker-compose.dev.yml`, `docker-compose.local.yml`, `.env`, credentials, local paths, S3 keys, model keys, session secrets, and raw Markdown data should stay out of git.
+
+Useful production Compose commands:
 
 ```bash
 pnpm compose:config
@@ -90,9 +145,42 @@ pnpm compose:down
 pnpm compose:clean
 ```
 
-`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local copies of images used by the production Compose stack. It is destructive for local PostgreSQL and Redis data.
+`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local copies of images used by the production Compose stack. It also removes local PostgreSQL and Redis data owned by that stack.
 
-For a full Docker development runtime that builds local API and Admin images from the Dockerfile:
+## Local Development
+
+This repository uses pnpm and TypeScript.
+
+Workspace packages:
+
+- `apps/api`: Hono API server, Admin endpoints, public file endpoints, runtime config, database repositories, Redis coordination, and S3 storage.
+- `apps/admin`: Vite React Admin UI with shadcn/ui components and `en-US` / `zh-CN` i18n resources.
+- `packages/okf`: metadata resolution, OKF-style bundle generation, indexes, logs, and optional model assistance helpers.
+
+Host-based development uses the local infrastructure template:
+
+```bash
+cp .env.dev.example .env
+cp docker-compose.local.yml.example docker-compose.local.yml
+pnpm compose:local:up
+pnpm --filter @focowiki/api db:migrate
+pnpm dev
+```
+
+Useful local infrastructure commands:
+
+```bash
+pnpm compose:local:config
+pnpm compose:local:example:config
+pnpm compose:local:up
+pnpm compose:local:ps
+pnpm compose:local:down
+pnpm compose:local:clean
+```
+
+`pnpm compose:local:clean` removes local PostgreSQL and Redis containers, named volumes, and orphans for the local infrastructure stack.
+
+Docker development builds local API and Admin images from the Dockerfile:
 
 ```bash
 cp .env.dev.example .env
@@ -116,141 +204,86 @@ pnpm compose:dev:down
 pnpm compose:dev:clean
 ```
 
-`pnpm compose:dev:clean` removes Docker development containers, named volumes, orphans, and locally built images used by the Docker development Compose stack. It is destructive for local PostgreSQL and Redis data.
+`pnpm compose:dev:clean` removes Docker development containers, named volumes, orphans, and locally built images used by the Docker development Compose stack.
 
-For host-based pnpm development, use the local infrastructure template:
+## Configuration
 
-```bash
-cp .env.dev.example .env
-cp docker-compose.local.yml.example docker-compose.local.yml
-pnpm compose:local:up
-pnpm --filter @focowiki/api db:migrate
-pnpm dev
-```
+Use `.env.dev.example` for local development and `.env.example` for deployment. The API process loads the root `.env` file automatically. Set `ENV_FILE=/absolute/path/to/.env` only when a different local file should be loaded.
 
-Useful local infrastructure commands:
+Admin and public origins:
 
-```bash
-pnpm compose:local:config
-pnpm compose:local:example:config
-pnpm compose:local:up
-pnpm compose:local:ps
-pnpm compose:local:down
-pnpm compose:local:clean
-```
+- `APP_ENV`: `development` or `production`.
+- `ADMIN_USERNAME`, `ADMIN_PASSWORD`: Admin login credentials.
+- `ADMIN_SESSION_SECRET`: high-entropy signing secret for HTTP-only Admin session cookies.
+- `ADMIN_SESSION_TTL_SECONDS`, `ADMIN_SESSION_SECRET_MIN_LENGTH`, `ADMIN_SESSION_COOKIE_SECURE`, `ADMIN_SESSION_COOKIE_SAME_SITE`: session lifetime and cookie controls.
+- `ADMIN_API_PORT`, `ADMIN_UI_HOST`, `ADMIN_UI_PORT`, `ADMIN_API_PROXY_TARGET`: Admin API and Admin UI runtime ports and proxy target.
+- `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN`: externally visible origins.
+- `ADMIN_TRUSTED_ORIGINS`, `ALLOWED_HOSTS`, `TRUSTED_PROXY_MODE`, `CORS_ORIGINS`: browser, host, proxy, and public response controls.
 
-`pnpm compose:local:clean` removes local PostgreSQL and Redis containers, named volumes, and orphans. It is destructive for local PostgreSQL and Redis data.
+Infrastructure:
 
-For public deployment behind a reverse proxy, replace every placeholder in `.env.example`, use HTTPS public origins, set `ALLOWED_HOSTS`, set `ADMIN_TRUSTED_ORIGINS`, enable `TRUSTED_PROXY_MODE` only for trusted proxies, and keep PostgreSQL, Redis, and external S3-compatible storage private. Expose only the Admin UI, Admin API, and public OpenAPI routes that your deployment requires.
+- `DATABASE_URL`: PostgreSQL connection URL.
+- `REDIS_URL`: Redis connection URL.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `REDIS_PORT`: bundled Compose service settings and local host-published ports.
 
-For a pre-release destructive deployment reset, stop the deployment stack, remove its volumes, rerun migrations, and re-upload Markdown files:
+S3-compatible storage:
 
-```bash
-pnpm compose:clean
-pnpm compose:pull
-pnpm compose:migrate
-pnpm compose:up
-```
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`: object storage connection settings.
+- `S3_PREFIX`: internal object-key namespace. Public URLs never expose this value.
+- `S3_FORCE_PATH_STYLE`: set `true` for many local or self-hosted S3-compatible services.
 
-## GitHub CI/CD
+Public OpenAPI:
 
-Pull requests and `main` branch pushes run GitHub Actions CI. CI installs with pnpm and the committed lockfile, then runs lint, typecheck, tests, build, local path leak validation, and Compose config validation for the production, Docker development, and local infrastructure templates.
+- `PUBLIC_OPENAPI_PORT`: public OpenAPI read service port.
+- `PUBLIC_BASE_URL`: base URL used for generated public file URLs.
+- Public OpenAPI bearer keys are generated and managed in the Admin UI under `OpenAPI keys`. Keys are stored as database-backed hash-only records.
 
-The Docker publishing workflow runs for `main`, `v*` tags, and manual dispatch. It builds the Dockerfile `api` target into `ghcr.io/farozerolabs/focowiki-api` and the Dockerfile `admin` target into `ghcr.io/farozerolabs/focowiki-admin`. `main` publishes `latest`, `main`, and `sha-*` tags. Version tags publish semver tags and `sha-*` tags. Published images include OCI metadata labels and registry-linked build provenance attestations.
+Upload, generation, and pagination:
 
-## Environment Variables
-
-Required admin configuration:
-
-- `APP_ENV`: `development` or `production`. Production enables stricter secret, HTTPS origin, host, and cookie validation.
-- `ADMIN_USERNAME`: admin login username.
-- `ADMIN_PASSWORD`: admin login password.
-- `ADMIN_SESSION_SECRET`: signing secret for HTTP-only admin session cookies. Generate a unique high-entropy value for each deployment.
-- `ADMIN_SESSION_TTL_SECONDS`, `ADMIN_SESSION_SECRET_MIN_LENGTH`, `ADMIN_SESSION_COOKIE_SECURE`, `ADMIN_SESSION_COOKIE_SAME_SITE`: session lifetime and cookie safety controls. Production requires secure cookies.
-- `ADMIN_API_PORT`: internal Admin API listen port. Defaults to `43000` when omitted.
-- `ADMIN_UI_HOST`: local pnpm/Vite admin UI listen host. It is not used by the Docker Admin runtime.
-- `ADMIN_UI_PORT`: local or Docker Admin UI port. Defaults to `43100` when omitted.
-- `ADMIN_API_PROXY_TARGET`: Admin UI proxy target. In Docker deployment it should point to the internal API service, for example `http://api:43000`.
-- `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN`: externally visible origins used for reverse-proxy deployments and production validation.
-- `ADMIN_TRUSTED_ORIGINS`: comma-separated origins allowed to submit Admin API state-changing browser requests.
-- `ALLOWED_HOSTS`: comma-separated public hosts accepted in production mode.
-- `TRUSTED_PROXY_MODE`: set `true` only when trusted reverse-proxy forwarded headers should be used.
-- `VITE_ADMIN_API_BASE_URL`: optional browser-visible Admin API base URL. Leave empty when the Admin UI proxies `/admin/api`.
-
-Production Compose image configuration:
-
-- `FOCOWIKI_API_IMAGE`: API image used by `docker-compose.yml`. Defaults to `ghcr.io/farozerolabs/focowiki-api:latest` in `.env.example`.
-- `FOCOWIKI_ADMIN_IMAGE`: Admin UI image used by `docker-compose.yml`. Defaults to `ghcr.io/farozerolabs/focowiki-admin:latest` in `.env.example`.
-
-Required infrastructure configuration:
-
-- `DATABASE_URL`: PostgreSQL connection URL for production admin records.
-- `REDIS_URL`: Redis connection URL for sessions, coordination, locks, pagination cursor/cache state, and security rate-limit counters.
-- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `REDIS_PORT`: bundled Compose service defaults and local host-published development ports. Production deployments should keep PostgreSQL and Redis private behind Compose or private infrastructure.
-
-Required public OpenAPI configuration:
-
-- `PUBLIC_OPENAPI_PORT`: public OpenAPI file-read listen port. Defaults to `43200` when omitted.
-- `PUBLIC_BASE_URL`: base URL for the public OpenAPI file-read endpoints and generated public file URLs.
-- Public OpenAPI bearer keys are generated and managed in the Admin UI under `OpenAPI keys`. They are stored as database-backed hash-only records and are not configured in `.env`.
-
-Required storage and upload configuration:
-
-- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_PREFIX`: external object storage configuration.
-- `S3_PREFIX`: internal object-key namespace, such as `dev`; it is never exposed in public URLs.
-- `S3_FORCE_PATH_STYLE`: set `true` for many S3-compatible local or self-hosted stores.
-- `MAX_UPLOAD_BYTES`: maximum bytes accepted in one upload request.
-- `MAX_UPLOAD_FILES`: maximum number of files accepted in one upload request.
+- `MAX_UPLOAD_BYTES`, `MAX_UPLOAD_FILES`: upload request bounds.
 - `GENERATION_BATCH_SIZE`: bounded OKF generation batch size.
-- `UPLOAD_TASK_CONCURRENCY`: active upload parsing and generation tasks per API process. Default `1`.
-- `UPLOAD_FILE_PROCESSING_CONCURRENCY`: per-task Markdown source processing and OKF publication concurrency. Default `1`.
-- `OKF_LOG_MAX_ENTRIES`: newest public update entries retained in generated `log.md`. Default `100`.
-- `OKF_LOG_MAX_BYTES`: maximum generated `log.md` Markdown size. Default `65536`.
+- `UPLOAD_TASK_CONCURRENCY`: active upload parsing and generation tasks per API process.
+- `UPLOAD_FILE_PROCESSING_CONCURRENCY`: per-task Markdown source processing and OKF publication concurrency.
+- `OKF_LOG_MAX_ENTRIES`, `OKF_LOG_MAX_BYTES`: rolling generated `log.md` bounds.
+- `ADMIN_LIST_PAGE_SIZE`, `ADMIN_LIST_MAX_PAGE_SIZE`, `ADMIN_PAGINATION_CURSOR_TTL_SECONDS`: bounded Admin pagination defaults and Redis cursor TTL.
 
-Optional:
+Security limits:
 
-- `ADMIN_LIST_PAGE_SIZE`, `ADMIN_LIST_MAX_PAGE_SIZE`, `ADMIN_PAGINATION_CURSOR_TTL_SECONDS`: bounded admin pagination defaults and Redis cursor TTL.
-- `CORS_ORIGINS`: comma-separated allowed origins for public file responses.
-- `ADMIN_LOGIN_RATE_LIMIT_MAX`, `ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed admin login throttle.
+- `ADMIN_LOGIN_RATE_LIMIT_MAX`, `ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Admin login throttle.
 - `ADMIN_API_RATE_LIMIT_MAX`, `ADMIN_API_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Admin API request throttle.
 - `UPLOAD_RATE_LIMIT_MAX`, `UPLOAD_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed upload request throttle.
 - `PUBLIC_OPENAPI_RATE_LIMIT_MAX`, `PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed public OpenAPI read throttle.
-- `SECURITY_AUDIT_RETENTION_DAYS`: planned retention window for persisted security audit evidence.
-- `MODEL_BASE_URL`: OpenAI-compatible Responses API base URL. Defaults to `https://api.openai.com/v1` when model assistance is enabled and this value is omitted.
+- `SECURITY_AUDIT_RETENTION_DAYS`: retention window for persisted security audit evidence.
+
+Optional model assistance:
+
+- `MODEL_BASE_URL`: OpenAI-compatible Responses API base URL. Defaults to `https://api.openai.com/v1` when model assistance is enabled and this value is empty.
 - `MODEL_API_KEY`: model bearer credential.
-- `MODEL_NAME`: model name for optional assistance.
-- `MODEL_CONTEXT_WINDOW_TOKENS`: required when model assistance is enabled; examples include `200000` or `2000000`.
-- `MODEL_REQUEST_MAX_TIMEOUT_MS`: hard maximum model request receive timeout. Default `120000`.
-- `MODEL_REQUEST_IDLE_TIMEOUT_MS`: idle no-progress model receive timeout. Default `30000`.
-- `MODEL_SUGGESTION_CONCURRENCY`: concurrent model suggestion requests. Default `2`.
+- `MODEL_NAME`: model name.
+- `MODEL_CONTEXT_WINDOW_TOKENS`: model context window used to decide how much Markdown can be sent.
+- `MODEL_REQUEST_MAX_TIMEOUT_MS`: hard maximum model receive timeout.
+- `MODEL_REQUEST_IDLE_TIMEOUT_MS`: idle no-progress receive timeout.
+- `MODEL_SUGGESTION_CONCURRENCY`: concurrent model suggestion requests.
 
-If either `MODEL_API_KEY` or `MODEL_NAME` is missing, model assistance is disabled and generation remains deterministic.
+Model assistance stays disabled when either `MODEL_API_KEY` or `MODEL_NAME` is empty.
 
-## Generated Bundle and Storage
+## Generated Bundle
 
-Upload parsing writes raw source files and generated bundle files under knowledge base scoped internal object keys:
+Focowiki writes raw source files and generated bundle files under knowledge base scoped internal object keys in S3-compatible storage. Public URLs expose only the public bundle path.
+
+Generated public files:
 
 ```text
-S3_PREFIX/
-  knowledge-bases/{knowledgeBaseId}/
-    uploads/{taskId}/sources/{sourceFileId}/{originalFileName}
-    releases/{releaseId}/bundle/
-      index.md
-      log.md
-      schema.md
-      pages/*.md
-      _index/manifest.json
-      _index/search.json
-      _index/links.json
+index.md
+log.md
+schema.md
+pages/*.md
+_index/manifest.json
+_index/search.json
+_index/links.json
 ```
 
-`index.md` is a reserved navigation file and does not include frontmatter. `log.md` is a reserved rolling update history file and does not include frontmatter. It is regenerated from PostgreSQL release/task facts on publication, keeps the newest bounded public entries, and summarizes older persisted history by month. `schema.md` and `pages/*.md` are public concept files with YAML frontmatter, non-empty `type`, and non-empty `title`. Raw uploaded source objects remain internal under the upload path and are not part of the public bundle tree.
-
-The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object keys. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage.
-
-## Public File API
-
-The public API serves knowledge base scoped raw files without a business JSON envelope:
+Public OpenAPI read paths:
 
 ```text
 GET /kb/{knowledgeBaseId}/index.md
@@ -263,98 +296,40 @@ GET /kb/{knowledgeBaseId}/_index/links.json
 GET /kb/{knowledgeBaseId}/tasks/latest
 ```
 
-`PUBLIC_BASE_URL` must point to the public OpenAPI service. Use HTTPS public origins in production; local development may use `http://127.0.0.1:43200`. Admin UI and Admin API URLs are separate. Public URLs are built as `PUBLIC_BASE_URL + /kb/{knowledgeBaseId}/...` and do not expose S3 bucket names, `S3_PREFIX`, release IDs, task IDs used in storage keys, or raw object keys.
+`index.md` is the public navigation file. `log.md` is a bounded rolling update history generated from persisted release and task facts. `schema.md` describes the generated bundle metadata shape. `pages/*.md` contains public concept pages with YAML frontmatter. `_index/*.json` contains generated machine-readable indexes for manifests, search, and links.
 
-Public OpenAPI reads always require `Authorization: Bearer <Admin-generated OpenAPI key>`. Open the Admin UI, switch to `OpenAPI keys`, and copy the generated key once after deployment. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
+The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object-key mappings. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage. Public responses never expose bucket names, `S3_PREFIX`, internal release IDs, storage task IDs, or raw object keys.
 
-Unsupported public methods return stable JSON errors and do not mutate knowledge bases, source files, tasks, releases, storage objects, or indexes. Public reads are rate-limited through Redis before storage or expensive repository work.
+Public OpenAPI reads require `Authorization: Bearer <Admin-generated OpenAPI key>`. Successful file reads return raw Markdown or JSON. Failed reads return small JSON errors with stable codes.
 
 ## Security Baseline
 
-The Admin API is the authorization boundary. The Admin UI route guard only controls rendering; every protected Admin API request validates the signed Redis-backed session server-side. Cookie-authenticated state-changing Admin API requests also require a trusted `Origin` or `Referer`.
+The Admin API is the authorization boundary. Every protected Admin API request validates the signed Redis-backed session server-side. Cookie-authenticated state-changing Admin API requests also require a trusted `Origin` or `Referer`.
 
-Production mode rejects placeholder secrets, weak admin session secrets, insecure public origins, insecure session-cookie settings, wildcard private CORS, and missing allowed hosts before serving traffic. Login failures, login throttling, invalid sessions, origin rejection, logout, and selected upload/public rate-limit events write redacted audit evidence without passwords, cookies, API keys, S3 object keys, local paths, or raw Markdown bodies.
+Production mode rejects placeholder secrets, weak Admin session secrets, insecure public origins, unsafe session-cookie settings, wildcard private CORS, and missing allowed hosts before serving traffic. Login failures, throttling, invalid sessions, origin rejection, logout, selected upload events, and public rate-limit events write redacted audit evidence without passwords, cookies, API keys, S3 object keys, local paths, or raw Markdown bodies.
 
-When deploying behind a domain reverse proxy, set the public origins, `ALLOWED_HOSTS`, and `TRUSTED_PROXY_MODE` explicitly. The product should be reached through HTTPS in production; internal loopback, database, Redis, and S3 endpoints must not be exposed in rendered UI or public file URLs.
+When deploying behind a domain reverse proxy, set public origins, `ALLOWED_HOSTS`, and `TRUSTED_PROXY_MODE` explicitly. Use HTTPS public origins in production. Keep PostgreSQL, Redis, and S3-compatible storage on private infrastructure.
 
-## Real Legal Markdown Release-Gate Validation
+## Quality Checks
 
-The validation scripts can exercise a local-only real cleaned legal Markdown dataset without committing the dataset, local paths, or raw document bodies. The legal dataset is validation input only; product behavior remains domain-agnostic. Configure the dataset only in the local shell or a local `.env` file:
+Pull requests and `main` branch pushes run GitHub Actions CI. CI installs with pnpm and the committed lockfile, then runs lint, typecheck, tests, build, local path leak validation, and Compose config validation for the production, Docker development, and local infrastructure templates.
 
-```bash
-FOCOWIKI_VALIDATION_MARKDOWN_DIR=<local-cleaned-markdown-directory>
-FOCOWIKI_VALIDATION_SAMPLE_COUNT=24
-FOCOWIKI_VALIDATION_BATCH_SAMPLE_COUNT=23
-FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS=180000
-```
-
-Run the bounded sample selector first. It records only basenames, counts, hashes, and coverage metadata:
+Contributor checks:
 
 ```bash
-pnpm validate:real-legal:samples
+pnpm verify
+pnpm build
+pnpm validate:no-local-paths
+pnpm compose:example:config
+pnpm compose:dev:example:config
+pnpm compose:local:example:config
 ```
 
-With PostgreSQL, Redis, S3-compatible storage, Admin API, Admin UI, and public OpenAPI running, validate the API, backend, storage, Redis, OKF files, public reads, security headers, audit evidence, source-backed page deletion, republish, and knowledge base deletion:
-
-```bash
-pnpm validate:real-legal:api
-```
-
-Run the browser flow against the admin UI:
-
-```bash
-pnpm validate:real-legal:browser
-```
-
-For a large-scale release-gate run, use the separate profile. It keeps the same scripts and services but requires one batch upload action with at least 50 selected Markdown files:
-
-```bash
-FOCOWIKI_VALIDATION_MIN_BATCH_FILES=50
-FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS=900000
-FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS=5000
-FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS=900000
-FOCOWIKI_VALIDATION_MAX_MEMORY_DELTA_MB=512
-
-pnpm validate:real-legal:large:samples
-pnpm validate:real-legal:large:api
-pnpm validate:real-legal:large:browser
-```
-
-The large-scale profile validates black-box Admin API, Admin UI, and public OpenAPI behavior; white-box PostgreSQL, Redis, S3-compatible storage, generated OKF files, JSON indexes, pagination, audit evidence, and deletion state; security behavior for auth, origin checks, upload rejection, path safety, public keys, headers, and redaction; and performance evidence for endpoint timing, task duration, pagination pages, and process memory growth. It records only safe basenames, counts, redacted URLs, metrics, and failure summaries.
-
-The legacy `validate:cleaned-legal:*` aliases remain available and run the same validation scripts. Validation reports are written under the active OpenSpec change directory, which is ignored by git. Reports must stay redacted: no local absolute paths, private dataset names, credentials, raw S3 object keys, provider secrets, model prompts, session cookies, or raw source document bodies.
-
-## Admin Pagination
-
-Every admin list and file tree read is cursor-paginated through PostgreSQL queries with bounded limits. This includes knowledge base cards, generated file tree directory pages, source files, releases, bundle files, upload tasks, and task phase details.
-
-Redis stores opaque admin pagination cursors, short-lived page cache state, invalidation markers, admin sessions, task locks, and short-lived task refresh markers. PostgreSQL remains the source of truth for product records and task lifecycle rows. The API must not load full knowledge base trees, full source lists, full release lists, or full task histories into process memory for normal admin reads.
-
-## OpenAI Structured Outputs
-
-Optional model assistance uses the OpenAI Responses API Structured Outputs format. The request uses `text.format` with:
-
-- `type: "json_schema"`
-- `name: "focowiki_model_suggestions"`
-- `strict: true`
-- a project-owned JSON Schema
-
-The schema allows only:
-
-- `title`
-- `type`
-- `description`
-- `tags`
-- `related_links`
-- `keywords`
-
-Every object schema sets `additionalProperties: false`. The implementation validates model output locally before using it. Model suggestions may fill missing generic presentation metadata, add related Markdown links, and add search keywords. They do not create or override fact metadata such as `resource`, `timestamp`, official identifiers, source URLs, legal status, hashes, owner fields, or user-provided fields.
-
-If the first model response refuses, returns incomplete output, fails schema validation, stalls, times out, or the provider call fails, the generator makes one bounded repair attempt with sanitized error context. If the repair attempt also fails, generation continues without model suggestions and returns safe warnings.
+Docker image publishing runs for `main`, `v*` tags, and manual dispatch. The workflow builds the Dockerfile `api` target into `ghcr.io/farozerolabs/focowiki-api` and the Dockerfile `admin` target into `ghcr.io/farozerolabs/focowiki-admin`. Published images include OCI metadata labels and registry-linked build provenance attestations.
 
 ## Dependency Policy
 
-Use pnpm for all dependency changes. When adding dependencies, request current latest versions, for example:
+Use pnpm for dependency changes. When adding packages, request current latest versions, for example:
 
 ```bash
 pnpm add hono@latest
@@ -364,19 +339,23 @@ pnpm dlx shadcn@latest
 
 Resolved versions are recorded in `pnpm-lock.yaml`. Keep imports and generated code compatible with the locked versions.
 
-## Current Limitations
+## Product Boundaries
 
 - Uploaded source files must be `.md`.
-- `.txt`, `.json`, `.yaml`, `.yml`, `.zip`, sidecar metadata files, archives, and upload-to-Markdown conversion are not accepted in this version.
 - Metadata comes from Markdown frontmatter, deterministic Markdown signals, filename fallback, and optional model suggestions for missing generic fields.
-- PostgreSQL and Redis are required for production admin state, sessions, coordination, and paginated admin reads.
-- There is no CMS workspace, collaboration workflow, vector search, embedding pipeline, or server-side query engine.
-- Search is a generated static `_index/search.json` file.
-- The MVP does not generate a formal OpenAPI specification file.
-- Admin review is read-only; generated files are not editable in the UI.
+- PostgreSQL and Redis are required for production Admin state, sessions, coordination, and paginated Admin reads.
+- Search is served through generated `_index/search.json`.
+- Public OpenAPI serves generated files and latest task state. A generated formal OpenAPI specification document is outside the current product scope.
+- Admin review is read-only. Generated files are viewed from the UI and regenerated from uploads.
+
+## License
+
+Focowiki is distributed under a modified Apache License 2.0. See [LICENSE](./LICENSE).
 
 ## References
 
 - [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
 - [OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+- [GitHub README guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+- [Open Source Guides: Starting an Open Source Project](https://opensource.guide/starting-a-project/#writing-a-readme)
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
