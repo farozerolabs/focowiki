@@ -55,6 +55,8 @@ describe("database schema migration", () => {
     expect(sql).toContain("unique (release_id, parent_path, name)");
     expect(sql).toContain("unique (task_id, phase_key)");
     expect(sql).toContain("check (phase_key in");
+    expect(sql).toContain("drop constraint if exists upload_task_events_check");
+    expect(sql).toContain("add constraint upload_task_events_phase_key_check");
     expect(sql).toContain("'source_deletion'");
     expect(sql).toContain("check (severity in");
     expect(sql).toContain("check (entry_type in");
@@ -81,6 +83,16 @@ describe("database schema migration", () => {
     ]) {
       expect(sql).toContain(index);
     }
+  });
+
+  it("computes upload task progress and current stage from source-file aggregates", () => {
+    const repository = readRepository();
+
+    expect(repository).toContain("count(*) filter (where processing_status = 'completed')");
+    expect(repository).toContain("count(*) filter (where processing_status = 'running')");
+    expect(repository).toContain("array_agg(processing_stage order by");
+    expect(repository).toContain("source_current_stage");
+    expect(repository).not.toContain("processingprogressmap");
   });
 
   it("defines deletion-aware source, bundle, and task metadata", () => {

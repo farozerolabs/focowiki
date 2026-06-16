@@ -83,10 +83,19 @@ export function toUploadTaskLifecycle(task: UploadTaskRecord) {
       completed: task.endedAt ? task.sourceCount : 0,
       failed: task.internalErrorCode ? task.sourceCount : 0,
       running: task.endedAt ? 0 : Math.min(task.sourceCount, 1),
-      pending: task.endedAt ? 0 : Math.max(task.sourceCount - 1, 0)
+      pending: task.endedAt ? 0 : Math.max(task.sourceCount - 1, 0),
+      currentStage: inferFallbackCurrentStage(task)
     },
     resultReleaseId: task.resultReleaseId
   };
+}
+
+function inferFallbackCurrentStage(task: UploadTaskRecord) {
+  if (task.operation !== "upload") {
+    return null;
+  }
+
+  return task.endedAt ? "release_activation" : "upload_storage";
 }
 
 export function toAdminUploadTaskEvent(event: UploadTaskEventRecord) {

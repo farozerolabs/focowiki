@@ -49,6 +49,23 @@ CREATE TABLE IF NOT EXISTS focowiki.upload_task_events (
   CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
 );
 
+DO $$
+BEGIN
+  ALTER TABLE focowiki.upload_task_events
+    DROP CONSTRAINT IF EXISTS upload_task_events_check,
+    DROP CONSTRAINT IF EXISTS upload_task_events_phase_key_check,
+    ADD CONSTRAINT upload_task_events_phase_key_check
+    CHECK (phase_key IN (
+      'upload_storage',
+      'source_deletion',
+      'metadata_resolution',
+      'okf_validation',
+      'bundle_generation',
+      'index_publication',
+      'release_activation'
+    ));
+END $$;
+
 CREATE TABLE IF NOT EXISTS focowiki.source_files (
   id text PRIMARY KEY,
   knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),

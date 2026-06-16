@@ -74,12 +74,13 @@ export type PublishOkfReleaseInput = {
   pageSize: number;
   concurrency: number;
   storage: OkfPublicationStorage;
-  fetchSourcePage: (
-    request: CursorPageRequest
-  ) => Promise<CursorPage<SourceFileForPublication>>;
+  fetchSourcePage: (request: CursorPageRequest) => Promise<CursorPage<SourceFileForPublication>>;
   persistBundleFiles: (files: BundleFileDraft[]) => Promise<void>;
   persistBundleTreeEntries: (entries: BundleTreeEntryDraft[]) => Promise<void>;
+  onSourcePageStage?: (input: { sourceFileIds: string[]; stage: SourcePageStage }) => Promise<void>;
 };
+
+type SourcePageStage = "bundle_generation" | "okf_validation" | "index_publication";
 
 export type PublishOkfReleaseResult = {
   releaseId: string;
@@ -148,9 +149,7 @@ export async function publishOkfRelease(
   let cursor: string | null = null;
   const publicFilePlans = await collectPublicFilePlans(input);
 
-  const nextFileId = (): string => {
-    return `bundle-file-${randomUUID()}`;
-  };
+  const nextFileId = (): string => `bundle-file-${randomUUID()}`;
 
   do {
     const page = await input.fetchSourcePage({
@@ -169,6 +168,8 @@ export async function publishOkfRelease(
         publicFileName: plan.publicFileName
       };
     });
+    const pageSourceIds = plannedSources.map(({ source }) => source.id);
+    await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "bundle_generation" });
     const generatedFiles = await mapWithConcurrency(
       plannedSources,
       input.concurrency,
@@ -181,12 +182,14 @@ export async function publishOkfRelease(
         })
     );
 
+    await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "okf_validation" });
     for (const generated of generatedFiles) {
       pageIndexEntries.push(generated.summary);
       const pageFile = await writeAndPersistBundleFile(input, nextFileId, generated.page);
       fileCount += 1;
       await registerPublishedFile(input, treeState, manifestEntries, pageFile);
     }
+    await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "index_publication" });
 
     cursor = page.nextCursor;
   } while (cursor);

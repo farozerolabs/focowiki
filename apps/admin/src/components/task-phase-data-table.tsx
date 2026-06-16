@@ -13,6 +13,7 @@ import {
 import type { UploadTaskDetail, UploadTaskLifecycle } from "@/lib/admin-api";
 import { TaskFileDataTable } from "./task-file-data-table";
 import {
+  formatTaskCurrentStage,
   formatTaskFileCount,
   formatTaskProgress,
   formatTaskTime
@@ -52,7 +53,7 @@ export function UploadTaskDataTable({
           <TableRow>
             <TableHead className="w-12">{t("tasks.table.expand")}</TableHead>
             <TableHead>{t("tasks.table.status")}</TableHead>
-            <TableHead>{t("tasks.table.operation")}</TableHead>
+            <TableHead>{t("tasks.table.currentStage")}</TableHead>
             <TableHead>{t("tasks.table.files")}</TableHead>
             <TableHead>{t("tasks.table.progress")}</TableHead>
             <TableHead>{t("tasks.table.taskId")}</TableHead>
@@ -84,9 +85,7 @@ export function UploadTaskDataTable({
                   <TableCell className="font-medium">
                     {task.lifecycle === "ended" ? t("tasks.ended") : t("tasks.running")}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {t(`tasks.operation.${task.operation ?? "upload"}`)}
-                  </TableCell>
+                  <TableCell>{formatTaskCurrentStage(task, t)}</TableCell>
                   <TableCell>{formatTaskFileCount(task, t)}</TableCell>
                   <TableCell>{formatTaskProgress(task, t)}</TableCell>
                   <TableCell>

@@ -43,6 +43,14 @@ export type UploadTaskLifecycle = {
     failed: number;
     running: number;
     pending: number;
+    currentStage:
+      | "upload_storage"
+      | "metadata_resolution"
+      | "okf_validation"
+      | "bundle_generation"
+      | "index_publication"
+      | "release_activation"
+      | null;
   };
 };
 

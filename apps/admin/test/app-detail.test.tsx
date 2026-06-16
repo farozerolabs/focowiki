@@ -70,13 +70,14 @@ vi.mock("../src/lib/admin-api", () => ({
       endedAt: null,
       lifecycle: "running",
       operation: "upload",
-      sourceCount: 1,
+      sourceCount: 2,
       progress: {
-        total: 1,
+        total: 2,
         completed: 0,
         failed: 0,
         running: 1,
-        pending: 0
+        pending: 1,
+        currentStage: "metadata_resolution"
       }
     },
     phaseDetails: {
@@ -110,11 +111,21 @@ vi.mock("../src/lib/admin-api", () => ({
           id: "source-001",
           originalName: "ff8081819c46fdc3019cd19068731f64-intro-e656df554f9e.md",
           processingStatus: "running",
-          processingStage: "upload_storage",
+          processingStage: "metadata_resolution",
           processingStartedAt: "2026-06-14T00:00:00.000Z",
           processingEndedAt: null,
           processingErrorCode: null,
           createdAt: "2026-06-14T00:00:00.000Z"
+        },
+        {
+          id: "source-002",
+          originalName: "setup.md",
+          processingStatus: "pending",
+          processingStage: "upload_storage",
+          processingStartedAt: "2026-06-14T00:00:01.000Z",
+          processingEndedAt: null,
+          processingErrorCode: null,
+          createdAt: "2026-06-14T00:00:01.000Z"
         }
       ],
       nextCursor: null
@@ -140,13 +151,14 @@ vi.mock("../src/lib/admin-api", () => ({
         endedAt: null,
         lifecycle: "running",
         operation: "upload",
-        sourceCount: 1,
+        sourceCount: 2,
         progress: {
-          total: 1,
+          total: 2,
           completed: 0,
           failed: 0,
           running: 1,
-          pending: 0
+          pending: 1,
+          currentStage: "metadata_resolution"
         }
       }
     ],
@@ -252,7 +264,8 @@ describe("Admin knowledge base detail", () => {
     expect(table).toBeTruthy();
     expect(screen.getByTestId("upload-task-row-task-001")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Operation" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Operation" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Current stage" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Files" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Progress" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Task ID" })).toBeTruthy();
@@ -260,10 +273,11 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByRole("columnheader", { name: "Ended" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Phase" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Severity" })).toBeNull();
-    expect(within(table).getByText("Upload")).toBeTruthy();
+    expect(within(table).queryByText("Upload")).toBeNull();
+    expect(within(table).getByText("Metadata resolution")).toBeTruthy();
     expect(within(table).getAllByText("task-001")).toHaveLength(1);
-    expect(within(table).getByText("1 file")).toBeTruthy();
-    expect(within(table).getByText("0/1 | 1 running")).toBeTruthy();
+    expect(within(table).getByText("2 files")).toBeTruthy();
+    expect(within(table).getByText("0/2 | 1 running | 1 pending")).toBeTruthy();
     expect(within(table).queryByText("intro.md")).toBeNull();
     expect(fetchUploadTaskDetail).not.toHaveBeenCalled();
 
@@ -276,9 +290,13 @@ describe("Admin knowledge base detail", () => {
       taskId: "task-001"
     });
     expect(within(fileTable).getByText("intro.md")).toBeTruthy();
+    expect(within(fileTable).getByText("setup.md")).toBeTruthy();
     expect(within(fileTable).getByText("source-001")).toBeTruthy();
+    expect(within(fileTable).getByText("source-002")).toBeTruthy();
     expect(within(fileTable).getByText("Running")).toBeTruthy();
+    expect(within(fileTable).getByText("Pending")).toBeTruthy();
     expect(within(fileTable).getByText("Upload storage")).toBeTruthy();
+    expect(within(fileTable).getAllByText("Metadata resolution").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Upload storage / Metadata resolution")).toBeTruthy();
     expect(screen.queryByText("Info")).toBeNull();
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
@@ -578,7 +596,8 @@ describe("Admin knowledge base detail", () => {
       );
       expect(screen.queryByRole("heading", { name: "Intro", level: 1 })).toBeNull();
     });
-    expect(await screen.findByText("Delete file")).toBeTruthy();
+    expect(await screen.findByTestId("upload-task-row-task-delete")).toBeTruthy();
+    expect(screen.queryByText("Delete file")).toBeNull();
     expect(fetchKnowledgeBaseFileTree).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
       cursor: null

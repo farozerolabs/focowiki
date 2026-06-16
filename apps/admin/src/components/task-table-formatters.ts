@@ -27,7 +27,8 @@ export function formatTaskProgress(task: UploadTaskLifecycle, t: TFunction) {
     failed: 0,
     running: task.lifecycle === "running" ? Math.min(task.sourceCount ?? 0, 1) : 0,
     pending:
-      task.lifecycle === "running" ? Math.max((task.sourceCount ?? 0) - 1, 0) : 0
+      task.lifecycle === "running" ? Math.max((task.sourceCount ?? 0) - 1, 0) : 0,
+    currentStage: task.lifecycle === "ended" ? "release_activation" : "upload_storage"
   };
   const parts = [
     t("tasks.progress", {
@@ -47,4 +48,16 @@ export function formatTaskProgress(task: UploadTaskLifecycle, t: TFunction) {
   }
 
   return parts.join(" | ");
+}
+
+export function formatTaskCurrentStage(task: UploadTaskLifecycle, t: TFunction) {
+  const stage = task.progress?.currentStage;
+
+  if (!stage) {
+    return t("tasks.notRecorded");
+  }
+
+  return t(
+    `tasks.phase.${stage.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase())}`
+  );
 }

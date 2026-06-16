@@ -158,6 +158,7 @@ export type UploadTaskProgress = {
   failed: number;
   running: number;
   pending: number;
+  currentStage: SourceFileProcessingStage | null;
 };
 
 export type UploadTaskEventRecord = {
@@ -375,6 +376,7 @@ type UploadTaskRow = {
   source_failed_count?: string | number;
   source_running_count?: string | number;
   source_pending_count?: string | number;
+  source_current_stage?: SourceFileProcessingStage | null;
 };
 
 type UploadTaskEventRow = {
@@ -989,7 +991,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             COALESCE(progress.source_completed_count, 0) AS source_completed_count,
             COALESCE(progress.source_failed_count, 0) AS source_failed_count,
             COALESCE(progress.source_running_count, 0) AS source_running_count,
-            COALESCE(progress.source_pending_count, 0) AS source_pending_count
+            COALESCE(progress.source_pending_count, 0) AS source_pending_count,
+            progress.source_current_stage AS source_current_stage
           FROM focowiki.upload_tasks task
           LEFT JOIN (
             SELECT
@@ -997,7 +1000,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
               count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
               count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
+              (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
             FROM focowiki.source_files
             WHERE knowledge_base_id = ${knowledgeBaseId}
               AND deleted_at IS NULL
@@ -1026,7 +1030,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             COALESCE(progress.source_completed_count, 0) AS source_completed_count,
             COALESCE(progress.source_failed_count, 0) AS source_failed_count,
             COALESCE(progress.source_running_count, 0) AS source_running_count,
-            COALESCE(progress.source_pending_count, 0) AS source_pending_count
+            COALESCE(progress.source_pending_count, 0) AS source_pending_count,
+            progress.source_current_stage AS source_current_stage
           FROM focowiki.upload_tasks task
           LEFT JOIN (
             SELECT
@@ -1034,7 +1039,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
               count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
               count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
+              (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
             FROM focowiki.source_files
             WHERE knowledge_base_id = ${knowledgeBaseId}
               AND deleted_at IS NULL
@@ -1066,7 +1072,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                 COALESCE(progress.source_completed_count, 0) AS source_completed_count,
                 COALESCE(progress.source_failed_count, 0) AS source_failed_count,
                 COALESCE(progress.source_running_count, 0) AS source_running_count,
-                COALESCE(progress.source_pending_count, 0) AS source_pending_count
+                COALESCE(progress.source_pending_count, 0) AS source_pending_count,
+                progress.source_current_stage AS source_current_stage
               FROM focowiki.upload_tasks task
               LEFT JOIN (
                 SELECT
@@ -1074,7 +1081,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                   count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
                   count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
                   count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
+                  (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
                 FROM focowiki.source_files
                 WHERE knowledge_base_id = ${knowledgeBaseId}
                   AND deleted_at IS NULL
@@ -1100,7 +1108,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                 COALESCE(progress.source_completed_count, 0) AS source_completed_count,
                 COALESCE(progress.source_failed_count, 0) AS source_failed_count,
                 COALESCE(progress.source_running_count, 0) AS source_running_count,
-                COALESCE(progress.source_pending_count, 0) AS source_pending_count
+                COALESCE(progress.source_pending_count, 0) AS source_pending_count,
+                progress.source_current_stage AS source_current_stage
               FROM focowiki.upload_tasks task
               LEFT JOIN (
                 SELECT
@@ -1108,7 +1117,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                   count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
                   count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
                   count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
+                  (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
                 FROM focowiki.source_files
                 WHERE knowledge_base_id = ${knowledgeBaseId}
                   AND deleted_at IS NULL
@@ -1436,6 +1446,11 @@ function mapReleaseRow(row: ReleaseRow): ReleaseRecord {
 }
 
 function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
+  const completed = Number(row.source_completed_count ?? 0);
+  const failed = Number(row.source_failed_count ?? 0);
+  const running = Number(row.source_running_count ?? 0);
+  const pending = Math.max(0, row.source_count - completed - failed - running);
+
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
@@ -1449,18 +1464,53 @@ function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
     createdAt: row.created_at.toISOString(),
     progress: {
       total: row.source_count,
-      completed: Number(row.source_completed_count ?? 0),
-      failed: Number(row.source_failed_count ?? 0),
-      running: Number(row.source_running_count ?? 0),
-      pending: Math.max(
-        0,
-        row.source_count -
-          Number(row.source_completed_count ?? 0) -
-          Number(row.source_failed_count ?? 0) -
-          Number(row.source_running_count ?? 0)
-      )
+      completed,
+      failed,
+      running,
+      pending,
+      currentStage: row.source_current_stage ?? inferUploadTaskCurrentStage({ row, pending })
     }
   };
+}
+
+function inferUploadTaskCurrentStage(input: {
+  row: UploadTaskRow;
+  pending: number;
+}): SourceFileProcessingStage | null {
+  if (input.row.operation !== "upload") {
+    return null;
+  }
+
+  if (input.pending > 0) {
+    return "upload_storage";
+  }
+
+  if (input.row.source_count > 0 && input.row.ended_at && !input.row.internal_error_code) {
+    return "release_activation";
+  }
+
+  return null;
+}
+
+function sourceProgressStageOrderSql(): string {
+  return [
+    "CASE processing_status",
+    "WHEN 'running' THEN 0",
+    "WHEN 'pending' THEN 1",
+    "WHEN 'failed' THEN 2",
+    "WHEN 'completed' THEN 3",
+    "ELSE 4",
+    "END ASC,",
+    "CASE processing_stage",
+    "WHEN 'upload_storage' THEN 1",
+    "WHEN 'metadata_resolution' THEN 2",
+    "WHEN 'bundle_generation' THEN 3",
+    "WHEN 'okf_validation' THEN 4",
+    "WHEN 'index_publication' THEN 5",
+    "WHEN 'release_activation' THEN 6",
+    "ELSE 0",
+    "END DESC"
+  ].join(" ");
 }
 
 function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {

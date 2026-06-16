@@ -134,6 +134,22 @@ class MemoryStorage implements StorageAdapter {
 function createRepositories(options: { activeReleaseId?: string | null } = {}) {
   const createdTasks: Array<{ knowledgeBaseId: string; sourceCount: number }> = [];
   const sourcePageCalls: Array<{ limit: number; cursor: string | null }> = [];
+  const processingUpdates: Array<{
+    knowledgeBaseId: string;
+    taskId: string;
+    sourceFileIds: string[];
+    status: "pending" | "running" | "completed" | "failed";
+    stage:
+      | "upload_storage"
+      | "metadata_resolution"
+      | "okf_validation"
+      | "bundle_generation"
+      | "index_publication"
+      | "release_activation";
+    startedAt?: string | null;
+    endedAt?: string | null;
+    errorCode?: string | null;
+  }> = [];
   const sourceFiles: Array<{
     id: string;
     knowledgeBaseId: string;
@@ -222,6 +238,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     records: {
       sourceFiles,
       sourcePageCalls,
+      processingUpdates,
       releases,
       bundleFiles,
       bundleTreeEntries,
@@ -245,10 +262,11 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
         async createSourceFiles(
           files: Array<Omit<(typeof sourceFiles)[number], "createdAt" | "deletedAt">>
         ) {
+          const startIndex = sourceFiles.length;
           sourceFiles.push(
             ...files.map((file, index) => ({
               ...file,
-              createdAt: `2026-06-14T00:00:${String(index).padStart(2, "0")}.000Z`,
+              createdAt: `2026-06-14T00:00:${String(startIndex + index).padStart(2, "0")}.000Z`,
               deletedAt: null
             }))
           );
@@ -323,6 +341,10 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
           endedAt?: string | null;
           errorCode?: string | null;
         }) {
+          processingUpdates.push({
+            ...input,
+            sourceFileIds: [...input.sourceFileIds]
+          });
           const ids = new Set(input.sourceFileIds);
 
           for (const file of sourceFiles) {
@@ -456,14 +478,14 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
           const persisted = taskRecords.get(input.taskId);
 
           if (persisted && persisted.knowledgeBaseId === input.knowledgeBaseId) {
-            return persisted;
+            return withTaskProgress(persisted, sourceFiles);
           }
 
           if (input.knowledgeBaseId !== knowledgeBase.id || input.taskId !== "task-001") {
             return null;
           }
 
-          return {
+          return withTaskProgress({
             id: "task-001",
             knowledgeBaseId: input.knowledgeBaseId,
             operation: "upload" as const,
@@ -474,14 +496,16 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
             internalErrorCode: null,
             internalErrorMessage: null,
             createdAt: "2026-06-14T00:00:00.000Z"
-          };
+          }, sourceFiles);
         },
         async getLatestUploadTask(knowledgeBaseId: string) {
-          return (
+          const task = (
             Array.from(taskRecords.values())
               .filter((task) => task.knowledgeBaseId === knowledgeBaseId)
               .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0] ?? null
           );
+
+          return task ? withTaskProgress(task, sourceFiles) : null;
         },
         async listUploadTasks(input: {
           knowledgeBaseId: string;
@@ -490,7 +514,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
         }) {
           return {
             items: [
-              {
+              withTaskProgress({
                 id: input.cursor ? "task-002" : "task-001",
                 knowledgeBaseId: input.knowledgeBaseId,
                 operation: "upload" as const,
@@ -505,7 +529,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
                 createdAt: input.cursor
                   ? "2026-06-13T00:00:00.000Z"
                   : "2026-06-14T00:00:00.000Z"
-              }
+              }, sourceFiles)
             ],
             nextCursor: input.cursor ? null : "task-cursor-001"
           };
@@ -591,6 +615,101 @@ function createPublicApiKeyRepository(rawKey: string) {
   };
 }
 
+const processingStageOrder = [
+  "upload_storage",
+  "metadata_resolution",
+  "bundle_generation",
+  "okf_validation",
+  "index_publication",
+  "release_activation"
+] as const;
+
+function withTaskProgress<
+  T extends {
+    id: string;
+    knowledgeBaseId: string;
+    sourceCount: number;
+    endedAt: string | null;
+    internalErrorCode: string | null;
+  }
+>(
+  task: T,
+  sourceFiles: Array<{
+    knowledgeBaseId: string;
+    taskId: string;
+    processingStatus?: "pending" | "running" | "completed" | "failed";
+    processingStage?: (typeof processingStageOrder)[number];
+    deletedAt: string | null;
+  }>
+) {
+  const files = sourceFiles.filter(
+    (file) =>
+      file.knowledgeBaseId === task.knowledgeBaseId &&
+      file.taskId === task.id &&
+      file.deletedAt === null
+  );
+  const completed = files.filter((file) => file.processingStatus === "completed").length;
+  const failed = files.filter((file) => file.processingStatus === "failed").length;
+  const running = files.filter((file) => file.processingStatus === "running").length;
+  const explicitPending = files.filter((file) => file.processingStatus === "pending").length;
+  const pending = Math.max(0, task.sourceCount - completed - failed - running);
+
+  return {
+    ...task,
+    progress: {
+      total: task.sourceCount,
+      completed,
+      failed,
+      running,
+      pending: Math.max(pending, explicitPending),
+      currentStage: selectCurrentStage(files, {
+        pending: Math.max(pending, explicitPending),
+        ended: Boolean(task.endedAt)
+      })
+    }
+  };
+}
+
+function selectCurrentStage(
+  files: Array<{
+    processingStatus?: "pending" | "running" | "completed" | "failed";
+    processingStage?: (typeof processingStageOrder)[number];
+  }>,
+  summary: { pending: number; ended: boolean }
+) {
+  const runningStage = latestStage(
+    files
+      .filter((file) => file.processingStatus === "running")
+      .map((file) => file.processingStage ?? "upload_storage")
+  );
+
+  if (runningStage) {
+    return runningStage;
+  }
+
+  if (summary.pending > 0) {
+    return "upload_storage";
+  }
+
+  const failedStage = latestStage(
+    files
+      .filter((file) => file.processingStatus === "failed")
+      .map((file) => file.processingStage ?? "bundle_generation")
+  );
+
+  if (failedStage) {
+    return failedStage;
+  }
+
+  return files.length > 0 || summary.ended ? "release_activation" : null;
+}
+
+function latestStage(stages: Array<(typeof processingStageOrder)[number]>) {
+  return stages.sort(
+    (left, right) => processingStageOrder.indexOf(right) - processingStageOrder.indexOf(left)
+  )[0] ?? null;
+}
+
 describe("Upload parsing task lifecycle", () => {
   it("creates exactly one knowledge base-scoped upload task and coordinates through Redis", async () => {
     const { repositories, createdTasks, records } = createRepositories();
@@ -658,6 +777,30 @@ describe("Upload parsing task lifecycle", () => {
         })
       ])
     );
+    const metadataUpdates = records.processingUpdates.filter(
+      (update) => update.stage === "metadata_resolution"
+    );
+    const bundleUpdates = records.processingUpdates.filter(
+      (update) => update.stage === "bundle_generation"
+    );
+    const releaseUpdates = records.processingUpdates.filter(
+      (update) => update.stage === "release_activation"
+    );
+
+    expect(new Set(records.sourceFiles.map((file) => file.processingStartedAt)).size).toBe(2);
+    expect(new Set(records.sourceFiles.map((file) => file.processingEndedAt)).size).toBe(2);
+    expect(metadataUpdates).toHaveLength(2);
+    expect(metadataUpdates.every((update) => update.sourceFileIds.length === 1)).toBe(true);
+    expect(
+      bundleUpdates.filter((update) => update.sourceFileIds.length === 1).length
+    ).toBeGreaterThanOrEqual(2);
+    expect(releaseUpdates).toHaveLength(2);
+    expect(releaseUpdates.every((update) => update.sourceFileIds.length === 1)).toBe(true);
+    expect(
+      records.processingUpdates.some(
+        (update) => update.stage === "metadata_resolution" && update.sourceFileIds.length === 2
+      )
+    ).toBe(false);
     expect(records.sourcePageCalls).toEqual([
       { limit: 200, cursor: null },
       { limit: 50, cursor: null },
@@ -716,6 +859,11 @@ describe("Upload parsing task lifecycle", () => {
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
         key.startsWith("focowiki-test:pagination-invalid:upload-tasks:kb-001")
+      )
+    ).toBe(true);
+    expect(
+      Array.from(redisClient.values.keys()).some((key) =>
+        key.startsWith("focowiki-test:pagination-invalid:upload-task-source-files:kb-001:task-001")
       )
     ).toBe(true);
   });
@@ -1357,8 +1505,9 @@ describe("Upload parsing task lifecycle", () => {
           total: 2,
           completed: 0,
           failed: 0,
-          running: 1,
-          pending: 1
+          running: 0,
+          pending: 2,
+          currentStage: "upload_storage"
         }
       })
     ]);

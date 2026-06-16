@@ -181,7 +181,7 @@ try {
   await deleteFileDialog.waitFor();
   await deleteFileDialog.getByRole("button", { name: "Delete" }).click();
   await deleteFileDialog.waitFor({ state: "detached", timeout: 30_000 });
-  await page.getByText("Delete file").waitFor({ timeout: 30_000 });
+  await page.getByText("Upload tasks").first().waitFor({ timeout: 30_000 });
   await expectButtonDetached(page, secondSampleName, taskTimeoutMs);
   await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));

@@ -27,6 +27,8 @@ export type ModelSuggestionSource = {
 export async function readModelSuggestions(input: {
   sources: ModelSuggestionSource[];
   modelAssistance: ModelAssistanceOptions | null;
+  onSourceStart?: (source: ModelSuggestionSource) => Promise<void>;
+  onSourceComplete?: (source: ModelSuggestionSource) => Promise<void>;
 }): Promise<{
   suggestionsBySourceId: Map<string, ModelSuggestions>;
   warnings: string[];
@@ -44,6 +46,7 @@ export async function readModelSuggestions(input: {
   const modelAssistance = input.modelAssistance;
 
   await mapWithConcurrency(input.sources, modelAssistance.suggestionConcurrency, async (source) => {
+    await input.onSourceStart?.(source);
     const candidatePaths = selectModelCandidatePaths({
       source,
       sources: input.sources
@@ -63,6 +66,7 @@ export async function readModelSuggestions(input: {
     }
 
     warnings.push(...result.warnings);
+    await input.onSourceComplete?.(source);
   });
 
   return {
