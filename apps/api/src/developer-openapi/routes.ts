@@ -37,8 +37,7 @@ export function registerDeveloperOpenApiRoutes(
 
   app.get("/openapi/v1/health", (context) =>
     context.json({
-      status: "ok",
-      apiVersion: "v1"
+      status: "ok"
     })
   );
 

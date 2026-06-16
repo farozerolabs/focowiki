@@ -83,6 +83,23 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).not.toMatch(/sqlite|embedded|in-memory|memory-backed/i);
   });
 
+  it("keeps Compose health checks on health-state-only probes", () => {
+    const deploymentCompose = readFileSync(deploymentComposeTemplatePath, "utf8");
+    const devCompose = readFileSync(devComposeTemplatePath, "utf8");
+
+    for (const compose of [deploymentCompose, devCompose]) {
+      expect(compose).toContain("http://127.0.0.1:8080/healthz");
+      expect(compose).toContain("'/healthz'");
+      expect(compose).toContain("JSON.stringify(body)===");
+      expect(compose).toContain('\\"status\\":\\"ok\\"');
+      expect(compose).not.toContain("/admin/api/session");
+      expect(compose).not.toContain("/openapi/v1/version");
+      expect(compose).not.toContain("/openapi/v1/openapi.json");
+      expect(compose).not.toContain("apiVersion");
+      expect(compose).not.toContain("authenticated");
+    }
+  });
+
   it("defines multi-stage Docker runtime targets without using the Vite dev server", () => {
     const dockerfile = readFileSync(dockerfilePath, "utf8");
 

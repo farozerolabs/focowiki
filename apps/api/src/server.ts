@@ -103,6 +103,7 @@ function createBaseApp(config: RuntimeConfig): Hono {
 
     await next();
   });
+  app.get("/healthz", (context) => context.json({ status: "ok" }));
   app.notFound((context) =>
     context.json(
       {

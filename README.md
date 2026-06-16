@@ -316,6 +316,8 @@ GET    /openapi/v1/webhook-deliveries
 POST   /openapi/v1/webhook-deliveries/{deliveryId}/redeliver
 ```
 
+The health endpoint returns only health state. Use `/openapi/v1/version` for product and API version metadata, and `/openapi/v1/openapi.json` for the machine-readable contract.
+
 `index.md` is the public navigation file. `log.md` is a bounded rolling update history generated from persisted release and task facts. `schema.md` describes the generated bundle metadata shape. `pages/*.md` contains public concept pages with YAML frontmatter. `_index/*.json` contains generated machine-readable indexes for manifests, search, and links.
 
 The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object-key mappings. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage. Public responses never expose bucket names, `S3_PREFIX`, internal release IDs, storage task IDs, or raw object keys.

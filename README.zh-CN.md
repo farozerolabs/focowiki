@@ -316,6 +316,8 @@ GET    /openapi/v1/webhook-deliveries
 POST   /openapi/v1/webhook-deliveries/{deliveryId}/redeliver
 ```
 
+Health endpoint 只返回健康状态。产品和 API 版本信息通过 `/openapi/v1/version` 获取，机器可读接口契约通过 `/openapi/v1/openapi.json` 获取。
+
 `index.md` 是 public navigation file。`log.md` 是从 persisted release and task facts 生成的 bounded rolling update history。`schema.md` 描述 generated bundle metadata shape。`pages/*.md` 包含带 YAML frontmatter 的 public concept pages。`_index/*.json` 包含 manifest、search 和 links 的 generated machine-readable indexes。
 
 数据库保存 knowledge base records、task lifecycle rows、source file records、release records、generated file records、checksums、metadata summaries 和 S3 object-key mappings。Raw uploaded Markdown 和 generated Markdown/JSON bodies 保存在 S3 兼容存储中。Public responses 不会暴露 bucket names、`S3_PREFIX`、internal release IDs、storage task IDs 或 raw object keys。

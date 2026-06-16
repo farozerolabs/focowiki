@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPublicOpenApiApp } from "../src/server.js";
+import { createAdminApiApp, createPublicOpenApiApp } from "../src/server.js";
 import type {
   AdminRepositories,
   BundleFileRecord,
@@ -19,6 +19,17 @@ import { createTestRedisCoordinator } from "./support/session.js";
 
 const developerKey = "fwok_developer-openapi-test-key";
 const now = "2026-06-16T00:00:00.000Z";
+const forbiddenHealthKeys = new Set([
+  "apiVersion",
+  "version",
+  "authenticated",
+  "database",
+  "redis",
+  "s3",
+  "model",
+  "routes",
+  "deployment"
+]);
 
 function createConfig(): RuntimeConfig {
   return {
@@ -614,7 +625,8 @@ function authHeaders(extra: Record<string, string> = {}) {
 
 async function expectOpenApiError(response: Response, status: number, code: string) {
   expect(response.status).toBe(status);
-  await expect(response.json()).resolves.toMatchObject({
+  const body = (await response.json()) as Record<string, unknown>;
+  expect(body).toMatchObject({
     error: {
       code,
       httpStatus: status,
@@ -622,15 +634,38 @@ async function expectOpenApiError(response: Response, status: number, code: stri
     },
     requestId: expect.any(String)
   });
+  return body;
+}
+
+function collectKeys(value: unknown, keys = new Set<string>()): Set<string> {
+  if (!value || typeof value !== "object") {
+    return keys;
+  }
+
+  for (const [key, nested] of Object.entries(value)) {
+    keys.add(key);
+    collectKeys(nested, keys);
+  }
+
+  return keys;
 }
 
 describe("Developer OpenAPI", () => {
   it("requires bearer authentication for metadata endpoints", async () => {
     const { app } = createApp();
 
-    for (const path of ["/openapi/v1/health", "/openapi/v1/version", "/openapi/v1/openapi.json"]) {
+    for (const path of ["/openapi/v1/version", "/openapi/v1/openapi.json"]) {
       await expectOpenApiError(await app.request(path), 401, "UNAUTHORIZED");
     }
+
+    const healthBody = await expectOpenApiError(
+      await app.request("/openapi/v1/health"),
+      401,
+      "UNAUTHORIZED"
+    );
+
+    expect(healthBody).not.toMatchObject({ status: "ok" });
+    expect([...collectKeys(healthBody)].filter((key) => forbiddenHealthKeys.has(key))).toEqual([]);
   });
 
   it("serves authenticated metadata and documents the reusable identifiers", async () => {
@@ -641,13 +676,34 @@ describe("Developer OpenAPI", () => {
     const openapiBody = (await openapi.json()) as Record<string, unknown>;
 
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({ status: "ok" });
+    await expect(health.json()).resolves.toEqual({ status: "ok" });
     expect(version.status).toBe(200);
     await expect(version.json()).resolves.toMatchObject({ apiVersion: "v1" });
     expect(openapi.status).toBe(200);
     expect(JSON.stringify(openapiBody)).toContain("knowledgeBaseId");
     expect(JSON.stringify(openapiBody)).toContain("taskId");
     expect(JSON.stringify(openapiBody)).toContain("fileId");
+  });
+
+  it("keeps product-owned health probes health-state-only", async () => {
+    const { app } = createApp();
+    const adminApp = createAdminApiApp({ config: createConfig() });
+    const publicHealth = await app.request("/healthz");
+    const adminHealth = await adminApp.request("/healthz");
+    const developerHealth = await app.request("/openapi/v1/health", { headers: authHeaders() });
+    const bodies = [
+      await publicHealth.json(),
+      await adminHealth.json(),
+      await developerHealth.json()
+    ] as Array<Record<string, unknown>>;
+
+    expect(publicHealth.status).toBe(200);
+    expect(adminHealth.status).toBe(200);
+    expect(developerHealth.status).toBe(200);
+    expect(bodies).toEqual([{ status: "ok" }, { status: "ok" }, { status: "ok" }]);
+    for (const body of bodies) {
+      expect([...collectKeys(body)].filter((key) => forbiddenHealthKeys.has(key))).toEqual([]);
+    }
   });
 
   it("requires bearer authentication for every workflow route before resource lookup", async () => {
