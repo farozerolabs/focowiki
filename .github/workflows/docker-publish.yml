@@ -11,8 +11,6 @@ on:
 permissions:
   contents: read
   packages: write
-  attestations: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -78,6 +76,7 @@ jobs:
           push: true
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
+          provenance: mode=max
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
@@ -91,19 +90,6 @@ jobs:
           push: true
           tags: ${{ steps.meta-admin.outputs.tags }}
           labels: ${{ steps.meta-admin.outputs.labels }}
+          provenance: mode=max
           cache-from: type=gha,scope=admin
           cache-to: type=gha,mode=max,scope=admin
-
-      - name: Attest API image
-        uses: actions/attest-build-provenance@v4.1.0
-        with:
-          subject-name: ${{ env.API_IMAGE }}
-          subject-digest: ${{ steps.build-api.outputs.digest }}
-          push-to-registry: true
-
-      - name: Attest Admin image
-        uses: actions/attest-build-provenance@v4.1.0
-        with:
-          subject-name: ${{ env.ADMIN_IMAGE }}
-          subject-digest: ${{ steps.build-admin.outputs.digest }}
-          push-to-registry: true
