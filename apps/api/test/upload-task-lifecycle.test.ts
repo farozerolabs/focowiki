@@ -144,6 +144,17 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     sizeBytes: number;
     checksumSha256: string;
     metadata: SourceMetadataDefaults;
+    processingStatus?: "pending" | "running" | "completed" | "failed";
+    processingStage?:
+      | "upload_storage"
+      | "metadata_resolution"
+      | "okf_validation"
+      | "bundle_generation"
+      | "index_publication"
+      | "release_activation";
+    processingStartedAt?: string | null;
+    processingEndedAt?: string | null;
+    processingErrorCode?: string | null;
     createdAt: string;
     deletedAt: string | null;
   }> = [];
@@ -295,6 +306,40 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
             items: filtered.slice(start, start + input.limit),
             nextCursor: start + input.limit < filtered.length ? String(start + input.limit) : null
           };
+        },
+        async updateSourceFileProcessingState(input: {
+          knowledgeBaseId: string;
+          taskId: string;
+          sourceFileIds: string[];
+          status: "pending" | "running" | "completed" | "failed";
+          stage:
+            | "upload_storage"
+            | "metadata_resolution"
+            | "okf_validation"
+            | "bundle_generation"
+            | "index_publication"
+            | "release_activation";
+          startedAt?: string | null;
+          endedAt?: string | null;
+          errorCode?: string | null;
+        }) {
+          const ids = new Set(input.sourceFileIds);
+
+          for (const file of sourceFiles) {
+            if (
+              file.knowledgeBaseId !== input.knowledgeBaseId ||
+              file.taskId !== input.taskId ||
+              !ids.has(file.id)
+            ) {
+              continue;
+            }
+
+            file.processingStatus = input.status;
+            file.processingStage = input.stage;
+            file.processingStartedAt = input.startedAt ?? file.processingStartedAt ?? null;
+            file.processingEndedAt = input.endedAt ?? null;
+            file.processingErrorCode = input.errorCode ?? null;
+          }
         },
         async listBundleTreeEntries() {
           return { items: bundleTreeEntries, nextCursor: null };
@@ -593,6 +638,26 @@ describe("Upload parsing task lifecycle", () => {
     await waitForBackgroundUpload(() => Boolean(records.releases[0]?.publishedAt));
 
     expect(records.sourceFiles).toHaveLength(2);
+    expect(records.sourceFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          originalName: "intro.md",
+          processingStatus: "completed",
+          processingStage: "release_activation",
+          processingStartedAt: expect.any(String),
+          processingEndedAt: expect.any(String),
+          processingErrorCode: null
+        }),
+        expect.objectContaining({
+          originalName: "setup.md",
+          processingStatus: "completed",
+          processingStage: "release_activation",
+          processingStartedAt: expect.any(String),
+          processingEndedAt: expect.any(String),
+          processingErrorCode: null
+        })
+      ])
+    );
     expect(records.sourcePageCalls).toEqual([
       { limit: 200, cursor: null },
       { limit: 50, cursor: null },
@@ -1287,10 +1352,18 @@ describe("Upload parsing task lifecycle", () => {
         knowledgeBaseId: "kb-001",
         lifecycle: "running",
         startedAt: "2026-06-14T00:00:00.000Z",
-        endedAt: null
+        endedAt: null,
+        progress: {
+          total: 2,
+          completed: 0,
+          failed: 0,
+          running: 1,
+          pending: 1
+        }
       })
     ]);
     expect(firstBody.items[0]).not.toHaveProperty("phases");
+    expect(firstBody.items).toHaveLength(1);
     expect(firstBody.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
@@ -1374,7 +1447,12 @@ describe("Upload parsing task lifecycle", () => {
       expect.objectContaining({
         id: "source-001",
         taskId: "task-001",
-        originalName: "intro.md"
+        originalName: "intro.md",
+        processingStatus: "completed",
+        processingStage: "release_activation",
+        processingStartedAt: "2026-06-14T00:00:00.000Z",
+        processingEndedAt: "2026-06-14T00:00:00.000Z",
+        processingErrorCode: null
       })
     ]);
     expect(body.sourceFiles.nextCursor).toBeNull();
@@ -1461,7 +1539,10 @@ describe("Upload parsing task lifecycle", () => {
       expect.objectContaining({
         id: "source-001",
         taskId: "task-001",
-        originalName: "intro.md"
+        originalName: "intro.md",
+        processingStatus: "completed",
+        processingStage: "release_activation",
+        processingErrorCode: null
       })
     ]);
     expect(firstBody.sourceFiles.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
@@ -1491,7 +1572,10 @@ describe("Upload parsing task lifecycle", () => {
       expect.objectContaining({
         id: "source-002",
         taskId: "task-001",
-        originalName: "setup.md"
+        originalName: "setup.md",
+        processingStatus: "completed",
+        processingStage: "release_activation",
+        processingErrorCode: null
       })
     ]);
     expect(secondBody.sourceFiles.items).not.toContainEqual(

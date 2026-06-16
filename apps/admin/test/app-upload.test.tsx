@@ -146,10 +146,7 @@ describe("Admin upload file picker", () => {
       knowledgeBaseId: "kb-docs",
       files: [file]
     });
-    expect(fetchUploadTaskDetail).toHaveBeenCalledWith({
-      knowledgeBaseId: "kb-docs",
-      taskId: "task-new"
-    });
+    expect(fetchUploadTaskDetail).not.toHaveBeenCalled();
   });
 
   it("shows a multi-file batch summary before upload", async () => {

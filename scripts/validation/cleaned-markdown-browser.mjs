@@ -56,6 +56,7 @@ const report = {
     "Admin UI browser flow",
     "single-file upload",
     "multi-file batch upload",
+    "expandable upload task file table",
     "task source pagination",
     "preview, copy, source-backed deletion, and knowledge base deletion"
   ],
@@ -120,12 +121,16 @@ try {
   await page.getByRole("button", { name: /^Upload$/ }).waitFor();
   report.checks.push(okCheck("knowledge-base", "Created and opened validation knowledge base."));
 
-  await uploadFilesFromDialog(page, [singleSample], {
+  const singleUploadTaskId = await uploadFilesFromDialog(page, [singleSample], {
     checkName: "single-upload-submit",
     message: "Single-file upload dialog submitted and task list refreshed."
   });
-  await page.getByText("Upload parsing task ended").waitFor({ timeout: taskTimeoutMs });
+  await waitForTaskEnded(page, singleUploadTaskId, taskTimeoutMs);
   report.checks.push(okCheck("single-task-ended", "Browser observed ended single-file upload task."));
+  await validateExpandedTaskFileTable(page, singleUploadTaskId, [singleSample], {
+    checkName: "single-expanded-task-files",
+    message: "Single-file task expands to one nested file row with stable file metadata."
+  });
 
   const firstSampleName = singleSample.basename;
   const secondSampleName = batchSamples[0]?.basename;
@@ -141,20 +146,16 @@ try {
   report.checks.push(okCheck("single-file-preview", "Opened generated single-upload file preview in browser."));
 
   await page.getByRole("button", { name: "Upload tasks" }).click();
-  await uploadFilesFromDialog(page, batchSamples, {
+  const batchUploadTaskId = await uploadFilesFromDialog(page, batchSamples, {
     checkName: "batch-upload-submit",
     message: "Batch upload dialog submitted and task list refreshed."
   });
-  await page.getByText("Upload parsing task ended").nth(1).waitFor({ timeout: taskTimeoutMs });
+  await waitForTaskEnded(page, batchUploadTaskId, taskTimeoutMs);
   report.checks.push(okCheck("batch-task-ended", "Browser observed ended batch upload task."));
-
-  const loadMoreFiles = page.getByRole("button", { name: "Load more files" });
-  if ((await loadMoreFiles.count()) > 0) {
-    await loadMoreFiles.first().click();
-    report.checks.push(okCheck("task-source-pagination", "Browser loaded another source-file page for a task."));
-  } else {
-    report.checks.push(okCheck("task-source-pagination", "Task source-file page fit within the configured browser page size."));
-  }
+  await validateExpandedTaskFileTable(page, batchUploadTaskId, batchSamples, {
+    checkName: "batch-expanded-task-files",
+    message: "Batch task expands to a nested file table with original filenames, file IDs, status, stage, and pagination."
+  });
 
   await openPagesDirectoryIfNeeded(page, firstSampleName);
   await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
@@ -267,9 +268,81 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
   await uploadDialog.getByText(`${samples.length} selected Markdown file`, { exact: false }).waitFor({
     timeout: 30_000
   });
-  await uploadDialog.getByRole("button", { name: /^Upload$/ }).click();
+  const [uploadResponse] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/admin/api/knowledge-bases/") &&
+        response.url().includes("/uploads") &&
+        response.status() === 202
+    ),
+    uploadDialog.getByRole("button", { name: /^Upload$/ }).click()
+  ]);
+  const uploadBody = await uploadResponse.json();
   await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
-  await page.getByText(/task-/).first().waitFor({ timeout: 30_000 });
+  const taskId = uploadBody?.task?.id;
+
+  if (!taskId) {
+    throw new Error("Upload response did not include a task id.");
+  }
+
+  await page.getByTestId(`upload-task-row-${taskId}`).waitFor({ timeout: 30_000 });
+  report.checks.push(okCheck(checkName, message));
+  return taskId;
+}
+
+async function waitForTaskEnded(page, taskId, timeout) {
+  await page
+    .getByTestId(`upload-task-row-${taskId}`)
+    .filter({ hasText: "Upload parsing task ended" })
+    .waitFor({ timeout });
+}
+
+async function validateExpandedTaskFileTable(page, taskId, samples, { checkName, message }) {
+  const taskRow = page.getByTestId(`upload-task-row-${taskId}`);
+
+  if ((await taskRow.count()) !== 1) {
+    throw new Error(`Expected one visible task row for ${taskId}.`);
+  }
+
+  const expandButton = page.getByRole("button", { name: `Expand task ${taskId}` });
+  await expandButton.waitFor({ timeout: 30_000 });
+  await expandButton.click();
+
+  const fileTable = page.getByRole("table", { name: `Files for ${taskId}` });
+  await fileTable.waitFor({ timeout: 30_000 });
+  await fileTable.getByText(samples[0].basename, { exact: true }).waitFor({ timeout: 30_000 });
+  await fileTable.getByText("Completed", { exact: true }).first().waitFor({ timeout: 30_000 });
+  await fileTable.getByText("Release activation", { exact: true }).first().waitFor({ timeout: 30_000 });
+
+  const fileRows = page.locator(`[data-testid^="upload-task-file-row-${taskId}-"]`);
+  const initialRowCount = await fileRows.count();
+
+  if (initialRowCount < 1) {
+    throw new Error(`Expected nested file rows for ${taskId}.`);
+  }
+
+  const rowIds = await fileRows.evaluateAll((rows) =>
+    rows.map((row) => row.getAttribute("data-testid") ?? "")
+  );
+
+  if (rowIds.some((id) => id === `upload-task-file-row-${taskId}-`)) {
+    throw new Error("Expanded task file rows did not include stable file ids.");
+  }
+
+  const loadMoreFiles = page.getByRole("button", { name: "Load more files" });
+
+  if ((await loadMoreFiles.count()) > 0) {
+    await loadMoreFiles.click();
+    await fileTable.getByText(samples.at(-1).basename, { exact: true }).waitFor({
+      timeout: 30_000
+    });
+    report.checks.push(okCheck("task-source-pagination", "Browser loaded another source-file page for a task."));
+  } else {
+    report.checks.push(okCheck("task-source-pagination", "Task source-file page fit within the configured browser page size."));
+  }
+
+  await page.getByRole("button", { name: `Collapse task ${taskId}` }).click();
   report.checks.push(okCheck(checkName, message));
 }
 

@@ -80,6 +80,9 @@ export function KnowledgeBaseDetailPage({
   const [tasks, setTasks] = useState<UploadTaskLifecycle[]>([]);
   const [taskCursor, setTaskCursor] = useState<string | null>(null);
   const [taskDetailsById, setTaskDetailsById] = useState<Record<string, UploadTaskDetail | null>>({});
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
+  const [loadingTaskDetailIds, setLoadingTaskDetailIds] = useState<Set<string>>(new Set());
+  const [taskDetailErrorsById, setTaskDetailErrorsById] = useState<Record<string, string | null>>({});
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
   const [copiedUrl, setCopiedUrl] = useState("");
 
@@ -103,6 +106,9 @@ export function KnowledgeBaseDetailPage({
     setTasks([]);
     setTaskCursor(null);
     setTaskDetailsById({});
+    setExpandedTaskIds(new Set());
+    setLoadingTaskDetailIds(new Set());
+    setTaskDetailErrorsById({});
     setPublicUrls(null);
     setCopiedUrl("");
     loadedTreeParentsRef.current = new Set();
@@ -118,7 +124,7 @@ export function KnowledgeBaseDetailPage({
     }, TASK_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [knowledgeBase.id]);
+  }, [expandedTaskIds, knowledgeBase.id]);
 
   async function loadFileTree(input: { parentPath: string; replace: boolean }) {
     const currentCursor = input.replace ? null : treePages[input.parentPath]?.nextCursor ?? null;
@@ -207,7 +213,7 @@ export function KnowledgeBaseDetailPage({
 
     setTasks((current) => (input.replace ? page.items : [...current, ...page.items]));
     setTaskCursor(page.nextCursor);
-    await loadTaskDetails(page.items, { replace: input.replace });
+    await refreshExpandedTaskDetails(page.items);
 
     if (input.replace) {
       hasRunningTasksRef.current = hasRunningTasks;
@@ -229,22 +235,69 @@ export function KnowledgeBaseDetailPage({
     ]);
   }
 
-  async function loadTaskDetails(pageTasks: UploadTaskLifecycle[], input: { replace: boolean }) {
-    const entries = await Promise.all(
-      pageTasks.map(async (task) => {
-        const detail = await fetchUploadTaskDetail({
-          knowledgeBaseId: knowledgeBase.id,
-          taskId: task.id
-        });
-
-        return [task.id, detail] as const;
-      })
+  async function refreshExpandedTaskDetails(pageTasks: UploadTaskLifecycle[]) {
+    await Promise.all(
+      pageTasks
+        .filter((task) => expandedTaskIds.has(task.id))
+        .map((task) => loadTaskDetail(task.id))
     );
+  }
 
-    setTaskDetailsById((current) => ({
-      ...(input.replace ? {} : current),
-      ...Object.fromEntries(entries)
+  async function loadTaskDetail(taskId: string) {
+    setLoadingTaskDetailIds((current) => new Set(current).add(taskId));
+    setTaskDetailErrorsById((current) => ({
+      ...current,
+      [taskId]: null
     }));
+
+    try {
+      const detail = await fetchUploadTaskDetail({
+        knowledgeBaseId: knowledgeBase.id,
+        taskId
+      });
+
+      if (!detail) {
+        setTaskDetailErrorsById((current) => ({
+          ...current,
+          [taskId]: "errors.uploadFailed"
+        }));
+        return;
+      }
+
+      setTaskDetailsById((current) => ({
+        ...current,
+        [taskId]: detail
+      }));
+    } catch {
+      setTaskDetailErrorsById((current) => ({
+        ...current,
+        [taskId]: "errors.uploadFailed"
+      }));
+    } finally {
+      setLoadingTaskDetailIds((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
+    }
+  }
+
+  async function handleToggleTask(taskId: string, open: boolean) {
+    setExpandedTaskIds((current) => {
+      const next = new Set(current);
+
+      if (open) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+
+      return next;
+    });
+
+    if (open && !taskDetailsById[taskId] && !loadingTaskDetailIds.has(taskId)) {
+      await loadTaskDetail(taskId);
+    }
   }
 
   async function loadMoreTaskSourceFiles(taskId: string) {
@@ -255,13 +308,35 @@ export function KnowledgeBaseDetailPage({
       return;
     }
 
-    const nextDetail = await fetchUploadTaskDetail({
-      knowledgeBaseId: knowledgeBase.id,
-      taskId,
-      sourceCursor
-    });
+    setLoadingTaskDetailIds((current) => new Set(current).add(taskId));
+    setTaskDetailErrorsById((current) => ({
+      ...current,
+      [taskId]: null
+    }));
+
+    let nextDetail: UploadTaskDetail | null = null;
+
+    try {
+      nextDetail = await fetchUploadTaskDetail({
+        knowledgeBaseId: knowledgeBase.id,
+        taskId,
+        sourceCursor
+      });
+    } catch {
+      nextDetail = null;
+    } finally {
+      setLoadingTaskDetailIds((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
+    }
 
     if (!nextDetail) {
+      setTaskDetailErrorsById((current) => ({
+        ...current,
+        [taskId]: "errors.uploadFailed"
+      }));
       return;
     }
 
@@ -380,8 +455,12 @@ export function KnowledgeBaseDetailPage({
               tasks={tasks}
               taskCursor={taskCursor}
               taskDetailsById={taskDetailsById}
+              expandedTaskIds={expandedTaskIds}
+              loadingTaskDetailIds={loadingTaskDetailIds}
+              taskDetailErrorsById={taskDetailErrorsById}
               onLoadMore={() => void loadTasks({ replace: false })}
               onLoadMoreTaskSourceFiles={(taskId) => void loadMoreTaskSourceFiles(taskId)}
+              onToggleTask={(taskId, open) => void handleToggleTask(taskId, open)}
               onUpload={() => setIsUploadDialogOpen(true)}
             />
           ) : (

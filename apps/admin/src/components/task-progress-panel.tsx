@@ -16,8 +16,12 @@ type TaskProgressPanelProps = {
   tasks: UploadTaskLifecycle[];
   taskCursor: string | null;
   taskDetailsById: Record<string, UploadTaskDetail | null>;
+  expandedTaskIds: Set<string>;
+  loadingTaskDetailIds: Set<string>;
+  taskDetailErrorsById: Record<string, string | null>;
   onLoadMore: () => void;
   onLoadMoreTaskSourceFiles: (taskId: string) => void;
+  onToggleTask: (taskId: string, open: boolean) => void;
   onUpload: () => void;
 };
 
@@ -25,8 +29,12 @@ export function TaskProgressPanel({
   tasks,
   taskCursor,
   taskDetailsById,
+  expandedTaskIds,
+  loadingTaskDetailIds,
+  taskDetailErrorsById,
   onLoadMore,
   onLoadMoreTaskSourceFiles,
+  onToggleTask,
   onUpload
 }: TaskProgressPanelProps) {
   const { t } = useTranslation();
@@ -48,6 +56,10 @@ export function TaskProgressPanel({
           <UploadTaskDataTable
             tasks={tasks}
             taskDetailsById={taskDetailsById}
+            expandedTaskIds={expandedTaskIds}
+            loadingTaskDetailIds={loadingTaskDetailIds}
+            taskDetailErrorsById={taskDetailErrorsById}
+            onToggleTask={onToggleTask}
             onLoadMoreSourceFiles={onLoadMoreTaskSourceFiles}
           />
           {taskCursor ? (

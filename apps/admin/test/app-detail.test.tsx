@@ -70,7 +70,14 @@ vi.mock("../src/lib/admin-api", () => ({
       endedAt: null,
       lifecycle: "running",
       operation: "upload",
-      sourceCount: 1
+      sourceCount: 1,
+      progress: {
+        total: 1,
+        completed: 0,
+        failed: 0,
+        running: 1,
+        pending: 0
+      }
     },
     phaseDetails: {
       items: [
@@ -102,6 +109,11 @@ vi.mock("../src/lib/admin-api", () => ({
         {
           id: "source-001",
           originalName: "ff8081819c46fdc3019cd19068731f64-intro-e656df554f9e.md",
+          processingStatus: "running",
+          processingStage: "upload_storage",
+          processingStartedAt: "2026-06-14T00:00:00.000Z",
+          processingEndedAt: null,
+          processingErrorCode: null,
           createdAt: "2026-06-14T00:00:00.000Z"
         }
       ],
@@ -128,7 +140,14 @@ vi.mock("../src/lib/admin-api", () => ({
         endedAt: null,
         lifecycle: "running",
         operation: "upload",
-        sourceCount: 1
+        sourceCount: 1,
+        progress: {
+          total: 1,
+          completed: 0,
+          failed: 0,
+          running: 1,
+          pending: 0
+        }
       }
     ],
     nextCursor: null
@@ -214,17 +233,13 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByText(/type: guide/)).toBeTruthy();
   });
 
-  it("renders upload tasks as one table row with an internal phase summary", async () => {
+  it("renders upload tasks as one task row and expands the file processing list", async () => {
     await openDetail();
 
     await waitFor(() => {
       expect(listUploadTasks).toHaveBeenCalledWith({
         knowledgeBaseId: "kb-docs",
         cursor: null
-      });
-      expect(fetchUploadTaskDetail).toHaveBeenCalledWith({
-        knowledgeBaseId: "kb-docs",
-        taskId: "task-001"
       });
     });
     expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
@@ -233,22 +248,38 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByText("Select an upload task")).toBeNull();
     expect(screen.queryByText("No file selected")).toBeNull();
     expect(await screen.findByText("Upload parsing task is running")).toBeTruthy();
-    const table = screen.getByRole("table");
+    const table = screen.getByRole("table", { name: "Upload tasks" });
     expect(table).toBeTruthy();
-    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByTestId("upload-task-row-task-001")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Operation" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "File name" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Progress" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Task ID" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Detail" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Started" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Ended" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Phase" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Severity" })).toBeNull();
-    expect(within(table).getByText("intro.md")).toBeTruthy();
     expect(within(table).getByText("Upload")).toBeTruthy();
     expect(within(table).getAllByText("task-001")).toHaveLength(1);
-    expect(within(table).getByText("Upload storage / Metadata resolution")).toBeTruthy();
+    expect(within(table).getByText("1 file")).toBeTruthy();
+    expect(within(table).getByText("0/1 | 1 running")).toBeTruthy();
+    expect(within(table).queryByText("intro.md")).toBeNull();
+    expect(fetchUploadTaskDetail).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand task task-001" }));
+
+    const fileTable = await screen.findByRole("table", { name: "Files for task-001" });
+    expect(fileTable).toBeTruthy();
+    expect(fetchUploadTaskDetail).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      taskId: "task-001"
+    });
+    expect(within(fileTable).getByText("intro.md")).toBeTruthy();
+    expect(within(fileTable).getByText("source-001")).toBeTruthy();
+    expect(within(fileTable).getByText("Running")).toBeTruthy();
+    expect(within(fileTable).getByText("Upload storage")).toBeTruthy();
+    expect(screen.getByText("Upload storage / Metadata resolution")).toBeTruthy();
     expect(screen.queryByText("Info")).toBeNull();
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
   });
@@ -324,19 +355,27 @@ describe("Admin knowledge base detail", () => {
 
     await openDetail();
 
-    const table = screen.getByRole("table");
-    expect(screen.getAllByRole("row")).toHaveLength(2);
-    expect(within(table).getByText("intro.md, setup.md + 1 more")).toBeTruthy();
+    const table = screen.getByRole("table", { name: "Upload tasks" });
+    expect(screen.getByTestId("upload-task-row-task-001")).toBeTruthy();
+    expect(within(table).getByText("3 files")).toBeTruthy();
+    expect(within(table).queryByText("intro.md")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand task task-001" }));
+
+    const fileTable = await screen.findByRole("table", { name: "Files for task-001" });
+    expect(within(fileTable).getByText("intro.md")).toBeTruthy();
+    expect(within(fileTable).getByText("setup.md")).toBeTruthy();
+    expect(within(fileTable).queryByText("advanced.md")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Load more files" }));
 
-    expect(await within(table).findByText("intro.md, setup.md, advanced.md")).toBeTruthy();
+    expect(await within(fileTable).findByText("advanced.md")).toBeTruthy();
     expect(fetchUploadTaskDetail).toHaveBeenLastCalledWith({
       knowledgeBaseId: "kb-docs",
       taskId: "task-001",
       sourceCursor: "source-cursor-001"
     });
-    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getAllByTestId(/upload-task-file-row-task-001-/)).toHaveLength(3);
   });
 
   it("opens internal Markdown preview links inside the admin file preview", async () => {

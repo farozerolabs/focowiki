@@ -59,9 +59,80 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
   size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
   checksum_sha256 text NOT NULL,
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  processing_status text NOT NULL DEFAULT 'pending',
+  processing_stage text NOT NULL DEFAULT 'upload_storage',
+  processing_started_at timestamptz,
+  processing_ended_at timestamptz,
+  processing_error_code text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  deleted_at timestamptz
+  deleted_at timestamptz,
+  CHECK (processing_status IN ('pending', 'running', 'completed', 'failed')),
+  CHECK (processing_stage IN (
+    'upload_storage',
+    'metadata_resolution',
+    'okf_validation',
+    'bundle_generation',
+    'index_publication',
+    'release_activation'
+  )),
+  CHECK (processing_ended_at IS NULL OR processing_started_at IS NULL OR processing_ended_at >= processing_started_at)
 );
+
+ALTER TABLE focowiki.source_files
+  ADD COLUMN IF NOT EXISTS processing_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS processing_stage text NOT NULL DEFAULT 'upload_storage',
+  ADD COLUMN IF NOT EXISTS processing_started_at timestamptz,
+  ADD COLUMN IF NOT EXISTS processing_ended_at timestamptz,
+  ADD COLUMN IF NOT EXISTS processing_error_code text;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'focowiki.source_files'::regclass
+      AND conname = 'source_files_processing_status_check'
+  ) THEN
+    ALTER TABLE focowiki.source_files
+      ADD CONSTRAINT source_files_processing_status_check
+      CHECK (processing_status IN ('pending', 'running', 'completed', 'failed'));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'focowiki.source_files'::regclass
+      AND conname = 'source_files_processing_stage_check'
+  ) THEN
+    ALTER TABLE focowiki.source_files
+      ADD CONSTRAINT source_files_processing_stage_check
+      CHECK (processing_stage IN (
+        'upload_storage',
+        'metadata_resolution',
+        'okf_validation',
+        'bundle_generation',
+        'index_publication',
+        'release_activation'
+      ));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'focowiki.source_files'::regclass
+      AND conname = 'source_files_processing_time_check'
+  ) THEN
+    ALTER TABLE focowiki.source_files
+      ADD CONSTRAINT source_files_processing_time_check
+      CHECK (processing_ended_at IS NULL OR processing_started_at IS NULL OR processing_ended_at >= processing_started_at);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS focowiki.releases (
   id text PRIMARY KEY,
@@ -198,6 +269,9 @@ CREATE INDEX IF NOT EXISTS source_files_kb_active_created_cursor_idx
 
 CREATE INDEX IF NOT EXISTS source_files_task_idx
   ON focowiki.source_files(task_id);
+
+CREATE INDEX IF NOT EXISTS source_files_kb_task_processing_idx
+  ON focowiki.source_files(knowledge_base_id, task_id, processing_status, processing_stage);
 
 CREATE INDEX IF NOT EXISTS upload_task_events_task_created_cursor_idx
   ON focowiki.upload_task_events(task_id, created_at, id);

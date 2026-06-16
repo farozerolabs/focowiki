@@ -70,6 +70,7 @@ describe("database schema migration", () => {
       "source_files(knowledge_base_id, task_id, created_at desc, id)",
       "source_files(knowledge_base_id, created_at desc, id)",
       "source_files(knowledge_base_id, deleted_at, created_at desc, id)",
+      "source_files(knowledge_base_id, task_id, processing_status, processing_stage)",
       "upload_task_events(task_id, created_at, id)",
       "releases(knowledge_base_id, published_at desc, id)",
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
@@ -89,6 +90,9 @@ describe("database schema migration", () => {
     expect(sql).toContain("operation text not null default 'upload'");
     expect(sql).toContain("check (operation in ('upload', 'delete_source', 'delete_knowledge_base'))");
     expect(sql).toContain("source_file_id text references focowiki.source_files(id)");
+    expect(sql).toContain("processing_status text not null default 'pending'");
+    expect(sql).toContain("processing_stage text not null default 'upload_storage'");
+    expect(sql).toContain("check (processing_status in ('pending', 'running', 'completed', 'failed'))");
     expect(sql).toContain("file_kind text not null");
     expect(sql).toContain(
       "check (file_kind in ('page', 'index', 'schema', 'manifest_index', 'search_index', 'link_index'))"

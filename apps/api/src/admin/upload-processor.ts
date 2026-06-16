@@ -66,12 +66,14 @@ export function createUploadProcessor(
   const createBundleTreeEntries = filesRepository.createBundleTreeEntries;
   const activateRelease = filesRepository.activateRelease;
   const listSourceFiles = filesRepository.listSourceFiles;
+  const updateSourceFileProcessingState = filesRepository.updateSourceFileProcessingState;
   const completeUploadTask = taskRepository.completeUploadTask;
 
   return {
     async process(input) {
       const ownerId = `admin-api-${randomUUID()}`;
       let lockAcquired = false;
+      let persistedSourceFileIds: string[] = [];
 
       try {
         lockAcquired = await redis.acquireTaskLock(
@@ -107,6 +109,11 @@ export function createUploadProcessor(
             sizeBytes: file.bytes.byteLength,
             checksumSha256: sha256Bytes(file.bytes),
             metadata: parsed.metadata,
+            processingStatus: "running" as const,
+            processingStage: "upload_storage" as const,
+            processingStartedAt: input.generatedAt,
+            processingEndedAt: null,
+            processingErrorCode: null,
             bytes: file.bytes,
             content: file.content
           };
@@ -132,6 +139,7 @@ export function createUploadProcessor(
         await createSourceFiles(
           sourceRecords.map(({ bytes: _bytes, content: _content, ...source }) => source)
         );
+        persistedSourceFileIds = sourceRecords.map((source) => source.id);
         await recordTaskPhase({
           taskRepository,
           taskId: input.task.id,
@@ -139,6 +147,23 @@ export function createUploadProcessor(
           startedAt: input.generatedAt,
           endedAt: new Date().toISOString(),
           severity: "info"
+        });
+        await updateSourceFileProcessingState?.({
+          knowledgeBaseId: input.knowledgeBaseId,
+          taskId: input.task.id,
+          sourceFileIds: persistedSourceFileIds,
+          status: "running",
+          stage: "metadata_resolution",
+          startedAt: input.generatedAt,
+          endedAt: null,
+          errorCode: null
+        });
+        await invalidateKnowledgeBaseCaches({
+          redis,
+          knowledgeBaseId: input.knowledgeBaseId,
+          releaseId: null,
+          taskId: input.task.id,
+          ttlSeconds: input.cursorTtlSeconds
         });
         await recordTaskPhase({
           taskRepository,
@@ -176,6 +201,23 @@ export function createUploadProcessor(
           startedAt: input.generatedAt,
           endedAt: new Date().toISOString(),
           severity: modelResult.warnings.length > 0 ? "warning" : "info"
+        });
+        await updateSourceFileProcessingState?.({
+          knowledgeBaseId: input.knowledgeBaseId,
+          taskId: input.task.id,
+          sourceFileIds: persistedSourceFileIds,
+          status: "running",
+          stage: "bundle_generation",
+          startedAt: input.generatedAt,
+          endedAt: null,
+          errorCode: null
+        });
+        await invalidateKnowledgeBaseCaches({
+          redis,
+          knowledgeBaseId: input.knowledgeBaseId,
+          releaseId: null,
+          taskId: input.task.id,
+          ttlSeconds: input.cursorTtlSeconds
         });
 
         const releaseId = createReleaseId();
@@ -269,6 +311,16 @@ export function createUploadProcessor(
           endedAt: publicationEndedAt,
           severity: "info"
         });
+        await updateSourceFileProcessingState?.({
+          knowledgeBaseId: input.knowledgeBaseId,
+          taskId: input.task.id,
+          sourceFileIds: persistedSourceFileIds,
+          status: "completed",
+          stage: "release_activation",
+          startedAt: input.generatedAt,
+          endedAt: publicationEndedAt,
+          errorCode: null
+        });
 
         const completedTask = await completeUploadTask({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -295,6 +347,19 @@ export function createUploadProcessor(
 
         return completedTask;
       } catch (error) {
+        await updateSourceFileProcessingState?.({
+          knowledgeBaseId: input.knowledgeBaseId,
+          taskId: input.task.id,
+          sourceFileIds: persistedSourceFileIds,
+          status: "failed",
+          stage: error instanceof MetadataValidationError ? "metadata_resolution" : "bundle_generation",
+          startedAt: input.generatedAt,
+          endedAt: new Date().toISOString(),
+          errorCode:
+            error instanceof MetadataValidationError
+              ? "METADATA_VALIDATION_FAILED"
+              : "UPLOAD_PROCESSING_FAILED"
+        }).catch(() => undefined);
         await recordTaskPhase({
           taskRepository,
           taskId: input.task.id,

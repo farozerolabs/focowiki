@@ -48,6 +48,11 @@ export function toAdminSourceFile(file: SourceFileRecord) {
     sizeBytes: file.sizeBytes,
     checksumSha256: file.checksumSha256,
     metadata: file.metadata,
+    processingStatus: file.processingStatus ?? "completed",
+    processingStage: file.processingStage ?? "release_activation",
+    processingStartedAt: file.processingStartedAt ?? file.createdAt,
+    processingEndedAt: file.processingEndedAt ?? file.createdAt,
+    processingErrorCode: file.processingErrorCode ?? null,
     createdAt: file.createdAt
   };
 }
@@ -73,6 +78,13 @@ export function toUploadTaskLifecycle(task: UploadTaskRecord) {
     endedAt: task.endedAt,
     lifecycle: task.endedAt ? "ended" : "running",
     sourceCount: task.sourceCount,
+    progress: task.progress ?? {
+      total: task.sourceCount,
+      completed: task.endedAt ? task.sourceCount : 0,
+      failed: task.internalErrorCode ? task.sourceCount : 0,
+      running: task.endedAt ? 0 : Math.min(task.sourceCount, 1),
+      pending: task.endedAt ? 0 : Math.max(task.sourceCount - 1, 0)
+    },
     resultReleaseId: task.resultReleaseId
   };
 }

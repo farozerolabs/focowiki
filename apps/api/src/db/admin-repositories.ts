@@ -80,6 +80,16 @@ export type BundleFileRecord = {
   frontmatter: Record<string, unknown>;
 };
 
+export type SourceFileProcessingStatus = "pending" | "running" | "completed" | "failed";
+
+export type SourceFileProcessingStage =
+  | "upload_storage"
+  | "metadata_resolution"
+  | "okf_validation"
+  | "bundle_generation"
+  | "index_publication"
+  | "release_activation";
+
 export type SourceFileRecord = {
   id: string;
   knowledgeBaseId: string;
@@ -90,11 +100,27 @@ export type SourceFileRecord = {
   sizeBytes: number;
   checksumSha256: string;
   metadata: SourceMetadataDefaults;
+  processingStatus?: SourceFileProcessingStatus;
+  processingStage?: SourceFileProcessingStage;
+  processingStartedAt?: string | null;
+  processingEndedAt?: string | null;
+  processingErrorCode?: string | null;
   createdAt: string;
   deletedAt: string | null;
 };
 
-export type SourceFileDraft = Omit<SourceFileRecord, "createdAt" | "deletedAt">;
+type SourceFileProcessingFields =
+  | "processingStatus"
+  | "processingStage"
+  | "processingStartedAt"
+  | "processingEndedAt"
+  | "processingErrorCode";
+
+export type SourceFileDraft = Omit<
+  SourceFileRecord,
+  "createdAt" | "deletedAt" | SourceFileProcessingFields
+> &
+  Partial<Pick<SourceFileRecord, SourceFileProcessingFields>>;
 
 export type ReleaseRecord = {
   id: string;
@@ -123,6 +149,15 @@ export type UploadTaskRecord = {
   internalErrorCode: string | null;
   internalErrorMessage: string | null;
   createdAt: string;
+  progress?: UploadTaskProgress;
+};
+
+export type UploadTaskProgress = {
+  total: number;
+  completed: number;
+  failed: number;
+  running: number;
+  pending: number;
 };
 
 export type UploadTaskEventRecord = {
@@ -168,6 +203,16 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<SourceFileRecord>>;
+  updateSourceFileProcessingState?: (input: {
+    knowledgeBaseId: string;
+    taskId: string;
+    sourceFileIds: string[];
+    status: SourceFileProcessingStatus;
+    stage: SourceFileProcessingStage;
+    startedAt?: string | null;
+    endedAt?: string | null;
+    errorCode?: string | null;
+  }) => Promise<void>;
   listBundleTreeEntries: (request: {
     knowledgeBaseId: string;
     releaseId: string;
@@ -294,6 +339,11 @@ type SourceFileRow = {
   size_bytes: string | number;
   checksum_sha256: string;
   metadata_json: unknown;
+  processing_status: SourceFileProcessingStatus;
+  processing_stage: SourceFileProcessingStage;
+  processing_started_at: Date | null;
+  processing_ended_at: Date | null;
+  processing_error_code: string | null;
   created_at: Date;
   deleted_at: Date | null;
 };
@@ -321,6 +371,10 @@ type UploadTaskRow = {
   internal_error_code: string | null;
   internal_error_message: string | null;
   created_at: Date;
+  source_completed_count?: string | number;
+  source_failed_count?: string | number;
+  source_running_count?: string | number;
+  source_pending_count?: string | number;
 };
 
 type UploadTaskEventRow = {
@@ -436,7 +490,12 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               content_type,
               size_bytes,
               checksum_sha256,
-              metadata_json
+              metadata_json,
+              processing_status,
+              processing_stage,
+              processing_started_at,
+              processing_ended_at,
+              processing_error_code
             )
             VALUES (
               ${file.id},
@@ -447,7 +506,12 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${file.contentType},
               ${file.sizeBytes},
               ${file.checksumSha256},
-              ${sql.json(file.metadata as never)}
+              ${sql.json(file.metadata as never)},
+              ${file.processingStatus ?? "pending"},
+              ${file.processingStage ?? "upload_storage"},
+              ${file.processingStartedAt ?? null},
+              ${file.processingEndedAt ?? null},
+              ${file.processingErrorCode ?? null}
             )
           `;
         }
@@ -574,7 +638,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND task_id = ${taskId}
@@ -587,7 +651,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND task_id = ${taskId}
@@ -604,6 +668,33 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ? serializeTimedCursor({ createdAt: lastRow.created_at.toISOString(), id: lastRow.id })
               : null
         };
+      },
+      async updateSourceFileProcessingState({
+        knowledgeBaseId,
+        taskId,
+        sourceFileIds,
+        status,
+        stage,
+        startedAt,
+        endedAt,
+        errorCode
+      }) {
+        if (sourceFileIds.length === 0) {
+          return;
+        }
+
+        await sql`
+          UPDATE focowiki.source_files
+          SET
+            processing_status = ${status},
+            processing_stage = ${stage},
+            processing_started_at = COALESCE(${startedAt ?? null}, processing_started_at),
+            processing_ended_at = ${endedAt ?? null},
+            processing_error_code = ${errorCode ?? null}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND task_id = ${taskId}
+            AND id = ANY(${sourceFileIds})
+        `;
       },
       async listBundleTreeEntries({ knowledgeBaseId, releaseId, parentPath, limit, cursor }) {
         const cursorValue = cursor ? parseTreeCursor(cursor) : null;
@@ -671,7 +762,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND deleted_at IS NULL
@@ -683,7 +774,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, created_at, deleted_at
+              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
               FROM focowiki.source_files
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND deleted_at IS NULL
@@ -885,19 +976,35 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       async getUploadTask({ knowledgeBaseId, taskId }) {
         const rows = await sql<UploadTaskRow[]>`
           SELECT
-            id,
-            knowledge_base_id,
-            operation,
-            started_at,
-            ended_at,
-            source_count,
-            result_release_id,
-            internal_error_code,
-            internal_error_message,
-            created_at
-          FROM focowiki.upload_tasks
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND id = ${taskId}
+            task.id,
+            task.knowledge_base_id,
+            task.operation,
+            task.started_at,
+            task.ended_at,
+            task.source_count,
+            task.result_release_id,
+            task.internal_error_code,
+            task.internal_error_message,
+            task.created_at,
+            COALESCE(progress.source_completed_count, 0) AS source_completed_count,
+            COALESCE(progress.source_failed_count, 0) AS source_failed_count,
+            COALESCE(progress.source_running_count, 0) AS source_running_count,
+            COALESCE(progress.source_pending_count, 0) AS source_pending_count
+          FROM focowiki.upload_tasks task
+          LEFT JOIN (
+            SELECT
+              task_id,
+              count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
+              count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
+              count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
+              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+            FROM focowiki.source_files
+            WHERE knowledge_base_id = ${knowledgeBaseId}
+              AND deleted_at IS NULL
+            GROUP BY task_id
+          ) progress ON progress.task_id = task.id
+          WHERE task.knowledge_base_id = ${knowledgeBaseId}
+            AND task.id = ${taskId}
           LIMIT 1
         `;
         const row = rows[0];
@@ -906,20 +1013,36 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       async getLatestUploadTask(knowledgeBaseId) {
         const rows = await sql<UploadTaskRow[]>`
           SELECT
-            id,
-            knowledge_base_id,
-            operation,
-            started_at,
-            ended_at,
-            source_count,
-            result_release_id,
-            internal_error_code,
-            internal_error_message,
-            created_at
-          FROM focowiki.upload_tasks
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND operation = 'upload'
-          ORDER BY started_at DESC, id ASC
+            task.id,
+            task.knowledge_base_id,
+            task.operation,
+            task.started_at,
+            task.ended_at,
+            task.source_count,
+            task.result_release_id,
+            task.internal_error_code,
+            task.internal_error_message,
+            task.created_at,
+            COALESCE(progress.source_completed_count, 0) AS source_completed_count,
+            COALESCE(progress.source_failed_count, 0) AS source_failed_count,
+            COALESCE(progress.source_running_count, 0) AS source_running_count,
+            COALESCE(progress.source_pending_count, 0) AS source_pending_count
+          FROM focowiki.upload_tasks task
+          LEFT JOIN (
+            SELECT
+              task_id,
+              count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
+              count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
+              count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
+              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+            FROM focowiki.source_files
+            WHERE knowledge_base_id = ${knowledgeBaseId}
+              AND deleted_at IS NULL
+            GROUP BY task_id
+          ) progress ON progress.task_id = task.id
+          WHERE task.knowledge_base_id = ${knowledgeBaseId}
+            AND task.operation = 'upload'
+          ORDER BY task.started_at DESC, task.id ASC
           LIMIT 1
         `;
         const row = rows[0];
@@ -930,37 +1053,69 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const rows = cursorValue
           ? await sql<UploadTaskRow[]>`
               SELECT
-                id,
-                knowledge_base_id,
-                operation,
-                started_at,
-                ended_at,
-                source_count,
-                result_release_id,
-                internal_error_code,
-                internal_error_message,
-                created_at
-              FROM focowiki.upload_tasks
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND (started_at < ${cursorValue.createdAt} OR (started_at = ${cursorValue.createdAt} AND id > ${cursorValue.id}))
-              ORDER BY started_at DESC, id ASC
+                task.id,
+                task.knowledge_base_id,
+                task.operation,
+                task.started_at,
+                task.ended_at,
+                task.source_count,
+                task.result_release_id,
+                task.internal_error_code,
+                task.internal_error_message,
+                task.created_at,
+                COALESCE(progress.source_completed_count, 0) AS source_completed_count,
+                COALESCE(progress.source_failed_count, 0) AS source_failed_count,
+                COALESCE(progress.source_running_count, 0) AS source_running_count,
+                COALESCE(progress.source_pending_count, 0) AS source_pending_count
+              FROM focowiki.upload_tasks task
+              LEFT JOIN (
+                SELECT
+                  task_id,
+                  count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
+                  count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
+                  count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
+                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+                FROM focowiki.source_files
+                WHERE knowledge_base_id = ${knowledgeBaseId}
+                  AND deleted_at IS NULL
+                GROUP BY task_id
+              ) progress ON progress.task_id = task.id
+              WHERE task.knowledge_base_id = ${knowledgeBaseId}
+                AND (task.started_at < ${cursorValue.createdAt} OR (task.started_at = ${cursorValue.createdAt} AND task.id > ${cursorValue.id}))
+              ORDER BY task.started_at DESC, task.id ASC
               LIMIT ${limit + 1}
             `
           : await sql<UploadTaskRow[]>`
               SELECT
-                id,
-                knowledge_base_id,
-                operation,
-                started_at,
-                ended_at,
-                source_count,
-                result_release_id,
-                internal_error_code,
-                internal_error_message,
-                created_at
-              FROM focowiki.upload_tasks
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-              ORDER BY started_at DESC, id ASC
+                task.id,
+                task.knowledge_base_id,
+                task.operation,
+                task.started_at,
+                task.ended_at,
+                task.source_count,
+                task.result_release_id,
+                task.internal_error_code,
+                task.internal_error_message,
+                task.created_at,
+                COALESCE(progress.source_completed_count, 0) AS source_completed_count,
+                COALESCE(progress.source_failed_count, 0) AS source_failed_count,
+                COALESCE(progress.source_running_count, 0) AS source_running_count,
+                COALESCE(progress.source_pending_count, 0) AS source_pending_count
+              FROM focowiki.upload_tasks task
+              LEFT JOIN (
+                SELECT
+                  task_id,
+                  count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
+                  count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
+                  count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
+                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count
+                FROM focowiki.source_files
+                WHERE knowledge_base_id = ${knowledgeBaseId}
+                  AND deleted_at IS NULL
+                GROUP BY task_id
+              ) progress ON progress.task_id = task.id
+              WHERE task.knowledge_base_id = ${knowledgeBaseId}
+              ORDER BY task.started_at DESC, task.id ASC
               LIMIT ${limit + 1}
             `;
         const pageRows = rows.slice(0, limit);
@@ -1256,6 +1411,11 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
     sizeBytes: Number(row.size_bytes),
     checksumSha256: row.checksum_sha256,
     metadata: readRecord(row.metadata_json) as SourceMetadataDefaults,
+    processingStatus: row.processing_status,
+    processingStage: row.processing_stage,
+    processingStartedAt: row.processing_started_at?.toISOString() ?? null,
+    processingEndedAt: row.processing_ended_at?.toISOString() ?? null,
+    processingErrorCode: row.processing_error_code,
     createdAt: row.created_at.toISOString(),
     deletedAt: row.deleted_at?.toISOString() ?? null
   };
@@ -1286,7 +1446,20 @@ function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
     resultReleaseId: row.result_release_id,
     internalErrorCode: row.internal_error_code,
     internalErrorMessage: row.internal_error_message,
-    createdAt: row.created_at.toISOString()
+    createdAt: row.created_at.toISOString(),
+    progress: {
+      total: row.source_count,
+      completed: Number(row.source_completed_count ?? 0),
+      failed: Number(row.source_failed_count ?? 0),
+      running: Number(row.source_running_count ?? 0),
+      pending: Math.max(
+        0,
+        row.source_count -
+          Number(row.source_completed_count ?? 0) -
+          Number(row.source_failed_count ?? 0) -
+          Number(row.source_running_count ?? 0)
+      )
+    }
   };
 }
 

@@ -37,6 +37,13 @@ export type UploadTaskLifecycle = {
   endedAt: string | null;
   lifecycle: "running" | "ended";
   sourceCount?: number;
+  progress?: {
+    total: number;
+    completed: number;
+    failed: number;
+    running: number;
+    pending: number;
+  };
 };
 
 export type BundleTreeEntry = {
@@ -73,6 +80,17 @@ export type SourceFileRecord = {
   id: string;
   taskId?: string;
   originalName: string;
+  processingStatus?: "pending" | "running" | "completed" | "failed";
+  processingStage?:
+    | "upload_storage"
+    | "metadata_resolution"
+    | "okf_validation"
+    | "bundle_generation"
+    | "index_publication"
+    | "release_activation";
+  processingStartedAt?: string | null;
+  processingEndedAt?: string | null;
+  processingErrorCode?: string | null;
   createdAt: string;
 };
 
