@@ -19,12 +19,13 @@ class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
     cursor: string | null;
   }) {
     const offset = input.cursor ? Number(input.cursor) : 0;
-    const items = this.records.slice(offset, offset + input.limit);
+    const activeRecords = this.records.filter((record) => record.status === "active");
+    const items = activeRecords.slice(offset, offset + input.limit);
     const nextOffset = offset + items.length;
 
     return {
       items,
-      nextCursor: nextOffset < this.records.length ? String(nextOffset) : null
+      nextCursor: nextOffset < activeRecords.length ? String(nextOffset) : null
     };
   }
 

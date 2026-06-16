@@ -186,9 +186,7 @@ export function App() {
       return result;
     }
 
-    setPublicOpenApiKeys((current) =>
-      current.map((item) => (item.id === key.id ? { ...item, status: "revoked" } : item))
-    );
+    setPublicOpenApiKeys((current) => current.filter((item) => item.id !== key.id));
 
     return result;
   }
@@ -235,6 +233,7 @@ export function App() {
         onDelete={handleDeleteKnowledgeBase}
         onCreatePublicOpenApiKey={handleCreatePublicOpenApiKey}
         onDeletePublicOpenApiKey={handleDeletePublicOpenApiKey}
+        onDismissPublicOpenApiOneTimeKey={() => setPublicOpenApiKeysOneTimeKey(null)}
         onLoadPublicOpenApiKeys={(input) => void loadPublicOpenApiKeys(input)}
         onOpenApiKeysTabSelected={handleOpenApiKeysTabSelected}
         onLoadMore={() => void loadKnowledgeBases({ replace: false })}

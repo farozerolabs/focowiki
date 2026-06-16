@@ -65,6 +65,7 @@ type AdminHomePageProps = {
     input: { name: string }
   ) => Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure>;
   onDeletePublicOpenApiKey: (key: PublicOpenApiKey) => Promise<{ deleted: true } | ApiFailure>;
+  onDismissPublicOpenApiOneTimeKey: () => void;
   onLoadPublicOpenApiKeys: (input: { replace: boolean }) => void;
   onOpenApiKeysTabSelected: () => void;
   onLoadMore: () => void;
@@ -84,6 +85,7 @@ export function AdminHomePage({
   onDelete,
   onCreatePublicOpenApiKey,
   onDeletePublicOpenApiKey,
+  onDismissPublicOpenApiOneTimeKey,
   onLoadPublicOpenApiKeys,
   onOpenApiKeysTabSelected,
   onLoadMore,
@@ -270,6 +272,7 @@ export function AdminHomePage({
               isLoading={isLoadingPublicOpenApiKeys}
               onCreate={onCreatePublicOpenApiKey}
               onDelete={onDeletePublicOpenApiKey}
+              onDismissOneTimeKey={onDismissPublicOpenApiOneTimeKey}
               onLoadMore={() => onLoadPublicOpenApiKeys({ replace: false })}
             />
           </TabsContent>

@@ -270,7 +270,12 @@ describe("Admin knowledge base home", () => {
     fireEvent.click(openApiKeysTab);
 
     expect(await screen.findByText("Default key")).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Copy this key now" })).toBeTruthy();
     expect(screen.getByDisplayValue("fwok_default-secret")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("fwok_default-secret")).toBeNull();
+    });
     expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
 
     fireEvent.click(screen.getByRole("button", { name: "Create key" }));
@@ -285,7 +290,12 @@ describe("Admin knowledge base home", () => {
       expect(createPublicOpenApiKey).toHaveBeenCalledWith({ name: "Agent key" });
     });
     expect(await screen.findByText("Agent key")).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Copy this key now" })).toBeTruthy();
     expect(screen.getByDisplayValue("fwok_created-secret")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("fwok_created-secret")).toBeNull();
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Agent key" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -293,7 +303,10 @@ describe("Admin knowledge base home", () => {
     await waitFor(() => {
       expect(deletePublicOpenApiKey).toHaveBeenCalledWith({ keyId: "openapi-key-created" });
     });
-    expect(screen.getByText("Revoked")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText("Agent key")).toBeNull();
+    });
+    expect(screen.queryByText("Revoked")).toBeNull();
   });
 
   it("appends paginated knowledge base card pages", async () => {

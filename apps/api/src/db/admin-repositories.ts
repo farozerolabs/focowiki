@@ -1071,14 +1071,18 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           ? await sql<PublicApiKeyRow[]>`
               SELECT id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
               FROM focowiki.public_api_keys
-              WHERE created_at < ${cursorValue.createdAt}
-                OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+              WHERE status = 'active'
+                AND (
+                  created_at < ${cursorValue.createdAt}
+                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
               ORDER BY created_at DESC, id ASC
               LIMIT ${limit + 1}
             `
           : await sql<PublicApiKeyRow[]>`
               SELECT id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
               FROM focowiki.public_api_keys
+              WHERE status = 'active'
               ORDER BY created_at DESC, id ASC
               LIMIT ${limit + 1}
             `;

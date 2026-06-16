@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import {
@@ -46,6 +46,7 @@ type OpenApiKeysPanelProps = {
     input: { name: string }
   ) => Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure>;
   onDelete: (key: PublicOpenApiKey) => Promise<{ deleted: true } | ApiFailure>;
+  onDismissOneTimeKey: () => void;
   onLoadMore: () => void;
 };
 
@@ -56,6 +57,7 @@ export function OpenApiKeysPanel({
   isLoading,
   onCreate,
   onDelete,
+  onDismissOneTimeKey,
   onLoadMore
 }: OpenApiKeysPanelProps) {
   const { t } = useTranslation();
@@ -67,6 +69,10 @@ export function OpenApiKeysPanel({
   const [deleteError, setDeleteError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCopiedKeyId(null);
+  }, [oneTimeKey?.id]);
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,19 +129,6 @@ export function OpenApiKeysPanel({
           {t("openapiKeys.createAction")}
         </Button>
       </div>
-
-      {oneTimeKey ? (
-        <div className="rounded-lg border bg-muted/20 p-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-sm font-medium">{t("openapiKeys.oneTimeTitle")}</p>
-            <Button type="button" variant="outline" size="sm" onClick={() => void copyOneTimeKey()}>
-              <CopyIcon data-icon="inline-start" />
-              {copiedKeyId === oneTimeKey.id ? t("common.copied") : t("common.copy")}
-            </Button>
-          </div>
-          <Input readOnly value={oneTimeKey.rawKey} aria-label={t("openapiKeys.oneTimeLabel")} />
-        </div>
-      ) : null}
 
       {isLoading && keys.length === 0 ? (
         <Alert>
@@ -226,6 +219,42 @@ export function OpenApiKeysPanel({
               </DialogFooter>
             </FieldGroup>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(oneTimeKey)}
+        onOpenChange={(open) => {
+          if (!open) {
+            onDismissOneTimeKey();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("openapiKeys.oneTimeTitle")}</DialogTitle>
+            <DialogDescription>{t("openapiKeys.oneTimeDescription")}</DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="openapi-one-time-key">{t("openapiKeys.oneTimeLabel")}</FieldLabel>
+              <Input
+                id="openapi-one-time-key"
+                readOnly
+                value={oneTimeKey?.rawKey ?? ""}
+                aria-label={t("openapiKeys.oneTimeLabel")}
+              />
+            </Field>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onDismissOneTimeKey}>
+                {t("common.close")}
+              </Button>
+              <Button type="button" onClick={() => void copyOneTimeKey()} disabled={!oneTimeKey}>
+                <CopyIcon data-icon="inline-start" />
+                {copiedKeyId === oneTimeKey?.id ? t("common.copied") : t("common.copy")}
+              </Button>
+            </DialogFooter>
+          </FieldGroup>
         </DialogContent>
       </Dialog>
 

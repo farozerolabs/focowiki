@@ -29,6 +29,7 @@ export const resources = {
       },
       common: {
         cancel: "Cancel",
+        close: "Close",
         copy: "Copy",
         copied: "Copied"
       },
@@ -70,6 +71,7 @@ export const resources = {
         creating: "Creating",
         nameLabel: "Key name",
         oneTimeTitle: "Copy this key now",
+        oneTimeDescription: "This full key is shown once. Copy it before closing this dialog.",
         oneTimeLabel: "OpenAPI key",
         empty: "No OpenAPI keys",
         neverUsed: "Never used",
@@ -229,6 +231,7 @@ export const resources = {
       },
       common: {
         cancel: "取消",
+        close: "关闭",
         copy: "复制",
         copied: "已复制"
       },
@@ -270,6 +273,7 @@ export const resources = {
         creating: "创建中",
         nameLabel: "Key 名称",
         oneTimeTitle: "现在复制这个 key",
+        oneTimeDescription: "完整 key 只显示一次，关闭弹窗前请先复制。",
         oneTimeLabel: "OpenAPI key",
         empty: "暂无 OpenAPI keys",
         neverUsed: "从未使用",
