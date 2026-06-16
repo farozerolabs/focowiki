@@ -12,12 +12,16 @@ export type UploadProgressTracker = {
   markFiles: (input: UploadProgressUpdate & { sourceFileIds: string[] }) => Promise<void>;
 };
 
-type UploadProgressUpdate = {
+export type UploadProgressUpdate = {
   status: SourceFileProcessingStatus;
   stage: SourceFileProcessingStage;
   startedAt?: string | null;
   endedAt?: string | null;
   errorCode?: string | null;
+};
+
+export type UploadProgressNotification = UploadProgressUpdate & {
+  sourceFileIds: string[];
 };
 
 export function createUploadProgressTracker(input: {
@@ -26,6 +30,7 @@ export function createUploadProgressTracker(input: {
   knowledgeBaseId: string;
   taskId: string;
   ttlSeconds: number;
+  onProgress?: (progress: UploadProgressNotification) => Promise<void>;
 }): UploadProgressTracker {
   const updateSourceFileProcessingState =
     input.repositories.files?.updateSourceFileProcessingState;
@@ -54,6 +59,14 @@ export function createUploadProgressTracker(input: {
       errorCode: update.errorCode ?? null
     });
     await invalidate();
+    await input.onProgress?.({
+      sourceFileIds: update.sourceFileIds,
+      status: update.status,
+      stage: update.stage,
+      startedAt: update.startedAt ?? null,
+      endedAt: update.endedAt ?? null,
+      errorCode: update.errorCode ?? null
+    });
   };
 
   return {

@@ -2,7 +2,7 @@
 
 [中文](./README.zh-CN.md) | English
 
-Focowiki is a lightweight Markdown knowledge-base system for developers and product managers. It accepts cleaned `.md` files, extracts Markdown frontmatter and document signals, generates an OKF-style public bundle, stores source and generated files in S3-compatible storage, and exposes generated Markdown/JSON files through an Admin UI, Admin API, and public OpenAPI read service.
+Focowiki is a lightweight Markdown knowledge-base system for developers and product managers. It accepts cleaned `.md` files, extracts Markdown frontmatter and document signals, generates an OKF-style public bundle, stores source and generated files in S3-compatible storage, and exposes knowledge-base operations through an Admin UI, Admin API, and Developer OpenAPI.
 
 Focowiki is designed for teams that already have Markdown knowledge assets and want a small self-hosted service that produces file-based knowledge bundles for people, applications, and agents.
 
@@ -14,7 +14,7 @@ Focowiki is designed for teams that already have Markdown knowledge assets and w
 - Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, and JSON indexes.
 - Store raw uploaded source files and generated bundle files in S3-compatible storage.
 - Persist knowledge bases, upload tasks, source file records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
-- Serve generated files through public OpenAPI reads protected by Admin-generated bearer keys.
+- Expose knowledge-base CRUD, Markdown upload, task observation, generated file reads, deletion, and webhooks through Developer OpenAPI protected by Admin-generated bearer keys.
 
 ## Open Knowledge Format
 
@@ -31,7 +31,7 @@ The [OKF specification](https://github.com/GoogleCloudPlatform/knowledge-catalog
 
 Focowiki generates an OKF-style public bundle from uploaded Markdown files. The generated bundle follows the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
 
-Focowiki keeps the implementation intentionally small. It focuses on Markdown intake, deterministic bundle generation, optional OpenAI-compatible Structured Outputs assistance, S3-compatible persistence, Admin workflows, and public file reads. The project uses the OKF model as the output convention and links to the Google specification for readers who need formal format details.
+Focowiki keeps the implementation intentionally small. It focuses on Markdown intake, deterministic bundle generation, optional OpenAI-compatible Structured Outputs assistance, S3-compatible persistence, Admin workflows, and Developer OpenAPI integration. The project uses the OKF model as the output convention and links to the Google specification for readers who need formal format details.
 
 ## Markdown Upload Format
 
@@ -97,7 +97,7 @@ Local service URLs:
 
 - Admin UI: `http://127.0.0.1:43100`
 - Admin API: `http://127.0.0.1:43000`
-- Public OpenAPI reads: `http://127.0.0.1:43200`
+- Developer OpenAPI: `http://127.0.0.1:43200`
 
 Open the Admin UI and log in with `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env`. The Admin UI language switch is in the page header.
 
@@ -134,7 +134,7 @@ Production deployment requires:
 - PostgreSQL for product records, tasks, releases, generated file records, OpenAPI key records, and audit evidence.
 - Redis for sessions, rate limits, cursors, coordination, locks, and short-lived task refresh state.
 - External S3-compatible storage for uploaded source files and generated public bundles.
-- HTTPS public origins for Admin UI, Admin API, and public OpenAPI behind your reverse proxy.
+- HTTPS public origins for Admin UI, Admin API, and Developer OpenAPI behind your reverse proxy.
 
 Docker Compose reads the root `.env` file by default. Real `docker-compose.yml`, `docker-compose.dev.yml`, `docker-compose.local.yml`, `.env`, credentials, local paths, S3 keys, model keys, session secrets, and raw Markdown data should stay out of git.
 
@@ -160,7 +160,7 @@ This repository uses pnpm and TypeScript.
 
 Workspace packages:
 
-- `apps/api`: Hono API server, Admin endpoints, public file endpoints, runtime config, database repositories, Redis coordination, and S3 storage.
+- `apps/api`: Hono API server, Admin endpoints, Developer OpenAPI endpoints, runtime config, database repositories, Redis coordination, webhook delivery, and S3 storage.
 - `apps/admin`: Vite React Admin UI with shadcn/ui components and `en-US` / `zh-CN` i18n resources.
 - `packages/okf`: metadata resolution, OKF-style bundle generation, indexes, logs, and optional model assistance helpers.
 
@@ -239,11 +239,11 @@ S3-compatible storage:
 - `S3_PREFIX`: internal object-key namespace. Public URLs never expose this value.
 - `S3_FORCE_PATH_STYLE`: set `true` for many local or self-hosted S3-compatible services.
 
-Public OpenAPI:
+Developer OpenAPI:
 
-- `PUBLIC_OPENAPI_PORT`: public OpenAPI read service port.
-- `PUBLIC_BASE_URL`: base URL used for generated public file URLs.
-- Public OpenAPI bearer keys are generated and managed in the Admin UI under `OpenAPI keys`. Keys are stored as database-backed hash-only records.
+- `PUBLIC_OPENAPI_PORT`: Developer OpenAPI service port.
+- `PUBLIC_BASE_URL`: base URL used for generated Developer OpenAPI file URLs.
+- Developer OpenAPI bearer keys are generated and managed in the Admin UI under `OpenAPI keys`. Keys are stored as database-backed hash-only records.
 
 Upload, generation, and pagination:
 
@@ -259,7 +259,7 @@ Security limits:
 - `ADMIN_LOGIN_RATE_LIMIT_MAX`, `ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Admin login throttle.
 - `ADMIN_API_RATE_LIMIT_MAX`, `ADMIN_API_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Admin API request throttle.
 - `UPLOAD_RATE_LIMIT_MAX`, `UPLOAD_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed upload request throttle.
-- `PUBLIC_OPENAPI_RATE_LIMIT_MAX`, `PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed public OpenAPI read throttle.
+- `PUBLIC_OPENAPI_RATE_LIMIT_MAX`, `PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS`: Redis-backed Developer OpenAPI request throttle.
 - `SECURITY_AUDIT_RETENTION_DAYS`: retention window for persisted security audit evidence.
 
 Optional model assistance:
@@ -276,9 +276,9 @@ Model assistance stays disabled when either `MODEL_API_KEY` or `MODEL_NAME` is e
 
 ## Generated Bundle
 
-Focowiki writes raw source files and generated bundle files under knowledge base scoped internal object keys in S3-compatible storage. Public URLs expose only the public bundle path.
+Focowiki writes raw source files and generated bundle files under knowledge base scoped internal object keys in S3-compatible storage. Developer OpenAPI URLs expose only product-level identifiers and logical paths.
 
-Generated public files:
+Generated bundle files:
 
 ```text
 index.md
@@ -290,30 +290,58 @@ _index/search.json
 _index/links.json
 ```
 
-Public OpenAPI read paths:
+Developer OpenAPI endpoint groups:
 
 ```text
-GET /kb/{knowledgeBaseId}/index.md
-GET /kb/{knowledgeBaseId}/log.md
-GET /kb/{knowledgeBaseId}/schema.md
-GET /kb/{knowledgeBaseId}/pages/{file}.md
-GET /kb/{knowledgeBaseId}/_index/manifest.json
-GET /kb/{knowledgeBaseId}/_index/search.json
-GET /kb/{knowledgeBaseId}/_index/links.json
-GET /kb/{knowledgeBaseId}/tasks/latest
+GET    /openapi/v1/health
+GET    /openapi/v1/version
+GET    /openapi/v1/openapi.json
+POST   /openapi/v1/knowledge-bases
+GET    /openapi/v1/knowledge-bases
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}
+DELETE /openapi/v1/knowledge-bases/{knowledgeBaseId}
+POST   /openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/tree
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content
+GET    /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content?path=pages%2Fexample.md
+DELETE /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}
+DELETE /openapi/v1/knowledge-bases/{knowledgeBaseId}/files?path=pages%2Fexample.md
+POST   /openapi/v1/webhooks
+GET    /openapi/v1/webhooks
+DELETE /openapi/v1/webhooks/{webhookId}
+GET    /openapi/v1/webhook-deliveries
+POST   /openapi/v1/webhook-deliveries/{deliveryId}/redeliver
 ```
 
 `index.md` is the public navigation file. `log.md` is a bounded rolling update history generated from persisted release and task facts. `schema.md` describes the generated bundle metadata shape. `pages/*.md` contains public concept pages with YAML frontmatter. `_index/*.json` contains generated machine-readable indexes for manifests, search, and links.
 
 The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object-key mappings. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage. Public responses never expose bucket names, `S3_PREFIX`, internal release IDs, storage task IDs, or raw object keys.
 
-Public OpenAPI reads require `Authorization: Bearer <Admin-generated OpenAPI key>`. Successful file reads return raw Markdown or JSON. Failed reads return small JSON errors with stable codes.
+Every Developer OpenAPI route requires `Authorization: Bearer <Admin-generated OpenAPI key>`. Key lifecycle remains Admin-only and is not exposed through Developer OpenAPI. Responses keep reusable identifiers continuous: `knowledgeBaseId`, `taskId`, `fileId`, `webhookId`, `deliveryId`, `cursor`, and `path` can be passed to the documented follow-up endpoints.
+
+Developer OpenAPI errors use a stable JSON envelope:
+
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Resource was not found.",
+    "httpStatus": 404
+  },
+  "requestId": "req-example"
+}
+```
+
+Webhook subscriptions return the signing secret only on creation. Later list and delivery-log responses never expose signing secrets.
 
 ## Security Baseline
 
 The Admin API is the authorization boundary. Every protected Admin API request validates the signed Redis-backed session server-side. Cookie-authenticated state-changing Admin API requests also require a trusted `Origin` or `Referer`.
 
-Production mode rejects placeholder secrets, weak Admin session secrets, insecure public origins, unsafe session-cookie settings, wildcard private CORS, and missing allowed hosts before serving traffic. Login failures, throttling, invalid sessions, origin rejection, logout, selected upload events, and public rate-limit events write redacted audit evidence without passwords, cookies, API keys, S3 object keys, local paths, or raw Markdown bodies.
+Production mode rejects placeholder secrets, weak Admin session secrets, insecure public origins, unsafe session-cookie settings, wildcard private CORS, and missing allowed hosts before serving traffic. Login failures, throttling, invalid sessions, origin rejection, logout, selected upload events, and Developer OpenAPI rate-limit events write redacted audit evidence without passwords, cookies, API keys, S3 object keys, local paths, or raw Markdown bodies.
 
 When deploying behind a domain reverse proxy, set public origins, `ALLOWED_HOSTS`, and `TRUSTED_PROXY_MODE` explicitly. Use HTTPS public origins in production. Keep PostgreSQL, Redis, and S3-compatible storage on private infrastructure.
 
@@ -352,7 +380,7 @@ Resolved versions are recorded in `pnpm-lock.yaml`. Keep imports and generated c
 - Metadata comes from Markdown frontmatter, deterministic Markdown signals, filename fallback, and optional model suggestions for missing generic fields.
 - PostgreSQL and Redis are required for production Admin state, sessions, coordination, and paginated Admin reads.
 - Search is served through generated `_index/search.json`.
-- Public OpenAPI serves generated files and latest task state. A generated formal OpenAPI specification document is outside the current product scope.
+- Developer OpenAPI serves knowledge-base CRUD, uploads, task state, generated files, deletion, and webhooks.
 - Admin review is read-only. Generated files are viewed from the UI and regenerated from uploads.
 
 ## License

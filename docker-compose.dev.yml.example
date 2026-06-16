@@ -39,7 +39,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const adminPort=process.env.ADMIN_API_PORT||'43000'; const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200'; Promise.all([fetch('http://127.0.0.1:'+adminPort+'/admin/api/session').then((r)=>r.status===401||r.ok), fetch('http://127.0.0.1:'+publicPort+'/kb/__health__/index.md').then((r)=>r.status===401||r.status===404)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
+      test: ["CMD-SHELL", "node -e \"const adminPort=process.env.ADMIN_API_PORT||'43000'; const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200'; Promise.all([fetch('http://127.0.0.1:'+adminPort+'/admin/api/session').then((r)=>r.status===401||r.ok), fetch('http://127.0.0.1:'+publicPort+'/openapi/v1/health').then((r)=>r.status===401||r.ok)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
       interval: 10s
       timeout: 5s
       retries: 12

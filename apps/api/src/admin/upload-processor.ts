@@ -10,12 +10,13 @@ import { publishOkfRelease } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { mapWithConcurrency } from "../runtime/bounded.js";
 import type { StorageAdapter } from "../storage/s3.js";
-import {
-  readModelSuggestions,
-  type ModelAssistanceOptions
-} from "./model-suggestions.js";
+import { readModelSuggestions, type ModelAssistanceOptions } from "./model-suggestions.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
-import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
+import {
+  createProgressClock,
+  createUploadProgressTracker,
+  type UploadProgressNotification
+} from "./upload-progress.js";
 
 export type UploadFile = {
   name: string;
@@ -23,6 +24,7 @@ export type UploadFile = {
 };
 
 export type LoadedUploadFile = {
+  sourceFileId?: string;
   fileName: string;
   bytes: Uint8Array;
   content: string;
@@ -39,6 +41,7 @@ export type KnowledgeBaseUploadProcessor = {
     cursorTtlSeconds: number;
     fileProcessingConcurrency: number;
     okfLog?: Partial<OkfLogLimits> | undefined;
+    onProgress?: (progress: UploadProgressNotification) => Promise<void>;
   }) => Promise<UploadTaskRecord>;
 };
 
@@ -83,7 +86,8 @@ export function createUploadProcessor(
         redis,
         knowledgeBaseId: input.knowledgeBaseId,
         taskId: input.task.id,
-        ttlSeconds: input.cursorTtlSeconds
+        ttlSeconds: input.cursorTtlSeconds,
+        ...(input.onProgress ? { onProgress: input.onProgress } : {})
       });
 
       try {
@@ -110,7 +114,7 @@ export function createUploadProcessor(
           input.files,
           input.fileProcessingConcurrency,
           async (file) => {
-            const sourceFileId = createSourceFileId();
+            const sourceFileId = file.sourceFileId ?? createSourceFileId();
             const parsed = parseUploadedMarkdownSource({
               fileName: file.fileName,
               content: file.content
@@ -455,13 +459,7 @@ export async function readBoundedUploadFiles(files: UploadFile[]): Promise<Loade
 async function recordTaskPhase(options: {
   taskRepository: NonNullable<AdminRepositories["tasks"]>;
   taskId: string;
-  phaseKey:
-    | "upload_storage"
-    | "metadata_resolution"
-    | "okf_validation"
-    | "bundle_generation"
-    | "index_publication"
-    | "release_activation";
+  phaseKey: "upload_storage" | "metadata_resolution" | "okf_validation" | "bundle_generation" | "index_publication" | "release_activation";
   startedAt: string | null;
   endedAt: string | null;
   severity: "info" | "warning" | "error";
@@ -486,10 +484,9 @@ function phaseMessageKey(phaseKey: Parameters<typeof recordTaskPhase>[0]["phaseK
   )}`;
 }
 
-function createSourceFileId(): string {
+export function createSourceFileId(): string {
   return `source-file-${randomUUID()}`;
 }
-
 function createReleaseId(): string {
   return `release-${randomUUID()}`;
 }

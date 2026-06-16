@@ -227,6 +227,15 @@ export type BundleFileRepository = {
     releaseId: string;
     logicalPath: string;
   }) => Promise<BundleFileRecord | null>;
+  getBundleFileById?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    fileId: string;
+  }) => Promise<BundleFileRecord | null>;
+  getSourceFile?: (request: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+  }) => Promise<SourceFileRecord | null>;
   listSourceFiles: (request: {
     knowledgeBaseId: string;
     limit: number;
@@ -255,6 +264,77 @@ export type BundleFileRepository = {
     sourceFileId: string;
     deletedAt: string;
   }) => Promise<boolean>;
+};
+
+export type WebhookSubscriptionRecord = {
+  id: string;
+  name: string;
+  url: string;
+  signingSecret: string;
+  events: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastDeliveryAt: string | null;
+};
+
+export type WebhookDeliveryRecord = {
+  id: string;
+  webhookId: string;
+  eventId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  status: "pending" | "success" | "failed";
+  attemptCount: number;
+  httpStatus: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WebhookRepository = {
+  createWebhookSubscription: (input: {
+    id: string;
+    name: string;
+    url: string;
+    signingSecret: string;
+    events: string[];
+    createdAt: string;
+  }) => Promise<WebhookSubscriptionRecord>;
+  getWebhookSubscription?: (id: string) => Promise<WebhookSubscriptionRecord | null>;
+  listWebhookSubscriptions: (request: {
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<WebhookSubscriptionRecord>>;
+  deleteWebhookSubscription: (input: {
+    id: string;
+    updatedAt: string;
+  }) => Promise<boolean>;
+  createWebhookDelivery?: (input: {
+    id: string;
+    webhookId: string;
+    eventId: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+    status: WebhookDeliveryRecord["status"];
+    attemptCount: number;
+    httpStatus: number | null;
+    errorCode: string | null;
+    createdAt: string;
+  }) => Promise<WebhookDeliveryRecord>;
+  updateWebhookDeliveryResult?: (input: {
+    id: string;
+    status: WebhookDeliveryRecord["status"];
+    attemptCount: number;
+    httpStatus: number | null;
+    errorCode: string | null;
+    updatedAt: string;
+  }) => Promise<WebhookDeliveryRecord | null>;
+  listWebhookDeliveries: (request: {
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<WebhookDeliveryRecord>>;
+  getWebhookDelivery?: (deliveryId: string) => Promise<WebhookDeliveryRecord | null>;
 };
 
 export type AdminRepositories = {
@@ -296,6 +376,7 @@ export type AdminRepositories = {
     createSecurityAuditEvent: (input: SecurityAuditEventDraft) => Promise<void>;
   };
   publicApiKeys?: PublicOpenApiKeyRepository;
+  webhooks?: WebhookRepository;
 };
 
 type KnowledgeBaseRow = {
@@ -421,6 +502,32 @@ type PublicApiKeyRow = {
   created_at: Date;
   last_used_at: Date | null;
   revoked_at: Date | null;
+};
+
+type WebhookSubscriptionRow = {
+  id: string;
+  name: string;
+  url: string;
+  signing_secret: string;
+  events_json: unknown;
+  enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+  last_delivery_at: Date | null;
+};
+
+type WebhookDeliveryRow = {
+  id: string;
+  webhook_id: string;
+  event_id: string;
+  event_type: string;
+  payload_json: unknown;
+  status: "pending" | "success" | "failed";
+  attempt_count: number;
+  http_status: number | null;
+  error_code: string | null;
+  created_at: Date;
+  updated_at: Date;
 };
 
 export function createSecurityAuditEventId(): string {
@@ -780,6 +887,45 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         `;
         const row = rows[0];
         return row ? mapBundleFileRow(row) : null;
+      },
+      async getBundleFileById({ knowledgeBaseId, releaseId, fileId }) {
+        const rows = await sql<BundleFileRow[]>`
+          SELECT
+            id,
+            knowledge_base_id,
+            release_id,
+            logical_path,
+            object_key,
+            content_type,
+            size_bytes,
+            checksum_sha256,
+            source_file_id,
+            file_kind,
+            okf_type,
+            title,
+            description,
+            tags_json,
+            frontmatter_json
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND release_id = ${releaseId}
+            AND id = ${fileId}
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapBundleFileRow(row) : null;
+      },
+      async getSourceFile({ knowledgeBaseId, sourceFileId }) {
+        const rows = await sql<SourceFileRow[]>`
+          SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
+          FROM focowiki.source_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${sourceFileId}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapSourceFileRow(row) : null;
       },
       async listSourceFiles({ knowledgeBaseId, limit, cursor }) {
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
@@ -1398,6 +1544,187 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             AND status = 'active'
         `;
       }
+    },
+    webhooks: {
+      async createWebhookSubscription(input) {
+        const rows = await sql<WebhookSubscriptionRow[]>`
+          INSERT INTO focowiki.webhook_subscriptions (
+            id,
+            name,
+            url,
+            signing_secret,
+            events_json,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            ${input.id},
+            ${input.name},
+            ${input.url},
+            ${input.signingSecret},
+            ${sql.json(input.events as never)},
+            ${input.createdAt},
+            ${input.createdAt}
+          )
+          RETURNING id, name, url, signing_secret, events_json, enabled, created_at, updated_at, last_delivery_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Webhook subscription creation did not return a row");
+        }
+
+        return mapWebhookSubscriptionRow(row);
+      },
+      async getWebhookSubscription(id) {
+        const rows = await sql<WebhookSubscriptionRow[]>`
+          SELECT id, name, url, signing_secret, events_json, enabled, created_at, updated_at, last_delivery_at
+          FROM focowiki.webhook_subscriptions
+          WHERE id = ${id}
+            AND enabled = true
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapWebhookSubscriptionRow(row) : null;
+      },
+      async listWebhookSubscriptions({ limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<WebhookSubscriptionRow[]>`
+              SELECT id, name, url, signing_secret, events_json, enabled, created_at, updated_at, last_delivery_at
+              FROM focowiki.webhook_subscriptions
+              WHERE enabled = true
+                AND (
+                  created_at < ${cursorValue.createdAt}
+                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                )
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<WebhookSubscriptionRow[]>`
+              SELECT id, name, url, signing_secret, events_json, enabled, created_at, updated_at, last_delivery_at
+              FROM focowiki.webhook_subscriptions
+              WHERE enabled = true
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapWebhookSubscriptionRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: lastRow.created_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async deleteWebhookSubscription({ id, updatedAt }) {
+        const rows = await sql<Array<{ id: string }>>`
+          UPDATE focowiki.webhook_subscriptions
+          SET enabled = false, updated_at = ${updatedAt}
+          WHERE id = ${id}
+            AND enabled = true
+          RETURNING id
+        `;
+        return rows.length > 0;
+      },
+      async createWebhookDelivery(input) {
+        const rows = await sql<WebhookDeliveryRow[]>`
+          INSERT INTO focowiki.webhook_deliveries (
+            id,
+            webhook_id,
+            event_id,
+            event_type,
+            payload_json,
+            status,
+            attempt_count,
+            http_status,
+            error_code,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            ${input.id},
+            ${input.webhookId},
+            ${input.eventId},
+            ${input.eventType},
+            ${sql.json(input.payload as never)},
+            ${input.status},
+            ${input.attemptCount},
+            ${input.httpStatus},
+            ${input.errorCode},
+            ${input.createdAt},
+            ${input.createdAt}
+          )
+          RETURNING id, webhook_id, event_id, event_type, payload_json, status, attempt_count, http_status, error_code, created_at, updated_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Webhook delivery creation did not return a row");
+        }
+
+        return mapWebhookDeliveryRow(row);
+      },
+      async updateWebhookDeliveryResult(input) {
+        const rows = await sql<WebhookDeliveryRow[]>`
+          UPDATE focowiki.webhook_deliveries
+          SET status = ${input.status},
+              attempt_count = ${input.attemptCount},
+              http_status = ${input.httpStatus},
+              error_code = ${input.errorCode},
+              updated_at = ${input.updatedAt}
+          WHERE id = ${input.id}
+          RETURNING id, webhook_id, event_id, event_type, payload_json, status, attempt_count, http_status, error_code, created_at, updated_at
+        `;
+        const row = rows[0];
+        return row ? mapWebhookDeliveryRow(row) : null;
+      },
+      async listWebhookDeliveries({ limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<WebhookDeliveryRow[]>`
+              SELECT id, webhook_id, event_id, event_type, payload_json, status, attempt_count, http_status, error_code, created_at, updated_at
+              FROM focowiki.webhook_deliveries
+              WHERE (
+                created_at < ${cursorValue.createdAt}
+                OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+              )
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<WebhookDeliveryRow[]>`
+              SELECT id, webhook_id, event_id, event_type, payload_json, status, attempt_count, http_status, error_code, created_at, updated_at
+              FROM focowiki.webhook_deliveries
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapWebhookDeliveryRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: lastRow.created_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async getWebhookDelivery(deliveryId) {
+        const rows = await sql<WebhookDeliveryRow[]>`
+          SELECT id, webhook_id, event_id, event_type, payload_json, status, attempt_count, http_status, error_code, created_at, updated_at
+          FROM focowiki.webhook_deliveries
+          WHERE id = ${deliveryId}
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapWebhookDeliveryRow(row) : null;
+      }
     }
   };
 }
@@ -1634,6 +1961,36 @@ function mapPublicApiKeyRow(row: PublicApiKeyRow): PublicOpenApiKeyRecord {
     createdAt: row.created_at.toISOString(),
     lastUsedAt: row.last_used_at?.toISOString() ?? null,
     revokedAt: row.revoked_at?.toISOString() ?? null
+  };
+}
+
+function mapWebhookSubscriptionRow(row: WebhookSubscriptionRow): WebhookSubscriptionRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    signingSecret: row.signing_secret,
+    events: readStringArray(row.events_json),
+    enabled: row.enabled,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+    lastDeliveryAt: row.last_delivery_at?.toISOString() ?? null
+  };
+}
+
+function mapWebhookDeliveryRow(row: WebhookDeliveryRow): WebhookDeliveryRecord {
+  return {
+    id: row.id,
+    webhookId: row.webhook_id,
+    eventId: row.event_id,
+    eventType: row.event_type,
+    payload: readRecord(row.payload_json),
+    status: row.status,
+    attemptCount: row.attempt_count,
+    httpStatus: row.http_status,
+    errorCode: row.error_code,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
   };
 }
 

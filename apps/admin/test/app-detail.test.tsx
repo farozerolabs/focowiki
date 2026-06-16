@@ -57,9 +57,11 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => ({
-    index: "https://kb.example.com/kb/kb-docs/index.md",
-    search: "https://kb.example.com/kb/kb-docs/_index/search.json",
-    links: "https://kb.example.com/kb/kb-docs/_index/links.json"
+    index: "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=index.md",
+    search:
+      "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=_index%2Fsearch.json",
+    links:
+      "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=_index%2Flinks.json"
   })),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
@@ -426,7 +428,7 @@ describe("Admin knowledge base detail", () => {
         knowledgeBaseId: "kb-docs"
       });
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "https://kb.example.com/kb/kb-docs/index.md"
+        "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=index.md"
       );
     });
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(

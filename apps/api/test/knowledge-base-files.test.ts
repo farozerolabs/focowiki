@@ -426,9 +426,12 @@ describe("Knowledge base file Admin API", () => {
 
     await expect(response.json()).resolves.toEqual({
       publicUrls: {
-        index: "https://kb.example.com/kb/kb-001/index.md",
-        search: "https://kb.example.com/kb/kb-001/_index/search.json",
-        links: "https://kb.example.com/kb/kb-001/_index/links.json"
+        index:
+          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+        search:
+          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+        links:
+          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Flinks.json"
       }
     });
     expect(response.status).toBe(200);

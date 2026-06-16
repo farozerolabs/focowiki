@@ -619,29 +619,45 @@ describe("Admin resource deletion API", () => {
       "intro.md"
     );
 
-    const removed = await app.request("/kb/kb-001/pages/intro.md", {
+    const removed = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2Fintro.md",
+      {
+        headers: { authorization: `Bearer ${publicKey}` }
+      }
+    );
+    const remaining = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2Fsetup.md",
+      {
+        headers: { authorization: `Bearer ${publicKey}` }
+      }
+    );
+    const schema = await app.request("/openapi/v1/knowledge-bases/kb-001/files/content?path=schema.md", {
       headers: { authorization: `Bearer ${publicKey}` }
     });
-    const remaining = await app.request("/kb/kb-001/pages/setup.md", {
-      headers: { authorization: `Bearer ${publicKey}` }
-    });
-    const schema = await app.request("/kb/kb-001/schema.md", {
-      headers: { authorization: `Bearer ${publicKey}` }
-    });
-    const search = await app.request("/kb/kb-001/_index/search.json", {
-      headers: { authorization: `Bearer ${publicKey}` }
-    });
-    const manifest = await app.request("/kb/kb-001/_index/manifest.json", {
-      headers: { authorization: `Bearer ${publicKey}` }
-    });
+    const search = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+      {
+        headers: { authorization: `Bearer ${publicKey}` }
+      }
+    );
+    const manifest = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fmanifest.json",
+      {
+        headers: { authorization: `Bearer ${publicKey}` }
+      }
+    );
 
     expect(removed.status).toBe(404);
     expect(remaining.status).toBe(200);
     expect(schema.status).toBe(200);
     expect(search.status).toBe(200);
     expect(manifest.status).toBe(200);
-    await expect(search.text()).resolves.not.toContain("intro.md");
-    await expect(manifest.text()).resolves.not.toContain("intro.md");
+    await expect(search.json()).resolves.toMatchObject({
+      content: expect.not.stringContaining("intro.md")
+    });
+    await expect(manifest.json()).resolves.toMatchObject({
+      content: expect.not.stringContaining("intro.md")
+    });
   });
 
   it("rejects deletion for generated system files", async () => {

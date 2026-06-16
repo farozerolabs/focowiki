@@ -175,11 +175,11 @@ try {
   await copyButton.click();
   const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
 
-  if (!clipboardText.includes("/kb/") || clipboardText.includes("S3_")) {
-    throw new Error("Copied public URL does not look like a scoped public URL.");
+  if (!clipboardText.includes("/openapi/v1/knowledge-bases/") || clipboardText.includes("S3_")) {
+    throw new Error("Copied public URL does not look like a Developer OpenAPI file URL.");
   }
 
-  report.checks.push(okCheck("copy-url", "Public URL copy action produced a scoped URL."));
+  report.checks.push(okCheck("copy-url", "Public URL copy action produced a Developer OpenAPI URL."));
 
   await page.getByRole("button", { name: `File actions: ${secondSampleName}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();

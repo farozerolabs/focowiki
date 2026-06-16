@@ -11,7 +11,7 @@ import {
 import type { AdminRepositories } from "./db/admin-repositories.js";
 import type { RedisCoordinator } from "./redis/coordination.js";
 import { registerAdminApiRoutes } from "./admin/routes.js";
-import { registerPublicOpenApiRoutes } from "./public-openapi/routes.js";
+import { registerDeveloperOpenApiRoutes } from "./developer-openapi/routes.js";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage/s3.js";
 import { applySecurityHeaders } from "./security/headers.js";
 
@@ -45,7 +45,7 @@ export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config);
 
-  registerPublicOpenApiRoutes(app, services);
+  registerDeveloperOpenApiRoutes(app, services);
 
   return app;
 }
@@ -55,7 +55,7 @@ export function createApiApp(options: ApiAppOptions): Hono {
   const app = createBaseApp(services.config);
 
   registerAdminApiRoutes(app, services);
-  registerPublicOpenApiRoutes(app, services);
+  registerDeveloperOpenApiRoutes(app, services);
 
   return app;
 }

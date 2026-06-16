@@ -236,6 +236,60 @@ CREATE TABLE IF NOT EXISTS focowiki.public_api_keys (
   )
 );
 
+CREATE TABLE IF NOT EXISTS focowiki.webhook_subscriptions (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  url text NOT NULL,
+  signing_secret text NOT NULL,
+  events_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  last_delivery_at timestamptz,
+  CHECK (id ~ '^webhook-[a-zA-Z0-9-]+$')
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.webhook_deliveries (
+  id text PRIMARY KEY,
+  webhook_id text NOT NULL REFERENCES focowiki.webhook_subscriptions(id),
+  event_id text NOT NULL,
+  event_type text NOT NULL,
+  payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'pending',
+  attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  http_status integer,
+  error_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (id ~ '^delivery-[a-zA-Z0-9-]+$'),
+  CHECK (status IN ('pending', 'success', 'failed'))
+);
+
+DO $$
+BEGIN
+  ALTER TABLE focowiki.webhook_subscriptions
+    ADD COLUMN IF NOT EXISTS signing_secret text;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'focowiki'
+      AND table_name = 'webhook_subscriptions'
+      AND column_name = 'secret_hash'
+  ) THEN
+    UPDATE focowiki.webhook_subscriptions
+    SET signing_secret = COALESCE(signing_secret, secret_hash);
+    ALTER TABLE focowiki.webhook_subscriptions
+      DROP COLUMN secret_hash;
+  END IF;
+
+  ALTER TABLE focowiki.webhook_subscriptions
+    ALTER COLUMN signing_secret SET NOT NULL;
+
+  ALTER TABLE focowiki.webhook_deliveries
+    ADD COLUMN IF NOT EXISTS payload_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+END $$;
+
 DO $$
 BEGIN
   ALTER TABLE focowiki.knowledge_bases
@@ -329,3 +383,12 @@ CREATE INDEX IF NOT EXISTS public_api_keys_status_created_cursor_idx
 CREATE INDEX IF NOT EXISTS public_api_keys_active_hash_idx
   ON focowiki.public_api_keys(key_hash)
   WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS webhook_subscriptions_enabled_created_cursor_idx
+  ON focowiki.webhook_subscriptions(enabled, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS webhook_deliveries_created_cursor_idx
+  ON focowiki.webhook_deliveries(created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS webhook_deliveries_webhook_created_idx
+  ON focowiki.webhook_deliveries(webhook_id, created_at DESC, id);

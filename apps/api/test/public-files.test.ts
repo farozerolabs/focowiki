@@ -94,12 +94,13 @@ describe("Public file API compatibility boundary", () => {
       }
     });
 
-    await expect(response.json()).resolves.toEqual({
+    await expect(response.json()).resolves.toMatchObject({
       error: {
-        code: "METHOD_NOT_ALLOWED"
+        code: "UNSUPPORTED_ROUTE",
+        httpStatus: 404
       }
     });
-    expect(response.status).toBe(405);
+    expect(response.status).toBe(404);
   });
 
   it("rate-limits public OpenAPI reads before repository work", async () => {
@@ -124,8 +125,8 @@ describe("Public file API compatibility boundary", () => {
       redis: createTestRedisCoordinator()
     });
 
-    const first = await app.request("/kb/kb-001/index.md");
-    const second = await app.request("/kb/kb-001/index.md");
+    const first = await app.request("/openapi/v1/health");
+    const second = await app.request("/openapi/v1/health");
 
     expect(first.status).toBe(503);
     expect(second.status).toBe(429);

@@ -236,9 +236,10 @@ export async function runApiValidation() {
     const singleAdminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report, {
       expectedSamples: singleSamples,
       checkName: "single-admin-file-surfaces",
-      message: "Admin release, bundle, tree, detail, and public URL surfaces work after single upload."
+      message: "Admin release, bundle, tree, detail, and Developer OpenAPI URL surfaces work after single upload."
     });
     await validatePublicOpenApi(publicApi, knowledgeBase.id, singleAdminFiles, env, report, {
+      taskId: completedSingleTask.id,
       checkName: "single-public-openapi",
       message: "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed after single upload."
     });
@@ -306,7 +307,7 @@ export async function runApiValidation() {
       expectedSamples: allSamples,
       checkName: "batch-admin-file-surfaces",
       message:
-        "Admin release, bundle, tree, detail, and public URL surfaces include single and batch generated files."
+        "Admin release, bundle, tree, detail, and Developer OpenAPI URL surfaces include single and batch generated files."
     });
     await validateAdminPaginationSurfaces(
       admin,
@@ -316,6 +317,7 @@ export async function runApiValidation() {
       performanceEvidence
     );
     await validatePublicOpenApi(publicApi, knowledgeBase.id, batchAdminFiles, env, report, {
+      taskId: completedBatchTask.id,
       checkName: "batch-public-openapi",
       message:
         "Public scoped Markdown, JSON, task, auth, source hiding, and error checks passed after batch upload."
@@ -616,7 +618,7 @@ function defaultTestsRun(kind) {
 
   if (kind === "api") {
     tests.push("Admin API black-box flow");
-    tests.push("public OpenAPI black-box flow");
+    tests.push("Developer OpenAPI black-box flow");
     tests.push("PostgreSQL, Redis, S3, and OKF white-box checks");
     tests.push("Admin UI browser flow");
     tests.push("repository no-local-path scan");
@@ -629,7 +631,7 @@ function defaultTestsRun(kind) {
 function defaultValidationPasses(kind) {
   const passes = [
     "Pass 1: bounded sample selection and redacted prerequisite validation.",
-    "Pass 2: real service API, public OpenAPI, persistence, storage, Redis, OKF, model-mode, and deletion validation."
+    "Pass 2: real service API, Developer OpenAPI, persistence, storage, Redis, OKF, model-mode, and deletion validation."
   ];
 
   if (kind === "api") {
@@ -906,28 +908,28 @@ async function validateS3Connectivity(env, report) {
 }
 
 async function validatePublicApiReachable(publicApi, env, report) {
-  const response = await publicApi.request("/kb/focowiki-validation-missing/index.md");
+  const response = await publicApi.request("/openapi/v1/health");
 
-  if (![401, 404].includes(response.status)) {
-    throw new Error(`Public OpenAPI prerequisite expected HTTP 401 or 404, got ${response.status}.`);
+  if (![200, 401].includes(response.status)) {
+    throw new Error(`Developer OpenAPI prerequisite expected HTTP 200 or 401, got ${response.status}.`);
   }
 
-  report.checks.push(okCheck("public-openapi-prerequisite", "Public OpenAPI is reachable."));
+  report.checks.push(okCheck("developer-openapi-prerequisite", "Developer OpenAPI is reachable."));
 }
 
 async function validateSecurityHeaders({ admin, publicApi, env, report }) {
   const adminResponse = await admin.request("/admin/api/knowledge-bases");
   assertSecurityHeaders(adminResponse, "Admin API");
 
-  const publicResponse = await publicApi.request("/kb/focowiki-validation-missing/index.md", {
+  const publicResponse = await publicApi.request("/openapi/v1/health", {
     headers: {}
   });
-  assertSecurityHeaders(publicResponse, "Public OpenAPI");
+  assertSecurityHeaders(publicResponse, "Developer OpenAPI");
 
   report.checks.push(
     okCheck(
       "http-security-headers",
-      "Admin API and public OpenAPI return security response headers on validation responses.",
+      "Admin API and Developer OpenAPI return security response headers on validation responses.",
       {},
       BLACK_BOX
     )
@@ -1332,7 +1334,7 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   }
 
   report.checks.push(
-    okCheck(options.checkName ?? "admin-file-surfaces", options.message ?? "Admin release, bundle, tree, detail, and public URL surfaces work.", {
+    okCheck(options.checkName ?? "admin-file-surfaces", options.message ?? "Admin release, bundle, tree, detail, and Developer OpenAPI URL surfaces work.", {
       bundleFiles: bundleFiles.items.length,
       rootTreeItems: tree.items.length,
       pageFiles: pageFiles.length,
@@ -1431,20 +1433,25 @@ async function validateAdminPaginationSurfaces(
 }
 
 async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env, report, options = {}) {
-  const missingAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`);
-
-  if (missingAuth.status !== 401) {
-    throw new Error("Public OpenAPI did not reject missing bearer auth.");
+  if (!options.taskId) {
+    throw new Error("Developer OpenAPI validation requires a taskId.");
   }
 
-  const invalidAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`, {
+  const indexPath = developerFileContentPath(knowledgeBaseId, "index.md");
+  const missingAuth = await publicApi.request(indexPath);
+
+  if (missingAuth.status !== 401) {
+    throw new Error("Developer OpenAPI did not reject missing bearer auth.");
+  }
+
+  const invalidAuth = await publicApi.request(indexPath, {
     headers: {
       authorization: "Bearer invalid-validation-key"
     }
   });
 
   if (invalidAuth.status !== 401) {
-    throw new Error("Public OpenAPI did not reject an invalid bearer key.");
+    throw new Error("Developer OpenAPI did not reject an invalid bearer key.");
   }
 
   const authHeaders = publicAuthHeaders(env);
@@ -1460,31 +1467,11 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   const bodies = new Map();
 
   for (const logicalPath of paths) {
-    const response = await publicApi.request(
-      `/kb/${encodeURIComponent(knowledgeBaseId)}/${encodePublicLogicalPath(logicalPath)}`,
-      {
-        headers: authHeaders
-      }
+    const body = await readPublicText(
+      publicApi,
+      developerFileContentPath(knowledgeBaseId, logicalPath),
+      authHeaders
     );
-
-    if (!response.ok) {
-      throw new Error(`Public read failed for ${logicalPath} with HTTP ${response.status}.`);
-    }
-
-    const contentType = response.headers.get("content-type") ?? "";
-    const body = await response.text();
-
-    if (!body.trim()) {
-      throw new Error(`Public read returned an empty body for ${logicalPath}.`);
-    }
-
-    if (logicalPath.endsWith(".json") && !contentType.includes("application/json")) {
-      throw new Error(`Expected JSON content type for ${logicalPath}.`);
-    }
-
-    if (logicalPath.endsWith(".md") && !contentType.includes("text/markdown")) {
-      throw new Error(`Expected Markdown content type for ${logicalPath}.`);
-    }
 
     bodies.set(logicalPath, body);
   }
@@ -1497,43 +1484,43 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
   const taskStatus = await readJson(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/tasks/latest`,
+    developerTaskPath(knowledgeBaseId, options.taskId),
     { headers: authHeaders }
   );
 
-  if (!taskStatus.taskId || !taskStatus.startedAt || taskStatus.phaseDetails) {
-    throw new Error("Public latest task status does not match the unified public lifecycle shape.");
+  if (!taskStatus.task?.taskId || !taskStatus.task?.startedAt || taskStatus.task?.phaseDetails) {
+    throw new Error("Developer OpenAPI task status does not match the unified lifecycle shape.");
   }
 
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/pages/%252e%252e/secret.md`,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%252e%252e/secret.md`,
     authHeaders,
     [400]
   );
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/pages/%5Csecret.md`,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%5Csecret.md`,
     authHeaders,
     [400]
   );
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/pages/missing.md`,
+    developerFileContentPath(knowledgeBaseId, "pages/missing.md"),
     authHeaders,
     [404]
   );
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/sources/${encodeURIComponent(path.basename(adminFiles.pageFile.logicalPath))}`,
+    developerFileContentPath(knowledgeBaseId, `sources/${path.basename(adminFiles.pageFile.logicalPath)}`),
     authHeaders,
-    [404]
+    [422]
   );
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/unsupported.txt`,
+    developerFileContentPath(knowledgeBaseId, "unsupported.txt"),
     authHeaders,
-    [404]
+    [422]
   );
   await expectJsonError(
     publicApi,
@@ -1543,9 +1530,9 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   );
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`,
+    developerFileContentPath(knowledgeBaseId, "index.md"),
     authHeaders,
-    [405],
+    [404],
     { method: "DELETE" }
   );
 
@@ -1916,14 +1903,14 @@ async function validatePublicDeletionState({
 
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/${encodePublicLogicalPath(deletedPagePath)}`,
+    developerFileContentPath(knowledgeBaseId, deletedPagePath),
     headers,
     [404]
   );
 
   const remaining = await readPublicText(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/${encodePublicLogicalPath(remainingPagePath)}`,
+    developerFileContentPath(knowledgeBaseId, remainingPagePath),
     headers
   );
 
@@ -1934,23 +1921,35 @@ async function validatePublicDeletionState({
   const publicBodies = new Map([
     [
       "index.md",
-      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`, headers)
+      await readPublicText(publicApi, developerFileContentPath(knowledgeBaseId, "index.md"), headers)
     ],
     [
       "log.md",
-      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/log.md`, headers)
+      await readPublicText(publicApi, developerFileContentPath(knowledgeBaseId, "log.md"), headers)
     ],
     [
       "_index/manifest.json",
-      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/manifest.json`, headers)
+      await readPublicText(
+        publicApi,
+        developerFileContentPath(knowledgeBaseId, "_index/manifest.json"),
+        headers
+      )
     ],
     [
       "_index/search.json",
-      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/search.json`, headers)
+      await readPublicText(
+        publicApi,
+        developerFileContentPath(knowledgeBaseId, "_index/search.json"),
+        headers
+      )
     ],
     [
       "_index/links.json",
-      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/_index/links.json`, headers)
+      await readPublicText(
+        publicApi,
+        developerFileContentPath(knowledgeBaseId, "_index/links.json"),
+        headers
+      )
     ]
   ]);
 
@@ -1973,7 +1972,7 @@ async function validatePublicDeletionState({
   }
 
   report.checks.push(
-    okCheck("public-deletion-state", "Public OpenAPI and generated indexes reflect source-backed page deletion.", {
+    okCheck("developer-openapi-deletion-state", "Developer OpenAPI and generated indexes reflect source-backed page deletion.", {
       deletedPagePath,
       remainingPagePath
     })
@@ -2014,7 +2013,7 @@ async function validateKnowledgeBaseDeletion({ admin, publicApi, env, knowledgeB
 
   await expectJsonError(
     publicApi,
-    `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`,
+    developerFileContentPath(knowledgeBaseId, "index.md"),
     publicAuthHeaders(env),
     [404]
   );
@@ -2344,7 +2343,13 @@ async function readPublicText(client, pathname, headers) {
     throw new Error(`Request ${pathname} failed with HTTP ${response.status}.`);
   }
 
-  return response.text();
+  const body = await response.json();
+
+  if (typeof body.content !== "string" || !body.content.trim()) {
+    throw new Error(`Request ${pathname} did not return a non-empty content field.`);
+  }
+
+  return body.content;
 }
 
 async function expectJsonError(client, pathname, headers, statuses, options = {}) {
@@ -2374,7 +2379,7 @@ async function expectJsonError(client, pathname, headers, statuses, options = {}
 
 function publicAuthHeaders(env) {
   if (!env.PUBLIC_OPENAPI_VALIDATION_KEY) {
-    throw new Error("Managed public OpenAPI validation key is not available.");
+    throw new Error("Managed Developer OpenAPI validation key is not available.");
   }
 
   return { authorization: `Bearer ${env.PUBLIC_OPENAPI_VALIDATION_KEY}` };
@@ -2448,8 +2453,16 @@ async function responseBodyToString(body) {
   throw new TypeError("Unsupported S3 response body");
 }
 
-function encodePublicLogicalPath(logicalPath) {
-  return logicalPath.split("/").map(encodeURIComponent).join("/");
+function developerFileContentPath(knowledgeBaseId, logicalPath) {
+  return `/openapi/v1/knowledge-bases/${encodeURIComponent(
+    knowledgeBaseId
+  )}/files/content?path=${encodeURIComponent(logicalPath)}`;
+}
+
+function developerTaskPath(knowledgeBaseId, taskId) {
+  return `/openapi/v1/knowledge-bases/${encodeURIComponent(
+    knowledgeBaseId
+  )}/tasks/${encodeURIComponent(taskId)}`;
 }
 
 function redactUrl(url) {

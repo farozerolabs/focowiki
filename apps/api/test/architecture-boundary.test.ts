@@ -17,7 +17,7 @@ describe("lightweight architecture boundaries", () => {
     expect(countLines("apps/api/src/server.ts")).toBeLessThanOrEqual(150);
     expect(countLines("apps/api/src/admin/routes.ts")).toBeLessThanOrEqual(1_100);
     expect(countLines("apps/api/src/admin/upload-processor.ts")).toBeLessThanOrEqual(500);
-    expect(countLines("apps/api/src/public-openapi/routes.ts")).toBeLessThanOrEqual(300);
+    expect(countLines("apps/api/src/developer-openapi/routes.ts")).toBeLessThanOrEqual(350);
     expect(countLines("apps/api/src/okf/publication.ts")).toBeLessThanOrEqual(800);
     expect(countLines("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx")).toBeLessThanOrEqual(
       700
@@ -34,14 +34,14 @@ describe("lightweight architecture boundaries", () => {
     expect(adminPage).not.toContain("apps/api/src");
   });
 
-  it("keeps public OpenAPI reads in their own route module", () => {
+  it("keeps Developer OpenAPI routes in their own route module", () => {
     const server = readWorkspaceFile("apps/api/src/server.ts");
-    const publicRoutes = readWorkspaceFile("apps/api/src/public-openapi/routes.ts");
+    const developerRoutes = readWorkspaceFile("apps/api/src/developer-openapi/routes.ts");
 
-    expect(server).toContain("registerPublicOpenApiRoutes");
+    expect(server).toContain("registerDeveloperOpenApiRoutes");
     expect(server).not.toContain("serveScopedPublicFile");
-    expect(publicRoutes).toContain("serveScopedPublicFile");
-    expect(publicRoutes).toContain("servePublicLatestTaskStatus");
+    expect(developerRoutes).toContain("/openapi/v1/knowledge-bases");
+    expect(developerRoutes).toContain("/openapi/v1/webhooks");
   });
 
   it("keeps Admin API routes in their own module without obsolete pre-release endpoints", () => {

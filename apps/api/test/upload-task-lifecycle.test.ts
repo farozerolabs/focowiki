@@ -1352,25 +1352,31 @@ describe("Upload parsing task lifecycle", () => {
     const publicApp = createPublicOpenApiApp({
       config: createConfig(),
       storage,
+      redis: createRedisCoordinator(new MemoryRedisCommandClient(), {
+        keyPrefix: "focowiki-test-public"
+      }),
       repositories
     });
-    const response = await publicApp.request("/kb/kb-001/tasks/latest", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    const response = await publicApp.request(
+      "/openapi/v1/knowledge-bases/kb-001/tasks/task-001",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const body = (await response.json()) as Record<string, unknown>;
+    );
+    const body = (await response.json()) as { task: Record<string, unknown> };
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
+    expect(body.task).toMatchObject({
       knowledgeBaseId: "kb-001",
       taskId: "task-001",
       startedAt: "2026-06-14T00:00:00.000Z",
       endedAt: expect.any(String),
       lifecycle: "ended"
     });
-    expect(body).not.toHaveProperty("phaseKey");
-    expect(body).not.toHaveProperty("phaseDetails");
+    expect(body.task).not.toHaveProperty("phaseKey");
+    expect(body.task).not.toHaveProperty("phaseDetails");
   });
 
   it("keeps the previous active release when upload parsing publication fails", async () => {

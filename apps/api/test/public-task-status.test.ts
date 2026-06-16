@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
+import { createTestRedisCoordinator } from "./support/session.js";
 
 const publicKey = "fwok_test-public-secret";
 
@@ -12,6 +13,18 @@ const knowledgeBase = {
   activeReleaseId: null,
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
+};
+
+const taskRecord = {
+  id: "task-001",
+  knowledgeBaseId: "kb-001",
+  operation: "upload" as const,
+  startedAt: "2026-06-14T00:00:00.000Z",
+  sourceCount: 2,
+  resultReleaseId: "release-001",
+  internalErrorCode: null,
+  internalErrorMessage: null,
+  createdAt: "2026-06-14T00:00:00.000Z"
 };
 
 function createConfig(): RuntimeConfig {
@@ -77,26 +90,52 @@ function createRepositories(task: { endedAt: string | null } | null) {
         return id === knowledgeBase.id ? knowledgeBase : null;
       }
     },
+    files: {
+      async listBundleTreeEntries() {
+        return { items: [], nextCursor: null };
+      },
+      async getBundleFile() {
+        return null;
+      },
+      async listSourceFilesForTask() {
+        return { items: [], nextCursor: null };
+      },
+      async listSourceFiles() {
+        return { items: [], nextCursor: null };
+      },
+      async listReleases() {
+        return { items: [], nextCursor: null };
+      },
+      async listBundleFiles() {
+        return { items: [], nextCursor: null };
+      }
+    },
     tasks: {
       async createUploadTask() {
         throw new Error("Not used by public task status tests");
       },
-      async getLatestUploadTask(knowledgeBaseId: string) {
-        return knowledgeBaseId === "kb-001" && task
+      async getUploadTask(input: { knowledgeBaseId: string; taskId: string }) {
+        return input.knowledgeBaseId === "kb-001" && input.taskId === "task-001" && task
           ? {
-              id: "task-001",
-              knowledgeBaseId,
-              operation: "upload" as const,
-              startedAt: "2026-06-14T00:00:00.000Z",
+              ...taskRecord,
               endedAt: task.endedAt,
-              sourceCount: 2,
-              resultReleaseId: "release-001",
-              internalErrorCode: null,
-              internalErrorMessage: null,
-              createdAt: "2026-06-14T00:00:00.000Z",
               phases: [{ phaseKey: "bundle_generation" }]
             }
           : null;
+      },
+      async listUploadTasks(input: {
+        knowledgeBaseId: string;
+        limit: number;
+        cursor: string | null;
+      }) {
+        if (input.knowledgeBaseId !== "kb-001" || !task) {
+          return { items: [], nextCursor: null };
+        }
+
+        return {
+          items: [{ ...taskRecord, endedAt: task.endedAt }],
+          nextCursor: null
+        };
       }
     }
   };
@@ -139,61 +178,67 @@ function createPublicApiKeyRepository(rawKey: string) {
   };
 }
 
-describe("Public upload task status OpenAPI", () => {
-  it("returns latest unified running task lifecycle without internal phases", async () => {
+describe("Developer upload task status OpenAPI", () => {
+  it("returns unified running task lifecycle without internal phases", async () => {
     const app = createPublicOpenApiApp({
       config: createConfig(),
-      repositories: createRepositories({ endedAt: null })
+      repositories: createRepositories({ endedAt: null }),
+      redis: createTestRedisCoordinator()
     });
-    const response = await app.request("/kb/kb-001/tasks/latest", {
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-001/tasks", {
       headers: {
         authorization: `Bearer ${publicKey}`
       }
     });
-    const body = (await response.json()) as Record<string, unknown>;
+    const body = (await response.json()) as { items: Array<Record<string, unknown>> };
 
     expect(response.status).toBe(200);
-    expect(body).toEqual({
+    expect(body.items[0]).toMatchObject({
       knowledgeBaseId: "kb-001",
       taskId: "task-001",
       startedAt: "2026-06-14T00:00:00.000Z",
       endedAt: null,
       lifecycle: "running"
     });
-    expect(body).not.toHaveProperty("phases");
-    expect(body).not.toHaveProperty("phaseKey");
+    expect(body.items[0]).not.toHaveProperty("phases");
+    expect(body.items[0]).not.toHaveProperty("phaseKey");
   });
 
   it("returns latest unified ended task lifecycle", async () => {
     const app = createPublicOpenApiApp({
       config: createConfig(),
-      repositories: createRepositories({ endedAt: "2026-06-14T00:01:00.000Z" })
+      repositories: createRepositories({ endedAt: "2026-06-14T00:01:00.000Z" }),
+      redis: createTestRedisCoordinator()
     });
-    const response = await app.request("/kb/kb-001/tasks/latest", {
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-001/tasks/task-001", {
       headers: {
         authorization: `Bearer ${publicKey}`
       }
     });
 
     await expect(response.json()).resolves.toMatchObject({
-      endedAt: "2026-06-14T00:01:00.000Z",
-      lifecycle: "ended"
+      task: {
+        endedAt: "2026-06-14T00:01:00.000Z",
+        lifecycle: "ended"
+      }
     });
     expect(response.status).toBe(200);
   });
 
-  it("protects latest task status and returns not found when missing", async () => {
+  it("protects task status and returns not found when missing", async () => {
     const app = createPublicOpenApiApp({
       config: createConfig(),
-      repositories: createRepositories(null)
+      repositories: createRepositories(null),
+      redis: createTestRedisCoordinator()
     });
-    const missingAuth = await app.request("/kb/kb-001/tasks/latest");
-    const wrongAuth = await app.request("/kb/kb-001/tasks/latest", {
+    const path = "/openapi/v1/knowledge-bases/kb-001/tasks/task-001";
+    const missingAuth = await app.request(path);
+    const wrongAuth = await app.request(path, {
       headers: {
         authorization: "Bearer wrong"
       }
     });
-    const missingTask = await app.request("/kb/kb-001/tasks/latest", {
+    const missingTask = await app.request(path, {
       headers: {
         authorization: `Bearer ${publicKey}`
       }

@@ -8,7 +8,10 @@ export function buildPublicFileUrl(
   logicalPath: string
 ): string {
   const base = baseUrl.replace(/\/+$/, "");
-  return `${base}/kb/${normalizeId(knowledgeBaseId, "knowledgeBaseId")}/${normalizePublicPath(logicalPath)}`;
+  return `${base}/openapi/v1/knowledge-bases/${normalizeId(
+    knowledgeBaseId,
+    "knowledgeBaseId"
+  )}/files/content?path=${encodeURIComponent(normalizePublicPath(logicalPath))}`;
 }
 
 function normalizeId(value: string, fieldName: string): string {

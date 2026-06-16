@@ -309,7 +309,7 @@ function createPublicApiKeyRepository(rawKey: string, status: "active" | "revoke
 }
 
 describe("Scoped public file OpenAPI", () => {
-  it("serves knowledge base scoped raw Markdown and JSON files", async () => {
+  it("serves knowledge base scoped Markdown and JSON content through Developer OpenAPI", async () => {
     const storage = new MemoryStorage();
     const repositories = createRepositories();
     const app = createPublicOpenApiApp({
@@ -317,38 +317,56 @@ describe("Scoped public file OpenAPI", () => {
       storage,
       repositories
     });
-    const markdown = await app.request("/kb/kb-001/index.md", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    const markdown = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const log = await app.request("/kb/kb-001/log.md", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    );
+    const log = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=log.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const json = await app.request("/kb/kb-001/_index/search.json", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    );
+    const json = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
+    );
 
     expect(markdown.status).toBe(200);
-    expect(markdown.headers.get("content-type")).toContain("text/markdown");
-    await expect(markdown.text()).resolves.toBe("# Developer docs");
+    await expect(markdown.json()).resolves.toMatchObject({
+      file: { path: "index.md", fileId: "bundle-file-index" },
+      content: "# Developer docs"
+    });
     expect(log.status).toBe(200);
-    expect(log.headers.get("content-type")).toContain("text/markdown");
-    await expect(log.text()).resolves.toContain("# Directory Update Log");
+    await expect(log.json()).resolves.toMatchObject({
+      file: { path: "log.md", fileId: "bundle-file-log" },
+      content: expect.stringContaining("# Directory Update Log")
+    });
     expect(json.status).toBe(200);
-    expect(json.headers.get("content-type")).toContain("application/json");
-    const jsonBody = (await json.json()) as typeof publicSearchIndex;
-    expect(jsonBody).toEqual(publicSearchIndex);
-    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("objectKey");
-    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("releaseId");
-    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("taskId");
-    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("localPath");
-    expect(storage.bodyReads).toBe(3);
-    expect(storage.textReads).toBe(0);
+    const jsonBody = (await json.json()) as {
+      file: Record<string, unknown>;
+      content: string;
+    };
+    const searchIndex = JSON.parse(jsonBody.content) as typeof publicSearchIndex;
+
+    expect(jsonBody.file).toMatchObject({ path: "_index/search.json" });
+    expect(searchIndex).toEqual(publicSearchIndex);
+    expect(searchIndex.items[0]?.metadata).not.toHaveProperty("objectKey");
+    expect(searchIndex.items[0]?.metadata).not.toHaveProperty("releaseId");
+    expect(searchIndex.items[0]?.metadata).not.toHaveProperty("taskId");
+    expect(searchIndex.items[0]?.metadata).not.toHaveProperty("localPath");
+    expect(storage.textReads).toBe(3);
+    expect(storage.bodyReads).toBe(0);
     expect(repositories.calls).toMatchObject({
       fileLookups: 3,
       treeLists: 0,
@@ -372,14 +390,25 @@ describe("Scoped public file OpenAPI", () => {
       "---\ntype: page\ntitle: 外国企业常驻代表机构登记管理条例\n---\n# 外国企业"
     );
 
-    const response = await app.request(`/kb/kb-001/pages/${encodeURIComponent(fileName)}`, {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    const response = await app.request(
+      `/openapi/v1/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(
+        `pages/${fileName}`
+      )}`,
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
+    );
 
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain("# 外国企业");
+    await expect(response.json()).resolves.toMatchObject({
+      file: {
+        path: `pages/${fileName}`,
+        title: "外国企业常驻代表机构登记管理条例"
+      },
+      content: expect.stringContaining("# 外国企业")
+    });
   });
 
   it("requires the public bearer key before scoped lookup in private mode", async () => {
@@ -388,8 +417,9 @@ describe("Scoped public file OpenAPI", () => {
       storage: new MemoryStorage(),
       repositories: createRepositories()
     });
-    const missing = await app.request("/kb/kb-001/index.md");
-    const wrong = await app.request("/kb/kb-001/index.md", {
+    const path = "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md";
+    const missing = await app.request(path);
+    const wrong = await app.request(path, {
       headers: {
         authorization: "Bearer wrong"
       }
@@ -410,22 +440,23 @@ describe("Scoped public file OpenAPI", () => {
       storage: new MemoryStorage(),
       repositories: createRepositories({ publicKeyStatus: "missing" })
     });
-    const revoked = await revokedApp.request("/kb/kb-001/index.md", {
+    const path = "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md";
+    const revoked = await revokedApp.request(path, {
       headers: {
         authorization: `Bearer ${publicKey}`
       }
     });
-    const deleted = await deletedApp.request("/kb/kb-001/index.md", {
+    const deleted = await deletedApp.request(path, {
       headers: {
         authorization: `Bearer ${publicKey}`
       }
     });
 
-    await expect(revoked.json()).resolves.toEqual({
-      error: { code: "UNAUTHORIZED" }
+    await expect(revoked.json()).resolves.toMatchObject({
+      error: { code: "UNAUTHORIZED", httpStatus: 401 }
     });
-    await expect(deleted.json()).resolves.toEqual({
-      error: { code: "UNAUTHORIZED" }
+    await expect(deleted.json()).resolves.toMatchObject({
+      error: { code: "UNAUTHORIZED", httpStatus: 401 }
     });
     expect(revoked.status).toBe(401);
     expect(deleted.status).toBe(401);
@@ -437,51 +468,81 @@ describe("Scoped public file OpenAPI", () => {
       storage: new MemoryStorage(),
       repositories: createRepositories()
     });
-    const missingKnowledgeBase = await app.request("/kb/kb-missing/index.md", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    const missingKnowledgeBase = await app.request(
+      "/openapi/v1/knowledge-bases/kb-missing/files/content?path=index.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const missingFile = await app.request("/kb/kb-001/pages/missing.md", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    );
+    const missingFile = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2Fmissing.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const unsupported = await app.request("/kb/kb-001/unsupported.txt", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    );
+    const unsupported = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=unsupported.txt",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const sourceFile = await app.request("/kb/kb-001/sources/intro.md", {
-      headers: {
-        authorization: `Bearer ${publicKey}`
+    );
+    const sourceFile = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=sources%2Fintro.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
       }
-    });
-    const traversal = await app.request("/kb/kb-001/pages/%252e%252e/secret.md", {
+    );
+    const traversal = await app.request("/openapi/v1/knowledge-bases/kb-001/pages/%252e%252e", {
       headers: {
         authorization: `Bearer ${publicKey}`
       }
     });
 
-    await expect(missingKnowledgeBase.json()).resolves.toEqual({
-      error: { code: "NOT_FOUND" }
+    await expect(missingKnowledgeBase.json()).resolves.toMatchObject({
+      error: { code: "NOT_FOUND", httpStatus: 404 }
     });
-    await expect(missingFile.json()).resolves.toEqual({
-      error: { code: "NOT_FOUND" }
+    await expect(missingFile.json()).resolves.toMatchObject({
+      error: { code: "NOT_FOUND", httpStatus: 404 }
     });
-    await expect(unsupported.json()).resolves.toEqual({
-      error: { code: "NOT_FOUND" }
+    await expect(unsupported.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_ERROR", httpStatus: 422 }
     });
-    await expect(sourceFile.json()).resolves.toEqual({
-      error: { code: "NOT_FOUND" }
+    await expect(sourceFile.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_ERROR", httpStatus: 422 }
     });
     await expect(traversal.json()).resolves.toEqual({
       error: { code: "INVALID_PATH" }
     });
     expect(missingKnowledgeBase.status).toBe(404);
     expect(missingFile.status).toBe(404);
-    expect(unsupported.status).toBe(404);
-    expect(sourceFile.status).toBe(404);
+    expect(unsupported.status).toBe(422);
+    expect(sourceFile.status).toBe(422);
     expect(traversal.status).toBe(400);
+  });
+
+  it("does not serve old /kb public routes", async () => {
+    const app = createPublicOpenApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      repositories: createRepositories()
+    });
+    const response = await app.request("/kb/kb-001/index.md", {
+      headers: {
+        authorization: `Bearer ${publicKey}`
+      }
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNSUPPORTED_ROUTE", httpStatus: 404 }
+    });
+    expect(response.status).toBe(404);
   });
 });
