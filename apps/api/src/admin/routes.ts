@@ -39,6 +39,7 @@ import {
   toAdminUploadTaskEvent,
   toUploadTaskLifecycle
 } from "./serializers.js";
+import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -68,6 +69,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     redis,
     repositories
   });
+
+  registerAdminOpenApiKeyRoutes(
+    app,
+    {
+      config,
+      redis,
+      repositories
+    },
+    {
+      requireAuth,
+      requireWriteProtection
+    }
+  );
 
   app.post("/admin/api/login", async (context) => {
     if (containsCredentialQuery(context.req.raw.url)) {

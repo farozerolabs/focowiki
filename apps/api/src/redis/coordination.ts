@@ -36,6 +36,14 @@ export type RedisCoordinator = {
   ) => Promise<void>;
   getPageCache: <T = unknown>(scope: string, pageId: string) => Promise<T | null>;
   markPaginationInvalid: (scope: string, reason: string, ttlSeconds: number) => Promise<void>;
+  setPublicOpenApiKeyCache: (
+    keyHash: string,
+    value: { id: string },
+    ttlSeconds: number
+  ) => Promise<void>;
+  getPublicOpenApiKeyCache: (keyHash: string) => Promise<{ id: string } | null>;
+  clearPublicOpenApiKeyCache: (keyHash: string) => Promise<void>;
+  markPublicOpenApiKeyUsed: (keyId: string, ttlSeconds: number) => Promise<boolean>;
   hitRateLimit: (
     scope: string,
     id: string,
@@ -138,6 +146,25 @@ export function createRedisCoordinator(
       await client.set(buildKey("pagination-invalid", scope), reason, {
         EX: ttlSeconds
       });
+    },
+    async setPublicOpenApiKeyCache(keyHash, value, ttlSeconds) {
+      await client.set(buildKey("public-openapi-key-cache", keyHash), JSON.stringify(value), {
+        EX: ttlSeconds
+      });
+    },
+    async getPublicOpenApiKeyCache(keyHash) {
+      const raw = await client.get(buildKey("public-openapi-key-cache", keyHash));
+      return raw ? (JSON.parse(raw) as { id: string }) : null;
+    },
+    async clearPublicOpenApiKeyCache(keyHash) {
+      await client.del(buildKey("public-openapi-key-cache", keyHash));
+    },
+    async markPublicOpenApiKeyUsed(keyId, ttlSeconds) {
+      const result = await client.set(buildKey("public-openapi-key-used", keyId), "1", {
+        EX: ttlSeconds,
+        NX: true
+      });
+      return result === "OK";
     },
     async hitRateLimit(scope, id, limit) {
       const key = buildKey("rate-limits", scope, id);

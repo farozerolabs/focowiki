@@ -26,9 +26,15 @@ const REPORT_MD = path.join(CHANGE_DIR, "validation-report.md");
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const WHITE_BOX = "white-box";
 const BLACK_BOX = "black-box";
+const SECURITY_AUDIT_SECRET_PATTERN =
+  /password|session=|\bPUBLIC_OPENAPI_KEY\b|\bS3_SECRET(?:_ACCESS_KEY)?\b|\bMODEL_API_KEY\b|Bearer\s+[A-Za-z0-9._-]+/i;
 const requireFromApiPackage = createRequire(
   pathToFileURL(path.resolve("apps/api/package.json"))
 );
+
+export function hasSecretLikeAuditData(rows) {
+  return SECURITY_AUDIT_SECRET_PATTERN.test(JSON.stringify(rows));
+}
 
 export async function main(argv = process.argv.slice(2)) {
   loadLocalEnv();
@@ -148,6 +154,7 @@ export async function runApiValidation() {
     await validateSecurityHeaders({ admin, publicApi, env, report });
 
     await loginAdmin(admin, env, report);
+    env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
     const knowledgeBase = await createValidationKnowledgeBase(admin, report);
 
     const singleUploadTask = await uploadSamples(admin, knowledgeBase.id, singleSamples, report, {
@@ -802,14 +809,10 @@ async function validateS3Connectivity(env, report) {
 }
 
 async function validatePublicApiReachable(publicApi, env, report) {
-  const headers =
-    env.PUBLIC_API_AUTH_REQUIRED === "true" && env.PUBLIC_API_KEY
-      ? { authorization: `Bearer ${env.PUBLIC_API_KEY}` }
-      : {};
-  const response = await publicApi.request("/kb/focowiki-validation-missing/index.md", { headers });
+  const response = await publicApi.request("/kb/focowiki-validation-missing/index.md");
 
-  if (response.status !== 404) {
-    throw new Error(`Public OpenAPI prerequisite expected HTTP 404, got ${response.status}.`);
+  if (![401, 404].includes(response.status)) {
+    throw new Error(`Public OpenAPI prerequisite expected HTTP 401 or 404, got ${response.status}.`);
   }
 
   report.checks.push(okCheck("public-openapi-prerequisite", "Public OpenAPI is reachable."));
@@ -820,7 +823,7 @@ async function validateSecurityHeaders({ admin, publicApi, env, report }) {
   assertSecurityHeaders(adminResponse, "Admin API");
 
   const publicResponse = await publicApi.request("/kb/focowiki-validation-missing/index.md", {
-    headers: publicAuthHeaders(env)
+    headers: {}
   });
   assertSecurityHeaders(publicResponse, "Public OpenAPI");
 
@@ -876,6 +879,48 @@ async function loginAdmin(admin, env, report) {
   }
 
   report.checks.push(okCheck("admin-login", "Admin login succeeded with configured credentials."));
+}
+
+async function ensureManagedPublicOpenApiKey(admin, report) {
+  const listResponse = await admin.request("/admin/api/openapi-keys?limit=50");
+
+  if (!listResponse.ok) {
+    throw new Error(`OpenAPI key list failed with HTTP ${listResponse.status}.`);
+  }
+
+  const list = await listResponse.json();
+
+  if (list.oneTimeKey?.rawKey) {
+    report.checks.push(
+      okCheck("public-openapi-managed-key", "Loaded one-time managed OpenAPI key from Admin API.")
+    );
+    return list.oneTimeKey.rawKey;
+  }
+
+  const createResponse = await admin.request("/admin/api/openapi-keys", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      name: "Validation key"
+    })
+  });
+
+  if (createResponse.status !== 201) {
+    throw new Error(`OpenAPI key creation failed with HTTP ${createResponse.status}.`);
+  }
+
+  const created = await createResponse.json();
+
+  if (!created.oneTimeKey?.rawKey) {
+    throw new Error("OpenAPI key creation response did not include a one-time key.");
+  }
+
+  report.checks.push(
+    okCheck("public-openapi-managed-key", "Created a managed OpenAPI key for validation.")
+  );
+  return created.oneTimeKey.rawKey;
 }
 
 async function createValidationKnowledgeBase(admin, report) {
@@ -1132,18 +1177,13 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
 }
 
 async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env, report, options = {}) {
-  if (env.PUBLIC_API_AUTH_REQUIRED === "true") {
-    const missingAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`);
+  const missingAuth = await publicApi.request(`/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`);
 
-    if (missingAuth.status !== 401) {
-      throw new Error("Public OpenAPI private mode did not reject missing bearer auth.");
-    }
+  if (missingAuth.status !== 401) {
+    throw new Error("Public OpenAPI did not reject missing bearer auth.");
   }
 
-  const authHeaders =
-    env.PUBLIC_API_AUTH_REQUIRED === "true" && env.PUBLIC_API_KEY
-      ? { authorization: `Bearer ${env.PUBLIC_API_KEY}` }
-      : {};
+  const authHeaders = publicAuthHeaders(env);
   const paths = [
     "index.md",
     "schema.md",
@@ -1601,9 +1641,7 @@ async function validateSecurityAuditEvidence(databaseUrl, startedAt, report) {
       throw new Error("Security audit validation expected at least one audit event for this run.");
     }
 
-    const serialized = JSON.stringify(rows);
-
-    if (/password|session=|PUBLIC_API_KEY|S3_SECRET|MODEL_API_KEY|Bearer\s+[A-Za-z0-9._-]+/i.test(serialized)) {
+    if (hasSecretLikeAuditData(rows)) {
       throw new Error("Security audit records exposed secret-like data.");
     }
 
@@ -1922,9 +1960,11 @@ async function expectJsonError(client, pathname, headers, statuses, options = {}
 }
 
 function publicAuthHeaders(env) {
-  return env.PUBLIC_API_AUTH_REQUIRED === "true" && env.PUBLIC_API_KEY
-    ? { authorization: `Bearer ${env.PUBLIC_API_KEY}` }
-    : {};
+  if (!env.PUBLIC_OPENAPI_VALIDATION_KEY) {
+    throw new Error("Managed public OpenAPI validation key is not available.");
+  }
+
+  return { authorization: `Bearer ${env.PUBLIC_OPENAPI_VALIDATION_KEY}` };
 }
 
 function parseJsonIndex(raw, logicalPath) {

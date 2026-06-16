@@ -11,6 +11,7 @@ import type {
   BundleTreeEntryDraft,
   BundleTreeEntryRecord
 } from "../src/db/admin-repositories.js";
+import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
@@ -28,6 +29,7 @@ const knowledgeBase = {
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
 };
+const publicKey = "fwok_test-public-secret";
 
 function createConfig(): RuntimeConfig {
   return {
@@ -48,9 +50,7 @@ function createConfig(): RuntimeConfig {
       publicOpenApi: 43_200
     },
     publicApi: {
-      baseUrl: "https://kb.example.com",
-      authRequired: true,
-      apiKey: "public-secret"
+      baseUrl: "https://kb.example.com"
     },
     storage: {
       endpoint: "https://s3.example.com",
@@ -218,6 +218,7 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
     },
     createdTasks,
     repositories: {
+      publicApiKeys: createPublicApiKeyRepository(publicKey),
       knowledgeBases: {
         async listKnowledgeBases() {
           return { items: [currentKnowledgeBase], nextCursor: null };
@@ -504,6 +505,43 @@ function createRepositories(options: { activeReleaseId?: string | null } = {}) {
           };
         }
       }
+    }
+  };
+}
+
+function createPublicApiKeyRepository(rawKey: string) {
+  const keyHash = hashPublicOpenApiKey(rawKey);
+
+  return {
+    async countActivePublicOpenApiKeys() {
+      return 1;
+    },
+    async listPublicOpenApiKeys() {
+      return { items: [], nextCursor: null };
+    },
+    async createPublicOpenApiKey() {
+      throw new Error("Not used by upload task lifecycle tests");
+    },
+    async findActivePublicOpenApiKeyByHash(candidateHash: string) {
+      return candidateHash === keyHash
+        ? {
+            id: "openapi-key-test",
+            name: "Test key",
+            keyHash,
+            keyPrefix: rawKey.slice(0, 10),
+            keySuffix: rawKey.slice(-6),
+            status: "active" as const,
+            createdAt: "2026-06-14T00:00:00.000Z",
+            lastUsedAt: null,
+            revokedAt: null
+          }
+        : null;
+    },
+    async revokePublicOpenApiKey() {
+      return null;
+    },
+    async updatePublicOpenApiKeyLastUsed() {
+      return undefined;
     }
   };
 }
@@ -1103,7 +1141,7 @@ describe("Upload parsing task lifecycle", () => {
     });
     const response = await publicApp.request("/kb/kb-001/tasks/latest", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const body = (await response.json()) as Record<string, unknown>;

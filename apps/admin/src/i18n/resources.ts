@@ -28,7 +28,9 @@ export const resources = {
         invalidCredentials: "Invalid admin credentials"
       },
       common: {
-        cancel: "Cancel"
+        cancel: "Cancel",
+        copy: "Copy",
+        copied: "Copied"
       },
       delete: {
         action: "Delete",
@@ -43,6 +45,8 @@ export const resources = {
       },
       home: {
         title: "Knowledge bases",
+        knowledgeBasesTab: "Knowledge bases",
+        openapiKeysTab: "OpenAPI keys",
         cardsTitle: "Knowledge bases",
         cardsDescription: "Create and open Markdown knowledge bases.",
         createAction: "Create knowledge base",
@@ -56,6 +60,34 @@ export const resources = {
         nameLabel: "Knowledge base name",
         descriptionLabel: "Description",
         noDescription: "No description"
+      },
+      openapiKeys: {
+        title: "OpenAPI keys",
+        description: "Manage bearer keys for public OpenAPI reads.",
+        createAction: "Create key",
+        createDescription: "Create a bearer key for agents and integrations.",
+        createSubmit: "Create",
+        creating: "Creating",
+        nameLabel: "Key name",
+        oneTimeTitle: "Copy this key now",
+        oneTimeLabel: "OpenAPI key",
+        empty: "No OpenAPI keys",
+        neverUsed: "Never used",
+        deleteAction: "Delete {{name}}",
+        deleteTitle: "Delete OpenAPI key",
+        deleteDescription: "Delete {{name}}. Requests using this key will stop working.",
+        status: {
+          active: "Active",
+          revoked: "Revoked"
+        },
+        table: {
+          name: "Name",
+          fingerprint: "Key",
+          status: "Status",
+          createdAt: "Created",
+          lastUsedAt: "Last used",
+          actions: "Actions"
+        }
       },
       detail: {
         back: "Back",
@@ -167,7 +199,8 @@ export const resources = {
         deleteFailed: "Delete request failed",
         fileNotDeletable: "This file cannot be deleted",
         securityRequestRejected: "Request rejected",
-        rateLimited: "Too many requests"
+        rateLimited: "Too many requests",
+        openapiKeyFailed: "OpenAPI key request failed"
       }
     }
   },
@@ -195,7 +228,9 @@ export const resources = {
         invalidCredentials: "管理员账号或密码无效"
       },
       common: {
-        cancel: "取消"
+        cancel: "取消",
+        copy: "复制",
+        copied: "已复制"
       },
       delete: {
         action: "删除",
@@ -210,6 +245,8 @@ export const resources = {
       },
       home: {
         title: "知识库",
+        knowledgeBasesTab: "知识库",
+        openapiKeysTab: "OpenAPI keys",
         cardsTitle: "知识库",
         cardsDescription: "创建和打开 Markdown 知识库。",
         createAction: "创建知识库",
@@ -223,6 +260,34 @@ export const resources = {
         nameLabel: "知识库名称",
         descriptionLabel: "描述",
         noDescription: "暂无描述"
+      },
+      openapiKeys: {
+        title: "OpenAPI keys",
+        description: "管理公开 OpenAPI 读取使用的 Bearer key。",
+        createAction: "创建 key",
+        createDescription: "为 Agent 和集成创建 Bearer key。",
+        createSubmit: "创建",
+        creating: "创建中",
+        nameLabel: "Key 名称",
+        oneTimeTitle: "现在复制这个 key",
+        oneTimeLabel: "OpenAPI key",
+        empty: "暂无 OpenAPI keys",
+        neverUsed: "从未使用",
+        deleteAction: "删除 {{name}}",
+        deleteTitle: "删除 OpenAPI key",
+        deleteDescription: "删除 {{name}}，使用该 key 的请求将停止工作。",
+        status: {
+          active: "启用",
+          revoked: "已删除"
+        },
+        table: {
+          name: "名称",
+          fingerprint: "Key",
+          status: "状态",
+          createdAt: "创建时间",
+          lastUsedAt: "最近使用",
+          actions: "操作"
+        }
       },
       detail: {
         back: "返回",
@@ -334,7 +399,8 @@ export const resources = {
         deleteFailed: "删除请求失败",
         fileNotDeletable: "该文件不能删除",
         securityRequestRejected: "请求已被拒绝",
-        rateLimited: "请求过于频繁"
+        rateLimited: "请求过于频繁",
+        openapiKeyFailed: "OpenAPI key 请求失败"
       }
     }
   }

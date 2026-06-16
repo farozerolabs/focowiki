@@ -140,6 +140,10 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
     expect(deploymentEnv).toContain("ADMIN_SESSION_SECRET=<generate-a-strong-session-secret>");
     expect(deploymentEnv).not.toContain("ADMIN_PASSWORD=change-me");
+    expect(devEnv).not.toContain("PUBLIC_API_KEY");
+    expect(devEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");
+    expect(deploymentEnv).not.toContain("PUBLIC_API_KEY");
+    expect(deploymentEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");
   });
 
   it("keeps env template keys and Compose references synchronized", () => {

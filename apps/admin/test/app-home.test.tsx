@@ -5,8 +5,11 @@ import { initI18n } from "../src/i18n";
 import {
   checkAdminSession,
   createKnowledgeBase,
+  createPublicOpenApiKey,
   deleteKnowledgeBase,
+  deletePublicOpenApiKey,
   listKnowledgeBases,
+  listPublicOpenApiKeys,
   loginAdmin,
   setAdminAuthFailureHandler
 } from "../src/lib/admin-api";
@@ -21,7 +24,22 @@ vi.mock("../src/lib/admin-api", () => ({
       activeReleaseId: null
     }
   })),
+  createPublicOpenApiKey: vi.fn(async () => ({
+    key: {
+      id: "openapi-key-created",
+      name: "Agent key",
+      fingerprint: "fwok_cre...secret",
+      status: "active",
+      createdAt: "2026-06-14T00:00:00.000Z",
+      lastUsedAt: null
+    },
+    oneTimeKey: {
+      id: "openapi-key-created",
+      rawKey: "fwok_created-secret"
+    }
+  })),
   deleteKnowledgeBase: vi.fn(async () => ({ deleted: true })),
+  deletePublicOpenApiKey: vi.fn(async () => ({ deleted: true })),
   deleteKnowledgeBaseFile: vi.fn(),
   fetchKnowledgeBaseFileDetail: vi.fn(),
   fetchKnowledgeBaseFileTree: vi.fn(async () => ({
@@ -36,6 +54,23 @@ vi.mock("../src/lib/admin-api", () => ({
   listKnowledgeBases: vi.fn(async () => ({
     items: [],
     nextCursor: null
+  })),
+  listPublicOpenApiKeys: vi.fn(async () => ({
+    items: [
+      {
+        id: "openapi-key-default",
+        name: "Default key",
+        fingerprint: "fwok_def...secret",
+        status: "active",
+        createdAt: "2026-06-14T00:00:00.000Z",
+        lastUsedAt: null
+      }
+    ],
+    nextCursor: null,
+    oneTimeKey: {
+      id: "openapi-key-default",
+      rawKey: "fwok_default-secret"
+    }
   })),
   listUploadTasks: vi.fn(async () => ({
     items: [],
@@ -220,6 +255,45 @@ describe("Admin knowledge base home", () => {
 
     expect(await screen.findByRole("heading", { name: "知识库", level: 1 })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "创建知识库" }).length).toBeGreaterThan(0);
+  });
+
+  it("manages public OpenAPI keys from the home tabs", async () => {
+    render(<App />);
+
+    await login();
+    const openApiKeysTab = screen.getByRole("tab", { name: "OpenAPI keys" });
+    fireEvent.mouseDown(openApiKeysTab, {
+      button: 0,
+      ctrlKey: false
+    });
+    fireEvent.mouseUp(openApiKeysTab);
+    fireEvent.click(openApiKeysTab);
+
+    expect(await screen.findByText("Default key")).toBeTruthy();
+    expect(screen.getByDisplayValue("fwok_default-secret")).toBeTruthy();
+    expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
+
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    fireEvent.change(screen.getByLabelText("Key name"), {
+      target: {
+        value: "Agent key"
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(createPublicOpenApiKey).toHaveBeenCalledWith({ name: "Agent key" });
+    });
+    expect(await screen.findByText("Agent key")).toBeTruthy();
+    expect(screen.getByDisplayValue("fwok_created-secret")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Agent key" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(deletePublicOpenApiKey).toHaveBeenCalledWith({ keyId: "openapi-key-created" });
+    });
+    expect(screen.getByText("Revoked")).toBeTruthy();
   });
 
   it("appends paginated knowledge base card pages", async () => {

@@ -131,6 +131,23 @@ CREATE TABLE IF NOT EXISTS focowiki.admin_audit_events (
   CHECK (result IN ('success', 'failure', 'blocked'))
 );
 
+CREATE TABLE IF NOT EXISTS focowiki.public_api_keys (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  key_hash text NOT NULL UNIQUE,
+  key_prefix text NOT NULL,
+  key_suffix text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz,
+  CHECK (status IN ('active', 'revoked')),
+  CHECK (
+    (status = 'active' AND revoked_at IS NULL)
+    OR (status = 'revoked' AND revoked_at IS NOT NULL)
+  )
+);
+
 DO $$
 BEGIN
   ALTER TABLE focowiki.knowledge_bases
@@ -211,3 +228,13 @@ CREATE INDEX IF NOT EXISTS admin_audit_events_created_idx
 
 CREATE INDEX IF NOT EXISTS admin_audit_events_type_result_idx
   ON focowiki.admin_audit_events(event_type, result, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS public_api_keys_created_cursor_idx
+  ON focowiki.public_api_keys(created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS public_api_keys_status_created_cursor_idx
+  ON focowiki.public_api_keys(status, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS public_api_keys_active_hash_idx
+  ON focowiki.public_api_keys(key_hash)
+  WHERE status = 'active';

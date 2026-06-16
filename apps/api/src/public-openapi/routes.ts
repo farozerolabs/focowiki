@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
@@ -13,6 +12,10 @@ import {
   publicResponseHeaders,
   unsupportedPublicMethod
 } from "./security.js";
+import {
+  createPublicOpenApiKeyService,
+  type PublicOpenApiKeyService
+} from "./keys.js";
 
 export type PublicOpenApiRouteServices = {
   config: RuntimeConfig;
@@ -26,6 +29,17 @@ export function registerPublicOpenApiRoutes(
   services: PublicOpenApiRouteServices
 ): void {
   const { config, storage, repositories, redis } = services;
+  const keyService = repositories?.publicApiKeys
+    ? createPublicOpenApiKeyService({
+        repository: repositories.publicApiKeys,
+        redis
+      })
+    : null;
+  const requireManagedKey = requirePublicAuth({
+    keyService,
+    repositories,
+    config
+  });
 
   app.use("/kb/*", applyPublicCors(config));
   app.use("/kb/*", async (context, next) => {
@@ -55,19 +69,19 @@ export function registerPublicOpenApiRoutes(
     await next();
   });
 
-  app.get("/kb/:knowledgeBaseId/tasks/latest", requirePublicAuth(config), async (context) =>
+  app.get("/kb/:knowledgeBaseId/tasks/latest", requireManagedKey, async (context) =>
     servePublicLatestTaskStatus(context, repositories)
   );
-  app.get("/kb/:knowledgeBaseId/index.md", requirePublicAuth(config), async (context) =>
+  app.get("/kb/:knowledgeBaseId/index.md", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, "index.md", config)
   );
-  app.get("/kb/:knowledgeBaseId/schema.md", requirePublicAuth(config), async (context) =>
+  app.get("/kb/:knowledgeBaseId/schema.md", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, "schema.md", config)
   );
-  app.get("/kb/:knowledgeBaseId/pages/*", requirePublicAuth(config), async (context) =>
+  app.get("/kb/:knowledgeBaseId/pages/*", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
   );
-  app.get("/kb/:knowledgeBaseId/_index/*", requirePublicAuth(config), async (context) =>
+  app.get("/kb/:knowledgeBaseId/_index/*", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, scopedPublicPathFromRequest(context), config)
   );
   app.on(["POST", "PUT", "PATCH", "DELETE"], "/kb/:knowledgeBaseId/*", (context) =>
@@ -75,16 +89,34 @@ export function registerPublicOpenApiRoutes(
   );
 }
 
-function requirePublicAuth(config: RuntimeConfig): MiddlewareHandler {
+function requirePublicAuth(options: {
+  keyService: PublicOpenApiKeyService | null;
+  repositories: AdminRepositories | null;
+  config: RuntimeConfig;
+}): MiddlewareHandler {
   return async (context, next) => {
-    if (!config.publicApi.authRequired) {
-      await next();
-      return;
+    if (!options.keyService) {
+      return context.json(
+        {
+          error: {
+            code: "DATABASE_REPOSITORY_UNAVAILABLE"
+          }
+        },
+        503
+      );
     }
 
     const token = readBearerToken(context.req.header("authorization"));
 
-    if (!token || !config.publicApi.apiKey || !secureTokenEquals(token, config.publicApi.apiKey)) {
+    if (!token || !(await options.keyService.authorize(token)).authorized) {
+      await recordSecurityAudit({
+        repositories: options.repositories,
+        config: options.config,
+        context,
+        eventType: "public_openapi_auth",
+        result: "failure",
+        errorCode: "UNAUTHORIZED"
+      });
       return unauthorized(context);
     }
 
@@ -221,17 +253,6 @@ function decodeScopedPublicPath(path: string): string {
 function readBearerToken(authorization: string | undefined): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(authorization ?? "");
   return match?.[1] ?? null;
-}
-
-function secureTokenEquals(value: string, expected: string): boolean {
-  const valueBuffer = Buffer.from(value);
-  const expectedBuffer = Buffer.from(expected);
-
-  if (valueBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(valueBuffer, expectedBuffer);
 }
 
 function unauthorized(context: Parameters<MiddlewareHandler>[0]): Response {

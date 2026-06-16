@@ -6,12 +6,17 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   checkAdminSession,
   createKnowledgeBase,
+  createPublicOpenApiKey,
   deleteKnowledgeBase,
+  deletePublicOpenApiKey,
   listKnowledgeBases,
+  listPublicOpenApiKeys,
   logoutAdmin,
   setAdminAuthFailureHandler,
   type ApiFailure,
-  type KnowledgeBase
+  type KnowledgeBase,
+  type OneTimePublicOpenApiKey,
+  type PublicOpenApiKey
 } from "@/lib/admin-api";
 
 type AuthState = "checking" | "anonymous" | "authenticated";
@@ -22,6 +27,14 @@ export function App() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
+  const [publicOpenApiKeys, setPublicOpenApiKeys] = useState<PublicOpenApiKey[]>([]);
+  const [publicOpenApiKeysNextCursor, setPublicOpenApiKeysNextCursor] = useState<string | null>(
+    null
+  );
+  const [publicOpenApiKeysOneTimeKey, setPublicOpenApiKeysOneTimeKey] =
+    useState<OneTimePublicOpenApiKey | null>(null);
+  const [isLoadingPublicOpenApiKeys, setIsLoadingPublicOpenApiKeys] = useState(false);
+  const [hasLoadedPublicOpenApiKeys, setHasLoadedPublicOpenApiKeys] = useState(false);
 
   useEffect(() => {
     setAdminAuthFailureHandler(() => {
@@ -84,6 +97,11 @@ export function App() {
     setNextCursor(null);
     setSelectedKnowledgeBase(null);
     setIsLoadingKnowledgeBases(false);
+    setPublicOpenApiKeys([]);
+    setPublicOpenApiKeysNextCursor(null);
+    setPublicOpenApiKeysOneTimeKey(null);
+    setIsLoadingPublicOpenApiKeys(false);
+    setHasLoadedPublicOpenApiKeys(false);
   }
 
   async function loadKnowledgeBases(input: { replace: boolean }) {
@@ -126,6 +144,55 @@ export function App() {
     return result;
   }
 
+  async function loadPublicOpenApiKeys(input: { replace: boolean }) {
+    setIsLoadingPublicOpenApiKeys(true);
+    const page = await listPublicOpenApiKeys(
+      input.replace ? {} : { cursor: publicOpenApiKeysNextCursor }
+    );
+    setPublicOpenApiKeys((current) => (input.replace ? page.items : [...current, ...page.items]));
+    setPublicOpenApiKeysNextCursor(page.nextCursor);
+    setPublicOpenApiKeysOneTimeKey(page.oneTimeKey);
+    setHasLoadedPublicOpenApiKeys(true);
+    setIsLoadingPublicOpenApiKeys(false);
+  }
+
+  function handleOpenApiKeysTabSelected() {
+    if (!hasLoadedPublicOpenApiKeys && !isLoadingPublicOpenApiKeys) {
+      void loadPublicOpenApiKeys({ replace: true });
+    }
+  }
+
+  async function handleCreatePublicOpenApiKey(input: {
+    name: string;
+  }): Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure> {
+    const result = await createPublicOpenApiKey(input);
+
+    if ("messageKey" in result) {
+      return result;
+    }
+
+    setPublicOpenApiKeys((current) => [result.key, ...current]);
+    setPublicOpenApiKeysOneTimeKey(result.oneTimeKey);
+    setHasLoadedPublicOpenApiKeys(true);
+    return result;
+  }
+
+  async function handleDeletePublicOpenApiKey(
+    key: PublicOpenApiKey
+  ): Promise<{ deleted: true } | ApiFailure> {
+    const result = await deletePublicOpenApiKey({ keyId: key.id });
+
+    if ("messageKey" in result) {
+      return result;
+    }
+
+    setPublicOpenApiKeys((current) =>
+      current.map((item) => (item.id === key.id ? { ...item, status: "revoked" } : item))
+    );
+
+    return result;
+  }
+
   if (authState === "checking") {
     return (
       <TooltipProvider>
@@ -160,8 +227,16 @@ export function App() {
         knowledgeBases={knowledgeBases}
         nextCursor={nextCursor}
         isLoading={isLoadingKnowledgeBases}
+        publicOpenApiKeys={publicOpenApiKeys}
+        publicOpenApiKeysNextCursor={publicOpenApiKeysNextCursor}
+        publicOpenApiKeysOneTimeKey={publicOpenApiKeysOneTimeKey}
+        isLoadingPublicOpenApiKeys={isLoadingPublicOpenApiKeys}
         onCreate={handleCreateKnowledgeBase}
         onDelete={handleDeleteKnowledgeBase}
+        onCreatePublicOpenApiKey={handleCreatePublicOpenApiKey}
+        onDeletePublicOpenApiKey={handleDeletePublicOpenApiKey}
+        onLoadPublicOpenApiKeys={(input) => void loadPublicOpenApiKeys(input)}
+        onOpenApiKeysTabSelected={handleOpenApiKeysTabSelected}
         onLoadMore={() => void loadKnowledgeBases({ replace: false })}
         onLogout={() => void handleLogout()}
         onOpenKnowledgeBase={setSelectedKnowledgeBase}

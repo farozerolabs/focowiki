@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
+
+const publicKey = "fwok_test-public-secret";
 
 const knowledgeBase = {
   id: "kb-001",
@@ -30,9 +33,7 @@ function createConfig(): RuntimeConfig {
       publicOpenApi: 43_200
     },
     publicApi: {
-      baseUrl: "https://kb.example.com",
-      authRequired: true,
-      apiKey: "public-secret"
+      baseUrl: "https://kb.example.com"
     },
     storage: {
       endpoint: "https://s3.example.com",
@@ -64,6 +65,7 @@ function createConfig(): RuntimeConfig {
 
 function createRepositories(task: { endedAt: string | null } | null) {
   return {
+    publicApiKeys: createPublicApiKeyRepository(publicKey),
     knowledgeBases: {
       async listKnowledgeBases() {
         return { items: [knowledgeBase], nextCursor: null };
@@ -100,6 +102,43 @@ function createRepositories(task: { endedAt: string | null } | null) {
   };
 }
 
+function createPublicApiKeyRepository(rawKey: string) {
+  const keyHash = hashPublicOpenApiKey(rawKey);
+
+  return {
+    async countActivePublicOpenApiKeys() {
+      return 1;
+    },
+    async listPublicOpenApiKeys() {
+      return { items: [], nextCursor: null };
+    },
+    async createPublicOpenApiKey() {
+      throw new Error("Not used by public task status tests");
+    },
+    async findActivePublicOpenApiKeyByHash(candidateHash: string) {
+      return candidateHash === keyHash
+        ? {
+            id: "openapi-key-test",
+            name: "Test key",
+            keyHash,
+            keyPrefix: rawKey.slice(0, 10),
+            keySuffix: rawKey.slice(-6),
+            status: "active" as const,
+            createdAt: "2026-06-14T00:00:00.000Z",
+            lastUsedAt: null,
+            revokedAt: null
+          }
+        : null;
+    },
+    async revokePublicOpenApiKey() {
+      return null;
+    },
+    async updatePublicOpenApiKeyLastUsed() {
+      return undefined;
+    }
+  };
+}
+
 describe("Public upload task status OpenAPI", () => {
   it("returns latest unified running task lifecycle without internal phases", async () => {
     const app = createPublicOpenApiApp({
@@ -108,7 +147,7 @@ describe("Public upload task status OpenAPI", () => {
     });
     const response = await app.request("/kb/kb-001/tasks/latest", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const body = (await response.json()) as Record<string, unknown>;
@@ -132,7 +171,7 @@ describe("Public upload task status OpenAPI", () => {
     });
     const response = await app.request("/kb/kb-001/tasks/latest", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
 
@@ -156,7 +195,7 @@ describe("Public upload task status OpenAPI", () => {
     });
     const missingTask = await app.request("/kb/kb-001/tasks/latest", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
 

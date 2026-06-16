@@ -10,6 +10,26 @@ export type KnowledgeBasePage = {
   nextCursor: string | null;
 };
 
+export type PublicOpenApiKey = {
+  id: string;
+  name: string;
+  fingerprint: string;
+  status: "active" | "revoked";
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+export type OneTimePublicOpenApiKey = {
+  id: string;
+  rawKey: string;
+};
+
+export type PublicOpenApiKeyPage = {
+  items: PublicOpenApiKey[];
+  nextCursor: string | null;
+  oneTimeKey: OneTimePublicOpenApiKey | null;
+};
+
 export type UploadTaskLifecycle = {
   id: string;
   operation?: "upload" | "delete_source" | "delete_knowledge_base";
@@ -209,6 +229,70 @@ export async function deleteKnowledgeBase(input: {
       method: "DELETE"
     }
   );
+  const body = (await response.json()) as
+    | { deleted: true }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.deleteFailed");
+  }
+
+  return body as { deleted: true };
+}
+
+export async function listPublicOpenApiKeys(input: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<PublicOpenApiKeyPage> {
+  const params = new URLSearchParams();
+
+  if (input.limit) {
+    params.set("limit", String(input.limit));
+  }
+  if (input.cursor) {
+    params.set("cursor", input.cursor);
+  }
+
+  const response = await adminFetch(`/admin/api/openapi-keys${params.size ? `?${params}` : ""}`);
+
+  if (!response.ok) {
+    return {
+      items: [],
+      nextCursor: null,
+      oneTimeKey: null
+    };
+  }
+
+  return (await response.json()) as PublicOpenApiKeyPage;
+}
+
+export async function createPublicOpenApiKey(input: {
+  name: string;
+}): Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure> {
+  const response = await adminFetch("/admin/api/openapi-keys", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input.name.trim() ? { name: input.name.trim() } : {})
+  });
+  const body = (await response.json()) as
+    | { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.openapiKeyFailed");
+  }
+
+  return body as { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey };
+}
+
+export async function deletePublicOpenApiKey(input: {
+  keyId: string;
+}): Promise<{ deleted: true } | ApiFailure> {
+  const response = await adminFetch(`/admin/api/openapi-keys/${encodeURIComponent(input.keyId)}`, {
+    method: "DELETE"
+  });
   const body = (await response.json()) as
     | { deleted: true }
     | { error?: { messageKey?: string } };
@@ -440,6 +524,7 @@ function readFailure(
   body:
     | { knowledgeBase: KnowledgeBase }
     | { task: UploadTaskLifecycle }
+    | { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey }
     | { deleted: true }
     | { error?: { messageKey?: string } },
   fallbackMessageKey: string

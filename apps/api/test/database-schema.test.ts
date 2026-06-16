@@ -29,7 +29,8 @@ describe("database schema migration", () => {
       "source_files",
       "releases",
       "bundle_files",
-      "bundle_tree_entries"
+      "bundle_tree_entries",
+      "public_api_keys"
     ]) {
       expect(sql).toContain(`create table if not exists focowiki.${table}`);
     }
@@ -73,7 +74,9 @@ describe("database schema migration", () => {
       "releases(knowledge_base_id, published_at desc, id)",
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
       "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
-      "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)"
+      "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)",
+      "public_api_keys(created_at desc, id)",
+      "public_api_keys(status, created_at desc, id)"
     ]) {
       expect(sql).toContain(index);
     }
@@ -112,6 +115,18 @@ describe("database schema migration", () => {
     expect(repository).toContain("and deleted_at is null");
     expect(repository).not.toContain("legacy");
     expect(repository).not.toContain("backfill");
+  });
+
+  it("stores public OpenAPI keys as hash-only records", () => {
+    const sql = readMigration();
+
+    expect(sql).toContain("create table if not exists focowiki.public_api_keys");
+    expect(sql).toContain("key_hash text not null unique");
+    expect(sql).toContain("key_prefix text not null");
+    expect(sql).toContain("key_suffix text not null");
+    expect(sql).toContain("check (status in ('active', 'revoked'))");
+    expect(sql).toContain("public_api_keys_active_hash_idx");
+    expect(sql).not.toMatch(/\b(raw_key|plain_key|api_key_secret|key_value)\b/);
   });
 
   it("updates active releases in a database transaction", () => {

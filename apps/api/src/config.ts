@@ -61,8 +61,6 @@ export type RuntimeConfig = {
   };
   publicApi: {
     baseUrl: string;
-    authRequired: boolean;
-    apiKey: string | null;
   };
   storage: {
     endpoint: string;
@@ -126,8 +124,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const redisUrl = requireRedisUrl(env, "REDIS_URL", issues);
   const ports = parseServicePorts(env, issues);
   const publicBaseUrl = requireUrl(env, "PUBLIC_BASE_URL", issues);
-  const publicApiAuthRequired = requireBoolean(env, "PUBLIC_API_AUTH_REQUIRED", issues);
-  const publicApiKey = optionalString(env, "PUBLIC_API_KEY");
+  rejectDeprecatedPublicApiEnv(env, issues);
   const endpoint = requireUrl(env, "S3_ENDPOINT", issues);
   const region = requireString(env, "S3_REGION", issues);
   const bucket = requireString(env, "S3_BUCKET", issues);
@@ -160,17 +157,11 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       adminSessionSecret,
       ports,
       publicBaseUrl,
-      publicApiAuthRequired,
-      publicApiKey,
       storageCredentials: [accessKeyId, secretAccessKey],
       model
     },
     issues
   );
-
-  if (publicApiAuthRequired && !publicApiKey) {
-    issues.push("PUBLIC_API_KEY is required when PUBLIC_API_AUTH_REQUIRED is true");
-  }
 
   if (issues.length > 0) {
     throw new ConfigValidationError(issues.map((issue) => redactSecrets(issue)));
@@ -191,9 +182,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     ports,
     pagination,
     publicApi: {
-      baseUrl: publicBaseUrl,
-      authRequired: publicApiAuthRequired,
-      apiKey: publicApiAuthRequired ? publicApiKey : null
+      baseUrl: publicBaseUrl
     },
     storage: {
       endpoint,
@@ -232,6 +221,16 @@ export function resolveSecurityConfig(
 function optionalString(env: RuntimeEnv, field: string): string | null {
   const value = env[field]?.trim();
   return value ? value : null;
+}
+
+function rejectDeprecatedPublicApiEnv(env: RuntimeEnv, issues: string[]): void {
+  if (Object.hasOwn(env, "PUBLIC_API_KEY")) {
+    issues.push("PUBLIC_API_KEY is no longer supported; manage OpenAPI keys in Admin UI");
+  }
+
+  if (Object.hasOwn(env, "PUBLIC_API_AUTH_REQUIRED")) {
+    issues.push("PUBLIC_API_AUTH_REQUIRED is no longer supported; public OpenAPI keys are always required");
+  }
 }
 
 function requireString(env: RuntimeEnv, field: string, issues: string[]): string {
@@ -508,8 +507,6 @@ function parseSecurityConfig(
     adminSessionSecret: string;
     ports: RuntimeConfig["ports"];
     publicBaseUrl: string;
-    publicApiAuthRequired: boolean;
-    publicApiKey: string | null;
     storageCredentials: string[];
     model: RuntimeConfig["model"];
   },
@@ -571,8 +568,6 @@ function parseSecurityConfig(
     validateProductionSecurity({
       adminPassword: input.adminPassword,
       adminSessionSecret: input.adminSessionSecret,
-      publicApiAuthRequired: input.publicApiAuthRequired,
-      publicApiKey: input.publicApiKey,
       storageCredentials: input.storageCredentials,
       model: input.model,
       cookieSecure,
@@ -752,8 +747,6 @@ function validateOrigin(field: string, value: string, issues: string[]): string 
 function validateProductionSecurity(input: {
   adminPassword: string;
   adminSessionSecret: string;
-  publicApiAuthRequired: boolean;
-  publicApiKey: string | null;
   storageCredentials: string[];
   model: RuntimeConfig["model"];
   cookieSecure: boolean;
@@ -764,7 +757,6 @@ function validateProductionSecurity(input: {
   const placeholderChecks: Array<[string, string | null]> = [
     ["ADMIN_PASSWORD", input.adminPassword],
     ["ADMIN_SESSION_SECRET", input.adminSessionSecret],
-    ["PUBLIC_API_KEY", input.publicApiAuthRequired ? input.publicApiKey : null],
     ["S3_ACCESS_KEY_ID", input.storageCredentials[0] ?? null],
     ["S3_SECRET_ACCESS_KEY", input.storageCredentials[1] ?? null],
     ["MODEL_API_KEY", input.model.enabled ? input.model.apiKey : null]

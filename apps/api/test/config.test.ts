@@ -11,8 +11,6 @@ const validEnv = {
   ADMIN_UI_PORT: "43100",
   PUBLIC_OPENAPI_PORT: "43200",
   PUBLIC_BASE_URL: "https://kb.example.com/base",
-  PUBLIC_API_AUTH_REQUIRED: "true",
-  PUBLIC_API_KEY: "public-secret",
   S3_ENDPOINT: "https://s3.example.com",
   S3_REGION: "us-east-1",
   S3_BUCKET: "focowiki",
@@ -41,8 +39,6 @@ describe("parseRuntimeConfig", () => {
       publicOpenApi: 43_200
     });
     expect(config.publicApi.baseUrl).toBe("https://kb.example.com/base");
-    expect(config.publicApi.authRequired).toBe(true);
-    expect(config.publicApi.apiKey).toBe("public-secret");
     expect(config.storage).toMatchObject({
       endpoint: "https://s3.example.com",
       region: "us-east-1",
@@ -65,19 +61,31 @@ describe("parseRuntimeConfig", () => {
     ]);
   });
 
-  it("parses public OpenAPI URL and bearer API key settings", () => {
+  it("parses public OpenAPI URL while leaving key management to the database", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
-      PUBLIC_BASE_URL: "https://docs.example.com/kb/",
-      PUBLIC_API_AUTH_REQUIRED: "true",
-      PUBLIC_API_KEY: "reader-secret"
+      PUBLIC_BASE_URL: "https://docs.example.com/kb/"
     });
 
     expect(config.publicApi).toEqual({
-      baseUrl: "https://docs.example.com/kb",
-      authRequired: true,
-      apiKey: "reader-secret"
+      baseUrl: "https://docs.example.com/kb"
     });
+  });
+
+  it("rejects deprecated env-based public OpenAPI key settings", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        PUBLIC_API_AUTH_REQUIRED: "false"
+      })
+    ).toThrow(/PUBLIC_API_AUTH_REQUIRED/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        PUBLIC_API_KEY: "reader-secret"
+      })
+    ).toThrow(/PUBLIC_API_KEY/);
   });
 
   it("reports secret-safe validation errors for missing required settings", () => {
@@ -205,8 +213,7 @@ describe("parseRuntimeConfig", () => {
     expect(() =>
       parseRuntimeConfig({
         ...validEnv,
-        CORS_ORIGINS: "*",
-        PUBLIC_API_AUTH_REQUIRED: "true"
+        CORS_ORIGINS: "*"
       })
     ).toThrow(/CORS_ORIGINS/);
 
@@ -260,27 +267,6 @@ describe("parseRuntimeConfig", () => {
         ADMIN_PAGINATION_CURSOR_TTL_SECONDS: "0"
       })
     ).toThrow(/ADMIN_PAGINATION_CURSOR_TTL_SECONDS/);
-  });
-
-  it("requires PUBLIC_API_KEY when public reads are private", () => {
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PUBLIC_API_AUTH_REQUIRED: "true",
-        PUBLIC_API_KEY: ""
-      })
-    ).toThrow(/PUBLIC_API_KEY/);
-  });
-
-  it("allows anonymous public reads when configured", () => {
-    const config = parseRuntimeConfig({
-      ...validEnv,
-      PUBLIC_API_AUTH_REQUIRED: "false",
-      PUBLIC_API_KEY: ""
-    });
-
-    expect(config.publicApi.authRequired).toBe(false);
-    expect(config.publicApi.apiKey).toBeNull();
   });
 
   it("validates upload limits", () => {

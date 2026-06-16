@@ -27,9 +27,7 @@ const config: RuntimeConfig = {
     publicOpenApi: 43_200
   },
   publicApi: {
-    baseUrl: "https://kb.example.com",
-    authRequired: true,
-    apiKey: "public-secret"
+    baseUrl: "https://kb.example.com"
   },
   storage: {
     endpoint: "https://s3.example.com",

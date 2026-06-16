@@ -3,9 +3,7 @@
 ## Purpose
 
 Define Docker Compose deployment templates, production container builds, runtime configuration boundaries, and validation expectations for self-hosted Focowiki deployments.
-
 ## Requirements
-
 ### Requirement: Docker Compose deployment mode
 Focowiki SHALL provide Docker Compose templates for running the application stack while preserving the pnpm local development workflow through explicit development templates.
 
@@ -64,13 +62,15 @@ Focowiki SHALL provide deployment configuration templates that make production e
 
 #### Scenario: Deployment env template is complete
 - **WHEN** an operator copies the default deployment env template
-- **THEN** the template MUST include Admin UI, Admin API, public OpenAPI, PostgreSQL, Redis, S3-compatible storage, upload limits, pagination, rate limits, security, public API auth, and optional model assistance fields
+- **THEN** the template MUST include Admin UI, Admin API, public OpenAPI URL/port/origin settings, PostgreSQL, Redis, S3-compatible storage, upload limits, pagination, rate limits, security, and optional model assistance fields
+- **AND** the template MUST NOT include `PUBLIC_API_KEY` or `PUBLIC_API_AUTH_REQUIRED`
 - **AND** placeholder values MUST be clearly marked as placeholders and MUST NOT be valid production secrets
 
 #### Scenario: Production mode rejects unsafe defaults
 - **WHEN** the Compose deployment runs with `APP_ENV=production`
 - **THEN** startup MUST rely on the existing production runtime validation for strong session secrets, secure cookie settings, allowed hosts, trusted origins, public origins, and non-placeholder storage credentials
 - **AND** container documentation MUST tell operators to generate deployment-specific secrets instead of using example values
+- **AND** container documentation MUST tell operators to manage public OpenAPI keys from the Admin UI after deployment
 
 #### Scenario: External S3-compatible storage is required
 - **WHEN** an operator configures the Compose deployment
@@ -120,3 +120,16 @@ Focowiki SHALL document the Docker Compose deployment path clearly for open-sour
 - **WHEN** contributors modify deployment files
 - **THEN** the repository MUST document validation commands for Docker build, Compose config validation, migration service execution, service startup, health checks, and smoke tests
 - **AND** validation MUST include checks that deployment files do not introduce hardcoded credentials, local absolute paths, or private dataset names
+
+### Requirement: Compose deployment uses managed public OpenAPI keys
+Focowiki SHALL keep public OpenAPI key secrets out of Compose environment templates.
+
+#### Scenario: Deployment stack starts without public API key env
+- **WHEN** `docker-compose.yml.example` starts with a valid copied `.env`
+- **THEN** the API MUST start without `PUBLIC_API_KEY` or `PUBLIC_API_AUTH_REQUIRED`
+- **AND** the public OpenAPI key service MUST create or expose the first managed key through the Admin UI
+
+#### Scenario: Compose docs mention OpenAPI key management
+- **WHEN** an operator follows Docker Compose deployment documentation
+- **THEN** the documentation MUST direct the operator to copy the generated OpenAPI key from the Admin UI
+- **AND** it MUST NOT instruct the operator to place public OpenAPI keys in `.env`

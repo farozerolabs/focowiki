@@ -20,8 +20,12 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
   public async set(
     key: string,
     value: string,
-    _options?: Record<string, unknown>
+    options?: Record<string, unknown>
   ): Promise<string | null> {
+    if (options?.NX === true && this.values.has(key)) {
+      return null;
+    }
+
     this.values.set(key, value);
     return "OK";
   }

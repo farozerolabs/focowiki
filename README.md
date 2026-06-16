@@ -133,8 +133,7 @@ Required public OpenAPI configuration:
 
 - `PUBLIC_OPENAPI_PORT`: public OpenAPI file-read listen port. Defaults to `43200` when omitted.
 - `PUBLIC_BASE_URL`: base URL for the public OpenAPI file-read endpoints and generated public file URLs.
-- `PUBLIC_API_AUTH_REQUIRED`: `true` or `false`; controls whether public OpenAPI reads require a bearer API key.
-- `PUBLIC_API_KEY`: required when `PUBLIC_API_AUTH_REQUIRED=true`; clients call private public OpenAPI reads with `Authorization: Bearer $PUBLIC_API_KEY`.
+- Public OpenAPI bearer keys are generated and managed in the Admin UI under `OpenAPI keys`. They are stored as database-backed hash-only records and are not configured in `.env`.
 
 Required storage and upload configuration:
 
@@ -203,7 +202,7 @@ GET /kb/{knowledgeBaseId}/tasks/latest
 
 `PUBLIC_BASE_URL` must point to the public OpenAPI service. Use HTTPS public origins in production; local development may use `http://127.0.0.1:43200`. Admin UI and Admin API URLs are separate. Public URLs are built as `PUBLIC_BASE_URL + /kb/{knowledgeBaseId}/...` and do not expose S3 bucket names, `S3_PREFIX`, release IDs, task IDs used in storage keys, or raw object keys.
 
-Private mode requires `Authorization: Bearer $PUBLIC_API_KEY`. Public mode allows anonymous reads while still enforcing knowledge base scoping and path safety. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
+Public OpenAPI reads always require `Authorization: Bearer <Admin-generated OpenAPI key>`. Open the Admin UI, switch to `OpenAPI keys`, and copy the generated key once after deployment. Successful file reads return raw Markdown or JSON. Failed public reads return small JSON errors with stable codes.
 
 Unsupported public methods return stable JSON errors and do not mutate knowledge bases, source files, tasks, releases, storage objects, or indexes. Public reads are rate-limited through Redis before storage or expensive repository work.
 

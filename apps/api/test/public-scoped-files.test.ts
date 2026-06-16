@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
+
+const publicKey = "fwok_test-public-secret";
 
 const knowledgeBase = {
   id: "kb-001",
@@ -33,8 +36,6 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
     },
     publicApi: {
       baseUrl: "https://kb.example.com",
-      authRequired: true,
-      apiKey: "public-secret",
       ...publicApi
     },
     storage: {
@@ -107,7 +108,7 @@ class MemoryStorage implements StorageAdapter {
   }
 }
 
-function createRepositories() {
+function createRepositories(options: { publicKeyStatus?: "active" | "revoked" | "missing" } = {}) {
   const calls = {
     fileLookups: 0,
     treeLists: 0,
@@ -181,6 +182,7 @@ function createRepositories() {
 
   return {
     calls,
+    publicApiKeys: createPublicApiKeyRepository(publicKey, options.publicKeyStatus ?? "active"),
     knowledgeBases: {
       async listKnowledgeBases() {
         return { items: [knowledgeBase], nextCursor: null };
@@ -219,6 +221,43 @@ function createRepositories() {
   };
 }
 
+function createPublicApiKeyRepository(rawKey: string, status: "active" | "revoked" | "missing") {
+  const keyHash = hashPublicOpenApiKey(rawKey);
+
+  return {
+    async countActivePublicOpenApiKeys() {
+      return status === "active" ? 1 : 0;
+    },
+    async listPublicOpenApiKeys() {
+      return { items: [], nextCursor: null };
+    },
+    async createPublicOpenApiKey() {
+      throw new Error("Not used by public file tests");
+    },
+    async findActivePublicOpenApiKeyByHash(candidateHash: string) {
+      return status === "active" && candidateHash === keyHash
+        ? {
+            id: "openapi-key-test",
+            name: "Test key",
+            keyHash,
+            keyPrefix: rawKey.slice(0, 10),
+            keySuffix: rawKey.slice(-6),
+            status: "active" as const,
+            createdAt: "2026-06-14T00:00:00.000Z",
+            lastUsedAt: null,
+            revokedAt: null
+          }
+        : null;
+    },
+    async revokePublicOpenApiKey() {
+      return null;
+    },
+    async updatePublicOpenApiKeyLastUsed() {
+      return undefined;
+    }
+  };
+}
+
 describe("Scoped public file OpenAPI", () => {
   it("serves knowledge base scoped raw Markdown and JSON files", async () => {
     const storage = new MemoryStorage();
@@ -230,12 +269,12 @@ describe("Scoped public file OpenAPI", () => {
     });
     const markdown = await app.request("/kb/kb-001/index.md", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const json = await app.request("/kb/kb-001/_index/search.json", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
 
@@ -272,7 +311,7 @@ describe("Scoped public file OpenAPI", () => {
 
     const response = await app.request(`/kb/kb-001/pages/${encodeURIComponent(fileName)}`, {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
 
@@ -297,6 +336,38 @@ describe("Scoped public file OpenAPI", () => {
     expect(wrong.status).toBe(401);
   });
 
+  it("rejects revoked and deleted managed public bearer keys", async () => {
+    const revokedApp = createPublicOpenApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      repositories: createRepositories({ publicKeyStatus: "revoked" })
+    });
+    const deletedApp = createPublicOpenApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      repositories: createRepositories({ publicKeyStatus: "missing" })
+    });
+    const revoked = await revokedApp.request("/kb/kb-001/index.md", {
+      headers: {
+        authorization: `Bearer ${publicKey}`
+      }
+    });
+    const deleted = await deletedApp.request("/kb/kb-001/index.md", {
+      headers: {
+        authorization: `Bearer ${publicKey}`
+      }
+    });
+
+    await expect(revoked.json()).resolves.toEqual({
+      error: { code: "UNAUTHORIZED" }
+    });
+    await expect(deleted.json()).resolves.toEqual({
+      error: { code: "UNAUTHORIZED" }
+    });
+    expect(revoked.status).toBe(401);
+    expect(deleted.status).toBe(401);
+  });
+
   it("returns JSON errors for missing scoped resources and unsafe paths", async () => {
     const app = createPublicOpenApiApp({
       config: createConfig(),
@@ -305,27 +376,27 @@ describe("Scoped public file OpenAPI", () => {
     });
     const missingKnowledgeBase = await app.request("/kb/kb-missing/index.md", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const missingFile = await app.request("/kb/kb-001/pages/missing.md", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const unsupported = await app.request("/kb/kb-001/unsupported.txt", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const sourceFile = await app.request("/kb/kb-001/sources/intro.md", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
     const traversal = await app.request("/kb/kb-001/pages/%252e%252e/secret.md", {
       headers: {
-        authorization: "Bearer public-secret"
+        authorization: `Bearer ${publicKey}`
       }
     });
 

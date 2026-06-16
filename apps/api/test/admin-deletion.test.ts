@@ -6,6 +6,7 @@ import type {
   BundleTreeEntryDraft,
   BundleTreeEntryRecord
 } from "../src/db/admin-repositories.js";
+import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
@@ -16,6 +17,7 @@ import {
 } from "./support/session.js";
 
 const now = "2026-06-14T00:00:00.000Z";
+const publicKey = "fwok_test-public-secret";
 
 function createConfig(): RuntimeConfig {
   return {
@@ -36,9 +38,7 @@ function createConfig(): RuntimeConfig {
       publicOpenApi: 43_200
     },
     publicApi: {
-      baseUrl: "https://kb.example.com",
-      authRequired: true,
-      apiKey: "public-secret"
+      baseUrl: "https://kb.example.com"
     },
     storage: {
       endpoint: "https://s3.example.com",
@@ -242,6 +242,7 @@ function createRepositories() {
       taskEvents
     },
     repositories: {
+      publicApiKeys: createPublicApiKeyRepository(publicKey),
       knowledgeBases: {
         async listKnowledgeBases() {
           return {
@@ -452,6 +453,43 @@ function createRepositories() {
   };
 }
 
+function createPublicApiKeyRepository(rawKey: string) {
+  const keyHash = hashPublicOpenApiKey(rawKey);
+
+  return {
+    async countActivePublicOpenApiKeys() {
+      return 1;
+    },
+    async listPublicOpenApiKeys() {
+      return { items: [], nextCursor: null };
+    },
+    async createPublicOpenApiKey() {
+      throw new Error("Not used by admin deletion tests");
+    },
+    async findActivePublicOpenApiKeyByHash(candidateHash: string) {
+      return candidateHash === keyHash
+        ? {
+            id: "openapi-key-test",
+            name: "Test key",
+            keyHash,
+            keyPrefix: rawKey.slice(0, 10),
+            keySuffix: rawKey.slice(-6),
+            status: "active" as const,
+            createdAt: now,
+            lastUsedAt: null,
+            revokedAt: null
+          }
+        : null;
+    },
+    async revokePublicOpenApiKey() {
+      return null;
+    },
+    async updatePublicOpenApiKeyLastUsed() {
+      return undefined;
+    }
+  };
+}
+
 describe("Admin resource deletion API", () => {
   it("soft-deletes a knowledge base and invalidates admin cursors", async () => {
     const redisClient = new MemoryRedisCommandClient();
@@ -471,7 +509,7 @@ describe("Admin resource deletion API", () => {
       headers: { cookie }
     });
     const publicIndex = await app.request("/kb/kb-001/index.md", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
 
     await expect(deleted.json()).resolves.toEqual({ deleted: true });
@@ -581,19 +619,19 @@ describe("Admin resource deletion API", () => {
     );
 
     const removed = await app.request("/kb/kb-001/pages/intro.md", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
     const remaining = await app.request("/kb/kb-001/pages/setup.md", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
     const schema = await app.request("/kb/kb-001/schema.md", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
     const search = await app.request("/kb/kb-001/_index/search.json", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
     const manifest = await app.request("/kb/kb-001/_index/manifest.json", {
-      headers: { authorization: "Bearer public-secret" }
+      headers: { authorization: `Bearer ${publicKey}` }
     });
 
     expect(removed.status).toBe(404);

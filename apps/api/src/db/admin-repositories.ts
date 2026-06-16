@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { SourceMetadataDefaults } from "@focowiki/okf";
+import type {
+  PublicOpenApiKeyRecord,
+  PublicOpenApiKeyRepository,
+  PublicOpenApiKeyStatus
+} from "../public-openapi/keys.js";
 import type { DatabaseClient } from "./client.js";
 
 export type CursorPage<T> = {
@@ -236,6 +241,7 @@ export type AdminRepositories = {
   securityAudit?: {
     createSecurityAuditEvent: (input: SecurityAuditEventDraft) => Promise<void>;
   };
+  publicApiKeys?: PublicOpenApiKeyRepository;
 };
 
 type KnowledgeBaseRow = {
@@ -326,6 +332,18 @@ type UploadTaskEventRow = {
   ended_at: Date | null;
   severity: "info" | "warning" | "error";
   created_at: Date;
+};
+
+type PublicApiKeyRow = {
+  id: string;
+  name: string;
+  key_hash: string;
+  key_prefix: string;
+  key_suffix: string;
+  status: PublicOpenApiKeyStatus;
+  created_at: Date;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
 };
 
 export function createSecurityAuditEventId(): string {
@@ -1037,6 +1055,107 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           )
         `;
       }
+    },
+    publicApiKeys: {
+      async countActivePublicOpenApiKeys() {
+        const rows = await sql<Array<{ count: string | number }>>`
+          SELECT count(*) AS count
+          FROM focowiki.public_api_keys
+          WHERE status = 'active'
+        `;
+        return Number(rows[0]?.count ?? 0);
+      },
+      async listPublicOpenApiKeys({ limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<PublicApiKeyRow[]>`
+              SELECT id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
+              FROM focowiki.public_api_keys
+              WHERE created_at < ${cursorValue.createdAt}
+                OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<PublicApiKeyRow[]>`
+              SELECT id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
+              FROM focowiki.public_api_keys
+              ORDER BY created_at DESC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+
+        return {
+          items: pageRows.map(mapPublicApiKeyRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({
+                  createdAt: lastRow.created_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async createPublicOpenApiKey(input) {
+        const rows = await sql<PublicApiKeyRow[]>`
+          INSERT INTO focowiki.public_api_keys (
+            id,
+            name,
+            key_hash,
+            key_prefix,
+            key_suffix,
+            created_at
+          )
+          VALUES (
+            ${input.id},
+            ${input.name},
+            ${input.keyHash},
+            ${input.keyPrefix},
+            ${input.keySuffix},
+            ${input.createdAt}
+          )
+          RETURNING id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Public OpenAPI key creation did not return a row");
+        }
+
+        return mapPublicApiKeyRow(row);
+      },
+      async findActivePublicOpenApiKeyByHash(keyHash) {
+        const rows = await sql<PublicApiKeyRow[]>`
+          SELECT id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
+          FROM focowiki.public_api_keys
+          WHERE key_hash = ${keyHash}
+            AND status = 'active'
+          LIMIT 1
+        `;
+        const row = rows[0];
+        return row ? mapPublicApiKeyRow(row) : null;
+      },
+      async revokePublicOpenApiKey({ id, revokedAt }) {
+        const rows = await sql<PublicApiKeyRow[]>`
+          UPDATE focowiki.public_api_keys
+          SET
+            status = 'revoked',
+            revoked_at = ${revokedAt}
+          WHERE id = ${id}
+            AND status = 'active'
+          RETURNING id, name, key_hash, key_prefix, key_suffix, status, created_at, last_used_at, revoked_at
+        `;
+        const row = rows[0];
+        return row ? mapPublicApiKeyRow(row) : null;
+      },
+      async updatePublicOpenApiKeyLastUsed({ id, lastUsedAt }) {
+        await sql`
+          UPDATE focowiki.public_api_keys
+          SET last_used_at = ${lastUsedAt}
+          WHERE id = ${id}
+            AND status = 'active'
+        `;
+      }
     }
   };
 }
@@ -1177,6 +1296,20 @@ function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {
     endedAt: row.ended_at?.toISOString() ?? null,
     severity: row.severity,
     createdAt: row.created_at.toISOString()
+  };
+}
+
+function mapPublicApiKeyRow(row: PublicApiKeyRow): PublicOpenApiKeyRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    keyHash: row.key_hash,
+    keyPrefix: row.key_prefix,
+    keySuffix: row.key_suffix,
+    status: row.status,
+    createdAt: row.created_at.toISOString(),
+    lastUsedAt: row.last_used_at?.toISOString() ?? null,
+    revokedAt: row.revoked_at?.toISOString() ?? null
   };
 }
 

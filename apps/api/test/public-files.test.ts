@@ -23,8 +23,6 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
     },
     publicApi: {
       baseUrl: "https://kb.example.com/base",
-      authRequired: true,
-      apiKey: "public-secret",
       ...publicApi
     },
     storage: {
@@ -106,8 +104,7 @@ describe("Public file API compatibility boundary", () => {
 
   it("rate-limits public OpenAPI reads before repository work", async () => {
     const baseConfig = createConfig({
-      authRequired: false,
-      apiKey: null
+      baseUrl: "https://kb.example.com/base"
     });
     const security = resolveSecurityConfig(baseConfig);
     const app = createPublicOpenApiApp({
@@ -137,8 +134,7 @@ describe("Public file API compatibility boundary", () => {
   it("rejects unsafe paths before any public route lookup", async () => {
     const app = createPublicOpenApiApp({
       config: createConfig({
-        authRequired: false,
-        apiKey: null
+        baseUrl: "https://kb.example.com/base"
       })
     });
     const traversal = await app.request("/kb/kb-001/pages/%5Csecret.md");
