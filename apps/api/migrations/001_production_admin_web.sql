@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
   frontmatter_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (release_id, logical_path),
-  CHECK (file_kind IN ('page', 'index', 'schema', 'manifest_index', 'search_index', 'link_index')),
+  CHECK (file_kind IN ('page', 'index', 'log', 'schema', 'manifest_index', 'search_index', 'link_index')),
   CHECK (
     (file_kind = 'page' AND source_file_id IS NOT NULL)
     OR (file_kind <> 'page' AND source_file_id IS NULL)

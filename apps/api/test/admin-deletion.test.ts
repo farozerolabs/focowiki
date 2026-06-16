@@ -600,6 +600,7 @@ describe("Admin resource deletion API", () => {
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/setup.md",
       "schema.md"
     ]);

@@ -1,4 +1,9 @@
 import matter from "gray-matter";
+import {
+  buildIndexMetadataFields,
+  type IndexMetadata,
+  type IndexMetadataFields
+} from "./index-metadata.js";
 
 export type BundleFileForIndex = {
   path: string;
@@ -11,6 +16,7 @@ export type SearchIndexSource = {
   description?: string;
   tags: string[];
   keywords?: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export type ManifestIndex = {
@@ -19,6 +25,7 @@ export type ManifestIndex = {
     path: string;
     content_type: string;
     title?: string;
+    metadata?: IndexMetadata;
   }>;
 };
 
@@ -26,10 +33,14 @@ export type SearchIndex = {
   generated_at: string;
   items: Array<{
     path: string;
+    type?: string;
     title: string;
     description?: string;
+    resource?: string;
+    timestamp?: string;
     tags: string[];
     keywords: string[];
+    metadata?: IndexMetadata;
   }>;
 };
 
@@ -52,13 +63,17 @@ export function buildManifestIndex(
     generated_at: generatedAt,
     files: files
       .map((file) => {
-        const title = readMarkdownTitle(file);
+        const metadata = readMarkdownIndexMetadata(file);
         const entry = {
           path: file.path,
           content_type: contentTypeForPath(file.path)
         };
 
-        return title ? { ...entry, title } : entry;
+        return {
+          ...entry,
+          ...(metadata.title ? { title: metadata.title } : {}),
+          ...(metadata.metadata ? { metadata: metadata.metadata } : {})
+        };
       })
       .sort((left, right) => left.path.localeCompare(right.path))
   };
@@ -72,14 +87,28 @@ export function buildSearchIndex(
     generated_at: generatedAt,
     items: sources
       .map((source) => {
-        const entry = {
-          path: source.path,
-          title: source.title,
-          tags: source.tags,
-        keywords: buildKeywords(source)
+        const metadata = buildIndexMetadataFields(source.metadata ?? {});
+        const title = metadata.title ?? source.title;
+        const description = metadata.description ?? source.description;
+        const tags = metadata.tags ?? source.tags;
+        const keywordInput = {
+          title,
+          ...(description ? { description } : {}),
+          tags,
+          ...(source.keywords ? { keywords: source.keywords } : {})
         };
 
-        return source.description ? { ...entry, description: source.description } : entry;
+        return {
+          path: source.path,
+          ...(metadata.type ? { type: metadata.type } : {}),
+          title,
+          ...(description ? { description } : {}),
+          ...(metadata.resource ? { resource: metadata.resource } : {}),
+          ...(metadata.timestamp ? { timestamp: metadata.timestamp } : {}),
+          tags,
+          keywords: buildKeywords(keywordInput),
+          ...(metadata.metadata ? { metadata: metadata.metadata } : {})
+        };
       })
       .sort((left, right) => left.path.localeCompare(right.path))
   };
@@ -115,18 +144,19 @@ export function stringifyIndex(index: ManifestIndex | SearchIndex | LinkIndex): 
   return `${JSON.stringify(index, null, 2)}\n`;
 }
 
-function readMarkdownTitle(file: BundleFileForIndex): string | undefined {
+function readMarkdownIndexMetadata(file: BundleFileForIndex): IndexMetadataFields {
   if (!file.path.endsWith(".md")) {
-    return undefined;
+    return {};
   }
 
-  if (file.path === "index.md") {
-    return undefined;
+  if (file.path === "index.md" || file.path === "log.md") {
+    return {};
   }
 
   const parsed = matter(file.content);
-  const title = parsed.data.title;
-  return typeof title === "string" ? title : undefined;
+  const metadata = buildIndexMetadataFields(parsed.data);
+
+  return file.path.startsWith("pages/") ? metadata : metadata.title ? { title: metadata.title } : {};
 }
 
 function contentTypeForPath(path: string): string {
@@ -137,7 +167,12 @@ function contentTypeForPath(path: string): string {
   return "text/markdown; charset=utf-8";
 }
 
-function buildKeywords(source: SearchIndexSource): string[] {
+function buildKeywords(source: {
+  title: string;
+  description?: string;
+  tags: string[];
+  keywords?: string[];
+}): string[] {
   return unique([
     ...tokenize(source.title),
     ...tokenize(source.description ?? ""),

@@ -816,13 +816,14 @@ describe("Upload parsing task lifecycle", () => {
       knowledgeBaseId: "kb-001",
       taskId: "task-001",
       publishedAt: expect.any(String),
-      fileCount: 7
+      fileCount: 8
     });
     expect(records.bundleFiles.map((file) => file.logicalPath).sort()).toEqual([
       "_index/links.json",
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/intro.md",
       "pages/setup.md",
       "schema.md"
@@ -962,6 +963,7 @@ describe("Upload parsing task lifecycle", () => {
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/existing.md",
       "pages/new.md",
       "schema.md"

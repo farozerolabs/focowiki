@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SourceMetadataDefaults } from "@focowiki/okf";
+import type { OkfLogEntry, OkfLogMonthlySummary, SourceMetadataDefaults } from "@focowiki/okf";
 import type {
   PublicOpenApiKeyRecord,
   PublicOpenApiKeyRepository,
@@ -57,6 +57,7 @@ export type BundleTreeEntryDraft = Omit<BundleTreeEntryRecord, "sourceFileId" | 
 export type BundleFileKind =
   | "page"
   | "index"
+  | "log"
   | "schema"
   | "manifest_index"
   | "search_index"
@@ -242,6 +243,13 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<BundleFileRecord>>;
+  listPublicationLogHistory?: (request: {
+    knowledgeBaseId: string;
+    maxEntries: number;
+  }) => Promise<{
+    entries: OkfLogEntry[];
+    summaries: OkfLogMonthlySummary[];
+  }>;
   softDeleteSourceFile?: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -359,6 +367,19 @@ type ReleaseRow = {
   file_count: number;
   manifest_checksum_sha256: string;
   created_at: Date;
+};
+
+type PublicationLogEntryRow = {
+  occurred_at: Date;
+  operation: UploadTaskOperation;
+  file_count: number;
+  source_count: number;
+};
+
+type PublicationLogSummaryRow = {
+  month: string;
+  publication_count: string | number;
+  changed_file_count: string | number;
 };
 
 type UploadTaskRow = {
@@ -855,6 +876,58 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             rows.length > limit && lastRow
               ? serializeLogicalPathCursor({ logicalPath: lastRow.logical_path, id: lastRow.id })
               : null
+        };
+      },
+      async listPublicationLogHistory({ knowledgeBaseId, maxEntries }) {
+        const boundedMaxEntries = Math.max(1, Math.min(maxEntries, 1_000));
+        const entryRows = await sql<PublicationLogEntryRow[]>`
+          SELECT
+            COALESCE(release.published_at, release.generated_at) AS occurred_at,
+            task.operation,
+            release.file_count,
+            task.source_count
+          FROM focowiki.releases release
+          JOIN focowiki.upload_tasks task ON task.id = release.task_id
+          WHERE release.knowledge_base_id = ${knowledgeBaseId}
+            AND release.published_at IS NOT NULL
+          ORDER BY COALESCE(release.published_at, release.generated_at) DESC, release.id ASC
+          LIMIT ${boundedMaxEntries}
+        `;
+        const summaryRows = await sql<PublicationLogSummaryRow[]>`
+          WITH ranked_releases AS (
+            SELECT
+              COALESCE(release.published_at, release.generated_at) AS occurred_at,
+              release.file_count,
+              row_number() OVER (
+                ORDER BY COALESCE(release.published_at, release.generated_at) DESC, release.id ASC
+              ) AS row_number
+            FROM focowiki.releases release
+            WHERE release.knowledge_base_id = ${knowledgeBaseId}
+              AND release.published_at IS NOT NULL
+          )
+          SELECT
+            to_char(date_trunc('month', occurred_at), 'YYYY-MM') AS month,
+            count(*) AS publication_count,
+            COALESCE(sum(file_count), 0) AS changed_file_count
+          FROM ranked_releases
+          WHERE row_number > ${boundedMaxEntries}
+          GROUP BY month
+          ORDER BY month DESC
+          LIMIT 24
+        `;
+
+        return {
+          entries: entryRows.map((row) => ({
+            occurredAt: row.occurred_at.toISOString(),
+            action: logActionForOperation(row.operation),
+            message: logMessageForOperation(row.operation, row.file_count, row.source_count),
+            changedFileCount: row.file_count
+          })),
+          summaries: summaryRows.map((row) => ({
+            month: row.month,
+            publicationCount: Number(row.publication_count),
+            changedFileCount: Number(row.changed_file_count)
+          }))
         };
       },
       async softDeleteSourceFile({ knowledgeBaseId, sourceFileId, deletedAt }) {
@@ -1524,6 +1597,30 @@ function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {
     severity: row.severity,
     createdAt: row.created_at.toISOString()
   };
+}
+
+function logActionForOperation(operation: UploadTaskOperation): string {
+  if (operation === "delete_source" || operation === "delete_knowledge_base") {
+    return "Deletion";
+  }
+
+  return "Update";
+}
+
+function logMessageForOperation(
+  operation: UploadTaskOperation,
+  fileCount: number,
+  sourceCount: number
+): string {
+  if (operation === "delete_source") {
+    return `Republished the knowledge base after deleting one source document; ${fileCount} generated files are active.`;
+  }
+
+  if (operation === "delete_knowledge_base") {
+    return "Deleted the knowledge base.";
+  }
+
+  return `Published ${sourceCount} source documents and ${fileCount} generated files.`;
 }
 
 function mapPublicApiKeyRow(row: PublicApiKeyRow): PublicOpenApiKeyRecord {

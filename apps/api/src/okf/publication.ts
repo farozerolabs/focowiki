@@ -1,11 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
-  buildSearchIndex,
-  bundleSchemaTitle, knowledgeBaseTitle,
+  buildIndexMetadataFields,
   resolveSourceMetadata,
-  stringifyIndex,
   validateOkfBundle,
+  type OkfLogLimits,
   type SourceMetadata,
   type SourceMetadataDefaults,
   type SourceModelSuggestions
@@ -13,6 +12,20 @@ import {
 import { mapWithConcurrency, type CursorPage, type CursorPageRequest } from "../runtime/bounded.js";
 import type { StorageKeyspace } from "../storage/keys.js";
 import type { StoredObject } from "../storage/s3.js";
+import {
+  applyPresentationSuggestions,
+  normalizeLogLimits,
+  renderIndexFile,
+  renderIndexFiles,
+  renderLogFile,
+  renderPageFile,
+  renderSchemaFile,
+  type BundleFileKind,
+  type GeneratedOkfFile,
+  type GeneratedPageSummary,
+  type ManifestFileEntry,
+  type PublicationLogHistory
+} from "./publication-files.js";
 
 export type SourceFileForPublication = {
   id: string;
@@ -40,14 +53,6 @@ export type BundleFileDraft = {
   frontmatter: Record<string, unknown>;
 };
 
-export type BundleFileKind =
-  | "page"
-  | "index"
-  | "schema"
-  | "manifest_index"
-  | "search_index"
-  | "link_index";
-
 export type BundleTreeEntryDraft = {
   id: string;
   knowledgeBaseId: string;
@@ -73,8 +78,13 @@ export type PublishOkfReleaseInput = {
   generatedAt: string;
   pageSize: number;
   concurrency: number;
+  log?: Partial<OkfLogLimits> | undefined;
   storage: OkfPublicationStorage;
   fetchSourcePage: (request: CursorPageRequest) => Promise<CursorPage<SourceFileForPublication>>;
+  fetchPublicationLogHistory?: ((request: {
+    knowledgeBaseId: string;
+    maxEntries: number;
+  }) => Promise<PublicationLogHistory>) | undefined;
   persistBundleFiles: (files: BundleFileDraft[]) => Promise<void>;
   persistBundleTreeEntries: (entries: BundleTreeEntryDraft[]) => Promise<void>;
   onSourcePageStage?: (input: { sourceFileIds: string[]; stage: SourcePageStage }) => Promise<void>;
@@ -91,12 +101,6 @@ export type PublishOkfReleaseResult = {
   manifestChecksumSha256: string;
 };
 
-type GeneratedPageSummary = {
-  pagePath: string;
-  metadata: SourceMetadata;
-  suggestions: SourceModelSuggestions | null;
-};
-
 type GeneratedSourceFiles = {
   page: GeneratedOkfFile;
   summary: GeneratedPageSummary;
@@ -105,20 +109,6 @@ type GeneratedSourceFiles = {
 type PublicFilePlans = {
   bySourceId: Map<string, { publicFileName: string; pagePath: string }>;
   publicPaths: Set<string>;
-};
-
-type GeneratedOkfFile = {
-  logicalPath: string;
-  sourceFileId: string | null;
-  fileKind: BundleFileKind;
-  content: string;
-  metadata: SourceMetadata | null;
-};
-
-type ManifestFileEntry = {
-  path: string;
-  content_type: string;
-  title?: string;
 };
 
 type TreePublicationState = {
@@ -194,8 +184,16 @@ export async function publishOkfRelease(
     cursor = page.nextCursor;
   } while (cursor);
 
+  const logLimits = normalizeLogLimits(input.log);
+  const logHistory = input.fetchPublicationLogHistory
+    ? await input.fetchPublicationLogHistory({
+        knowledgeBaseId: input.knowledgeBaseId,
+        maxEntries: logLimits.maxEntries
+      })
+    : { entries: [], summaries: [] };
   const fixedMarkdownFiles = [
     renderIndexFile(pageIndexEntries, input.generatedAt, input.knowledgeBaseName),
+    renderLogFile(pageIndexEntries, input.generatedAt, logLimits, logHistory),
     renderSchemaFile(input.knowledgeBaseName)
   ];
 
@@ -270,7 +268,7 @@ async function generateSourceFiles(input: {
 
 async function collectPublicFilePlans(input: PublishOkfReleaseInput): Promise<PublicFilePlans> {
   const publicFileNames = new Set<string>();
-  const publicPaths = new Set(["index.md", "schema.md"]);
+  const publicPaths = new Set(["index.md", "log.md", "schema.md"]);
   const bySourceId = new Map<string, { publicFileName: string; pagePath: string }>();
   let cursor: string | null = null;
 
@@ -344,10 +342,15 @@ async function registerPublishedFile(
   manifestEntries: ManifestFileEntry[],
   file: BundleFileDraft
 ): Promise<void> {
+  const metadata = file.fileKind === "page"
+    ? buildIndexMetadataFields(file.frontmatter).metadata
+    : undefined;
+
   manifestEntries.push({
     path: file.logicalPath,
     content_type: file.contentType,
-    ...(file.title ? { title: file.title } : {})
+    ...(file.title ? { title: file.title } : {}),
+    ...(metadata ? { metadata } : {})
   });
 
   queueTreeEntries(input, treeState, file);
@@ -460,121 +463,6 @@ function createBundleFileDraft(input: {
   };
 }
 
-function renderIndexFile(pages: GeneratedPageSummary[], generatedAt: string, title: string): GeneratedOkfFile {
-  return {
-    logicalPath: "index.md",
-    sourceFileId: null,
-    fileKind: "index",
-    metadata: null,
-    content: [
-      `# ${knowledgeBaseTitle(title)}`,
-      "",
-      `Generated at: ${generatedAt}`,
-      "",
-      "## Pages",
-      "",
-      ...pages.map((page) => `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)})`)
-    ].join("\n")
-  };
-}
-
-function renderSchemaFile(title: string): GeneratedOkfFile {
-  const metadata = {
-    type: "schema",
-    title: bundleSchemaTitle(title),
-    description: `Schema reference for ${knowledgeBaseTitle(title)}`
-  };
-
-  return {
-    logicalPath: "schema.md",
-    sourceFileId: null,
-    fileKind: "schema",
-    metadata,
-    content: renderConceptFile(
-      metadata,
-      [
-        `# ${bundleSchemaTitle(title)}`,
-        "",
-        "Every non-reserved Markdown concept file includes parseable YAML frontmatter.",
-        "",
-        "Required fields:",
-        "",
-        "- type",
-        "- title"
-      ].join("\n")
-    )
-  };
-}
-
-function renderIndexFiles(
-  pages: GeneratedPageSummary[],
-  files: ManifestFileEntry[],
-  generatedAt: string
-): GeneratedOkfFile[] {
-  const searchIndex = buildSearchIndex(
-    pages.map((page) => ({
-      path: page.pagePath,
-      title: page.metadata.title,
-      ...(typeof page.metadata.description === "string"
-        ? { description: page.metadata.description }
-        : {}),
-      tags: Array.isArray(page.metadata.tags) ? page.metadata.tags : [],
-      keywords: readSuggestedStrings(page.suggestions?.keywords)
-    })),
-    generatedAt
-  );
-  const linkIndex = {
-    generated_at: generatedAt,
-    links: buildLinkEntries(pages)
-  };
-  const manifestIndex = {
-    generated_at: generatedAt,
-    files: [
-      ...files.map((file) => ({
-        path: file.path,
-        content_type: file.content_type,
-        ...(file.title ? { title: file.title } : {})
-      })),
-      {
-        path: "_index/manifest.json",
-        content_type: "application/json; charset=utf-8"
-      },
-      {
-        path: "_index/search.json",
-        content_type: "application/json; charset=utf-8"
-      },
-      {
-        path: "_index/links.json",
-        content_type: "application/json; charset=utf-8"
-      }
-    ].sort((left, right) => left.path.localeCompare(right.path))
-  };
-
-  return [
-    {
-      logicalPath: "_index/manifest.json",
-      sourceFileId: null,
-      fileKind: "manifest_index",
-      metadata: null,
-      content: stringifyIndex(manifestIndex)
-    },
-    {
-      logicalPath: "_index/search.json",
-      sourceFileId: null,
-      fileKind: "search_index",
-      metadata: null,
-      content: stringifyIndex(searchIndex)
-    },
-    {
-      logicalPath: "_index/links.json",
-      sourceFileId: null,
-      fileKind: "link_index",
-      metadata: null,
-      content: stringifyIndex(linkIndex)
-    }
-  ];
-}
-
 function normalizeTreeLogicalPath(rawPath: string): string {
   const decoded = decodeTreeLogicalPath(rawPath).replace(/^\/+|\/+$/g, "");
   const segments = decoded.split("/");
@@ -618,122 +506,6 @@ function decodeTreeLogicalPath(value: string): string {
   return decoded;
 }
 
-function buildLinkEntries(pages: GeneratedPageSummary[]): Array<{
-  from: string;
-  to: string;
-  label: string;
-}> {
-  const publicPaths = new Set(pages.flatMap((page) => [page.pagePath, "index.md", "schema.md"]));
-  const links = pages.flatMap((page) => [
-    {
-      from: "index.md",
-      to: page.pagePath,
-      label: page.metadata.title
-    },
-    ...buildRelatedLinkEntries(page, publicPaths)
-  ]);
-
-  return links.sort((left, right) =>
-    `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
-      `${right.from}\u0000${right.to}\u0000${right.label}`
-    )
-  );
-}
-
-function buildRelatedLinkEntries(
-  page: GeneratedPageSummary,
-  publicPaths: Set<string>
-): Array<{ from: string; to: string; label: string }> {
-  return (page.suggestions?.related_links ?? [])
-    .map((link) => ({
-      from: page.pagePath,
-      to: normalizePublicPathReference(link.path),
-      label: link.title.trim()
-    }))
-    .filter((link) => link.to && link.label && publicPaths.has(link.to));
-}
-
-function renderPageFile(
-  page: GeneratedPageSummary,
-  body: string,
-  publicPaths: Set<string>
-): string {
-  return renderConceptFile(
-    page.metadata,
-    [
-      body.trim(),
-      "",
-      ...renderRelatedLinks(page.suggestions, publicPaths),
-      ...renderCitations(page.metadata)
-    ].join("\n")
-  );
-}
-
-function renderCitations(metadata: SourceMetadata): string[] {
-  const resource = typeof metadata.resource === "string" ? metadata.resource.trim() : "";
-  return resource ? ["", "# Citations", "", `- ${resource}`] : [];
-}
-
-function renderRelatedLinks(
-  suggestions: SourceModelSuggestions | null,
-  publicPaths: Set<string>
-): string[] {
-  const links = (suggestions?.related_links ?? [])
-    .map((link) => ({
-      path: normalizePublicPathReference(link.path),
-      title: link.title.trim()
-    }))
-    .filter((link) => link.path && link.title && publicPaths.has(link.path))
-    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)})`);
-
-  return links.length > 0 ? ["", "## Related", "", ...links] : [];
-}
-
-function applyPresentationSuggestions(
-  metadata: SourceMetadata,
-  suggestions: SourceModelSuggestions | null
-): SourceMetadata {
-  if (typeof metadata.description === "string" && metadata.description.trim()) {
-    return metadata;
-  }
-
-  const description = suggestions?.description.trim();
-  return description ? { ...metadata, description } : metadata;
-}
-
-function renderConceptFile(metadata: SourceMetadata, body: string): string {
-  return ["---", ...serializeYamlRecord(metadata), "---", body.trim()].join("\n").trimEnd();
-}
-
-function serializeYamlRecord(record: Record<string, unknown>): string[] {
-  return Object.entries(record)
-    .filter(([, value]) => value !== undefined)
-    .flatMap(([key, value]) => serializeYamlField(key, value));
-}
-
-function serializeYamlField(key: string, value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.length === 0
-      ? [`${key}: []`]
-      : [`${key}:`, ...value.map((item) => `  - ${serializeYamlScalar(item)}`)];
-  }
-
-  return [`${key}: ${serializeYamlScalar(value)}`];
-}
-
-function serializeYamlScalar(value: unknown): string {
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    value === null
-  ) {
-    return JSON.stringify(value);
-  }
-
-  return JSON.stringify(value);
-}
-
 function normalizePublicMarkdownFileName(fileName: string): string {
   const normalized = fileName.trim();
 
@@ -742,34 +514,6 @@ function normalizePublicMarkdownFileName(fileName: string): string {
   }
 
   return normalized;
-}
-
-function normalizePublicPathReference(path: string): string {
-  let normalized = path.trim().replace(/^\/+/, "").replace(/#.*$/, "");
-
-  for (let index = 0; index < 3; index += 1) {
-    try {
-      const next = decodeURIComponent(normalized);
-
-      if (next === normalized) {
-        break;
-      }
-
-      normalized = next;
-    } catch {
-      break;
-    }
-  }
-
-  return normalized;
-}
-
-function toMarkdownHref(path: string): string {
-  return `/${path.split("/").map(encodeURIComponent).join("/")}`;
-}
-
-function readSuggestedStrings(values: string[] | undefined): string[] {
-  return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
 function contentTypeForPath(path: string): string {

@@ -1,6 +1,6 @@
 import { AppError } from "../errors.js";
 
-const BUNDLE_ROOT_FILES = new Set(["index.md", "schema.md"]);
+const BUNDLE_ROOT_FILES = new Set(["index.md", "log.md", "schema.md"]);
 const INDEX_FILES = new Set(["manifest.json", "search.json", "links.json"]);
 const SAFE_ID_TOKEN_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   MetadataValidationError,
   parseUploadedMarkdownSource,
-  resolveSourceMetadata
+  resolveSourceMetadata,
+  type OkfLogLimits
 } from "@focowiki/okf";
 import type { AdminRepositories, UploadTaskRecord } from "../db/admin-repositories.js";
 import { publishOkfRelease } from "../okf/publication.js";
@@ -37,6 +38,7 @@ export type KnowledgeBaseUploadProcessor = {
     batchSize: number;
     cursorTtlSeconds: number;
     fileProcessingConcurrency: number;
+    okfLog?: Partial<OkfLogLimits> | undefined;
   }) => Promise<UploadTaskRecord>;
 };
 
@@ -68,8 +70,8 @@ export function createUploadProcessor(
   const createBundleTreeEntries = filesRepository.createBundleTreeEntries;
   const activateRelease = filesRepository.activateRelease;
   const listSourceFiles = filesRepository.listSourceFiles;
+  const listPublicationLogHistory = filesRepository.listPublicationLogHistory;
   const completeUploadTask = taskRepository.completeUploadTask;
-
   return {
     async process(input) {
       const ownerId = `admin-api-${randomUUID()}`;
@@ -266,7 +268,15 @@ export function createUploadProcessor(
           generatedAt: input.generatedAt,
           pageSize: input.batchSize,
           concurrency: input.fileProcessingConcurrency,
+          log: input.okfLog,
           storage,
+          fetchPublicationLogHistory: listPublicationLogHistory
+            ? ({ knowledgeBaseId, maxEntries }) =>
+                listPublicationLogHistory({
+                  knowledgeBaseId,
+                  maxEntries
+                })
+            : undefined,
           fetchSourcePage: ({ cursor, limit }) =>
             listSourceFiles({
               knowledgeBaseId: input.knowledgeBaseId,

@@ -16,6 +16,32 @@ const knowledgeBase = {
   updatedAt: "2026-06-14T00:00:00.000Z"
 };
 
+const publicSearchIndex = {
+  generated_at: "2026-06-14T00:00:00.000Z",
+  items: [
+    {
+      path: "pages/外国企业常驻代表机构登记管理条例.md",
+      type: "regulation",
+      title: "外国企业常驻代表机构登记管理条例",
+      description: "Public scoped metadata fixture",
+      resource: "https://example.com/legal-rule",
+      timestamp: "2026-06-14T00:00:00.000Z",
+      tags: ["legal", "rule"],
+      keywords: ["public", "scoped", "metadata"],
+      metadata: {
+        type: "regulation",
+        title: "外国企业常驻代表机构登记管理条例",
+        description: "Public scoped metadata fixture",
+        resource: "https://example.com/legal-rule",
+        timestamp: "2026-06-14T00:00:00.000Z",
+        tags: ["legal", "rule"],
+        officialId: "law-001",
+        status: "active"
+      }
+    }
+  ]
+};
+
 function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeConfig {
   return {
     admin: {
@@ -76,8 +102,12 @@ class MemoryStorage implements StorageAdapter {
       "# Developer docs"
     ],
     [
+      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/log.md",
+      "# Directory Update Log\n\n## 2026-06-14\n\n* **Update**: Published 1 Markdown pages."
+    ],
+    [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json",
-      "{\n  \"items\": []\n}\n"
+      `${JSON.stringify(publicSearchIndex, null, 2)}\n`
     ]
   ]);
 
@@ -129,6 +159,26 @@ function createRepositories(options: { publicKeyStatus?: "active" | "revoked" | 
         objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/index.md",
         contentType: "text/markdown; charset=utf-8",
         sizeBytes: 24,
+        checksumSha256: "checksum",
+        okfType: null,
+        title: null,
+        description: null,
+        tags: [],
+        frontmatter: {}
+      }
+    ],
+    [
+      "log.md",
+      {
+        id: "bundle-file-log",
+        knowledgeBaseId: "kb-001",
+        releaseId: "release-001",
+        sourceFileId: null,
+        fileKind: "log" as const,
+        logicalPath: "log.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/log.md",
+        contentType: "text/markdown; charset=utf-8",
+        sizeBytes: 96,
         checksumSha256: "checksum",
         okfType: null,
         title: null,
@@ -272,6 +322,11 @@ describe("Scoped public file OpenAPI", () => {
         authorization: `Bearer ${publicKey}`
       }
     });
+    const log = await app.request("/kb/kb-001/log.md", {
+      headers: {
+        authorization: `Bearer ${publicKey}`
+      }
+    });
     const json = await app.request("/kb/kb-001/_index/search.json", {
       headers: {
         authorization: `Bearer ${publicKey}`
@@ -281,13 +336,21 @@ describe("Scoped public file OpenAPI", () => {
     expect(markdown.status).toBe(200);
     expect(markdown.headers.get("content-type")).toContain("text/markdown");
     await expect(markdown.text()).resolves.toBe("# Developer docs");
+    expect(log.status).toBe(200);
+    expect(log.headers.get("content-type")).toContain("text/markdown");
+    await expect(log.text()).resolves.toContain("# Directory Update Log");
     expect(json.status).toBe(200);
     expect(json.headers.get("content-type")).toContain("application/json");
-    await expect(json.json()).resolves.toEqual({ items: [] });
-    expect(storage.bodyReads).toBe(2);
+    const jsonBody = (await json.json()) as typeof publicSearchIndex;
+    expect(jsonBody).toEqual(publicSearchIndex);
+    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("objectKey");
+    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("releaseId");
+    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("taskId");
+    expect(jsonBody.items[0]?.metadata).not.toHaveProperty("localPath");
+    expect(storage.bodyReads).toBe(3);
     expect(storage.textReads).toBe(0);
     expect(repositories.calls).toMatchObject({
-      fileLookups: 2,
+      fileLookups: 3,
       treeLists: 0,
       sourceLists: 0,
       releaseLists: 0,

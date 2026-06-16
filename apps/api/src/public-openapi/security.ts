@@ -48,6 +48,7 @@ export function publicResponseHeaders(
 export function isAllowedPublicLogicalPath(path: string): boolean {
   if (
     path === "index.md" ||
+    path === "log.md" ||
     path === "schema.md" ||
     path === "_index/manifest.json" ||
     path === "_index/search.json" ||

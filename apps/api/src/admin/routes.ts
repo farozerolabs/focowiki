@@ -441,7 +441,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
             generatedAt: deletedAt,
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency
+            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+            okfLog: config.okf?.log
           })
         )
         .catch(() => undefined);
@@ -933,7 +934,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
             generatedAt: new Date().toISOString(),
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency
+            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+            okfLog: config.okf?.log
           })
         )
         .catch(() => undefined);

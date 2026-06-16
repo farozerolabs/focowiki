@@ -12,6 +12,14 @@ import {
   type SourceMetadata,
   type SourceMetadataDefaults
 } from "./metadata.js";
+import {
+  DEFAULT_OKF_LOG_LIMITS,
+  renderOkfIndex,
+  renderOkfLog,
+  type OkfLogEntry,
+  type OkfLogLimits,
+  type OkfLogMonthlySummary
+} from "./reserved-files.js";
 import { bundleSchemaTitle, knowledgeBaseTitle } from "./titles.js";
 
 export type MarkdownSourceInput = {
@@ -42,6 +50,11 @@ export type GenerateOkfBundleInput = {
   defaults: SourceMetadataDefaults;
   generatedAt: string;
   title?: string;
+  log?: {
+    entries?: OkfLogEntry[];
+    summaries?: OkfLogMonthlySummary[];
+    limits?: Partial<OkfLogLimits>;
+  };
 };
 
 export type GeneratedOkfBundle = {
@@ -81,6 +94,7 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
   });
   const publicPaths = new Set([
     "index.md",
+    "log.md",
     "schema.md",
     ...pages.map((page) => page.pagePath)
   ]);
@@ -89,6 +103,10 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
     {
       path: "index.md",
       content: renderIndex(pages, input.generatedAt, input.title)
+    },
+    {
+      path: "log.md",
+      content: renderLog(pages, input.generatedAt, input.log)
     },
     {
       path: "schema.md",
@@ -147,15 +165,51 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
 }
 
 function renderIndex(pages: GeneratedPage[], generatedAt: string, title?: string): string {
-  return [
-    `# ${knowledgeBaseTitle(title)}`,
-    "",
-    `Generated at: ${generatedAt}`,
-    "",
-    "## Pages",
-    "",
-    ...pages.map((page) => `- [${page.metadata.title}](${toMarkdownHref(page.pagePath)})`)
-  ].join("\n");
+  return renderOkfIndex({
+    title: knowledgeBaseTitle(title),
+    generatedAt,
+    pages: pages.map((page) => ({
+      path: page.pagePath,
+      title: page.metadata.title,
+      type: page.metadata.type,
+      ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
+        ? { description: page.metadata.description }
+        : {})
+    }))
+  }).trimEnd();
+}
+
+function renderLog(
+  pages: GeneratedPage[],
+  generatedAt: string,
+  log: GenerateOkfBundleInput["log"]
+): string {
+  const currentEntries: OkfLogEntry[] = [
+    {
+      occurredAt: generatedAt,
+      action: "Update",
+      message: `Published ${pages.length} Markdown pages for this knowledge base.`,
+      changedFileCount: pages.length
+    },
+    ...pages.map((page) => ({
+      occurredAt: generatedAt,
+      action: "Creation",
+      message: `Added ${page.metadata.title}.`,
+      changedFileCount: 1,
+      links: [
+        {
+          path: page.pagePath,
+          title: page.metadata.title
+        }
+      ]
+    }))
+  ];
+
+  return renderOkfLog({
+    entries: [...currentEntries, ...(log?.entries ?? [])],
+    summaries: log?.summaries ?? [],
+    limits: log?.limits ?? DEFAULT_OKF_LOG_LIMITS
+  }).trimEnd();
 }
 
 function renderPage(page: GeneratedPage, publicPaths: Set<string>): string {
@@ -186,11 +240,12 @@ function toSearchIndexSource(page: GeneratedPage): SearchIndexSource {
   return {
     path: page.pagePath,
     title: page.metadata.title,
-    ...(typeof page.metadata.description === "string"
+    ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
       ? { description: page.metadata.description }
       : {}),
     tags: Array.isArray(page.metadata.tags) ? page.metadata.tags : [],
-    keywords: readSuggestedStrings(page.suggestions?.keywords)
+    keywords: readSuggestedStrings(page.suggestions?.keywords),
+    metadata: page.metadata
   };
 }
 

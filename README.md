@@ -145,6 +145,8 @@ Required storage and upload configuration:
 - `GENERATION_BATCH_SIZE`: bounded OKF generation batch size.
 - `UPLOAD_TASK_CONCURRENCY`: active upload parsing and generation tasks per API process. Default `1`.
 - `UPLOAD_FILE_PROCESSING_CONCURRENCY`: per-task Markdown source processing and OKF publication concurrency. Default `1`.
+- `OKF_LOG_MAX_ENTRIES`: newest public update entries retained in generated `log.md`. Default `100`.
+- `OKF_LOG_MAX_BYTES`: maximum generated `log.md` Markdown size. Default `65536`.
 
 Optional:
 
@@ -175,6 +177,7 @@ S3_PREFIX/
     uploads/{taskId}/sources/{sourceFileId}/{originalFileName}
     releases/{releaseId}/bundle/
       index.md
+      log.md
       schema.md
       pages/*.md
       _index/manifest.json
@@ -182,7 +185,7 @@ S3_PREFIX/
       _index/links.json
 ```
 
-`index.md` is a reserved navigation file and does not include frontmatter. `schema.md` and `pages/*.md` are public concept files with YAML frontmatter, non-empty `type`, and non-empty `title`. Raw uploaded source objects remain internal under the upload path and are not part of the public bundle tree.
+`index.md` is a reserved navigation file and does not include frontmatter. `log.md` is a reserved rolling update history file and does not include frontmatter. It is regenerated from PostgreSQL release/task facts on publication, keeps the newest bounded public entries, and summarizes older persisted history by month. `schema.md` and `pages/*.md` are public concept files with YAML frontmatter, non-empty `type`, and non-empty `title`. Raw uploaded source objects remain internal under the upload path and are not part of the public bundle tree.
 
 The database stores knowledge base records, task lifecycle rows, source file records, release records, generated file records, checksums, metadata summaries, and S3 object keys. Raw uploaded Markdown and generated Markdown/JSON bodies stay in S3-compatible storage.
 
@@ -192,6 +195,7 @@ The public API serves knowledge base scoped raw files without a business JSON en
 
 ```text
 GET /kb/{knowledgeBaseId}/index.md
+GET /kb/{knowledgeBaseId}/log.md
 GET /kb/{knowledgeBaseId}/schema.md
 GET /kb/{knowledgeBaseId}/pages/{file}.md
 GET /kb/{knowledgeBaseId}/_index/manifest.json

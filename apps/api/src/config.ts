@@ -6,6 +6,8 @@ const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
 const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
+const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
+const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
@@ -83,6 +85,12 @@ export type RuntimeConfig = {
     maxPageSize: number;
     cursorTtlSeconds: number;
   };
+  okf?: {
+    log: {
+      maxEntries: number;
+      maxBytes: number;
+    };
+  } | undefined;
   model:
     | {
         enabled: true;
@@ -148,6 +156,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     issues
   );
   const pagination = parsePaginationConfig(env, issues);
+  const okf = parseOkfConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model = parseModelConfig(env, issues);
   const security = parseSecurityConfig(
@@ -181,6 +190,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     },
     ports,
     pagination,
+    okf,
     publicApi: {
       baseUrl: publicBaseUrl
     },
@@ -370,6 +380,25 @@ function parsePaginationConfig(
     defaultPageSize,
     maxPageSize,
     cursorTtlSeconds
+  };
+}
+
+function parseOkfConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig["okf"] {
+  return {
+    log: {
+      maxEntries: optionalPositiveInteger(
+        env,
+        "OKF_LOG_MAX_ENTRIES",
+        DEFAULT_OKF_LOG_MAX_ENTRIES,
+        issues
+      ),
+      maxBytes: optionalPositiveInteger(
+        env,
+        "OKF_LOG_MAX_BYTES",
+        DEFAULT_OKF_LOG_MAX_BYTES,
+        issues
+      )
+    }
   };
 }
 

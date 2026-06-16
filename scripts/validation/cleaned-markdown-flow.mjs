@@ -31,6 +31,22 @@ const SECURITY_AUDIT_SECRET_PATTERN =
 const requireFromApiPackage = createRequire(
   pathToFileURL(path.resolve("apps/api/package.json"))
 );
+const requireFromOkfPackage = createRequire(
+  pathToFileURL(path.resolve("packages/okf/package.json"))
+);
+const matter = requireFromOkfPackage("gray-matter");
+const PUBLIC_INDEX_INTERNAL_KEYS = [
+  "objectKey",
+  "releaseId",
+  "taskId",
+  "localPath",
+  "rawUploadPath",
+  "redisKey",
+  "sqlDetails",
+  "providerPayload",
+  "secret",
+  "token"
+];
 
 export function hasSecretLikeAuditData(rows) {
   return SECURITY_AUDIT_SECRET_PATTERN.test(JSON.stringify(rows));
@@ -519,7 +535,7 @@ function defaultCommandsRun(kind) {
     commands.push("pnpm build");
     commands.push("pnpm test:validation");
     commands.push("pnpm validate:no-local-paths");
-    commands.push("openspec validate validate-real-legal-full-flow");
+    commands.push(`openspec validate ${CHANGE_ID} --strict`);
   }
 
   return Array.from(new Set(commands));
@@ -1134,11 +1150,13 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   const pageFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("pages/"));
   const pageFiles = bundleFiles.items.filter((file) => String(file.logicalPath).startsWith("pages/"));
   const indexFile = bundleFiles.items.find((file) => file.logicalPath === "index.md");
+  const logFile = bundleFiles.items.find((file) => file.logicalPath === "log.md");
+  const schemaFile = bundleFiles.items.find((file) => file.logicalPath === "schema.md");
   const searchFile = bundleFiles.items.find((file) => file.logicalPath === "_index/search.json");
   const exposedSourceFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("sources/"));
 
-  if (!pageFile || !indexFile || !searchFile || exposedSourceFile) {
-    throw new Error("Generated bundle must include page and index files without sources/ files.");
+  if (!pageFile || !indexFile || !logFile || !schemaFile || !searchFile || exposedSourceFile) {
+    throw new Error("Generated bundle must include reserved, page, and index files without sources/ files.");
   }
 
   for (const sample of expectedSamples) {
@@ -1171,6 +1189,8 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
     pageFile,
     pageFiles,
     indexFile,
+    logFile,
+    schemaFile,
     searchFile,
     publicUrls: urls.publicUrls
   };
@@ -1186,6 +1206,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   const authHeaders = publicAuthHeaders(env);
   const paths = [
     "index.md",
+    "log.md",
     "schema.md",
     ...adminFiles.pageFiles.map((file) => file.logicalPath),
     "_index/manifest.json",
@@ -1288,9 +1309,22 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
 function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
   const index = bodies.get("index.md") ?? "";
+  const log = bodies.get("log.md") ?? "";
   const manifest = parseJsonIndex(bodies.get("_index/manifest.json"), "_index/manifest.json");
   const search = parseJsonIndex(bodies.get("_index/search.json"), "_index/search.json");
   const links = parseJsonIndex(bodies.get("_index/links.json"), "_index/links.json");
+
+  if (index.startsWith("---\n") || !index.startsWith("# ")) {
+    throw new Error("Public index.md must be a reserved Markdown file without frontmatter.");
+  }
+
+  if (
+    log.startsWith("---\n") ||
+    !log.startsWith("# Directory Update Log") ||
+    /\brelease-[0-9a-f-]|\btask-[0-9a-f-]|S3_PREFIX|s3:\/\//i.test(log)
+  ) {
+    throw new Error("Public log.md must be a sanitized reserved Markdown update log without frontmatter.");
+  }
 
   for (const pagePath of pagePaths) {
     const page = bodies.get(pagePath) ?? "";
@@ -1303,13 +1337,41 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
       throw new Error("Sampled public page does not include expected frontmatter and heading content.");
     }
 
-    if (!Array.isArray(manifest.files) || !manifest.files.some((file) => file.path === pagePath)) {
+    const manifestEntry = Array.isArray(manifest.files)
+      ? manifest.files.find((file) => file.path === pagePath)
+      : null;
+    const searchItem = Array.isArray(search.items)
+      ? search.items.find((item) => item.path === pagePath && item.title)
+      : null;
+
+    if (!manifestEntry) {
       throw new Error("Manifest index does not include sampled public page path.");
     }
 
-    if (!Array.isArray(search.items) || !search.items.some((item) => item.path === pagePath && item.title)) {
+    if (!searchItem) {
       throw new Error("Search index does not include sampled public page metadata.");
     }
+
+    assertPublicIndexMetadata({
+      pagePath,
+      pageMetadata: matter(page).data ?? {},
+      manifestEntry,
+      searchItem
+    });
+  }
+
+  for (const reservedPath of ["index.md", "log.md", "schema.md"]) {
+    const manifestEntry = Array.isArray(manifest.files)
+      ? manifest.files.find((file) => file.path === reservedPath)
+      : null;
+
+    if (!manifestEntry) {
+      throw new Error(`Manifest index does not include reserved public file ${reservedPath}.`);
+    }
+  }
+
+  if (Array.isArray(search.items) && search.items.some((item) => item.path === "index.md" || item.path === "log.md")) {
+    throw new Error("Search index unexpectedly includes reserved root Markdown files.");
   }
 
   if (!Array.isArray(links.links)) {
@@ -1340,6 +1402,91 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
       links: links.links.length
     }, WHITE_BOX)
   );
+}
+
+function assertPublicIndexMetadata({ pagePath, pageMetadata, manifestEntry, searchItem }) {
+  if (!isRecord(manifestEntry.metadata) || !isRecord(searchItem.metadata)) {
+    throw new Error(`Public JSON indexes are missing metadata for ${pagePath}.`);
+  }
+
+  for (const field of ["type", "title", "description", "resource", "timestamp"]) {
+    const expected = readNonEmptyString(pageMetadata[field]);
+
+    if (!expected) {
+      continue;
+    }
+
+    if (manifestEntry.metadata[field] !== expected || searchItem.metadata[field] !== expected) {
+      throw new Error(`Public JSON indexes did not preserve ${field} metadata for ${pagePath}.`);
+    }
+
+    if (field !== "title" && field !== "description" && searchItem[field] !== expected) {
+      throw new Error(`Public search index did not expose top-level ${field} for ${pagePath}.`);
+    }
+  }
+
+  if (Array.isArray(pageMetadata.tags)) {
+    const tags = pageMetadata.tags.filter((tag) => typeof tag === "string" && tag.trim());
+
+    if (
+      tags.length &&
+      (!sameStringArray(manifestEntry.metadata.tags, tags) ||
+        !sameStringArray(searchItem.metadata.tags, tags) ||
+        !sameStringArray(searchItem.tags, tags))
+    ) {
+      throw new Error(`Public JSON indexes did not preserve tags metadata for ${pagePath}.`);
+    }
+  }
+
+  assertNoPublicInternalMetadata(manifestEntry.metadata, pagePath);
+  assertNoPublicInternalMetadata(searchItem.metadata, pagePath);
+}
+
+function assertNoPublicInternalMetadata(metadata, pagePath) {
+  for (const key of PUBLIC_INDEX_INTERNAL_KEYS) {
+    if (hasNestedMetadataKey(metadata, key)) {
+      throw new Error(`Public JSON indexes expose internal metadata field ${key} for ${pagePath}.`);
+    }
+  }
+
+  const serialized = JSON.stringify(metadata);
+
+  if (
+    serialized.includes("knowledge-bases/") ||
+    serialized.includes("s3://") ||
+    serialized.includes("file://")
+  ) {
+    throw new Error(`Public JSON indexes expose internal storage metadata for ${pagePath}.`);
+  }
+}
+
+function hasNestedMetadataKey(value, key) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return Object.entries(value).some(
+    ([entryKey, entryValue]) =>
+      entryKey === key ||
+      (isRecord(entryValue) && hasNestedMetadataKey(entryValue, key)) ||
+      (Array.isArray(entryValue) && entryValue.some((item) => hasNestedMetadataKey(item, key)))
+  );
+}
+
+function readNonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function sameStringArray(left, right) {
+  return (
+    Array.isArray(left) &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function validateSourceDeletionFullFlow({
@@ -1538,6 +1685,10 @@ async function validatePublicDeletionState({
     [
       "index.md",
       await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/index.md`, headers)
+    ],
+    [
+      "log.md",
+      await readPublicText(publicApi, `/kb/${encodeURIComponent(knowledgeBaseId)}/log.md`, headers)
     ],
     [
       "_index/manifest.json",

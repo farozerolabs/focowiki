@@ -54,6 +54,12 @@ describe("parseRuntimeConfig", () => {
       taskConcurrency: 1,
       fileProcessingConcurrency: 1
     });
+    expect(config.okf).toEqual({
+      log: {
+        maxEntries: 100,
+        maxBytes: 65_536
+      }
+    });
     expect("i18n" in config).toBe(false);
     expect(config.corsOrigins).toEqual([
       "https://admin.example.com",
@@ -283,6 +289,40 @@ describe("parseRuntimeConfig", () => {
         MAX_UPLOAD_FILES: "-1"
       })
     ).toThrow(/MAX_UPLOAD_FILES/);
+  });
+
+  it("defaults and validates OKF log limits", () => {
+    expect(parseRuntimeConfig(validEnv).okf).toEqual({
+      log: {
+        maxEntries: 100,
+        maxBytes: 65_536
+      }
+    });
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        OKF_LOG_MAX_ENTRIES: "50",
+        OKF_LOG_MAX_BYTES: "32768"
+      }).okf
+    ).toEqual({
+      log: {
+        maxEntries: 50,
+        maxBytes: 32_768
+      }
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        OKF_LOG_MAX_ENTRIES: "0"
+      })
+    ).toThrow(/OKF_LOG_MAX_ENTRIES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        OKF_LOG_MAX_BYTES: "-1"
+      })
+    ).toThrow(/OKF_LOG_MAX_BYTES/);
   });
 
   it("defaults and validates upload and model concurrency limits", () => {

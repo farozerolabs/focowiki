@@ -2,15 +2,13 @@ import { describe, expect, it } from "vitest";
 import { publishOkfRelease, type BundleFileDraft, type BundleTreeEntryDraft } from "../src/okf/publication.js";
 import { createStorageKeyspace, type StorageKeyspace } from "../src/storage/keys.js";
 import type { StoredObject } from "../src/storage/s3.js";
+import type { SourceMetadataDefaults } from "@focowiki/okf";
 
 type SourceRecord = {
   id: string;
   originalName: string;
   objectKey: string;
-  metadata: {
-    type?: string;
-    title?: string;
-  };
+  metadata: SourceMetadataDefaults;
   suggestions?: {
     description: string;
     title: string;
@@ -108,12 +106,18 @@ describe("publishOkfRelease", () => {
       { cursor: "1", limit: 1 }
     ]);
     expect(storage.maxActiveReads).toBeLessThanOrEqual(1);
-    expect(result.fileCount).toBe(7);
+    expect(result.fileCount).toBe(8);
     expect(result.bundleRootKey).toBe("tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/");
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("# Developer docs");
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("[intro](/pages/intro.md)");
+    expect(storage.objects.get(`${result.bundleRootKey}log.md`)).toContain("# Directory Update Log");
+    expect(storage.objects.get(`${result.bundleRootKey}log.md`)).toContain("Published 2 Markdown pages");
+    expect(storage.objects.get(`${result.bundleRootKey}log.md`)).toContain("[intro](/pages/intro.md)");
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       "\"pages/intro.md\""
+    );
+    expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
+      "\"log.md\""
     );
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       "\"Developer docs schema\""
@@ -125,6 +129,7 @@ describe("publishOkfRelease", () => {
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/intro.md",
       "pages/setup.md",
       "schema.md"
@@ -141,6 +146,13 @@ describe("publishOkfRelease", () => {
         logicalPath: "index.md",
         sourceFileId: null,
         fileKind: "index"
+      })
+    );
+    expect(fileBatches.flat()).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "log.md",
+        sourceFileId: null,
+        fileKind: "log"
       })
     );
     expect(treeBatches.flat()).toContainEqual(
@@ -203,6 +215,110 @@ describe("publishOkfRelease", () => {
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       `"${pagePath}"`
     );
+  });
+
+  it("publishes generic and pass-through frontmatter metadata into JSON indexes", async () => {
+    const sources: SourceRecord[] = [
+      {
+        id: "source-001",
+        originalName: "legal-rule.md",
+        objectKey: "tenant/demo/source/legal-rule.md",
+        metadata: {
+          type: "regulation",
+          title: "Legal rule",
+          description: "Factual rule description",
+          resource: "https://example.com/legal-rule",
+          timestamp: "2026-06-14T00:00:00.000Z",
+          tags: ["legal", "rule"],
+          officialId: "law-001",
+          status: "active",
+          jurisdiction: "example",
+          objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/legal-rule.md",
+          releaseId: "release-001",
+          taskId: "task-001",
+          localPath: "/private/tmp/legal-rule.md",
+          providerPayload: {
+            id: "provider-output"
+          }
+        }
+      }
+    ];
+    const storage = new PublicationStorage(sources);
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Legal docs",
+      releaseId: "release-001",
+      taskId: "task-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 50,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const manifest = JSON.parse(
+      storage.objects.get(`${result.bundleRootKey}_index/manifest.json`) ?? "{}"
+    ) as {
+      files: Array<{ path: string; metadata?: Record<string, unknown> }>;
+    };
+    const search = JSON.parse(
+      storage.objects.get(`${result.bundleRootKey}_index/search.json`) ?? "{}"
+    ) as {
+      items: Array<{
+        path: string;
+        type?: string;
+        title: string;
+        description?: string;
+        resource?: string;
+        timestamp?: string;
+        tags: string[];
+        metadata?: Record<string, unknown>;
+      }>;
+    };
+
+    const manifestPage = manifest.files.find((file) => file.path === "pages/legal-rule.md");
+    expect(manifestPage?.metadata).toMatchObject({
+      type: "regulation",
+      title: "Legal rule",
+      description: "Factual rule description",
+      resource: "https://example.com/legal-rule",
+      timestamp: "2026-06-14T00:00:00.000Z",
+      tags: ["legal", "rule"],
+      officialId: "law-001",
+      status: "active",
+      jurisdiction: "example"
+    });
+    expect(manifestPage?.metadata).not.toHaveProperty("objectKey");
+    expect(manifestPage?.metadata).not.toHaveProperty("releaseId");
+    expect(manifestPage?.metadata).not.toHaveProperty("taskId");
+    expect(manifestPage?.metadata).not.toHaveProperty("localPath");
+    expect(manifestPage?.metadata).not.toHaveProperty("providerPayload");
+
+    expect(search.items).toContainEqual(
+      expect.objectContaining({
+        path: "pages/legal-rule.md",
+        type: "regulation",
+        title: "Legal rule",
+        description: "Factual rule description",
+        resource: "https://example.com/legal-rule",
+        timestamp: "2026-06-14T00:00:00.000Z",
+        tags: ["legal", "rule"],
+        metadata: expect.objectContaining({
+          officialId: "law-001",
+          status: "active",
+          jurisdiction: "example"
+        })
+      })
+    );
+    const searchPage = search.items.find((item) => item.path === "pages/legal-rule.md");
+    expect(searchPage?.metadata).not.toHaveProperty("objectKey");
+    expect(searchPage?.metadata).not.toHaveProperty("releaseId");
+    expect(searchPage?.metadata).not.toHaveProperty("taskId");
+    expect(searchPage?.metadata).not.toHaveProperty("localPath");
+    expect(searchPage?.metadata).not.toHaveProperty("providerPayload");
   });
 
   it("limits source file processing with the configured publication concurrency", async () => {
@@ -315,6 +431,64 @@ describe("publishOkfRelease", () => {
     expect(intro).toContain("[Setup](/pages/setup.md)");
     expect(intro).not.toContain("deleted.md");
     expect(links).toContain("pages/setup.md");
+    expect(links).toContain("\"from\": \"log.md\"");
     expect(links).not.toContain("pages/deleted.md");
+  });
+
+  it("publishes a bounded update log from current and historical publication summaries", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-001", "intro.md", "tenant/demo/source/intro.md")
+    ];
+    const storage = new PublicationStorage(sources);
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      taskId: "task-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 50,
+      concurrency: 1,
+      log: {
+        maxEntries: 2,
+        maxBytes: 65_536
+      },
+      storage,
+      fetchPublicationLogHistory: async () => ({
+        entries: [
+          {
+            occurredAt: "2026-01-10T00:00:00.000Z",
+            action: "Update",
+            message: "Last quiet-period update.",
+            changedFileCount: 7
+          },
+          {
+            occurredAt: "2025-12-10T00:00:00.000Z",
+            action: "Update",
+            message: "Summarized older update.",
+            changedFileCount: 3
+          }
+        ],
+        summaries: [
+          {
+            month: "2025-11",
+            publicationCount: 2,
+            changedFileCount: 12
+          }
+        ]
+      }),
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+    const log = storage.objects.get(`${result.bundleRootKey}log.md`) ?? "";
+
+    expect(log).toContain("## 2026-06-14");
+    expect(log).toContain("Published 1 Markdown pages");
+    expect(log).toContain("Added intro.");
+    expect(log).not.toContain("Last quiet-period update.");
+    expect(log).toContain("2026-01: 1 publication events, 7 documents changed.");
+    expect(log).toContain("2025-12: 1 publication events, 3 documents changed.");
+    expect(log).toContain("2025-11: 2 publication events, 12 documents changed.");
   });
 });

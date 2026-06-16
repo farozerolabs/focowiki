@@ -107,7 +107,7 @@ describe("database schema migration", () => {
     expect(sql).toContain("check (processing_status in ('pending', 'running', 'completed', 'failed'))");
     expect(sql).toContain("file_kind text not null");
     expect(sql).toContain(
-      "check (file_kind in ('page', 'index', 'schema', 'manifest_index', 'search_index', 'link_index'))"
+      "check (file_kind in ('page', 'index', 'log', 'schema', 'manifest_index', 'search_index', 'link_index'))"
     );
     expect(sql).toContain("(file_kind = 'page' and source_file_id is not null)");
     expect(sql).toContain("(file_kind <> 'page' and source_file_id is null)");

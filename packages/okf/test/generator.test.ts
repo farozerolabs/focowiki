@@ -41,14 +41,25 @@ describe("generateOkfBundle", () => {
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/intro.md",
       "schema.md"
     ]);
     expect(files["index.md"]?.startsWith("---")).toBe(false);
     expect(files["index.md"]).toContain("# Knowledge base");
+    expect(files["index.md"]).toContain("## Pages");
     expect(files["index.md"]).toContain("[Getting started](/pages/intro.md)");
+    expect(files["index.md"]).toContain("- [Getting started](/pages/intro.md) - Project introduction");
     expect(files["index.md"]).not.toContain("/sources/");
     expect(files["index.md"]).not.toContain("Focowiki knowledge base");
+    expect(files["log.md"]?.startsWith("---")).toBe(false);
+    expect(files["log.md"]).toContain("# Directory Update Log");
+    expect(files["log.md"]).toContain("## 2026-06-14");
+    expect(files["log.md"]).toContain("Published 1 Markdown pages");
+    expect(files["log.md"]).toContain("[Getting started](/pages/intro.md)");
+    expect(files["log.md"]).not.toContain("release-");
+    expect(files["log.md"]).not.toContain("task-");
+    expect(files["log.md"]).not.toContain("S3_PREFIX");
 
     const schema = matter(files["schema.md"] ?? "");
     expect(schema.data).toMatchObject({
@@ -116,8 +127,20 @@ describe("generateOkfBundle", () => {
             "---",
             "title: Getting started",
             "description: Project introduction",
+            "resource: https://example.com/source",
+            "timestamp: \"2026-06-14T00:00:00.000Z\"",
             "tags:",
             "  - onboarding",
+            "officialId: law-001",
+            "status: active",
+            "contract:",
+            "  partyCount: 2",
+            "objectKey: tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
+            "releaseId: release-001",
+            "taskId: task-001",
+            "localPath: /private/tmp/source.md",
+            "providerPayload:",
+            "  id: provider-output",
             "---",
             "# Getting started",
             "",
@@ -130,15 +153,24 @@ describe("generateOkfBundle", () => {
     const files = filesByPath(bundle.files);
     const manifest = JSON.parse(files["_index/manifest.json"] ?? "{}") as {
       generated_at: string;
-      files: Array<{ path: string; content_type: string; title?: string }>;
+      files: Array<{
+        path: string;
+        content_type: string;
+        title?: string;
+        metadata?: Record<string, unknown>;
+      }>;
     };
     const search = JSON.parse(files["_index/search.json"] ?? "{}") as {
       items: Array<{
         path: string;
+        type?: string;
         title: string;
         description?: string;
+        resource?: string;
+        timestamp?: string;
         tags: string[];
         keywords: string[];
+        metadata?: Record<string, unknown>;
       }>;
     };
     const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
@@ -151,25 +183,78 @@ describe("generateOkfBundle", () => {
       "_index/manifest.json",
       "_index/search.json",
       "index.md",
+      "log.md",
       "pages/intro.md",
       "schema.md"
     ]);
     expect(manifest.files).toContainEqual({
+      path: "log.md",
+      content_type: "text/markdown; charset=utf-8"
+    });
+    expect(manifest.files).toContainEqual({
       path: "pages/intro.md",
       content_type: "text/markdown; charset=utf-8",
-      title: "Getting started"
+      title: "Getting started",
+      metadata: expect.objectContaining({
+        type: "page",
+        title: "Getting started",
+        description: "Project introduction",
+        resource: "https://example.com/source",
+        timestamp: "2026-06-14T00:00:00.000Z",
+        tags: ["onboarding"],
+        officialId: "law-001",
+        status: "active",
+        contract: {
+          partyCount: 2
+        }
+      })
     });
+    const manifestPage = manifest.files.find((file) => file.path === "pages/intro.md");
+    expect(manifestPage?.metadata).not.toHaveProperty("objectKey");
+    expect(manifestPage?.metadata).not.toHaveProperty("releaseId");
+    expect(manifestPage?.metadata).not.toHaveProperty("taskId");
+    expect(manifestPage?.metadata).not.toHaveProperty("localPath");
+    expect(manifestPage?.metadata).not.toHaveProperty("providerPayload");
 
     expect(search.items).toContainEqual({
       path: "pages/intro.md",
+      type: "page",
       title: "Getting started",
       description: "Project introduction",
+      resource: "https://example.com/source",
+      timestamp: "2026-06-14T00:00:00.000Z",
       tags: ["onboarding"],
-      keywords: ["getting", "started", "project", "introduction", "onboarding"]
+      keywords: ["getting", "started", "project", "introduction", "onboarding"],
+      metadata: expect.objectContaining({
+        type: "page",
+        title: "Getting started",
+        description: "Project introduction",
+        resource: "https://example.com/source",
+        timestamp: "2026-06-14T00:00:00.000Z",
+        tags: ["onboarding"],
+        officialId: "law-001",
+        status: "active",
+        contract: {
+          partyCount: 2
+        }
+      })
     });
+    const searchPage = search.items.find((item) => item.path === "pages/intro.md");
+    expect(search.items.map((item) => item.path)).not.toContain("index.md");
+    expect(search.items.map((item) => item.path)).not.toContain("log.md");
+    expect(searchPage?.metadata).not.toHaveProperty("objectKey");
+    expect(searchPage?.metadata).not.toHaveProperty("releaseId");
+    expect(searchPage?.metadata).not.toHaveProperty("taskId");
+    expect(searchPage?.metadata).not.toHaveProperty("localPath");
+    expect(searchPage?.metadata).not.toHaveProperty("providerPayload");
 
     expect(links.links).toContainEqual({
       from: "index.md",
+      to: "pages/intro.md",
+      label: "Getting started"
+    });
+    expect(links.links).toContainEqual({
+      from: "log.md",
       to: "pages/intro.md",
       label: "Getting started"
     });
@@ -178,6 +263,70 @@ describe("generateOkfBundle", () => {
         to: "sources/intro.md"
       })
     );
+  });
+
+  it("omits empty optional and placeholder metadata from JSON indexes", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {
+        type: "page"
+      },
+      sources: [
+        {
+          fileName: "placeholder.md",
+          content: [
+            "---",
+            "title: Placeholder metadata",
+            "description: \"\"",
+            "resource: \"\"",
+            "timestamp: unknown",
+            "tags: []",
+            "reviewedBy: TBD",
+            "domainStatus: n/a",
+            "emptyNested:",
+            "  value: \"\"",
+            "---",
+            "# Placeholder metadata",
+            "",
+            "Body."
+          ].join("\n")
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const manifest = JSON.parse(files["_index/manifest.json"] ?? "{}") as {
+      files: Array<{ path: string; metadata?: Record<string, unknown> }>;
+    };
+    const search = JSON.parse(files["_index/search.json"] ?? "{}") as {
+      items: Array<{
+        path: string;
+        description?: string;
+        resource?: string;
+        timestamp?: string;
+        tags: string[];
+        metadata?: Record<string, unknown>;
+      }>;
+    };
+
+    const manifestPage = manifest.files.find((file) => file.path === "pages/placeholder.md");
+    const searchPage = search.items.find((item) => item.path === "pages/placeholder.md");
+
+    expect(manifestPage?.metadata).toEqual({
+      type: "page",
+      title: "Placeholder metadata"
+    });
+    expect(searchPage).toMatchObject({
+      path: "pages/placeholder.md",
+      title: "Placeholder metadata",
+      tags: []
+    });
+    expect(searchPage).not.toHaveProperty("description");
+    expect(searchPage).not.toHaveProperty("resource");
+    expect(searchPage).not.toHaveProperty("timestamp");
+    expect(searchPage?.metadata).toEqual({
+      type: "page",
+      title: "Placeholder metadata"
+    });
   });
 
   it("generates OKF metadata from Markdown and generic fallbacks without form defaults", () => {
@@ -392,6 +541,110 @@ describe("generateOkfBundle", () => {
     });
     expect(links.links).not.toContainEqual(expect.objectContaining({ to: "pages/missing.md" }));
     expect(links.links).not.toContainEqual(expect.objectContaining({ to: "sources/raw.md" }));
+  });
+
+  it("generates a rolling bounded public update log", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      log: {
+        entries: [
+          {
+            occurredAt: "2026-05-01T00:00:00.000Z",
+            action: "Update",
+            message: "Older retained update.",
+            changedFileCount: 3
+          },
+          {
+            occurredAt: "2026-04-01T00:00:00.000Z",
+            action: "Update",
+            message: "Older summarized update.",
+            changedFileCount: 2
+          }
+        ],
+        summaries: [
+          {
+            month: "2026-03",
+            publicationCount: 4,
+            changedFileCount: 40
+          }
+        ],
+        limits: {
+          maxEntries: 2,
+          maxBytes: 65_536
+        }
+      },
+      sources: [
+        {
+          fileName: "intro.md",
+          content: "---\ntype: page\ntitle: Intro\n---\n# Intro"
+        }
+      ]
+    });
+    const log = filesByPath(bundle.files)["log.md"] ?? "";
+
+    expect(log).toContain("## 2026-06-14");
+    expect(log).toContain("Published 1 Markdown pages");
+    expect(log).toContain("Added Intro.");
+    expect(log).not.toContain("Older retained update.");
+    expect(log).not.toContain("Older summarized update.");
+    expect(log).toContain("## Older Updates");
+    expect(log).toContain("2026-05: 1 publication events, 3 documents changed.");
+    expect(log).toContain("2026-04: 1 publication events, 2 documents changed.");
+    expect(log).toContain("2026-03: 4 publication events, 40 documents changed.");
+  });
+
+  it("keeps newest persisted log entries when there is no recent calendar activity", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      log: {
+        entries: [
+          {
+            occurredAt: "2026-01-10T00:00:00.000Z",
+            action: "Update",
+            message: "Last quiet-period update.",
+            changedFileCount: 1
+          }
+        ],
+        limits: {
+          maxEntries: 10,
+          maxBytes: 65_536
+        }
+      },
+      sources: []
+    });
+    const log = filesByPath(bundle.files)["log.md"] ?? "";
+
+    expect(log).toContain("## 2026-06-14");
+    expect(log).toContain("Published 0 Markdown pages");
+    expect(log).toContain("## 2026-01-10");
+    expect(log).toContain("Last quiet-period update.");
+  });
+
+  it("redacts unsafe public update log text", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      log: {
+        entries: [
+          {
+            occurredAt: "2026-06-13T00:00:00.000Z",
+            action: "Update",
+            message: "Stored release-001 at /private/tmp/source.md with S3_PREFIX and object key.",
+            changedFileCount: 1
+          }
+        ]
+      },
+      sources: []
+    });
+    const log = filesByPath(bundle.files)["log.md"] ?? "";
+
+    expect(log).not.toContain("release-001");
+    expect(log).not.toContain("/private/tmp/source.md");
+    expect(log).not.toContain("S3_PREFIX");
+    expect(log).not.toContain("object key");
+    expect(log).toContain("[redacted]");
   });
 
   it("matches the repeatable cleaned Markdown fixture bundle", () => {

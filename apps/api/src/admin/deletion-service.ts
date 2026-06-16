@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { OkfLogLimits } from "@focowiki/okf";
 import type {
   AdminRepositories,
   BundleFileRecord,
@@ -30,6 +31,7 @@ export type AdminDeletionService = {
     batchSize: number;
     cursorTtlSeconds: number;
     fileProcessingConcurrency: number;
+    okfLog?: Partial<OkfLogLimits> | undefined;
   }) => Promise<UploadTaskRecord>;
 };
 
@@ -75,6 +77,7 @@ export function createDeletionService(
   const createBundleTreeEntries = filesRepository.createBundleTreeEntries;
   const activateRelease = filesRepository.activateRelease;
   const listSourceFiles = filesRepository.listSourceFiles;
+  const listPublicationLogHistory = filesRepository.listPublicationLogHistory;
   const createUploadTask = taskRepository.createUploadTask;
   const completeUploadTask = taskRepository.completeUploadTask;
 
@@ -211,7 +214,15 @@ export function createDeletionService(
           generatedAt: input.generatedAt,
           pageSize: input.batchSize,
           concurrency: input.fileProcessingConcurrency,
+          log: input.okfLog,
           storage,
+          fetchPublicationLogHistory: listPublicationLogHistory
+            ? ({ knowledgeBaseId, maxEntries }) =>
+                listPublicationLogHistory({
+                  knowledgeBaseId,
+                  maxEntries
+                })
+            : undefined,
           fetchSourcePage: ({ cursor, limit }) =>
             listSourceFiles({
               knowledgeBaseId: input.knowledgeBase.id,

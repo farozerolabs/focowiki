@@ -75,6 +75,9 @@ export function registerPublicOpenApiRoutes(
   app.get("/kb/:knowledgeBaseId/index.md", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, "index.md", config)
   );
+  app.get("/kb/:knowledgeBaseId/log.md", requireManagedKey, async (context) =>
+    serveScopedPublicFile(context, repositories, storage, "log.md", config)
+  );
   app.get("/kb/:knowledgeBaseId/schema.md", requireManagedKey, async (context) =>
     serveScopedPublicFile(context, repositories, storage, "schema.md", config)
   );
