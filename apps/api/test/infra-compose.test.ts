@@ -12,6 +12,7 @@ const gitignorePath = resolve(rootDir, ".gitignore");
 const packageJsonPath = resolve(rootDir, "package.json");
 const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
+const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
 
 describe("Docker Compose infrastructure", () => {
   it("defines PostgreSQL and Redis services for local development in the local template", () => {
@@ -173,6 +174,28 @@ describe("Docker Compose infrastructure", () => {
     expect(devEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");
     expect(deploymentEnv).not.toContain("PUBLIC_API_KEY");
     expect(deploymentEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");
+  });
+
+  it("publishes Docker images from version tags with versioned and latest tags", () => {
+    const workflow = readFileSync(dockerPublishWorkflowPath, "utf8");
+
+    expect(workflow).toContain('tags:\n      - "v*"');
+    expect(workflow).not.toContain("branches:\n      - main");
+    expect(workflow).toContain("name: Resolve release version");
+    expect(workflow).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
+    expect(workflow).toContain("Docker image releases require a semantic version tag like v1.2.3.");
+    expect(workflow).toContain("org.opencontainers.image.version=${{ steps.release.outputs.version }}");
+    expect(workflow).toContain(
+      "type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' }}"
+    );
+    expect(workflow).toContain("type=ref,event=tag");
+    expect(workflow).toContain("type=semver,pattern={{version}}");
+    expect(workflow).toContain("type=semver,pattern={{major}}.{{minor}}");
+    expect(workflow).toContain("type=semver,pattern={{major}}");
+    expect(workflow).toContain("type=sha,prefix=sha-");
+    expect(workflow).toContain("type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}");
+    expect(workflow).toContain("actions/attest-build-provenance@v4.1.0");
+    expect(workflow).toContain("push-to-registry: true");
   });
 
   it("keeps env template keys and Compose references synchronized", () => {

@@ -2,8 +2,6 @@ name: Publish Docker Images
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -38,6 +36,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release version
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Docker image releases require a semantic version tag like v1.2.3."
+              exit 1
+            fi
+            echo "is_release_tag=true" >> "${GITHUB_OUTPUT}"
+            echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is_release_tag=false" >> "${GITHUB_OUTPUT}"
+            echo "version=manual-${GITHUB_SHA::12}" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: API image metadata
         id: meta-api
         uses: docker/metadata-action@v6.1.0
@@ -45,13 +60,15 @@ jobs:
           images: ${{ env.API_IMAGE }}
           labels: |
             org.opencontainers.image.title=Focowiki API
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' }}
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
 
       - name: Admin image metadata
         id: meta-admin
@@ -60,13 +77,15 @@ jobs:
           images: ${{ env.ADMIN_IMAGE }}
           labels: |
             org.opencontainers.image.title=Focowiki Admin
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' }}
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
 
       - name: Build and push API image
         id: build-api

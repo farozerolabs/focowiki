@@ -120,7 +120,14 @@ docker compose -f docker-compose.yml up -d
 - `ghcr.io/farozerolabs/focowiki-api:latest`
 - `ghcr.io/farozerolabs/focowiki-admin:latest`
 
-在 `.env` 中设置 `FOCOWIKI_API_IMAGE` 和 `FOCOWIKI_ADMIN_IMAGE` 可以固定 tag、使用 `sha-*` tag、使用 fork 或使用其他 registry。私有 GHCR packages 需要先执行 `docker login ghcr.io`。
+Docker Compose 模板默认使用 `latest`。若需固定版本，在 `.env` 中直接按 tag 固定版本号，例如：
+
+```env
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
+```
+
+私有 GHCR packages 需要先执行 `docker login ghcr.io`。
 
 生产部署需要：
 
@@ -325,7 +332,7 @@ pnpm compose:dev:example:config
 pnpm compose:local:example:config
 ```
 
-Docker image publishing 会在 `main`、`v*` tags 和 manual dispatch 时运行。Workflow 将 Dockerfile `api` target 构建为 `ghcr.io/farozerolabs/focowiki-api`，将 Dockerfile `admin` target 构建为 `ghcr.io/farozerolabs/focowiki-admin`。发布镜像包含 OCI metadata labels 和 registry-linked build provenance attestations。
+Docker image publishing 会在 `v1.2.3` 这样的 semantic version tags 和 manual dispatch 时运行。常规 release path 是推送版本 tag；该 workflow 会将 Dockerfile `api` target 构建为 `ghcr.io/farozerolabs/focowiki-api`，将 Dockerfile `admin` target 构建为 `ghcr.io/farozerolabs/focowiki-admin`。发布的 release images 包含 version tags、`latest`、不可变的 `sha-*` tags、OCI metadata labels 和 registry-linked build provenance attestations。
 
 ## 依赖策略
 

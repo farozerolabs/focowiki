@@ -120,7 +120,14 @@ Default production images:
 - `ghcr.io/farozerolabs/focowiki-api:latest`
 - `ghcr.io/farozerolabs/focowiki-admin:latest`
 
-Set `FOCOWIKI_API_IMAGE` and `FOCOWIKI_ADMIN_IMAGE` in `.env` to pin a tag, use a `sha-*` tag, use a fork, or use another registry. For private GHCR packages, run `docker login ghcr.io` before pulling images.
+The Docker Compose template uses `latest` by default. To pin a release, set the image tag directly in `.env`, for example:
+
+```env
+FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
+FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
+```
+
+For private GHCR packages, run `docker login ghcr.io` before pulling images.
 
 Production deployment requires:
 
@@ -325,7 +332,7 @@ pnpm compose:dev:example:config
 pnpm compose:local:example:config
 ```
 
-Docker image publishing runs for `main`, `v*` tags, and manual dispatch. The workflow builds the Dockerfile `api` target into `ghcr.io/farozerolabs/focowiki-api` and the Dockerfile `admin` target into `ghcr.io/farozerolabs/focowiki-admin`. Published images include OCI metadata labels and registry-linked build provenance attestations.
+Docker image publishing runs for semantic version tags such as `v1.2.3` and manual dispatch. The normal release path is to push a version tag; that workflow builds the Dockerfile `api` target into `ghcr.io/farozerolabs/focowiki-api` and the Dockerfile `admin` target into `ghcr.io/farozerolabs/focowiki-admin`. Published release images include version tags, `latest`, immutable `sha-*` tags, OCI metadata labels, and registry-linked build provenance attestations.
 
 ## Dependency Policy
 
