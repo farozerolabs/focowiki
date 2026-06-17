@@ -8,6 +8,8 @@ Focowiki is a lightweight Markdown knowledge-base system for developers and prod
 
 Focowiki is useful for teams that already have Markdown knowledge assets and want a small self-hosted service that produces file-based knowledge bundles for people, applications, and agents.
 
+![Focowiki architecture](/images/focowiki-architecture.png)
+
 ## What Focowiki Does
 
 - Upload one or more `.md` files.
@@ -17,6 +19,10 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 - Store uploaded source files and generated bundle files in S3-compatible storage.
 - Persist knowledge bases, upload tasks, source file records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
 - Expose knowledge-base CRUD, Markdown upload, task observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
+
+## Admin UI Preview
+
+![Focowiki Admin UI knowledge base detail](/images/focowiki-admin-detail.png)
 
 ## Open Knowledge Format
 

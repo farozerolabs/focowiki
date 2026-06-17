@@ -346,10 +346,17 @@ function linkCandidates(file: string, target: string): string[] {
     ? path.join(docsRoot, decoded.slice(1))
     : path.resolve(path.dirname(file), decoded);
   const extension = path.extname(base);
+  const publicBase = decoded.startsWith("/")
+    ? path.join(docsRoot, "public", decoded.slice(1))
+    : undefined;
   if (extension) {
-    return [base];
+    return publicBase ? [base, publicBase] : [base];
   }
-  return [base, `${base}.md`, path.join(base, "index.md")];
+  const candidates = [base, `${base}.md`, path.join(base, "index.md")];
+  if (publicBase) {
+    candidates.push(publicBase, `${publicBase}.md`, path.join(publicBase, "index.md"));
+  }
+  return candidates;
 }
 
 function isExternalLink(target: string): boolean {

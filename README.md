@@ -6,6 +6,8 @@ Focowiki is an open-source Markdown knowledge-base platform for developers and p
 
 The project is designed for teams that want a small self-hosted system for file-based knowledge. Generated bundles can be read by people, applications, and agents through documented product interfaces.
 
+![Focowiki architecture](./docs/public/images/focowiki-architecture.png)
+
 ## Documentation
 
 Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com).
@@ -36,6 +38,10 @@ Focowiki uses this model as a practical product direction. Uploaded Markdown fil
 - S3-compatible storage for uploaded source files and generated bundle files.
 - Admin UI for login, knowledge-base management, uploads, file-tree browsing, task observation, and OpenAPI key management.
 - Developer OpenAPI for backend integration. See the [Developer OpenAPI documentation](https://docs.focowiki.com/openapi/).
+
+## Admin UI Preview
+
+![Focowiki Admin UI knowledge base detail](./docs/public/images/focowiki-admin-detail.png)
 
 ## Markdown Input
 

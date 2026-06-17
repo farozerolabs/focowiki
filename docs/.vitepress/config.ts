@@ -15,7 +15,7 @@ function readOpenApiSidebar(locale: "root" | "zh-CN"): DefaultTheme.SidebarItem[
 }
 
 const sharedThemeConfig: DefaultTheme.Config = {
-  logo: "/logo.svg",
+  logo: "/logo.jpg",
   search: {
     provider: "local",
     options: {

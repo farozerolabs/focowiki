@@ -12,7 +12,10 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
       <div className="absolute right-6 top-6">
         <LanguageSwitch />
       </div>
-      <LoginForm onLogin={loginAdmin} onAuthenticated={onAuthenticated} />
+      <div className="flex w-full max-w-sm flex-col items-center gap-6">
+        <img src="/logo.jpg" alt="" className="size-14 rounded-lg object-cover" />
+        <LoginForm onLogin={loginAdmin} onAuthenticated={onAuthenticated} />
+      </div>
     </main>
   );
 }
