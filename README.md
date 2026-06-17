@@ -105,7 +105,7 @@ Real upload parsing requires S3-compatible storage. The development template giv
 
 ## Docker Compose Deployment
 
-The repository commits Compose templates. Copy the production template, fill `.env`, pull images from GitHub Container Registry, run migrations, and start the stack.
+The repository commits Compose templates. Copy the production template, fill `.env`, pull images from GitHub Container Registry, run an explicit migration check, and start the stack.
 
 ```bash
 cp .env.example .env
@@ -126,8 +126,6 @@ The Docker Compose template uses `latest` by default. To pin a release, set the 
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
-
-For private GHCR packages, run `docker login ghcr.io` before pulling images.
 
 Production deployment requires:
 

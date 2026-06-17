@@ -4,6 +4,10 @@ packages:
 overrides:
   "@modelcontextprotocol/sdk>zod": ^3.25.76
   "shadcn>zod": ^3.25.76
+peerDependencyRules:
+  allowedVersions:
+    react: 19.2.7
+    react-dom: 19.2.7
 allowBuilds:
   core-js: false
   esbuild: true

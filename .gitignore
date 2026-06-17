@@ -58,6 +58,11 @@ node_modules/
 dist/
 build/
 apps/api/runtime/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/.vitepress/generated/
+docs/openapi/operations/
+docs/zh-CN/openapi/operations/
 docs/public/openapi/focowiki-openapi.json
 out/
 .next/

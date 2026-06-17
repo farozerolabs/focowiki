@@ -266,7 +266,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         taskId: task.id,
         files: loadedFiles.map((file) => ({
           fileId: file.sourceFileId,
-          originalFilename: file.fileName
+          originalFilename: file.fileName,
+          sizeBytes: file.bytes.byteLength
         }))
       };
     },

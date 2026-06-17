@@ -52,6 +52,11 @@
     "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs",
     "openapi:export": "tsx scripts/openapi/export-developer-openapi.ts",
     "openapi:validate": "tsx scripts/openapi/validate-developer-openapi.ts",
+    "docs:generate-api": "tsx scripts/docs/generate-openapi-docs.ts",
+    "docs:dev": "pnpm docs:generate-api && vitepress dev docs --host 127.0.0.1",
+    "docs:build": "pnpm docs:generate-api && vitepress build docs",
+    "docs:preview": "vitepress preview docs --host 127.0.0.1",
+    "docs:validate": "pnpm docs:generate-api && tsx scripts/docs/validate-docs.ts && vitepress build docs",
     "test:validation": "node --test scripts/validation/test/*.test.mjs"
   },
   "devDependencies": {
@@ -62,6 +67,7 @@
     "playwright": "^1.60.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
+    "vitepress": "1.6.4",
     "vitest": "^4.1.8"
   }
 }

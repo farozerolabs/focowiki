@@ -105,7 +105,7 @@ pnpm dev
 
 ## Docker Compose 部署
 
-仓库提交的是 Compose 模板。复制生产模板，填写 `.env`，从 GitHub Container Registry 拉取镜像，执行迁移，然后启动 stack。
+仓库提交的是 Compose 模板。复制生产模板，填写 `.env`，从 GitHub Container Registry 拉取镜像，执行显式迁移检查，然后启动 stack。
 
 ```bash
 cp .env.example .env
@@ -126,8 +126,6 @@ Docker Compose 模板默认使用 `latest`。若需固定版本，在 `.env` 中
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
-
-私有 GHCR packages 需要先执行 `docker login ghcr.io`。
 
 生产部署需要：
 

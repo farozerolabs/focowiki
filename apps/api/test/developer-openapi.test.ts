@@ -738,6 +738,36 @@ function expectDocumentedResponseShape(
   }
 }
 
+function expectDocumentedExampleShape(
+  document: OpenApiDocument,
+  path: string,
+  method: string,
+  status: string,
+  example: Record<string, unknown>
+) {
+  const operation = getDocumentedOperation(document, path, method);
+  const responses = operation.responses as Record<string, Record<string, unknown>> | undefined;
+  const response = responses?.[status] ?? responses?.default;
+  const content = response?.content as Record<string, { schema?: Record<string, unknown> }> | undefined;
+  const schema = resolveSchema(document, content?.["application/json"]?.schema);
+  const properties = collectSchemaProperties(document, schema);
+
+  expect(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`).toBeDefined();
+  expect(properties.size, `Missing JSON schema properties for ${method.toUpperCase()} ${path}`).toBeGreaterThan(
+    0
+  );
+
+  for (const key of Object.keys(example)) {
+    expect([...properties.keys()], `${key} must be documented for ${method.toUpperCase()} ${path}`).toContain(
+      key
+    );
+  }
+
+  for (const key of readRequiredFields(schema)) {
+    expect(example, `${key} example is required for ${method.toUpperCase()} ${path}`).toHaveProperty(key);
+  }
+}
+
 function resolveSchema(
   document: OpenApiDocument,
   schema: Record<string, unknown> | undefined
@@ -753,6 +783,65 @@ function resolveSchema(
 
   const schemaName = reference.replace("#/components/schemas/", "");
   return document.components?.schemas?.[schemaName];
+}
+
+function collectSchemaProperties(
+  document: OpenApiDocument,
+  schema: Record<string, unknown> | undefined,
+  seen = new Set<Record<string, unknown>>()
+): Map<string, unknown> {
+  const resolved = resolveSchema(document, schema);
+  const properties = new Map<string, unknown>();
+
+  if (!resolved || seen.has(resolved)) {
+    return properties;
+  }
+  seen.add(resolved);
+
+  for (const item of readSchemaArray(resolved.allOf)) {
+    for (const [key, value] of collectSchemaProperties(document, item, seen)) {
+      properties.set(key, value);
+    }
+  }
+
+  const ownProperties = resolved.properties;
+  if (ownProperties && typeof ownProperties === "object" && !Array.isArray(ownProperties)) {
+    for (const [key, value] of Object.entries(ownProperties)) {
+      properties.set(key, value);
+    }
+  }
+
+  return properties;
+}
+
+function readRequiredFields(schema: Record<string, unknown> | undefined): string[] {
+  const required = schema?.required;
+  return Array.isArray(required) ? required.filter((value): value is string => typeof value === "string") : [];
+}
+
+function readSchemaArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+}
+
+function readJsonExample(
+  operation: Record<string, unknown>,
+  status: string
+): Record<string, unknown> | undefined {
+  const responses = operation.responses as Record<string, Record<string, unknown>> | undefined;
+  const response = responses?.[status];
+  const content = response?.content as Record<string, { example?: unknown }> | undefined;
+  const example = content?.["application/json"]?.example;
+  return example && typeof example === "object" && !Array.isArray(example)
+    ? (example as Record<string, unknown>)
+    : undefined;
+}
+
+function readRequestBodyExample(operation: Record<string, unknown>): unknown {
+  const requestBody = operation.requestBody as Record<string, unknown> | undefined;
+  const content = requestBody?.content as Record<string, { example?: unknown }> | undefined;
+  return content ? Object.values(content).find((entry) => entry.example !== undefined)?.example : undefined;
 }
 
 describe("Developer OpenAPI", () => {
@@ -890,6 +979,54 @@ describe("Developer OpenAPI", () => {
 
     for (const snippet of forbiddenSnippets) {
       expect(documentText).not.toContain(snippet);
+    }
+  });
+
+  it("documents safe request, success response, and error examples for every operation", async () => {
+    const { app } = createApp();
+    const document = await readOpenApiDocument(app);
+    const documentText = JSON.stringify(document);
+
+    for (const expected of expectedDeveloperOpenApiOperations) {
+      const operation = getDocumentedOperation(document, expected.path, expected.method);
+      const requestExample = operation["x-request-example"];
+      const successExample = readJsonExample(operation, expected.status);
+      const unauthorizedExample = readJsonExample(operation, "401");
+      const internalErrorExample = readJsonExample(operation, "500");
+
+      expect(requestExample, `${expected.method} ${expected.path} must document request example`).toBeDefined();
+      expect(successExample, `${expected.method} ${expected.path} must document success example`).toBeDefined();
+      expect(unauthorizedExample, `${expected.method} ${expected.path} must document 401 error example`).toBeDefined();
+      expect(internalErrorExample, `${expected.method} ${expected.path} must document 500 error example`).toBeDefined();
+
+      if (operation.requestBody) {
+        expect(
+          readRequestBodyExample(operation),
+          `${expected.method} ${expected.path} must document request body example`
+        ).toBeDefined();
+      }
+
+      expectDocumentedExampleShape(document, expected.path, expected.method, expected.status, successExample ?? {});
+      expect(unauthorizedExample).toMatchObject({
+        error: { code: "UNAUTHORIZED", httpStatus: 401 },
+        requestId: "req_123"
+      });
+      expect(internalErrorExample).toMatchObject({
+        error: { code: "INTERNAL_ERROR", httpStatus: 500 },
+        requestId: "req_123"
+      });
+    }
+
+    const contractExample = readJsonExample(
+      getDocumentedOperation(document, "/openapi/v1/openapi.json", "get"),
+      "200"
+    );
+    const contractPaths = contractExample?.paths as Record<string, unknown> | undefined;
+    expect(Object.keys(contractPaths ?? {})).toContain("/openapi/v1/knowledge-bases");
+    expect(JSON.stringify(contractPaths)).toContain("listKnowledgeBases");
+
+    for (const forbidden of [developerKey, "fwok_", "fwwh_", "sk-", "/Users/", "tenant/demo/knowledge-bases"]) {
+      expect(documentText).not.toContain(forbidden);
     }
   });
 
@@ -1259,7 +1396,7 @@ describe("Developer OpenAPI", () => {
     const uploadBody = (await upload.json()) as {
       knowledgeBaseId: string;
       taskId: string;
-      files: Array<{ fileId: string; originalFilename: string }>;
+      files: Array<{ fileId: string; originalFilename: string; sizeBytes: number }>;
     };
 
     expect(upload.status).toBe(202);
@@ -1267,7 +1404,8 @@ describe("Developer OpenAPI", () => {
     expect(uploadBody.taskId).toMatch(/^task-/);
     expect(uploadBody.files[0]).toMatchObject({
       fileId: expect.stringMatching(/^source-file-/),
-      originalFilename: "intro.md"
+      originalFilename: "intro.md",
+      sizeBytes: 39
     });
 
     const task = await app.request(

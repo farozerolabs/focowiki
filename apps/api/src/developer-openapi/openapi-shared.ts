@@ -14,8 +14,10 @@ export function operation(input: {
   parameters?: ParameterObject[];
   requestSchema?: SchemaObject;
   requestBody?: Record<string, unknown>;
+  requestExample?: unknown;
   successStatus: number;
   successSchema: SchemaObject;
+  successExample?: unknown;
   extraResponses?: Record<string, ResponseObject>;
 }): OperationObject {
   return {
@@ -23,6 +25,7 @@ export function operation(input: {
     operationId: input.operationId,
     summary: input.summary,
     security: bearerSecurity,
+    "x-request-example": input.requestExample ?? {},
     ...(input.parameters ? { parameters: input.parameters } : {}),
     ...(input.requestBody ? { requestBody: input.requestBody } : {}),
     ...(input.requestSchema
@@ -31,14 +34,21 @@ export function operation(input: {
             required: true,
             content: {
               [jsonContentType]: {
-                schema: input.requestSchema
+                schema: input.requestSchema,
+                ...(input.requestExample && readRecord(input.requestExample).body
+                  ? { example: readRecord(input.requestExample).body }
+                  : {})
               }
             }
           }
         }
       : {}),
     responses: {
-      [String(input.successStatus)]: jsonResponse("Successful response.", input.successSchema),
+      [String(input.successStatus)]: jsonResponse(
+        "Successful response.",
+        input.successSchema,
+        input.successExample
+      ),
       ...standardErrorResponses(),
       ...input.extraResponses
     }
@@ -138,28 +148,44 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
 
 function standardErrorResponses(): Record<string, ResponseObject> {
   return {
-    "401": errorResponse("Bearer API key is missing, malformed, unknown, revoked, or deleted."),
-    "404": errorResponse("The requested resource or route was not found."),
-    "409": errorResponse("The requested operation conflicts with the current resource state."),
-    "422": errorResponse("The request failed validation."),
-    "429": errorResponse("The request exceeded configured rate limits."),
-    "500": errorResponse("The API encountered an internal error.")
+    "401": errorResponse(
+      "Bearer API key is missing, malformed, unknown, revoked, or deleted.",
+      "UNAUTHORIZED",
+      401
+    ),
+    "404": errorResponse("The requested resource or route was not found.", "NOT_FOUND", 404),
+    "409": errorResponse(
+      "The requested operation conflicts with the current resource state.",
+      "CONFLICT",
+      409
+    ),
+    "422": errorResponse("The request failed validation.", "VALIDATION_ERROR", 422),
+    "429": errorResponse("The request exceeded configured rate limits.", "RATE_LIMITED", 429),
+    "500": errorResponse("The API encountered an internal error.", "INTERNAL_ERROR", 500)
   };
 }
 
-function jsonResponse(description: string, schema: SchemaObject): ResponseObject {
+export function jsonResponse(description: string, schema: SchemaObject, example?: unknown): ResponseObject {
   return {
     description,
     content: {
       [jsonContentType]: {
-        schema
+        schema,
+        ...(example !== undefined ? { example } : {})
       }
     }
   };
 }
 
-function errorResponse(description: string): ResponseObject {
-  return jsonResponse(description, ref("Error"));
+export function errorResponse(description: string, code: string, httpStatus: number): ResponseObject {
+  return jsonResponse(description, ref("Error"), {
+    error: {
+      code,
+      message: description,
+      httpStatus
+    },
+    requestId: "req_123"
+  });
 }
 
 function pathParameter(name: string, description: string): ParameterObject {
@@ -170,4 +196,8 @@ function pathParameter(name: string, description: string): ParameterObject {
     description,
     schema: { type: "string", minLength: 1 }
   };
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
