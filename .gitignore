@@ -58,6 +58,7 @@ node_modules/
 dist/
 build/
 apps/api/runtime/
+docs/public/openapi/focowiki-openapi.json
 out/
 .next/
 .nuxt/

@@ -30,6 +30,34 @@ const forbiddenHealthKeys = new Set([
   "routes",
   "deployment"
 ]);
+const openApiHttpMethods = ["get", "post", "put", "patch", "delete", "head", "options", "trace"];
+const expectedDeveloperOpenApiOperations = [
+  { method: "get", path: "/openapi/v1/health", status: "200" },
+  { method: "get", path: "/openapi/v1/version", status: "200" },
+  { method: "get", path: "/openapi/v1/openapi.json", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases", status: "200" },
+  { method: "post", path: "/openapi/v1/knowledge-bases", status: "201" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}", status: "200" },
+  { method: "delete", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}", status: "200" },
+  { method: "post", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads", status: "202" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}", status: "200" },
+  {
+    method: "get",
+    path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content",
+    status: "200"
+  },
+  { method: "delete", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}", status: "202" },
+  { method: "delete", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files", status: "202" },
+  { method: "post", path: "/openapi/v1/webhooks", status: "201" },
+  { method: "get", path: "/openapi/v1/webhooks", status: "200" },
+  { method: "delete", path: "/openapi/v1/webhooks/{webhookId}", status: "200" },
+  { method: "get", path: "/openapi/v1/webhook-deliveries", status: "200" },
+  { method: "post", path: "/openapi/v1/webhook-deliveries/{deliveryId}/redeliver", status: "202" }
+] as const;
 
 function createConfig(): RuntimeConfig {
   return {
@@ -650,6 +678,83 @@ function collectKeys(value: unknown, keys = new Set<string>()): Set<string> {
   return keys;
 }
 
+type OpenApiDocument = {
+  openapi: string;
+  paths: Record<string, Record<string, Record<string, unknown>>>;
+  components?: {
+    schemas?: Record<string, Record<string, unknown>>;
+    securitySchemes?: Record<string, unknown>;
+  };
+  security?: unknown[];
+  "x-field-continuity"?: Record<string, string[]>;
+};
+
+function asOpenApiDocument(value: unknown): OpenApiDocument {
+  return value as OpenApiDocument;
+}
+
+async function readOpenApiDocument(app: ReturnType<typeof createPublicOpenApiApp>) {
+  const response = await app.request("/openapi/v1/openapi.json", { headers: authHeaders() });
+
+  expect(response.status).toBe(200);
+  return asOpenApiDocument(await response.json());
+}
+
+function getDocumentedOperation(
+  document: OpenApiDocument,
+  path: string,
+  method: string
+): Record<string, unknown> {
+  const pathItem = document.paths[path];
+
+  expect(pathItem, `Missing path ${path}`).toBeDefined();
+  expect(pathItem, `Path ${path} must not be empty`).not.toEqual({});
+
+  const operation = pathItem?.[method];
+
+  expect(operation, `Missing ${method.toUpperCase()} ${path}`).toBeDefined();
+  return operation ?? {};
+}
+
+function expectDocumentedResponseShape(
+  document: OpenApiDocument,
+  path: string,
+  method: string,
+  status: string,
+  body: Record<string, unknown>
+) {
+  const operation = getDocumentedOperation(document, path, method);
+  const responses = operation.responses as Record<string, Record<string, unknown>> | undefined;
+  const response = responses?.[status] ?? responses?.default;
+  const content = response?.content as Record<string, { schema?: Record<string, unknown> }> | undefined;
+  const schema = resolveSchema(document, content?.["application/json"]?.schema);
+  const properties = schema?.properties as Record<string, unknown> | undefined;
+
+  expect(response, `Missing ${status} response for ${method.toUpperCase()} ${path}`).toBeDefined();
+  expect(properties, `Missing JSON schema properties for ${method.toUpperCase()} ${path}`).toBeDefined();
+
+  for (const key of Object.keys(body)) {
+    expect(properties, `${key} must be documented for ${method.toUpperCase()} ${path}`).toHaveProperty(key);
+  }
+}
+
+function resolveSchema(
+  document: OpenApiDocument,
+  schema: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!schema) {
+    return undefined;
+  }
+
+  const reference = schema.$ref;
+  if (typeof reference !== "string") {
+    return schema;
+  }
+
+  const schemaName = reference.replace("#/components/schemas/", "");
+  return document.components?.schemas?.[schemaName];
+}
+
 describe("Developer OpenAPI", () => {
   it("requires bearer authentication for metadata endpoints", async () => {
     const { app } = createApp();
@@ -683,6 +788,379 @@ describe("Developer OpenAPI", () => {
     expect(JSON.stringify(openapiBody)).toContain("knowledgeBaseId");
     expect(JSON.stringify(openapiBody)).toContain("taskId");
     expect(JSON.stringify(openapiBody)).toContain("fileId");
+  });
+
+  it("serves a complete machine-readable OpenAPI contract for implemented routes", async () => {
+    const { app } = createApp();
+    const document = await readOpenApiDocument(app);
+
+    expect(document.openapi).toBe("3.1.0");
+    expect(document.security).toEqual([{ bearerAuth: [] }]);
+    expect(document.components?.securitySchemes?.bearerAuth).toMatchObject({
+      type: "http",
+      scheme: "bearer"
+    });
+
+    for (const path of Object.keys(document.paths)) {
+      expect(path.startsWith("/openapi/v1/")).toBe(true);
+      expect(document.paths[path]).not.toEqual({});
+    }
+
+    for (const expected of expectedDeveloperOpenApiOperations) {
+      const operation = getDocumentedOperation(document, expected.path, expected.method);
+      const responses = operation.responses as Record<string, unknown> | undefined;
+
+      expect(operation.operationId).toEqual(expect.any(String));
+      expect(operation.summary).toEqual(expect.any(String));
+      expect(operation.security).toEqual([{ bearerAuth: [] }]);
+      expect(responses?.[expected.status], `${expected.method} ${expected.path}`).toBeDefined();
+      expect(responses?.["401"], `${expected.method} ${expected.path}`).toBeDefined();
+      expect(responses?.["500"] ?? responses?.default, `${expected.method} ${expected.path}`).toBeDefined();
+    }
+
+    const documentedOperations = Object.entries(document.paths).flatMap(([path, pathItem]) =>
+      Object.keys(pathItem)
+        .filter((method) => openApiHttpMethods.includes(method))
+        .map((method) => `${method.toUpperCase()} ${path}`)
+    );
+    const expectedOperations = expectedDeveloperOpenApiOperations.map(
+      (item) => `${item.method.toUpperCase()} ${item.path}`
+    );
+
+    expect(documentedOperations.sort()).toEqual(expectedOperations.sort());
+  });
+
+  it("documents reusable schemas, pagination, and field continuity", async () => {
+    const { app } = createApp();
+    const document = await readOpenApiDocument(app);
+    const requiredSchemas = [
+      "Error",
+      "Page",
+      "KnowledgeBase",
+      "UploadTask",
+      "UploadProgress",
+      "SourceFile",
+      "BundleTreeEntry",
+      "BundleFile",
+      "Webhook",
+      "WebhookDelivery",
+      "DeleteResponse"
+    ];
+
+    for (const schemaName of requiredSchemas) {
+      expect(document.components?.schemas?.[schemaName], schemaName).toBeDefined();
+    }
+
+    const continuity = document["x-field-continuity"];
+    expect(continuity?.knowledgeBaseId).toContain("GET /openapi/v1/knowledge-bases/{knowledgeBaseId}");
+    expect(continuity?.taskId).toContain(
+      "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}"
+    );
+    expect(continuity?.fileId).toContain(
+      "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content"
+    );
+    expect(continuity?.cursor).toContain("GET /openapi/v1/knowledge-bases");
+    expect(continuity?.path).toContain(
+      "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content"
+    );
+
+    for (const routes of Object.values(continuity ?? {})) {
+      for (const route of routes) {
+        const [method, path] = route.split(" ");
+        expect(method).toEqual(expect.stringMatching(/^[A-Z]+$/));
+        expect(document.paths[path ?? ""]?.[method?.toLowerCase() ?? ""]).toBeDefined();
+      }
+    }
+  });
+
+  it("keeps the OpenAPI contract free of secrets and internal storage identifiers", async () => {
+    const { app } = createApp();
+    const documentText = JSON.stringify(await readOpenApiDocument(app));
+    const forbiddenSnippets = [
+      developerKey,
+      "fwok_",
+      "fwwh_",
+      "s3-access",
+      "s3-secret",
+      "tenant/demo/knowledge-bases",
+      "objectKey",
+      "/Users/",
+      "Authorization:"
+    ];
+
+    for (const snippet of forbiddenSnippets) {
+      expect(documentText).not.toContain(snippet);
+    }
+  });
+
+  it("keeps representative success responses aligned with documented schemas", async () => {
+    const { app, repositories } = createApp();
+    const document = await readOpenApiDocument(app);
+    const knowledgeBases = await app.request("/openapi/v1/knowledge-bases", {
+      headers: authHeaders()
+    });
+    const knowledgeBasesBody = (await knowledgeBases.json()) as Record<string, unknown>;
+    const createKnowledgeBase = await app.request("/openapi/v1/knowledge-bases", {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ name: "Created KB", description: "Created through OpenAPI" })
+    });
+    const createKnowledgeBaseBody = (await createKnowledgeBase.json()) as {
+      knowledgeBase: { knowledgeBaseId: string };
+    } & Record<string, unknown>;
+    const knowledgeBaseId = createKnowledgeBaseBody.knowledgeBase.knowledgeBaseId;
+    const readKnowledgeBase = await app.request(`/openapi/v1/knowledge-bases/${knowledgeBaseId}`, {
+      headers: authHeaders()
+    });
+    const readKnowledgeBaseBody = (await readKnowledgeBase.json()) as Record<string, unknown>;
+    const deleteKnowledgeBase = await app.request(`/openapi/v1/knowledge-bases/${knowledgeBaseId}`, {
+      method: "DELETE",
+      headers: authHeaders()
+    });
+    const deleteKnowledgeBaseBody = (await deleteKnowledgeBase.json()) as Record<string, unknown>;
+
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases",
+      "get",
+      "200",
+      knowledgeBasesBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases",
+      "post",
+      "201",
+      createKnowledgeBaseBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}",
+      "get",
+      "200",
+      readKnowledgeBaseBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}",
+      "delete",
+      "200",
+      deleteKnowledgeBaseBody
+    );
+
+    const uploadForm = new FormData();
+    uploadForm.append(
+      "files",
+      new File(["---\ntype: page\ntitle: Contract\n---\n# Contract"], "contract.md", {
+        type: "text/markdown"
+      })
+    );
+    const upload = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: uploadForm
+    });
+    const uploadBody = (await upload.json()) as { taskId: string } & Record<string, unknown>;
+    const tasks = await app.request("/openapi/v1/knowledge-bases/kb-seeded/tasks", {
+      headers: authHeaders()
+    });
+    const tasksBody = (await tasks.json()) as Record<string, unknown>;
+    const task = await app.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/tasks/${uploadBody.taskId}`,
+      { headers: authHeaders() }
+    );
+    const taskBody = (await task.json()) as Record<string, unknown>;
+    const tree = await app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages", {
+      headers: authHeaders()
+    });
+    const treeBody = (await tree.json()) as { items: Array<{ fileId: string; path: string }> } &
+      Record<string, unknown>;
+    const guide = treeBody.items.find((item) => item.path === "pages/guide.md");
+    const fileDetail = await app.request(`/openapi/v1/knowledge-bases/kb-seeded/files/${guide?.fileId}`, {
+      headers: authHeaders()
+    });
+    const fileDetailBody = (await fileDetail.json()) as Record<string, unknown>;
+    const fileContent = await app.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/files/${guide?.fileId}/content`,
+      { headers: authHeaders() }
+    );
+    const fileContentBody = (await fileContent.json()) as Record<string, unknown>;
+    const fileContentByPath = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md",
+      { headers: authHeaders() }
+    );
+    const fileContentByPathBody = (await fileContentByPath.json()) as Record<string, unknown>;
+    const fileDeletion = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files?path=pages%2Fguide.md",
+      { method: "DELETE", headers: authHeaders() }
+    );
+    const fileDeletionBody = (await fileDeletion.json()) as Record<string, unknown>;
+
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads",
+      "post",
+      "202",
+      uploadBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks",
+      "get",
+      "200",
+      tasksBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}",
+      "get",
+      "200",
+      taskBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree",
+      "get",
+      "200",
+      treeBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}",
+      "get",
+      "200",
+      fileDetailBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content",
+      "get",
+      "200",
+      fileContentBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content",
+      "get",
+      "200",
+      fileContentByPathBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files",
+      "delete",
+      "202",
+      fileDeletionBody
+    );
+
+    const createWebhook = await app.request("/openapi/v1/webhooks", {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({
+        name: "Contract",
+        url: "https://127.0.0.1:9/webhook",
+        events: ["task.ended"]
+      })
+    });
+    const createWebhookBody = (await createWebhook.json()) as {
+      webhook: { webhookId: string };
+    } & Record<string, unknown>;
+    const webhookId = createWebhookBody.webhook.webhookId;
+
+    repositories.webhookDeliveries.set("delivery-seeded", {
+      id: "delivery-seeded",
+      webhookId,
+      eventId: "event-seeded",
+      eventType: "task.ended",
+      payload: { knowledgeBaseId: "kb-seeded", taskId: "task-seeded" },
+      status: "failed",
+      attemptCount: 1,
+      httpStatus: null,
+      errorCode: "WEBHOOK_DELIVERY_FAILED",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const webhooks = await app.request("/openapi/v1/webhooks", { headers: authHeaders() });
+    const webhooksBody = (await webhooks.json()) as Record<string, unknown>;
+    const deliveries = await app.request("/openapi/v1/webhook-deliveries", {
+      headers: authHeaders()
+    });
+    const deliveriesBody = (await deliveries.json()) as Record<string, unknown>;
+    const redelivery = await app.request("/openapi/v1/webhook-deliveries/delivery-seeded/redeliver", {
+      method: "POST",
+      headers: authHeaders()
+    });
+    const redeliveryBody = (await redelivery.json()) as Record<string, unknown>;
+    const deleteWebhook = await app.request(`/openapi/v1/webhooks/${webhookId}`, {
+      method: "DELETE",
+      headers: authHeaders()
+    });
+    const deleteWebhookBody = (await deleteWebhook.json()) as Record<string, unknown>;
+
+    expectDocumentedResponseShape(document, "/openapi/v1/webhooks", "post", "201", createWebhookBody);
+    expectDocumentedResponseShape(document, "/openapi/v1/webhooks", "get", "200", webhooksBody);
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/webhook-deliveries",
+      "get",
+      "200",
+      deliveriesBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/webhook-deliveries/{deliveryId}/redeliver",
+      "post",
+      "202",
+      redeliveryBody
+    );
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/webhooks/{webhookId}",
+      "delete",
+      "200",
+      deleteWebhookBody
+    );
+  });
+
+  it("keeps representative error responses aligned with documented schemas", async () => {
+    const { app } = createApp();
+    const document = await readOpenApiDocument(app);
+    const unauthorized = await expectOpenApiError(
+      await app.request("/openapi/v1/knowledge-bases"),
+      401,
+      "UNAUTHORIZED"
+    );
+    const invalidCursor = await expectOpenApiError(
+      await app.request("/openapi/v1/knowledge-bases?cursor=missing", {
+        headers: authHeaders()
+      }),
+      422,
+      "VALIDATION_ERROR"
+    );
+    const missing = await expectOpenApiError(
+      await app.request("/openapi/v1/knowledge-bases/kb-missing", {
+        headers: authHeaders()
+      }),
+      404,
+      "NOT_FOUND"
+    );
+    const unsupported = await expectOpenApiError(
+      await app.request("/openapi/v1/unsupported", { headers: authHeaders() }),
+      404,
+      "UNSUPPORTED_ROUTE"
+    );
+
+    expectDocumentedResponseShape(document, "/openapi/v1/knowledge-bases", "get", "401", unauthorized);
+    expectDocumentedResponseShape(document, "/openapi/v1/knowledge-bases", "get", "422", invalidCursor);
+    expectDocumentedResponseShape(
+      document,
+      "/openapi/v1/knowledge-bases/{knowledgeBaseId}",
+      "get",
+      "404",
+      missing
+    );
+    expect(Object.keys(unsupported)).toEqual(["error", "requestId"]);
   });
 
   it("keeps product-owned health probes health-state-only", async () => {

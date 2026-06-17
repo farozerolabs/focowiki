@@ -1,0 +1,375 @@
+import {
+  idSchema,
+  nullableString,
+  nullableTimestampSchema,
+  objectSchema,
+  pageSchema,
+  ref,
+  timestampSchema,
+  type SchemaObject
+} from "./openapi-shared.js";
+
+export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
+  return {
+    Error: objectSchema(
+      {
+        error: objectSchema(
+          {
+            code: {
+              type: "string",
+              enum: [
+                "UNAUTHORIZED",
+                "FORBIDDEN",
+                "NOT_FOUND",
+                "CONFLICT",
+                "PAYLOAD_TOO_LARGE",
+                "VALIDATION_ERROR",
+                "RATE_LIMITED",
+                "UNSUPPORTED_ROUTE",
+                "INTERNAL_ERROR",
+                "DATABASE_REPOSITORY_UNAVAILABLE"
+              ]
+            },
+            message: { type: "string" },
+            httpStatus: { type: "integer" },
+            details: { type: "object", additionalProperties: true }
+          },
+          ["code", "message", "httpStatus"]
+        ),
+        requestId: { type: "string" }
+      },
+      ["error", "requestId"]
+    ),
+    HealthResponse: objectSchema({ status: { type: "string", const: "ok" } }, ["status"]),
+    VersionResponse: objectSchema(
+      {
+        product: { type: "string", const: "focowiki" },
+        version: { type: "string" },
+        apiVersion: { type: "string", const: "v1" }
+      },
+      ["product", "version", "apiVersion"]
+    ),
+    Page: objectSchema(
+      {
+        items: { type: "array", items: {} },
+        nextCursor: nullableString("Opaque cursor accepted only by the same list family.")
+      },
+      ["items", "nextCursor"]
+    ),
+    KnowledgeBase: objectSchema(
+      {
+        knowledgeBaseId: idSchema("Knowledge-base identifier used by scoped routes."),
+        name: { type: "string" },
+        description: nullableString("Optional knowledge-base description."),
+        activeReleaseId: nullableString("Current active release identifier, when published."),
+        createdAt: timestampSchema(),
+        updatedAt: timestampSchema()
+      },
+      ["knowledgeBaseId", "name", "description", "activeReleaseId", "createdAt", "updatedAt"]
+    ),
+    KnowledgeBaseListResponse: pageSchema(ref("KnowledgeBase")),
+    KnowledgeBaseResponse: objectSchema({ knowledgeBase: ref("KnowledgeBase") }, ["knowledgeBase"]),
+    CreateKnowledgeBaseRequest: objectSchema(
+      {
+        name: { type: "string", minLength: 1 },
+        description: nullableString("Optional description.")
+      },
+      ["name"]
+    ),
+    DeleteKnowledgeBaseResponse: objectSchema(
+      {
+        deleted: { type: "boolean" },
+        knowledgeBaseId: idSchema("Deleted knowledge-base identifier.")
+      },
+      ["deleted", "knowledgeBaseId"]
+    ),
+    UploadAcceptedFile: objectSchema(
+      {
+        fileId: idSchema("Source file identifier accepted by task detail and file detail reads."),
+        originalFilename: { type: "string" },
+        sizeBytes: { type: "integer", minimum: 0 }
+      },
+      ["fileId", "originalFilename", "sizeBytes"]
+    ),
+    UploadResponse: objectSchema(
+      {
+        knowledgeBaseId: idSchema("Knowledge-base identifier."),
+        taskId: idSchema("Task identifier accepted by task detail reads."),
+        files: { type: "array", items: ref("UploadAcceptedFile") }
+      },
+      ["knowledgeBaseId", "taskId", "files"]
+    ),
+    UploadProgress: objectSchema(
+      {
+        total: { type: "integer", minimum: 0 },
+        completed: { type: "integer", minimum: 0 },
+        failed: { type: "integer", minimum: 0 },
+        running: { type: "integer", minimum: 0 },
+        pending: { type: "integer", minimum: 0 },
+        currentStage: { type: "string" }
+      },
+      ["total", "completed", "failed", "running", "pending", "currentStage"]
+    ),
+    UploadTask: objectSchema(
+      {
+        taskId: idSchema("Task identifier."),
+        knowledgeBaseId: idSchema("Knowledge-base identifier."),
+        operation: { type: "string", enum: ["upload", "delete"] },
+        lifecycle: { type: "string", enum: ["running", "ended"] },
+        startedAt: timestampSchema(),
+        endedAt: nullableTimestampSchema(),
+        sourceCount: { type: "integer", minimum: 0 },
+        progress: ref("UploadProgress"),
+        resultReleaseId: nullableString("Result release identifier when publication completes."),
+        errorCode: nullableString("Stable internal task error code when task fails.")
+      },
+      [
+        "taskId",
+        "knowledgeBaseId",
+        "operation",
+        "lifecycle",
+        "startedAt",
+        "endedAt",
+        "sourceCount",
+        "progress",
+        "resultReleaseId",
+        "errorCode"
+      ]
+    ),
+    TaskListResponse: pageSchema(ref("UploadTask")),
+    SourceFile: sourceFileSchema(),
+    TaskDetailResponse: objectSchema(
+      {
+        task: ref("UploadTask"),
+        files: pageSchema(ref("SourceFile"))
+      },
+      ["task", "files"]
+    ),
+    BundleTreeEntry: bundleTreeEntrySchema(),
+    TreeResponse: pageSchema(ref("BundleTreeEntry")),
+    BundleFile: bundleFileSchema(),
+    SourceFileDetail: sourceFileDetailSchema(),
+    FileDetailResponse: objectSchema(
+      {
+        file: {
+          oneOf: [ref("BundleFile"), ref("SourceFileDetail")]
+        }
+      },
+      ["file"]
+    ),
+    FileContentResponse: objectSchema(
+      {
+        file: ref("BundleFile"),
+        content: { type: "string" }
+      },
+      ["file", "content"]
+    ),
+    FileDeletionResponse: objectSchema(
+      {
+        knowledgeBaseId: idSchema("Knowledge-base identifier."),
+        taskId: idSchema("Deletion task identifier."),
+        file: ref("BundleFile")
+      },
+      ["knowledgeBaseId", "taskId", "file"]
+    ),
+    DeleteResponse: objectSchema(
+      {
+        deleted: { type: "boolean" },
+        webhookId: idSchema("Deleted webhook identifier.")
+      },
+      ["deleted"]
+    ),
+    Webhook: objectSchema(
+      {
+        webhookId: idSchema("Webhook identifier."),
+        name: { type: "string" },
+        endpointHost: { type: "string" },
+        events: { type: "array", items: { type: "string" } },
+        enabled: { type: "boolean" },
+        createdAt: timestampSchema(),
+        updatedAt: timestampSchema(),
+        lastDeliveryAt: nullableTimestampSchema()
+      },
+      ["webhookId", "name", "endpointHost", "events", "enabled", "createdAt", "updatedAt", "lastDeliveryAt"]
+    ),
+    WebhookCreateRequest: objectSchema(
+      {
+        name: nullableString("Optional webhook name."),
+        url: { type: "string", format: "uri" },
+        events: { type: "array", items: { type: "string" } }
+      },
+      ["url", "events"]
+    ),
+    WebhookCreateResponse: objectSchema(
+      {
+        webhook: ref("Webhook"),
+        signingSecret: {
+          type: "string",
+          description: "Returned only once when the webhook is created."
+        }
+      },
+      ["webhook", "signingSecret"]
+    ),
+    WebhookListResponse: pageSchema(ref("Webhook")),
+    WebhookDelivery: objectSchema(
+      {
+        deliveryId: idSchema("Webhook delivery identifier."),
+        webhookId: idSchema("Webhook identifier."),
+        eventId: idSchema("Webhook event identifier."),
+        eventType: { type: "string" },
+        status: { type: "string", enum: ["pending", "success", "failed"] },
+        attemptCount: { type: "integer", minimum: 0 },
+        httpStatus: { anyOf: [{ type: "integer" }, { type: "null" }] },
+        errorCode: nullableString("Stable delivery error code when delivery fails."),
+        createdAt: timestampSchema(),
+        updatedAt: timestampSchema()
+      },
+      [
+        "deliveryId",
+        "webhookId",
+        "eventId",
+        "eventType",
+        "status",
+        "attemptCount",
+        "httpStatus",
+        "errorCode",
+        "createdAt",
+        "updatedAt"
+      ]
+    ),
+    WebhookDeliveryListResponse: pageSchema(ref("WebhookDelivery")),
+    WebhookRedeliveryResponse: objectSchema({ delivery: ref("WebhookDelivery") }, ["delivery"])
+  };
+}
+
+function sourceFileSchema(): SchemaObject {
+  return objectSchema(
+    {
+      fileId: idSchema("Source file identifier."),
+      knowledgeBaseId: idSchema("Knowledge-base identifier."),
+      taskId: idSchema("Task identifier."),
+      originalFilename: { type: "string" },
+      contentType: { type: "string" },
+      sizeBytes: { type: "integer", minimum: 0 },
+      checksumSha256: { type: "string" },
+      metadata: { type: "object", additionalProperties: true },
+      processingState: { type: "string" },
+      currentStage: { type: "string" },
+      processingStartedAt: timestampSchema(),
+      processingEndedAt: nullableTimestampSchema(),
+      processingErrorCode: nullableString("Stable processing error code when processing fails."),
+      createdAt: timestampSchema()
+    },
+    [
+      "fileId",
+      "knowledgeBaseId",
+      "taskId",
+      "originalFilename",
+      "contentType",
+      "sizeBytes",
+      "checksumSha256",
+      "metadata",
+      "processingState",
+      "currentStage",
+      "processingStartedAt",
+      "processingEndedAt",
+      "processingErrorCode",
+      "createdAt"
+    ]
+  );
+}
+
+function bundleTreeEntrySchema(): SchemaObject {
+  return objectSchema(
+    {
+      id: idSchema("Tree entry identifier."),
+      fileId: nullableString("Bundle file identifier when this entry is a persisted file."),
+      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      parentPath: { type: "string" },
+      name: { type: "string" },
+      path: {
+        type: "string",
+        description: "Logical generated file path. It is not a storage path."
+      },
+      entryType: { type: "string", enum: ["file", "directory"] },
+      fileKind: nullableString("Generated file classification."),
+      deletable: { type: "boolean" }
+    },
+    ["id", "fileId", "sourceFileId", "parentPath", "name", "path", "entryType", "fileKind", "deletable"]
+  );
+}
+
+function bundleFileSchema(): SchemaObject {
+  return objectSchema(
+    {
+      fileId: idSchema("Bundle file identifier."),
+      knowledgeBaseId: idSchema("Knowledge-base identifier."),
+      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      path: {
+        type: "string",
+        description: "Logical generated file path accepted by path-based reads."
+      },
+      originalFilename: nullableString("Original uploaded filename when available."),
+      fileKind: { type: "string" },
+      contentType: { type: "string" },
+      sizeBytes: { type: "integer", minimum: 0 },
+      checksumSha256: { type: "string" },
+      okfType: nullableString("OKF document type when available."),
+      title: nullableString("Resolved title when available."),
+      description: nullableString("Resolved description when available."),
+      tags: { type: "array", items: { type: "string" } },
+      frontmatter: { type: "object", additionalProperties: true },
+      deletable: { type: "boolean" },
+      contentAvailable: { type: "boolean" }
+    },
+    [
+      "fileId",
+      "knowledgeBaseId",
+      "sourceFileId",
+      "path",
+      "originalFilename",
+      "fileKind",
+      "contentType",
+      "sizeBytes",
+      "checksumSha256",
+      "okfType",
+      "title",
+      "description",
+      "tags",
+      "frontmatter",
+      "deletable",
+      "contentAvailable"
+    ]
+  );
+}
+
+function sourceFileDetailSchema(): SchemaObject {
+  return objectSchema(
+    {
+      fileId: idSchema("Source file identifier."),
+      knowledgeBaseId: idSchema("Knowledge-base identifier."),
+      path: { type: "null" },
+      originalFilename: { type: "string" },
+      fileKind: { type: "string", const: "source" },
+      contentType: { type: "string" },
+      sizeBytes: { type: "integer", minimum: 0 },
+      checksumSha256: { type: "string" },
+      processingState: { type: "string" },
+      currentStage: { type: "string" },
+      contentAvailable: { type: "boolean", const: false }
+    },
+    [
+      "fileId",
+      "knowledgeBaseId",
+      "path",
+      "originalFilename",
+      "fileKind",
+      "contentType",
+      "sizeBytes",
+      "checksumSha256",
+      "processingState",
+      "currentStage",
+      "contentAvailable"
+    ]
+  );
+}

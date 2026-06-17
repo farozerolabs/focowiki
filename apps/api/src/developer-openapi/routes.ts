@@ -15,6 +15,7 @@ import {
   requireDeveloperOpenApiAuth
 } from "./security.js";
 import { createDeveloperOpenApiService } from "./services.js";
+import { createDeveloperOpenApiDocument } from "./openapi-document.js";
 
 export type DeveloperOpenApiRouteServices = {
   config: RuntimeConfig;
@@ -49,7 +50,7 @@ export function registerDeveloperOpenApiRoutes(
     })
   );
 
-  app.get("/openapi/v1/openapi.json", (context) => context.json(createOpenApiDocument()));
+  app.get("/openapi/v1/openapi.json", (context) => context.json(createDeveloperOpenApiDocument()));
 
   app.get("/openapi/v1/knowledge-bases", async (context) =>
     safe(context, () =>
@@ -258,69 +259,4 @@ function readLimit(value: string | undefined, config: RuntimeConfig): number {
   }
 
   return parsed;
-}
-
-function createOpenApiDocument() {
-  return {
-    openapi: "3.1.0",
-    info: {
-      title: "Focowiki Developer OpenAPI",
-      version: "0.1.0"
-    },
-    security: [{ bearerAuth: [] }],
-    components: {
-      securitySchemes: {
-        bearerAuth: {
-          type: "http",
-          scheme: "bearer"
-        }
-      },
-      schemas: {
-        Error: {
-          type: "object",
-          required: ["error", "requestId"],
-          properties: {
-            error: {
-              type: "object",
-              required: ["code", "message", "httpStatus"]
-            },
-            requestId: { type: "string" }
-          }
-        }
-      }
-    },
-    "x-field-continuity": {
-      knowledgeBaseId: [
-        "POST /openapi/v1/knowledge-bases",
-        "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}",
-        "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads"
-      ],
-      taskId: [
-        "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads",
-        "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}"
-      ],
-      fileId: [
-        "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads",
-        "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}",
-        "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content"
-      ],
-      webhookId: [
-        "POST /openapi/v1/webhooks",
-        "DELETE /openapi/v1/webhooks/{webhookId}"
-      ],
-      deliveryId: [
-        "GET /openapi/v1/webhook-deliveries",
-        "POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver"
-      ]
-    },
-    paths: {
-      "/openapi/v1/knowledge-bases": {},
-      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads": {},
-      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}": {},
-      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}": {},
-      "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content": {},
-      "/openapi/v1/webhooks": {},
-      "/openapi/v1/webhook-deliveries/{deliveryId}/redeliver": {}
-    }
-  };
 }
