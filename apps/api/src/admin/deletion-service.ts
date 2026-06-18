@@ -91,6 +91,11 @@ export function createDeletionService(
         releaseId: knowledgeBase.activeReleaseId,
         ttlSeconds: input.cursorTtlSeconds
       });
+      await cleanupKnowledgeBaseGraph({
+        repositories,
+        knowledgeBaseId: knowledgeBase.id,
+        batchSize: 200
+      });
       return true;
     },
     async deleteSourcePage(input) {
@@ -148,6 +153,10 @@ export function createDeletionService(
         if (!deleted) {
           return { ok: false, reason: "not_found" };
         }
+        await repositories.graph?.deleteGraphForSourceFile({
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: file.sourceFileId
+        });
 
         const releaseId = `release-${randomUUID()}`;
         const bundleRootKey = storage.keyspace.releaseRootKey(knowledgeBase.id, releaseId);
@@ -175,6 +184,22 @@ export function createDeletionService(
                 listPublicationLogHistory({
                   knowledgeBaseId,
                   maxEntries
+                })
+            : undefined,
+          fetchGraphNodePage: repositories.graph
+            ? ({ cursor, limit }) =>
+                repositories.graph!.listGraphNodes({
+                  knowledgeBaseId: knowledgeBase.id,
+                  cursor,
+                  limit
+                })
+            : undefined,
+          fetchGraphEdgePage: repositories.graph
+            ? ({ cursor, limit }) =>
+                repositories.graph!.listGraphEdges({
+                  knowledgeBaseId: knowledgeBase.id,
+                  cursor,
+                  limit
                 })
             : undefined,
           fetchSourcePage: ({ cursor, limit }) =>
@@ -224,6 +249,35 @@ export function createDeletionService(
       }
     }
   };
+}
+
+async function cleanupKnowledgeBaseGraph(input: {
+  repositories: AdminRepositories;
+  knowledgeBaseId: string;
+  batchSize: number;
+}): Promise<void> {
+  if (!input.repositories.graph || !input.repositories.files?.listSourceFiles) {
+    return;
+  }
+
+  let cursor: string | null = null;
+
+  do {
+    const page = await input.repositories.files.listSourceFiles({
+      knowledgeBaseId: input.knowledgeBaseId,
+      limit: input.batchSize,
+      cursor
+    });
+
+    for (const source of page.items) {
+      await input.repositories.graph.deleteGraphForSourceFile({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: source.id
+      });
+    }
+
+    cursor = page.nextCursor;
+  } while (cursor);
 }
 
 async function waitForPublicationLock(input: {

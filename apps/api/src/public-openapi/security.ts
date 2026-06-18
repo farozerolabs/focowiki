@@ -31,9 +31,7 @@ export function publicResponseHeaders(
   config: RuntimeConfig
 ): Headers {
   const headers = new Headers({
-    "content-type": path.endsWith(".json")
-      ? "application/json; charset=utf-8"
-      : "text/markdown; charset=utf-8"
+    "content-type": publicContentType(path)
   });
   const origin = context.req.header("origin");
 
@@ -52,12 +50,29 @@ export function isAllowedPublicLogicalPath(path: string): boolean {
     path === "schema.md" ||
     path === "_index/manifest.json" ||
     path === "_index/search.json" ||
-    path === "_index/links.json"
+    path === "_index/links.json" ||
+    path === "_graph/index.md" ||
+    path === "_graph/manifest.json" ||
+    path === "_graph/nodes.jsonl"
   ) {
     return true;
   }
 
-  return /^pages\/[^/\\\u0000-\u001f\u007f]+\.md$/u.test(path);
+  return (
+    /^pages\/[^/\\\u0000-\u001f\u007f]+\.md$/u.test(path) ||
+    /^_graph\/edges\/[0-9]{4}\.jsonl$/u.test(path) ||
+    /^_graph\/by-file\/[^/\\\u0000-\u001f\u007f]+\.json$/u.test(path)
+  );
+}
+
+function publicContentType(path: string): string {
+  if (path.endsWith(".jsonl")) {
+    return "application/x-ndjson; charset=utf-8";
+  }
+
+  return path.endsWith(".json")
+    ? "application/json; charset=utf-8"
+    : "text/markdown; charset=utf-8";
 }
 
 export function invalidPath(context: RequestContext): Response {

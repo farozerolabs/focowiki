@@ -12,9 +12,9 @@ Production deployment requires:
 
 | Service | Purpose |
 | --- | --- |
-| PostgreSQL | Product records, tasks, releases, generated file records, OpenAPI key records, and audit evidence. |
-| Redis | Sessions, rate limits, cursors, coordination, locks, and short-lived task refresh state. |
-| S3-compatible storage | Uploaded source files and generated public bundles. |
+| PostgreSQL | Product records, source-file processing records, graph nodes, graph edges, releases, generated file records, OpenAPI key records, and audit evidence. |
+| Redis | Sessions, rate limits, cursors, coordination, locks, and short-lived source-file refresh state. |
+| S3-compatible storage | Uploaded source files and generated public bundles, including `_graph/` files. |
 | Reverse proxy | HTTPS public origins for Admin UI, Admin API, and Developer OpenAPI. |
 
 The Compose template starts PostgreSQL and Redis. Configure an external S3-compatible service in `.env`.
@@ -108,3 +108,11 @@ pnpm compose:clean
 5. Use the key with Developer OpenAPI.
 
 Continue with [Developer OpenAPI](../openapi/index.md).
+
+## Graph Processing Notes
+
+Focowiki stores file graph nodes, graph edges, and graph job records in PostgreSQL. Redis coordinates locks and pagination state during processing. Generated graph files are published to S3-compatible storage with the active bundle.
+
+Keep graph processing bounded by the runtime limits in `.env`. Avoid custom scripts that load the full source corpus or full graph into process memory.
+
+For unreleased development deployments, data can be rebuilt destructively. Stop the stack, run `pnpm compose:clean` if you need to clear local PostgreSQL and Redis volumes, start the stack again, run migrations, and upload Markdown files to regenerate graph-backed bundles.

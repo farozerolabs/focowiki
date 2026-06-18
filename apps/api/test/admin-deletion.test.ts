@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { OkfGraphEdge, OkfGraphNode } from "@focowiki/okf";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
 import type {
@@ -171,13 +172,31 @@ function createRepositories() {
     }
   ];
   const sourceEvents: SourceFileEventDraft[] = [];
+  const graphNodes = new Map<string, OkfGraphNode>([
+    ["source-001", createGraphNode("source-001", "pages/intro.md", "Intro")],
+    ["source-002", createGraphNode("source-002", "pages/setup.md", "Setup")]
+  ]);
+  const graphEdges: OkfGraphEdge[] = [
+    {
+      fromFileId: "source-001",
+      toFileId: "source-002",
+      relationType: "shared_tag",
+      weight: 0.8,
+      reason: "Both files share tags.",
+      source: "deterministic"
+    }
+  ];
+  const graphDeletedSourceFileIds: string[] = [];
 
   return {
     records: {
       knowledgeBase,
       sourceFiles,
       bundleFiles,
-      sourceEvents
+      sourceEvents,
+      graphNodes,
+      graphEdges,
+      graphDeletedSourceFileIds
     },
     repositories: {
       knowledgeBases: {
@@ -293,6 +312,40 @@ function createRepositories() {
         async updatePublicOpenApiKeyLastUsed() {
           return undefined;
         }
+      },
+      graph: {
+        async upsertGraphNode(input: { node: OkfGraphNode }) {
+          graphNodes.set(input.node.fileId, input.node);
+        },
+        async upsertGraphEdges(input: { edges: OkfGraphEdge[] }) {
+          graphEdges.push(...input.edges);
+        },
+        async listGraphNodes(input: { limit: number }) {
+          return {
+            items: Array.from(graphNodes.values()).slice(0, input.limit),
+            nextCursor: null
+          };
+        },
+        async listGraphEdges(input: { limit: number }) {
+          return {
+            items: graphEdges.slice(0, input.limit),
+            nextCursor: null
+          };
+        },
+        async listGraphNeighborhood() {
+          return { items: [], nextCursor: null };
+        },
+        async deleteGraphForSourceFile(input: { sourceFileId: string }) {
+          graphDeletedSourceFileIds.push(input.sourceFileId);
+          graphNodes.delete(input.sourceFileId);
+          for (let index = graphEdges.length - 1; index >= 0; index -= 1) {
+            const edge = graphEdges[index];
+
+            if (edge?.fromFileId === input.sourceFileId || edge?.toFileId === input.sourceFileId) {
+              graphEdges.splice(index, 1);
+            }
+          }
+        }
       }
     }
   };
@@ -330,5 +383,24 @@ describe("admin source deletion", () => {
     );
     expect(records.knowledgeBase.activeReleaseId).toBe(body.releaseId);
     expect(records.sourceEvents.some((event) => event.stageKey === "source_deletion")).toBe(true);
+    expect(records.graphDeletedSourceFileIds).toContain("source-001");
+    expect(records.graphNodes.has("source-001")).toBe(false);
+    expect(records.graphEdges).toHaveLength(0);
   });
 });
+
+function createGraphNode(fileId: string, filePath: string, title: string): OkfGraphNode {
+  return {
+    fileId,
+    path: filePath,
+    title,
+    type: "page",
+    tags: [],
+    headings: [title],
+    keywords: [title.toLowerCase()],
+    metadata: {
+      type: "page",
+      title
+    }
+  };
+}

@@ -102,6 +102,7 @@ function createRepositories() {
   const sourceCalls: Array<{ limit: number; cursor: string | null }> = [];
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
+  const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
   const bundleFile = {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
@@ -129,7 +130,8 @@ function createRepositories() {
       treeCalls,
       sourceCalls,
       releaseCalls,
-      bundleCalls
+      bundleCalls,
+      graphSummaryCalls
     },
     repositories: {
       knowledgeBases: {
@@ -230,6 +232,48 @@ function createRepositories() {
             items: [bundleFile].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
             nextCursor: null
           };
+        }
+      },
+      graph: {
+        async upsertGraphNode() {
+          return undefined;
+        },
+        async upsertGraphEdges() {
+          return undefined;
+        },
+        async listGraphNodes() {
+          return { items: [], nextCursor: null };
+        },
+        async listGraphEdges() {
+          return { items: [], nextCursor: null };
+        },
+        async listGraphNeighborhood() {
+          return { items: [], nextCursor: null };
+        },
+        async getGraphSummary(input: { knowledgeBaseId: string; sourceFileId: string; limit: number }) {
+          graphSummaryCalls.push(input);
+          return {
+            sourceFileId: input.sourceFileId,
+            relationshipCount: 1,
+            relationships: [
+              {
+                fileId: "source-related",
+                sourceFileId: "source-related",
+                bundleFileId: "bundle-related",
+                path: "pages/related.md",
+                title: "Related",
+                relationType: "shared_tag",
+                direction: "outgoing" as const,
+                weight: 0.8,
+                reason: "Both files share tags.",
+                source: "deterministic",
+                contentAvailable: true
+              }
+            ]
+          };
+        },
+        async deleteGraphForSourceFile() {
+          return undefined;
         }
       }
     }
@@ -409,9 +453,16 @@ describe("Knowledge base file Admin API", () => {
     expect(releases.status).toBe(200);
     expect(bundleFiles.status).toBe(200);
     expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
+    expect(sourceBody.items[0]?.graphSummary).toMatchObject({
+      relationshipCount: 1,
+      relationships: [expect.objectContaining({ path: "pages/related.md" })]
+    });
     expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
     expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
+    expect(records.graphSummaryCalls).toEqual([
+      expect.objectContaining({ sourceFileId: "source-001", limit: 3 })
+    ]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
   });

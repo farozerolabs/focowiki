@@ -26,7 +26,18 @@ export type RedisCoordinator = {
     ttlSeconds: number
   ) => Promise<boolean>;
   releaseSourceFileLock: (sourceFileId: string, ownerId: string) => Promise<boolean>;
+  acquireSourceFileGraphLock: (
+    sourceFileId: string,
+    ownerId: string,
+    ttlSeconds: number
+  ) => Promise<boolean>;
+  releaseSourceFileGraphLock: (sourceFileId: string, ownerId: string) => Promise<boolean>;
   recordSourceFileEvent: (
+    sourceFileId: string,
+    value: unknown,
+    ttlSeconds: number
+  ) => Promise<void>;
+  recordSourceFileGraphState: (
     sourceFileId: string,
     value: unknown,
     ttlSeconds: number
@@ -156,8 +167,31 @@ export function createRedisCoordinator(
       await client.del(key);
       return true;
     },
+    async acquireSourceFileGraphLock(sourceFileId, ownerId, ttlSeconds) {
+      const result = await client.set(buildKey("source-file-graph-locks", sourceFileId), ownerId, {
+        EX: ttlSeconds,
+        NX: true
+      });
+      return result === "OK";
+    },
+    async releaseSourceFileGraphLock(sourceFileId, ownerId) {
+      const key = buildKey("source-file-graph-locks", sourceFileId);
+      const currentOwner = await client.get(key);
+
+      if (currentOwner !== ownerId) {
+        return false;
+      }
+
+      await client.del(key);
+      return true;
+    },
     async recordSourceFileEvent(sourceFileId, value, ttlSeconds) {
       await client.set(buildKey("source-file-events", sourceFileId), JSON.stringify(value), {
+        EX: ttlSeconds
+      });
+    },
+    async recordSourceFileGraphState(sourceFileId, value, ttlSeconds) {
+      await client.set(buildKey("source-file-graph-state", sourceFileId), JSON.stringify(value), {
         EX: ttlSeconds
       });
     },

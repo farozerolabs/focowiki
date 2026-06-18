@@ -371,8 +371,8 @@ describe("parseRuntimeConfig", () => {
       MODEL_NAME: "gpt-5.2",
       MODEL_BASE_URL: "https://models.example.com/v1",
       MODEL_CONTEXT_WINDOW_TOKENS: "200000",
-      MODEL_REQUEST_MAX_TIMEOUT_MS: "120000",
-      MODEL_REQUEST_IDLE_TIMEOUT_MS: "30000",
+      MODEL_REQUEST_MAX_TIMEOUT_MS: "600000",
+      MODEL_REQUEST_IDLE_TIMEOUT_MS: "120000",
       MODEL_SUGGESTION_CONCURRENCY: "4"
     });
 
@@ -382,8 +382,8 @@ describe("parseRuntimeConfig", () => {
       modelName: "gpt-5.2",
       baseUrl: "https://models.example.com/v1",
       contextWindowTokens: 200_000,
-      requestMaxTimeoutMs: 120_000,
-      requestIdleTimeoutMs: 30_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
       suggestionConcurrency: 4
     });
   });

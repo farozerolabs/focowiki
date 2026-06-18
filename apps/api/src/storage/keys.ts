@@ -2,6 +2,7 @@ import { AppError } from "../errors.js";
 
 const BUNDLE_ROOT_FILES = new Set(["index.md", "log.md", "schema.md"]);
 const INDEX_FILES = new Set(["manifest.json", "search.json", "links.json"]);
+const GRAPH_ROOT_FILES = new Set(["index.md", "manifest.json", "nodes.jsonl"]);
 const SAFE_ID_TOKEN_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 export type CurrentPointer = {
@@ -139,6 +140,10 @@ function normalizeBundlePath(rawPath: string): string {
     return segments.join("/");
   }
 
+  if (segments[0] === "_graph") {
+    return normalizeGraphBundlePath(segments);
+  }
+
   if (segments.length !== 2) {
     throw new StorageKeyError("path is not an allowed public bundle path");
   }
@@ -155,6 +160,40 @@ function normalizeBundlePath(rawPath: string): string {
     }
 
     return `${directory}/${fileName}`;
+  }
+
+  throw new StorageKeyError("path is not an allowed public bundle path");
+}
+
+function normalizeGraphBundlePath(segments: string[]): string {
+  if (segments.length === 2) {
+    const [, fileName] = segments;
+
+    if (!fileName || !GRAPH_ROOT_FILES.has(fileName)) {
+      throw new StorageKeyError("path must reference an allowed graph root file");
+    }
+
+    return segments.join("/");
+  }
+
+  if (segments.length === 3 && segments[1] === "edges") {
+    const fileName = segments[2] ?? "";
+
+    if (!/^[0-9]{4}\.jsonl$/.test(fileName)) {
+      throw new StorageKeyError("path must reference an allowed graph edge shard");
+    }
+
+    return segments.join("/");
+  }
+
+  if (segments.length === 3 && segments[1] === "by-file") {
+    const fileName = segments[2] ?? "";
+
+    if (!fileName.endsWith(".json") || !isSafePathSegment(fileName)) {
+      throw new StorageKeyError("path must reference an allowed graph file");
+    }
+
+    return segments.join("/");
   }
 
   throw new StorageKeyError("path is not an allowed public bundle path");

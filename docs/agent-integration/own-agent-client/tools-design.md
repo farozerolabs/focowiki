@@ -15,6 +15,7 @@ The Skill should describe the tools from the Agent user's perspective. It should
 | `list_tree` | Discover files in the configured knowledge base. | none | `items`, `nextCursor` |
 | `get_file` | Read safe metadata for one file. | `fileId` | file metadata |
 | `read_file` | Read one Markdown file. | `fileId` or `path` | Markdown content and metadata |
+| `read_related` | Read bounded related files for one source-backed page. | `fileId` | related file records |
 | `search_files` | Find candidate files for a question. | `query` | matching file entries |
 
 ## `list_tree`
@@ -107,7 +108,43 @@ Output:
 }
 ```
 
-Prefer `fileId` when the Agent already has it. Use `path` for known generated files such as `index.md`, `schema.md`, `log.md`, or pages discovered from links.
+Prefer `fileId` when the Agent already has it. Use `path` for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, `_graph/by-file/{fileId}.json`, or pages discovered from links.
+
+## `read_related`
+
+Input:
+
+```json
+{
+  "fileId": "file_123",
+  "cursor": null,
+  "limit": 20
+}
+```
+
+Output:
+
+```json
+{
+  "fileId": "file_123",
+  "sourceFileId": "source_123",
+  "items": [
+    {
+      "fileId": "file_456",
+      "path": "pages/related.md",
+      "title": "Related",
+      "relationType": "shared_tag",
+      "direction": "outgoing",
+      "weight": 0.8,
+      "reason": "Both files share tags.",
+      "contentAvailable": true
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+This tool is optional. The Agent can also read `_graph/by-file/{fileId}.json` through `read_file` by logical path.
 
 ## `search_files`
 

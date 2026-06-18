@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA,
   MODEL_SUGGESTION_SCHEMA,
+  buildGraphRelationshipConfirmationRequest,
   buildModelSuggestionRequest,
   receiveWithProgressTimeout,
+  requestGraphRelationshipConfirmations,
   requestModelSuggestions,
+  validateGraphRelationshipConfirmations,
   validateModelSuggestions
 } from "../src/model.js";
 
@@ -63,6 +67,102 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(
       collectObjectSchemas(schema).every((objectSchema) => objectSchema.additionalProperties === false)
     ).toBe(true);
+  });
+
+  it("builds a bounded graph relationship confirmation request", () => {
+    const request = buildGraphRelationshipConfirmationRequest({
+      modelName: "gpt-5.2",
+      currentFile: {
+        fileId: "source-a",
+        path: "pages/a.md",
+        title: "A",
+        tags: ["guide"]
+      },
+      body: "# A\n\nSee B.",
+      candidates: [
+        {
+          fromFileId: "source-a",
+          toFileId: "source-b",
+          relationType: "title_mention",
+          weight: 0.7,
+          reason: "The source body mentions the related file title.",
+          source: "deterministic"
+        }
+      ],
+      candidateFiles: [
+        {
+          fileId: "source-b",
+          path: "pages/b.md",
+          title: "B",
+          tags: ["guide"]
+        }
+      ],
+      contextWindowTokens: 200_000
+    });
+
+    expect(request.model).toBe("gpt-5.2");
+    expect(request.instructions).toContain("only evaluate the provided candidate");
+    expect(request.input).toContain("\"targetFileId\": \"source-b\"");
+    expect(request.input).not.toContain("source-c");
+    expect(request.text.format).toMatchObject({
+      type: "json_schema",
+      name: "focowiki_graph_relationship_confirmations",
+      strict: true,
+      schema: GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA
+    });
+  });
+
+  it("validates graph relationship confirmations with strict local schema", () => {
+    expect(
+      validateGraphRelationshipConfirmations({
+        relationships: [
+          {
+            targetFileId: "source-b",
+            accepted: true,
+            relationType: "title_mention",
+            weight: 0.8,
+            reason: "The current file refers to the related title."
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        targetFileId: "source-b",
+        accepted: true,
+        relationType: "title_mention",
+        weight: 0.8,
+        reason: "The current file refers to the related title."
+      }
+    ]);
+
+    expect(() =>
+      validateGraphRelationshipConfirmations({
+        relationships: [
+          {
+            targetFileId: "source-b",
+            accepted: true,
+            relationType: "title_mention",
+            weight: 1.2,
+            reason: "Unsafe weight"
+          }
+        ]
+      })
+    ).toThrow(/weight/);
+
+    expect(() =>
+      validateGraphRelationshipConfirmations({
+        relationships: [
+          {
+            targetFileId: "source-b",
+            accepted: true,
+            relationType: "title_mention",
+            weight: 0.8,
+            reason: "OK",
+            inventedPath: "pages/c.md"
+          }
+        ]
+      })
+    ).toThrow(/inventedPath/);
   });
 
   it("validates suggestions locally and rejects fact metadata", () => {
@@ -410,6 +510,95 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(result.warnings).toEqual([
       "Model suggestions failed local schema validation: response was not valid JSON"
     ]);
+  });
+
+  it("repairs graph relationship confirmation output once", async () => {
+    const requests: Array<{ input: string }> = [];
+    const result = await requestGraphRelationshipConfirmations({
+      modelName: "gpt-5.2",
+      currentFile: {
+        fileId: "source-a",
+        path: "pages/a.md",
+        title: "A"
+      },
+      body: "# A",
+      candidates: [
+        {
+          fromFileId: "source-a",
+          toFileId: "source-b",
+          relationType: "shared_tag",
+          weight: 0.6,
+          reason: "Both files share tags.",
+          source: "deterministic"
+        }
+      ],
+      candidateFiles: [
+        {
+          fileId: "source-b",
+          path: "pages/b.md",
+          title: "B"
+        }
+      ],
+      contextWindowTokens: 200_000,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      },
+      client: {
+        responses: {
+          create: async (request) => {
+            requests.push(request);
+
+            if (requests.length === 1) {
+              return {
+                status: "completed",
+                output_text: JSON.stringify({
+                  relationships: [
+                    {
+                      targetFileId: "source-b",
+                      accepted: true,
+                      relationType: "shared_tag",
+                      weight: "high",
+                      reason: "Invalid"
+                    }
+                  ]
+                })
+              };
+            }
+
+            return {
+              status: "completed",
+              output_text: JSON.stringify({
+                relationships: [
+                  {
+                    targetFileId: "source-b",
+                    accepted: true,
+                    relationType: "shared_tag",
+                    weight: 0.85,
+                    reason: "The files share a stable topic tag."
+                  }
+                ]
+              })
+            };
+          }
+        }
+      }
+    });
+
+    expect(result).toEqual({
+      confirmations: [
+        {
+          targetFileId: "source-b",
+          accepted: true,
+          relationType: "shared_tag",
+          weight: 0.85,
+          reason: "The files share a stable topic tag."
+        }
+      ],
+      warnings: []
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.input).toContain("Previous attempt error:");
   });
 
   it("keeps receiving while progress is active before the hard timeout", async () => {

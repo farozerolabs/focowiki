@@ -12,6 +12,8 @@ export type BundleFileForIndex = {
 
 export type SearchIndexSource = {
   path: string;
+  fileId?: string;
+  graphRef?: string;
   title: string;
   description?: string;
   tags: string[];
@@ -33,6 +35,8 @@ export type SearchIndex = {
   generated_at: string;
   items: Array<{
     path: string;
+    fileId?: string;
+    graphRef?: string;
     type?: string;
     title: string;
     description?: string;
@@ -46,11 +50,15 @@ export type SearchIndex = {
 
 export type LinkIndex = {
   generated_at: string;
-  links: Array<{
-    from: string;
-    to: string;
-    label: string;
-  }>;
+    links: Array<{
+      from: string;
+      to: string;
+      label: string;
+      relation_type?: string;
+      weight?: number;
+      source?: string;
+      reason?: string;
+    }>;
 };
 
 const MARKDOWN_LINK_PATTERN = /\[([^\]]+)]\((\/?[^)\s]+)\)/g;
@@ -100,6 +108,8 @@ export function buildSearchIndex(
 
         return {
           path: source.path,
+          ...(source.fileId ? { fileId: source.fileId } : {}),
+          ...(source.graphRef ? { graphRef: source.graphRef } : {}),
           ...(metadata.type ? { type: metadata.type } : {}),
           title,
           ...(description ? { description } : {}),
@@ -160,6 +170,10 @@ function readMarkdownIndexMetadata(file: BundleFileForIndex): IndexMetadataField
 }
 
 function contentTypeForPath(path: string): string {
+  if (path.endsWith(".jsonl")) {
+    return "application/x-ndjson; charset=utf-8";
+  }
+
   if (path.endsWith(".json")) {
     return "application/json; charset=utf-8";
   }

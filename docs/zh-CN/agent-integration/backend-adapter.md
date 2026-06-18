@@ -51,6 +51,7 @@ title: 后端适配
 | `GET /agent/knowledge/files/{fileId}` | `getFileById` | 安全文件元数据。 |
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown 内容。 |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | 按逻辑路径读取的 Markdown 内容。 |
+| `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | 有界相关文件记录。 |
 | `GET /agent/knowledge/search?query=...` | 你的搜索层或生成索引文件 | 供 Agent 继续读取的候选文件。 |
 
 `search` 路由是可选项。第一版可以只提供文件树和文件读取。
@@ -64,6 +65,7 @@ title: 后端适配
 | `list_tree` | `GET /agent/knowledge/tree` |
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` 或 `GET /agent/knowledge/files/content?path=...` |
+| `read_related` | `GET /agent/knowledge/files/{fileId}/related` 或 `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
 | `search_files` | `GET /agent/knowledge/search?query=...` |
 
 ## 标识符流转
@@ -75,6 +77,7 @@ title: 后端适配
 | `knowledgeBaseId` | Admin UI、`listKnowledgeBases` 或后端配置 | 限定所有 Focowiki 调用范围。 |
 | `fileId` | 上传响应、源文件处理记录、文件树条目或文件详情响应 | 读取文件元数据和内容。 |
 | `path` | 文件树条目 | 按逻辑路径读取文件内容。 |
+| `graphRef` | 页面 frontmatter 或 `_index/search.json` | 读取 `_graph/by-file/{fileId}.json` 关系文件。 |
 | `cursor` | 列表响应 | 继续分页。 |
 
 这样可以保证 Agent 调用流程连续。上一个调用返回的值可以直接用于下一个调用。

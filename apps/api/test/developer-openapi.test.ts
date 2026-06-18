@@ -51,6 +51,11 @@ const expectedDeveloperOpenApiOperations = [
     path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content",
     status: "200"
   },
+  {
+    method: "get",
+    path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related",
+    status: "200"
+  },
   { method: "delete", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}", status: "200" },
   { method: "delete", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files", status: "200" },
   { method: "post", path: "/openapi/v1/webhooks", status: "201" },
@@ -305,6 +310,46 @@ function createRepositories(): AdminRepositories & {
         return true;
       }
     },
+    graph: {
+      async upsertGraphNode() {
+        throw new Error("Not used by Developer OpenAPI tests");
+      },
+      async upsertGraphEdges() {
+        throw new Error("Not used by Developer OpenAPI tests");
+      },
+      async listGraphNodes() {
+        return { items: [], nextCursor: null };
+      },
+      async listGraphEdges() {
+        return { items: [], nextCursor: null };
+      },
+      async listGraphNeighborhood({ sourceFileId }) {
+        return {
+          items:
+            sourceFileId === "source-guide"
+              ? [
+                  {
+                    fileId: "source-reference",
+                    sourceFileId: "source-reference",
+                    bundleFileId: "bundle-reference",
+                    path: "pages/reference.md",
+                    title: "Reference",
+                    relationType: "shared_tag",
+                    direction: "outgoing",
+                    weight: 0.8,
+                    reason: "Both files share a topic.",
+                    source: "deterministic",
+                    contentAvailable: true
+                  }
+                ]
+              : [],
+          nextCursor: null
+        };
+      },
+      async deleteGraphForSourceFile() {
+        throw new Error("Not used by Developer OpenAPI tests");
+      }
+    },
     webhooks: {
       async createWebhookSubscription(input) {
         const webhook = {
@@ -445,5 +490,41 @@ describe("Developer OpenAPI", () => {
       processingState: "completed"
     });
     expect(body.items[0]).not.toHaveProperty("taskId");
+  });
+
+  it("returns bounded related files for a generated source-backed file", async () => {
+    const { app } = createApp();
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide/related",
+      {
+        headers: authHeaders()
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      fileId: string;
+      sourceFileId: string;
+      items: Array<Record<string, unknown>>;
+      nextCursor: string | null;
+    };
+
+    expect(body).toMatchObject({
+      fileId: "bundle-guide",
+      sourceFileId: "source-guide",
+      nextCursor: null,
+      items: [
+        {
+          fileId: "source-reference",
+          path: "pages/reference.md",
+          title: "Reference",
+          relationType: "shared_tag",
+          direction: "outgoing",
+          weight: 0.8,
+          reason: "Both files share a topic.",
+          contentAvailable: true
+        }
+      ]
+    });
   });
 });

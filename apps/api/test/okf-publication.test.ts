@@ -385,7 +385,7 @@ describe("publishOkfRelease", () => {
     );
   });
 
-  it("filters generated relationship links to current public bundle paths", async () => {
+  it("does not publish model suggestion links without persisted graph edges", async () => {
     const sources: SourceRecord[] = [
       {
         ...sourceRecord("source-001", "intro.md", "tenant/demo/source/intro.md"),
@@ -421,11 +421,121 @@ describe("publishOkfRelease", () => {
     const intro = storage.objects.get(`${result.bundleRootKey}pages/intro.md`) ?? "";
     const links = storage.objects.get(`${result.bundleRootKey}_index/links.json`) ?? "";
 
-    expect(intro).toContain("[Setup](/pages/setup.md)");
+    expect(intro).not.toContain("[Setup](/pages/setup.md)");
     expect(intro).not.toContain("deleted.md");
-    expect(links).toContain("pages/setup.md");
+    const linkIndex = JSON.parse(links) as {
+      links: Array<{ from: string; to: string; label: string }>;
+    };
+    expect(linkIndex.links).not.toContainEqual(
+      expect.objectContaining({ from: "pages/intro.md", to: "pages/setup.md" })
+    );
     expect(links).toContain("\"from\": \"log.md\"");
     expect(links).not.toContain("pages/deleted.md");
+  });
+
+  it("publishes graph files, graph-backed related links, and graph references", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-intro", "intro.md", "tenant/demo/source/intro.md"),
+      sourceRecord("source-setup", "setup.md", "tenant/demo/source/setup.md")
+    ];
+    const storage = new PublicationStorage(sources);
+    const fileBatches: BundleFileDraft[][] = [];
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 2,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      fetchGraphNodePage: async () => ({
+        items: [
+          {
+            fileId: "source-intro",
+            path: "pages/intro.md",
+            title: "intro",
+            type: "page",
+            tags: [],
+            headings: ["intro"],
+            keywords: ["intro"],
+            metadata: { type: "page", title: "intro" }
+          },
+          {
+            fileId: "source-setup",
+            path: "pages/setup.md",
+            title: "setup",
+            type: "page",
+            tags: [],
+            headings: ["setup"],
+            keywords: ["setup"],
+            metadata: { type: "page", title: "setup" }
+          }
+        ],
+        nextCursor: null
+      }),
+      fetchGraphEdgePage: async () => ({
+        items: [
+          {
+            fromFileId: "source-intro",
+            toFileId: "source-setup",
+            relationType: "title_mention",
+            weight: 0.7,
+            reason: "Intro mentions setup.",
+            source: "deterministic",
+            evidence: { signal: "title_mention" }
+          }
+        ],
+        nextCursor: null
+      }),
+      fetchGraphNeighborhood: async ({ sourceFileId }) => ({
+        sourceFileId,
+        edges:
+          sourceFileId === "source-intro"
+            ? [
+                {
+                  fromFileId: "source-intro",
+                  toFileId: "source-setup",
+                  relationType: "title_mention",
+                  weight: 0.7,
+                  reason: "Intro mentions setup.",
+                  source: "deterministic",
+                  evidence: { signal: "title_mention" }
+                }
+              ]
+            : []
+      }),
+      persistBundleFiles: async (files) => {
+        fileBatches.push(files);
+      },
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const intro = storage.objects.get(`${result.bundleRootKey}pages/intro.md`) ?? "";
+    const manifest = storage.objects.get(`${result.bundleRootKey}_index/manifest.json`) ?? "";
+    const search = storage.objects.get(`${result.bundleRootKey}_index/search.json`) ?? "";
+    const byFile = storage.objects.get(
+      `${result.bundleRootKey}_graph/by-file/source-intro.json`
+    ) ?? "";
+
+    expect(result.fileCount).toBe(14);
+    expect(intro).toContain("fileId: \"source-intro\"");
+    expect(intro).toContain("graph: \"../_graph/by-file/source-intro.json\"");
+    expect(intro).toContain("- [setup](/pages/setup.md) - title_mention");
+    expect(manifest).toContain("\"_graph/index.md\"");
+    expect(manifest).toContain("\"_graph/by-file/source-intro.json\"");
+    expect(search).toContain("\"fileId\": \"source-intro\"");
+    expect(search).toContain("\"graphRef\": \"_graph/by-file/source-intro.json\"");
+    expect(byFile).toContain("\"direction\": \"outgoing\"");
+    expect(byFile).toContain("\"relationType\": \"title_mention\"");
+    expect(fileBatches.flat()).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "_graph/by-file/source-intro.json",
+        sourceFileId: null,
+        fileKind: "graph_file"
+      })
+    );
   });
 
   it("publishes a bounded update log from current and historical publication summaries", async () => {

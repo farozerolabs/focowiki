@@ -125,6 +125,16 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       },
       ["file", "content"]
     ),
+    RelatedFile: relatedFileSchema(),
+    RelatedFileListResponse: objectSchema(
+      {
+        fileId: idSchema("Requested file identifier."),
+        sourceFileId: idSchema("Source file identifier used for graph lookup."),
+        items: { type: "array", items: ref("RelatedFile") },
+        nextCursor: nullableString("Opaque cursor accepted by this related-file endpoint.")
+      },
+      ["fileId", "sourceFileId", "items", "nextCursor"]
+    ),
     FileDeletionResponse: objectSchema(
       {
         knowledgeBaseId: idSchema("Knowledge-base identifier."),
@@ -202,6 +212,39 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     WebhookDeliveryListResponse: pageSchema(ref("WebhookDelivery")),
     WebhookRedeliveryResponse: objectSchema({ delivery: ref("WebhookDelivery") }, ["delivery"])
   };
+}
+
+function relatedFileSchema(): SchemaObject {
+  return objectSchema(
+    {
+      fileId: idSchema("Related source file identifier."),
+      sourceFileId: idSchema("Related source file identifier."),
+      bundleFileId: nullableString("Related generated bundle file identifier when published."),
+      path: { type: "string" },
+      title: { type: "string" },
+      relationType: { type: "string" },
+      direction: { type: "string", enum: ["outgoing", "incoming"] },
+      weight: { type: "number", minimum: 0, maximum: 1 },
+      reason: { type: "string" },
+      source: { type: "string" },
+      evidence: { type: "object", additionalProperties: true },
+      contentAvailable: { type: "boolean" }
+    },
+    [
+      "fileId",
+      "sourceFileId",
+      "bundleFileId",
+      "path",
+      "title",
+      "relationType",
+      "direction",
+      "weight",
+      "reason",
+      "source",
+      "evidence",
+      "contentAvailable"
+    ]
+  );
 }
 
 function sourceFileSchema(): SchemaObject {

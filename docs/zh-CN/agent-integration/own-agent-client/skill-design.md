@@ -47,6 +47,8 @@ Use this Skill when the user asks about knowledge-base content, asks to inspect 
 - Read metadata: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}"`
 - Read content by ID: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"`
 - Read content by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`
+- Read graph by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=_graph/by-file/{fileId}.json"`
+- Read related files: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"`
 - Search files: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..." --data-urlencode "limit=10"`
 
 ## Process
@@ -56,8 +58,9 @@ Use this Skill when the user asks about knowledge-base content, asks to inspect 
 3. Use `/search` for direct questions when search is available.
 4. Use `/tree` when search is unavailable or incomplete.
 5. Read one file at a time.
-6. Follow Markdown links when related context is needed.
-7. Cite file titles or paths in the final answer.
+6. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when related context is needed.
+7. Follow Markdown links and graph relationships when they add evidence.
+8. Cite file titles or paths in the final answer.
 
 ## Boundaries
 
@@ -118,6 +121,23 @@ curl -sS "$KNOWLEDGE_BASE_URL/files/file_123"
 
 Response: file metadata
 
+## Graph by file
+
+```bash
+curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" \
+  --data-urlencode "path=_graph/by-file/file_123.json"
+```
+
+Response: related file records with `path`, `title`, `relationType`, `direction`, `weight`, and `reason`
+
+## Related files
+
+```bash
+curl -sS "$KNOWLEDGE_BASE_URL/files/file_123/related?limit=20"
+```
+
+Response: bounded related file entries and `nextCursor`
+
 ## Search
 
 ```bash
@@ -141,14 +161,16 @@ Response: candidate file entries and `nextCursor`
 3. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=schema.md"` when metadata fields are unclear.
 4. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "parentPath=" --data-urlencode "limit=50"` to inspect available pages.
 5. Read one relevant candidate file with content by ID or content by path.
-6. Follow Markdown links only when they help answer the user request.
+6. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when relationship context is useful.
+7. Follow Markdown links only when they help answer the user request.
 
 ## Direct Questions
 
 1. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..." --data-urlencode "limit=10"` when search is available.
 2. Read the top candidate with `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"`.
 3. Read another candidate only when the first file does not contain enough evidence.
-4. Follow links from the selected file when related context is needed.
+4. Read `_graph/by-file/{fileId}.json` or `/files/{fileId}/related` when related context is needed.
+5. Follow related page paths returned by the graph file.
 
 ## File Inspection
 
@@ -201,6 +223,9 @@ curl -sS -G "https://knowledge.example.com/search" --data-urlencode "query=uploa
 
 Terminal command:
 curl -sS "https://knowledge.example.com/files/file_upload_lifecycle/content"
+
+Terminal command:
+curl -sS -G "https://knowledge.example.com/files/content" --data-urlencode "path=_graph/by-file/file_upload_lifecycle.json"
 
 Agent answer:
 The upload lifecycle starts with Markdown submission, then runs parsing, knowledge package generation, validation, index publishing, and activation. Evidence: `index.md`, `pages/upload-lifecycle.md`.

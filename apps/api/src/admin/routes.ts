@@ -4,7 +4,8 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { type RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
 import type {
-  AdminRepositories
+  AdminRepositories,
+  SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { createSourceFileQueueProcessor } from "./source-file-processor.js";
@@ -634,6 +635,15 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         limit,
         cursor: repositoryCursor
       });
+      const items = await Promise.all(
+        page.items.map((file) =>
+          readAdminSourceFileWithGraphSummary({
+            repositories,
+            knowledgeBaseId: knowledgeBase.id,
+            sourceFile: file
+          })
+        )
+      );
       const nextCursor = await writeOpaqueCursor({
         redis,
         scope: cursorScope,
@@ -652,7 +662,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       );
 
       return context.json({
-        items: page.items.map(toAdminSourceFile),
+        items,
         nextCursor
       });
     }
@@ -713,7 +723,11 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       });
 
       return context.json({
-        file: toAdminSourceFile(sourceFile),
+        file: await readAdminSourceFileWithGraphSummary({
+          repositories,
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFile
+        }),
         events: {
           items: events.items.map(toAdminSourceFileEvent),
           nextCursor
@@ -914,12 +928,30 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       return context.json(
         {
-          files: sourceFiles.map(toAdminSourceFile)
+          files: sourceFiles.map((sourceFile) => toAdminSourceFile(sourceFile))
         },
         202
       );
     }
   );
+}
+
+async function readAdminSourceFileWithGraphSummary(input: {
+  repositories: AdminRepositories;
+  knowledgeBaseId: string;
+  sourceFile: SourceFileRecord;
+}) {
+  if (!input.repositories.graph?.getGraphSummary) {
+    return toAdminSourceFile(input.sourceFile);
+  }
+
+  const summary = await input.repositories.graph.getGraphSummary({
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFileId: input.sourceFile.id,
+    limit: 3
+  });
+
+  return toAdminSourceFile(input.sourceFile, summary);
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {

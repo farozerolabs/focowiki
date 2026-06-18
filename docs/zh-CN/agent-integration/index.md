@@ -43,6 +43,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 读取文件元数据 | `getFileById` |
 | 按稳定标识读取文件内容 | `getFileContentById` |
 | 按逻辑路径读取文件内容 | `getFileContentByPath` |
+| 读取有界相关文件 | `listRelatedFiles` |
 | 删除生成文件 | `deleteFileById`、`deleteFileByPath` |
 | 管理 Webhook | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
@@ -58,6 +59,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | `read_file` | 按 `fileId` 或逻辑 `path` 返回 Markdown 内容。 |
 | `get_file` | 返回文件的安全元数据。 |
 | `search_files` | 可选操作，由你的搜索层或生成索引文件支持。 |
+| `read_related` | 可选的有界相关文件快捷接口。Agent 也可以读取 `_graph/by-file/{fileId}.json`。 |
 
 接口保持小而稳定。Agent 可以发现文件树、读取单个文件、沿着链接继续探索，并重复这个过程。
 
@@ -74,8 +76,9 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 2. 再读取 `schema.md`，理解生成文件约定和 metadata 字段。
 3. 分页列出文件树。
 4. 按 `fileId` 或 `path` 读取最相关页面。
-5. 沿着 Markdown links 和 metadata relationships 继续读取相关文件。
-6. 任务没有要求完整导出时，避免一次性读取所有文件。
+5. 需要关系探索时读取页面 `graph` 引用或 `_graph/by-file/{fileId}.json`。
+6. 沿着 Markdown links 和图关系继续读取相关文件。
+7. 任务没有要求完整导出时，避免一次性读取所有文件。
 
 这个流程可以让请求更稳定，并限制内存、CPU 和 token 消耗。
 

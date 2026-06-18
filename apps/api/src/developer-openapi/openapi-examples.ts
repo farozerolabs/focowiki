@@ -75,6 +75,23 @@ const bundleFile = {
   contentAvailable: true
 };
 
+const relatedFile = {
+  fileId: "file_source_456",
+  sourceFileId: "file_source_456",
+  bundleFileId: "file_page_456",
+  path: "pages/reference.md",
+  title: "Reference",
+  relationType: "shared_tag",
+  direction: "outgoing",
+  weight: 0.8,
+  reason: "Both files share a topic.",
+  source: "deterministic",
+  evidence: {
+    tags: ["guide"]
+  },
+  contentAvailable: true
+};
+
 const treeEntry = {
   id: "tree_123",
   fileId: bundleFileId,
@@ -160,6 +177,10 @@ export const requestExamples = {
   },
   getFileById: {
     path: { knowledgeBaseId, fileId: bundleFileId }
+  },
+  listRelatedFiles: {
+    path: { knowledgeBaseId, fileId: bundleFileId },
+    query: { limit: 50 }
   },
   deleteFileById: {
     path: { knowledgeBaseId, fileId: bundleFileId }
@@ -284,6 +305,12 @@ export const responseExamples = {
   },
   getFileById: {
     file: bundleFile
+  },
+  listRelatedFiles: {
+    fileId: bundleFileId,
+    sourceFileId,
+    items: [relatedFile],
+    nextCursor: null
   },
   deleteFileById: {
     knowledgeBaseId,

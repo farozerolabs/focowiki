@@ -176,6 +176,17 @@ export function registerDeveloperOpenApiRoutes(
     )
   );
 
+  app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/files/:fileId/related", async (context) =>
+    safe(context, () =>
+      api.listRelatedFiles({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        fileId: context.req.param("fileId"),
+        limit: readLimit(context.req.query("limit"), services.config),
+        cursor: context.req.query("cursor") ?? null
+      })
+    )
+  );
+
   app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/files/:fileId/content", async (context) =>
     safe(context, () =>
       api.getFileContentById({

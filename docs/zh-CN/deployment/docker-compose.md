@@ -12,9 +12,9 @@ title: Docker Compose 部署
 
 | 服务 | 用途 |
 | --- | --- |
-| PostgreSQL | 保存产品记录、任务、发布、生成文件记录、OpenAPI key records 和 audit evidence。 |
-| Redis | 保存 sessions、rate limits、cursors、coordination、locks 和 short-lived task refresh state。 |
-| S3 兼容存储 | 保存上传源文件和生成后的 public bundles。 |
+| PostgreSQL | 保存产品记录、来源文件处理记录、graph nodes、graph edges、发布、生成文件记录、OpenAPI key records 和 audit evidence。 |
+| Redis | 保存 sessions、rate limits、cursors、coordination、locks 和 short-lived source-file refresh state。 |
+| S3 兼容存储 | 保存上传源文件和生成后的 public bundles，包括 `_graph/` 文件。 |
 | 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS public origins。 |
 
 Compose 模板会启动 PostgreSQL 和 Redis。外部 S3 兼容服务需要在 `.env` 中配置。
@@ -108,3 +108,11 @@ pnpm compose:clean
 5. 使用这个 key 调用 Developer OpenAPI。
 
 继续阅读 [Developer OpenAPI](../openapi/index.md)。
+
+## 图关系处理说明
+
+Focowiki 将 file graph nodes、graph edges 和 graph job records 保存在 PostgreSQL。Redis 在处理过程中协调 locks 和 pagination state。生成后的图关系文件会随 active bundle 一起发布到 S3 兼容存储。
+
+图关系处理应受 `.env` 中的 runtime limits 控制。避免使用自定义脚本把完整 source corpus 或完整 graph 加载到进程内存。
+
+未发布阶段的开发部署可以破坏式重建数据。需要清空本地 PostgreSQL 和 Redis volumes 时，先停止 stack，执行 `pnpm compose:clean`，再启动 stack、执行迁移，并重新上传 Markdown 文件生成 graph-backed bundles。

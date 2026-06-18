@@ -1,15 +1,23 @@
 import {
   buildSearchIndex,
+  buildGraphGeneratedFiles,
+  buildGraphLinkIndexEntries,
   bundleSchemaTitle,
   DEFAULT_OKF_LOG_LIMITS,
+  graphRefForFile,
   knowledgeBaseTitle,
+  listPageRelatedGraphLinks,
+  pageGraphRefForFile,
+  prepareGeneratedMarkdownBody,
   renderOkfIndex,
   renderOkfLog,
   stringifyIndex,
   type IndexMetadata,
+  type NormalizedOkfGraph,
   type OkfLogEntry,
   type OkfLogLimits,
   type OkfLogMonthlySummary,
+  type OkfGraphRelationship,
   type SourceMetadata,
   type SourceModelSuggestions
 } from "@focowiki/okf";
@@ -21,12 +29,20 @@ export type BundleFileKind =
   | "schema"
   | "manifest_index"
   | "search_index"
-  | "link_index";
+  | "link_index"
+  | "graph_index"
+  | "graph_manifest"
+  | "graph_node_index"
+  | "graph_edge_shard"
+  | "graph_file";
 
 export type GeneratedPageSummary = {
   pagePath: string;
+  fileId: string;
+  graphRef?: string;
   metadata: SourceMetadata;
   suggestions: SourceModelSuggestions | null;
+  graphLinks?: OkfGraphRelationship[];
 };
 
 export type GeneratedOkfFile = {
@@ -49,6 +65,11 @@ export type PublicationLogHistory = {
   summaries: OkfLogMonthlySummary[];
 };
 
+export type PublicationGraphFilesInput = {
+  graph: NormalizedOkfGraph;
+  generatedAt: string;
+};
+
 export function applyPresentationSuggestions(
   metadata: SourceMetadata,
   suggestions: SourceModelSuggestions | null
@@ -64,15 +85,19 @@ export function applyPresentationSuggestions(
 export function renderPageFile(
   page: GeneratedPageSummary,
   body: string,
-  publicPaths: Set<string>
+  publicPaths: Set<string>,
+  graph: NormalizedOkfGraph | null
 ): string {
+  const prepared = prepareGeneratedMarkdownBody(body);
   return renderConceptFile(
     page.metadata,
     [
-      body.trim(),
+      prepared.content,
       "",
-      ...renderRelatedLinks(page.suggestions, publicPaths),
-      ...renderCitations(page.metadata)
+      ...renderRelatedLinks(publicPaths, page.graphLinks ?? [], graph),
+      ...(prepared.trailingCitations
+        ? ["", prepared.trailingCitations]
+        : renderCitations(page.metadata))
     ].join("\n")
   );
 }
@@ -164,7 +189,16 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
         "Required fields:",
         "",
         "- type",
-        "- title"
+        "- title",
+        "",
+        "File graph:",
+        "",
+        "- Source-backed pages may include `fileId` and `graph` frontmatter fields.",
+        "- `_graph/index.md` introduces the file graph.",
+        "- `_graph/manifest.json` describes graph file counts and path patterns.",
+        "- `_graph/nodes.jsonl` stores one graph node per line.",
+        "- `_graph/edges/*.jsonl` stores sharded graph edges.",
+        "- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
       ].join("\n")
     )
   };
@@ -173,11 +207,14 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
 export function renderIndexFiles(
   pages: GeneratedPageSummary[],
   files: ManifestFileEntry[],
-  generatedAt: string
+  generatedAt: string,
+  graph: NormalizedOkfGraph | null = null
 ): GeneratedOkfFile[] {
   const searchIndex = buildSearchIndex(
     pages.map((page) => ({
       path: page.pagePath,
+      fileId: page.fileId,
+      ...(page.graphRef ? { graphRef: page.graphRef } : {}),
       title: page.metadata.title,
       ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
         ? { description: page.metadata.description }
@@ -190,7 +227,14 @@ export function renderIndexFiles(
   );
   const linkIndex = {
     generated_at: generatedAt,
-    links: buildLinkEntries(pages)
+    links: [
+      ...buildLinkEntries(pages),
+      ...(graph ? buildGraphLinkIndexEntries(graph) : [])
+    ].sort((left, right) =>
+      `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
+        `${right.from}\u0000${right.to}\u0000${right.label}`
+      )
+    )
   };
   const manifestIndex = {
     generated_at: generatedAt,
@@ -241,6 +285,40 @@ export function renderIndexFiles(
   ];
 }
 
+export function renderGraphFiles(input: PublicationGraphFilesInput): GeneratedOkfFile[] {
+  return buildGraphGeneratedFiles(input.graph, input.generatedAt).map((file) => ({
+    logicalPath: file.path,
+    sourceFileId: null,
+    fileKind: file.kind,
+    content: file.content,
+    metadata: null
+  }));
+}
+
+export function attachGraphToPage(
+  page: GeneratedPageSummary,
+  graph: NormalizedOkfGraph | null,
+  publicPaths: Set<string>
+): GeneratedPageSummary {
+  const graphRef = graph?.nodesByFileId.has(page.fileId) ? graphRefForFile(page.fileId) : undefined;
+
+  return {
+    ...page,
+    ...(graphRef ? { graphRef } : {}),
+    metadata: graphRef
+      ? {
+          ...page.metadata,
+          fileId: page.fileId,
+          graph: pageGraphRefForFile(page.fileId)
+        }
+      : page.metadata,
+    graphLinks:
+      page.graphLinks && page.graphLinks.length > 0
+        ? page.graphLinks
+        : listPageRelatedGraphLinks(graph, page.fileId, publicPaths)
+  };
+}
+
 export function normalizeLogLimits(limits: Partial<OkfLogLimits> | undefined): OkfLogLimits {
   const maxEntries = limits?.maxEntries;
   const maxBytes = limits?.maxBytes;
@@ -288,7 +366,7 @@ function buildRelatedLinkEntries(
   page: GeneratedPageSummary,
   publicPaths: Set<string>
 ): Array<{ from: string; to: string; label: string }> {
-  return (page.suggestions?.related_links ?? [])
+  return (page.graphLinks ?? [])
     .map((link) => ({
       from: page.pagePath,
       to: normalizePublicPathReference(link.path),
@@ -303,18 +381,19 @@ function renderCitations(metadata: SourceMetadata): string[] {
 }
 
 function renderRelatedLinks(
-  suggestions: SourceModelSuggestions | null,
-  publicPaths: Set<string>
+  publicPaths: Set<string>,
+  graphLinks: OkfGraphRelationship[],
+  graph: NormalizedOkfGraph | null
 ): string[] {
-  const links = (suggestions?.related_links ?? [])
-    .map((link) => ({
-      path: normalizePublicPathReference(link.path),
-      title: link.title.trim()
-    }))
-    .filter((link) => link.path && link.title && publicPaths.has(link.path))
-    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)})`);
+  const graphRelated = graphLinks
+    .filter((link) => publicPaths.has(link.path))
+    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)}) - ${link.relationType}`);
 
-  return links.length > 0 ? ["", "## Related", "", ...links] : [];
+  if (graph && graphRelated.length > 0) {
+    return ["", "## Related", "", ...graphRelated];
+  }
+
+  return [];
 }
 
 function renderConceptFile(metadata: SourceMetadata, body: string): string {

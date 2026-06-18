@@ -15,7 +15,7 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 - Upload one or more `.md` files.
 - Parse YAML frontmatter, Markdown headings, Markdown links, and body content.
 - Preserve safe domain metadata from frontmatter.
-- Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, and JSON indexes.
+- Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, JSON indexes, and `_graph/*` relationship files.
 - Store uploaded source files and generated bundle files in S3-compatible storage.
 - Persist knowledge bases, source-file processing records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
 - Expose knowledge-base CRUD, Markdown upload, source-file processing observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
@@ -90,6 +90,7 @@ Markdown links are the primary relationship mechanism. Links in body content hel
 ## Next Steps
 
 - [Understand Open Knowledge Format](./guide/open-knowledge-format.md)
+- [Understand file-first graph relationships](./guide/file-first-graph.md)
 - [Deploy with Docker Compose](./deployment/docker-compose.md)
 - [Use Developer OpenAPI](./openapi/index.md)
 - [Connect Agents](./agent-integration/index.md)

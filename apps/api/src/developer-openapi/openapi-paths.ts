@@ -253,6 +253,18 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successExample: responseExamples.getFileContentById
       })
     },
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related": {
+      get: operation({
+        tag: "Files",
+        operationId: "listRelatedFiles",
+        summary: "List related files",
+        parameters: [knowledgeBaseIdParameter(), fileIdParameter(), ...paginationParameters()],
+        requestExample: requestExamples.listRelatedFiles,
+        successStatus: 200,
+        successSchema: ref("RelatedFileListResponse"),
+        successExample: responseExamples.listRelatedFiles
+      })
+    },
     "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files": {
       delete: operation({
         tag: "Files",

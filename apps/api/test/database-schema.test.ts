@@ -106,11 +106,51 @@ describe("database schema migration", () => {
     expect(sql).toContain("check (status in ('running', 'completed', 'failed', 'skipped'))");
     expect(sql).toContain("check (processing_status in ('queued', 'running', 'completed', 'failed'))");
     expect(sql).toContain("file_kind text not null");
-    expect(sql).toContain(
-      "check (file_kind in ('page', 'index', 'log', 'schema', 'manifest_index', 'search_index', 'link_index'))"
-    );
+    for (const fileKind of [
+      "'page'",
+      "'index'",
+      "'log'",
+      "'schema'",
+      "'manifest_index'",
+      "'search_index'",
+      "'link_index'",
+      "'graph_index'",
+      "'graph_manifest'",
+      "'graph_node_index'",
+      "'graph_edge_shard'",
+      "'graph_file'"
+    ]) {
+      expect(sql).toContain(fileKind);
+    }
     expect(sql).toContain("(file_kind = 'page' and source_file_id is not null)");
     expect(sql).toContain("(file_kind <> 'page' and source_file_id is null)");
+  });
+
+  it("defines graph tables, stages, file kinds, and bounded graph indexes", () => {
+    const sql = readMigration();
+    const repository = readRepository();
+
+    for (const table of [
+      "source_file_graph_nodes",
+      "source_file_graph_edges",
+      "source_file_graph_jobs"
+    ]) {
+      expect(sql).toContain(`create table if not exists focowiki.${table}`);
+    }
+    expect(sql).toContain("'graph_generation'");
+    expect(sql).toContain("'graph_index'");
+    expect(sql).toContain("'graph_manifest'");
+    expect(sql).toContain("'graph_node_index'");
+    expect(sql).toContain("'graph_edge_shard'");
+    expect(sql).toContain("'graph_file'");
+    expect(sql).toContain("source_file_graph_edges(knowledge_base_id, from_source_file_id, weight desc");
+    expect(sql).toContain("source_file_graph_edges(knowledge_base_id, to_source_file_id, weight desc");
+    expect(sql).toContain("source_file_graph_edges(knowledge_base_id, relation_type, weight desc");
+    expect(sql).toContain("unique (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type)");
+    expect(repository).toContain("upsertgraphnode");
+    expect(repository).toContain("upsertgraphedges");
+    expect(repository).toContain("listgraphneighborhood");
+    expect(repository).toContain("deletegraphforsourcefile");
   });
 
   it("uses URL-safe opaque knowledge base identifiers", () => {

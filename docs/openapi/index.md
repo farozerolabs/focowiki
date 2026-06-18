@@ -76,8 +76,9 @@ Error responses use:
 3. Poll source-file detail or source-file events until each file reaches `completed` or `failed`.
 4. Read the generated tree and keep `path` or `fileId` values.
 5. Read file content by `path` or `fileId`.
-6. Delete source-backed generated pages when needed.
-7. Register webhooks when an external system needs event delivery.
+6. Read `_graph/by-file/{fileId}.json` or the related-file endpoint when the application needs relationship exploration.
+7. Delete source-backed generated pages when needed.
+8. Register webhooks when an external system needs event delivery.
 
 ## Quick Start
 
@@ -159,6 +160,23 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
+Read the file-first graph entry for a source-backed page. The same graph path appears in page frontmatter and `_index/search.json` as `graphRef`.
+
+```bash
+curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "path=_graph/by-file/$FIRST_SOURCE_FILE_ID.json"
+```
+
+Read a bounded related-file list when your backend wants JSON relationship records directly:
+
+```bash
+curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/$FIRST_TREE_FILE_ID/related?limit=20" \
+  -H "Authorization: Bearer $OPENAPI_KEY"
+```
+
+Graph files are logical generated files. Use tree listing, content by path, content by ID, or the related-file endpoint. The API returns logical paths and safe reasons, not S3 object keys or runtime internals.
+
 Read source file metadata returned by the upload response:
 
 ```bash
@@ -183,7 +201,7 @@ See [Webhook Delivery](./webhook-delivery.md) for delivery headers, payload form
 
 ## Agent Integration
 
-When an Agent needs to read a knowledge base, place a developer backend between the Agent and Focowiki. The backend keeps the Focowiki OpenAPI key, selects the target knowledge base, and exposes a small read-focused interface to the Agent.
+When an Agent needs to read a knowledge base, place a developer backend between the Agent and Focowiki. The backend keeps the Focowiki OpenAPI key, selects the target knowledge base, and exposes a small read-focused interface to the Agent. Agents can follow generated Markdown links and `_graph/by-file/{fileId}.json` files for deeper exploration.
 
 See [Agent Integration](../agent-integration/index.md) for backend adapter and Skill design guidance.
 

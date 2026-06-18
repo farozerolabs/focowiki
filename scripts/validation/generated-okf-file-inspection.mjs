@@ -46,7 +46,7 @@ try {
   report.knowledgeBaseId = knowledgeBase.id;
   cleanup = () => deleteKnowledgeBase(admin, knowledgeBase.id);
   const upload = await uploadMarkdownFiles(admin, knowledgeBase.id, samples);
-  report.sourceFileIds = upload.files.map((file) => file.fileId);
+  report.sourceFileIds = upload.files.map((file) => file.id);
   const sourceFiles = await waitForSourceFilesCompleted(admin, knowledgeBase.id, report.sourceFileIds, readSourceFileTimeoutMs(samples.length));
   assertSourceFiles(sourceFiles, samples);
   const release = await readLatestRelease(admin, knowledgeBase.id);
@@ -212,9 +212,9 @@ async function uploadMarkdownFiles(admin, knowledgeBaseId, samples) {
     throw new Error("Upload response did not include accepted source files.");
   }
 
-  const missingIds = body.files.filter((file) => !file.fileId);
+  const missingIds = body.files.filter((file) => !file.id);
   if (missingIds.length > 0) {
-    throw new Error("Upload response included source files without fileId.");
+    throw new Error("Upload response included source files without id.");
   }
 
   report.checks.push(okCheck("upload-submit", "Selected Markdown files were uploaded."));
@@ -386,6 +386,9 @@ function inspectSingleFile(file, content, paths, samples) {
   if (file.logicalPath.endsWith(".json")) {
     JSON.parse(content);
     assertContentType(file, "application/json; charset=utf-8");
+  } else if (file.logicalPath.endsWith(".jsonl")) {
+    inspectJsonlFile(file, content);
+    assertContentType(file, "application/x-ndjson; charset=utf-8");
   } else if (file.logicalPath.endsWith(".md")) {
     assertContentType(file, "text/markdown; charset=utf-8");
     inspectMarkdownFile(file, content, samples);
@@ -401,6 +404,18 @@ function inspectSingleFile(file, content, paths, samples) {
     title: file.title || null,
     sourceBacked: Boolean(file.sourceFileId)
   });
+}
+
+function inspectJsonlFile(file, content) {
+  const lines = content.split("\n").filter((line) => line.trim().length > 0);
+
+  if (lines.length === 0) {
+    throw new Error(`JSONL file is empty: ${file.logicalPath}`);
+  }
+
+  for (const line of lines) {
+    JSON.parse(line);
+  }
 }
 
 function inspectMarkdownFile(file, content, samples) {
@@ -424,18 +439,116 @@ function inspectMarkdownFile(file, content, samples) {
     return;
   }
 
+  if (file.logicalPath.startsWith("_graph/")) {
+    if (!parsed.content.startsWith("# ")) {
+      throw new Error(`Graph Markdown file must start with a heading: ${file.logicalPath}`);
+    }
+    return;
+  }
+
   const sample = samples.find((candidate) => `pages/${candidate.basename}` === file.logicalPath);
 
   if (!sample) {
     throw new Error(`Generated page path does not match any uploaded original filename: ${file.logicalPath}`);
   }
 
-  const source = matter(fs.readFileSync(sample.filePath, "utf8")).data;
-  assertMetadataPreserved(file.logicalPath, source, parsed.data);
+  const sourceFile = matter(fs.readFileSync(sample.filePath, "utf8"));
+  assertMetadataPreserved(file.logicalPath, sourceFile.data, parsed.data);
+  assertSourceBodyPreserved(file.logicalPath, sourceFile.content, parsed.content);
 
   if (!parsed.content.includes(sample.title)) {
     throw new Error(`Generated page content does not include the source title: ${file.logicalPath}`);
   }
+
+  if (countMarkdownHeading(parsed.content, "related") > 1) {
+    throw new Error(`Generated page contains duplicate Related sections: ${file.logicalPath}`);
+  }
+
+  if (countMarkdownHeading(parsed.content, "citations") > 1) {
+    throw new Error(`Generated page contains duplicate Citations sections: ${file.logicalPath}`);
+  }
+}
+
+function assertSourceBodyPreserved(filePath, sourceContent, generatedContent) {
+  const prepared = prepareSourceBodyForComparison(sourceContent);
+  const snippets = selectBodySnippets(prepared);
+
+  if (snippets.length === 0) {
+    throw new Error(`Source body did not provide comparable snippets: ${filePath}`);
+  }
+
+  const missing = snippets.filter((snippet) => !generatedContent.includes(snippet));
+
+  if (missing.length > 0) {
+    throw new Error(`Generated page dropped source body snippets in ${filePath}: ${missing.slice(0, 2).join(" | ")}`);
+  }
+}
+
+function prepareSourceBodyForComparison(sourceContent) {
+  let lines = sourceContent.trimEnd().split(/\r?\n/);
+  const citationsStart = findTrailingHeading(lines, "citations");
+
+  if (citationsStart !== null) {
+    lines = lines.slice(0, citationsStart);
+  }
+
+  const relatedStart = findTrailingHeading(lines, "related");
+
+  if (relatedStart !== null) {
+    lines = lines.slice(0, relatedStart);
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
+function selectBodySnippets(content) {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 24 && !/^#{1,6}\s+related\s*$/i.test(line));
+  const selected = [];
+
+  for (const index of [0, 1, 2, Math.floor(lines.length / 2), lines.length - 3, lines.length - 2, lines.length - 1]) {
+    const line = lines[index];
+
+    if (line && !selected.includes(line)) {
+      selected.push(line);
+    }
+  }
+
+  return selected;
+}
+
+function countMarkdownHeading(content, expectedTitle) {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => readHeadingTitle(line) === expectedTitle)
+    .length;
+}
+
+function findTrailingHeading(lines, expectedTitle) {
+  const headingStart = findLastMarkdownHeading(lines);
+
+  if (headingStart === null) {
+    return null;
+  }
+
+  return readHeadingTitle(lines[headingStart]) === expectedTitle ? headingStart : null;
+}
+
+function findLastMarkdownHeading(lines) {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (readHeadingTitle(lines[index])) {
+      return index;
+    }
+  }
+
+  return null;
+}
+
+function readHeadingTitle(line) {
+  const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line?.trim() ?? "");
+  return match?.[2]?.trim().toLowerCase() || null;
 }
 
 function assertMetadataPreserved(filePath, source, generated) {

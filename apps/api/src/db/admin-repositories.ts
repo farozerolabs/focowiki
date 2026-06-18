@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
+  OkfGraphEdge,
+  OkfGraphNode,
   OkfLogEntry,
   OkfLogMonthlySummary,
   SourceMetadataDefaults,
@@ -11,6 +13,7 @@ import type {
   PublicOpenApiKeyStatus
 } from "../public-openapi/keys.js";
 import type { DatabaseClient } from "./client.js";
+import { createPostgresFileGraphRepository } from "./file-graph-repository.js";
 
 export type CursorPage<T> = {
   items: T[];
@@ -66,7 +69,12 @@ export type BundleFileKind =
   | "schema"
   | "manifest_index"
   | "search_index"
-  | "link_index";
+  | "link_index"
+  | "graph_index"
+  | "graph_manifest"
+  | "graph_node_index"
+  | "graph_edge_shard"
+  | "graph_file";
 
 export type BundleFileRecord = {
   id: string;
@@ -92,6 +100,7 @@ export type SourceFileProcessingStage =
   | "upload_storage"
   | "metadata_resolution"
   | "llm_suggestion"
+  | "graph_generation"
   | "okf_validation"
   | "bundle_generation"
   | "index_publication"
@@ -375,9 +384,96 @@ export type WebhookRepository = {
   getWebhookDelivery?: (deliveryId: string) => Promise<WebhookDeliveryRecord | null>;
 };
 
+export type FileGraphNodeRecord = OkfGraphNode & {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  updatedAt: string;
+};
+
+export type FileGraphRelatedRecord = {
+  fileId: string;
+  sourceFileId: string;
+  bundleFileId: string | null;
+  path: string;
+  title: string;
+  relationType: string;
+  direction: "outgoing" | "incoming";
+  weight: number;
+  reason: string;
+  source: string;
+  evidence?: Record<string, unknown>;
+  contentAvailable: boolean;
+};
+
+export type FileGraphSummaryRecord = {
+  sourceFileId: string;
+  relationshipCount: number;
+  relationships: FileGraphRelatedRecord[];
+};
+
+export type FileGraphJobRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  endedAt: string | null;
+  errorCode: string | null;
+  createdAt: string;
+};
+
+export type FileGraphRepository = {
+  createGraphJob?: (input: {
+    id?: string;
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    startedAt: string;
+  }) => Promise<FileGraphJobRecord>;
+  completeGraphJob?: (input: {
+    id: string;
+    status: FileGraphJobRecord["status"];
+    endedAt: string;
+    errorCode?: string | null;
+  }) => Promise<FileGraphJobRecord | null>;
+  upsertGraphNode: (input: {
+    knowledgeBaseId: string;
+    node: OkfGraphNode;
+  }) => Promise<void>;
+  upsertGraphEdges: (input: {
+    knowledgeBaseId: string;
+    edges: OkfGraphEdge[];
+  }) => Promise<void>;
+  listGraphNodes: (request: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<OkfGraphNode>>;
+  listGraphEdges: (request: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<OkfGraphEdge>>;
+  listGraphNeighborhood: (request: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    limit: number;
+    cursor?: string | null;
+  }) => Promise<CursorPage<FileGraphRelatedRecord>>;
+  getGraphSummary?: (request: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    limit: number;
+  }) => Promise<FileGraphSummaryRecord>;
+  deleteGraphForSourceFile: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+  }) => Promise<void>;
+};
+
 export type AdminRepositories = {
   knowledgeBases: KnowledgeBaseRepository;
   files?: BundleFileRepository;
+  graph?: FileGraphRepository;
   modelInvocations?: {
     createModelInvocation: (input: ModelInvocationDraft) => Promise<ModelInvocationRecord>;
     completeModelInvocation: (input: {
@@ -1217,6 +1313,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         return rows.length > 0;
       }
     },
+    graph: createPostgresFileGraphRepository(sql),
     modelInvocations: {
       async createModelInvocation(input) {
         const rows = await sql<ModelInvocationRow[]>`

@@ -1,6 +1,7 @@
 import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
+  FileGraphRelatedRecord,
   KnowledgeBaseRecord,
   SourceFileEventRecord,
   SourceFileRecord,
@@ -92,6 +93,23 @@ export function toDeveloperBundleFile(record: BundleFileRecord, source?: SourceF
     frontmatter: record.frontmatter,
     deletable: record.fileKind === "page" && Boolean(record.sourceFileId),
     contentAvailable: true
+  };
+}
+
+export function toDeveloperRelatedFile(record: FileGraphRelatedRecord) {
+  return {
+    fileId: record.fileId,
+    sourceFileId: record.sourceFileId,
+    bundleFileId: record.bundleFileId,
+    path: record.path,
+    title: record.title,
+    relationType: record.relationType,
+    direction: record.direction,
+    weight: record.weight,
+    reason: record.reason,
+    source: record.source,
+    evidence: record.evidence ?? {},
+    contentAvailable: record.contentAvailable
   };
 }
 

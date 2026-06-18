@@ -451,12 +451,12 @@ describe("generateOkfBundle", () => {
       timestamp: "2026-06-14T00:00:00.000Z",
       description: "Suggested description"
     });
-    expect(page.content).toContain("## Related");
-    expect(page.content).toContain("- [Related](/pages/related.md)");
+    expect(page.content).not.toContain("## Related");
+    expect(page.content).not.toContain("- [Related](/pages/related.md)");
     const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
       links: Array<{ from: string; to: string; label: string }>;
     };
-    expect(links.links).toContainEqual({
+    expect(links.links).not.toContainEqual({
       from: "pages/intro.md",
       to: "pages/related.md",
       label: "Related"
@@ -496,7 +496,7 @@ describe("generateOkfBundle", () => {
     expect(page.content).not.toContain("- https://example.com/source");
   });
 
-  it("filters relationship graph suggestions to generated public bundle paths", () => {
+  it("does not publish model relationship suggestions as generated relationships", () => {
     const bundle = generateOkfBundle({
       generatedAt: "2026-06-14T00:00:00.000Z",
       defaults: {},
@@ -530,17 +530,230 @@ describe("generateOkfBundle", () => {
       links: Array<{ from: string; to: string; label: string }>;
     };
 
-    expect(page.content).toContain("- [Related](/pages/related.md)");
+    expect(page.content).not.toContain("## Related");
+    expect(page.content).not.toContain("- [Related](/pages/related.md)");
     expect(page.content).not.toContain("Missing");
     expect(page.content).not.toContain("Raw source");
     expect(page.content).not.toContain("Object key");
-    expect(links.links).toContainEqual({
+    expect(links.links).not.toContainEqual({
       from: "pages/intro.md",
       to: "pages/related.md",
       label: "Related"
     });
     expect(links.links).not.toContainEqual(expect.objectContaining({ to: "pages/missing.md" }));
     expect(links.links).not.toContainEqual(expect.objectContaining({ to: "sources/raw.md" }));
+  });
+
+  it("generates file-first graph files and graph-backed related links", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          id: "source-intro",
+          fileName: "intro.md",
+          content: "---\ntype: guide\ntitle: Intro\ntags:\n  - setup\n---\n# Intro\n\nSee setup."
+        },
+        {
+          id: "source-setup",
+          fileName: "setup.md",
+          content: "---\ntype: guide\ntitle: Setup\ntags:\n  - setup\n---\n# Setup"
+        }
+      ],
+      graph: {
+        nodes: [
+          {
+            fileId: "source-intro",
+            path: "pages/intro.md",
+            title: "Intro",
+            type: "guide",
+            tags: ["setup"],
+            headings: ["Intro"],
+            keywords: ["intro", "setup"],
+            metadata: { type: "guide", title: "Intro", tags: ["setup"] }
+          },
+          {
+            fileId: "source-setup",
+            path: "pages/setup.md",
+            title: "Setup",
+            type: "guide",
+            tags: ["setup"],
+            headings: ["Setup"],
+            keywords: ["setup"],
+            metadata: { type: "guide", title: "Setup", tags: ["setup"] }
+          }
+        ],
+        edges: [
+          {
+            fromFileId: "source-intro",
+            toFileId: "source-setup",
+            relationType: "shared_tag",
+            weight: 0.8,
+            reason: "Both files share the setup tag.",
+            source: "deterministic",
+            evidence: { tags: ["setup"] }
+          }
+        ],
+        limits: {
+          pageRelatedLimit: 10,
+          perFileLimit: 50,
+          edgeShardSize: 1000
+        }
+      }
+    });
+    const files = filesByPath(bundle.files);
+    const intro = matter(files["pages/intro.md"] ?? "");
+    const search = JSON.parse(files["_index/search.json"] ?? "{}") as {
+      items: Array<{ path: string; fileId?: string; graphRef?: string }>;
+    };
+    const manifest = JSON.parse(files["_index/manifest.json"] ?? "{}") as {
+      files: Array<{ path: string; content_type: string }>;
+    };
+    const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
+      links: Array<{ from: string; to: string; label: string; relation_type?: string }>;
+    };
+    const graphManifest = JSON.parse(files["_graph/manifest.json"] ?? "{}") as {
+      node_count: number;
+      edge_count: number;
+      by_file_pattern: string;
+    };
+    const byFile = JSON.parse(files["_graph/by-file/source-intro.json"] ?? "{}") as {
+      fileId: string;
+      path: string;
+      relationships: Array<{ fileId: string; direction: string; relationType: string }>;
+    };
+
+    expect(Object.keys(files).sort()).toEqual(
+      expect.arrayContaining([
+        "_graph/index.md",
+        "_graph/manifest.json",
+        "_graph/nodes.jsonl",
+        "_graph/edges/0000.jsonl",
+        "_graph/by-file/source-intro.json",
+        "_graph/by-file/source-setup.json"
+      ])
+    );
+    expect(intro.data).toMatchObject({
+      fileId: "source-intro",
+      graph: "../_graph/by-file/source-intro.json"
+    });
+    expect(intro.content).toContain("## Related");
+    expect(intro.content).toContain("- [Setup](/pages/setup.md) - shared_tag");
+    expect(search.items).toContainEqual(
+      expect.objectContaining({
+        path: "pages/intro.md",
+        fileId: "source-intro",
+        graphRef: "_graph/by-file/source-intro.json"
+      })
+    );
+    expect(manifest.files).toContainEqual({
+      path: "_graph/by-file/source-intro.json",
+      content_type: "application/json; charset=utf-8"
+    });
+    expect(links.links).toContainEqual(
+      expect.objectContaining({
+        from: "pages/intro.md",
+        to: "pages/setup.md",
+        label: "Setup",
+        relation_type: "shared_tag"
+      })
+    );
+    expect(graphManifest).toMatchObject({
+      node_count: 2,
+      edge_count: 1,
+      by_file_pattern: "_graph/by-file/{fileId}.json"
+    });
+    expect(files["_graph/nodes.jsonl"]).toContain("\"fileId\":\"source-intro\"");
+    expect(files["_graph/edges/0000.jsonl"]).toContain("\"relationType\":\"shared_tag\"");
+    expect(byFile).toMatchObject({
+      fileId: "source-intro",
+      path: "pages/intro.md",
+      relationships: [
+        {
+          fileId: "source-setup",
+          direction: "outgoing",
+          relationType: "shared_tag"
+        }
+      ]
+    });
+  });
+
+  it("replaces trailing source related sections with graph-backed related links", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          id: "source-intro",
+          fileName: "intro.md",
+          content: [
+            "---",
+            "type: guide",
+            "title: Intro",
+            "resource: https://example.com/source",
+            "---",
+            "# Intro",
+            "",
+            "Body.",
+            "",
+            "## Related",
+            "",
+            "- [Stale](stale.md)",
+            "",
+            "# Citations",
+            "",
+            "- Existing citation"
+          ].join("\n")
+        },
+        {
+          id: "source-setup",
+          fileName: "setup.md",
+          content: "---\ntype: guide\ntitle: Setup\n---\n# Setup"
+        }
+      ],
+      graph: {
+        nodes: [
+          {
+            fileId: "source-intro",
+            path: "pages/intro.md",
+            title: "Intro",
+            type: "guide",
+            tags: [],
+            headings: ["Intro"],
+            keywords: ["intro"],
+            metadata: { type: "guide", title: "Intro" }
+          },
+          {
+            fileId: "source-setup",
+            path: "pages/setup.md",
+            title: "Setup",
+            type: "guide",
+            tags: [],
+            headings: ["Setup"],
+            keywords: ["setup"],
+            metadata: { type: "guide", title: "Setup" }
+          }
+        ],
+        edges: [
+          {
+            fromFileId: "source-intro",
+            toFileId: "source-setup",
+            relationType: "title_mention",
+            weight: 0.9,
+            reason: "The source mentions setup.",
+            source: "deterministic",
+            evidence: {}
+          }
+        ]
+      }
+    });
+    const page = matter(filesByPath(bundle.files)["pages/intro.md"] ?? "");
+
+    expect(page.content.match(/^## Related$/gm)).toHaveLength(1);
+    expect(page.content).toContain("- [Setup](/pages/setup.md) - title_mention");
+    expect(page.content).not.toContain("Stale");
+    expect(page.content.match(/^# Citations$/gm)).toHaveLength(1);
+    expect(page.content).toContain("- Existing citation");
   });
 
   it("generates a rolling bounded public update log", () => {

@@ -18,6 +18,11 @@ import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 import { createModelInvocationTracker } from "./model-invocation-tracker.js";
 import { readModelSuggestions, type ModelAssistanceOptions } from "./model-suggestions.js";
+import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
+import {
+  sourceFileStageMessageKey,
+  waitForPublicationLock
+} from "./source-file-processor-support.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
 import { createReleaseId } from "./upload-processor-utils.js";
 
@@ -267,6 +272,24 @@ export function createSourceFileQueueProcessor(
           });
         }
 
+        currentStage = "graph_generation";
+        await processSourceFileGraphStage({
+          repositories,
+          redis,
+          knowledgeBaseId: input.knowledgeBaseId,
+          source,
+          metadata: parsed.metadata,
+          body: resolved.body,
+          suggestions,
+          pageSize: input.batchSize,
+          ttlSeconds: input.cursorTtlSeconds,
+          ownerId,
+          modelAssistance,
+          progressClock,
+          mark,
+          recordStage
+        });
+
         currentStage = "bundle_generation";
         await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
         publicationLockAcquired = await waitForPublicationLock({
@@ -311,6 +334,22 @@ export function createSourceFileQueueProcessor(
                 listPublicationLogHistory({
                   knowledgeBaseId,
                   maxEntries
+                })
+            : undefined,
+          fetchGraphNodePage: repositories.graph
+            ? ({ cursor, limit }) =>
+                repositories.graph!.listGraphNodes({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  cursor,
+                  limit
+                })
+            : undefined,
+          fetchGraphEdgePage: repositories.graph
+            ? ({ cursor, limit }) =>
+                repositories.graph!.listGraphEdges({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  cursor,
+                  limit
                 })
             : undefined,
           fetchSourcePage: ({ cursor, limit }) =>
@@ -424,6 +463,8 @@ export function createSourceFileQueueProcessor(
             ? "METADATA_VALIDATION_FAILED"
             : currentStage === "llm_suggestion"
               ? "MODEL_SUGGESTION_FAILED"
+              : currentStage === "graph_generation"
+                ? "GRAPH_GENERATION_FAILED"
               : "SOURCE_FILE_PROCESSING_FAILED";
         const message = error instanceof Error ? error.message : "Source file processing failed";
         await mark({
@@ -449,41 +490,4 @@ export function createSourceFileQueueProcessor(
       }
     }
   };
-}
-
-async function waitForPublicationLock(input: {
-  redis: RedisCoordinator;
-  knowledgeBaseId: string;
-  ownerId: string;
-  ttlSeconds: number;
-}): Promise<boolean> {
-  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, 60_000);
-
-  while (Date.now() <= deadline) {
-    const acquired = await input.redis.acquireKnowledgeBasePublicationLock(
-      input.knowledgeBaseId,
-      input.ownerId,
-      input.ttlSeconds
-    );
-
-    if (acquired) {
-      return true;
-    }
-
-    await sleep(1_000);
-  }
-
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function sourceFileStageMessageKey(stage: SourceFileProcessingStage): string {
-  return `sourceFiles.stage.${stage.replace(/_([a-z])/g, (_match, letter: string) =>
-    letter.toUpperCase()
-  )}`;
 }

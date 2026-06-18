@@ -61,7 +61,10 @@ describe("readModelSuggestions", () => {
     const client: OpenAIResponsesClient = {
       responses: {
         create: async (request) => {
-          requests.push(request);
+          if (request.text.format.name !== "focowiki_model_suggestions") {
+            throw new Error("Unexpected model request format");
+          }
+          requests.push(request as ModelSuggestionRequest);
           return {
             status: "completed",
             output_text: JSON.stringify({
@@ -103,7 +106,10 @@ describe("readModelSuggestions", () => {
     const client: OpenAIResponsesClient = {
       responses: {
         create: async (request) => {
-          requests.push(request);
+          if (request.text.format.name !== "focowiki_model_suggestions") {
+            throw new Error("Unexpected model request format");
+          }
+          requests.push(request as ModelSuggestionRequest);
           return {
             status: "completed",
             output_text: JSON.stringify({

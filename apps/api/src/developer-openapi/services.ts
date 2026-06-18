@@ -25,6 +25,7 @@ import {
   toDeveloperBundleFile,
   toDeveloperBundleTreeEntry,
   toDeveloperKnowledgeBase,
+  toDeveloperRelatedFile,
   toDeveloperSourceFile,
   toDeveloperSourceFileDetail,
   toDeveloperSourceFileEvent,
@@ -512,6 +513,46 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             : toDeveloperSourceFileDetail(resolved.file)
       };
     },
+    async listRelatedFiles(input: {
+      knowledgeBaseId: string;
+      fileId: string;
+      limit: number;
+      cursor: string | null;
+    }) {
+      const repo = requireRepositories();
+
+      if (!repo.graph?.listGraphNeighborhood) {
+        throw repositoryUnavailable();
+      }
+
+      const resolved = await resolveFileById(repo, input);
+      const sourceFileId =
+        resolved.kind === "bundle" ? resolved.file.sourceFileId : resolved.file.id;
+
+      if (!sourceFileId) {
+        throw conflict("Only source-backed files can return related files.");
+      }
+
+      const scope = `developer-openapi:related:${input.knowledgeBaseId}:${sourceFileId}`;
+      const page = await repo.graph.listGraphNeighborhood({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId,
+        limit: input.limit,
+        cursor: await readCursor(requireRedis(), scope, input.cursor)
+      });
+
+      return {
+        fileId: input.fileId,
+        sourceFileId,
+        items: page.items.map(toDeveloperRelatedFile),
+        nextCursor: await writeCursor(
+          requireRedis(),
+          scope,
+          page.nextCursor,
+          config.pagination.cursorTtlSeconds
+        )
+      };
+    },
     async getFileContentById(input: { knowledgeBaseId: string; fileId: string }) {
       const resolved = await resolveFileById(requireRepositories(), input);
 
@@ -896,7 +937,18 @@ function isAllowedGeneratedPath(path: string): boolean {
       path === "log.md" ||
       path === "schema.md" ||
       /^pages\/[^/].*\.md$/u.test(path) ||
-      /^_index\/[^/]+\.json$/u.test(path))
+      /^_index\/[^/]+\.json$/u.test(path) ||
+      isAllowedGraphPath(path))
+  );
+}
+
+function isAllowedGraphPath(path: string): boolean {
+  return (
+    path === "_graph/index.md" ||
+    path === "_graph/manifest.json" ||
+    path === "_graph/nodes.jsonl" ||
+    /^_graph\/edges\/[0-9]{4}\.jsonl$/u.test(path) ||
+    /^_graph\/by-file\/[^/]+\.json$/u.test(path)
   );
 }
 

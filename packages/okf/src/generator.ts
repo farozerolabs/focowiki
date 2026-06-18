@@ -8,10 +8,22 @@ import {
   type SearchIndexSource
 } from "./indexes.js";
 import {
+  buildGraphGeneratedFiles,
+  buildGraphLinkIndexEntries,
+  graphRefForFile,
+  listPageRelatedGraphLinks,
+  normalizeOkfGraph,
+  pageGraphRefForFile,
+  type OkfGraphInput,
+  type OkfGraphRelationship,
+  type NormalizedOkfGraph
+} from "./graph.js";
+import {
   resolveSourceMetadata,
   type SourceMetadata,
   type SourceMetadataDefaults
 } from "./metadata.js";
+import { prepareGeneratedMarkdownBody } from "./markdown-appendix.js";
 import {
   DEFAULT_OKF_LOG_LIMITS,
   renderOkfIndex,
@@ -23,6 +35,7 @@ import {
 import { bundleSchemaTitle, knowledgeBaseTitle } from "./titles.js";
 
 export type MarkdownSourceInput = {
+  id?: string;
   fileName: string;
   content: string;
   suggestions?: SourceModelSuggestions | null;
@@ -50,6 +63,7 @@ export type GenerateOkfBundleInput = {
   defaults: SourceMetadataDefaults;
   generatedAt: string;
   title?: string;
+  graph?: OkfGraphInput;
   log?: {
     entries?: OkfLogEntry[];
     summaries?: OkfLogMonthlySummary[];
@@ -64,14 +78,18 @@ export type GeneratedOkfBundle = {
 
 type GeneratedPage = {
   pagePath: string;
+  fileId?: string;
+  graphRef?: string;
   metadata: SourceMetadata;
   body: string;
   suggestions: SourceModelSuggestions | null;
+  graphLinks: OkfGraphRelationship[];
 };
 
 export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBundle {
   const publicFileNames = new Set<string>();
-  const pages = input.sources.map((source) => {
+  const graph = normalizeOkfGraph(input.graph);
+  const pages: GeneratedPage[] = input.sources.map((source) => {
     const resolved = resolveSourceMetadata({
       ...source,
       defaults: input.defaults,
@@ -84,12 +102,22 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
     }
 
     publicFileNames.add(publicFileName);
+    const pagePath = `pages/${publicFileName}`;
+    const fileId = source.id?.trim() || undefined;
+    const graphRef = fileId && graph?.nodesByFileId.has(fileId) ? graphRefForFile(fileId) : undefined;
 
     return {
-      pagePath: `pages/${publicFileName}`,
-      metadata: applyPresentationSuggestions(resolved.metadata, source.suggestions ?? null),
+      pagePath,
+      ...(fileId ? { fileId } : {}),
+      ...(graphRef ? { graphRef } : {}),
+      metadata: applyGraphMetadata(
+        applyPresentationSuggestions(resolved.metadata, source.suggestions ?? null),
+        fileId,
+        graphRef
+      ),
       body: resolved.body,
-      suggestions: source.suggestions ?? null
+      suggestions: source.suggestions ?? null,
+      graphLinks: []
     };
   });
   const publicPaths = new Set([
@@ -98,6 +126,9 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
     "schema.md",
     ...pages.map((page) => page.pagePath)
   ]);
+  for (const page of pages) {
+    page.graphLinks = listPageRelatedGraphLinks(graph, page.fileId, publicPaths);
+  }
 
   const markdownFiles: OkfBundleFile[] = [
     {
@@ -124,21 +155,45 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
           "Required fields:",
           "",
           "- type",
-          "- title"
+          "- title",
+          "",
+          "File graph:",
+          "",
+          "- Source-backed pages may include `fileId` and `graph` frontmatter fields.",
+          "- `_graph/index.md` introduces the file graph.",
+          "- `_graph/manifest.json` describes graph file counts and path patterns.",
+          "- `_graph/nodes.jsonl` stores one graph node per line.",
+          "- `_graph/edges/*.jsonl` stores sharded graph edges.",
+          "- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
         ].join("\n")
       )
     },
     ...pages.flatMap((page) => [
       {
         path: page.pagePath,
-        content: renderPage(page, publicPaths)
+        content: renderPage(page, publicPaths, graph)
       }
     ])
   ];
+  const graphFiles = graph ? buildGraphGeneratedFiles(graph, input.generatedAt) : [];
   const searchSources = pages.map(toSearchIndexSource);
   const linkIndexFile = {
     path: "_index/links.json",
-    content: stringifyIndex(buildLinkIndex(markdownFiles, input.generatedAt))
+    content: stringifyIndex(
+      graph
+        ? {
+            generated_at: input.generatedAt,
+            links: [
+              ...buildLinkIndex(markdownFiles, input.generatedAt).links,
+              ...buildGraphLinkIndexEntries(graph)
+            ].sort((left, right) =>
+              `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
+                `${right.from}\u0000${right.to}\u0000${right.label}`
+              )
+            )
+          }
+        : buildLinkIndex(markdownFiles, input.generatedAt)
+    )
   };
   const searchIndexFile = {
     path: "_index/search.json",
@@ -146,6 +201,7 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
   };
   const manifestFiles: BundleFileForIndex[] = [
     ...markdownFiles,
+    ...graphFiles,
     {
       path: "_index/manifest.json",
       content: ""
@@ -160,7 +216,7 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
 
   return {
     generatedAt: input.generatedAt,
-    files: [...markdownFiles, manifestIndexFile, searchIndexFile, linkIndexFile]
+    files: [...markdownFiles, ...graphFiles, manifestIndexFile, searchIndexFile, linkIndexFile]
   };
 }
 
@@ -212,14 +268,21 @@ function renderLog(
   }).trimEnd();
 }
 
-function renderPage(page: GeneratedPage, publicPaths: Set<string>): string {
+function renderPage(
+  page: GeneratedPage,
+  publicPaths: Set<string>,
+  graph: NormalizedOkfGraph | null
+): string {
+  const body = prepareGeneratedMarkdownBody(page.body);
   return renderConceptFile(
     page.metadata,
     [
-      page.body,
+      body.content,
       "",
-      ...renderRelatedLinks(page.suggestions, publicPaths),
-      ...renderCitations(page.metadata, page.body)
+      ...renderRelatedLinks(publicPaths, page.graphLinks, graph),
+      ...(body.trailingCitations
+        ? ["", body.trailingCitations]
+        : renderCitations(page.metadata, body.content))
     ].join("\n")
   );
 }
@@ -239,6 +302,8 @@ function renderCitations(metadata: SourceMetadata, body: string): string[] {
 function toSearchIndexSource(page: GeneratedPage): SearchIndexSource {
   return {
     path: page.pagePath,
+    ...(page.fileId ? { fileId: page.fileId } : {}),
+    ...(page.graphRef ? { graphRef: page.graphRef } : {}),
     title: page.metadata.title,
     ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
       ? { description: page.metadata.description }
@@ -287,39 +352,32 @@ function applyPresentationSuggestions(
   return description ? { ...metadata, description } : metadata;
 }
 
-function renderRelatedLinks(
-  suggestions: SourceModelSuggestions | null,
-  publicPaths: Set<string>
-): string[] {
-  const links = (suggestions?.related_links ?? [])
-    .map((link) => ({
-      path: normalizePublicPathReference(link.path),
-      title: link.title.trim()
-    }))
-    .filter((link) => link.path && link.title && publicPaths.has(link.path))
-    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)})`);
-
-  return links.length > 0 ? ["", "## Related", "", ...links] : [];
+function applyGraphMetadata(
+  metadata: SourceMetadata,
+  fileId: string | undefined,
+  graphRef: string | undefined
+): SourceMetadata {
+  return {
+    ...metadata,
+    ...(fileId ? { fileId } : {}),
+    ...(graphRef ? { graph: pageGraphRefForFile(fileId ?? "") } : {})
+  };
 }
 
-function normalizePublicPathReference(path: string): string {
-  let normalized = path.trim().replace(/^\/+/, "").replace(/#.*$/, "");
+function renderRelatedLinks(
+  publicPaths: Set<string>,
+  graphLinks: OkfGraphRelationship[],
+  graph: NormalizedOkfGraph | null
+): string[] {
+  const graphRelated = graphLinks
+    .filter((link) => publicPaths.has(link.path))
+    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)}) - ${link.relationType}`);
 
-  for (let index = 0; index < 3; index += 1) {
-    try {
-      const next = decodeURIComponent(normalized);
-
-      if (next === normalized) {
-        break;
-      }
-
-      normalized = next;
-    } catch {
-      break;
-    }
+  if (graph && graphRelated.length > 0) {
+    return ["", "## Related", "", ...graphRelated];
   }
 
-  return normalized;
+  return [];
 }
 
 function toMarkdownHref(path: string): string {

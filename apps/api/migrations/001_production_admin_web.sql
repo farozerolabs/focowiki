@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
     'upload_storage',
     'metadata_resolution',
     'llm_suggestion',
+    'graph_generation',
     'okf_validation',
     'bundle_generation',
     'index_publication',
@@ -96,6 +97,7 @@ ALTER TABLE focowiki.source_files
     'upload_storage',
     'metadata_resolution',
     'llm_suggestion',
+    'graph_generation',
     'okf_validation',
     'bundle_generation',
     'index_publication',
@@ -158,6 +160,7 @@ CREATE TABLE IF NOT EXISTS focowiki.source_file_events (
     'source_deletion',
     'metadata_resolution',
     'llm_suggestion',
+    'graph_generation',
     'okf_validation',
     'bundle_generation',
     'index_publication',
@@ -198,11 +201,67 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
   frontmatter_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (release_id, logical_path),
-  CHECK (file_kind IN ('page', 'index', 'log', 'schema', 'manifest_index', 'search_index', 'link_index')),
+  CHECK (file_kind IN (
+    'page',
+    'index',
+    'log',
+    'schema',
+    'manifest_index',
+    'search_index',
+    'link_index',
+    'graph_index',
+    'graph_manifest',
+    'graph_node_index',
+    'graph_edge_shard',
+    'graph_file'
+  )),
   CHECK (
     (file_kind = 'page' AND source_file_id IS NOT NULL)
     OR (file_kind <> 'page' AND source_file_id IS NULL)
   )
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_nodes (
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  path text NOT NULL,
+  title text NOT NULL,
+  type text,
+  description text,
+  tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  headings_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  keywords_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (knowledge_base_id, source_file_id)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_edges (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  from_source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  to_source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  relation_type text NOT NULL,
+  weight numeric NOT NULL CHECK (weight >= 0 AND weight <= 1),
+  reason text NOT NULL,
+  source text NOT NULL,
+  evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type),
+  CHECK (from_source_file_id <> to_source_file_id)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_jobs (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  status text NOT NULL,
+  started_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  error_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (status IN ('running', 'completed', 'failed')),
+  CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
 
 CREATE TABLE IF NOT EXISTS focowiki.bundle_tree_entries (
@@ -365,6 +424,21 @@ CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_cursor_idx
 
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_logical_cursor_idx
   ON focowiki.bundle_tree_entries(release_id, logical_path, id);
+
+CREATE INDEX IF NOT EXISTS source_file_graph_nodes_kb_path_cursor_idx
+  ON focowiki.source_file_graph_nodes(knowledge_base_id, path, source_file_id);
+
+CREATE INDEX IF NOT EXISTS source_file_graph_edges_from_weight_idx
+  ON focowiki.source_file_graph_edges(knowledge_base_id, from_source_file_id, weight DESC, to_source_file_id);
+
+CREATE INDEX IF NOT EXISTS source_file_graph_edges_to_weight_idx
+  ON focowiki.source_file_graph_edges(knowledge_base_id, to_source_file_id, weight DESC, from_source_file_id);
+
+CREATE INDEX IF NOT EXISTS source_file_graph_edges_relation_weight_idx
+  ON focowiki.source_file_graph_edges(knowledge_base_id, relation_type, weight DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_file_graph_jobs_source_created_idx
+  ON focowiki.source_file_graph_jobs(knowledge_base_id, source_file_id, created_at DESC, id);
 
 CREATE INDEX IF NOT EXISTS admin_audit_events_created_idx
   ON focowiki.admin_audit_events(created_at DESC, id);

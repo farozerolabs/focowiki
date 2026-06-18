@@ -2,8 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   buildIndexMetadataFields,
+  normalizeOkfGraph,
   resolveSourceMetadata,
   validateOkfBundle,
+  type NormalizedOkfGraph,
+  type OkfGraphEdge,
+  type OkfGraphLimits,
+  type OkfGraphNode,
+  type OkfGraphRelationship,
   type OkfLogLimits,
   type SourceMetadata,
   type SourceMetadataDefaults,
@@ -14,7 +20,9 @@ import type { StorageKeyspace } from "../storage/keys.js";
 import type { StoredObject } from "../storage/s3.js";
 import {
   applyPresentationSuggestions,
+  attachGraphToPage,
   normalizeLogLimits,
+  renderGraphFiles,
   renderIndexFile,
   renderIndexFiles,
   renderLogFile,
@@ -80,6 +88,14 @@ export type PublishOkfReleaseInput = {
   log?: Partial<OkfLogLimits> | undefined;
   storage: OkfPublicationStorage;
   fetchSourcePage: (request: CursorPageRequest) => Promise<CursorPage<SourceFileForPublication>>;
+  fetchGraphNodePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphNode>>) | undefined;
+  fetchGraphEdgePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphEdge>>) | undefined;
+  fetchGraphNeighborhood?:
+    | ((request: {
+        sourceFileId: string;
+        limit: number;
+      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
+    | undefined;
   fetchPublicationLogHistory?: ((request: {
     knowledgeBaseId: string;
     maxEntries: number;
@@ -87,6 +103,7 @@ export type PublishOkfReleaseInput = {
   persistBundleFiles: (files: BundleFileDraft[]) => Promise<void>;
   persistBundleTreeEntries: (entries: BundleTreeEntryDraft[]) => Promise<void>;
   onSourcePageStage?: (input: { sourceFileIds: string[]; stage: SourcePageStage }) => Promise<void>;
+  graph?: OkfGraphLimits | undefined;
 };
 
 type SourcePageStage = "bundle_generation" | "okf_validation" | "index_publication";
@@ -136,6 +153,7 @@ export async function publishOkfRelease(
   let manifestChecksumSha256 = "";
   let cursor: string | null = null;
   const publicFilePlans = await collectPublicFilePlans(input);
+  const graph = await collectPublicationGraph(input, publicFilePlans);
 
   const nextFileId = (): string => `bundle-file-${randomUUID()}`;
 
@@ -166,7 +184,9 @@ export async function publishOkfRelease(
           source,
           publicFileName,
           publicPaths: publicFilePlans.publicPaths,
-          storage: input.storage
+          storage: input.storage,
+          graph,
+          fetchGraphNeighborhood: input.fetchGraphNeighborhood
         })
     );
 
@@ -201,7 +221,17 @@ export async function publishOkfRelease(
     await registerPublishedFile(input, treeState, manifestEntries, persisted);
   }
 
-  const indexFiles = renderIndexFiles(pageIndexEntries, manifestEntries, input.generatedAt);
+  if (graph) {
+    const graphFiles = renderGraphFiles({ graph, generatedAt: input.generatedAt });
+
+    for (const file of graphFiles) {
+      const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
+      fileCount += 1;
+      await registerPublishedFile(input, treeState, manifestEntries, persisted);
+    }
+  }
+
+  const indexFiles = renderIndexFiles(pageIndexEntries, manifestEntries, input.generatedAt, graph);
   for (const file of indexFiles) {
     const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
     fileCount += 1;
@@ -228,6 +258,13 @@ async function generateSourceFiles(input: {
   publicFileName: string;
   publicPaths: Set<string>;
   storage: OkfPublicationStorage;
+  graph: NormalizedOkfGraph | null;
+  fetchGraphNeighborhood:
+    | ((request: {
+        sourceFileId: string;
+        limit: number;
+      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
+    | undefined;
 }): Promise<GeneratedSourceFiles> {
   const content = await input.storage.getObjectText(input.source.objectKey);
 
@@ -245,11 +282,22 @@ async function generateSourceFiles(input: {
     resolved.metadata,
     input.source.suggestions ?? null
   );
-  const summary: GeneratedPageSummary = {
-    pagePath: `pages/${input.publicFileName}`,
-    metadata,
-    suggestions: input.source.suggestions ?? null
-  };
+  const graphLinks = await readGraphLinks({
+    graph: input.graph,
+    sourceFileId: input.source.id,
+    fetchGraphNeighborhood: input.fetchGraphNeighborhood
+  });
+  const summary = attachGraphToPage(
+    {
+      pagePath: `pages/${input.publicFileName}`,
+      fileId: input.source.id,
+      metadata,
+      suggestions: input.source.suggestions ?? null,
+      graphLinks
+    },
+    input.graph,
+    input.publicPaths
+  );
 
   return {
     summary,
@@ -257,10 +305,108 @@ async function generateSourceFiles(input: {
       logicalPath: summary.pagePath,
       sourceFileId: input.source.id,
       fileKind: "page",
-      content: renderPageFile(summary, resolved.body, input.publicPaths),
-      metadata
+      content: renderPageFile(summary, resolved.body, input.publicPaths, input.graph),
+      metadata: summary.metadata
     }
   };
+}
+
+async function readGraphLinks(input: {
+  graph: NormalizedOkfGraph | null;
+  sourceFileId: string;
+  fetchGraphNeighborhood:
+    | ((request: {
+        sourceFileId: string;
+        limit: number;
+      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
+    | undefined;
+}): Promise<OkfGraphRelationship[]> {
+  if (!input.graph || !input.fetchGraphNeighborhood) {
+    return [];
+  }
+
+  const neighborhood = await input.fetchGraphNeighborhood({
+    sourceFileId: input.sourceFileId,
+    limit: input.graph.limits.pageRelatedLimit
+  });
+  const edgeGraph = normalizeOkfGraph({
+    nodes: input.graph.nodes,
+    edges: neighborhood.edges,
+    limits: input.graph.limits
+  });
+
+  if (!edgeGraph) {
+    return [];
+  }
+
+  return edgeGraph.edges.flatMap((edge) => {
+    const relatedFileId =
+      edge.fromFileId === input.sourceFileId
+        ? edge.toFileId
+        : edge.toFileId === input.sourceFileId
+          ? edge.fromFileId
+          : null;
+    const direction = edge.fromFileId === input.sourceFileId ? "outgoing" : "incoming";
+    const node = relatedFileId ? edgeGraph.nodesByFileId.get(relatedFileId) : null;
+
+    if (!node) {
+      return [];
+    }
+
+    return [
+      {
+        fileId: node.fileId,
+        path: node.path,
+        title: node.title,
+        relationType: edge.relationType,
+        direction,
+        weight: edge.weight,
+        reason: edge.reason,
+        source: edge.source,
+        ...(edge.evidence ? { evidence: edge.evidence } : {})
+      }
+    ];
+  });
+}
+
+async function collectPublicationGraph(
+  input: PublishOkfReleaseInput,
+  plans: PublicFilePlans
+): Promise<NormalizedOkfGraph | null> {
+  if (!input.fetchGraphNodePage || !input.fetchGraphEdgePage) {
+    return null;
+  }
+
+  const nodes = (await collectCursorItems(input.fetchGraphNodePage, input.pageSize)).map((node) => {
+    const plan = plans.bySourceId.get(node.fileId);
+    return {
+      ...node,
+      ...(plan ? { path: plan.pagePath } : {})
+    };
+  });
+  const edges = await collectCursorItems(input.fetchGraphEdgePage, input.pageSize);
+
+  return normalizeOkfGraph({
+    nodes,
+    edges,
+    ...(input.graph ? { limits: input.graph } : {})
+  });
+}
+
+async function collectCursorItems<T>(
+  fetchPage: (request: CursorPageRequest) => Promise<CursorPage<T>>,
+  limit: number
+): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | null = null;
+
+  do {
+    const page = await fetchPage({ cursor, limit });
+    items.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  return items;
 }
 
 async function collectPublicFilePlans(input: PublishOkfReleaseInput): Promise<PublicFilePlans> {
@@ -514,6 +660,10 @@ function normalizePublicMarkdownFileName(fileName: string): string {
 }
 
 function contentTypeForPath(path: string): string {
+  if (path.endsWith(".jsonl")) {
+    return "application/x-ndjson; charset=utf-8";
+  }
+
   return path.endsWith(".json")
     ? "application/json; charset=utf-8"
     : "text/markdown; charset=utf-8";

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { OkfGraphEdge, OkfGraphNode } from "@focowiki/okf";
 import type {
   AdminRepositories,
   BundleFileRecord,
@@ -54,6 +55,8 @@ function createRepositories() {
   const releases = new Map<string, ReleaseDraft>();
   const bundleFiles: BundleFileRecord[] = [];
   const events: SourceFileEventDraft[] = [];
+  const graphNodes = new Map<string, OkfGraphNode>();
+  const graphEdges: OkfGraphEdge[] = [];
 
   const repositories: AdminRepositories = {
     knowledgeBases: {
@@ -167,10 +170,36 @@ function createRepositories() {
       async listPublicationLogHistory() {
         return { entries: [], summaries: [] };
       }
+    },
+    graph: {
+      async upsertGraphNode(input) {
+        graphNodes.set(input.node.fileId, input.node);
+      },
+      async upsertGraphEdges(input) {
+        graphEdges.push(...input.edges);
+      },
+      async listGraphNodes(input) {
+        return {
+          items: Array.from(graphNodes.values()).slice(0, input.limit),
+          nextCursor: null
+        };
+      },
+      async listGraphEdges(input) {
+        return {
+          items: graphEdges.slice(0, input.limit),
+          nextCursor: null
+        };
+      },
+      async listGraphNeighborhood() {
+        return { items: [], nextCursor: null };
+      },
+      async deleteGraphForSourceFile(input) {
+        graphNodes.delete(input.sourceFileId);
+      }
     }
   };
 
-  return { repositories, knowledgeBase, sources, bundleFiles, events };
+  return { repositories, knowledgeBase, sources, bundleFiles, events, graphNodes, graphEdges };
 }
 
 describe("source file queue", () => {
@@ -214,6 +243,9 @@ describe("source file queue", () => {
     expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
     expect(records.knowledgeBase.activeReleaseId).toMatch(/^release-/u);
     expect(records.bundleFiles.some((file) => file.logicalPath === "pages/guide.md")).toBe(true);
+    expect(records.bundleFiles.some((file) => file.logicalPath === "_graph/manifest.json")).toBe(true);
     expect(records.events.some((event) => event.stageKey === "llm_suggestion")).toBe(true);
+    expect(records.events.some((event) => event.stageKey === "graph_generation")).toBe(true);
+    expect(records.graphNodes.has(sourceFileId)).toBe(true);
   });
 });

@@ -43,6 +43,7 @@ The backend usually calls these Focowiki interfaces:
 | Read file metadata | `getFileById` |
 | Read file content by stable identifier | `getFileContentById` |
 | Read file content by logical path | `getFileContentByPath` |
+| Read bounded related files | `listRelatedFiles` |
 | Delete generated files | `deleteFileById`, `deleteFileByPath` |
 | Manage webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
@@ -58,6 +59,7 @@ A minimal Agent-facing backend can expose these operations. In an own Agent clie
 | `read_file` | Return Markdown content by `fileId` or logical `path`. |
 | `get_file` | Return safe metadata for a file. |
 | `search_files` | Optional operation backed by your own search layer or by generated index files. |
+| `read_related` | Optional shortcut for bounded related files. Agents can also read `_graph/by-file/{fileId}.json`. |
 
 Keep this interface small. Agents work better when they can discover a file tree, read one file, follow links, and repeat the loop.
 
@@ -74,8 +76,9 @@ Keep this interface small. Agents work better when they can discover a file tree
 2. Read `schema.md` to understand generated file conventions and metadata fields.
 3. List the file tree with pagination.
 4. Read the most relevant page by `fileId` or `path`.
-5. Follow Markdown links and metadata relationships to related files.
-6. Avoid fetching every file unless the task explicitly needs a full export.
+5. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when relationship exploration is useful.
+6. Follow Markdown links and graph relationships to related files.
+7. Avoid fetching every file unless the task explicitly needs a full export.
 
 This keeps requests predictable and limits memory, CPU, and token usage.
 

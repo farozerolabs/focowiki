@@ -66,6 +66,8 @@ const report = {
     "multi-file batch upload",
     "source-file processing table",
     "source-file processing pagination",
+    "graph-backed related preview",
+    "graph file tree preview",
     "preview, copy, source-backed deletion, and knowledge base deletion"
   ],
   validationPasses: [
@@ -170,8 +172,12 @@ try {
   await page.getByRole("button", { name: secondSampleName, exact: true }).waitFor({ timeout: 30_000 });
   await page.getByRole("button", { name: secondSampleName, exact: true }).click();
   await waitForPreviewText(page, batchSamples[0].title);
+  await waitForPreviewText(page, "Related");
 
   report.checks.push(okCheck("batch-file-preview", "Opened generated batch-upload file preview in browser."));
+  report.checks.push(okCheck("graph-related-preview", "Generated page preview shows graph-backed related links."));
+
+  await validateGraphFilePreview(page, batchSourceFileIds[0]);
 
   const copyButton = page.getByRole("button", { name: "Copy index URL" });
   await copyButton.click();
@@ -382,6 +388,22 @@ async function openPagesDirectoryIfNeeded(page, expectedFileName) {
   await expectedFileButton.waitFor({ timeout: 30_000 });
 }
 
+async function validateGraphFilePreview(page, sourceFileId) {
+  const graphFileName = `${sourceFileId}.json`;
+  const graphFileButton = page.getByRole("button", { name: graphFileName, exact: true });
+
+  if ((await graphFileButton.count()) === 0) {
+    await page.getByRole("button", { name: "_graph", exact: true }).click();
+    await page.getByRole("button", { name: "by-file", exact: true }).click();
+  }
+
+  await graphFileButton.waitFor({ timeout: 30_000 });
+  await graphFileButton.click();
+  await waitForPreviewText(page, sourceFileId);
+  await waitForPreviewText(page, "relationships");
+  report.checks.push(okCheck("graph-file-preview", "Opened generated file-first graph JSON preview in browser."));
+}
+
 async function waitForPreviewText(page, expectedText) {
   await page.locator("article").waitFor({ timeout: 30_000 });
 
@@ -432,7 +454,7 @@ function readValidationTaskTimeoutMs(sampleCount) {
   }
 
   const concurrency = readPositiveInteger(process.env.MODEL_SUGGESTION_CONCURRENCY, 2);
-  const idleMs = readPositiveInteger(process.env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 30_000);
+  const idleMs = readPositiveInteger(process.env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 120_000);
   const batches = Math.ceil(sampleCount / concurrency);
 
   return Math.max(180_000, batches * 2 * idleMs + 120_000);

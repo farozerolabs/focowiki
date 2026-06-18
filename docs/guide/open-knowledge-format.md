@@ -75,6 +75,8 @@ An agent uses knowledge more like a research assistant than a search box. It can
 
 `index.md` provides a gradual entry point. The agent can first see what exists in a directory, then decide which file to open. Frontmatter provides type, title, description, source, tags, and timestamp. Markdown links expose relationship paths. A regulation can link to an interpretation, a metric can link to its source table, and a runbook can link to a rollback guide.
 
+Focowiki also publishes a file-first graph under `_graph/`. Source-backed pages can include a stable `fileId` and a `graph` reference to `_graph/by-file/{fileId}.json`. This lets the agent move from one full Markdown page to a bounded list of related pages without reading the entire corpus or depending on an internal graph database.
+
 Full files also change the context unit. The agent can read the complete source when needed. Long-context models can receive the whole document. Smaller-context models can still read in parts, with segmentation driven by the agent's task and the document structure rather than by a fixed offline chunking policy.
 
 Search remains useful as an entry point. It can help the agent find candidate files in a large bundle. After search, the agent can return to the complete file and its link graph.
@@ -139,9 +141,9 @@ This form of evaluation resembles real knowledge work. A researcher answering a 
 
 ## How Focowiki Applies This Direction
 
-Focowiki organizes knowledge around this file-based model. Markdown is the input. Safe frontmatter fields are parsed and preserved. The generated bundle includes `index.md`, `log.md`, `schema.md`, Markdown pages, and JSON indexes for tree, search, manifest, and links. Source and generated files live in S3-compatible storage. PostgreSQL and Redis coordinate knowledge bases, source-file processing records, files, releases, cursors, and API keys.
+Focowiki organizes knowledge around this file-based model. Markdown is the input. Safe frontmatter fields are parsed and preserved. The generated bundle includes `index.md`, `log.md`, `schema.md`, Markdown pages, JSON indexes for tree, search, manifest, and links, plus `_graph/` relationship files. Source and generated files live in S3-compatible storage. PostgreSQL and Redis coordinate knowledge bases, source-file processing records, graph nodes, graph edges, files, releases, cursors, and API keys.
 
-The system first keeps knowledge readable, auditable, and linkable. Developer OpenAPI then exposes that corpus to external systems and agents. Search can act as an entry point, while the generated files remain the canonical knowledge object. Developers can integrate it through their own backend or let agents read file trees, file content, source-file processing state, and webhook events through APIs.
+The system first keeps knowledge readable, auditable, and linkable. Developer OpenAPI then exposes that corpus to external systems and agents. Search can act as an entry point, while the generated files remain the canonical knowledge object. Developers can integrate it through their own backend or let agents read file trees, file content, graph relationship files, source-file processing state, and webhook events through APIs.
 
 Focowiki does not need to replace every RAG system. A stronger architecture uses file-based knowledge as the source layer and RAG as an optional access layer. When semantic recall is useful, vectors can be built from the OKF-style bundle. When full reading, audit, and citation matter, the agent returns to the files.
 

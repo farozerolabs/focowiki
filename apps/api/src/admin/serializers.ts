@@ -1,6 +1,7 @@
 import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
+  FileGraphSummaryRecord,
   ReleaseRecord,
   SourceFileEventRecord,
   SourceFileRecord
@@ -38,7 +39,7 @@ export function toAdminBundleFile(file: BundleFileRecord) {
   };
 }
 
-export function toAdminSourceFile(file: SourceFileRecord) {
+export function toAdminSourceFile(file: SourceFileRecord, graphSummary?: FileGraphSummaryRecord | null) {
   return {
     id: file.id,
     originalName: file.originalName,
@@ -60,7 +61,28 @@ export function toAdminSourceFile(file: SourceFileRecord) {
     modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
+    graphSummary: graphSummary ? toAdminGraphSummary(graphSummary) : null,
     createdAt: file.createdAt
+  };
+}
+
+export function toAdminGraphSummary(summary: FileGraphSummaryRecord) {
+  return {
+    sourceFileId: summary.sourceFileId,
+    relationshipCount: summary.relationshipCount,
+    relationships: summary.relationships.map((relationship) => ({
+      fileId: relationship.fileId,
+      sourceFileId: relationship.sourceFileId,
+      bundleFileId: relationship.bundleFileId,
+      path: relationship.path,
+      title: relationship.title,
+      relationType: relationship.relationType,
+      direction: relationship.direction,
+      weight: relationship.weight,
+      reason: relationship.reason,
+      source: relationship.source,
+      contentAvailable: relationship.contentAvailable
+    }))
   };
 }
 

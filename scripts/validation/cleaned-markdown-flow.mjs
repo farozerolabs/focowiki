@@ -38,6 +38,7 @@ const EXPECTED_UPLOAD_PHASE_KEYS = new Set([
   "source_deletion",
   "metadata_resolution",
   "llm_suggestion",
+  "graph_generation",
   "bundle_generation",
   "okf_validation",
   "index_publication",
@@ -752,8 +753,8 @@ function readModelAssistanceMode(env) {
     modelName: enabled ? env.MODEL_NAME : null,
     baseUrl: enabled ? redactUrl(env.MODEL_BASE_URL || "https://api.openai.com/v1") : null,
     contextWindowTokens: enabled ? Number(env.MODEL_CONTEXT_WINDOW_TOKENS || 0) : null,
-    requestMaxTimeoutMs: enabled ? Number(env.MODEL_REQUEST_MAX_TIMEOUT_MS || 120_000) : null,
-    requestIdleTimeoutMs: enabled ? Number(env.MODEL_REQUEST_IDLE_TIMEOUT_MS || 30_000) : null,
+    requestMaxTimeoutMs: enabled ? Number(env.MODEL_REQUEST_MAX_TIMEOUT_MS || 600_000) : null,
+    requestIdleTimeoutMs: enabled ? Number(env.MODEL_REQUEST_IDLE_TIMEOUT_MS || 120_000) : null,
     suggestionConcurrency: enabled ? readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2) : null
   };
 }
@@ -831,7 +832,7 @@ function readValidationTaskTimeoutMs(env, sampleCount) {
   }
 
   const concurrency = readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2);
-  const idleMs = readPositiveInteger(env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 30_000);
+  const idleMs = readPositiveInteger(env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 120_000);
   const batches = Math.ceil(sampleCount / concurrency);
 
   return Math.max(180_000, batches * 2 * idleMs + 120_000);

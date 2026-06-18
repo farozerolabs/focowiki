@@ -68,6 +68,7 @@ export type SourceFileRecord = {
     | "upload_storage"
     | "metadata_resolution"
     | "llm_suggestion"
+    | "graph_generation"
     | "okf_validation"
     | "bundle_generation"
     | "index_publication"
@@ -83,6 +84,23 @@ export type SourceFileRecord = {
   modelInvocationEndedAt?: string | null;
   modelInvocationWarningCount?: number | null;
   modelInvocationErrorCode?: string | null;
+  graphSummary?: {
+    sourceFileId: string;
+    relationshipCount: number;
+    relationships: Array<{
+      fileId: string;
+      sourceFileId: string;
+      bundleFileId: string | null;
+      path: string;
+      title: string;
+      relationType: string;
+      direction: "outgoing" | "incoming";
+      weight: number;
+      reason: string;
+      source: string;
+      contentAvailable: boolean;
+    }>;
+  } | null;
   createdAt: string;
 };
 

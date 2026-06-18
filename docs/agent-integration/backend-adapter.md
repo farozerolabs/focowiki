@@ -51,6 +51,7 @@ The exact routes belong to your product. This example shows a small shape that w
 | `GET /agent/knowledge/files/{fileId}` | `getFileById` | Safe file metadata. |
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown content. |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | Markdown content by logical path. |
+| `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | Bounded related file records. |
 | `GET /agent/knowledge/search?query=...` | Your search layer or generated index files | Candidate files for the Agent to read. |
 
 The `search` route is optional. A simple first version can start with tree listing and file reads.
@@ -64,6 +65,7 @@ For own Agent clients, register tools with the same contract:
 | `list_tree` | `GET /agent/knowledge/tree` |
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` or `GET /agent/knowledge/files/content?path=...` |
+| `read_related` | `GET /agent/knowledge/files/{fileId}/related` or `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
 | `search_files` | `GET /agent/knowledge/search?query=...` |
 
 ## Identifier Flow
@@ -75,6 +77,7 @@ The backend should preserve the same identifiers that Focowiki returns:
 | `knowledgeBaseId` | Admin UI, `listKnowledgeBases`, or backend configuration | Scope all Focowiki calls. |
 | `fileId` | Upload responses, source-file processing rows, tree entries, or file detail responses | Read file metadata and content. |
 | `path` | Tree entries | Read file content by logical path. |
+| `graphRef` | Page frontmatter or `_index/search.json` | Read `_graph/by-file/{fileId}.json` for related files. |
 | `cursor` | List responses | Continue pagination. |
 
 This makes the Agent workflow continuous. The value returned by one call can be used by the next call.

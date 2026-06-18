@@ -59,7 +59,8 @@ function englishThemeConfig(): DefaultTheme.Config {
         text: "Guide",
         items: [
           { text: "Project Introduction", link: "/" },
-          { text: "Open Knowledge Format", link: "/guide/open-knowledge-format" }
+          { text: "Open Knowledge Format", link: "/guide/open-knowledge-format" },
+          { text: "File-first Graph", link: "/guide/file-first-graph" }
         ]
       },
       {
@@ -110,7 +111,8 @@ function chineseThemeConfig(): DefaultTheme.Config {
         text: "指南",
         items: [
           { text: "项目介绍", link: "/zh-CN/" },
-          { text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format" }
+          { text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format" },
+          { text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph" }
         ]
       },
       {

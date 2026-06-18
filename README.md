@@ -19,6 +19,7 @@ Use the documentation for:
 - [Developer OpenAPI](https://docs.focowiki.com/openapi/)
 - [Agent integration](https://docs.focowiki.com/agent-integration/)
 - [Open Knowledge Format guide](https://docs.focowiki.com/guide/open-knowledge-format)
+- [File-first graph guide](https://docs.focowiki.com/guide/file-first-graph)
 
 ## Project Origin
 
@@ -32,7 +33,7 @@ Focowiki uses this model as a practical product direction. Uploaded Markdown fil
 
 - Markdown-only upload workflow for `.md` files.
 - YAML frontmatter and Markdown structure extraction.
-- OKF-style generated bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, and `_index/*.json`.
+- OKF-style generated bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, `_index/*.json`, and `_graph/*`.
 - PostgreSQL-backed records for knowledge bases, tasks, releases, files, and API keys.
 - Redis-backed coordination for sessions, cursors, rate limits, and task state refresh.
 - S3-compatible storage for uploaded source files and generated bundle files.
