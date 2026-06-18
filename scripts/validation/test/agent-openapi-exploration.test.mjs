@@ -1,0 +1,96 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  MIN_AGENT_VALIDATION_SAMPLE_COUNT,
+  assertAgentEvidenceBoundary,
+  buildAgentScenarioPlan,
+  requireQuantifiedFindings,
+  requireValidationSampleCount,
+  scorePersonaResults,
+  summarizeReportStagingPolicy
+} from "../lib/agent-openapi-validation.mjs";
+import { redactAgentValidationText } from "../lib/agent-openapi-report.mjs";
+
+test("agent validation requires at least 50 legal Markdown samples", () => {
+  assert.equal(MIN_AGENT_VALIDATION_SAMPLE_COUNT, 50);
+  assert.throws(
+    () => requireValidationSampleCount(new Array(49).fill({ basename: "sample.md" })),
+    /at least 50/
+  );
+});
+
+test("agent scenario plan includes generic and legal-domain personas with legal task variety", () => {
+  const samples = buildSamples(52);
+  const plan = buildAgentScenarioPlan(samples);
+
+  assert.equal(new Set(plan.map((scenario) => scenario.persona)).has("generic"), true);
+  assert.equal(new Set(plan.map((scenario) => scenario.persona)).has("legal-domain"), true);
+  assert.equal(new Set(plan.map((scenario) => scenario.scenarioType)).size >= 5, true);
+  assert.equal(plan.every((scenario) => scenario.question && scenario.expectedVisibleClues.length > 0), true);
+});
+
+test("persona scores stay separate before combined scoring", () => {
+  const scores = scorePersonaResults([
+    { persona: "generic", answerability: "partially_answered", score: 62 },
+    { persona: "legal-domain", answerability: "answered", score: 86 }
+  ]);
+
+  assert.equal(scores.generic.score, 62);
+  assert.equal(scores["legal-domain"].score, 86);
+  assert.equal(scores.combined.score, 74);
+});
+
+test("agent evidence boundary rejects internal rescue data", () => {
+  assert.throws(
+    () =>
+      assertAgentEvidenceBoundary({
+        route: "/openapi/v1/knowledge-bases/kb/files/content",
+        internalDatabaseRowsUsed: 1,
+        s3ObjectKeyUsed: false,
+        localFixtureBodyUsed: false,
+        manualTargetFileUsed: false
+      }),
+    /internal evidence/
+  );
+});
+
+test("unquantified findings cannot be counted as pass results", () => {
+  assert.throws(
+    () =>
+      requireQuantifiedFindings([
+        { claim: "Agent can explore related files", metrics: {}, evidence: [] }
+      ]),
+    /quantified/
+  );
+});
+
+test("report redaction removes local paths and raw auth values", () => {
+  const redacted = redactAgentValidationText(
+    "Read /private/var/folders/fixture-root/markdown Authorization: Bearer fwok_secret S3_SECRET_ACCESS_KEY=secret"
+  );
+
+  assert.equal(redacted.includes("fixture-root"), false);
+  assert.equal(redacted.includes("fwok_secret"), false);
+  assert.equal(redacted.includes("secret"), false);
+});
+
+test("report staging policy documents local-only ReferenceDocs output", () => {
+  const policy = summarizeReportStagingPolicy();
+
+  assert.equal(policy.reportRoot, "ReferenceDocs");
+  assert.equal(policy.commitScope, "local-only");
+  assert.equal(policy.mustStageReports, false);
+});
+
+function buildSamples(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    basename: `${String(index + 1).padStart(2, "0")}.md`,
+    title: index === 2 ? "Duplicated title" : `Legal sample ${index + 1}`,
+    type: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"][index % 5],
+    status: ["有效", "已修改", "尚未生效"][index % 3],
+    category: index % 4 === 0 ? "地方人大及其常委会 > 浙江" : "法律",
+    publicationDate: `2026-01-${String((index % 28) + 1).padStart(2, "0")}`,
+    sizeBytes: 1024 + index
+  }));
+}
