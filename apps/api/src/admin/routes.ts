@@ -7,10 +7,9 @@ import type {
   AdminRepositories
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import {
-  createUploadProcessor,
-  readBoundedUploadFiles
-} from "./upload-processor.js";
+import { createSourceFileQueueProcessor } from "./source-file-processor.js";
+import { acceptUploadSourceFiles } from "./source-file-upload.js";
+import { readBoundedUploadFiles } from "./upload-processor-utils.js";
 import {
   hasDuplicateUploadFileNames,
   hasExistingSourceFileName,
@@ -36,10 +35,10 @@ import {
   toAdminBundleTreeEntry,
   toAdminRelease,
   toAdminSourceFile,
-  toAdminUploadTaskEvent,
-  toUploadTaskLifecycle
+  toAdminSourceFileEvent
 } from "./serializers.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
+import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -76,6 +75,21 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       config,
       redis,
       repositories
+    },
+    {
+      requireAuth,
+      requireWriteProtection
+    }
+  );
+  registerAdminSourceFileRetryRoutes(
+    app,
+    {
+      config,
+      storage,
+      modelClient,
+      redis,
+      repositories,
+      taskRunner: adminTaskRunner
     },
     {
       requireAuth,
@@ -404,7 +418,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     requireAuth,
     requireWriteProtection,
     async (context) => {
-      if (!repositories?.files || !repositories.tasks || !redis) {
+      if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
       }
 
@@ -420,38 +434,28 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return missingRepositoryBackend(context);
       }
 
-      const started = await deletionService.createSourcePageDeletionTask({
+      const deletedAt = new Date().toISOString();
+      const result = await deletionService.deleteSourcePage({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        logicalPath
+        logicalPath,
+        deletedAt,
+        generatedAt: deletedAt,
+        batchSize: config.upload.generationBatchSize,
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+        okfLog: config.okf?.log
       });
 
-      if (!started.ok) {
-        return started.reason === "not_deletable" ? fileNotDeletable(context) : notFound(context);
+      if (!result.ok) {
+        return result.reason === "not_deletable" ? fileNotDeletable(context) : notFound(context);
       }
-
-      const deletedAt = new Date().toISOString();
-
-      void adminTaskRunner
-        .run(() =>
-          deletionService.processSourcePageDeletion({
-            knowledgeBase: started.knowledgeBase,
-            file: started.file,
-            task: started.task,
-            deletedAt,
-            generatedAt: deletedAt,
-            batchSize: config.upload.generationBatchSize,
-            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log
-          })
-        )
-        .catch(() => undefined);
 
       return context.json(
         {
-          task: toUploadTaskLifecycle(started.task)
+          deleted: true,
+          releaseId: result.releaseId
         },
-        202
+        200
       );
     }
   );
@@ -594,10 +598,10 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
 
   app.get(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/tasks",
+    "/admin/api/knowledge-bases/:knowledgeBaseId/source-files",
     requireAuth,
     async (context) => {
-      if (!repositories?.tasks?.listUploadTasks || !redis) {
+      if (!repositories?.files || !redis) {
         return missingRepositoryBackend(context);
       }
 
@@ -616,7 +620,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       }
 
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = `upload-tasks:${knowledgeBase.id}`;
+      const cursorScope = `source-files:${knowledgeBase.id}`;
       const repositoryCursor = cursorToken
         ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
         : null;
@@ -625,7 +629,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
-      const page = await repositories.tasks.listUploadTasks({
+      const page = await repositories.files.listSourceFiles({
         knowledgeBaseId: knowledgeBase.id,
         limit,
         cursor: repositoryCursor
@@ -648,22 +652,17 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       );
 
       return context.json({
-        items: page.items.map(toUploadTaskLifecycle),
+        items: page.items.map(toAdminSourceFile),
         nextCursor
       });
     }
   );
 
   app.get(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/tasks/:taskId",
+    "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     requireAuth,
     async (context) => {
-      if (
-        !repositories?.tasks?.getUploadTask ||
-        !repositories.tasks.listUploadTaskEvents ||
-        !repositories.files?.listSourceFilesForTask ||
-        !redis
-      ) {
+      if (!repositories?.files?.getSourceFile || !repositories.files.listSourceFileEvents || !redis) {
         return missingRepositoryBackend(context);
       }
 
@@ -675,12 +674,12 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return notFound(context);
       }
 
-      const task = await repositories.tasks.getUploadTask({
+      const sourceFile = await repositories.files.getSourceFile({
         knowledgeBaseId: knowledgeBase.id,
-        taskId: context.req.param("taskId")
+        sourceFileId: context.req.param("sourceFileId")
       });
 
-      if (!task) {
+      if (!sourceFile) {
         return notFound(context);
       }
 
@@ -691,7 +690,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       }
 
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = `upload-task-events:${knowledgeBase.id}:${task.id}`;
+      const cursorScope = `source-file-events:${knowledgeBase.id}:${sourceFile.id}`;
       const repositoryCursor = cursorToken
         ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
         : null;
@@ -700,69 +699,24 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
-      const sourceFilesCursorToken = context.req.query("sourceCursor") ?? null;
-      const sourceFilesCursorScope = `upload-task-source-files:${knowledgeBase.id}:${task.id}`;
-      const sourceFilesRepositoryCursor = sourceFilesCursorToken
-        ? await redis.getPaginationCursor<string>(sourceFilesCursorScope, sourceFilesCursorToken)
-        : null;
-
-      if (sourceFilesCursorToken && !sourceFilesRepositoryCursor) {
-        return invalidPagination(context);
-      }
-
-      const phaseDetails = await repositories.tasks.listUploadTaskEvents({
+      const events = await repositories.files.listSourceFileEvents({
         knowledgeBaseId: knowledgeBase.id,
-        taskId: task.id,
+        sourceFileId: sourceFile.id,
         limit,
         cursor: repositoryCursor
-      });
-      const sourceFiles = await repositories.files.listSourceFilesForTask({
-        knowledgeBaseId: knowledgeBase.id,
-        taskId: task.id,
-        limit,
-        cursor: sourceFilesRepositoryCursor
       });
       const nextCursor = await writeOpaqueCursor({
         redis,
         scope: cursorScope,
-        cursor: phaseDetails.nextCursor,
+        cursor: events.nextCursor,
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
-      const sourceFilesNextCursor = await writeOpaqueCursor({
-        redis,
-        scope: sourceFilesCursorScope,
-        cursor: sourceFiles.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-
-      await redis.setPageCache(
-        cursorScope,
-        `page-${randomUUID()}`,
-        {
-          cursor: cursorToken,
-          itemIds: phaseDetails.items.map((item) => item.id)
-        },
-        config.pagination.cursorTtlSeconds
-      );
-      await redis.setPageCache(
-        sourceFilesCursorScope,
-        `page-${randomUUID()}`,
-        {
-          cursor: sourceFilesCursorToken,
-          itemIds: sourceFiles.items.map((item) => item.id)
-        },
-        config.pagination.cursorTtlSeconds
-      );
 
       return context.json({
-        task: toUploadTaskLifecycle(task),
-        phaseDetails: {
-          items: phaseDetails.items.map(toAdminUploadTaskEvent),
+        file: toAdminSourceFile(sourceFile),
+        events: {
+          items: events.items.map(toAdminSourceFileEvent),
           nextCursor
-        },
-        sourceFiles: {
-          items: sourceFiles.items.map(toAdminSourceFile),
-          nextCursor: sourceFilesNextCursor
         }
       });
     }
@@ -773,11 +727,15 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     requireAuth,
     requireWriteProtection,
     async (context) => {
-      if (!repositories?.tasks || !repositories.files || !redis) {
+      if (
+        !repositories?.files?.createSourceFiles ||
+        !repositories.files.getSourceFile ||
+        !redis
+      ) {
         return missingRepositoryBackend(context);
       }
 
-      const uploadProcessor = createUploadProcessor(
+      const sourceFileProcessor = createSourceFileQueueProcessor(
         repositories,
         storage,
         redis,
@@ -795,7 +753,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
           : null
       );
 
-      if (!uploadProcessor) {
+      if (!sourceFileProcessor) {
         return missingRepositoryBackend(context);
       }
 
@@ -919,30 +877,44 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         );
       }
 
-      const task = await repositories.tasks.createUploadTask({
+      const sourceFileIds = await acceptUploadSourceFiles({
+        files: loadedFiles,
+        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
         knowledgeBaseId: knowledgeBase.id,
-        sourceCount: files.length
+        storage,
+        createSourceFiles: repositories.files.createSourceFiles
       });
-
-      void adminTaskRunner
-        .run(() =>
-          uploadProcessor.process({
-            knowledgeBaseId: knowledgeBase.id,
-            knowledgeBaseName: knowledgeBase.name,
-            task,
-            files: loadedFiles,
-            generatedAt: new Date().toISOString(),
-            batchSize: config.upload.generationBatchSize,
-            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log
-          })
+      const sourceFiles = (
+        await Promise.all(
+          sourceFileIds.map((sourceFileId) =>
+            repositories.files?.getSourceFile?.({
+              knowledgeBaseId: knowledgeBase.id,
+              sourceFileId
+            })
+          )
         )
-        .catch(() => undefined);
+      ).filter(isDefined);
+
+      for (const sourceFileId of sourceFileIds) {
+        void adminTaskRunner
+          .run(() =>
+            sourceFileProcessor.processFile({
+              knowledgeBaseId: knowledgeBase.id,
+              knowledgeBaseName: knowledgeBase.name,
+              sourceFileId,
+              generatedAt: new Date().toISOString(),
+              batchSize: config.upload.generationBatchSize,
+              cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+              fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+              okfLog: config.okf?.log
+            })
+          )
+          .catch(() => undefined);
+      }
 
       return context.json(
         {
-          task: toUploadTaskLifecycle(task)
+          files: sourceFiles.map(toAdminSourceFile)
         },
         202
       );
@@ -1069,4 +1041,8 @@ function fileNotDeletable(context: Parameters<MiddlewareHandler>[0]): Response {
     },
     400
   );
+}
+
+function isDefined<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }

@@ -18,9 +18,28 @@ export type RedisCoordinator = {
   setSession: (sessionId: string, value: unknown, ttlSeconds: number) => Promise<void>;
   getSession: <T = unknown>(sessionId: string) => Promise<T | null>;
   clearSession: (sessionId: string) => Promise<void>;
-  acquireTaskLock: (taskId: string, ownerId: string, ttlSeconds: number) => Promise<boolean>;
-  releaseTaskLock: (taskId: string, ownerId: string) => Promise<boolean>;
-  recordTaskEvent: (taskId: string, value: unknown, ttlSeconds: number) => Promise<void>;
+  acquireLock: (scope: string, id: string, ownerId: string, ttlSeconds: number) => Promise<boolean>;
+  releaseLock: (scope: string, id: string, ownerId: string) => Promise<boolean>;
+  acquireSourceFileLock: (
+    sourceFileId: string,
+    ownerId: string,
+    ttlSeconds: number
+  ) => Promise<boolean>;
+  releaseSourceFileLock: (sourceFileId: string, ownerId: string) => Promise<boolean>;
+  recordSourceFileEvent: (
+    sourceFileId: string,
+    value: unknown,
+    ttlSeconds: number
+  ) => Promise<void>;
+  acquireKnowledgeBasePublicationLock: (
+    knowledgeBaseId: string,
+    ownerId: string,
+    ttlSeconds: number
+  ) => Promise<boolean>;
+  releaseKnowledgeBasePublicationLock: (
+    knowledgeBaseId: string,
+    ownerId: string
+  ) => Promise<boolean>;
   setPaginationCursor: (
     scope: string,
     cursorId: string,
@@ -101,15 +120,15 @@ export function createRedisCoordinator(
     async clearSession(sessionId) {
       await client.del(buildKey("sessions", sessionId));
     },
-    async acquireTaskLock(taskId, ownerId, ttlSeconds) {
-      const result = await client.set(buildKey("task-locks", taskId), ownerId, {
+    async acquireLock(scope, id, ownerId, ttlSeconds) {
+      const result = await client.set(buildKey("locks", scope, id), ownerId, {
         EX: ttlSeconds,
         NX: true
       });
       return result === "OK";
     },
-    async releaseTaskLock(taskId, ownerId) {
-      const key = buildKey("task-locks", taskId);
+    async releaseLock(scope, id, ownerId) {
+      const key = buildKey("locks", scope, id);
       const currentOwner = await client.get(key);
 
       if (currentOwner !== ownerId) {
@@ -119,10 +138,50 @@ export function createRedisCoordinator(
       await client.del(key);
       return true;
     },
-    async recordTaskEvent(taskId, value, ttlSeconds) {
-      await client.set(buildKey("task-events", taskId), JSON.stringify(value), {
+    async acquireSourceFileLock(sourceFileId, ownerId, ttlSeconds) {
+      const result = await client.set(buildKey("source-file-locks", sourceFileId), ownerId, {
+        EX: ttlSeconds,
+        NX: true
+      });
+      return result === "OK";
+    },
+    async releaseSourceFileLock(sourceFileId, ownerId) {
+      const key = buildKey("source-file-locks", sourceFileId);
+      const currentOwner = await client.get(key);
+
+      if (currentOwner !== ownerId) {
+        return false;
+      }
+
+      await client.del(key);
+      return true;
+    },
+    async recordSourceFileEvent(sourceFileId, value, ttlSeconds) {
+      await client.set(buildKey("source-file-events", sourceFileId), JSON.stringify(value), {
         EX: ttlSeconds
       });
+    },
+    async acquireKnowledgeBasePublicationLock(knowledgeBaseId, ownerId, ttlSeconds) {
+      const result = await client.set(
+        buildKey("knowledge-base-publication-locks", knowledgeBaseId),
+        ownerId,
+        {
+          EX: ttlSeconds,
+          NX: true
+        }
+      );
+      return result === "OK";
+    },
+    async releaseKnowledgeBasePublicationLock(knowledgeBaseId, ownerId) {
+      const key = buildKey("knowledge-base-publication-locks", knowledgeBaseId);
+      const currentOwner = await client.get(key);
+
+      if (currentOwner !== ownerId) {
+        return false;
+      }
+
+      await client.del(key);
+      return true;
     },
     async setPaginationCursor(scope, cursorId, value, ttlSeconds) {
       await client.set(buildKey("pagination-cursors", scope, cursorId), JSON.stringify(value), {

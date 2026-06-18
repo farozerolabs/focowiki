@@ -1,5 +1,18 @@
 CREATE SCHEMA IF NOT EXISTS focowiki;
 
+DROP TABLE IF EXISTS focowiki.upload_task_events CASCADE;
+DROP TABLE IF EXISTS focowiki.upload_tasks CASCADE;
+
+ALTER TABLE IF EXISTS focowiki.source_files
+  DROP COLUMN IF EXISTS task_id,
+  DROP COLUMN IF EXISTS model_suggestions_json;
+
+ALTER TABLE IF EXISTS focowiki.model_invocations
+  DROP COLUMN IF EXISTS task_id;
+
+ALTER TABLE IF EXISTS focowiki.releases
+  DROP COLUMN IF EXISTS task_id;
+
 CREATE TABLE IF NOT EXISTS focowiki.knowledge_bases (
   id text PRIMARY KEY,
   name text NOT NULL,
@@ -11,82 +24,30 @@ CREATE TABLE IF NOT EXISTS focowiki.knowledge_bases (
   CHECK (id ~ '^[a-z0-9][a-z0-9-]*[a-z0-9]$')
 );
 
-CREATE TABLE IF NOT EXISTS focowiki.upload_tasks (
-  id text PRIMARY KEY,
-  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
-  operation text NOT NULL DEFAULT 'upload',
-  started_at timestamptz NOT NULL,
-  ended_at timestamptz,
-  source_count integer NOT NULL DEFAULT 0 CHECK (source_count >= 0),
-  result_release_id text,
-  internal_error_code text,
-  internal_error_message text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (operation IN ('upload', 'delete_source', 'delete_knowledge_base')),
-  CHECK (ended_at IS NULL OR ended_at >= started_at)
-);
-
-CREATE TABLE IF NOT EXISTS focowiki.upload_task_events (
-  id text PRIMARY KEY,
-  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
-  phase_key text NOT NULL,
-  message_key text NOT NULL,
-  started_at timestamptz,
-  ended_at timestamptz,
-  severity text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (task_id, phase_key),
-  CHECK (phase_key IN (
-    'upload_storage',
-    'source_deletion',
-    'metadata_resolution',
-    'okf_validation',
-    'bundle_generation',
-    'index_publication',
-    'release_activation'
-  )),
-  CHECK (severity IN ('info', 'warning', 'error')),
-  CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
-);
-
-DO $$
-BEGIN
-  ALTER TABLE focowiki.upload_task_events
-    DROP CONSTRAINT IF EXISTS upload_task_events_check,
-    DROP CONSTRAINT IF EXISTS upload_task_events_phase_key_check,
-    ADD CONSTRAINT upload_task_events_phase_key_check
-    CHECK (phase_key IN (
-      'upload_storage',
-      'source_deletion',
-      'metadata_resolution',
-      'okf_validation',
-      'bundle_generation',
-      'index_publication',
-      'release_activation'
-    ));
-END $$;
-
 CREATE TABLE IF NOT EXISTS focowiki.source_files (
   id text PRIMARY KEY,
   knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
-  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
   original_name text NOT NULL,
   object_key text NOT NULL,
   content_type text NOT NULL,
   size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
   checksum_sha256 text NOT NULL,
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  processing_status text NOT NULL DEFAULT 'pending',
+  model_suggestions_json jsonb,
+  processing_status text NOT NULL DEFAULT 'queued',
   processing_stage text NOT NULL DEFAULT 'upload_storage',
   processing_started_at timestamptz,
   processing_ended_at timestamptz,
   processing_error_code text,
+  processing_error_message text,
+  retry_count integer NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
-  CHECK (processing_status IN ('pending', 'running', 'completed', 'failed')),
+  CHECK (processing_status IN ('queued', 'running', 'completed', 'failed')),
   CHECK (processing_stage IN (
     'upload_storage',
     'metadata_resolution',
+    'llm_suggestion',
     'okf_validation',
     'bundle_generation',
     'index_publication',
@@ -96,11 +57,18 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
 );
 
 ALTER TABLE focowiki.source_files
-  ADD COLUMN IF NOT EXISTS processing_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS model_suggestions_json jsonb,
+  ADD COLUMN IF NOT EXISTS processing_status text NOT NULL DEFAULT 'queued',
   ADD COLUMN IF NOT EXISTS processing_stage text NOT NULL DEFAULT 'upload_storage',
   ADD COLUMN IF NOT EXISTS processing_started_at timestamptz,
   ADD COLUMN IF NOT EXISTS processing_ended_at timestamptz,
-  ADD COLUMN IF NOT EXISTS processing_error_code text;
+  ADD COLUMN IF NOT EXISTS processing_error_code text,
+  ADD COLUMN IF NOT EXISTS processing_error_message text,
+  ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
+
+UPDATE focowiki.source_files
+SET processing_status = 'queued'
+WHERE processing_status = 'pending';
 
 DO $$
 BEGIN
@@ -112,30 +80,43 @@ BEGIN
   ) THEN
     ALTER TABLE focowiki.source_files
       ADD CONSTRAINT source_files_processing_status_check
-      CHECK (processing_status IN ('pending', 'running', 'completed', 'failed'));
+      CHECK (processing_status IN ('queued', 'running', 'completed', 'failed'));
   END IF;
 END $$;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_constraint
-    WHERE conrelid = 'focowiki.source_files'::regclass
-      AND conname = 'source_files_processing_stage_check'
-  ) THEN
-    ALTER TABLE focowiki.source_files
-      ADD CONSTRAINT source_files_processing_stage_check
-      CHECK (processing_stage IN (
-        'upload_storage',
-        'metadata_resolution',
-        'okf_validation',
-        'bundle_generation',
-        'index_publication',
-        'release_activation'
-      ));
-  END IF;
-END $$;
+ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_processing_status_check,
+  ADD CONSTRAINT source_files_processing_status_check
+  CHECK (processing_status IN ('queued', 'running', 'completed', 'failed'));
+
+ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_processing_stage_check,
+  ADD CONSTRAINT source_files_processing_stage_check
+  CHECK (processing_stage IN (
+    'upload_storage',
+    'metadata_resolution',
+    'llm_suggestion',
+    'okf_validation',
+    'bundle_generation',
+    'index_publication',
+    'release_activation'
+  ));
+
+CREATE TABLE IF NOT EXISTS focowiki.model_invocations (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  model_name text NOT NULL,
+  status text NOT NULL,
+  started_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  warning_count integer NOT NULL DEFAULT 0 CHECK (warning_count >= 0),
+  error_code text,
+  error_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
+  CHECK (ended_at IS NULL OR ended_at >= started_at)
+);
 
 DO $$
 BEGIN
@@ -154,13 +135,49 @@ END $$;
 CREATE TABLE IF NOT EXISTS focowiki.releases (
   id text PRIMARY KEY,
   knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
-  task_id text NOT NULL REFERENCES focowiki.upload_tasks(id),
   bundle_root_key text NOT NULL,
   generated_at timestamptz NOT NULL,
   published_at timestamptz,
   file_count integer NOT NULL DEFAULT 0 CHECK (file_count >= 0),
   manifest_checksum_sha256 text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_file_events (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  stage_key text NOT NULL,
+  message_key text NOT NULL,
+  started_at timestamptz,
+  ended_at timestamptz,
+  severity text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (stage_key IN (
+    'upload_storage',
+    'source_deletion',
+    'metadata_resolution',
+    'llm_suggestion',
+    'okf_validation',
+    'bundle_generation',
+    'index_publication',
+    'release_activation'
+  )),
+  CHECK (severity IN ('info', 'warning', 'error')),
+  CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.source_file_retry_attempts (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  status text NOT NULL,
+  started_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  error_code text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (status IN ('running', 'completed', 'failed')),
+  CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
 
 CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
@@ -300,16 +317,6 @@ EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
 
-DO $$
-BEGIN
-  ALTER TABLE focowiki.upload_tasks
-    ADD CONSTRAINT upload_tasks_result_release_id_fkey
-    FOREIGN KEY (result_release_id)
-    REFERENCES focowiki.releases(id);
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-END $$;
-
 CREATE UNIQUE INDEX IF NOT EXISTS knowledge_bases_name_active_unique
   ON focowiki.knowledge_bases(lower(name))
   WHERE deleted_at IS NULL;
@@ -323,32 +330,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS bundle_files_object_key_unique
 CREATE INDEX IF NOT EXISTS knowledge_bases_list_cursor_idx
   ON focowiki.knowledge_bases(deleted_at, created_at DESC, id);
 
-CREATE INDEX IF NOT EXISTS upload_tasks_kb_started_cursor_idx
-  ON focowiki.upload_tasks(knowledge_base_id, started_at DESC, id);
-
-CREATE INDEX IF NOT EXISTS upload_tasks_kb_operation_started_cursor_idx
-  ON focowiki.upload_tasks(knowledge_base_id, operation, started_at DESC, id);
-
-CREATE INDEX IF NOT EXISTS source_files_kb_task_created_cursor_idx
-  ON focowiki.source_files(knowledge_base_id, task_id, created_at DESC, id);
-
 CREATE INDEX IF NOT EXISTS source_files_kb_created_cursor_idx
   ON focowiki.source_files(knowledge_base_id, created_at DESC, id);
 
 CREATE INDEX IF NOT EXISTS source_files_kb_active_created_cursor_idx
   ON focowiki.source_files(knowledge_base_id, deleted_at, created_at DESC, id);
 
-CREATE INDEX IF NOT EXISTS source_files_task_idx
-  ON focowiki.source_files(task_id);
+CREATE INDEX IF NOT EXISTS source_files_kb_processing_idx
+  ON focowiki.source_files(knowledge_base_id, processing_status, processing_stage, created_at DESC, id);
 
-CREATE INDEX IF NOT EXISTS source_files_kb_task_processing_idx
-  ON focowiki.source_files(knowledge_base_id, task_id, processing_status, processing_stage);
+CREATE INDEX IF NOT EXISTS model_invocations_source_created_idx
+  ON focowiki.model_invocations(source_file_id, created_at DESC, id);
 
-CREATE INDEX IF NOT EXISTS upload_task_events_task_created_cursor_idx
-  ON focowiki.upload_task_events(task_id, created_at, id);
+CREATE INDEX IF NOT EXISTS source_file_events_file_created_cursor_idx
+  ON focowiki.source_file_events(knowledge_base_id, source_file_id, created_at, id);
 
-CREATE INDEX IF NOT EXISTS upload_task_events_task_phase_unique_idx
-  ON focowiki.upload_task_events(task_id, phase_key);
+CREATE INDEX IF NOT EXISTS source_file_retry_attempts_file_created_cursor_idx
+  ON focowiki.source_file_retry_attempts(knowledge_base_id, source_file_id, created_at DESC, id);
 
 CREATE INDEX IF NOT EXISTS releases_kb_published_cursor_idx
   ON focowiki.releases(knowledge_base_id, published_at DESC, id);

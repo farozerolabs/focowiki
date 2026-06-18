@@ -1,7 +1,5 @@
 const exampleTimestamp = "2026-06-17T00:00:00.000Z";
 const knowledgeBaseId = "kb_123";
-const taskId = "task_123";
-const deletionTaskId = "task_delete_123";
 const sourceFileId = "file_source_123";
 const bundleFileId = "file_page_123";
 const webhookId = "webhook_123";
@@ -17,32 +15,9 @@ const knowledgeBase = {
   updatedAt: exampleTimestamp
 };
 
-const progress = {
-  total: 2,
-  completed: 1,
-  failed: 0,
-  running: 1,
-  pending: 0,
-  currentStage: "okf_validation"
-};
-
-const task = {
-  taskId,
-  knowledgeBaseId,
-  operation: "upload",
-  lifecycle: "running",
-  startedAt: exampleTimestamp,
-  endedAt: null,
-  sourceCount: 2,
-  progress,
-  resultReleaseId: null,
-  errorCode: null
-};
-
 const sourceFile = {
   fileId: sourceFileId,
   knowledgeBaseId,
-  taskId,
   originalFilename: "guide.md",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 1024,
@@ -55,6 +30,26 @@ const sourceFile = {
   processingStartedAt: exampleTimestamp,
   processingEndedAt: exampleTimestamp,
   processingErrorCode: null,
+  processingErrorMessage: null,
+  retryCount: 0,
+  modelInvocationStatus: "completed",
+  modelInvocationModelName: "gpt-5-mini",
+  modelInvocationStartedAt: exampleTimestamp,
+  modelInvocationEndedAt: exampleTimestamp,
+  modelInvocationWarningCount: 0,
+  modelInvocationErrorCode: null,
+  createdAt: exampleTimestamp
+};
+
+const sourceFileEvent = {
+  eventId: "event_123",
+  knowledgeBaseId,
+  fileId: sourceFileId,
+  stageKey: "metadata_resolution",
+  messageKey: "sourceFiles.phase.metadataResolution",
+  startedAt: exampleTimestamp,
+  endedAt: exampleTimestamp,
+  severity: "info",
   createdAt: exampleTimestamp
 };
 
@@ -94,9 +89,9 @@ const treeEntry = {
 
 const webhook = {
   webhookId,
-  name: "Task updates",
+  name: "Source file updates",
   endpointHost: "hooks.example.com",
-  events: ["task.ended"],
+  events: ["source_file.completed", "source_file.failed", "release.published"],
   enabled: true,
   createdAt: exampleTimestamp,
   updatedAt: exampleTimestamp,
@@ -107,7 +102,7 @@ const delivery = {
   deliveryId,
   webhookId,
   eventId: "event_123",
-  eventType: "task.ended",
+  eventType: "source_file.completed",
   status: "success",
   attemptCount: 1,
   httpStatus: 200,
@@ -141,13 +136,19 @@ export const requestExamples = {
       files: ["guide.md", "faq.md"]
     }
   },
-  listKnowledgeBaseTasks: {
+  listKnowledgeBaseSourceFiles: {
     path: { knowledgeBaseId },
     query: { limit: 50 }
   },
-  getKnowledgeBaseTask: {
-    path: { knowledgeBaseId, taskId },
+  getKnowledgeBaseSourceFile: {
+    path: { knowledgeBaseId, sourceFileId }
+  },
+  listKnowledgeBaseSourceFileEvents: {
+    path: { knowledgeBaseId, sourceFileId },
     query: { limit: 50 }
+  },
+  retryKnowledgeBaseSourceFile: {
+    path: { knowledgeBaseId, sourceFileId }
   },
   listKnowledgeBaseTree: {
     path: { knowledgeBaseId },
@@ -172,9 +173,9 @@ export const requestExamples = {
   },
   createWebhook: {
     body: {
-      name: "Task updates",
+      name: "Source file updates",
       url: "https://hooks.example.com/focowiki",
-      events: ["task.ended"]
+      events: ["source_file.completed", "source_file.failed", "release.published"]
     }
   },
   listWebhooks: {
@@ -235,29 +236,42 @@ export const responseExamples = {
   },
   uploadMarkdownFiles: {
     knowledgeBaseId,
-    taskId,
     files: [
       {
         fileId: sourceFileId,
         originalFilename: "guide.md",
-        sizeBytes: 1024
+        sizeBytes: 1024,
+        processingState: "queued",
+        currentStage: "upload_storage"
       },
       {
         fileId: "file_source_456",
         originalFilename: "faq.md",
-        sizeBytes: 2048
+        sizeBytes: 2048,
+        processingState: "queued",
+        currentStage: "upload_storage"
       }
     ]
   },
-  listKnowledgeBaseTasks: {
-    items: [task],
+  listKnowledgeBaseSourceFiles: {
+    items: [sourceFile],
     nextCursor: null
   },
-  getKnowledgeBaseTask: {
-    task,
-    files: {
-      items: [sourceFile],
-      nextCursor: null
+  getKnowledgeBaseSourceFile: {
+    file: sourceFile
+  },
+  listKnowledgeBaseSourceFileEvents: {
+    items: [sourceFileEvent],
+    nextCursor: null
+  },
+  retryKnowledgeBaseSourceFile: {
+    file: {
+      ...sourceFile,
+      processingState: "queued",
+      currentStage: "upload_storage",
+      processingStartedAt: exampleTimestamp,
+      processingEndedAt: null,
+      retryCount: 1
     }
   },
   listKnowledgeBaseTree: {
@@ -273,7 +287,8 @@ export const responseExamples = {
   },
   deleteFileById: {
     knowledgeBaseId,
-    taskId: deletionTaskId,
+    deleted: true,
+    releaseId: "release_456",
     file: bundleFile
   },
   getFileContentById: {
@@ -282,7 +297,8 @@ export const responseExamples = {
   },
   deleteFileByPath: {
     knowledgeBaseId,
-    taskId: deletionTaskId,
+    deleted: true,
+    releaseId: "release_456",
     file: bundleFile
   },
   createWebhook: {

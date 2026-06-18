@@ -33,6 +33,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     });
 
     expect(request.model).toBe("gpt-5.2");
+    expect(request.instructions).toContain("Return raw JSON only");
     expect(request.text?.format).toMatchObject({
       type: "json_schema",
       name: "focowiki_model_suggestions",
@@ -216,7 +217,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
       })
     ).resolves.toEqual({
       suggestions: null,
-      warnings: ["Model suggestions failed local schema validation"]
+      warnings: ["Model suggestions failed local schema validation: root: Unrecognized key: \"timestamp\""]
     });
 
     const providerResult = await requestModelSuggestions({
@@ -300,6 +301,90 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(requests[1]?.input).not.toContain("Authorization");
   });
 
+  it("reads model output from Responses output content and chat-compatible choices", async () => {
+    const commonInput = {
+      modelName: "gpt-5.2",
+      title: "Compatibility",
+      body: "# Compatibility",
+      candidatePaths: [],
+      contextWindowTokens: 200_000,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      }
+    };
+
+    await expect(
+      requestModelSuggestions({
+        ...commonInput,
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: JSON.stringify({
+                        description: "From response content",
+                        title: "",
+                        type: "",
+                        tags: [],
+                        related_links: [],
+                        keywords: ["response"]
+                      })
+                    }
+                  ]
+                }
+              ]
+            })
+          }
+        }
+      })
+    ).resolves.toMatchObject({
+      suggestions: {
+        description: "From response content",
+        keywords: ["response"]
+      },
+      warnings: []
+    });
+
+    await expect(
+      requestModelSuggestions({
+        ...commonInput,
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      description: "From choices",
+                      title: "",
+                      type: "",
+                      tags: [],
+                      related_links: [],
+                      keywords: ["choices"]
+                    })
+                  }
+                }
+              ]
+            })
+          }
+        }
+      })
+    ).resolves.toMatchObject({
+      suggestions: {
+        description: "From choices",
+        keywords: ["choices"]
+      },
+      warnings: []
+    });
+  });
+
   it("records one safe warning after two failed attempts", async () => {
     const result = await requestModelSuggestions({
       modelName: "gpt-5.2",
@@ -322,7 +407,9 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     });
 
     expect(result.suggestions).toBeNull();
-    expect(result.warnings).toEqual(["Model suggestions failed local schema validation"]);
+    expect(result.warnings).toEqual([
+      "Model suggestions failed local schema validation: response was not valid JSON"
+    ]);
   });
 
   it("keeps receiving while progress is active before the hard timeout", async () => {

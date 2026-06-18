@@ -36,7 +36,7 @@ Focowiki uses this model as a practical product direction. Uploaded Markdown fil
 - PostgreSQL-backed records for knowledge bases, tasks, releases, files, and API keys.
 - Redis-backed coordination for sessions, cursors, rate limits, and task state refresh.
 - S3-compatible storage for uploaded source files and generated bundle files.
-- Admin UI for login, knowledge-base management, uploads, file-tree browsing, task observation, and OpenAPI key management.
+- Admin UI for login, knowledge-base management, uploads, file-tree browsing, source-file processing observation, and OpenAPI key management.
 - Developer OpenAPI for backend integration. See the [Developer OpenAPI documentation](https://docs.focowiki.com/openapi/).
 
 ## Admin UI Preview

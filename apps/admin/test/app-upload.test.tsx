@@ -3,10 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
-  fetchUploadTaskDetail,
   fetchKnowledgeBaseFileTree,
   listKnowledgeBases,
-  listUploadTasks,
+  listSourceFiles,
   loginAdmin,
   logoutAdmin,
   uploadKnowledgeBaseSources
@@ -25,7 +24,6 @@ vi.mock("../src/lib/admin-api", () => ({
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
-  fetchUploadTaskDetail: vi.fn(),
   generateBundle: vi.fn(),
   listKnowledgeBases: vi.fn(async () => ({
     items: [
@@ -38,7 +36,7 @@ vi.mock("../src/lib/admin-api", () => ({
     ],
     nextCursor: null
   })),
-  listUploadTasks: vi.fn(async () => ({
+  listSourceFiles: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -47,10 +45,6 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   listReleases: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listSourceFiles: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -69,17 +63,22 @@ describe("Admin upload file picker", () => {
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
 
-  it("closes the upload dialog and refreshes task rows after submitting Markdown files", async () => {
+  it("closes the upload dialog and refreshes source-file rows after submitting Markdown files", async () => {
     vi.mocked(uploadKnowledgeBaseSources).mockResolvedValueOnce({
-      task: {
-        id: "task-new",
-        startedAt: "2026-06-14T00:00:00.000Z",
-        endedAt: null,
-        lifecycle: "running",
-        sourceCount: 1
-      }
+      files: [
+        {
+          id: "source-new",
+          originalName: "intro.md",
+          processingStatus: "queued",
+          processingStage: "upload_storage",
+          processingStartedAt: null,
+          processingEndedAt: null,
+          processingErrorCode: null,
+          createdAt: "2026-06-14T00:00:00.000Z"
+        }
+      ]
     });
-    vi.mocked(listUploadTasks)
+    vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [],
         nextCursor: null
@@ -87,38 +86,18 @@ describe("Admin upload file picker", () => {
       .mockResolvedValueOnce({
         items: [
           {
-            id: "task-new",
-            startedAt: "2026-06-14T00:00:00.000Z",
-            endedAt: null,
-            lifecycle: "running",
-            sourceCount: 1
-          }
-        ],
-        nextCursor: null
-      });
-    vi.mocked(fetchUploadTaskDetail).mockResolvedValue({
-      task: {
-        id: "task-new",
-        startedAt: "2026-06-14T00:00:00.000Z",
-        endedAt: null,
-        lifecycle: "running",
-        sourceCount: 1
-      },
-      phaseDetails: {
-        items: [],
-        nextCursor: null
-      },
-      sourceFiles: {
-        items: [
-          {
             id: "source-new",
             originalName: "intro.md",
+            processingStatus: "queued",
+            processingStage: "upload_storage",
+            processingStartedAt: null,
+            processingEndedAt: null,
+            processingErrorCode: null,
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
         nextCursor: null
-      }
-    });
+      });
     render(<App />);
 
     await openKnowledgeBaseDetail();
@@ -136,17 +115,16 @@ describe("Admin upload file picker", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
-      expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
+      expect(screen.getByRole("button", { name: "File processing" }).getAttribute("data-active")).toBe(
         "true"
       );
-      expect(screen.getByText("task-new")).toBeTruthy();
+      expect(screen.getByText("intro.md")).toBeTruthy();
     });
     expect(uploadKnowledgeBaseSources).toHaveBeenCalled();
     expect(uploadKnowledgeBaseSources).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
       files: [file]
     });
-    expect(fetchUploadTaskDetail).not.toHaveBeenCalled();
   });
 
   it("shows a multi-file batch summary before upload", async () => {
@@ -231,7 +209,7 @@ describe("Admin upload file picker", () => {
     );
   });
 
-  it("refreshes upload tasks on an interval while the detail page is open", async () => {
+  it("refreshes source files on an interval while the detail page is open", async () => {
     vi.mocked(fetchKnowledgeBaseFileTree).mockImplementation(async (input) => {
       if (input.parentPath === "pages") {
         return {
@@ -261,15 +239,18 @@ describe("Admin upload file picker", () => {
         nextCursor: null
       };
     });
-    vi.mocked(listUploadTasks)
+    vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [
           {
-            id: "task-new",
-            startedAt: "2026-06-14T00:00:00.000Z",
-            endedAt: null,
-            lifecycle: "running",
-            sourceCount: 1
+            id: "source-new",
+            originalName: "intro.md",
+            processingStatus: "running",
+            processingStage: "metadata_resolution",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
         nextCursor: null
@@ -277,46 +258,41 @@ describe("Admin upload file picker", () => {
       .mockResolvedValueOnce({
         items: [
           {
-            id: "task-new",
-            startedAt: "2026-06-14T00:00:00.000Z",
-            endedAt: "2026-06-14T00:00:05.000Z",
-            lifecycle: "ended",
-            sourceCount: 1
+            id: "source-new",
+            originalName: "intro.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: "2026-06-14T00:00:05.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
         nextCursor: null
       });
-    vi.mocked(fetchUploadTaskDetail).mockImplementation(async () => ({
-      task: {
-        id: "task-new",
-        startedAt: "2026-06-14T00:00:00.000Z",
-        endedAt: "2026-06-14T00:00:05.000Z",
-        lifecycle: "ended",
-        sourceCount: 1
-      },
-      phaseDetails: {
-        items: [],
-        nextCursor: null
-      },
-      sourceFiles: {
-        items: [],
-        nextCursor: null
-      }
-    }));
 
     render(<App />);
     await openKnowledgeBaseDetailPage();
+
+    expect(
+      within(await screen.findByTestId("source-file-row-source-new")).getByText("Running")
+    ).toBeTruthy();
+
+    await waitFor(
+      () => {
+        expect(
+          within(screen.getByTestId("source-file-row-source-new")).getByText("Completed")
+        ).toBeTruthy();
+      },
+      { timeout: 3_000 }
+    );
     fireEvent.click(await screen.findByRole("button", { name: "pages" }));
-
-    expect(await screen.findByText("Upload parsing task is running")).toBeTruthy();
-
-    expect(await screen.findByText("Upload parsing task ended", {}, { timeout: 3_000 })).toBeTruthy();
     await waitFor(() => {
-      const pageRefreshCalls = vi
+      const rootRefreshCalls = vi
         .mocked(fetchKnowledgeBaseFileTree)
-        .mock.calls.filter(([input]) => input.parentPath === "pages");
+        .mock.calls.filter(([input]) => input.parentPath === undefined);
 
-      expect(pageRefreshCalls.length).toBeGreaterThanOrEqual(2);
+      expect(rootRefreshCalls.length).toBeGreaterThanOrEqual(2);
     });
   }, 5_000);
 
@@ -376,7 +352,7 @@ describe("Admin upload file picker", () => {
       }
     });
 
-    expect(screen.queryByText("intro.md")).not.toBeNull();
+    expect(screen.queryAllByText("intro.md").length).toBeGreaterThan(0);
     expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
       false
     );

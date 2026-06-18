@@ -38,7 +38,7 @@ The backend usually calls these Focowiki interfaces:
 | Resolve available knowledge bases | `listKnowledgeBases` |
 | Create and maintain knowledge bases | `createKnowledgeBase`, `deleteKnowledgeBase` |
 | Upload Markdown files | `uploadMarkdownFiles` |
-| Observe ingestion and batch progress | `listKnowledgeBaseTasks`, `getKnowledgeBaseTask` |
+| Observe source-file processing | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
 | Read the generated file tree | `listKnowledgeBaseTree` |
 | Read file metadata | `getFileById` |
 | Read file content by stable identifier | `getFileContentById` |

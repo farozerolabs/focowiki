@@ -49,7 +49,6 @@ vi.mock("../src/lib/admin-api", () => ({
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
-  fetchUploadTaskDetail: vi.fn(),
   generateBundle: vi.fn(),
   listKnowledgeBases: vi.fn(async () => ({
     items: [],
@@ -72,7 +71,7 @@ vi.mock("../src/lib/admin-api", () => ({
       rawKey: "fwok_default-secret"
     }
   })),
-  listUploadTasks: vi.fn(async () => ({
+  listSourceFiles: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -81,10 +80,6 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   listReleases: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listSourceFiles: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -236,7 +231,7 @@ describe("Admin knowledge base home", () => {
 
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
     expect(screen.getAllByText("Developer docs").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
+    expect(screen.getByRole("button", { name: "File processing" }).getAttribute("data-active")).toBe(
       "true"
     );
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();

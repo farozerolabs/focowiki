@@ -86,7 +86,7 @@ async function runE2e(config, samples, report) {
     knowledgeBaseId = knowledgeBase.knowledgeBaseId;
 
     const upload = await uploadSamples(config, openApiKey, knowledgeBaseId, samples, report);
-    const taskDetail = await pollTaskEnded(config, openApiKey, knowledgeBaseId, upload.taskId, report);
+    const sourceFiles = await pollSourceFilesCompleted(config, openApiKey, knowledgeBaseId, upload.files, report);
     const bundle = await validateGeneratedBundle(config, openApiKey, knowledgeBaseId, samples, report);
     await ensureDemoBackend(config, openApiKey, knowledgeBaseId, report, managedProcesses);
     const demo = await validateDemoAgentRoutes(config, bundle, report);
@@ -95,9 +95,9 @@ async function runE2e(config, samples, report) {
 
     report.validationRun = {
       knowledgeBaseId,
-      taskId: upload.taskId,
+      sourceFileIds: upload.files.map((file) => file.fileId),
       uploadedFileCount: upload.files.length,
-      taskFileCount: taskDetail.files.items.length,
+      sourceFileCount: sourceFiles.length,
       rootEntryCount: bundle.rootEntries.length,
       pageFilePath: bundle.pageFile.path,
       pageFileId: bundle.pageFile.fileId,
@@ -348,8 +348,8 @@ async function uploadSamples(config, openApiKey, knowledgeBaseId, samples, repor
     status: 202
   });
 
-  if (!data.taskId || !Array.isArray(data.files) || data.files.length !== samples.length) {
-    throw new Error("Developer OpenAPI upload response did not preserve taskId and accepted file list.");
+  if (!Array.isArray(data.files) || data.files.length !== samples.length) {
+    throw new Error("Developer OpenAPI upload response did not preserve the accepted file list.");
   }
 
   const invalid = data.files.filter((file) => !file.fileId || !file.originalFilename);
@@ -368,47 +368,53 @@ async function uploadSamples(config, openApiKey, knowledgeBaseId, samples, repor
   return data;
 }
 
-async function pollTaskEnded(config, openApiKey, knowledgeBaseId, taskId, report) {
+async function pollSourceFilesCompleted(config, openApiKey, knowledgeBaseId, files, report) {
   const startedAt = Date.now();
-  let lastDetail = null;
+  const expected = new Map(files.map((file) => [file.fileId, file.originalFilename]));
 
   while (Date.now() - startedAt < config.taskTimeoutMs) {
-    lastDetail = await openApiJson(
-      config,
-      openApiKey,
-      `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tasks/${encodeURIComponent(taskId)}`,
-      {
-        query: { limit: config.maxRouteLimit }
-      }
+    const details = await Promise.all(
+      files.map((file) =>
+        openApiJson(
+          config,
+          openApiKey,
+          `/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/${encodeURIComponent(file.fileId)}`
+        )
+      )
     );
+    const sourceFiles = details.map((detail) => detail.file).filter(Boolean);
+    const missingIdentifiers = sourceFiles.filter((file) => !file.fileId || !file.originalFilename);
 
-    if (lastDetail.task?.lifecycle === "ended") {
-      const files = lastDetail.files?.items;
-      if (!Array.isArray(files) || files.length === 0) {
-        throw new Error("Ended task did not expose file-level items.");
-      }
-      const missingIdentifiers = files.filter((file) => !file.fileId || !file.originalFilename);
-      if (missingIdentifiers.length > 0) {
-        throw new Error("Task file-level items do not preserve fileId and originalFilename.");
-      }
+    if (missingIdentifiers.length > 0) {
+      throw new Error("Source-file detail items do not preserve fileId and originalFilename.");
+    }
+
+    const failed = sourceFiles.find((file) => file.processingState === "failed");
+    if (failed) {
+      throw new Error(`Source file processing failed: ${failed.originalFilename} (${failed.processingErrorCode ?? "unknown"})`);
+    }
+
+    if (
+      sourceFiles.length === expected.size &&
+      sourceFiles.every((file) => file.processingState === "completed")
+    ) {
       report.checks.push(
         okCheck(
-          "task-ended",
-          "Upload task reached ended state with file-level identifier continuity.",
+          "source-files-completed",
+          "Uploaded source files reached completed processing state with identifier continuity.",
           {
-            fileCount: files.length,
-            currentStage: lastDetail.task.progress?.currentStage || null
+            fileCount: sourceFiles.length
           },
           BLACK_BOX
         )
       );
-      return lastDetail;
+      return sourceFiles;
     }
 
     await sleep(config.taskPollIntervalMs);
   }
 
-  throw new Error(`Timed out waiting for task ${taskId} to end.`);
+  throw new Error("Timed out waiting for source files to complete.");
 }
 
 async function validateGeneratedBundle(config, openApiKey, knowledgeBaseId, samples, report) {
@@ -586,12 +592,11 @@ async function validateDemoAgentRoutes(config, bundle, report) {
   });
   const searchItems = assertItems(search.data, "demo search");
 
-  const rejected = await requestJson(`${config.demoBaseUrl}/agent/v1/tree`, {
-    allowError: true,
+  const publicTree = await requestJson(appendQuery(`${config.demoBaseUrl}/agent/v1/tree`, { limit: 1 }), {
     timeoutMs: config.requestTimeoutMs
   });
-  if (rejected.response.status !== 401) {
-    throw new Error(`Expected demo Agent auth failure to return 401, got ${rejected.response.status}.`);
+  if (assertItems(publicTree.data, "public demo tree").length === 0) {
+    throw new Error("Demo Agent public tree route returned no entries.");
   }
 
   const traversal = await requestJson(
@@ -609,7 +614,7 @@ async function validateDemoAgentRoutes(config, bundle, report) {
   report.checks.push(
     okCheck(
       "demo-agent-routes",
-      "Demo Agent routes returned health, summary, tree, metadata, content, search, auth rejection, and path rejection.",
+      "Demo Agent routes returned health, summary, tree, metadata, content, search, public reads, and path rejection.",
       {
         treeItems: treeItems.length,
         searchItems: searchItems.length

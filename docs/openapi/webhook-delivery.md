@@ -4,7 +4,7 @@ title: Webhook Delivery
 
 # Webhook Delivery
 
-Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v1/webhooks`. Use webhooks when another system needs task, release, file-deletion, or knowledge-base-deletion events without polling.
+Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v1/webhooks`. Use webhooks when another system needs source-file processing, release, file-deletion, or knowledge-base deletion events.
 
 ## Register A Webhook
 
@@ -15,9 +15,9 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
   --data '{
-  "name": "Task updates",
+  "name": "Source file updates",
   "url": "https://hooks.example.com/focowiki",
-  "events": ["task.started", "task.progress", "task.ended", "release.published"]
+  "events": ["source_file.completed", "source_file.failed", "release.published"]
 }'
 ```
 
@@ -33,13 +33,13 @@ Focowiki sends each delivery as an HTTP `POST` request.
 | Content-Type | `application/json` |
 | Success acknowledgement | Any `2xx` response status. |
 | Delivery timeout | 10 seconds. |
-| Automatic retry | No automatic retry is currently scheduled. Use `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` for manual redelivery. |
+| Redelivery | Use `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` for manual redelivery. |
 
 ## Request Headers
 
 | Header | Description |
 | --- | --- |
-| `x-focowiki-event` | Event type, such as `task.ended`. |
+| `x-focowiki-event` | Event type, such as `source_file.completed`. |
 | `x-focowiki-delivery-id` | Delivery identifier. Use it for idempotency. |
 | `x-focowiki-timestamp` | ISO timestamp used in the signature payload. |
 | `x-focowiki-signature` | HMAC SHA-256 signature in the format `sha256=<hex>`. |
@@ -51,14 +51,11 @@ Every webhook delivery uses this JSON envelope:
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.ended",
+  "eventType": "source_file.completed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "resultReleaseId": "release_123",
-    "errorCode": null
+    "sourceFileId": "file_source_123"
   }
 }
 ```
@@ -101,62 +98,57 @@ Use the raw request body bytes or exact raw body string received by the server. 
 
 | Event type | When it is sent | Payload fields |
 | --- | --- | --- |
-| `task.started` | An upload or deletion task starts. | `knowledgeBaseId`, `taskId`, `operation`, `sourceCount` |
-| `task.progress` | A source file processing stage changes during upload. | `knowledgeBaseId`, `taskId`, `operation`, `sourceFileIds`, `status`, `stage`, `startedAt`, `endedAt`, `errorCode` |
-| `task.ended` | An upload or deletion task ends. | `knowledgeBaseId`, `taskId`, `operation`, `resultReleaseId`, `errorCode` |
-| `release.published` | A task publishes a new release. | `knowledgeBaseId`, `taskId`, `releaseId` |
-| `file.deleted` | A source-backed generated file is deleted. | `knowledgeBaseId`, `taskId`, `fileId`, `sourceFileId`, `path` |
+| `source_file.accepted` | A Markdown file is accepted and persisted. | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.progress` | A source file starts or continues processing. | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.completed` | A source file completes processing. | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.failed` | A source file fails processing. | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
+| `release.published` | A release is published after file processing or deletion. | `knowledgeBaseId`, `sourceFileId`, `releaseId` when available |
+| `file.deleted` | A source-backed generated file is deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
 | `knowledge_base.deleted` | A knowledge base is deleted. | `knowledgeBaseId` |
 
 ## Payload Examples
 
-### `task.started`
+### `source_file.completed`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.started",
+  "eventType": "source_file.completed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "sourceCount": 2
+    "sourceFileId": "file_source_123"
   }
 }
 ```
 
-### `task.progress`
+### `source_file.failed`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.progress",
+  "eventType": "source_file.failed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "sourceFileIds": ["file_source_123"],
-    "status": "completed",
-    "stage": "okf_validation",
-    "startedAt": "2026-06-17T00:00:00.000Z",
-    "endedAt": "2026-06-17T00:00:10.000Z",
-    "errorCode": null
+    "sourceFileId": "file_source_123",
+    "errorCode": "MODEL_OUTPUT_INVALID"
   }
 }
 ```
 
-### `release.published`
+### `file.deleted`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "release.published",
+  "eventType": "file.deleted",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
+    "fileId": "file_page_123",
+    "sourceFileId": "file_source_123",
+    "path": "pages/guide.md",
     "releaseId": "release_123"
   }
 }

@@ -53,9 +53,9 @@ export type AdminSidebarTreeNode = {
   deletable: boolean;
 };
 
-export type AdminSidebarTask = {
+export type AdminSidebarSourceFile = {
   id: string;
-  lifecycle: "running" | "ended";
+  processingStatus?: "queued" | "running" | "completed" | "failed";
 };
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
@@ -72,13 +72,13 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     deleteFile: string;
     fileActions: string;
   };
-  activeView: "file" | "tasks";
+  activeView: "file" | "processing";
   tree: AdminSidebarTreeNode[];
   rootNextCursor: string | null;
-  tasks: AdminSidebarTask[];
+  sourceFiles: AdminSidebarSourceFile[];
   onBack: () => void;
   onLogout: () => void;
-  onOpenTasks: () => void;
+  onOpenProcessing: () => void;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
@@ -92,17 +92,19 @@ export function AppSidebar({
   activeView,
   tree,
   rootNextCursor,
-  tasks,
+  sourceFiles,
   onBack,
   onLogout,
-  onOpenTasks,
+  onOpenProcessing,
   onOpenFile,
   onDeleteFile,
   onToggleDirectory,
   onLoadMoreTree,
   ...props
 }: AppSidebarProps) {
-  const runningTasks = tasks.filter((task) => task.lifecycle === "running").length;
+  const runningSourceFiles = sourceFiles.filter(
+    (file) => file.processingStatus === "queued" || file.processingStatus === "running"
+  ).length;
 
   return (
     <Sidebar {...props}>
@@ -124,12 +126,12 @@ export function AppSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton isActive={activeView === "tasks"} onClick={onOpenTasks}>
+                <SidebarMenuButton isActive={activeView === "processing"} onClick={onOpenProcessing}>
                   <ListChecksIcon />
                   <span>{labels.uploadProgress}</span>
                 </SidebarMenuButton>
-                {tasks.length > 0 ? (
-                  <SidebarMenuBadge>{runningTasks > 0 ? labels.running : labels.ended}</SidebarMenuBadge>
+                {sourceFiles.length > 0 ? (
+                  <SidebarMenuBadge>{runningSourceFiles > 0 ? labels.running : labels.ended}</SidebarMenuBadge>
                 ) : null}
               </SidebarMenuItem>
             </SidebarMenu>

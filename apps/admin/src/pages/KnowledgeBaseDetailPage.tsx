@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CopyIcon } from "lucide-react";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
-import { TaskProgressPanel } from "@/components/task-progress-panel";
+import { SourceFileProgressPanel } from "@/components/task-progress-panel";
 import { UploadSourceDialog } from "@/components/upload-source-dialog";
 import {
   AlertDialog,
@@ -33,17 +33,16 @@ import {
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
-  fetchUploadTaskDetail,
-  listUploadTasks,
+  listSourceFiles,
+  retryKnowledgeBaseSourceFile,
   type BundleTreeEntry,
   type KnowledgeBasePublicUrls,
   type KnowledgeBase,
-  type UploadTaskDetail,
-  type UploadTaskLifecycle
+  type SourceFileRecord
 } from "@/lib/admin-api";
 
 const ROOT_PARENT_PATH = "";
-const TASK_REFRESH_INTERVAL_MS = 2_000;
+const SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;
 
 type KnowledgeBaseDetailPageProps = {
   knowledgeBase: KnowledgeBase;
@@ -57,7 +56,7 @@ type TreePageState = {
   isLoading: boolean;
 };
 
-type ActiveView = "file" | "tasks";
+type ActiveView = "file" | "processing";
 
 export function KnowledgeBaseDetailPage({
   knowledgeBase,
@@ -65,10 +64,10 @@ export function KnowledgeBaseDetailPage({
   onLogout
 }: KnowledgeBaseDetailPageProps) {
   const { t } = useTranslation();
-  const hasRunningTasksRef = useRef(false);
+  const hasRunningSourceFilesRef = useRef(false);
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
-  const [activeView, setActiveView] = useState<ActiveView>("tasks");
+  const [activeView, setActiveView] = useState<ActiveView>("processing");
   const [treePages, setTreePages] = useState<Record<string, TreePageState>>({});
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState("");
@@ -77,12 +76,10 @@ export function KnowledgeBaseDetailPage({
   const [deleteFileTarget, setDeleteFileTarget] = useState<AdminSidebarTreeNode | null>(null);
   const [deleteFileError, setDeleteFileError] = useState("");
   const [isDeletingFile, setIsDeletingFile] = useState(false);
-  const [tasks, setTasks] = useState<UploadTaskLifecycle[]>([]);
-  const [taskCursor, setTaskCursor] = useState<string | null>(null);
-  const [taskDetailsById, setTaskDetailsById] = useState<Record<string, UploadTaskDetail | null>>({});
-  const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set());
-  const [loadingTaskDetailIds, setLoadingTaskDetailIds] = useState<Set<string>>(new Set());
-  const [taskDetailErrorsById, setTaskDetailErrorsById] = useState<Record<string, string | null>>({});
+  const [sourceFiles, setSourceFiles] = useState<SourceFileRecord[]>([]);
+  const [sourceFileCursor, setSourceFileCursor] = useState<string | null>(null);
+  const [sourceFileError, setSourceFileError] = useState("");
+  const [retryingSourceFileId, setRetryingSourceFileId] = useState<string | null>(null);
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
   const [copiedUrl, setCopiedUrl] = useState("");
 
@@ -94,7 +91,7 @@ export function KnowledgeBaseDetailPage({
 
   useEffect(() => {
     setIsUploadDialogOpen(false);
-    setActiveView("tasks");
+    setActiveView("processing");
     setTreePages({});
     setExpandedDirectories(new Set());
     setSelectedFilePath("");
@@ -103,28 +100,26 @@ export function KnowledgeBaseDetailPage({
     setDeleteFileTarget(null);
     setDeleteFileError("");
     setIsDeletingFile(false);
-    setTasks([]);
-    setTaskCursor(null);
-    setTaskDetailsById({});
-    setExpandedTaskIds(new Set());
-    setLoadingTaskDetailIds(new Set());
-    setTaskDetailErrorsById({});
+    setSourceFiles([]);
+    setSourceFileCursor(null);
+    setSourceFileError("");
+    setRetryingSourceFileId(null);
     setPublicUrls(null);
     setCopiedUrl("");
     loadedTreeParentsRef.current = new Set();
 
     void loadFileTree({ parentPath: ROOT_PARENT_PATH, replace: true });
-    void loadTasks({ replace: true });
+    void loadSourceFiles({ replace: true });
     void loadPublicUrls();
   }, [knowledgeBase.id]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      void loadTasks({ replace: true });
-    }, TASK_REFRESH_INTERVAL_MS);
+      void loadSourceFiles({ replace: true });
+    }, SOURCE_FILE_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [expandedTaskIds, knowledgeBase.id]);
+  }, [knowledgeBase.id]);
 
   async function loadFileTree(input: { parentPath: string; replace: boolean }) {
     const currentCursor = input.replace ? null : treePages[input.parentPath]?.nextCursor ?? null;
@@ -203,20 +198,22 @@ export function KnowledgeBaseDetailPage({
     setPreviewHtml(`<pre>${escapeHtml(detail.content)}</pre>`);
   }
 
-  async function loadTasks(input: { replace: boolean }) {
-    const page = await listUploadTasks({
+  async function loadSourceFiles(input: { replace: boolean }) {
+    const page = await listSourceFiles({
       knowledgeBaseId: knowledgeBase.id,
-      cursor: input.replace ? null : taskCursor
+      cursor: input.replace ? null : sourceFileCursor
     });
-    const hasRunningTasks = page.items.some((task) => task.lifecycle === "running");
-    const shouldRefreshGeneratedFiles = input.replace && hasRunningTasksRef.current && !hasRunningTasks;
+    const hasRunningFiles = page.items.some(
+      (file) => file.processingStatus === "queued" || file.processingStatus === "running"
+    );
+    const shouldRefreshGeneratedFiles =
+      input.replace && hasRunningSourceFilesRef.current && !hasRunningFiles;
 
-    setTasks((current) => (input.replace ? page.items : [...current, ...page.items]));
-    setTaskCursor(page.nextCursor);
-    await refreshExpandedTaskDetails(page.items);
+    setSourceFiles((current) => (input.replace ? page.items : [...current, ...page.items]));
+    setSourceFileCursor(page.nextCursor);
 
     if (input.replace) {
-      hasRunningTasksRef.current = hasRunningTasks;
+      hasRunningSourceFilesRef.current = hasRunningFiles;
     }
 
     if (shouldRefreshGeneratedFiles) {
@@ -235,130 +232,26 @@ export function KnowledgeBaseDetailPage({
     ]);
   }
 
-  async function refreshExpandedTaskDetails(pageTasks: UploadTaskLifecycle[]) {
-    await Promise.all(
-      pageTasks
-        .filter((task) => expandedTaskIds.has(task.id))
-        .map((task) => loadTaskDetail(task.id))
-    );
-  }
-
-  async function loadTaskDetail(taskId: string) {
-    setLoadingTaskDetailIds((current) => new Set(current).add(taskId));
-    setTaskDetailErrorsById((current) => ({
-      ...current,
-      [taskId]: null
-    }));
+  async function handleRetrySourceFile(sourceFile: SourceFileRecord) {
+    setRetryingSourceFileId(sourceFile.id);
+    setSourceFileError("");
 
     try {
-      const detail = await fetchUploadTaskDetail({
+      const result = await retryKnowledgeBaseSourceFile({
         knowledgeBaseId: knowledgeBase.id,
-        taskId
+        sourceFileId: sourceFile.id
       });
 
-      if (!detail) {
-        setTaskDetailErrorsById((current) => ({
-          ...current,
-          [taskId]: "errors.uploadFailed"
-        }));
+      if ("messageKey" in result) {
+        setSourceFileError(result.messageKey);
         return;
       }
 
-      setTaskDetailsById((current) => ({
-        ...current,
-        [taskId]: detail
-      }));
-    } catch {
-      setTaskDetailErrorsById((current) => ({
-        ...current,
-        [taskId]: "errors.uploadFailed"
-      }));
+      await loadSourceFiles({ replace: true });
+      await refreshGeneratedFiles();
     } finally {
-      setLoadingTaskDetailIds((current) => {
-        const next = new Set(current);
-        next.delete(taskId);
-        return next;
-      });
+      setRetryingSourceFileId(null);
     }
-  }
-
-  async function handleToggleTask(taskId: string, open: boolean) {
-    setExpandedTaskIds((current) => {
-      const next = new Set(current);
-
-      if (open) {
-        next.add(taskId);
-      } else {
-        next.delete(taskId);
-      }
-
-      return next;
-    });
-
-    if (open && !taskDetailsById[taskId] && !loadingTaskDetailIds.has(taskId)) {
-      await loadTaskDetail(taskId);
-    }
-  }
-
-  async function loadMoreTaskSourceFiles(taskId: string) {
-    const currentDetail = taskDetailsById[taskId];
-    const sourceCursor = currentDetail?.sourceFiles.nextCursor;
-
-    if (!sourceCursor) {
-      return;
-    }
-
-    setLoadingTaskDetailIds((current) => new Set(current).add(taskId));
-    setTaskDetailErrorsById((current) => ({
-      ...current,
-      [taskId]: null
-    }));
-
-    let nextDetail: UploadTaskDetail | null = null;
-
-    try {
-      nextDetail = await fetchUploadTaskDetail({
-        knowledgeBaseId: knowledgeBase.id,
-        taskId,
-        sourceCursor
-      });
-    } catch {
-      nextDetail = null;
-    } finally {
-      setLoadingTaskDetailIds((current) => {
-        const next = new Set(current);
-        next.delete(taskId);
-        return next;
-      });
-    }
-
-    if (!nextDetail) {
-      setTaskDetailErrorsById((current) => ({
-        ...current,
-        [taskId]: "errors.uploadFailed"
-      }));
-      return;
-    }
-
-    setTaskDetailsById((current) => {
-      const previousDetail = current[taskId];
-
-      if (!previousDetail) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [taskId]: {
-          task: nextDetail.task,
-          phaseDetails: previousDetail.phaseDetails,
-          sourceFiles: {
-            items: [...previousDetail.sourceFiles.items, ...nextDetail.sourceFiles.items],
-            nextCursor: nextDetail.sourceFiles.nextCursor
-          }
-        }
-      };
-    });
   }
 
   async function loadPublicUrls() {
@@ -388,8 +281,7 @@ export function KnowledgeBaseDetailPage({
       return;
     }
 
-    setTasks((current) => [result.task, ...current.filter((task) => task.id !== result.task.id)]);
-    setActiveView("tasks");
+    setActiveView("processing");
     setDeleteFileTarget(null);
 
     if (selectedFilePath === deleteFileTarget.logicalPath) {
@@ -398,7 +290,7 @@ export function KnowledgeBaseDetailPage({
       setPreviewHtml("");
     }
 
-    await loadTasks({ replace: true });
+    await loadSourceFiles({ replace: true });
     await refreshGeneratedFiles();
   }
 
@@ -421,10 +313,10 @@ export function KnowledgeBaseDetailPage({
         activeView={activeView}
         tree={sidebarTree}
         rootNextCursor={rootTreePage?.nextCursor ?? null}
-        tasks={tasks}
+        sourceFiles={sourceFiles}
         onBack={onBack}
         onLogout={onLogout}
-        onOpenTasks={() => setActiveView("tasks")}
+        onOpenProcessing={() => setActiveView("processing")}
         onOpenFile={(node) => void handleSelectFile(node)}
         onDeleteFile={(node) => {
           setDeleteFileError("");
@@ -440,7 +332,7 @@ export function KnowledgeBaseDetailPage({
             <Separator orientation="vertical" className="h-4" />
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">
-                {activeView === "tasks"
+                {activeView === "processing"
                   ? t("tasks.title")
                   : selectedFileTitle || selectedFilePath || t("result.preview")}
               </p>
@@ -450,18 +342,15 @@ export function KnowledgeBaseDetailPage({
           <LanguageSwitch />
         </header>
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-4">
-          {activeView === "tasks" ? (
-            <TaskProgressPanel
-              tasks={tasks}
-              taskCursor={taskCursor}
-              taskDetailsById={taskDetailsById}
-              expandedTaskIds={expandedTaskIds}
-              loadingTaskDetailIds={loadingTaskDetailIds}
-              taskDetailErrorsById={taskDetailErrorsById}
-              onLoadMore={() => void loadTasks({ replace: false })}
-              onLoadMoreTaskSourceFiles={(taskId) => void loadMoreTaskSourceFiles(taskId)}
-              onToggleTask={(taskId, open) => void handleToggleTask(taskId, open)}
+          {activeView === "processing" ? (
+            <SourceFileProgressPanel
+              sourceFiles={sourceFiles}
+              sourceFileCursor={sourceFileCursor}
+              onLoadMore={() => void loadSourceFiles({ replace: false })}
               onUpload={() => setIsUploadDialogOpen(true)}
+              errorMessageKey={sourceFileError}
+              retryingSourceFileId={retryingSourceFileId}
+              onRetrySourceFile={(sourceFile) => void handleRetrySourceFile(sourceFile)}
             />
           ) : (
             <FilePreviewPanel
@@ -482,8 +371,8 @@ export function KnowledgeBaseDetailPage({
         open={isUploadDialogOpen}
         onOpenChange={setIsUploadDialogOpen}
         onAccepted={async () => {
-          setActiveView("tasks");
-          await loadTasks({ replace: true });
+          setActiveView("processing");
+          await loadSourceFiles({ replace: true });
         }}
       />
       <AlertDialog

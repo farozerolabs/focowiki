@@ -21,7 +21,7 @@ export function createDeveloperOpenApiDocument() {
     tags: [
       { name: "Metadata", description: "Health, version, and contract discovery." },
       { name: "Knowledge Bases", description: "Knowledge-base lifecycle and upload entry points." },
-      { name: "Tasks", description: "Upload and deletion task observation." },
+      { name: "Source Files", description: "Source-file processing observation and retry." },
       { name: "Files", description: "Generated tree, file detail, content, and deletion reads." },
       { name: "Webhooks", description: "Webhook subscriptions and delivery operations." }
     ],

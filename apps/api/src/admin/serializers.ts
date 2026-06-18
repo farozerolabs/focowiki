@@ -2,9 +2,8 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   ReleaseRecord,
-  SourceFileRecord,
-  UploadTaskEventRecord,
-  UploadTaskRecord
+  SourceFileEventRecord,
+  SourceFileRecord
 } from "../db/admin-repositories.js";
 
 export function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
@@ -42,17 +41,25 @@ export function toAdminBundleFile(file: BundleFileRecord) {
 export function toAdminSourceFile(file: SourceFileRecord) {
   return {
     id: file.id,
-    taskId: file.taskId,
     originalName: file.originalName,
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
     checksumSha256: file.checksumSha256,
     metadata: file.metadata,
+    modelSuggestions: file.modelSuggestions ?? null,
     processingStatus: file.processingStatus ?? "completed",
     processingStage: file.processingStage ?? "release_activation",
     processingStartedAt: file.processingStartedAt ?? file.createdAt,
     processingEndedAt: file.processingEndedAt ?? file.createdAt,
     processingErrorCode: file.processingErrorCode ?? null,
+    processingErrorMessage: file.processingErrorMessage ?? null,
+    retryCount: file.retryCount ?? 0,
+    modelInvocationStatus: file.modelInvocationStatus ?? null,
+    modelInvocationModelName: file.modelInvocationModelName ?? null,
+    modelInvocationStartedAt: file.modelInvocationStartedAt ?? null,
+    modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
+    modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
+    modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
     createdAt: file.createdAt
   };
 }
@@ -60,7 +67,6 @@ export function toAdminSourceFile(file: SourceFileRecord) {
 export function toAdminRelease(release: ReleaseRecord) {
   return {
     id: release.id,
-    taskId: release.taskId,
     generatedAt: release.generatedAt,
     publishedAt: release.publishedAt,
     fileCount: release.fileCount,
@@ -69,40 +75,11 @@ export function toAdminRelease(release: ReleaseRecord) {
   };
 }
 
-export function toUploadTaskLifecycle(task: UploadTaskRecord) {
-  return {
-    id: task.id,
-    knowledgeBaseId: task.knowledgeBaseId,
-    operation: task.operation,
-    startedAt: task.startedAt,
-    endedAt: task.endedAt,
-    lifecycle: task.endedAt ? "ended" : "running",
-    sourceCount: task.sourceCount,
-    progress: task.progress ?? {
-      total: task.sourceCount,
-      completed: task.endedAt ? task.sourceCount : 0,
-      failed: task.internalErrorCode ? task.sourceCount : 0,
-      running: task.endedAt ? 0 : Math.min(task.sourceCount, 1),
-      pending: task.endedAt ? 0 : Math.max(task.sourceCount - 1, 0),
-      currentStage: inferFallbackCurrentStage(task)
-    },
-    resultReleaseId: task.resultReleaseId
-  };
-}
-
-function inferFallbackCurrentStage(task: UploadTaskRecord) {
-  if (task.operation !== "upload") {
-    return null;
-  }
-
-  return task.endedAt ? "release_activation" : "upload_storage";
-}
-
-export function toAdminUploadTaskEvent(event: UploadTaskEventRecord) {
+export function toAdminSourceFileEvent(event: SourceFileEventRecord) {
   return {
     id: event.id,
-    taskId: event.taskId,
-    phaseKey: event.phaseKey,
+    sourceFileId: event.sourceFileId,
+    stageKey: event.stageKey,
     messageKey: event.messageKey,
     startedAt: event.startedAt,
     endedAt: event.endedAt,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createBoundedTaskRunner } from "../src/runtime/task-runner.js";
 
 describe("createBoundedTaskRunner", () => {
-  it("limits active upload tasks with configured concurrency", async () => {
+  it("limits active queued file work with configured concurrency", async () => {
     const runner = createBoundedTaskRunner(2);
     let active = 0;
     let maxActive = 0;

@@ -120,12 +120,12 @@ export function knowledgeBaseIdParameter(): ParameterObject {
   return pathParameter("knowledgeBaseId", "Knowledge-base identifier returned by knowledge-base APIs.");
 }
 
-export function taskIdParameter(): ParameterObject {
-  return pathParameter("taskId", "Task identifier returned by upload or deletion APIs.");
+export function sourceFileIdParameter(): ParameterObject {
+  return pathParameter("sourceFileId", "Source file identifier returned by upload or source-file list APIs.");
 }
 
 export function fileIdParameter(): ParameterObject {
-  return pathParameter("fileId", "File identifier returned by upload, task, tree, or file detail APIs.");
+  return pathParameter("fileId", "File identifier returned by upload, source-file, tree, or file detail APIs.");
 }
 
 export function webhookIdParameter(): ParameterObject {

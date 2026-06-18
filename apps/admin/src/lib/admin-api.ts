@@ -30,30 +30,6 @@ export type PublicOpenApiKeyPage = {
   oneTimeKey: OneTimePublicOpenApiKey | null;
 };
 
-export type UploadTaskLifecycle = {
-  id: string;
-  operation?: "upload" | "delete_source" | "delete_knowledge_base";
-  startedAt: string;
-  endedAt: string | null;
-  lifecycle: "running" | "ended";
-  sourceCount?: number;
-  progress?: {
-    total: number;
-    completed: number;
-    failed: number;
-    running: number;
-    pending: number;
-    currentStage:
-      | "upload_storage"
-      | "metadata_resolution"
-      | "okf_validation"
-      | "bundle_generation"
-      | "index_publication"
-      | "release_activation"
-      | null;
-  };
-};
-
 export type BundleTreeEntry = {
   id: string;
   name: string;
@@ -86,12 +62,12 @@ export type BundleFileDetail = {
 
 export type SourceFileRecord = {
   id: string;
-  taskId?: string;
   originalName: string;
-  processingStatus?: "pending" | "running" | "completed" | "failed";
+  processingStatus?: "queued" | "running" | "completed" | "failed";
   processingStage?:
     | "upload_storage"
     | "metadata_resolution"
+    | "llm_suggestion"
     | "okf_validation"
     | "bundle_generation"
     | "index_publication"
@@ -99,6 +75,14 @@ export type SourceFileRecord = {
   processingStartedAt?: string | null;
   processingEndedAt?: string | null;
   processingErrorCode?: string | null;
+  processingErrorMessage?: string | null;
+  retryCount?: number;
+  modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | null;
+  modelInvocationModelName?: string | null;
+  modelInvocationStartedAt?: string | null;
+  modelInvocationEndedAt?: string | null;
+  modelInvocationWarningCount?: number | null;
+  modelInvocationErrorCode?: string | null;
   createdAt: string;
 };
 
@@ -121,32 +105,9 @@ export type CursorPage<T> = {
   nextCursor: string | null;
 };
 
-export type UploadTaskPage = {
-  items: UploadTaskLifecycle[];
+export type SourceFilePage = {
+  items: SourceFileRecord[];
   nextCursor: string | null;
-};
-
-export type UploadTaskPhaseDetail = {
-  id: string;
-  taskId: string;
-  phaseKey: string;
-  messageKey: string;
-  startedAt: string | null;
-  endedAt: string | null;
-  severity: "info" | "warning" | "error";
-  createdAt: string;
-};
-
-export type UploadTaskDetail = {
-  task: UploadTaskLifecycle;
-  phaseDetails: {
-    items: UploadTaskPhaseDetail[];
-    nextCursor: string | null;
-  };
-  sourceFiles: {
-    items: SourceFileRecord[];
-    nextCursor: string | null;
-  };
 };
 
 export type KnowledgeBasePublicUrls = {
@@ -333,7 +294,7 @@ export async function deletePublicOpenApiKey(input: {
 export async function uploadKnowledgeBaseSources(input: {
   knowledgeBaseId: string;
   files: File[];
-}): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
+}): Promise<{ files: SourceFileRecord[] } | ApiFailure> {
   const formData = new FormData();
 
   input.files.forEach((file) => {
@@ -348,14 +309,37 @@ export async function uploadKnowledgeBaseSources(input: {
     }
   );
   const body = (await response.json()) as
-    | { task: UploadTaskLifecycle }
+    | { files: SourceFileRecord[] }
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
     return readFailure(body, "errors.invalidMetadata");
   }
 
-  return body as { task: UploadTaskLifecycle };
+  return body as { files: SourceFileRecord[] };
+}
+
+export async function retryKnowledgeBaseSourceFile(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+}): Promise<{ file: SourceFileRecord } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(
+      input.knowledgeBaseId
+    )}/source-files/${encodeURIComponent(input.sourceFileId)}/retry`,
+    {
+      method: "POST"
+    }
+  );
+  const body = (await response.json()) as
+    | { file: SourceFileRecord }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.uploadFailed");
+  }
+
+  return body as { file: SourceFileRecord };
 }
 
 export async function fetchKnowledgeBaseFileTree(input: {
@@ -408,7 +392,7 @@ export async function fetchKnowledgeBaseFileDetail(input: {
 export async function deleteKnowledgeBaseFile(input: {
   knowledgeBaseId: string;
   path: string;
-}): Promise<{ task: UploadTaskLifecycle } | ApiFailure> {
+}): Promise<{ deleted: true; releaseId: string } | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
@@ -418,20 +402,20 @@ export async function deleteKnowledgeBaseFile(input: {
     }
   );
   const body = (await response.json()) as
-    | { task: UploadTaskLifecycle }
+    | { deleted: true; releaseId: string }
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
     return readFailure(body, "errors.deleteFailed");
   }
 
-  return body as { task: UploadTaskLifecycle };
+  return body as { deleted: true; releaseId: string };
 }
 
-export async function listUploadTasks(input: {
+export async function listSourceFiles(input: {
   knowledgeBaseId: string;
   cursor?: string | null;
-}): Promise<UploadTaskPage> {
+}): Promise<SourceFilePage> {
   const params = new URLSearchParams();
 
   if (input.cursor) {
@@ -439,7 +423,7 @@ export async function listUploadTasks(input: {
   }
 
   const response = await adminFetch(
-    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/tasks${
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/source-files${
       params.size ? `?${params}` : ""
     }`
   );
@@ -451,35 +435,7 @@ export async function listUploadTasks(input: {
     };
   }
 
-  return (await response.json()) as UploadTaskPage;
-}
-
-export async function fetchUploadTaskDetail(input: {
-  knowledgeBaseId: string;
-  taskId: string;
-  cursor?: string | null;
-  sourceCursor?: string | null;
-}): Promise<UploadTaskDetail | null> {
-  const params = new URLSearchParams();
-
-  if (input.cursor) {
-    params.set("cursor", input.cursor);
-  }
-  if (input.sourceCursor) {
-    params.set("sourceCursor", input.sourceCursor);
-  }
-
-  const response = await adminFetch(
-    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/tasks/${encodeURIComponent(
-      input.taskId
-    )}${params.size ? `?${params}` : ""}`
-  );
-
-  if (!response.ok) {
-    return null;
-  }
-
-  return (await response.json()) as UploadTaskDetail;
+  return (await response.json()) as SourceFilePage;
 }
 
 export async function fetchKnowledgeBasePublicUrls(input: {
@@ -549,9 +505,10 @@ async function fetchKnowledgeBaseList<T>(input: {
 function readFailure(
   body:
     | { knowledgeBase: KnowledgeBase }
-    | { task: UploadTaskLifecycle }
+    | { files: SourceFileRecord[] }
+    | { file: SourceFileRecord }
     | { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey }
-    | { deleted: true }
+    | { deleted: true; releaseId?: string }
     | { error?: { messageKey?: string } },
   fallbackMessageKey: string
 ): ApiFailure {

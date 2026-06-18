@@ -153,7 +153,9 @@ export function buildModelSuggestionRequest(
     model: input.modelName,
     instructions: [
       "Suggest optional presentation metadata for an OKF-style Markdown knowledge bundle.",
-      "Return only title, type, description, tags, related_links, and keywords.",
+      "Return exactly one JSON object with all required keys: title, type, description, tags, related_links, and keywords.",
+      "Return raw JSON only. Do not wrap the JSON in Markdown fences and do not include explanatory text.",
+      "Do not omit any required key.",
       "Use an empty string or empty array when no safe suggestion is available.",
       "Suggest title and type only as generic fallbacks when the source does not provide them.",
       "Do not create or modify factual metadata such as resource, timestamp, official identifiers, source URLs, hashes, status, owner fields, or other domain-specific frontmatter."
@@ -249,7 +251,7 @@ async function runModelSuggestionAttempt(input: {
       return warning(`Model response did not complete: ${status}`);
     }
 
-    const outputText = readStringProperty(response, "output_text");
+    const outputText = readModelOutputText(response);
 
     if (!outputText) {
       return warning("Model suggestions failed local schema validation");
@@ -260,12 +262,28 @@ async function runModelSuggestionAttempt(input: {
       warnings: []
     };
   } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) {
-      return warning("Model suggestions failed local schema validation");
+    if (error instanceof z.ZodError) {
+      return warning(`Model suggestions failed local schema validation: ${formatZodIssues(error)}`);
+    }
+
+    if (error instanceof SyntaxError) {
+      return warning("Model suggestions failed local schema validation: response was not valid JSON");
     }
 
     return warning(`Model provider error: ${redactSecrets(error)}`);
   }
+}
+
+function formatZodIssues(error: z.ZodError): string {
+  const summary = error.issues
+    .slice(0, 5)
+    .map((issue) => {
+      const path = issue.path.length ? issue.path.join(".") : "root";
+      return `${path}: ${issue.message}`;
+    })
+    .join("; ");
+
+  return sanitizeRepairText(summary || "schema mismatch");
 }
 
 function containsRefusal(response: unknown): boolean {
@@ -306,6 +324,60 @@ function readStringProperty(value: unknown, property: string): string | null {
 
   const propertyValue = (value as Record<string, unknown>)[property];
   return typeof propertyValue === "string" ? propertyValue : null;
+}
+
+function readModelOutputText(response: unknown): string | null {
+  const outputText = readStringProperty(response, "output_text");
+
+  if (outputText) {
+    return outputText;
+  }
+
+  const responseObject = readRecord(response);
+  const output = Array.isArray(responseObject?.output) ? responseObject.output : [];
+
+  for (const item of output) {
+    const itemRecord = readRecord(item);
+    const content = Array.isArray(itemRecord?.content) ? itemRecord.content : [];
+
+    for (const part of content) {
+      const partRecord = readRecord(part);
+      const text = readStringProperty(partRecord, "text") ?? readStringProperty(partRecord, "output_text");
+
+      if (text) {
+        return text;
+      }
+    }
+  }
+
+  const choices = Array.isArray(responseObject?.choices) ? responseObject.choices : [];
+
+  for (const choice of choices) {
+    const message = readRecord(readRecord(choice)?.message);
+    const content = message?.content;
+
+    if (typeof content === "string" && content.trim()) {
+      return content;
+    }
+
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        const text = readStringProperty(part, "text");
+
+        if (text) {
+          return text;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function readIncompleteReason(value: unknown): string | null {

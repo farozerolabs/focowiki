@@ -2,8 +2,8 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   KnowledgeBaseRecord,
+  SourceFileEventRecord,
   SourceFileRecord,
-  UploadTaskRecord,
   WebhookDeliveryRecord,
   WebhookSubscriptionRecord
 } from "../db/admin-repositories.js";
@@ -19,43 +19,43 @@ export function toDeveloperKnowledgeBase(record: KnowledgeBaseRecord) {
   };
 }
 
-export function toDeveloperTask(record: UploadTaskRecord) {
-  return {
-    taskId: record.id,
-    knowledgeBaseId: record.knowledgeBaseId,
-    operation: record.operation,
-    lifecycle: record.endedAt ? "ended" : "running",
-    startedAt: record.startedAt,
-    endedAt: record.endedAt,
-    sourceCount: record.sourceCount,
-    progress: record.progress ?? {
-      total: record.sourceCount,
-      completed: record.endedAt ? record.sourceCount : 0,
-      failed: record.internalErrorCode ? record.sourceCount : 0,
-      running: record.endedAt ? 0 : Math.min(record.sourceCount, 1),
-      pending: record.endedAt ? 0 : Math.max(record.sourceCount - 1, 0),
-      currentStage: record.endedAt ? "release_activation" : "upload_storage"
-    },
-    resultReleaseId: record.resultReleaseId,
-    errorCode: record.internalErrorCode
-  };
-}
-
 export function toDeveloperSourceFile(record: SourceFileRecord) {
   return {
     fileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
-    taskId: record.taskId,
     originalFilename: record.originalName,
     contentType: record.contentType,
     sizeBytes: record.sizeBytes,
     checksumSha256: record.checksumSha256,
     metadata: record.metadata,
+    modelSuggestions: record.modelSuggestions ?? null,
     processingState: record.processingStatus ?? "completed",
     currentStage: record.processingStage ?? "release_activation",
     processingStartedAt: record.processingStartedAt ?? record.createdAt,
     processingEndedAt: record.processingEndedAt ?? record.createdAt,
     processingErrorCode: record.processingErrorCode ?? null,
+    processingErrorMessage: record.processingErrorMessage ?? null,
+    retryCount: record.retryCount ?? 0,
+    modelInvocationStatus: record.modelInvocationStatus ?? null,
+    modelInvocationModelName: record.modelInvocationModelName ?? null,
+    modelInvocationStartedAt: record.modelInvocationStartedAt ?? null,
+    modelInvocationEndedAt: record.modelInvocationEndedAt ?? null,
+    modelInvocationWarningCount: record.modelInvocationWarningCount ?? null,
+    modelInvocationErrorCode: record.modelInvocationErrorCode ?? null,
+    createdAt: record.createdAt
+  };
+}
+
+export function toDeveloperSourceFileEvent(record: SourceFileEventRecord) {
+  return {
+    eventId: record.id,
+    knowledgeBaseId: record.knowledgeBaseId,
+    fileId: record.sourceFileId,
+    stageKey: record.stageKey,
+    messageKey: record.messageKey,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    severity: record.severity,
     createdAt: record.createdAt
   };
 }

@@ -18,7 +18,7 @@ function createRepositories() {
         name: "Integration",
         url: "https://example.com/webhook",
         signingSecret: "fwwh_test-secret",
-        events: ["task.ended"],
+        events: ["source_file.completed"],
         enabled: true,
         createdAt: now,
         updatedAt: now,
@@ -96,8 +96,8 @@ describe("webhook dispatcher", () => {
 
     await dispatcher?.dispatch({
       eventId: "event-001",
-      eventType: "task.ended",
-      payload: { knowledgeBaseId: "kb-001", taskId: "task-001" },
+      eventType: "source_file.completed",
+      payload: { knowledgeBaseId: "kb-001", sourceFileId: "source-001" },
       createdAt: now
     });
 
@@ -109,16 +109,16 @@ describe("webhook dispatcher", () => {
       .digest("hex");
     const delivery = Array.from(deliveries.values())[0];
 
-    expect(request?.headers.get("x-focowiki-event")).toBe("task.ended");
+    expect(request?.headers.get("x-focowiki-event")).toBe("source_file.completed");
     expect(request?.headers.get("x-focowiki-signature")).toBe(`sha256=${signature}`);
     expect(delivery).toMatchObject({
       webhookId: "webhook-001",
       eventId: "event-001",
-      eventType: "task.ended",
+      eventType: "source_file.completed",
       status: "success",
       attemptCount: 1,
       httpStatus: 204,
-      payload: { knowledgeBaseId: "kb-001", taskId: "task-001" }
+      payload: { knowledgeBaseId: "kb-001", sourceFileId: "source-001" }
     });
   });
 
@@ -134,8 +134,8 @@ describe("webhook dispatcher", () => {
       id: "delivery-original",
       webhookId: "webhook-001",
       eventId: "event-001",
-      eventType: "task.ended",
-      payload: { knowledgeBaseId: "kb-001", taskId: "task-001" },
+      eventType: "source_file.completed",
+      payload: { knowledgeBaseId: "kb-001", sourceFileId: "source-001" },
       status: "failed",
       attemptCount: 1,
       httpStatus: 500,
@@ -148,8 +148,8 @@ describe("webhook dispatcher", () => {
 
     expect(next).toMatchObject({
       eventId: "event-001",
-      eventType: "task.ended",
-      payload: { knowledgeBaseId: "kb-001", taskId: "task-001" },
+      eventType: "source_file.completed",
+      payload: { knowledgeBaseId: "kb-001", sourceFileId: "source-001" },
       status: "failed",
       attemptCount: 1,
       httpStatus: 500,

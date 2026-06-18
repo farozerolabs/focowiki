@@ -16,7 +16,8 @@ describe("lightweight architecture boundaries", () => {
   it("keeps production admin responsibilities out of single oversized files", () => {
     expect(countLines("apps/api/src/server.ts")).toBeLessThanOrEqual(150);
     expect(countLines("apps/api/src/admin/routes.ts")).toBeLessThanOrEqual(1_100);
-    expect(countLines("apps/api/src/admin/upload-processor.ts")).toBeLessThanOrEqual(500);
+    expect(countLines("apps/api/src/admin/source-file-upload.ts")).toBeLessThanOrEqual(300);
+    expect(countLines("apps/api/src/admin/source-file-processor.ts")).toBeLessThanOrEqual(500);
     expect(countLines("apps/api/src/developer-openapi/routes.ts")).toBeLessThanOrEqual(350);
     expect(countLines("apps/api/src/okf/publication.ts")).toBeLessThanOrEqual(800);
     expect(countLines("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx")).toBeLessThanOrEqual(
@@ -26,11 +27,11 @@ describe("lightweight architecture boundaries", () => {
 
   it("keeps API and Admin UI layers separated", () => {
     const apiServer = readWorkspaceFile("apps/api/src/server.ts");
-    const uploadProcessor = readWorkspaceFile("apps/api/src/admin/upload-processor.ts");
+    const sourceFileProcessor = readWorkspaceFile("apps/api/src/admin/source-file-processor.ts");
     const adminPage = readWorkspaceFile("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx");
 
     expect(apiServer).not.toContain("apps/admin");
-    expect(uploadProcessor).not.toContain("apps/admin");
+    expect(sourceFileProcessor).not.toContain("apps/admin");
     expect(adminPage).not.toContain("apps/api/src");
   });
 

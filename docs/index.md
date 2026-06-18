@@ -17,8 +17,8 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 - Preserve safe domain metadata from frontmatter.
 - Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, and JSON indexes.
 - Store uploaded source files and generated bundle files in S3-compatible storage.
-- Persist knowledge bases, upload tasks, source file records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
-- Expose knowledge-base CRUD, Markdown upload, task observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
+- Persist knowledge bases, source-file processing records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
+- Expose knowledge-base CRUD, Markdown upload, source-file processing observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
 
 ## Admin UI Preview
 
@@ -83,7 +83,7 @@ Markdown links are the primary relationship mechanism. Links in body content hel
 2. Start Focowiki with Docker Compose or local development commands.
 3. Open Admin UI and create a knowledge base.
 4. Upload one or more cleaned Markdown files.
-5. Watch upload tasks until processing ends.
+5. Watch source-file processing until each file ends.
 6. Read generated bundle files through Admin UI or Developer OpenAPI.
 7. Use Developer OpenAPI keys for application integration and agent-facing backends.
 

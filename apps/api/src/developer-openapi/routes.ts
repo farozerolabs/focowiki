@@ -96,9 +96,9 @@ export function registerDeveloperOpenApiRoutes(
     )
   );
 
-  app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/tasks", async (context) =>
+  app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/source-files", async (context) =>
     safe(context, () =>
-      api.listTasks({
+      api.listSourceFiles({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         limit: readLimit(context.req.query("limit"), services.config),
         cursor: context.req.query("cursor") ?? null
@@ -106,15 +106,45 @@ export function registerDeveloperOpenApiRoutes(
     )
   );
 
-  app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/tasks/:taskId", async (context) =>
-    safe(context, () =>
-      api.getTask({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        taskId: context.req.param("taskId"),
-        limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
-      })
-    )
+  app.get(
+    "/openapi/v1/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
+    async (context) =>
+      safe(context, () =>
+        api.getSourceFile({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          sourceFileId: context.req.param("sourceFileId")
+        })
+      )
+  );
+
+  app.get(
+    "/openapi/v1/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/events",
+    async (context) =>
+      safe(context, () =>
+        api.listSourceFileEvents({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          sourceFileId: context.req.param("sourceFileId"),
+          limit: readLimit(context.req.query("limit"), services.config),
+          cursor: context.req.query("cursor") ?? null
+        })
+      )
+  );
+
+  app.post(
+    "/openapi/v1/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
+    async (context) =>
+      safe(
+        context,
+        () =>
+          api.retrySourceFile({
+            knowledgeBaseId: context.req.param("knowledgeBaseId"),
+            sourceFileId: context.req.param("sourceFileId"),
+            runTask: (work) => {
+              void taskRunner.run(work).catch(() => undefined);
+            }
+          }),
+        202
+      )
   );
 
   app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/tree", async (context) =>
@@ -161,12 +191,9 @@ export function registerDeveloperOpenApiRoutes(
       () =>
         api.deleteFileById({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          fileId: context.req.param("fileId"),
-          runTask: (work) => {
-            void taskRunner.run(work).catch(() => undefined);
-          }
+          fileId: context.req.param("fileId")
         }),
-      202
+      200
     )
   );
 
@@ -176,12 +203,9 @@ export function registerDeveloperOpenApiRoutes(
       () =>
         api.deleteFileByPath({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          path: context.req.query("path") ?? "",
-          runTask: (work) => {
-            void taskRunner.run(work).catch(() => undefined);
-          }
+          path: context.req.query("path") ?? ""
         }),
-      202
+      200
     )
   );
 

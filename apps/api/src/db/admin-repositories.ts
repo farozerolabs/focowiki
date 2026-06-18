@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { OkfLogEntry, OkfLogMonthlySummary, SourceMetadataDefaults } from "@focowiki/okf";
+import type {
+  OkfLogEntry,
+  OkfLogMonthlySummary,
+  SourceMetadataDefaults,
+  SourceModelSuggestions
+} from "@focowiki/okf";
 import type {
   PublicOpenApiKeyRecord,
   PublicOpenApiKeyRepository,
@@ -81,11 +86,12 @@ export type BundleFileRecord = {
   frontmatter: Record<string, unknown>;
 };
 
-export type SourceFileProcessingStatus = "pending" | "running" | "completed" | "failed";
+export type SourceFileProcessingStatus = "queued" | "running" | "completed" | "failed";
 
 export type SourceFileProcessingStage =
   | "upload_storage"
   | "metadata_resolution"
+  | "llm_suggestion"
   | "okf_validation"
   | "bundle_generation"
   | "index_publication"
@@ -94,18 +100,26 @@ export type SourceFileProcessingStage =
 export type SourceFileRecord = {
   id: string;
   knowledgeBaseId: string;
-  taskId: string;
   originalName: string;
   objectKey: string;
   contentType: string;
   sizeBytes: number;
   checksumSha256: string;
   metadata: SourceMetadataDefaults;
+  modelSuggestions?: SourceModelSuggestions | null;
   processingStatus?: SourceFileProcessingStatus;
   processingStage?: SourceFileProcessingStage;
   processingStartedAt?: string | null;
   processingEndedAt?: string | null;
   processingErrorCode?: string | null;
+  processingErrorMessage?: string | null;
+  retryCount?: number;
+  modelInvocationStatus?: ModelInvocationStatus | null;
+  modelInvocationModelName?: string | null;
+  modelInvocationStartedAt?: string | null;
+  modelInvocationEndedAt?: string | null;
+  modelInvocationWarningCount?: number | null;
+  modelInvocationErrorCode?: string | null;
   createdAt: string;
   deletedAt: string | null;
 };
@@ -126,7 +140,6 @@ export type SourceFileDraft = Omit<
 export type ReleaseRecord = {
   id: string;
   knowledgeBaseId: string;
-  taskId: string;
   bundleRootKey: string;
   generatedAt: string;
   publishedAt: string | null;
@@ -137,35 +150,11 @@ export type ReleaseRecord = {
 
 export type ReleaseDraft = Omit<ReleaseRecord, "createdAt">;
 
-export type UploadTaskOperation = "upload" | "delete_source" | "delete_knowledge_base";
-
-export type UploadTaskRecord = {
+export type SourceFileEventRecord = {
   id: string;
   knowledgeBaseId: string;
-  operation: UploadTaskOperation;
-  startedAt: string;
-  endedAt: string | null;
-  sourceCount: number;
-  resultReleaseId: string | null;
-  internalErrorCode: string | null;
-  internalErrorMessage: string | null;
-  createdAt: string;
-  progress?: UploadTaskProgress;
-};
-
-export type UploadTaskProgress = {
-  total: number;
-  completed: number;
-  failed: number;
-  running: number;
-  pending: number;
-  currentStage: SourceFileProcessingStage | null;
-};
-
-export type UploadTaskEventRecord = {
-  id: string;
-  taskId: string;
-  phaseKey: string;
+  sourceFileId: string;
+  stageKey: SourceFileProcessingStage | "source_deletion";
   messageKey: string;
   startedAt: string | null;
   endedAt: string | null;
@@ -173,7 +162,38 @@ export type UploadTaskEventRecord = {
   createdAt: string;
 };
 
-export type UploadTaskEventDraft = Omit<UploadTaskEventRecord, "id" | "createdAt">;
+export type SourceFileEventDraft = Omit<SourceFileEventRecord, "id" | "createdAt">;
+
+export type SourceFileRetryAttemptRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  endedAt: string | null;
+  errorCode: string | null;
+  createdAt: string;
+};
+
+export type ModelInvocationStatus = "running" | "completed" | "failed" | "skipped";
+
+export type ModelInvocationRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  modelName: string;
+  status: ModelInvocationStatus;
+  startedAt: string;
+  endedAt: string | null;
+  warningCount: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+};
+
+export type ModelInvocationDraft = Omit<ModelInvocationRecord, "id" | "createdAt"> & {
+  id?: string;
+};
 
 export type SecurityAuditEventDraft = {
   eventType: string;
@@ -194,27 +214,45 @@ export type BundleFileRepository = {
   activateRelease?: (input: {
     knowledgeBaseId: string;
     releaseId: string;
-    taskId: string;
     publishedAt: string;
     fileCount: number;
     manifestChecksumSha256: string;
   }) => Promise<void>;
-  listSourceFilesForTask?: (request: {
-    knowledgeBaseId: string;
-    taskId: string;
-    limit: number;
-    cursor: string | null;
-  }) => Promise<CursorPage<SourceFileRecord>>;
   updateSourceFileProcessingState?: (input: {
     knowledgeBaseId: string;
-    taskId: string;
     sourceFileIds: string[];
     status: SourceFileProcessingStatus;
     stage: SourceFileProcessingStage;
     startedAt?: string | null;
     endedAt?: string | null;
     errorCode?: string | null;
+    errorMessage?: string | null;
   }) => Promise<void>;
+  updateSourceFileMetadata?: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    metadata: SourceMetadataDefaults;
+  }) => Promise<void>;
+  updateSourceFileModelSuggestions?: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    suggestions: SourceModelSuggestions | null;
+  }) => Promise<void>;
+  createSourceFileEvent?: (input: SourceFileEventDraft) => Promise<SourceFileEventRecord>;
+  listSourceFileEvents?: (request: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<SourceFileEventRecord>>;
+  createSourceFileRetryAttempt?: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    status: SourceFileRetryAttemptRecord["status"];
+    startedAt: string;
+    endedAt?: string | null;
+    errorCode?: string | null;
+  }) => Promise<SourceFileRetryAttemptRecord>;
   listBundleTreeEntries: (request: {
     knowledgeBaseId: string;
     releaseId: string;
@@ -340,37 +378,16 @@ export type WebhookRepository = {
 export type AdminRepositories = {
   knowledgeBases: KnowledgeBaseRepository;
   files?: BundleFileRepository;
-  tasks?: {
-    createUploadTask: (input: {
-      knowledgeBaseId: string;
-      sourceCount: number;
-      operation?: UploadTaskOperation;
-    }) => Promise<UploadTaskRecord>;
-    completeUploadTask?: (input: {
-      knowledgeBaseId: string;
-      taskId: string;
+  modelInvocations?: {
+    createModelInvocation: (input: ModelInvocationDraft) => Promise<ModelInvocationRecord>;
+    completeModelInvocation: (input: {
+      id: string;
+      status: ModelInvocationStatus;
       endedAt: string;
-      resultReleaseId: string | null;
-      internalErrorCode?: string | null;
-      internalErrorMessage?: string | null;
-    }) => Promise<UploadTaskRecord>;
-    createUploadTaskEvent?: (input: UploadTaskEventDraft) => Promise<UploadTaskEventRecord>;
-    getUploadTask?: (input: {
-      knowledgeBaseId: string;
-      taskId: string;
-    }) => Promise<UploadTaskRecord | null>;
-    getLatestUploadTask?: (knowledgeBaseId: string) => Promise<UploadTaskRecord | null>;
-    listUploadTasks?: (request: {
-      knowledgeBaseId: string;
-      limit: number;
-      cursor: string | null;
-    }) => Promise<CursorPage<UploadTaskRecord>>;
-    listUploadTaskEvents?: (request: {
-      knowledgeBaseId: string;
-      taskId: string;
-      limit: number;
-      cursor: string | null;
-    }) => Promise<CursorPage<UploadTaskEventRecord>>;
+      warningCount?: number;
+      errorCode?: string | null;
+      errorMessage?: string | null;
+    }) => Promise<ModelInvocationRecord | null>;
   };
   securityAudit?: {
     createSecurityAuditEvent: (input: SecurityAuditEventDraft) => Promise<void>;
@@ -422,26 +439,34 @@ type BundleFileRow = {
 type SourceFileRow = {
   id: string;
   knowledge_base_id: string;
-  task_id: string;
   original_name: string;
   object_key: string;
   content_type: string;
   size_bytes: string | number;
   checksum_sha256: string;
   metadata_json: unknown;
+  model_suggestions_json: unknown;
   processing_status: SourceFileProcessingStatus;
   processing_stage: SourceFileProcessingStage;
   processing_started_at: Date | null;
   processing_ended_at: Date | null;
   processing_error_code: string | null;
+  processing_error_message: string | null;
+  retry_count: string | number;
+  model_invocation_status?: ModelInvocationStatus | null;
+  model_invocation_model_name?: string | null;
+  model_invocation_started_at?: Date | null;
+  model_invocation_ended_at?: Date | null;
+  model_invocation_warning_count?: string | number | null;
+  model_invocation_error_code?: string | null;
   created_at: Date;
+  created_at_cursor?: string;
   deleted_at: Date | null;
 };
 
 type ReleaseRow = {
   id: string;
   knowledge_base_id: string;
-  task_id: string;
   bundle_root_key: string;
   generated_at: Date;
   published_at: Date | null;
@@ -452,9 +477,7 @@ type ReleaseRow = {
 
 type PublicationLogEntryRow = {
   occurred_at: Date;
-  operation: UploadTaskOperation;
   file_count: number;
-  source_count: number;
 };
 
 type PublicationLogSummaryRow = {
@@ -463,32 +486,40 @@ type PublicationLogSummaryRow = {
   changed_file_count: string | number;
 };
 
-type UploadTaskRow = {
+type ModelInvocationRow = {
   id: string;
   knowledge_base_id: string;
-  operation: UploadTaskOperation;
+  source_file_id: string;
+  model_name: string;
+  status: ModelInvocationStatus;
   started_at: Date;
   ended_at: Date | null;
-  source_count: number;
-  result_release_id: string | null;
-  internal_error_code: string | null;
-  internal_error_message: string | null;
+  warning_count: number;
+  error_code: string | null;
+  error_message: string | null;
   created_at: Date;
-  source_completed_count?: string | number;
-  source_failed_count?: string | number;
-  source_running_count?: string | number;
-  source_pending_count?: string | number;
-  source_current_stage?: SourceFileProcessingStage | null;
 };
 
-type UploadTaskEventRow = {
+type SourceFileEventRow = {
   id: string;
-  task_id: string;
-  phase_key: string;
+  knowledge_base_id: string;
+  source_file_id: string;
+  stage_key: SourceFileEventRecord["stageKey"];
   message_key: string;
   started_at: Date | null;
   ended_at: Date | null;
-  severity: "info" | "warning" | "error";
+  severity: SourceFileEventRecord["severity"];
+  created_at: Date;
+};
+
+type SourceFileRetryAttemptRow = {
+  id: string;
+  knowledge_base_id: string;
+  source_file_id: string;
+  status: SourceFileRetryAttemptRecord["status"];
+  started_at: Date;
+  ended_at: Date | null;
+  error_code: string | null;
   created_at: Date;
 };
 
@@ -614,34 +645,38 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             INSERT INTO focowiki.source_files (
               id,
               knowledge_base_id,
-              task_id,
               original_name,
               object_key,
               content_type,
               size_bytes,
               checksum_sha256,
               metadata_json,
+              model_suggestions_json,
               processing_status,
               processing_stage,
               processing_started_at,
               processing_ended_at,
-              processing_error_code
+              processing_error_code,
+              processing_error_message,
+              retry_count
             )
             VALUES (
               ${file.id},
               ${file.knowledgeBaseId},
-              ${file.taskId},
               ${file.originalName},
               ${file.objectKey},
               ${file.contentType},
               ${file.sizeBytes},
               ${file.checksumSha256},
               ${sql.json(file.metadata as never)},
-              ${file.processingStatus ?? "pending"},
+              ${file.modelSuggestions ? sql.json(file.modelSuggestions as never) : null},
+              ${file.processingStatus ?? "queued"},
               ${file.processingStage ?? "upload_storage"},
               ${file.processingStartedAt ?? null},
               ${file.processingEndedAt ?? null},
-              ${file.processingErrorCode ?? null}
+              ${file.processingErrorCode ?? null},
+              ${file.processingErrorMessage ?? null},
+              ${file.retryCount ?? 0}
             )
           `;
         }
@@ -651,7 +686,6 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           INSERT INTO focowiki.releases (
             id,
             knowledge_base_id,
-            task_id,
             bundle_root_key,
             generated_at,
             published_at,
@@ -661,7 +695,6 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           VALUES (
             ${release.id},
             ${release.knowledgeBaseId},
-            ${release.taskId},
             ${release.bundleRootKey},
             ${release.generatedAt},
             ${release.publishedAt},
@@ -746,7 +779,6 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               manifest_checksum_sha256 = ${input.manifestChecksumSha256}
             WHERE knowledge_base_id = ${input.knowledgeBaseId}
               AND id = ${input.releaseId}
-              AND task_id = ${input.taskId}
           `;
           await transaction`
             UPDATE focowiki.knowledge_bases
@@ -756,58 +788,17 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             WHERE id = ${input.knowledgeBaseId}
               AND deleted_at IS NULL
           `;
-          await transaction`
-            UPDATE focowiki.upload_tasks
-            SET result_release_id = ${input.releaseId}
-            WHERE id = ${input.taskId}
-              AND knowledge_base_id = ${input.knowledgeBaseId}
-          `;
         });
-      },
-      async listSourceFilesForTask({ knowledgeBaseId, taskId, limit, cursor }) {
-        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
-        const rows = cursorValue
-          ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
-              FROM focowiki.source_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND task_id = ${taskId}
-                AND deleted_at IS NULL
-                AND (
-                  created_at < ${cursorValue.createdAt}
-                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
-                )
-              ORDER BY created_at DESC, id ASC
-              LIMIT ${limit + 1}
-            `
-          : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
-              FROM focowiki.source_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND task_id = ${taskId}
-                AND deleted_at IS NULL
-              ORDER BY created_at DESC, id ASC
-              LIMIT ${limit + 1}
-            `;
-        const pageRows = rows.slice(0, limit);
-        const lastRow = pageRows.at(-1);
-        return {
-          items: pageRows.map(mapSourceFileRow),
-          nextCursor:
-            rows.length > limit && lastRow
-              ? serializeTimedCursor({ createdAt: lastRow.created_at.toISOString(), id: lastRow.id })
-              : null
-        };
       },
       async updateSourceFileProcessingState({
         knowledgeBaseId,
-        taskId,
         sourceFileIds,
         status,
         stage,
         startedAt,
         endedAt,
-        errorCode
+        errorCode,
+        errorMessage
       }) {
         if (sourceFileIds.length === 0) {
           return;
@@ -820,11 +811,131 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             processing_stage = ${stage},
             processing_started_at = COALESCE(${startedAt ?? null}, processing_started_at),
             processing_ended_at = ${endedAt ?? null},
-            processing_error_code = ${errorCode ?? null}
+            processing_error_code = ${errorCode ?? null},
+            processing_error_message = ${errorMessage ?? null}
           WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND task_id = ${taskId}
             AND id = ANY(${sourceFileIds})
         `;
+      },
+      async updateSourceFileMetadata({ knowledgeBaseId, sourceFileId, metadata }) {
+        await sql`
+          UPDATE focowiki.source_files
+          SET metadata_json = ${sql.json(metadata as never)}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${sourceFileId}
+            AND deleted_at IS NULL
+        `;
+      },
+      async updateSourceFileModelSuggestions({ knowledgeBaseId, sourceFileId, suggestions }) {
+        await sql`
+          UPDATE focowiki.source_files
+          SET model_suggestions_json = ${suggestions ? sql.json(suggestions as never) : null}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ${sourceFileId}
+            AND deleted_at IS NULL
+        `;
+      },
+      async createSourceFileEvent(input) {
+        const rows = await sql<SourceFileEventRow[]>`
+          INSERT INTO focowiki.source_file_events (
+            id,
+            knowledge_base_id,
+            source_file_id,
+            stage_key,
+            message_key,
+            started_at,
+            ended_at,
+            severity
+          )
+          VALUES (
+            ${createSourceFileEventId()},
+            ${input.knowledgeBaseId},
+            ${input.sourceFileId},
+            ${input.stageKey},
+            ${input.messageKey},
+            ${input.startedAt},
+            ${input.endedAt},
+            ${input.severity}
+          )
+          RETURNING id, knowledge_base_id, source_file_id, stage_key, message_key, started_at, ended_at, severity, created_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Source file event creation did not return a row");
+        }
+
+        return mapSourceFileEventRow(row);
+      },
+      async listSourceFileEvents({ knowledgeBaseId, sourceFileId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<SourceFileEventRow[]>`
+              SELECT id, knowledge_base_id, source_file_id, stage_key, message_key, started_at, ended_at, severity, created_at
+              FROM focowiki.source_file_events
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND source_file_id = ${sourceFileId}
+                AND (created_at > ${cursorValue.createdAt} OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id}))
+              ORDER BY created_at ASC, id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<SourceFileEventRow[]>`
+              SELECT id, knowledge_base_id, source_file_id, stage_key, message_key, started_at, ended_at, severity, created_at
+              FROM focowiki.source_file_events
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND source_file_id = ${sourceFileId}
+              ORDER BY created_at ASC, id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+        return {
+          items: pageRows.map(mapSourceFileEventRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeTimedCursor({ createdAt: lastRow.created_at.toISOString(), id: lastRow.id })
+              : null
+        };
+      },
+      async createSourceFileRetryAttempt(input) {
+        const rows = await sql.begin(async (transaction) => {
+          const inserted = await transaction<SourceFileRetryAttemptRow[]>`
+            INSERT INTO focowiki.source_file_retry_attempts (
+              id,
+              knowledge_base_id,
+              source_file_id,
+              status,
+              started_at,
+              ended_at,
+              error_code
+            )
+            VALUES (
+              ${createSourceFileRetryAttemptId()},
+              ${input.knowledgeBaseId},
+              ${input.sourceFileId},
+              ${input.status},
+              ${input.startedAt},
+              ${input.endedAt ?? null},
+              ${input.errorCode ?? null}
+            )
+            RETURNING id, knowledge_base_id, source_file_id, status, started_at, ended_at, error_code, created_at
+          `;
+          await transaction`
+            UPDATE focowiki.source_files
+            SET retry_count = retry_count + 1
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND id = ${input.sourceFileId}
+              AND deleted_at IS NULL
+          `;
+          return inserted;
+        });
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Source file retry attempt creation did not return a row");
+        }
+
+        return mapSourceFileRetryAttemptRow(row);
       },
       async listBundleTreeEntries({ knowledgeBaseId, releaseId, parentPath, limit, cursor }) {
         const cursorValue = cursor ? parseTreeCursor(cursor) : null;
@@ -917,11 +1028,18 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       },
       async getSourceFile({ knowledgeBaseId, sourceFileId }) {
         const rows = await sql<SourceFileRow[]>`
-          SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
-          FROM focowiki.source_files
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND id = ${sourceFileId}
-            AND deleted_at IS NULL
+          SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+          FROM focowiki.source_files source
+          LEFT JOIN LATERAL (
+            SELECT status, model_name, started_at, ended_at, warning_count, error_code
+            FROM focowiki.model_invocations
+            WHERE source_file_id = source.id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+          ) model ON true
+          WHERE source.knowledge_base_id = ${knowledgeBaseId}
+            AND source.id = ${sourceFileId}
+            AND source.deleted_at IS NULL
           LIMIT 1
         `;
         const row = rows[0];
@@ -931,23 +1049,37 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
-              FROM focowiki.source_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND deleted_at IS NULL
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+              FROM focowiki.source_files source
+              LEFT JOIN LATERAL (
+                SELECT status, model_name, started_at, ended_at, warning_count, error_code
+                FROM focowiki.model_invocations
+                WHERE source_file_id = source.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+              ) model ON true
+              WHERE source.knowledge_base_id = ${knowledgeBaseId}
+                AND source.deleted_at IS NULL
                 AND (
-                  created_at < ${cursorValue.createdAt}
-                  OR (created_at = ${cursorValue.createdAt} AND id > ${cursorValue.id})
+                  source.created_at < ${cursorValue.createdAt}
+                  OR (source.created_at = ${cursorValue.createdAt} AND source.id > ${cursorValue.id})
                 )
-              ORDER BY created_at DESC, id ASC
+              ORDER BY source.created_at DESC, source.id ASC
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT id, knowledge_base_id, task_id, original_name, object_key, content_type, size_bytes, checksum_sha256, metadata_json, processing_status, processing_stage, processing_started_at, processing_ended_at, processing_error_code, created_at, deleted_at
-              FROM focowiki.source_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND deleted_at IS NULL
-              ORDER BY created_at DESC, id ASC
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+              FROM focowiki.source_files source
+              LEFT JOIN LATERAL (
+                SELECT status, model_name, started_at, ended_at, warning_count, error_code
+                FROM focowiki.model_invocations
+                WHERE source_file_id = source.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+              ) model ON true
+              WHERE source.knowledge_base_id = ${knowledgeBaseId}
+                AND source.deleted_at IS NULL
+              ORDER BY source.created_at DESC, source.id ASC
               LIMIT ${limit + 1}
             `;
         const pageRows = rows.slice(0, limit);
@@ -964,7 +1096,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<ReleaseRow[]>`
-              SELECT id, knowledge_base_id, task_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
+              SELECT id, knowledge_base_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
               FROM focowiki.releases
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND (
@@ -975,7 +1107,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<ReleaseRow[]>`
-              SELECT id, knowledge_base_id, task_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
+              SELECT id, knowledge_base_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at
               FROM focowiki.releases
               WHERE knowledge_base_id = ${knowledgeBaseId}
               ORDER BY published_at DESC, id ASC
@@ -1029,11 +1161,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const entryRows = await sql<PublicationLogEntryRow[]>`
           SELECT
             COALESCE(release.published_at, release.generated_at) AS occurred_at,
-            task.operation,
-            release.file_count,
-            task.source_count
+            release.file_count
           FROM focowiki.releases release
-          JOIN focowiki.upload_tasks task ON task.id = release.task_id
           WHERE release.knowledge_base_id = ${knowledgeBaseId}
             AND release.published_at IS NOT NULL
           ORDER BY COALESCE(release.published_at, release.generated_at) DESC, release.id ASC
@@ -1065,8 +1194,8 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         return {
           entries: entryRows.map((row) => ({
             occurredAt: row.occurred_at.toISOString(),
-            action: logActionForOperation(row.operation),
-            message: logMessageForOperation(row.operation, row.file_count, row.source_count),
+            action: "Update",
+            message: `Published ${row.file_count} generated files.`,
             changedFileCount: row.file_count
           })),
           summaries: summaryRows.map((row) => ({
@@ -1088,328 +1217,79 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         return rows.length > 0;
       }
     },
-    tasks: {
-      async createUploadTask({ knowledgeBaseId, sourceCount, operation }) {
-        const rows = await sql<UploadTaskRow[]>`
-          INSERT INTO focowiki.upload_tasks (id, knowledge_base_id, operation, started_at, source_count)
-          VALUES (${createUploadTaskId()}, ${knowledgeBaseId}, ${operation ?? "upload"}, now(), ${sourceCount})
-          RETURNING
+    modelInvocations: {
+      async createModelInvocation(input) {
+        const rows = await sql<ModelInvocationRow[]>`
+          INSERT INTO focowiki.model_invocations (
             id,
             knowledge_base_id,
-            operation,
+            source_file_id,
+            model_name,
+            status,
             started_at,
             ended_at,
-            source_count,
-            result_release_id,
-            internal_error_code,
-            internal_error_message,
-            created_at
-        `;
-        const row = rows[0];
-
-        if (!row) {
-          throw new Error("Upload task creation did not return a row");
-        }
-
-        return mapUploadTaskRow(row);
-      },
-      async completeUploadTask({
-        knowledgeBaseId,
-        taskId,
-        endedAt,
-        resultReleaseId,
-        internalErrorCode,
-        internalErrorMessage
-      }) {
-        const rows = await sql<UploadTaskRow[]>`
-          UPDATE focowiki.upload_tasks
-          SET
-            ended_at = ${endedAt},
-            result_release_id = ${resultReleaseId},
-            internal_error_code = ${internalErrorCode ?? null},
-            internal_error_message = ${internalErrorMessage ?? null}
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND id = ${taskId}
-          RETURNING
-            id,
-            knowledge_base_id,
-            operation,
-            started_at,
-            ended_at,
-            source_count,
-            result_release_id,
-            internal_error_code,
-            internal_error_message,
-            created_at
-        `;
-        const row = rows[0];
-
-        if (!row) {
-          throw new Error("Upload task completion did not return a row");
-        }
-
-        return mapUploadTaskRow(row);
-      },
-      async createUploadTaskEvent(input) {
-        const rows = await sql<UploadTaskEventRow[]>`
-          INSERT INTO focowiki.upload_task_events (
-            id,
-            task_id,
-            phase_key,
-            message_key,
-            started_at,
-            ended_at,
-            severity
+            warning_count,
+            error_code,
+            error_message
           )
           VALUES (
-            ${createUploadTaskEventId()},
-            ${input.taskId},
-            ${input.phaseKey},
-            ${input.messageKey},
+            ${input.id ?? createModelInvocationId()},
+            ${input.knowledgeBaseId},
+            ${input.sourceFileId},
+            ${input.modelName},
+            ${input.status},
             ${input.startedAt},
             ${input.endedAt},
-            ${input.severity}
+            ${input.warningCount},
+            ${input.errorCode},
+            ${input.errorMessage}
           )
-          ON CONFLICT (task_id, phase_key)
-          DO UPDATE SET
-            message_key = EXCLUDED.message_key,
-            started_at = COALESCE(focowiki.upload_task_events.started_at, EXCLUDED.started_at),
-            ended_at = EXCLUDED.ended_at,
-            severity = EXCLUDED.severity
           RETURNING
             id,
-            task_id,
-            phase_key,
-            message_key,
+            knowledge_base_id,
+            source_file_id,
+            model_name,
+            status,
             started_at,
             ended_at,
-            severity,
+            warning_count,
+            error_code,
+            error_message,
             created_at
         `;
         const row = rows[0];
 
         if (!row) {
-          throw new Error("Upload task event creation did not return a row");
+          throw new Error("Model invocation creation did not return a row");
         }
 
-        return mapUploadTaskEventRow(row);
+        return mapModelInvocationRow(row);
       },
-      async getUploadTask({ knowledgeBaseId, taskId }) {
-        const rows = await sql<UploadTaskRow[]>`
-          SELECT
-            task.id,
-            task.knowledge_base_id,
-            task.operation,
-            task.started_at,
-            task.ended_at,
-            task.source_count,
-            task.result_release_id,
-            task.internal_error_code,
-            task.internal_error_message,
-            task.created_at,
-            COALESCE(progress.source_completed_count, 0) AS source_completed_count,
-            COALESCE(progress.source_failed_count, 0) AS source_failed_count,
-            COALESCE(progress.source_running_count, 0) AS source_running_count,
-            COALESCE(progress.source_pending_count, 0) AS source_pending_count,
-            progress.source_current_stage AS source_current_stage
-          FROM focowiki.upload_tasks task
-          LEFT JOIN (
-            SELECT
-              task_id,
-              count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
-              count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
-              count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
-              (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
-            FROM focowiki.source_files
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-              AND deleted_at IS NULL
-            GROUP BY task_id
-          ) progress ON progress.task_id = task.id
-          WHERE task.knowledge_base_id = ${knowledgeBaseId}
-            AND task.id = ${taskId}
-          LIMIT 1
+      async completeModelInvocation(input) {
+        const rows = await sql<ModelInvocationRow[]>`
+          UPDATE focowiki.model_invocations
+          SET
+            status = ${input.status},
+            ended_at = ${input.endedAt},
+            warning_count = ${input.warningCount ?? 0},
+            error_code = ${input.errorCode ?? null},
+            error_message = ${input.errorMessage ?? null}
+          WHERE id = ${input.id}
+          RETURNING
+            id,
+            knowledge_base_id,
+            source_file_id,
+            model_name,
+            status,
+            started_at,
+            ended_at,
+            warning_count,
+            error_code,
+            error_message,
+            created_at
         `;
         const row = rows[0];
-        return row ? mapUploadTaskRow(row) : null;
-      },
-      async getLatestUploadTask(knowledgeBaseId) {
-        const rows = await sql<UploadTaskRow[]>`
-          SELECT
-            task.id,
-            task.knowledge_base_id,
-            task.operation,
-            task.started_at,
-            task.ended_at,
-            task.source_count,
-            task.result_release_id,
-            task.internal_error_code,
-            task.internal_error_message,
-            task.created_at,
-            COALESCE(progress.source_completed_count, 0) AS source_completed_count,
-            COALESCE(progress.source_failed_count, 0) AS source_failed_count,
-            COALESCE(progress.source_running_count, 0) AS source_running_count,
-            COALESCE(progress.source_pending_count, 0) AS source_pending_count,
-            progress.source_current_stage AS source_current_stage
-          FROM focowiki.upload_tasks task
-          LEFT JOIN (
-            SELECT
-              task_id,
-              count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
-              count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
-              count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-              count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
-              (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
-            FROM focowiki.source_files
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-              AND deleted_at IS NULL
-            GROUP BY task_id
-          ) progress ON progress.task_id = task.id
-          WHERE task.knowledge_base_id = ${knowledgeBaseId}
-            AND task.operation = 'upload'
-          ORDER BY task.started_at DESC, task.id ASC
-          LIMIT 1
-        `;
-        const row = rows[0];
-        return row ? mapUploadTaskRow(row) : null;
-      },
-      async listUploadTasks({ knowledgeBaseId, limit, cursor }) {
-        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
-        const rows = cursorValue
-          ? await sql<UploadTaskRow[]>`
-              SELECT
-                task.id,
-                task.knowledge_base_id,
-                task.operation,
-                task.started_at,
-                task.ended_at,
-                task.source_count,
-                task.result_release_id,
-                task.internal_error_code,
-                task.internal_error_message,
-                task.created_at,
-                COALESCE(progress.source_completed_count, 0) AS source_completed_count,
-                COALESCE(progress.source_failed_count, 0) AS source_failed_count,
-                COALESCE(progress.source_running_count, 0) AS source_running_count,
-                COALESCE(progress.source_pending_count, 0) AS source_pending_count,
-                progress.source_current_stage AS source_current_stage
-              FROM focowiki.upload_tasks task
-              LEFT JOIN (
-                SELECT
-                  task_id,
-                  count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
-                  count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
-                  count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
-                  (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
-                FROM focowiki.source_files
-                WHERE knowledge_base_id = ${knowledgeBaseId}
-                  AND deleted_at IS NULL
-                GROUP BY task_id
-              ) progress ON progress.task_id = task.id
-              WHERE task.knowledge_base_id = ${knowledgeBaseId}
-                AND (task.started_at < ${cursorValue.createdAt} OR (task.started_at = ${cursorValue.createdAt} AND task.id > ${cursorValue.id}))
-              ORDER BY task.started_at DESC, task.id ASC
-              LIMIT ${limit + 1}
-            `
-          : await sql<UploadTaskRow[]>`
-              SELECT
-                task.id,
-                task.knowledge_base_id,
-                task.operation,
-                task.started_at,
-                task.ended_at,
-                task.source_count,
-                task.result_release_id,
-                task.internal_error_code,
-                task.internal_error_message,
-                task.created_at,
-                COALESCE(progress.source_completed_count, 0) AS source_completed_count,
-                COALESCE(progress.source_failed_count, 0) AS source_failed_count,
-                COALESCE(progress.source_running_count, 0) AS source_running_count,
-                COALESCE(progress.source_pending_count, 0) AS source_pending_count,
-                progress.source_current_stage AS source_current_stage
-              FROM focowiki.upload_tasks task
-              LEFT JOIN (
-                SELECT
-                  task_id,
-                  count(*) FILTER (WHERE processing_status = 'completed') AS source_completed_count,
-                  count(*) FILTER (WHERE processing_status = 'failed') AS source_failed_count,
-                  count(*) FILTER (WHERE processing_status = 'running') AS source_running_count,
-                  count(*) FILTER (WHERE processing_status = 'pending') AS source_pending_count,
-                  (array_agg(processing_stage ORDER BY ${sql.unsafe(sourceProgressStageOrderSql())}))[1] AS source_current_stage
-                FROM focowiki.source_files
-                WHERE knowledge_base_id = ${knowledgeBaseId}
-                  AND deleted_at IS NULL
-                GROUP BY task_id
-              ) progress ON progress.task_id = task.id
-              WHERE task.knowledge_base_id = ${knowledgeBaseId}
-              ORDER BY task.started_at DESC, task.id ASC
-              LIMIT ${limit + 1}
-            `;
-        const pageRows = rows.slice(0, limit);
-        const lastRow = pageRows.at(-1);
-        return {
-          items: pageRows.map(mapUploadTaskRow),
-          nextCursor:
-            rows.length > limit && lastRow
-              ? serializeTimedCursor({
-                  createdAt: lastRow.started_at.toISOString(),
-                  id: lastRow.id
-                })
-              : null
-        };
-      },
-      async listUploadTaskEvents({ knowledgeBaseId, taskId, limit, cursor }) {
-        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
-        const rows = cursorValue
-          ? await sql<UploadTaskEventRow[]>`
-              SELECT
-                event.id,
-                event.task_id,
-                event.phase_key,
-                event.message_key,
-                event.started_at,
-                event.ended_at,
-                event.severity,
-                event.created_at
-              FROM focowiki.upload_task_events event
-              JOIN focowiki.upload_tasks task ON task.id = event.task_id
-              WHERE task.knowledge_base_id = ${knowledgeBaseId}
-                AND event.task_id = ${taskId}
-                AND (event.created_at > ${cursorValue.createdAt} OR (event.created_at = ${cursorValue.createdAt} AND event.id > ${cursorValue.id}))
-              ORDER BY event.created_at ASC, event.id ASC
-              LIMIT ${limit + 1}
-            `
-          : await sql<UploadTaskEventRow[]>`
-              SELECT
-                event.id,
-                event.task_id,
-                event.phase_key,
-                event.message_key,
-                event.started_at,
-                event.ended_at,
-                event.severity,
-                event.created_at
-              FROM focowiki.upload_task_events event
-              JOIN focowiki.upload_tasks task ON task.id = event.task_id
-              WHERE task.knowledge_base_id = ${knowledgeBaseId}
-                AND event.task_id = ${taskId}
-              ORDER BY event.created_at ASC, event.id ASC
-              LIMIT ${limit + 1}
-            `;
-        const pageRows = rows.slice(0, limit);
-        const lastRow = pageRows.at(-1);
-        return {
-          items: pageRows.map(mapUploadTaskEventRow),
-          nextCursor:
-            rows.length > limit && lastRow
-              ? serializeTimedCursor({
-                  createdAt: lastRow.created_at.toISOString(),
-                  id: lastRow.id
-                })
-              : null
-        };
+        return row ? mapModelInvocationRow(row) : null;
       }
     },
     securityAudit: {
@@ -1733,12 +1613,16 @@ export function createKnowledgeBaseId(): string {
   return `kb-${randomUUID()}`;
 }
 
-export function createUploadTaskId(): string {
-  return `task-${randomUUID()}`;
+export function createSourceFileEventId(): string {
+  return `source-event-${randomUUID()}`;
 }
 
-export function createUploadTaskEventId(): string {
-  return `task-event-${randomUUID()}`;
+export function createSourceFileRetryAttemptId(): string {
+  return `source-retry-${randomUUID()}`;
+}
+
+export function createModelInvocationId(): string {
+  return `model-invocation-${randomUUID()}`;
 }
 
 function mapKnowledgeBaseRow(row: KnowledgeBaseRow): KnowledgeBaseRecord {
@@ -1814,18 +1698,30 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
-    taskId: row.task_id,
     originalName: row.original_name,
     objectKey: row.object_key,
     contentType: row.content_type,
     sizeBytes: Number(row.size_bytes),
     checksumSha256: row.checksum_sha256,
     metadata: readRecord(row.metadata_json) as SourceMetadataDefaults,
+    modelSuggestions: readOptionalRecord(row.model_suggestions_json) as SourceModelSuggestions | null,
     processingStatus: row.processing_status,
     processingStage: row.processing_stage,
     processingStartedAt: row.processing_started_at?.toISOString() ?? null,
     processingEndedAt: row.processing_ended_at?.toISOString() ?? null,
     processingErrorCode: row.processing_error_code,
+    processingErrorMessage: row.processing_error_message,
+    retryCount: Number(row.retry_count),
+    modelInvocationStatus: row.model_invocation_status ?? null,
+    modelInvocationModelName: row.model_invocation_model_name ?? null,
+    modelInvocationStartedAt: row.model_invocation_started_at?.toISOString() ?? null,
+    modelInvocationEndedAt: row.model_invocation_ended_at?.toISOString() ?? null,
+    modelInvocationWarningCount:
+      row.model_invocation_warning_count === undefined ||
+      row.model_invocation_warning_count === null
+        ? null
+        : Number(row.model_invocation_warning_count),
+    modelInvocationErrorCode: row.model_invocation_error_code ?? null,
     createdAt: row.created_at.toISOString(),
     deletedAt: row.deleted_at?.toISOString() ?? null
   };
@@ -1835,7 +1731,6 @@ function mapReleaseRow(row: ReleaseRow): ReleaseRecord {
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
-    taskId: row.task_id,
     bundleRootKey: row.bundle_root_key,
     generatedAt: row.generated_at.toISOString(),
     publishedAt: row.published_at?.toISOString() ?? null,
@@ -1845,79 +1740,28 @@ function mapReleaseRow(row: ReleaseRow): ReleaseRecord {
   };
 }
 
-function mapUploadTaskRow(row: UploadTaskRow): UploadTaskRecord {
-  const completed = Number(row.source_completed_count ?? 0);
-  const failed = Number(row.source_failed_count ?? 0);
-  const running = Number(row.source_running_count ?? 0);
-  const pending = Math.max(0, row.source_count - completed - failed - running);
-
+function mapModelInvocationRow(row: ModelInvocationRow): ModelInvocationRecord {
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
-    operation: row.operation,
+    sourceFileId: row.source_file_id,
+    modelName: row.model_name,
+    status: row.status,
     startedAt: row.started_at.toISOString(),
     endedAt: row.ended_at?.toISOString() ?? null,
-    sourceCount: row.source_count,
-    resultReleaseId: row.result_release_id,
-    internalErrorCode: row.internal_error_code,
-    internalErrorMessage: row.internal_error_message,
-    createdAt: row.created_at.toISOString(),
-    progress: {
-      total: row.source_count,
-      completed,
-      failed,
-      running,
-      pending,
-      currentStage: row.source_current_stage ?? inferUploadTaskCurrentStage({ row, pending })
-    }
+    warningCount: row.warning_count,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    createdAt: row.created_at.toISOString()
   };
 }
 
-function inferUploadTaskCurrentStage(input: {
-  row: UploadTaskRow;
-  pending: number;
-}): SourceFileProcessingStage | null {
-  if (input.row.operation !== "upload") {
-    return null;
-  }
-
-  if (input.pending > 0) {
-    return "upload_storage";
-  }
-
-  if (input.row.source_count > 0 && input.row.ended_at && !input.row.internal_error_code) {
-    return "release_activation";
-  }
-
-  return null;
-}
-
-function sourceProgressStageOrderSql(): string {
-  return [
-    "CASE processing_status",
-    "WHEN 'running' THEN 0",
-    "WHEN 'pending' THEN 1",
-    "WHEN 'failed' THEN 2",
-    "WHEN 'completed' THEN 3",
-    "ELSE 4",
-    "END ASC,",
-    "CASE processing_stage",
-    "WHEN 'upload_storage' THEN 1",
-    "WHEN 'metadata_resolution' THEN 2",
-    "WHEN 'bundle_generation' THEN 3",
-    "WHEN 'okf_validation' THEN 4",
-    "WHEN 'index_publication' THEN 5",
-    "WHEN 'release_activation' THEN 6",
-    "ELSE 0",
-    "END DESC"
-  ].join(" ");
-}
-
-function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {
+function mapSourceFileEventRow(row: SourceFileEventRow): SourceFileEventRecord {
   return {
     id: row.id,
-    taskId: row.task_id,
-    phaseKey: row.phase_key,
+    knowledgeBaseId: row.knowledge_base_id,
+    sourceFileId: row.source_file_id,
+    stageKey: row.stage_key,
     messageKey: row.message_key,
     startedAt: row.started_at?.toISOString() ?? null,
     endedAt: row.ended_at?.toISOString() ?? null,
@@ -1926,28 +1770,17 @@ function mapUploadTaskEventRow(row: UploadTaskEventRow): UploadTaskEventRecord {
   };
 }
 
-function logActionForOperation(operation: UploadTaskOperation): string {
-  if (operation === "delete_source" || operation === "delete_knowledge_base") {
-    return "Deletion";
-  }
-
-  return "Update";
-}
-
-function logMessageForOperation(
-  operation: UploadTaskOperation,
-  fileCount: number,
-  sourceCount: number
-): string {
-  if (operation === "delete_source") {
-    return `Republished the knowledge base after deleting one source document; ${fileCount} generated files are active.`;
-  }
-
-  if (operation === "delete_knowledge_base") {
-    return "Deleted the knowledge base.";
-  }
-
-  return `Published ${sourceCount} source documents and ${fileCount} generated files.`;
+function mapSourceFileRetryAttemptRow(row: SourceFileRetryAttemptRow): SourceFileRetryAttemptRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    sourceFileId: row.source_file_id,
+    status: row.status,
+    startedAt: row.started_at.toISOString(),
+    endedAt: row.ended_at?.toISOString() ?? null,
+    errorCode: row.error_code,
+    createdAt: row.created_at.toISOString()
+  };
 }
 
 function mapPublicApiKeyRow(row: PublicApiKeyRow): PublicOpenApiKeyRecord {
@@ -2002,6 +1835,12 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function readOptionalRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function serializeTimedCursor(cursor: { createdAt: string; id: string }): string {

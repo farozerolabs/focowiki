@@ -1,5 +1,6 @@
 import {
   requestModelSuggestions,
+  type ModelSuggestionResult,
   type ModelReceiveTimeouts,
   type ModelSuggestions,
   type OpenAIResponsesClient
@@ -28,7 +29,10 @@ export async function readModelSuggestions(input: {
   sources: ModelSuggestionSource[];
   modelAssistance: ModelAssistanceOptions | null;
   onSourceStart?: (source: ModelSuggestionSource) => Promise<void>;
-  onSourceComplete?: (source: ModelSuggestionSource) => Promise<void>;
+  onSourceComplete?: (
+    source: ModelSuggestionSource,
+    result: ModelSuggestionResult
+  ) => Promise<void>;
 }): Promise<{
   suggestionsBySourceId: Map<string, ModelSuggestions>;
   warnings: string[];
@@ -66,7 +70,7 @@ export async function readModelSuggestions(input: {
     }
 
     warnings.push(...result.warnings);
-    await input.onSourceComplete?.(source);
+    await input.onSourceComplete?.(source, result);
   });
 
   return {

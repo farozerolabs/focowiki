@@ -85,66 +85,27 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     ),
     UploadAcceptedFile: objectSchema(
       {
-        fileId: idSchema("Source file identifier accepted by task detail and file detail reads."),
+        fileId: idSchema("Source file identifier accepted by source-file status and file detail reads."),
         originalFilename: { type: "string" },
-        sizeBytes: { type: "integer", minimum: 0 }
+        sizeBytes: { type: "integer", minimum: 0 },
+        processingState: { type: "string", enum: ["queued", "running", "completed", "failed"] },
+        currentStage: { type: "string" }
       },
-      ["fileId", "originalFilename", "sizeBytes"]
+      ["fileId", "originalFilename", "sizeBytes", "processingState", "currentStage"]
     ),
     UploadResponse: objectSchema(
       {
         knowledgeBaseId: idSchema("Knowledge-base identifier."),
-        taskId: idSchema("Task identifier accepted by task detail reads."),
         files: { type: "array", items: ref("UploadAcceptedFile") }
       },
-      ["knowledgeBaseId", "taskId", "files"]
+      ["knowledgeBaseId", "files"]
     ),
-    UploadProgress: objectSchema(
-      {
-        total: { type: "integer", minimum: 0 },
-        completed: { type: "integer", minimum: 0 },
-        failed: { type: "integer", minimum: 0 },
-        running: { type: "integer", minimum: 0 },
-        pending: { type: "integer", minimum: 0 },
-        currentStage: { type: "string" }
-      },
-      ["total", "completed", "failed", "running", "pending", "currentStage"]
-    ),
-    UploadTask: objectSchema(
-      {
-        taskId: idSchema("Task identifier."),
-        knowledgeBaseId: idSchema("Knowledge-base identifier."),
-        operation: { type: "string", enum: ["upload", "delete"] },
-        lifecycle: { type: "string", enum: ["running", "ended"] },
-        startedAt: timestampSchema(),
-        endedAt: nullableTimestampSchema(),
-        sourceCount: { type: "integer", minimum: 0 },
-        progress: ref("UploadProgress"),
-        resultReleaseId: nullableString("Result release identifier when publication completes."),
-        errorCode: nullableString("Stable internal task error code when task fails.")
-      },
-      [
-        "taskId",
-        "knowledgeBaseId",
-        "operation",
-        "lifecycle",
-        "startedAt",
-        "endedAt",
-        "sourceCount",
-        "progress",
-        "resultReleaseId",
-        "errorCode"
-      ]
-    ),
-    TaskListResponse: pageSchema(ref("UploadTask")),
     SourceFile: sourceFileSchema(),
-    TaskDetailResponse: objectSchema(
-      {
-        task: ref("UploadTask"),
-        files: pageSchema(ref("SourceFile"))
-      },
-      ["task", "files"]
-    ),
+    SourceFileListResponse: pageSchema(ref("SourceFile")),
+    SourceFileResponse: objectSchema({ file: ref("SourceFile") }, ["file"]),
+    SourceFileEvent: sourceFileEventSchema(),
+    SourceFileEventListResponse: pageSchema(ref("SourceFileEvent")),
+    SourceFileRetryResponse: objectSchema({ file: ref("SourceFile") }, ["file"]),
     BundleTreeEntry: bundleTreeEntrySchema(),
     TreeResponse: pageSchema(ref("BundleTreeEntry")),
     BundleFile: bundleFileSchema(),
@@ -167,10 +128,11 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     FileDeletionResponse: objectSchema(
       {
         knowledgeBaseId: idSchema("Knowledge-base identifier."),
-        taskId: idSchema("Deletion task identifier."),
+        deleted: { type: "boolean" },
+        releaseId: idSchema("Active release identifier after deletion."),
         file: ref("BundleFile")
       },
-      ["knowledgeBaseId", "taskId", "file"]
+      ["knowledgeBaseId", "deleted", "releaseId", "file"]
     ),
     DeleteResponse: objectSchema(
       {
@@ -247,7 +209,6 @@ function sourceFileSchema(): SchemaObject {
     {
       fileId: idSchema("Source file identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      taskId: idSchema("Task identifier."),
       originalFilename: { type: "string" },
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
@@ -258,12 +219,19 @@ function sourceFileSchema(): SchemaObject {
       processingStartedAt: timestampSchema(),
       processingEndedAt: nullableTimestampSchema(),
       processingErrorCode: nullableString("Stable processing error code when processing fails."),
+      processingErrorMessage: nullableString("Safe processing error message when processing fails."),
+      retryCount: { type: "integer", minimum: 0 },
+      modelInvocationStatus: nullableString("Model assistance status when model assistance is configured."),
+      modelInvocationModelName: nullableString("Model name used for assistance when available."),
+      modelInvocationStartedAt: nullableTimestampSchema(),
+      modelInvocationEndedAt: nullableTimestampSchema(),
+      modelInvocationWarningCount: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
+      modelInvocationErrorCode: nullableString("Stable model error code when model assistance fails."),
       createdAt: timestampSchema()
     },
     [
       "fileId",
       "knowledgeBaseId",
-      "taskId",
       "originalFilename",
       "contentType",
       "sizeBytes",
@@ -274,6 +242,41 @@ function sourceFileSchema(): SchemaObject {
       "processingStartedAt",
       "processingEndedAt",
       "processingErrorCode",
+      "processingErrorMessage",
+      "retryCount",
+      "modelInvocationStatus",
+      "modelInvocationModelName",
+      "modelInvocationStartedAt",
+      "modelInvocationEndedAt",
+      "modelInvocationWarningCount",
+      "modelInvocationErrorCode",
+      "createdAt"
+    ]
+  );
+}
+
+function sourceFileEventSchema(): SchemaObject {
+  return objectSchema(
+    {
+      eventId: idSchema("Source-file event identifier."),
+      knowledgeBaseId: idSchema("Knowledge-base identifier."),
+      fileId: idSchema("Source file identifier."),
+      stageKey: { type: "string" },
+      messageKey: { type: "string" },
+      startedAt: nullableTimestampSchema(),
+      endedAt: nullableTimestampSchema(),
+      severity: { type: "string", enum: ["info", "warning", "error"] },
+      createdAt: timestampSchema()
+    },
+    [
+      "eventId",
+      "knowledgeBaseId",
+      "fileId",
+      "stageKey",
+      "messageKey",
+      "startedAt",
+      "endedAt",
+      "severity",
       "createdAt"
     ]
   );

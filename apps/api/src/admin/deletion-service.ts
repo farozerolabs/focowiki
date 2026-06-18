@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { OkfLogLimits } from "@focowiki/okf";
-import type {
-  AdminRepositories,
-  BundleFileRecord,
-  KnowledgeBaseRecord,
-  UploadTaskEventRecord,
-  UploadTaskRecord
-} from "../db/admin-repositories.js";
+import type { AdminRepositories } from "../db/admin-repositories.js";
 import { publishOkfRelease } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
@@ -18,29 +12,22 @@ export type AdminDeletionService = {
     deletedAt: string;
     cursorTtlSeconds: number;
   }) => Promise<boolean>;
-  createSourcePageDeletionTask: (input: {
+  deleteSourcePage: (input: {
     knowledgeBaseId: string;
     logicalPath: string;
-  }) => Promise<SourcePageDeletionStartResult>;
-  processSourcePageDeletion: (input: {
-    knowledgeBase: KnowledgeBaseRecord;
-    file: BundleFileRecord;
-    task: UploadTaskRecord;
     deletedAt: string;
     generatedAt: string;
     batchSize: number;
     cursorTtlSeconds: number;
     fileProcessingConcurrency: number;
     okfLog?: Partial<OkfLogLimits> | undefined;
-  }) => Promise<UploadTaskRecord>;
+  }) => Promise<SourcePageDeletionResult>;
 };
 
-export type SourcePageDeletionStartResult =
+export type SourcePageDeletionResult =
   | {
       ok: true;
-      knowledgeBase: KnowledgeBaseRecord;
-      file: BundleFileRecord;
-      task: UploadTaskRecord;
+      releaseId: string;
     }
   | {
       ok: false;
@@ -52,34 +39,32 @@ export function createDeletionService(
   storage: StorageAdapter,
   redis: RedisCoordinator
 ): AdminDeletionService | null {
-  const filesRepository = repositories.files;
-  const taskRepository = repositories.tasks;
+  const files = repositories.files;
 
   if (
     !repositories.knowledgeBases.softDeleteKnowledgeBase ||
-    !filesRepository?.softDeleteSourceFile ||
-    !filesRepository.createRelease ||
-    !filesRepository.createBundleFiles ||
-    !filesRepository.createBundleTreeEntries ||
-    !filesRepository.activateRelease ||
-    !filesRepository.listSourceFiles ||
-    !taskRepository?.createUploadTask ||
-    !taskRepository.completeUploadTask ||
-    !taskRepository.createUploadTaskEvent
+    !files?.softDeleteSourceFile ||
+    !files.createRelease ||
+    !files.createBundleFiles ||
+    !files.createBundleTreeEntries ||
+    !files.activateRelease ||
+    !files.listSourceFiles ||
+    !files.getBundleFile ||
+    !files.createSourceFileEvent
   ) {
     return null;
   }
 
   const softDeleteKnowledgeBase = repositories.knowledgeBases.softDeleteKnowledgeBase;
-  const softDeleteSourceFile = filesRepository.softDeleteSourceFile;
-  const createRelease = filesRepository.createRelease;
-  const createBundleFiles = filesRepository.createBundleFiles;
-  const createBundleTreeEntries = filesRepository.createBundleTreeEntries;
-  const activateRelease = filesRepository.activateRelease;
-  const listSourceFiles = filesRepository.listSourceFiles;
-  const listPublicationLogHistory = filesRepository.listPublicationLogHistory;
-  const createUploadTask = taskRepository.createUploadTask;
-  const completeUploadTask = taskRepository.completeUploadTask;
+  const softDeleteSourceFile = files.softDeleteSourceFile;
+  const createRelease = files.createRelease;
+  const createBundleFiles = files.createBundleFiles;
+  const createBundleTreeEntries = files.createBundleTreeEntries;
+  const activateRelease = files.activateRelease;
+  const listSourceFiles = files.listSourceFiles;
+  const listPublicationLogHistory = files.listPublicationLogHistory;
+  const getBundleFile = files.getBundleFile;
+  const createSourceFileEvent = files.createSourceFileEvent;
 
   return {
     async deleteKnowledgeBase(input) {
@@ -108,7 +93,7 @@ export function createDeletionService(
       });
       return true;
     },
-    async createSourcePageDeletionTask(input) {
+    async deleteSourcePage(input) {
       const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
         input.knowledgeBaseId
       );
@@ -117,7 +102,7 @@ export function createDeletionService(
         return { ok: false, reason: "not_found" };
       }
 
-      const file = await filesRepository.getBundleFile({
+      const file = await getBundleFile({
         knowledgeBaseId: knowledgeBase.id,
         releaseId: knowledgeBase.activeReleaseId,
         logicalPath: input.logicalPath
@@ -131,65 +116,44 @@ export function createDeletionService(
         return { ok: false, reason: "not_deletable" };
       }
 
-      const task = await createUploadTask({
+      const ownerId = `source-delete-${randomUUID()}`;
+      const lockAcquired = await waitForPublicationLock({
+        redis,
         knowledgeBaseId: knowledgeBase.id,
-        sourceCount: 1,
-        operation: "delete_source"
+        ownerId,
+        ttlSeconds: input.cursorTtlSeconds
       });
 
-      return { ok: true, knowledgeBase, file, task };
-    },
-    async processSourcePageDeletion(input) {
-      const ownerId = `admin-api-${randomUUID()}`;
-      let lockAcquired = false;
-      let releaseId: string | null = null;
+      if (!lockAcquired) {
+        throw new Error("Knowledge base publication lock was not acquired");
+      }
 
       try {
-        lockAcquired = await redis.acquireTaskLock(
-          input.task.id,
-          ownerId,
-          input.cursorTtlSeconds
-        );
-
-        if (!lockAcquired) {
-          throw new Error("Deletion task lock is already held");
-        }
-
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "source_deletion",
+        await createSourceFileEvent({
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: file.sourceFileId,
+          stageKey: "source_deletion",
+          messageKey: "sourceFiles.stage.sourceDeletion",
           startedAt: input.generatedAt,
           endedAt: null,
           severity: "info"
         });
 
         const deleted = await softDeleteSourceFile({
-          knowledgeBaseId: input.knowledgeBase.id,
-          sourceFileId: input.file.sourceFileId ?? "",
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: file.sourceFileId,
           deletedAt: input.deletedAt
         });
 
         if (!deleted) {
-          throw new Error("Source file was not deleted");
+          return { ok: false, reason: "not_found" };
         }
 
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "source_deletion",
-          startedAt: input.generatedAt,
-          endedAt: new Date().toISOString(),
-          severity: "info"
-        });
-
-        releaseId = createReleaseId();
-        const bundleRootKey = storage.keyspace.releaseRootKey(input.knowledgeBase.id, releaseId);
-
+        const releaseId = `release-${randomUUID()}`;
+        const bundleRootKey = storage.keyspace.releaseRootKey(knowledgeBase.id, releaseId);
         await createRelease({
           id: releaseId,
-          knowledgeBaseId: input.knowledgeBase.id,
-          taskId: input.task.id,
+          knowledgeBaseId: knowledgeBase.id,
           bundleRootKey,
           generatedAt: input.generatedAt,
           publishedAt: null,
@@ -197,20 +161,10 @@ export function createDeletionService(
           manifestChecksumSha256: "pending"
         });
 
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "bundle_generation",
-          startedAt: input.generatedAt,
-          endedAt: null,
-          severity: "info"
-        });
-
         const publication = await publishOkfRelease({
-          knowledgeBaseId: input.knowledgeBase.id,
-          knowledgeBaseName: input.knowledgeBase.name,
+          knowledgeBaseId: knowledgeBase.id,
+          knowledgeBaseName: knowledgeBase.name,
           releaseId,
-          taskId: input.task.id,
           generatedAt: input.generatedAt,
           pageSize: input.batchSize,
           concurrency: input.fileProcessingConcurrency,
@@ -225,153 +179,80 @@ export function createDeletionService(
             : undefined,
           fetchSourcePage: ({ cursor, limit }) =>
             listSourceFiles({
-              knowledgeBaseId: input.knowledgeBase.id,
+              knowledgeBaseId: knowledgeBase.id,
               cursor,
               limit
-            }),
-          persistBundleFiles: (files) => createBundleFiles(files),
+            }).then((page) => ({
+              ...page,
+              items: page.items.filter((source) => source.processingStatus === "completed")
+            })),
+          persistBundleFiles: (bundleFiles) => createBundleFiles(bundleFiles),
           persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries)
         });
-
         const endedAt = new Date().toISOString();
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "okf_validation",
-          startedAt: input.generatedAt,
-          endedAt,
-          severity: "info"
-        });
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "bundle_generation",
-          startedAt: input.generatedAt,
-          endedAt,
-          severity: "info"
-        });
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "index_publication",
-          startedAt: input.generatedAt,
-          endedAt,
-          severity: "info"
-        });
 
         await activateRelease({
-          knowledgeBaseId: input.knowledgeBase.id,
+          knowledgeBaseId: knowledgeBase.id,
           releaseId,
-          taskId: input.task.id,
           publishedAt: endedAt,
           fileCount: publication.fileCount,
           manifestChecksumSha256: publication.manifestChecksumSha256
         });
-
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: "release_activation",
-          startedAt: input.generatedAt,
+        await createSourceFileEvent({
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: file.sourceFileId,
+          stageKey: "source_deletion",
+          messageKey: "sourceFiles.stage.sourceDeletion",
+          startedAt: null,
           endedAt,
           severity: "info"
         });
-
-        const completedTask = await completeUploadTask({
-          knowledgeBaseId: input.knowledgeBase.id,
-          taskId: input.task.id,
-          endedAt,
-          resultReleaseId: releaseId
-        });
-
-        await redis.recordTaskEvent(
-          input.task.id,
-          {
-            knowledgeBaseId: input.knowledgeBase.id,
-            lifecycle: "ended"
-          },
-          input.cursorTtlSeconds
-        );
         await invalidateKnowledgeBaseCaches({
           redis,
-          knowledgeBaseId: input.knowledgeBase.id,
+          knowledgeBaseId: knowledgeBase.id,
           releaseId,
-          taskId: input.task.id,
+          sourceFileId: file.sourceFileId,
           ttlSeconds: input.cursorTtlSeconds
         });
 
-        return completedTask;
-      } catch (error) {
-        const endedAt = new Date().toISOString();
-        await recordTaskPhase({
-          taskRepository,
-          taskId: input.task.id,
-          phaseKey: releaseId ? "bundle_generation" : "source_deletion",
-          startedAt: input.generatedAt,
-          endedAt,
-          severity: "error"
-        }).catch(() => undefined);
-        await completeUploadTask({
-          knowledgeBaseId: input.knowledgeBase.id,
-          taskId: input.task.id,
-          endedAt,
-          resultReleaseId: null,
-          internalErrorCode: "SOURCE_DELETION_FAILED",
-          internalErrorMessage: "Deletion failed"
-        }).catch(() => undefined);
-        await redis
-          .recordTaskEvent(
-            input.task.id,
-            {
-              knowledgeBaseId: input.knowledgeBase.id,
-              lifecycle: "ended"
-            },
-            input.cursorTtlSeconds
-          )
-          .catch(() => undefined);
-        await invalidateKnowledgeBaseCaches({
-          redis,
-          knowledgeBaseId: input.knowledgeBase.id,
-          releaseId: input.knowledgeBase.activeReleaseId,
-          taskId: input.task.id,
-          ttlSeconds: input.cursorTtlSeconds
-        }).catch(() => undefined);
-        throw error;
+        return {
+          ok: true,
+          releaseId
+        };
       } finally {
-        if (lockAcquired) {
-          await redis.releaseTaskLock(input.task.id, ownerId);
-        }
+        await redis.releaseKnowledgeBasePublicationLock(knowledgeBase.id, ownerId);
       }
     }
   };
 }
 
-async function recordTaskPhase(options: {
-  taskRepository: NonNullable<AdminRepositories["tasks"]>;
-  taskId: string;
-  phaseKey: string;
-  startedAt: string | null;
-  endedAt: string | null;
-  severity: UploadTaskEventRecord["severity"];
-}): Promise<void> {
-  if (!options.taskRepository.createUploadTaskEvent) {
-    return;
+async function waitForPublicationLock(input: {
+  redis: RedisCoordinator;
+  knowledgeBaseId: string;
+  ownerId: string;
+  ttlSeconds: number;
+}): Promise<boolean> {
+  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, 60_000);
+
+  while (Date.now() <= deadline) {
+    const acquired = await input.redis.acquireKnowledgeBasePublicationLock(
+      input.knowledgeBaseId,
+      input.ownerId,
+      input.ttlSeconds
+    );
+
+    if (acquired) {
+      return true;
+    }
+
+    await sleep(1_000);
   }
 
-  await options.taskRepository.createUploadTaskEvent({
-    taskId: options.taskId,
-    phaseKey: options.phaseKey,
-    messageKey: `tasks.phase.${toCamelCase(options.phaseKey)}`,
-    startedAt: options.startedAt,
-    endedAt: options.endedAt,
-    severity: options.severity
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
-}
-
-function toCamelCase(value: string): string {
-  return value.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
-}
-
-function createReleaseId(): string {
-  return `release-${randomUUID()}`;
 }

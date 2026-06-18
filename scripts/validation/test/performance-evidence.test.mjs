@@ -6,13 +6,13 @@ import {
   finalizePerformanceEvidence,
   recordEndpointTiming,
   recordPaginationEvidence,
-  recordTaskDuration
+  recordSourceFileDuration
 } from "../lib/performance-evidence.mjs";
 
 test("performance evidence enforces large-scale batch size and records bounded metrics", () => {
   const evidence = createPerformanceEvidence({
     FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS: "100",
-    FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS: "10000",
+    FOCOWIKI_VALIDATION_MAX_SOURCE_FILE_DURATION_MS: "10000",
     FOCOWIKI_VALIDATION_MAX_MEMORY_DELTA_MB: "512"
   });
 
@@ -22,12 +22,12 @@ test("performance evidence enforces large-scale batch size and records bounded m
     status: 200,
     durationMs: 25
   });
-  recordTaskDuration(evidence, {
-    id: "task-secret-id",
-    startedAt: "2026-06-16T00:00:00.000Z",
-    endedAt: "2026-06-16T00:00:05.000Z"
+  recordSourceFileDuration(evidence, {
+    id: "source-secret-id",
+    processingStartedAt: "2026-06-16T00:00:00.000Z",
+    processingEndedAt: "2026-06-16T00:00:05.000Z"
   });
-  recordPaginationEvidence(evidence, "task-source-pagination", {
+  recordPaginationEvidence(evidence, "source-file-pagination", {
     expectedSourceCount: 50,
     observedPages: 2
   });
@@ -40,10 +40,10 @@ test("performance evidence enforces large-scale batch size and records bounded m
 
   assert.equal(summary.ok, true);
   assert.equal(summary.endpointTimings.count, 1);
-  assert.equal(summary.taskDurations.count, 1);
+  assert.equal(summary.sourceFileDurations.count, 1);
   assert.equal(summary.pagination.length, 1);
   assert.equal(JSON.stringify(summary).includes("kb-secret-id"), false);
-  assert.equal(JSON.stringify(summary).includes("task-secret-id"), false);
+  assert.equal(JSON.stringify(summary).includes("source-secret-id"), false);
 });
 
 test("performance evidence fails large-scale runs below the configured batch minimum", () => {

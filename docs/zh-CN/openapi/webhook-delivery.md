@@ -4,7 +4,7 @@ title: Webhook 推送
 
 # Webhook 推送
 
-Focowiki 会把 webhook 事件主动推送到 `POST /openapi/v1/webhooks` 注册的 HTTPS URL。外部系统需要任务、发布、文件删除或知识库删除事件时，可以使用 webhook，减少轮询。
+Focowiki 会把 webhook 事件主动推送到 `POST /openapi/v1/webhooks` 注册的 HTTPS URL。外部系统需要来源文件处理、release、文件删除或知识库删除事件时，可以使用 webhook。
 
 ## 注册 Webhook
 
@@ -15,9 +15,9 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
   --data '{
-  "name": "Task updates",
+  "name": "Source file updates",
   "url": "https://hooks.example.com/focowiki",
-  "events": ["task.started", "task.progress", "task.ended", "release.published"]
+  "events": ["source_file.completed", "source_file.failed", "release.published"]
 }'
 ```
 
@@ -33,13 +33,13 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 | Content-Type | `application/json` |
 | 成功确认 | 任意 `2xx` 响应状态。 |
 | 投递超时 | 10 秒。 |
-| 自动重试 | 当前不安排自动重试。失败后可用 `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` 手动重投递。 |
+| 重投递 | 失败后可用 `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` 手动重投递。 |
 
 ## 请求头
 
 | Header | 说明 |
 | --- | --- |
-| `x-focowiki-event` | 事件类型，例如 `task.ended`。 |
+| `x-focowiki-event` | 事件类型，例如 `source_file.completed`。 |
 | `x-focowiki-delivery-id` | 投递标识。用于幂等处理。 |
 | `x-focowiki-timestamp` | 参与签名的 ISO 时间戳。 |
 | `x-focowiki-signature` | HMAC SHA-256 签名，格式为 `sha256=<hex>`。 |
@@ -51,14 +51,11 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.ended",
+  "eventType": "source_file.completed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "resultReleaseId": "release_123",
-    "errorCode": null
+    "sourceFileId": "file_source_123"
   }
 }
 ```
@@ -101,62 +98,57 @@ export function verifyFocowikiWebhook({ rawBody, timestamp, signatureHeader, sig
 
 | 事件类型 | 触发时机 | Payload 字段 |
 | --- | --- | --- |
-| `task.started` | 上传或删除任务开始。 | `knowledgeBaseId`, `taskId`, `operation`, `sourceCount` |
-| `task.progress` | 上传过程中来源文件处理阶段变化。 | `knowledgeBaseId`, `taskId`, `operation`, `sourceFileIds`, `status`, `stage`, `startedAt`, `endedAt`, `errorCode` |
-| `task.ended` | 上传或删除任务结束。 | `knowledgeBaseId`, `taskId`, `operation`, `resultReleaseId`, `errorCode` |
-| `release.published` | 任务发布新 release。 | `knowledgeBaseId`, `taskId`, `releaseId` |
-| `file.deleted` | 有来源文件关联的生成文件被删除。 | `knowledgeBaseId`, `taskId`, `fileId`, `sourceFileId`, `path` |
+| `source_file.accepted` | Markdown 文件已接收并持久化。 | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.progress` | 来源文件开始处理或继续处理。 | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.completed` | 来源文件处理完成。 | `knowledgeBaseId`, `sourceFileId` |
+| `source_file.failed` | 来源文件处理失败。 | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
+| `release.published` | 文件处理或删除后发布 release。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `releaseId` |
+| `file.deleted` | 有来源文件关联的生成文件被删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
 | `knowledge_base.deleted` | 知识库被删除。 | `knowledgeBaseId` |
 
 ## Payload 示例
 
-### `task.started`
+### `source_file.completed`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.started",
+  "eventType": "source_file.completed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "sourceCount": 2
+    "sourceFileId": "file_source_123"
   }
 }
 ```
 
-### `task.progress`
+### `source_file.failed`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "task.progress",
+  "eventType": "source_file.failed",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
-    "operation": "upload",
-    "sourceFileIds": ["file_source_123"],
-    "status": "completed",
-    "stage": "okf_validation",
-    "startedAt": "2026-06-17T00:00:00.000Z",
-    "endedAt": "2026-06-17T00:00:10.000Z",
-    "errorCode": null
+    "sourceFileId": "file_source_123",
+    "errorCode": "MODEL_OUTPUT_INVALID"
   }
 }
 ```
 
-### `release.published`
+### `file.deleted`
 
 ```json
 {
   "eventId": "event_123",
-  "eventType": "release.published",
+  "eventType": "file.deleted",
   "deliveryId": "delivery_123",
   "payload": {
     "knowledgeBaseId": "kb_123",
-    "taskId": "task_123",
+    "fileId": "file_page_123",
+    "sourceFileId": "file_source_123",
+    "path": "pages/guide.md",
     "releaseId": "release_123"
   }
 }

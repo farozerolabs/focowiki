@@ -18,6 +18,7 @@ export type UploadProgressUpdate = {
   startedAt?: string | null;
   endedAt?: string | null;
   errorCode?: string | null;
+  errorMessage?: string | null;
 };
 
 export type UploadProgressNotification = UploadProgressUpdate & {
@@ -28,7 +29,6 @@ export function createUploadProgressTracker(input: {
   repositories: AdminRepositories;
   redis: RedisCoordinator;
   knowledgeBaseId: string;
-  taskId: string;
   ttlSeconds: number;
   onProgress?: (progress: UploadProgressNotification) => Promise<void>;
 }): UploadProgressTracker {
@@ -40,7 +40,6 @@ export function createUploadProgressTracker(input: {
       redis: input.redis,
       knowledgeBaseId: input.knowledgeBaseId,
       releaseId: null,
-      taskId: input.taskId,
       ttlSeconds: input.ttlSeconds
     });
   const markFiles = async (update: UploadProgressUpdate & { sourceFileIds: string[] }) => {
@@ -50,13 +49,13 @@ export function createUploadProgressTracker(input: {
 
     await updateSourceFileProcessingState?.({
       knowledgeBaseId: input.knowledgeBaseId,
-      taskId: input.taskId,
       sourceFileIds: update.sourceFileIds,
       status: update.status,
       stage: update.stage,
       startedAt: update.startedAt ?? null,
       endedAt: update.endedAt ?? null,
-      errorCode: update.errorCode ?? null
+      errorCode: update.errorCode ?? null,
+      errorMessage: update.errorMessage ?? null
     });
     await invalidate();
     await input.onProgress?.({
@@ -65,7 +64,8 @@ export function createUploadProgressTracker(input: {
       stage: update.stage,
       startedAt: update.startedAt ?? null,
       endedAt: update.endedAt ?? null,
-      errorCode: update.errorCode ?? null
+      errorCode: update.errorCode ?? null,
+      errorMessage: update.errorMessage ?? null
     });
   };
 

@@ -5,18 +5,17 @@ describe("storage key normalization", () => {
   it("builds knowledge base scoped upload and release keys under S3_PREFIX", () => {
     const keys = createStorageKeyspace("tenant/demo");
 
-    expect(keys.sourceFileKey("kb-001", "task-001", "source-001", "Intro.md")).toBe(
-      "tenant/demo/knowledge-bases/kb-001/uploads/task-001/sources/source-001/Intro.md"
+    expect(keys.sourceFileKey("kb-001", "source-001", "Intro.md")).toBe(
+      "tenant/demo/knowledge-bases/kb-001/sources/source-001/Intro.md"
     );
     expect(
       keys.sourceFileKey(
         "kb-001",
-        "task-001",
         "source-001",
         "外国企业常驻代表机构登记管理条例.md"
       )
     ).toBe(
-      "tenant/demo/knowledge-bases/kb-001/uploads/task-001/sources/source-001/外国企业常驻代表机构登记管理条例.md"
+      "tenant/demo/knowledge-bases/kb-001/sources/source-001/外国企业常驻代表机构登记管理条例.md"
     );
     expect(keys.releaseRootKey("kb-001", "release-001")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/"
@@ -51,14 +50,14 @@ describe("storage key normalization", () => {
     expect(() => createStorageKeyspace("tenant\\demo")).toThrow(/S3_PREFIX/);
   });
 
-  it("rejects traversal in knowledge base, task, and release identifiers", () => {
+  it("rejects traversal in knowledge base, source file, and release identifiers", () => {
     const keys = createStorageKeyspace("tenant/demo");
 
     expect(() => keys.releaseBundleKey("../kb", "release-001", "index.md")).toThrow(
       /knowledgeBaseId/
     );
-    expect(() => keys.sourceFileKey("kb-001", "task/%2e%2e", "source-001", "intro.md")).toThrow(
-      /taskId/
+    expect(() => keys.sourceFileKey("kb-001", "source/%2e%2e", "intro.md")).toThrow(
+      /sourceFileId/
     );
     expect(() => keys.releaseBundleKey("kb-001", "release\\001", "index.md")).toThrow(
       /releaseId/

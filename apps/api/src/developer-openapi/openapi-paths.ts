@@ -8,7 +8,7 @@ import {
   operation,
   paginationParameters,
   ref,
-  taskIdParameter,
+  sourceFileIdParameter,
   webhookIdParameter,
   type PathItemObject
 } from "./openapi-shared.js";
@@ -137,28 +137,52 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         }
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks": {
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files": {
       get: operation({
-        tag: "Tasks",
-        operationId: "listKnowledgeBaseTasks",
-        summary: "List tasks for a knowledge base",
+        tag: "Source Files",
+        operationId: "listKnowledgeBaseSourceFiles",
+        summary: "List source files",
         parameters: [knowledgeBaseIdParameter(), ...paginationParameters()],
-        requestExample: requestExamples.listKnowledgeBaseTasks,
+        requestExample: requestExamples.listKnowledgeBaseSourceFiles,
         successStatus: 200,
-        successSchema: ref("TaskListResponse"),
-        successExample: responseExamples.listKnowledgeBaseTasks
+        successSchema: ref("SourceFileListResponse"),
+        successExample: responseExamples.listKnowledgeBaseSourceFiles
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks/{taskId}": {
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}": {
       get: operation({
-        tag: "Tasks",
-        operationId: "getKnowledgeBaseTask",
-        summary: "Get a task and its file page",
-        parameters: [knowledgeBaseIdParameter(), taskIdParameter(), ...paginationParameters()],
-        requestExample: requestExamples.getKnowledgeBaseTask,
+        tag: "Source Files",
+        operationId: "getKnowledgeBaseSourceFile",
+        summary: "Get source file",
+        parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
+        requestExample: requestExamples.getKnowledgeBaseSourceFile,
         successStatus: 200,
-        successSchema: ref("TaskDetailResponse"),
-        successExample: responseExamples.getKnowledgeBaseTask
+        successSchema: ref("SourceFileResponse"),
+        successExample: responseExamples.getKnowledgeBaseSourceFile
+      })
+    },
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events": {
+      get: operation({
+        tag: "Source Files",
+        operationId: "listKnowledgeBaseSourceFileEvents",
+        summary: "List source file events",
+        parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter(), ...paginationParameters()],
+        requestExample: requestExamples.listKnowledgeBaseSourceFileEvents,
+        successStatus: 200,
+        successSchema: ref("SourceFileEventListResponse"),
+        successExample: responseExamples.listKnowledgeBaseSourceFileEvents
+      })
+    },
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry": {
+      post: operation({
+        tag: "Source Files",
+        operationId: "retryKnowledgeBaseSourceFile",
+        summary: "Retry source file",
+        parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
+        requestExample: requestExamples.retryKnowledgeBaseSourceFile,
+        successStatus: 202,
+        successSchema: ref("SourceFileRetryResponse"),
+        successExample: responseExamples.retryKnowledgeBaseSourceFile
       })
     },
     "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree": {
@@ -212,7 +236,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         summary: "Delete a source-backed generated file",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.deleteFileById,
-        successStatus: 202,
+        successStatus: 200,
         successSchema: ref("FileDeletionResponse"),
         successExample: responseExamples.deleteFileById
       })
@@ -236,7 +260,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         summary: "Delete a source-backed generated file by logical path",
         parameters: [knowledgeBaseIdParameter(), filePathQueryParameter(true)],
         requestExample: requestExamples.deleteFileByPath,
-        successStatus: 202,
+        successStatus: 200,
         successSchema: ref("FileDeletionResponse"),
         successExample: responseExamples.deleteFileByPath
       })

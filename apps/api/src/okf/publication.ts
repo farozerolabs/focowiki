@@ -74,7 +74,6 @@ export type PublishOkfReleaseInput = {
   knowledgeBaseId: string;
   knowledgeBaseName: string;
   releaseId: string;
-  taskId: string;
   generatedAt: string;
   pageSize: number;
   concurrency: number;
@@ -94,7 +93,6 @@ type SourcePageStage = "bundle_generation" | "okf_validation" | "index_publicati
 
 export type PublishOkfReleaseResult = {
   releaseId: string;
-  taskId: string;
   bundleRootKey: string;
   fileCount: number;
   treeEntryCount: number;
@@ -218,7 +216,6 @@ export async function publishOkfRelease(
 
   return {
     releaseId: input.releaseId,
-    taskId: input.taskId,
     bundleRootKey,
     fileCount,
     treeEntryCount: treeState.entryCount,

@@ -4,7 +4,7 @@ export type KnowledgeBaseCacheInvalidationInput = {
   redis: RedisCoordinator;
   knowledgeBaseId: string;
   releaseId: string | null;
-  taskId?: string | null;
+  sourceFileId?: string | null;
   ttlSeconds: number;
 };
 
@@ -15,12 +15,8 @@ export async function invalidateKnowledgeBaseCaches(
     "knowledge-bases",
     `source-files:${input.knowledgeBaseId}`,
     `releases:${input.knowledgeBaseId}`,
-    `upload-tasks:${input.knowledgeBaseId}`,
-    ...(input.taskId
-      ? [
-          `upload-task-events:${input.knowledgeBaseId}:${input.taskId}`,
-          `upload-task-source-files:${input.knowledgeBaseId}:${input.taskId}`
-        ]
+    ...(input.sourceFileId
+      ? [`source-file-events:${input.knowledgeBaseId}:${input.sourceFileId}`]
       : []),
     ...(input.releaseId
       ? [

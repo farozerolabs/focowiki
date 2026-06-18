@@ -38,7 +38,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 解析可用知识库 | `listKnowledgeBases` |
 | 创建和维护知识库 | `createKnowledgeBase`、`deleteKnowledgeBase` |
 | 上传 Markdown 文件 | `uploadMarkdownFiles` |
-| 观察入库和批量进度 | `listKnowledgeBaseTasks`、`getKnowledgeBaseTask` |
+| 观察源文件处理进度 | `listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
 | 读取生成文件树 | `listKnowledgeBaseTree` |
 | 读取文件元数据 | `getFileById` |
 | 按稳定标识读取文件内容 | `getFileContentById` |

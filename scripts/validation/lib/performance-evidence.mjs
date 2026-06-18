@@ -1,5 +1,5 @@
 const DEFAULT_MAX_ENDPOINT_MS = 5_000;
-const DEFAULT_MAX_TASK_DURATION_MS = 900_000;
+const DEFAULT_MAX_SOURCE_FILE_DURATION_MS = 900_000;
 const DEFAULT_MAX_MEMORY_DELTA_MB = 512;
 const MAX_RECORDED_ENDPOINTS = 200;
 
@@ -7,9 +7,9 @@ export function createPerformanceEvidence(env = process.env) {
   return {
     budgets: {
       maxEndpointMs: readPositiveInteger(env.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, DEFAULT_MAX_ENDPOINT_MS),
-      maxTaskDurationMs: readPositiveInteger(
-        env.FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS,
-        DEFAULT_MAX_TASK_DURATION_MS
+      maxSourceFileDurationMs: readPositiveInteger(
+        env.FOCOWIKI_VALIDATION_MAX_SOURCE_FILE_DURATION_MS ?? env.FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS,
+        DEFAULT_MAX_SOURCE_FILE_DURATION_MS
       ),
       maxMemoryDeltaMb: readPositiveInteger(
         env.FOCOWIKI_VALIDATION_MAX_MEMORY_DELTA_MB,
@@ -17,7 +17,7 @@ export function createPerformanceEvidence(env = process.env) {
       )
     },
     endpointTimings: [],
-    taskDurations: [],
+    sourceFileDurations: [],
     pagination: [],
     memory: {
       startHeapMb: currentHeapMb(),
@@ -40,21 +40,21 @@ export function recordEndpointTiming(evidence, input) {
   });
 }
 
-export function recordTaskDuration(evidence, task) {
-  if (!evidence || !task?.startedAt || !task?.endedAt) {
+export function recordSourceFileDuration(evidence, sourceFile) {
+  if (!evidence || !sourceFile?.processingStartedAt || !sourceFile?.processingEndedAt) {
     return;
   }
 
-  const startedAt = Date.parse(task.startedAt);
-  const endedAt = Date.parse(task.endedAt);
+  const startedAt = Date.parse(sourceFile.processingStartedAt);
+  const endedAt = Date.parse(sourceFile.processingEndedAt);
 
   if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) {
     return;
   }
 
-  evidence.taskDurations.push({
-    operation: task.operation ?? "unknown",
-    sourceCount: Number.isSafeInteger(task.sourceCount) ? task.sourceCount : null,
+  evidence.sourceFileDurations.push({
+    fileId: sourceFile.id || sourceFile.fileId ? "<source-file>" : null,
+    status: sourceFile.processingStatus ?? sourceFile.processingState ?? "unknown",
     durationMs: endedAt - startedAt
   });
 }
@@ -88,17 +88,17 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
   }
 
   const endpointDurations = evidence.endpointTimings.map((item) => item.durationMs);
-  const taskDurations = evidence.taskDurations.map((item) => item.durationMs);
+  const sourceFileDurations = evidence.sourceFileDurations.map((item) => item.durationMs);
   const maxEndpointMs = max(endpointDurations);
-  const maxTaskDurationMs = max(taskDurations);
+  const maxSourceFileDurationMs = max(sourceFileDurations);
   const budgetFailures = [];
 
   if (maxEndpointMs > evidence.budgets.maxEndpointMs) {
     budgetFailures.push("endpoint latency");
   }
 
-  if (maxTaskDurationMs > evidence.budgets.maxTaskDurationMs) {
-    budgetFailures.push("task duration");
+  if (maxSourceFileDurationMs > evidence.budgets.maxSourceFileDurationMs) {
+    budgetFailures.push("source-file duration");
   }
 
   if (evidence.memory.deltaHeapMb > evidence.budgets.maxMemoryDeltaMb) {
@@ -116,11 +116,11 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
         .sort((left, right) => right.durationMs - left.durationMs)
         .slice(0, 10)
     },
-    taskDurations: {
-      count: taskDurations.length,
-      maxMs: maxTaskDurationMs,
-      averageMs: average(taskDurations),
-      items: evidence.taskDurations
+    sourceFileDurations: {
+      count: sourceFileDurations.length,
+      maxMs: maxSourceFileDurationMs,
+      averageMs: average(sourceFileDurations),
+      items: evidence.sourceFileDurations
     },
     pagination: evidence.pagination,
     memory: evidence.memory,
@@ -161,7 +161,7 @@ function roundMb(value) {
 function redactRuntimePath(pathname) {
   return String(pathname ?? "")
     .replace(/[0-9a-f]{8,}-[0-9a-f-]{8,}/gi, "<id>")
-    .replace(/\/task-[A-Za-z0-9-]+/g, "/<task>")
+    .replace(/\/source-[A-Za-z0-9-]+/g, "/<source>")
     .replace(/\/kb-[A-Za-z0-9-]+/g, "/<kb>")
     .replace(/(cursor|sourceCursor)=[^&]+/gi, "$1=<cursor>");
 }

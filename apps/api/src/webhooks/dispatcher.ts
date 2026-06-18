@@ -7,9 +7,10 @@ import type {
 import type { RedisCoordinator } from "../redis/coordination.js";
 
 export type WebhookEventType =
-  | "task.started"
-  | "task.progress"
-  | "task.ended"
+  | "source_file.accepted"
+  | "source_file.progress"
+  | "source_file.completed"
+  | "source_file.failed"
   | "release.published"
   | "file.deleted"
   | "knowledge_base.deleted";
@@ -120,8 +121,9 @@ async function sendDelivery(input: {
   redis: RedisCoordinator | null;
 }): Promise<WebhookDeliveryRecord> {
   const ownerId = `webhook-${randomUUID()}`;
-  const lockKey = `webhook-delivery:${input.delivery.id}`;
-  const locked = input.redis ? await input.redis.acquireTaskLock(lockKey, ownerId, 60) : true;
+  const locked = input.redis
+    ? await input.redis.acquireLock("webhook-delivery", input.delivery.id, ownerId, 60)
+    : true;
 
   if (!locked) {
     return input.delivery;
@@ -167,7 +169,7 @@ async function sendDelivery(input: {
     });
   } finally {
     clearTimeout(timeout);
-    await input.redis?.releaseTaskLock(lockKey, ownerId);
+    await input.redis?.releaseLock("webhook-delivery", input.delivery.id, ownerId);
   }
 }
 

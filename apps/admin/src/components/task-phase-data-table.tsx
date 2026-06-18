@@ -1,5 +1,3 @@
-import { ChevronDownIcon, ChevronRightIcon, CopyIcon } from "lucide-react";
-import { Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,39 +8,24 @@ import {
   TableHeader,
   TableRow
 } from "@/components/ui/table";
-import type { UploadTaskDetail, UploadTaskLifecycle } from "@/lib/admin-api";
-import { TaskFileDataTable } from "./task-file-data-table";
-import {
-  formatTaskCurrentStage,
-  formatTaskFileCount,
-  formatTaskProgress,
-  formatTaskTime
-} from "./task-table-formatters";
+import { formatDisplayFileName } from "@/lib/display-file-name";
+import type { SourceFileRecord } from "@/lib/admin-api";
+import { formatSourceFileTime } from "./task-table-formatters";
 
-type UploadTaskDataTableProps = {
-  tasks: UploadTaskLifecycle[];
-  taskDetailsById: Record<string, UploadTaskDetail | null>;
-  expandedTaskIds: Set<string>;
-  loadingTaskDetailIds: Set<string>;
-  taskDetailErrorsById: Record<string, string | null>;
-  onToggleTask: (taskId: string, open: boolean) => void;
-  onLoadMoreSourceFiles?: (taskId: string) => void;
+type SourceFileDataTableProps = {
+  sourceFiles: SourceFileRecord[];
+  retryingSourceFileId?: string | null | undefined;
+  onRetrySourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
 };
 
-const TASK_TABLE_COLUMN_COUNT = 8;
-
-export function UploadTaskDataTable({
-  tasks,
-  taskDetailsById,
-  expandedTaskIds,
-  loadingTaskDetailIds,
-  taskDetailErrorsById,
-  onToggleTask,
-  onLoadMoreSourceFiles
-}: UploadTaskDataTableProps) {
+export function SourceFileDataTable({
+  sourceFiles,
+  retryingSourceFileId,
+  onRetrySourceFile
+}: SourceFileDataTableProps) {
   const { i18n, t } = useTranslation();
 
-  if (tasks.length === 0) {
+  if (sourceFiles.length === 0) {
     return <p className="p-4 text-sm text-muted-foreground">{t("tasks.empty")}</p>;
   }
 
@@ -51,84 +34,120 @@ export function UploadTaskDataTable({
       <Table className="min-w-[72rem]" aria-label={t("tasks.title")}>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-12">{t("tasks.table.expand")}</TableHead>
-            <TableHead>{t("tasks.table.status")}</TableHead>
-            <TableHead>{t("tasks.table.currentStage")}</TableHead>
-            <TableHead>{t("tasks.table.files")}</TableHead>
-            <TableHead>{t("tasks.table.progress")}</TableHead>
-            <TableHead>{t("tasks.table.taskId")}</TableHead>
-            <TableHead>{t("tasks.table.startedAt")}</TableHead>
-            <TableHead>{t("tasks.table.endedAt")}</TableHead>
+            <TableHead>{t("tasks.filesTable.status")}</TableHead>
+            <TableHead>{t("tasks.filesTable.fileName")}</TableHead>
+            <TableHead>{t("tasks.filesTable.fileId")}</TableHead>
+            <TableHead>{t("tasks.filesTable.stage")}</TableHead>
+            <TableHead>{t("tasks.filesTable.model")}</TableHead>
+            <TableHead>{t("tasks.filesTable.startedAt")}</TableHead>
+            <TableHead>{t("tasks.filesTable.endedAt")}</TableHead>
+            <TableHead>{t("tasks.filesTable.error")}</TableHead>
+            <TableHead>{t("tasks.filesTable.actions")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {tasks.map((task) => {
-            const isExpanded = expandedTaskIds.has(task.id);
-            const ExpandIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
-
-            return (
-              <Fragment key={task.id}>
-                <TableRow key={task.id} data-testid={`upload-task-row-${task.id}`}>
-                  <TableCell>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      aria-label={t(isExpanded ? "tasks.collapseTask" : "tasks.expandTask", {
-                        id: task.id
-                      })}
-                      onClick={() => onToggleTask(task.id, !isExpanded)}
-                    >
-                      <ExpandIcon aria-hidden="true" />
-                    </Button>
-                  </TableCell>
-                  <TableCell className="font-medium">
-                    {task.lifecycle === "ended" ? t("tasks.ended") : t("tasks.running")}
-                  </TableCell>
-                  <TableCell>{formatTaskCurrentStage(task, t)}</TableCell>
-                  <TableCell>{formatTaskFileCount(task, t)}</TableCell>
-                  <TableCell>{formatTaskProgress(task, t)}</TableCell>
-                  <TableCell>
-                    <span className="block max-w-56 truncate text-muted-foreground">{task.id}</span>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {formatTaskTime(task.startedAt, i18n.language, t("tasks.notRecorded"))}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {formatTaskTime(task.endedAt, i18n.language, t("tasks.notRecorded"))}
-                  </TableCell>
-                </TableRow>
-                {isExpanded ? (
-                  <TableRow key={`${task.id}-files`}>
-                    <TableCell colSpan={TASK_TABLE_COLUMN_COUNT}>
-                      <div className="flex flex-col gap-3">
-                        <TaskFileDataTable
-                          taskId={task.id}
-                          detail={taskDetailsById[task.id]}
-                          isLoading={loadingTaskDetailIds.has(task.id)}
-                          error={taskDetailErrorsById[task.id]}
-                          onLoadMore={() => onLoadMoreSourceFiles?.(task.id)}
-                        />
-                        <div className="flex justify-end">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => void navigator.clipboard?.writeText(task.id)}
-                          >
-                            <CopyIcon data-icon="inline-start" />
-                            {t("tasks.copyTaskId", { id: task.id })}
-                          </Button>
-                        </div>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </Fragment>
-            );
-          })}
+          {sourceFiles.map((file) => (
+            <TableRow key={file.id} data-testid={`source-file-row-${file.id}`}>
+              <TableCell>{formatFileStatus(file, t)}</TableCell>
+              <TableCell>
+                <span className="block max-w-72 truncate">
+                  {formatDisplayFileName(file.originalName)}
+                </span>
+              </TableCell>
+              <TableCell>
+                <span className="block max-w-48 truncate text-muted-foreground">{file.id}</span>
+              </TableCell>
+              <TableCell>{formatFileStage(file, t)}</TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatModelInvocation(file, t)}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatSourceFileTime(
+                  file.processingStartedAt ?? file.createdAt,
+                  i18n.language,
+                  t("tasks.notRecorded")
+                )}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatSourceFileTime(file.processingEndedAt, i18n.language, t("tasks.notRecorded"))}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {file.processingErrorCode ?? t("tasks.noError")}
+              </TableCell>
+              <TableCell>
+                {file.processingStatus === "failed" && onRetrySourceFile ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={retryingSourceFileId === file.id}
+                    onClick={() => onRetrySourceFile(file)}
+                  >
+                    {retryingSourceFileId === file.id
+                      ? t("tasks.retryingFile")
+                      : t("tasks.retryFile")}
+                  </Button>
+                ) : (
+                  <span className="text-muted-foreground">{t("tasks.noAction")}</span>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
         </TableBody>
       </Table>
     </div>
   );
+}
+
+function formatFileStatus(file: SourceFileRecord, t: ReturnType<typeof useTranslation>["t"]) {
+  return t(`tasks.fileStatus.${file.processingStatus ?? "completed"}`);
+}
+
+function formatFileStage(file: SourceFileRecord, t: ReturnType<typeof useTranslation>["t"]) {
+  const stage = file.processingStage ?? "release_activation";
+
+  return t(`tasks.phase.${stage.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase())}`);
+}
+
+function formatModelInvocation(
+  file: SourceFileRecord,
+  t: ReturnType<typeof useTranslation>["t"]
+) {
+  const status = file.modelInvocationStatus;
+
+  if (!status) {
+    return t("tasks.notRecorded");
+  }
+
+  const parts = [
+    file.modelInvocationModelName ?? t("tasks.notRecorded"),
+    t(`tasks.modelStatus.${status}`)
+  ];
+  const duration = formatModelDuration(file.modelInvocationStartedAt, file.modelInvocationEndedAt);
+
+  if (duration) {
+    parts.push(duration);
+  }
+  if (file.modelInvocationWarningCount && file.modelInvocationWarningCount > 0) {
+    parts.push(t("tasks.modelWarnings", { count: file.modelInvocationWarningCount }));
+  }
+  if (file.modelInvocationErrorCode) {
+    parts.push(file.modelInvocationErrorCode);
+  }
+
+  return parts.join(" / ");
+}
+
+function formatModelDuration(startedAt: string | null | undefined, endedAt: string | null | undefined) {
+  if (!startedAt || !endedAt) {
+    return null;
+  }
+
+  const durationMs = Date.parse(endedAt) - Date.parse(startedAt);
+
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return null;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
 }

@@ -22,11 +22,14 @@ describe("database schema migration", () => {
     const sql = readMigration();
 
     expect(sql).toContain("create schema if not exists focowiki");
+    expect(sql).toContain("drop table if exists focowiki.upload_task_events cascade");
+    expect(sql).toContain("drop table if exists focowiki.upload_tasks cascade");
     for (const table of [
       "knowledge_bases",
-      "upload_tasks",
-      "upload_task_events",
       "source_files",
+      "source_file_events",
+      "source_file_retry_attempts",
+      "model_invocations",
       "releases",
       "bundle_files",
       "bundle_tree_entries",
@@ -48,15 +51,12 @@ describe("database schema migration", () => {
     const sql = readMigration();
 
     expect(sql).toContain("references focowiki.knowledge_bases");
-    expect(sql).toContain("references focowiki.upload_tasks");
+    expect(sql).toContain("references focowiki.source_files");
     expect(sql).toContain("references focowiki.releases");
     expect(sql).toContain("references focowiki.bundle_files");
     expect(sql).toContain("unique (release_id, logical_path)");
     expect(sql).toContain("unique (release_id, parent_path, name)");
-    expect(sql).toContain("unique (task_id, phase_key)");
-    expect(sql).toContain("check (phase_key in");
-    expect(sql).toContain("drop constraint if exists upload_task_events_check");
-    expect(sql).toContain("add constraint upload_task_events_phase_key_check");
+    expect(sql).toContain("check (stage_key in");
     expect(sql).toContain("'source_deletion'");
     expect(sql).toContain("check (severity in");
     expect(sql).toContain("check (entry_type in");
@@ -67,13 +67,12 @@ describe("database schema migration", () => {
 
     for (const index of [
       "knowledge_bases(deleted_at, created_at desc, id)",
-      "upload_tasks(knowledge_base_id, started_at desc, id)",
-      "upload_tasks(knowledge_base_id, operation, started_at desc, id)",
-      "source_files(knowledge_base_id, task_id, created_at desc, id)",
       "source_files(knowledge_base_id, created_at desc, id)",
       "source_files(knowledge_base_id, deleted_at, created_at desc, id)",
-      "source_files(knowledge_base_id, task_id, processing_status, processing_stage)",
-      "upload_task_events(task_id, created_at, id)",
+      "source_files(knowledge_base_id, processing_status, processing_stage, created_at desc, id)",
+      "model_invocations(source_file_id, created_at desc, id)",
+      "source_file_events(knowledge_base_id, source_file_id, created_at, id)",
+      "source_file_retry_attempts(knowledge_base_id, source_file_id, created_at desc, id)",
       "releases(knowledge_base_id, published_at desc, id)",
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
       "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
@@ -85,26 +84,27 @@ describe("database schema migration", () => {
     }
   });
 
-  it("computes upload task progress and current stage from source-file aggregates", () => {
+  it("removes upload task repository code paths", () => {
     const repository = readRepository();
 
-    expect(repository).toContain("count(*) filter (where processing_status = 'completed')");
-    expect(repository).toContain("count(*) filter (where processing_status = 'running')");
-    expect(repository).toContain("array_agg(processing_stage order by");
-    expect(repository).toContain("source_current_stage");
+    expect(repository).not.toContain("upload_tasks");
+    expect(repository).not.toContain("upload_task_events");
+    expect(repository).not.toContain("createuploadtask");
     expect(repository).not.toContain("processingprogressmap");
   });
 
-  it("defines deletion-aware source, bundle, and task metadata", () => {
+  it("defines deletion-aware source, bundle, and file processing metadata", () => {
     const sql = readMigration();
 
     expect(sql).toContain("deleted_at timestamptz");
-    expect(sql).toContain("operation text not null default 'upload'");
-    expect(sql).toContain("check (operation in ('upload', 'delete_source', 'delete_knowledge_base'))");
     expect(sql).toContain("source_file_id text references focowiki.source_files(id)");
-    expect(sql).toContain("processing_status text not null default 'pending'");
+    expect(sql).toContain("processing_status text not null default 'queued'");
     expect(sql).toContain("processing_stage text not null default 'upload_storage'");
-    expect(sql).toContain("check (processing_status in ('pending', 'running', 'completed', 'failed'))");
+    expect(sql).toContain("retry_count integer not null default 0");
+    expect(sql).toContain("model_suggestions_json jsonb");
+    expect(sql).toContain("'llm_suggestion'");
+    expect(sql).toContain("check (status in ('running', 'completed', 'failed', 'skipped'))");
+    expect(sql).toContain("check (processing_status in ('queued', 'running', 'completed', 'failed'))");
     expect(sql).toContain("file_kind text not null");
     expect(sql).toContain(
       "check (file_kind in ('page', 'index', 'log', 'schema', 'manifest_index', 'search_index', 'link_index'))"
@@ -150,6 +150,6 @@ describe("database schema migration", () => {
 
     expect(repository).toContain("await sql.begin");
     expect(repository).toContain("active_release_id = ${input.releaseid}");
-    expect(repository).toContain("result_release_id = ${input.releaseid}");
+    expect(repository).not.toContain("result_release_id = ${input.releaseid}");
   });
 });

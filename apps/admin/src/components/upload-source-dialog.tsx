@@ -11,7 +11,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { uploadKnowledgeBaseSources, type UploadTaskLifecycle } from "@/lib/admin-api";
+import { uploadKnowledgeBaseSources } from "@/lib/admin-api";
 import {
   filesFromSelection,
   formatUploadBytes,
@@ -26,7 +26,7 @@ type UploadSourceDialogProps = {
   knowledgeBaseId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAccepted: (task: UploadTaskLifecycle) => Promise<void>;
+  onAccepted: () => Promise<void>;
 };
 
 export function UploadSourceDialog({
@@ -78,7 +78,7 @@ export function UploadSourceDialog({
     resetSelection();
     onOpenChange(false);
     setIsUploading(false);
-    await onAccepted(result.task);
+    await onAccepted();
   }
 
   function handleSourceFilesChange(files: FileList | null) {

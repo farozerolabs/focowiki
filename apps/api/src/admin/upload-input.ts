@@ -1,5 +1,5 @@
 import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { UploadFile } from "./upload-processor.js";
+import type { UploadFile } from "./upload-processor-utils.js";
 
 export function hasDuplicateUploadFileNames(files: UploadFile[]): boolean {
   const names = new Set<string>();

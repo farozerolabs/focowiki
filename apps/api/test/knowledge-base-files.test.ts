@@ -193,7 +193,6 @@ function createRepositories() {
               {
                 id: "source-001",
                 knowledgeBaseId: "kb-001",
-                taskId: "task-001",
                 originalName: "intro.md",
                 objectKey: "tenant/demo/source/intro.md",
                 contentType: "text/markdown; charset=utf-8",
@@ -214,7 +213,6 @@ function createRepositories() {
               {
                 id: "release-001",
                 knowledgeBaseId: "kb-001",
-                taskId: "task-001",
                 bundleRootKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/",
                 generatedAt: "2026-06-14T00:00:00.000Z",
                 publishedAt: "2026-06-14T00:00:00.000Z",
@@ -386,7 +384,7 @@ describe("Knowledge base file Admin API", () => {
     ]);
   });
 
-  it("keeps source file list private and returns release and bundle file lists without storage keys", async () => {
+  it("returns source file, release, and bundle file lists without storage keys", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const sourceFiles = await app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
       headers: {
@@ -405,13 +403,15 @@ describe("Knowledge base file Admin API", () => {
     });
     const releaseBody = (await releases.json()) as { items: Array<Record<string, unknown>> };
     const bundleBody = (await bundleFiles.json()) as { items: Array<Record<string, unknown>> };
+    const sourceBody = (await sourceFiles.json()) as { items: Array<Record<string, unknown>> };
 
-    expect(sourceFiles.status).toBe(404);
+    expect(sourceFiles.status).toBe(200);
     expect(releases.status).toBe(200);
     expect(bundleFiles.status).toBe(200);
+    expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
     expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
-    expect(records.sourceCalls).toEqual([]);
+    expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
   });

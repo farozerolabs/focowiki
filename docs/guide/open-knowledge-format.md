@@ -139,9 +139,9 @@ This form of evaluation resembles real knowledge work. A researcher answering a 
 
 ## How Focowiki Applies This Direction
 
-Focowiki organizes knowledge around this file-based model. Markdown is the input. Safe frontmatter fields are parsed and preserved. The generated bundle includes `index.md`, `log.md`, `schema.md`, Markdown pages, and JSON indexes for tree, search, manifest, and links. Source and generated files live in S3-compatible storage. PostgreSQL and Redis coordinate knowledge bases, upload tasks, files, releases, cursors, and API keys.
+Focowiki organizes knowledge around this file-based model. Markdown is the input. Safe frontmatter fields are parsed and preserved. The generated bundle includes `index.md`, `log.md`, `schema.md`, Markdown pages, and JSON indexes for tree, search, manifest, and links. Source and generated files live in S3-compatible storage. PostgreSQL and Redis coordinate knowledge bases, source-file processing records, files, releases, cursors, and API keys.
 
-The system first keeps knowledge readable, auditable, and linkable. Developer OpenAPI then exposes that corpus to external systems and agents. Search can act as an entry point, while the generated files remain the canonical knowledge object. Developers can integrate it through their own backend or let agents read file trees, file content, task state, and webhook events through APIs.
+The system first keeps knowledge readable, auditable, and linkable. Developer OpenAPI then exposes that corpus to external systems and agents. Search can act as an entry point, while the generated files remain the canonical knowledge object. Developers can integrate it through their own backend or let agents read file trees, file content, source-file processing state, and webhook events through APIs.
 
 Focowiki does not need to replace every RAG system. A stronger architecture uses file-based knowledge as the source layer and RAG as an optional access layer. When semantic recall is useful, vectors can be built from the OKF-style bundle. When full reading, audit, and citation matter, the agent returns to the files.
 

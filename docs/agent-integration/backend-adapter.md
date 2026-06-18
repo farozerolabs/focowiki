@@ -4,7 +4,7 @@ title: Backend Adapter
 
 # Backend Adapter
 
-The backend adapter is the application code that connects your product to Focowiki Developer OpenAPI. It keeps Focowiki credentials server-side, supports product workflows such as upload and task observation, and provides a smaller read interface for Agent access.
+The backend adapter is the application code that connects your product to Focowiki Developer OpenAPI. It keeps Focowiki credentials server-side, supports product workflows such as upload and source-file processing observation, and provides a smaller read interface for Agent access.
 
 ## Responsibilities
 
@@ -25,7 +25,7 @@ The backend adapter is the application code that connects your product to Focowi
 3. Store the Focowiki OpenAPI base URL, such as `https://openapi.example.com`.
 4. Resolve or configure the target `knowledgeBaseId`.
 5. Add a small Focowiki client module that handles authentication, JSON parsing, pagination, and error mapping.
-6. Add product workflow services for knowledge-base creation, upload, task observation, deletion, and webhook management when your product needs them.
+6. Add product workflow services for knowledge-base creation, upload, source-file observation, retry, deletion, and webhook management when your product needs them.
 7. Add Agent-facing endpoints or tools that call the client module for read access.
 
 ## Product Workflow Boundary
@@ -35,7 +35,7 @@ The backend can use the full Focowiki Developer OpenAPI surface:
 | Workflow | Typical operations |
 | --- | --- |
 | Knowledge-base management | `listKnowledgeBases`, `createKnowledgeBase`, `deleteKnowledgeBase` |
-| Markdown ingestion | `uploadMarkdownFiles`, `listKnowledgeBaseTasks`, `getKnowledgeBaseTask` |
+| Markdown ingestion | `uploadMarkdownFiles`, `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
 | Generated file maintenance | `listKnowledgeBaseTree`, `getFileById`, `getFileContentById`, `getFileContentByPath`, `deleteFileById`, `deleteFileByPath` |
 | Webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
@@ -73,7 +73,7 @@ The backend should preserve the same identifiers that Focowiki returns:
 | Identifier | Source | Later use |
 | --- | --- | --- |
 | `knowledgeBaseId` | Admin UI, `listKnowledgeBases`, or backend configuration | Scope all Focowiki calls. |
-| `fileId` | Upload responses, task file items, tree entries, or file detail responses | Read file metadata and content. |
+| `fileId` | Upload responses, source-file processing rows, tree entries, or file detail responses | Read file metadata and content. |
 | `path` | Tree entries | Read file content by logical path. |
 | `cursor` | List responses | Continue pagination. |
 

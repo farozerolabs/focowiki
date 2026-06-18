@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { UploadIcon } from "lucide-react";
-import { UploadTaskDataTable } from "@/components/task-phase-data-table";
+import { SourceFileDataTable } from "@/components/task-phase-data-table";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -10,33 +11,27 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import type { UploadTaskDetail, UploadTaskLifecycle } from "@/lib/admin-api";
+import type { SourceFileRecord } from "@/lib/admin-api";
 
-type TaskProgressPanelProps = {
-  tasks: UploadTaskLifecycle[];
-  taskCursor: string | null;
-  taskDetailsById: Record<string, UploadTaskDetail | null>;
-  expandedTaskIds: Set<string>;
-  loadingTaskDetailIds: Set<string>;
-  taskDetailErrorsById: Record<string, string | null>;
+type SourceFileProgressPanelProps = {
+  sourceFiles: SourceFileRecord[];
+  sourceFileCursor: string | null;
   onLoadMore: () => void;
-  onLoadMoreTaskSourceFiles: (taskId: string) => void;
-  onToggleTask: (taskId: string, open: boolean) => void;
   onUpload: () => void;
+  errorMessageKey?: string;
+  retryingSourceFileId?: string | null | undefined;
+  onRetrySourceFile: (sourceFile: SourceFileRecord) => void;
 };
 
-export function TaskProgressPanel({
-  tasks,
-  taskCursor,
-  taskDetailsById,
-  expandedTaskIds,
-  loadingTaskDetailIds,
-  taskDetailErrorsById,
+export function SourceFileProgressPanel({
+  sourceFiles,
+  sourceFileCursor,
   onLoadMore,
-  onLoadMoreTaskSourceFiles,
-  onToggleTask,
-  onUpload
-}: TaskProgressPanelProps) {
+  onUpload,
+  errorMessageKey,
+  retryingSourceFileId,
+  onRetrySourceFile
+}: SourceFileProgressPanelProps) {
   const { t } = useTranslation();
 
   return (
@@ -53,16 +48,17 @@ export function TaskProgressPanel({
       </CardHeader>
       <CardContent className="min-w-0">
         <div className="flex flex-col gap-3">
-          <UploadTaskDataTable
-            tasks={tasks}
-            taskDetailsById={taskDetailsById}
-            expandedTaskIds={expandedTaskIds}
-            loadingTaskDetailIds={loadingTaskDetailIds}
-            taskDetailErrorsById={taskDetailErrorsById}
-            onToggleTask={onToggleTask}
-            onLoadMoreSourceFiles={onLoadMoreTaskSourceFiles}
+          {errorMessageKey ? (
+            <Alert variant="destructive">
+              <AlertTitle>{t(errorMessageKey)}</AlertTitle>
+            </Alert>
+          ) : null}
+          <SourceFileDataTable
+            sourceFiles={sourceFiles}
+            retryingSourceFileId={retryingSourceFileId}
+            onRetrySourceFile={onRetrySourceFile}
           />
-          {taskCursor ? (
+          {sourceFileCursor ? (
             <Button type="button" variant="outline" onClick={onLoadMore}>
               {t("home.loadMore")}
             </Button>

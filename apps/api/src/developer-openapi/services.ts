@@ -8,11 +8,9 @@ import type {
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
-import {
-  createSourceFileId,
-  createUploadProcessor,
-  type LoadedUploadFile
-} from "../admin/upload-processor.js";
+import { createSourceFileQueueProcessor } from "../admin/source-file-processor.js";
+import { acceptUploadSourceFiles } from "../admin/source-file-upload.js";
+import type { LoadedUploadFile } from "../admin/upload-processor-utils.js";
 import { createDeletionService } from "../admin/deletion-service.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
 import type { OpenAIResponsesClient } from "@focowiki/okf";
@@ -29,7 +27,7 @@ import {
   toDeveloperKnowledgeBase,
   toDeveloperSourceFile,
   toDeveloperSourceFileDetail,
-  toDeveloperTask,
+  toDeveloperSourceFileEvent,
   toDeveloperWebhook,
   toDeveloperWebhookDelivery
 } from "./serializers.js";
@@ -139,7 +137,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const repo = requireRepositories();
       const coordinator = requireRedis();
 
-      if (!repo.tasks || !repo.files) {
+      if (!repo.files?.createSourceFiles || !repo.files.getSourceFile) {
         throw repositoryUnavailable();
       }
 
@@ -168,12 +166,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw payloadTooLarge("Uploaded files exceed the byte limit.");
       }
 
-      const task = await repo.tasks.createUploadTask({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceCount: loadedFiles.length,
-        operation: "upload"
-      });
-      const processor = createUploadProcessor(
+      const processor = createSourceFileQueueProcessor(
         repo,
         storage,
         coordinator,
@@ -195,66 +188,275 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw repositoryUnavailable();
       }
 
-      input.runTask(async () => {
+      const sourceFileIds = await acceptUploadSourceFiles({
+        files: loadedFiles,
+        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+        knowledgeBaseId: knowledgeBase.id,
+        storage,
+        createSourceFiles: repo.files.createSourceFiles
+      });
+      const sourceFiles = (
+        await Promise.all(
+          sourceFileIds.map((sourceFileId) =>
+            repo.files?.getSourceFile?.({
+              knowledgeBaseId: knowledgeBase.id,
+              sourceFileId
+            })
+          )
+        )
+      ).filter(isDefined);
+
+      for (const sourceFileId of sourceFileIds) {
         const generatedAt = new Date().toISOString();
         await dispatchWebhookEvent({
-          eventType: "task.started",
+          eventType: "source_file.accepted",
           payload: {
             knowledgeBaseId: knowledgeBase.id,
-            taskId: task.id,
-            operation: task.operation,
-            sourceCount: task.sourceCount
+            sourceFileId
           },
           createdAt: generatedAt
         }).catch(() => undefined);
 
+        input.runTask(async () => {
+          try {
+            await dispatchWebhookEvent({
+              eventType: "source_file.progress",
+              payload: {
+                knowledgeBaseId: knowledgeBase.id,
+                sourceFileId
+              }
+            }).catch(() => undefined);
+            const completedSource = await processor.processFile({
+              knowledgeBaseId: knowledgeBase.id,
+              knowledgeBaseName: knowledgeBase.name,
+              sourceFileId,
+              generatedAt,
+              batchSize: config.upload.generationBatchSize,
+              cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+              fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+              okfLog: config.okf?.log
+            });
+            await dispatchWebhookEvent({
+              eventType: "source_file.completed",
+              payload: {
+                knowledgeBaseId: knowledgeBase.id,
+                sourceFileId: completedSource.id
+              }
+            }).catch(() => undefined);
+            if (completedSource.processingStatus === "completed") {
+              await dispatchWebhookEvent({
+                eventType: "release.published",
+                payload: {
+                  knowledgeBaseId: knowledgeBase.id,
+                  sourceFileId: completedSource.id
+                }
+              }).catch(() => undefined);
+            }
+          } catch (error) {
+            await dispatchWebhookEvent({
+              eventType: "source_file.failed",
+              payload: {
+                knowledgeBaseId: knowledgeBase.id,
+                sourceFileId,
+                errorCode: error instanceof Error ? "SOURCE_FILE_FAILED" : "UNKNOWN_FILE_ERROR"
+              }
+            }).catch(() => undefined);
+            throw error;
+          }
+        });
+      }
+
+      return {
+        knowledgeBaseId: knowledgeBase.id,
+        files: sourceFiles.map(toDeveloperSourceFile)
+      };
+    },
+    async listSourceFiles(input: { knowledgeBaseId: string; limit: number; cursor: string | null }) {
+      const repo = requireRepositories();
+
+      if (!repo.files?.listSourceFiles) {
+        throw repositoryUnavailable();
+      }
+
+      await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const scope = `developer-openapi:source-files:${input.knowledgeBaseId}`;
+      const page = await repo.files.listSourceFiles({
+        knowledgeBaseId: input.knowledgeBaseId,
+        limit: input.limit,
+        cursor: await readCursor(requireRedis(), scope, input.cursor)
+      });
+
+      return pageResponse(
+        page,
+        scope,
+        config.pagination.cursorTtlSeconds,
+        requireRedis(),
+        toDeveloperSourceFile
+      );
+    },
+    async getSourceFile(input: {
+      knowledgeBaseId: string;
+      sourceFileId: string;
+    }) {
+      const repo = requireRepositories();
+
+      if (!repo.files?.getSourceFile) {
+        throw repositoryUnavailable();
+      }
+
+      const sourceFile = await repo.files.getSourceFile({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId
+      });
+
+      if (!sourceFile) {
+        throw notFound();
+      }
+
+      return {
+        file: toDeveloperSourceFile(sourceFile)
+      };
+    },
+    async listSourceFileEvents(input: {
+      knowledgeBaseId: string;
+      sourceFileId: string;
+      limit: number;
+      cursor: string | null;
+    }) {
+      const repo = requireRepositories();
+
+      if (!repo.files?.getSourceFile || !repo.files.listSourceFileEvents) {
+        throw repositoryUnavailable();
+      }
+
+      const sourceFile = await repo.files.getSourceFile({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId
+      });
+
+      if (!sourceFile) {
+        throw notFound();
+      }
+
+      const scope = `developer-openapi:source-file-events:${input.knowledgeBaseId}:${input.sourceFileId}`;
+      const page = await repo.files.listSourceFileEvents({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        limit: input.limit,
+        cursor: await readCursor(requireRedis(), scope, input.cursor)
+      });
+
+      return pageResponse(
+        page,
+        scope,
+        config.pagination.cursorTtlSeconds,
+        requireRedis(),
+        toDeveloperSourceFileEvent
+      );
+    },
+    async retrySourceFile(input: {
+      knowledgeBaseId: string;
+      sourceFileId: string;
+      runTask: (work: () => Promise<unknown>) => void;
+    }) {
+      const repo = requireRepositories();
+      const coordinator = requireRedis();
+
+      if (
+        !repo.files?.getSourceFile ||
+        !repo.files.createSourceFileRetryAttempt
+      ) {
+        throw repositoryUnavailable();
+      }
+
+      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const sourceFile = await repo.files.getSourceFile({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: input.sourceFileId
+      });
+
+      if (!sourceFile) {
+        throw notFound();
+      }
+
+      if (sourceFile.processingStatus !== "failed") {
+        throw conflict("Only failed source files can be retried.");
+      }
+
+      const processor = createSourceFileQueueProcessor(
+        repo,
+        storage,
+        coordinator,
+        modelClient && config.model.enabled
+          ? {
+              client: modelClient,
+              modelName: config.model.modelName,
+              contextWindowTokens: config.model.contextWindowTokens,
+              receiveTimeouts: {
+                maxMs: config.model.requestMaxTimeoutMs,
+                idleMs: config.model.requestIdleTimeoutMs
+              },
+              suggestionConcurrency: config.model.suggestionConcurrency
+            }
+          : null
+      );
+
+      if (!processor) {
+        throw repositoryUnavailable();
+      }
+
+      const startedAt = new Date().toISOString();
+      await repo.files.createSourceFileRetryAttempt({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: sourceFile.id,
+        status: "running",
+        startedAt,
+        endedAt: null,
+        errorCode: null
+      });
+      const queuedFile =
+        (await repo.files.getSourceFile({
+          knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: sourceFile.id
+        })) ?? sourceFile;
+
+      input.runTask(async () => {
         try {
-          const completedTask = await processor.process({
+          await dispatchWebhookEvent({
+            eventType: "source_file.progress",
+            payload: {
+              knowledgeBaseId: knowledgeBase.id,
+              sourceFileId: sourceFile.id
+            }
+          }).catch(() => undefined);
+          const completedSource = await processor.processFile({
             knowledgeBaseId: knowledgeBase.id,
             knowledgeBaseName: knowledgeBase.name,
-            task,
-            files: loadedFiles,
-            generatedAt,
+            sourceFileId: sourceFile.id,
+            generatedAt: startedAt,
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,
             fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log,
-            onProgress: (progress) =>
-              dispatchWebhookEvent({
-                eventType: "task.progress",
-                payload: {
-                  knowledgeBaseId: knowledgeBase.id,
-                  taskId: task.id,
-                  operation: task.operation,
-                  sourceFileIds: progress.sourceFileIds,
-                  status: progress.status,
-                  stage: progress.stage,
-                  startedAt: progress.startedAt,
-                  endedAt: progress.endedAt,
-                  errorCode: progress.errorCode
-                }
-              }).catch(() => undefined)
+            okfLog: config.okf?.log
           });
-
-          await dispatchTaskEnded(completedTask).catch(() => undefined);
-          if (completedTask.resultReleaseId) {
-            await dispatchWebhookEvent({
-              eventType: "release.published",
-              payload: {
-                knowledgeBaseId: knowledgeBase.id,
-                taskId: task.id,
-                releaseId: completedTask.resultReleaseId
-              }
-            }).catch(() => undefined);
-          }
-        } catch (error) {
           await dispatchWebhookEvent({
-            eventType: "task.ended",
+            eventType:
+              completedSource.processingStatus === "completed"
+                ? "source_file.completed"
+                : "source_file.failed",
             payload: {
               knowledgeBaseId: knowledgeBase.id,
-              taskId: task.id,
-              operation: task.operation,
-              errorCode: error instanceof Error ? "TASK_FAILED" : "UNKNOWN_TASK_ERROR"
+              sourceFileId: completedSource.id,
+              errorCode: completedSource.processingErrorCode ?? null
+            }
+          }).catch(() => undefined);
+        } catch (error) {
+          await dispatchWebhookEvent({
+            eventType: "source_file.failed",
+            payload: {
+              knowledgeBaseId: knowledgeBase.id,
+              sourceFileId: sourceFile.id,
+              errorCode: error instanceof Error ? "SOURCE_FILE_FAILED" : "UNKNOWN_FILE_ERROR"
             }
           }).catch(() => undefined);
           throw error;
@@ -262,69 +464,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       });
 
       return {
-        knowledgeBaseId: knowledgeBase.id,
-        taskId: task.id,
-        files: loadedFiles.map((file) => ({
-          fileId: file.sourceFileId,
-          originalFilename: file.fileName,
-          sizeBytes: file.bytes.byteLength
-        }))
-      };
-    },
-    async listTasks(input: { knowledgeBaseId: string; limit: number; cursor: string | null }) {
-      const repo = requireRepositories();
-
-      if (!repo.tasks?.listUploadTasks) {
-        throw repositoryUnavailable();
-      }
-
-      await requireKnowledgeBase(repo, input.knowledgeBaseId);
-      const scope = `developer-openapi:tasks:${input.knowledgeBaseId}`;
-      const page = await repo.tasks.listUploadTasks({
-        knowledgeBaseId: input.knowledgeBaseId,
-        limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
-      });
-
-      return pageResponse(page, scope, config.pagination.cursorTtlSeconds, requireRedis(), toDeveloperTask);
-    },
-    async getTask(input: {
-      knowledgeBaseId: string;
-      taskId: string;
-      limit: number;
-      cursor: string | null;
-    }) {
-      const repo = requireRepositories();
-
-      if (!repo.tasks?.getUploadTask || !repo.files?.listSourceFilesForTask) {
-        throw repositoryUnavailable();
-      }
-
-      const task = await repo.tasks.getUploadTask(input);
-
-      if (!task) {
-        throw notFound();
-      }
-
-      const scope = `developer-openapi:task-files:${input.knowledgeBaseId}:${input.taskId}`;
-      const files = await repo.files.listSourceFilesForTask({
-        knowledgeBaseId: input.knowledgeBaseId,
-        taskId: input.taskId,
-        limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
-      });
-
-      return {
-        task: toDeveloperTask(task),
-        files: {
-          items: files.items.map(toDeveloperSourceFile),
-          nextCursor: await writeCursor(
-            requireRedis(),
-            scope,
-            files.nextCursor,
-            config.pagination.cursorTtlSeconds
-          )
-        }
+        file: toDeveloperSourceFile(queuedFile)
       };
     },
     async listTree(input: {
@@ -424,7 +564,6 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     async deleteFileById(input: {
       knowledgeBaseId: string;
       fileId: string;
-      runTask: (work: () => Promise<unknown>) => void;
     }) {
       const resolved = await resolveFileById(requireRepositories(), input);
 
@@ -432,12 +571,11 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw validationError("Only generated source-backed files can be deleted.");
       }
 
-      return deleteBundleFile(resolved.file, input.runTask);
+      return deleteBundleFile(resolved.file);
     },
     async deleteFileByPath(input: {
       knowledgeBaseId: string;
       path: string;
-      runTask: (work: () => Promise<unknown>) => void;
     }) {
       const repo = requireRepositories();
       const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
@@ -458,7 +596,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw notFound();
       }
 
-      return deleteBundleFile(file, input.runTask);
+      return deleteBundleFile(file);
     },
     async createWebhook(input: { name: string | null; url: string; events: string[] }) {
       const repo = requireRepositories();
@@ -561,10 +699,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     }
   };
 
-  async function deleteBundleFile(
-    file: BundleFileRecord,
-    runTask: (work: () => Promise<unknown>) => void
-  ) {
+  async function deleteBundleFile(file: BundleFileRecord) {
     const repo = requireRepositories();
     const coordinator = requireRedis();
     const deletionService = createDeletionService(repo, storage, coordinator);
@@ -573,82 +708,49 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       throw validationError("Only generated source-backed files can be deleted.");
     }
 
-    const started = await deletionService.createSourcePageDeletionTask({
+    const deletedAt = new Date().toISOString();
+    const result = await deletionService.deleteSourcePage({
       knowledgeBaseId: file.knowledgeBaseId,
-      logicalPath: file.logicalPath
+      logicalPath: file.logicalPath,
+      deletedAt,
+      generatedAt: deletedAt,
+      batchSize: config.upload.generationBatchSize,
+      cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+      fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+      okfLog: config.okf?.log
     });
 
-    if (!started.ok) {
-      throw started.reason === "not_deletable"
+    if (!result.ok) {
+      throw result.reason === "not_deletable"
         ? validationError("File is not deletable.")
         : notFound();
     }
 
-    const deletedAt = new Date().toISOString();
-    runTask(async () => {
-      await dispatchWebhookEvent({
-        eventType: "task.started",
-        payload: {
-          knowledgeBaseId: file.knowledgeBaseId,
-          taskId: started.task.id,
-          operation: started.task.operation,
-          sourceCount: started.task.sourceCount
-        },
-        createdAt: deletedAt
-      }).catch(() => undefined);
-      const completedTask = await deletionService.processSourcePageDeletion({
-        knowledgeBase: started.knowledgeBase,
-        file: started.file,
-        task: started.task,
-        deletedAt,
-        generatedAt: deletedAt,
-        batchSize: config.upload.generationBatchSize,
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-        okfLog: config.okf?.log
-      });
-
-      await dispatchTaskEnded(completedTask).catch(() => undefined);
-      await dispatchWebhookEvent({
-        eventType: "file.deleted",
-        payload: {
-          knowledgeBaseId: file.knowledgeBaseId,
-          taskId: started.task.id,
-          fileId: file.id,
-          sourceFileId: file.sourceFileId,
-          path: file.logicalPath
-        }
-      }).catch(() => undefined);
-      if (completedTask.resultReleaseId) {
-        await dispatchWebhookEvent({
-          eventType: "release.published",
-          payload: {
-            knowledgeBaseId: file.knowledgeBaseId,
-            taskId: started.task.id,
-            releaseId: completedTask.resultReleaseId
-          }
-        }).catch(() => undefined);
+    await dispatchWebhookEvent({
+      eventType: "file.deleted",
+      payload: {
+        knowledgeBaseId: file.knowledgeBaseId,
+        fileId: file.id,
+        sourceFileId: file.sourceFileId,
+        path: file.logicalPath,
+        releaseId: result.releaseId
       }
-    });
+    }).catch(() => undefined);
+    await dispatchWebhookEvent({
+      eventType: "release.published",
+      payload: {
+        knowledgeBaseId: file.knowledgeBaseId,
+        sourceFileId: file.sourceFileId,
+        releaseId: result.releaseId
+      }
+    }).catch(() => undefined);
 
     return {
       knowledgeBaseId: file.knowledgeBaseId,
-      taskId: started.task.id,
+      deleted: true,
+      releaseId: result.releaseId,
       file: toDeveloperBundleFile(file, await readSourceForBundle(repo, file))
     };
-  }
-
-  async function dispatchTaskEnded(task: { id: string; knowledgeBaseId: string; operation: string; resultReleaseId: string | null; internalErrorCode: string | null }) {
-    await dispatchWebhookEvent({
-      eventType: "task.ended",
-      payload: {
-        knowledgeBaseId: task.knowledgeBaseId,
-        taskId: task.id,
-        operation: task.operation,
-        resultReleaseId: task.resultReleaseId,
-        errorCode: task.internalErrorCode
-      }
-    });
   }
 
   async function dispatchWebhookEvent(event: WebhookEvent): Promise<void> {
@@ -717,7 +819,6 @@ async function readLoadedFiles(files: File[]): Promise<LoadedUploadFile[]> {
       const bytes = new Uint8Array(await file.arrayBuffer());
 
       return {
-        sourceFileId: createSourceFileId(),
         fileName: file.name,
         bytes,
         content: new TextDecoder().decode(bytes)
@@ -902,4 +1003,8 @@ function normalizeWebhookUrl(value: string): string {
   }
 
   return parsed.toString();
+}
+
+function isDefined<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }

@@ -139,9 +139,9 @@ RAG 时代的知识库评估重点经常落在 retrieval pipeline。系统要证
 
 ## Focowiki 的落点
 
-Focowiki 采用文件化知识库思路来组织产品能力。输入保持为 Markdown，frontmatter 中的安全字段会被解析和保留。系统生成 `index.md`、`log.md`、`schema.md`、Markdown pages，以及 tree、search、manifest、links 等 JSON indexes。源文件和生成文件保存到 S3-compatible storage。PostgreSQL 与 Redis 负责知识库、上传任务、文件、发布、游标和 API keys 等持久化流程。
+Focowiki 采用文件化知识库思路来组织产品能力。输入保持为 Markdown，frontmatter 中的安全字段会被解析和保留。系统生成 `index.md`、`log.md`、`schema.md`、Markdown pages，以及 tree、search、manifest、links 等 JSON indexes。源文件和生成文件保存到 S3-compatible storage。PostgreSQL 与 Redis 负责知识库、来源文件处理记录、文件、发布、游标和 API keys 等持久化流程。
 
-Focowiki 的设计先保证知识可读、可审计、可链接，再通过 Developer OpenAPI 暴露给开发者系统和 Agent。搜索能力可以作为入口存在，生成文件本身保留为 canonical knowledge object。开发者可以把它接入自己的后端，也可以让 Agent 通过接口读取文件树、文件内容、任务状态和 webhook 事件。
+Focowiki 的设计先保证知识可读、可审计、可链接，再通过 Developer OpenAPI 暴露给开发者系统和 Agent。搜索能力可以作为入口存在，生成文件本身保留为 canonical knowledge object。开发者可以把它接入自己的后端，也可以让 Agent 通过接口读取文件树、文件内容、来源文件处理状态和 webhook 事件。
 
 Focowiki 的目标并不在于替代所有 RAG 系统。更合理的产品架构是把文件化知识作为 source layer，把 RAG 作为可选 access layer。需要语义召回时，可以从 OKF-style bundle 构建向量索引；需要完整阅读、审计和引用时，Agent 回到文件本身。
 

@@ -4,7 +4,7 @@ title: 后端适配
 
 # 后端适配
 
-后端适配层是你的产品连接 Focowiki Developer OpenAPI 的应用代码。它把 Focowiki 凭据保存在服务端，支持上传、任务观察等产品工作流，并向 Agent 暴露更小的读取接口。
+后端适配层是你的产品连接 Focowiki Developer OpenAPI 的应用代码。它把 Focowiki 凭据保存在服务端，支持上传、源文件处理观察等产品工作流，并向 Agent 暴露更小的读取接口。
 
 ## 职责
 
@@ -25,7 +25,7 @@ title: 后端适配
 3. 保存 Focowiki OpenAPI base URL，例如 `https://openapi.example.com`。
 4. 解析或配置目标 `knowledgeBaseId`。
 5. 增加一个小型 Focowiki client module，处理鉴权、JSON 解析、分页和错误映射。
-6. 按产品需要增加知识库创建、上传、任务观察、删除和 Webhook 管理等工作流服务。
+6. 按产品需要增加知识库创建、上传、源文件观察、重试、删除和 Webhook 管理等工作流服务。
 7. 增加 Agent-facing endpoints 或 tools，通过 client module 提供读取能力。
 
 ## 产品工作流边界
@@ -35,7 +35,7 @@ title: 后端适配
 | 工作流 | 常用 operations |
 | --- | --- |
 | 知识库管理 | `listKnowledgeBases`、`createKnowledgeBase`、`deleteKnowledgeBase` |
-| Markdown 入库 | `uploadMarkdownFiles`、`listKnowledgeBaseTasks`、`getKnowledgeBaseTask` |
+| Markdown 入库 | `uploadMarkdownFiles`、`listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
 | 生成文件维护 | `listKnowledgeBaseTree`、`getFileById`、`getFileContentById`、`getFileContentByPath`、`deleteFileById`、`deleteFileByPath` |
 | Webhooks | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
@@ -73,7 +73,7 @@ title: 后端适配
 | 标识符 | 来源 | 后续用途 |
 | --- | --- | --- |
 | `knowledgeBaseId` | Admin UI、`listKnowledgeBases` 或后端配置 | 限定所有 Focowiki 调用范围。 |
-| `fileId` | 上传响应、任务文件项、文件树条目或文件详情响应 | 读取文件元数据和内容。 |
+| `fileId` | 上传响应、源文件处理记录、文件树条目或文件详情响应 | 读取文件元数据和内容。 |
 | `path` | 文件树条目 | 按逻辑路径读取文件内容。 |
 | `cursor` | 列表响应 | 继续分页。 |
 

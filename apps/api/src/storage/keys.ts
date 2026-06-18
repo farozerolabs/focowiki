@@ -13,7 +13,6 @@ export type StorageKeyspace = {
   prefix: string;
   sourceFileKey: (
     knowledgeBaseId: string,
-    taskId: string,
     sourceFileId: string,
     fileName: string
   ) => string;
@@ -40,8 +39,8 @@ export function createStorageKeyspace(rawPrefix: string): StorageKeyspace {
 
   return {
     prefix,
-    sourceFileKey: (knowledgeBaseId, taskId, sourceFileId, fileName) =>
-      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/uploads/${normalizeId(taskId, "taskId")}/sources/${normalizeId(sourceFileId, "sourceFileId")}/${normalizeMarkdownFileName(fileName, "fileName")}`,
+    sourceFileKey: (knowledgeBaseId, sourceFileId, fileName) =>
+      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/sources/${normalizeId(sourceFileId, "sourceFileId")}/${normalizeMarkdownFileName(fileName, "fileName")}`,
     releaseRootKey: (knowledgeBaseId, releaseId) =>
       `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/releases/${normalizeId(releaseId, "releaseId")}/bundle/`,
     releaseBundleKey: (knowledgeBaseId, releaseId, logicalPath) =>

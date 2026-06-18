@@ -55,7 +55,9 @@ describe("Redis coordination helpers", () => {
     const buildKey = createRedisKeyBuilder("focowiki:test");
 
     expect(buildKey("sessions", "session-1")).toBe("focowiki:test:sessions:session-1");
-    expect(buildKey("task-locks", "task-1")).toBe("focowiki:test:task-locks:task-1");
+    expect(buildKey("source-file-locks", "source-1")).toBe(
+      "focowiki:test:source-file-locks:source-1"
+    );
   });
 
   it("stores sessions through Redis with TTL", async () => {
@@ -75,23 +77,27 @@ describe("Redis coordination helpers", () => {
     });
   });
 
-  it("uses Redis NX locks for upload task coordination", async () => {
+  it("uses Redis NX locks for source-file coordination", async () => {
     const client = new FakeRedisClient();
     const coordinator = createRedisCoordinator(client, { keyPrefix: "focowiki:test" });
 
-    await expect(coordinator.acquireTaskLock("task-1", "worker-1", 60)).resolves.toBe(true);
-    await expect(coordinator.acquireTaskLock("task-1", "worker-2", 60)).resolves.toBe(false);
-    await expect(coordinator.releaseTaskLock("task-1", "worker-2")).resolves.toBe(false);
-    await expect(coordinator.releaseTaskLock("task-1", "worker-1")).resolves.toBe(true);
+    await expect(coordinator.acquireSourceFileLock("source-1", "worker-1", 60)).resolves.toBe(
+      true
+    );
+    await expect(coordinator.acquireSourceFileLock("source-1", "worker-2", 60)).resolves.toBe(
+      false
+    );
+    await expect(coordinator.releaseSourceFileLock("source-1", "worker-2")).resolves.toBe(false);
+    await expect(coordinator.releaseSourceFileLock("source-1", "worker-1")).resolves.toBe(true);
   });
 
-  it("stores short-lived task event markers in Redis", async () => {
+  it("stores short-lived source-file event markers in Redis", async () => {
     const client = new FakeRedisClient();
     const coordinator = createRedisCoordinator(client, { keyPrefix: "focowiki:test" });
 
-    await coordinator.recordTaskEvent("task-1", { event: "changed" }, 30);
+    await coordinator.recordSourceFileEvent("source-1", { event: "changed" }, 30);
 
-    expect(await client.get("focowiki:test:task-events:task-1")).toBe(
+    expect(await client.get("focowiki:test:source-file-events:source-1")).toBe(
       JSON.stringify({ event: "changed" })
     );
   });

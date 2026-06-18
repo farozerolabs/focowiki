@@ -54,7 +54,9 @@ const report = {
   scannedCandidateProfiles: sampleSelection.scannedCandidateProfiles ?? null,
   sampleCoverageWarnings: sampleSelection.coverageWarnings ?? [],
   commandsRun: [
-    sampleSelection.profile === "large-scale"
+    readBooleanEnv(process.env.FOCOWIKI_VALIDATION_REQUIRE_MODEL)
+      ? "pnpm validate:legal-llm:browser"
+      : sampleSelection.profile === "large-scale"
       ? "pnpm validate:real-legal:large:browser"
       : "pnpm validate:real-legal:browser"
   ],
@@ -62,13 +64,13 @@ const report = {
     "Admin UI browser flow",
     "single-file upload",
     "multi-file batch upload",
-    "expandable upload task file table",
-    "task source pagination",
+    "source-file processing table",
+    "source-file processing pagination",
     "preview, copy, source-backed deletion, and knowledge base deletion"
   ],
   validationPasses: [
     "Pass 1: browser login, language switching, and security header validation.",
-    "Pass 2: browser single-upload and batch-upload task validation.",
+    "Pass 2: browser single-upload and batch-upload source-file validation.",
     "Pass 3: browser preview, copy, deletion, cleanup, and report redaction validation."
   ],
   manualReviewItems: [
@@ -123,19 +125,19 @@ try {
   });
   await knowledgeBaseCard.waitFor();
   await knowledgeBaseCard.click();
-  await page.getByText("Upload tasks").first().waitFor();
+  await page.getByText("File processing").first().waitFor();
   await page.getByRole("button", { name: /^Upload$/ }).waitFor();
   report.checks.push(okCheck("knowledge-base", "Created and opened validation knowledge base."));
 
-  const singleUploadTaskId = await uploadFilesFromDialog(page, [singleSample], {
+  const singleSourceFileIds = await uploadFilesFromDialog(page, [singleSample], {
     checkName: "single-upload-submit",
-    message: "Single-file upload dialog submitted and task list refreshed."
+    message: "Single-file upload dialog submitted and source-file list refreshed."
   });
-  await waitForTaskEnded(page, singleUploadTaskId, taskTimeoutMs);
-  report.checks.push(okCheck("single-task-ended", "Browser observed ended single-file upload task."));
-  await validateExpandedTaskFileTable(page, singleUploadTaskId, [singleSample], {
-    checkName: "single-expanded-task-files",
-    message: "Single-file task expands to one nested file row with stable file metadata."
+  await waitForSourceFilesCompleted(page, singleSourceFileIds, taskTimeoutMs);
+  report.checks.push(okCheck("single-source-file-completed", "Browser observed completed single-file processing."));
+  await validateSourceFileRows(page, singleSourceFileIds, [singleSample], {
+    checkName: "single-source-file-row",
+    message: "Single-file upload appears as one top-level source-file row with stable metadata."
   });
 
   const firstSampleName = singleSample.basename;
@@ -151,16 +153,16 @@ try {
 
   report.checks.push(okCheck("single-file-preview", "Opened generated single-upload file preview in browser."));
 
-  await page.getByRole("button", { name: "Upload tasks" }).click();
-  const batchUploadTaskId = await uploadFilesFromDialog(page, batchSamples, {
+  await page.getByRole("button", { name: "File processing" }).click();
+  const batchSourceFileIds = await uploadFilesFromDialog(page, batchSamples, {
     checkName: "batch-upload-submit",
-    message: "Batch upload dialog submitted and task list refreshed."
+    message: "Batch upload dialog submitted and source-file list refreshed."
   });
-  await waitForTaskEnded(page, batchUploadTaskId, taskTimeoutMs);
-  report.checks.push(okCheck("batch-task-ended", "Browser observed ended batch upload task."));
-  await validateExpandedTaskFileTable(page, batchUploadTaskId, batchSamples, {
-    checkName: "batch-expanded-task-files",
-    message: "Batch task expands to a nested file table with original filenames, file IDs, status, stage, and pagination."
+  await waitForSourceFilesCompleted(page, batchSourceFileIds, taskTimeoutMs);
+  report.checks.push(okCheck("batch-source-files-completed", "Browser observed completed batch source-file processing."));
+  await validateSourceFileRows(page, batchSourceFileIds, batchSamples, {
+    checkName: "batch-source-file-rows",
+    message: "Batch upload appears as top-level source-file rows with original filenames, file IDs, status, stage, and pagination."
   });
 
   await openPagesDirectoryIfNeeded(page, firstSampleName);
@@ -187,7 +189,7 @@ try {
   await deleteFileDialog.waitFor();
   await deleteFileDialog.getByRole("button", { name: "Delete" }).click();
   await deleteFileDialog.waitFor({ state: "detached", timeout: 30_000 });
-  await page.getByText("Upload tasks").first().waitFor({ timeout: 30_000 });
+  await page.getByText("File processing").first().waitFor({ timeout: 30_000 });
   await expectButtonDetached(page, secondSampleName, taskTimeoutMs);
   await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));
@@ -247,6 +249,11 @@ function requiredEnv(name) {
   return value;
 }
 
+function readBooleanEnv(value) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
 function okCheck(name, message) {
   return {
     layer: "black-box",
@@ -292,69 +299,73 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
   ]);
   const uploadBody = await uploadResponse.json();
   await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
-  const taskId = uploadBody?.task?.id;
+  const sourceFileIds = Array.isArray(uploadBody?.files)
+    ? uploadBody.files.map((file) => file.id ?? file.fileId).filter(Boolean)
+    : [];
 
-  if (!taskId) {
-    throw new Error("Upload response did not include a task id.");
+  if (sourceFileIds.length !== samples.length) {
+    throw new Error("Upload response did not include accepted source-file ids.");
   }
 
-  await page.getByTestId(`upload-task-row-${taskId}`).waitFor({ timeout: 30_000 });
+  for (const sourceFileId of sourceFileIds) {
+    await page.getByTestId(`source-file-row-${sourceFileId}`).waitFor({ timeout: 30_000 });
+  }
   report.checks.push(okCheck(checkName, message));
-  return taskId;
+  return sourceFileIds;
 }
 
-async function waitForTaskEnded(page, taskId, timeout) {
-  await page
-    .getByTestId(`upload-task-row-${taskId}`)
-    .filter({ hasText: "Upload parsing task ended" })
-    .waitFor({ timeout });
+async function waitForSourceFilesCompleted(page, sourceFileIds, timeout) {
+  for (const sourceFileId of sourceFileIds) {
+    await page
+      .getByTestId(`source-file-row-${sourceFileId}`)
+      .filter({ hasText: "Completed" })
+      .waitFor({ timeout });
+  }
 }
 
-async function validateExpandedTaskFileTable(page, taskId, samples, { checkName, message }) {
-  const taskRow = page.getByTestId(`upload-task-row-${taskId}`);
+async function validateSourceFileRows(page, sourceFileIds, samples, { checkName, message }) {
+  const table = page.getByRole("table", { name: "File processing" });
+  await table.waitFor({ timeout: 30_000 });
 
-  if ((await taskRow.count()) !== 1) {
-    throw new Error(`Expected one visible task row for ${taskId}.`);
+  for (const [index, sourceFileId] of sourceFileIds.entries()) {
+    const row = page.getByTestId(`source-file-row-${sourceFileId}`);
+    await row.waitFor({ timeout: 30_000 });
+    await row.getByText(samples[index].basename, { exact: true }).waitFor({ timeout: 30_000 });
+    await row.getByText("Completed", { exact: true }).waitFor({ timeout: 30_000 });
+    await row.getByText("Release activation", { exact: true }).waitFor({ timeout: 30_000 });
   }
 
-  const expandButton = page.getByRole("button", { name: `Expand task ${taskId}` });
-  await expandButton.waitFor({ timeout: 30_000 });
-  await expandButton.click();
+  if (process.env.MODEL_API_KEY?.trim() && process.env.MODEL_NAME?.trim()) {
+    await waitForTableText(table, process.env.MODEL_NAME, 30_000);
+  }
 
-  const fileTable = page.getByRole("table", { name: `Files for ${taskId}` });
-  await fileTable.waitFor({ timeout: 30_000 });
-  await fileTable.getByText(samples[0].basename, { exact: true }).waitFor({ timeout: 30_000 });
-  await fileTable.getByText("Completed", { exact: true }).first().waitFor({ timeout: 30_000 });
-  await fileTable.getByText("Release activation", { exact: true }).first().waitFor({ timeout: 30_000 });
-
-  const fileRows = page.locator(`[data-testid^="upload-task-file-row-${taskId}-"]`);
+  const fileRows = page.locator('[data-testid^="source-file-row-"]');
   const initialRowCount = await fileRows.count();
 
   if (initialRowCount < 1) {
-    throw new Error(`Expected nested file rows for ${taskId}.`);
+    throw new Error("Expected source-file rows.");
   }
 
   const rowIds = await fileRows.evaluateAll((rows) =>
     rows.map((row) => row.getAttribute("data-testid") ?? "")
   );
 
-  if (rowIds.some((id) => id === `upload-task-file-row-${taskId}-`)) {
-    throw new Error("Expanded task file rows did not include stable file ids.");
+  if (rowIds.some((id) => id === "source-file-row-")) {
+    throw new Error("Source-file rows did not include stable file ids.");
   }
 
-  const loadMoreFiles = page.getByRole("button", { name: "Load more files" });
+  const loadMoreFiles = page.getByRole("button", { name: "Load more" });
 
   if ((await loadMoreFiles.count()) > 0) {
     await loadMoreFiles.click();
-    await fileTable.getByText(samples.at(-1).basename, { exact: true }).waitFor({
+    await table.getByText(samples.at(-1).basename, { exact: true }).waitFor({
       timeout: 30_000
     });
-    report.checks.push(okCheck("task-source-pagination", "Browser loaded another source-file page for a task."));
+    report.checks.push(okCheck("source-file-pagination", "Browser loaded another source-file page."));
   } else {
-    report.checks.push(okCheck("task-source-pagination", "Task source-file page fit within the configured browser page size."));
+    report.checks.push(okCheck("source-file-pagination", "Source-file rows fit within the configured browser page size."));
   }
 
-  await page.getByRole("button", { name: `Collapse task ${taskId}` }).click();
   report.checks.push(okCheck(checkName, message));
 }
 
@@ -385,6 +396,22 @@ async function waitForPreviewText(page, expectedText) {
   if (!found) {
     throw new Error("Generated file preview did not contain the selected Markdown title.");
   }
+}
+
+async function waitForTableText(table, expectedText, timeout) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeout) {
+    const text = await table.textContent();
+
+    if (text?.includes(expectedText)) {
+      return;
+    }
+
+    await table.page().waitForTimeout(250);
+  }
+
+  throw new Error(`Expected table text to include ${expectedText}.`);
 }
 
 function readValidationTaskTimeoutMs(sampleCount) {

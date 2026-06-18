@@ -4,7 +4,7 @@ title: Developer OpenAPI
 
 # Developer OpenAPI
 
-Developer OpenAPI lets applications operate Focowiki without the Admin UI. Use it to create knowledge bases, upload Markdown files, observe tasks, read generated files, delete source-backed pages, manage webhooks, and inspect webhook delivery state.
+Developer OpenAPI lets applications operate Focowiki without the Admin UI. Use it to create knowledge bases, upload Markdown files, observe source-file processing, read generated files, delete source-backed pages, manage webhooks, and inspect webhook delivery state.
 
 ## Base URL
 
@@ -72,8 +72,8 @@ Error responses use:
 ## Workflow
 
 1. Create or list knowledge bases and keep `knowledgeBaseId`.
-2. Upload one or more `.md` files to the knowledge base and keep `taskId` and returned `fileId` values.
-3. Poll the task detail endpoint until the task lifecycle ends.
+2. Upload one or more `.md` files to the knowledge base and keep returned source-file `fileId` values.
+3. Poll source-file detail or source-file events until each file reaches `completed` or `failed`.
 4. Read the generated tree and keep `path` or `fileId` values.
 5. Read file content by `path` or `fileId`.
 6. Delete source-backed generated pages when needed.
@@ -109,7 +109,7 @@ knowledge_base_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowled
 KNOWLEDGE_BASE_ID=$(printf "%s" "$knowledge_base_response" | jq -r ".knowledgeBase.knowledgeBaseId")
 ```
 
-Upload one or more Markdown files and store `taskId` plus a returned source file identifier. Replace `guide.md` and `faq.md` with local `.md` file paths.
+Upload one or more Markdown files and store a returned source-file identifier. Replace `guide.md` and `faq.md` with local `.md` file paths.
 
 ```bash
 upload_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/uploads" \
@@ -117,14 +117,20 @@ upload_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases
   -F "files=@guide.md;type=text/markdown" \
   -F "files=@faq.md;type=text/markdown")
 
-TASK_ID=$(printf "%s" "$upload_response" | jq -r ".taskId")
 FIRST_SOURCE_FILE_ID=$(printf "%s" "$upload_response" | jq -r ".files[0].fileId")
 ```
 
-Poll the task until its lifecycle ends:
+Poll source-file processing until the file reaches a terminal state:
 
 ```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/tasks/$TASK_ID?limit=50" \
+curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID" \
+  -H "Authorization: Bearer $OPENAPI_KEY"
+```
+
+Read detailed processing events when you need stage history:
+
+```bash
+curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID/events?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
@@ -156,20 +162,20 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
 Read source file metadata returned by the upload response:
 
 ```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/$FIRST_SOURCE_FILE_ID" \
+curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-Create a webhook when another system needs task or file events:
+Create a webhook when another system needs source-file or release events:
 
 ```bash
 curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
   --data '{
-  "name": "Task updates",
+  "name": "Source file updates",
   "url": "https://hooks.example.com/focowiki",
-  "events": ["task.ended"]
+  "events": ["source_file.completed", "source_file.failed", "release.published"]
 }'
 ```
 

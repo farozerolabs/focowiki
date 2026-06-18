@@ -7,10 +7,9 @@ import {
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
-  fetchUploadTaskDetail,
   listBundleFiles,
   listReleases,
-  listUploadTasks,
+  listSourceFiles,
   loginAdmin,
 } from "../src/lib/admin-api";
 
@@ -19,14 +18,8 @@ vi.mock("../src/lib/admin-api", () => ({
   createKnowledgeBase: vi.fn(),
   deleteKnowledgeBase: vi.fn(),
   deleteKnowledgeBaseFile: vi.fn(async () => ({
-    task: {
-      id: "task-delete",
-      operation: "delete_source",
-      startedAt: "2026-06-14T00:00:03.000Z",
-      endedAt: null,
-      lifecycle: "running",
-      sourceCount: 1
-    }
+    deleted: true,
+    releaseId: "release-delete"
   })),
   fetchKnowledgeBaseFileDetail: vi.fn(async () => ({
     file: {
@@ -65,74 +58,6 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
-  fetchUploadTaskDetail: vi.fn(async () => ({
-    task: {
-      id: "task-001",
-      startedAt: "2026-06-14T00:00:00.000Z",
-      endedAt: null,
-      lifecycle: "running",
-      operation: "upload",
-      sourceCount: 2,
-      progress: {
-        total: 2,
-        completed: 0,
-        failed: 0,
-        running: 1,
-        pending: 1,
-        currentStage: "metadata_resolution"
-      }
-    },
-    phaseDetails: {
-      items: [
-        {
-          id: "event-001",
-          taskId: "task-001",
-          phaseKey: "upload_storage",
-          messageKey: "tasks.phase.uploadStorage",
-          startedAt: "2026-06-14T00:00:00.000Z",
-          endedAt: null,
-          severity: "info",
-          createdAt: "2026-06-14T00:00:01.000Z"
-        },
-        {
-          id: "event-002",
-          taskId: "task-001",
-          phaseKey: "metadata_resolution",
-          messageKey: "tasks.phase.metadataResolution",
-          startedAt: "2026-06-14T00:00:01.000Z",
-          endedAt: "2026-06-14T00:00:02.000Z",
-          severity: "info",
-          createdAt: "2026-06-14T00:00:02.000Z"
-        }
-      ],
-      nextCursor: null
-    },
-    sourceFiles: {
-      items: [
-        {
-          id: "source-001",
-          originalName: "ff8081819c46fdc3019cd19068731f64-intro-e656df554f9e.md",
-          processingStatus: "running",
-          processingStage: "metadata_resolution",
-          processingStartedAt: "2026-06-14T00:00:00.000Z",
-          processingEndedAt: null,
-          processingErrorCode: null,
-          createdAt: "2026-06-14T00:00:00.000Z"
-        },
-        {
-          id: "source-002",
-          originalName: "setup.md",
-          processingStatus: "pending",
-          processingStage: "upload_storage",
-          processingStartedAt: "2026-06-14T00:00:01.000Z",
-          processingEndedAt: null,
-          processingErrorCode: null,
-          createdAt: "2026-06-14T00:00:01.000Z"
-        }
-      ],
-      nextCursor: null
-    }
-  })),
   generateBundle: vi.fn(),
   listKnowledgeBases: vi.fn(async () => ({
     items: [
@@ -145,23 +70,27 @@ vi.mock("../src/lib/admin-api", () => ({
     ],
     nextCursor: null
   })),
-  listUploadTasks: vi.fn(async () => ({
+  listSourceFiles: vi.fn(async () => ({
     items: [
       {
-        id: "task-001",
-        startedAt: "2026-06-14T00:00:00.000Z",
-        endedAt: null,
-        lifecycle: "running",
-        operation: "upload",
-        sourceCount: 2,
-        progress: {
-          total: 2,
-          completed: 0,
-          failed: 0,
-          running: 1,
-          pending: 1,
-          currentStage: "metadata_resolution"
-        }
+        id: "source-001",
+        originalName: "ff8081819c46fdc3019cd19068731f64-intro-e656df554f9e.md",
+        processingStatus: "running",
+        processingStage: "metadata_resolution",
+        processingStartedAt: "2026-06-14T00:00:00.000Z",
+        processingEndedAt: null,
+        processingErrorCode: null,
+        createdAt: "2026-06-14T00:00:00.000Z"
+      },
+      {
+        id: "source-002",
+        originalName: "setup.md",
+        processingStatus: "queued",
+        processingStage: "upload_storage",
+        processingStartedAt: "2026-06-14T00:00:01.000Z",
+        processingEndedAt: null,
+        processingErrorCode: null,
+        createdAt: "2026-06-14T00:00:01.000Z"
       }
     ],
     nextCursor: null
@@ -247,155 +176,93 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByText(/type: guide/)).toBeTruthy();
   });
 
-  it("renders upload tasks as one task row and expands the file processing list", async () => {
+  it("renders source files directly in the processing table", async () => {
     await openDetail();
 
     await waitFor(() => {
-      expect(listUploadTasks).toHaveBeenCalledWith({
+      expect(listSourceFiles).toHaveBeenCalledWith({
         knowledgeBaseId: "kb-docs",
         cursor: null
       });
     });
-    expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
+    expect(screen.getByRole("button", { name: "File processing" }).getAttribute("data-active")).toBe(
       "true"
     );
-    expect(screen.queryByText("Select an upload task")).toBeNull();
     expect(screen.queryByText("No file selected")).toBeNull();
-    expect(await screen.findByText("Upload parsing task is running")).toBeTruthy();
-    const table = screen.getByRole("table", { name: "Upload tasks" });
+    const table = screen.getByRole("table", { name: "File processing" });
     expect(table).toBeTruthy();
-    expect(screen.getByTestId("upload-task-row-task-001")).toBeTruthy();
+    expect(screen.getByTestId("source-file-row-source-001")).toBeTruthy();
+    expect(screen.getByTestId("source-file-row-source-002")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Operation" })).toBeNull();
     expect(screen.getByRole("columnheader", { name: "Current stage" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Files" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Progress" })).toBeTruthy();
-    expect(screen.getByRole("columnheader", { name: "Task ID" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "File name" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "File ID" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Started" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Ended" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Phase" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Severity" })).toBeNull();
-    expect(within(table).queryByText("Upload")).toBeNull();
+    expect(within(table).getByText("intro.md")).toBeTruthy();
+    expect(within(table).getByText("setup.md")).toBeTruthy();
+    expect(within(table).getByText("source-001")).toBeTruthy();
+    expect(within(table).getByText("source-002")).toBeTruthy();
+    expect(within(table).getByText("Running")).toBeTruthy();
+    expect(within(table).getByText("Queued")).toBeTruthy();
+    expect(within(table).getByText("Upload storage")).toBeTruthy();
     expect(within(table).getByText("Metadata resolution")).toBeTruthy();
-    expect(within(table).getAllByText("task-001")).toHaveLength(1);
-    expect(within(table).getByText("2 files")).toBeTruthy();
-    expect(within(table).getByText("0/2 | 1 running | 1 pending")).toBeTruthy();
-    expect(within(table).queryByText("intro.md")).toBeNull();
-    expect(fetchUploadTaskDetail).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Expand task task-001" }));
-
-    const fileTable = await screen.findByRole("table", { name: "Files for task-001" });
-    expect(fileTable).toBeTruthy();
-    expect(fetchUploadTaskDetail).toHaveBeenCalledWith({
-      knowledgeBaseId: "kb-docs",
-      taskId: "task-001"
-    });
-    expect(within(fileTable).getByText("intro.md")).toBeTruthy();
-    expect(within(fileTable).getByText("setup.md")).toBeTruthy();
-    expect(within(fileTable).getByText("source-001")).toBeTruthy();
-    expect(within(fileTable).getByText("source-002")).toBeTruthy();
-    expect(within(fileTable).getByText("Running")).toBeTruthy();
-    expect(within(fileTable).getByText("Pending")).toBeTruthy();
-    expect(within(fileTable).getByText("Upload storage")).toBeTruthy();
-    expect(within(fileTable).getAllByText("Metadata resolution").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Upload storage / Metadata resolution")).toBeTruthy();
-    expect(screen.queryByText("Info")).toBeNull();
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
   });
 
-  it("loads the next task source-file page inside the same task row", async () => {
-    vi.mocked(listUploadTasks).mockResolvedValueOnce({
-      items: [
-        {
-          id: "task-001",
-          startedAt: "2026-06-14T00:00:00.000Z",
-          endedAt: "2026-06-14T00:00:10.000Z",
-          lifecycle: "ended",
-          operation: "upload",
-          sourceCount: 3
-        }
-      ],
-      nextCursor: null
-    });
-    vi.mocked(fetchUploadTaskDetail)
+  it("appends source-file pages with bounded cursor requests", async () => {
+    vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
-        task: {
-          id: "task-001",
-          startedAt: "2026-06-14T00:00:00.000Z",
-          endedAt: "2026-06-14T00:00:10.000Z",
-          lifecycle: "ended",
-          operation: "upload",
-          sourceCount: 3
-        },
-        phaseDetails: {
-          items: [],
-          nextCursor: null
-        },
-        sourceFiles: {
-          items: [
-            {
-              id: "source-001",
-              originalName: "intro.md",
-              createdAt: "2026-06-14T00:00:00.000Z"
-            },
-            {
-              id: "source-002",
-              originalName: "setup.md",
-              createdAt: "2026-06-14T00:00:00.000Z"
-            }
-          ],
-          nextCursor: "source-cursor-001"
-        }
+        items: [
+          {
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: "2026-06-14T00:00:10.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
+          }
+        ],
+        nextCursor: "source-cursor-001"
       })
       .mockResolvedValueOnce({
-        task: {
-          id: "task-001",
-          startedAt: "2026-06-14T00:00:00.000Z",
-          endedAt: "2026-06-14T00:00:10.000Z",
-          lifecycle: "ended",
-          operation: "upload",
-          sourceCount: 3
-        },
-        phaseDetails: {
-          items: [],
-          nextCursor: null
-        },
-        sourceFiles: {
-          items: [
-            {
-              id: "source-003",
-              originalName: "advanced.md",
-              createdAt: "2026-06-14T00:00:00.000Z"
-            }
-          ],
-          nextCursor: null
-        }
+        items: [
+          {
+            id: "source-002",
+            originalName: "setup.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:11.000Z",
+            processingEndedAt: "2026-06-14T00:00:20.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:11.000Z"
+          }
+        ],
+        nextCursor: null
       });
 
     await openDetail();
 
-    const table = screen.getByRole("table", { name: "Upload tasks" });
-    expect(screen.getByTestId("upload-task-row-task-001")).toBeTruthy();
-    expect(within(table).getByText("3 files")).toBeTruthy();
-    expect(within(table).queryByText("intro.md")).toBeNull();
+    const table = screen.getByRole("table", { name: "File processing" });
+    expect(within(table).getByText("intro.md")).toBeTruthy();
+    expect(within(table).queryByText("setup.md")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Expand task task-001" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
 
-    const fileTable = await screen.findByRole("table", { name: "Files for task-001" });
-    expect(within(fileTable).getByText("intro.md")).toBeTruthy();
-    expect(within(fileTable).getByText("setup.md")).toBeTruthy();
-    expect(within(fileTable).queryByText("advanced.md")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Load more files" }));
-
-    expect(await within(fileTable).findByText("advanced.md")).toBeTruthy();
-    expect(fetchUploadTaskDetail).toHaveBeenLastCalledWith({
+    expect(await within(table).findByText("setup.md")).toBeTruthy();
+    expect(listSourceFiles).toHaveBeenNthCalledWith(1, {
       knowledgeBaseId: "kb-docs",
-      taskId: "task-001",
-      sourceCursor: "source-cursor-001"
+      cursor: null
     });
-    expect(screen.getAllByTestId(/upload-task-file-row-task-001-/)).toHaveLength(3);
+    expect(listSourceFiles).toHaveBeenNthCalledWith(2, {
+      knowledgeBaseId: "kb-docs",
+      cursor: "source-cursor-001"
+    });
   });
 
   it("opens internal Markdown preview links inside the admin file preview", async () => {
@@ -481,96 +348,70 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
-  it("appends task menu pages with bounded cursor requests", async () => {
-    vi.mocked(listUploadTasks)
+  it("appends file processing pages with bounded cursor requests", async () => {
+    vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [
           {
-            id: "task-001",
-            startedAt: "2026-06-14T00:00:00.000Z",
-            endedAt: null,
-            lifecycle: "running",
-            sourceCount: 1
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "running",
+            processingStage: "metadata_resolution",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
-        nextCursor: "task-cursor-001"
+        nextCursor: "source-cursor-001"
       })
       .mockResolvedValueOnce({
         items: [
           {
-            id: "task-002",
-            startedAt: "2026-06-13T00:00:00.000Z",
-            endedAt: "2026-06-13T00:00:10.000Z",
-            lifecycle: "ended",
-            sourceCount: 3
+            id: "source-002",
+            originalName: "setup.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-13T00:00:00.000Z",
+            processingEndedAt: "2026-06-13T00:00:10.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-13T00:00:00.000Z"
           }
         ],
         nextCursor: null
       });
 
     await openDetail();
-    expect(await screen.findByText("task-001")).toBeTruthy();
+    expect(await screen.findByTestId("source-file-row-source-001")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
 
-    expect(await screen.findByText("task-002")).toBeTruthy();
-    expect(listUploadTasks).toHaveBeenNthCalledWith(1, {
+    expect(await screen.findByTestId("source-file-row-source-002")).toBeTruthy();
+    expect(listSourceFiles).toHaveBeenNthCalledWith(1, {
       knowledgeBaseId: "kb-docs",
       cursor: null
     });
-    expect(listUploadTasks).toHaveBeenNthCalledWith(2, {
+    expect(listSourceFiles).toHaveBeenNthCalledWith(2, {
       knowledgeBaseId: "kb-docs",
-      cursor: "task-cursor-001"
+      cursor: "source-cursor-001"
     });
   });
 
   it("deletes a source-backed page from the file tree row menu", async () => {
-    vi.mocked(listUploadTasks)
-      .mockResolvedValueOnce({
-        items: [],
-        nextCursor: null
-      })
-      .mockResolvedValueOnce({
+    vi.mocked(listSourceFiles).mockResolvedValue({
         items: [
           {
-            id: "task-delete",
-            operation: "delete_source",
-            startedAt: "2026-06-14T00:00:03.000Z",
-            endedAt: null,
-            lifecycle: "running",
-            sourceCount: 1
-          }
-        ],
-        nextCursor: null
-      });
-    vi.mocked(fetchUploadTaskDetail).mockResolvedValue({
-      task: {
-        id: "task-delete",
-        operation: "delete_source",
-        startedAt: "2026-06-14T00:00:03.000Z",
-        endedAt: null,
-        lifecycle: "running",
-        sourceCount: 1
-      },
-      phaseDetails: {
-        items: [
-          {
-            id: "event-delete",
-            taskId: "task-delete",
-            phaseKey: "source_deletion",
-            messageKey: "tasks.phase.sourceDeletion",
-            startedAt: "2026-06-14T00:00:03.000Z",
-            endedAt: null,
-            severity: "info",
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:03.000Z",
+            processingEndedAt: "2026-06-14T00:00:04.000Z",
+            processingErrorCode: null,
             createdAt: "2026-06-14T00:00:03.000Z"
           }
         ],
         nextCursor: null
-      },
-      sourceFiles: {
-        items: [],
-        nextCursor: null
-      }
-    });
+      });
 
     await openDetail();
     fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
@@ -593,12 +434,12 @@ describe("Admin knowledge base detail", () => {
       expect(screen.queryByRole("alertdialog", { name: "Delete Markdown file" })).toBeNull();
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Upload tasks" }).getAttribute("data-active")).toBe(
+      expect(screen.getByRole("button", { name: "File processing" }).getAttribute("data-active")).toBe(
         "true"
       );
       expect(screen.queryByRole("heading", { name: "Intro", level: 1 })).toBeNull();
     });
-    expect(await screen.findByTestId("upload-task-row-task-delete")).toBeTruthy();
+    expect(await screen.findByTestId("source-file-row-source-001")).toBeTruthy();
     expect(screen.queryByText("Delete file")).toBeNull();
     expect(fetchKnowledgeBaseFileTree).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
@@ -670,7 +511,7 @@ describe("Admin knowledge base detail", () => {
   it("keeps source, release, and bundle file lists out of the sidebar detail view", async () => {
     await openDetail();
 
-    expect(await screen.findByRole("button", { name: "Upload tasks" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "File processing" })).toBeTruthy();
     expect(screen.queryByText("Source files")).toBeNull();
     expect(screen.queryByText("Releases")).toBeNull();
     expect(screen.queryByText("Bundle files")).toBeNull();
