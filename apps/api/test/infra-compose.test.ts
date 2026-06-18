@@ -90,8 +90,7 @@ describe("Docker Compose infrastructure", () => {
     for (const compose of [deploymentCompose, devCompose]) {
       expect(compose).toContain("http://127.0.0.1:8080/healthz");
       expect(compose).toContain("'/healthz'");
-      expect(compose).toContain("JSON.stringify(body)===");
-      expect(compose).toContain('\\"status\\":\\"ok\\"');
+      expect(compose).toContain("body?.status==='ok'");
       expect(compose).not.toContain("/admin/api/session");
       expect(compose).not.toContain("/openapi/v1/version");
       expect(compose).not.toContain("/openapi/v1/openapi.json");

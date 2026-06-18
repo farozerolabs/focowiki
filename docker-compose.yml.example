@@ -31,7 +31,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const check=(port)=>fetch('http://127.0.0.1:'+port+'/healthz').then(async(r)=>{const body=await r.json().catch(()=>null);return r.ok&&JSON.stringify(body)==='{\"status\":\"ok\"}';});const adminPort=process.env.ADMIN_API_PORT||'43000';const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200';Promise.all([check(adminPort),check(publicPort)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
+      test: ["CMD-SHELL", "node -e \"const check=(port)=>fetch('http://127.0.0.1:'+port+'/healthz').then(async(r)=>{const body=await r.json().catch(()=>null);return r.ok&&body?.status==='ok';});const adminPort=process.env.ADMIN_API_PORT||'43000';const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200';Promise.all([check(adminPort),check(publicPort)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
       interval: 10s
       timeout: 5s
       retries: 12
