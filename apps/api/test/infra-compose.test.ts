@@ -14,6 +14,8 @@ const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
 const ciWorkflowPath = resolve(rootDir, ".github/workflows/ci.yml");
 const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
+const docsPublishWorkflowPath = resolve(rootDir, ".github/workflows/docs-publish.yml");
+const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
 
 describe("Docker Compose infrastructure", () => {
   it("defines PostgreSQL and Redis services for local development in the local template", () => {
@@ -198,9 +200,15 @@ describe("Docker Compose infrastructure", () => {
 
     expect(workflow).toContain('tags:\n      - "v*"');
     expect(workflow).not.toContain("branches:\n      - main");
+    expect(workflow).toContain("group: docker-${{ github.ref }}");
+    expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("name: Resolve release version");
     expect(workflow).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
     expect(workflow).toContain("Docker image releases require a semantic version tag like v1.2.3.");
+    expect(workflow).toContain("name: Validate release contracts");
+    expect(workflow).toContain("FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}");
+    expect(workflow).toContain("pnpm test:validation");
+    expect(workflow).toContain("pnpm openapi:validate");
     expect(workflow).toContain("org.opencontainers.image.version=${{ steps.release.outputs.version }}");
     expect(workflow).toContain(
       "type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' }}"
@@ -213,6 +221,23 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}");
     expect(workflow).toContain("actions/attest-build-provenance@v4.1.0");
     expect(workflow).toContain("push-to-registry: true");
+  });
+
+  it("publishes documentation from version tags with release version and custom domain", () => {
+    const workflow = readFileSync(docsPublishWorkflowPath, "utf8");
+    const cname = readFileSync(docsCnamePath, "utf8").trim();
+
+    expect(workflow).toContain('tags:\n      - "v*"');
+    expect(workflow).not.toContain("branches:\n      - main");
+    expect(workflow).toContain("group: pages");
+    expect(workflow).toContain("cancel-in-progress: false");
+    expect(workflow).toContain("Documentation deployment requires a release tag.");
+    expect(workflow).toContain("Documentation releases require a semantic version tag like v1.2.3.");
+    expect(workflow).toContain("FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}");
+    expect(workflow).toContain("pnpm docs:validate");
+    expect(workflow).toContain("actions/upload-pages-artifact@v5.0.0");
+    expect(workflow).toContain("actions/deploy-pages@v5.0.0");
+    expect(cname).toBe("docs.focowiki.com");
   });
 
   it("runs release-sensitive validation in default CI", () => {
