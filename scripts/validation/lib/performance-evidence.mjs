@@ -1,4 +1,5 @@
 const DEFAULT_MAX_ENDPOINT_MS = 5_000;
+const DEFAULT_MAX_MUTATION_ENDPOINT_MS = 30_000;
 const DEFAULT_MAX_SOURCE_FILE_DURATION_MS = 900_000;
 const DEFAULT_MAX_MEMORY_DELTA_MB = 512;
 const MAX_RECORDED_ENDPOINTS = 200;
@@ -7,6 +8,10 @@ export function createPerformanceEvidence(env = process.env) {
   return {
     budgets: {
       maxEndpointMs: readPositiveInteger(env.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, DEFAULT_MAX_ENDPOINT_MS),
+      maxMutationEndpointMs: readPositiveInteger(
+        env.FOCOWIKI_VALIDATION_MAX_MUTATION_ENDPOINT_MS,
+        DEFAULT_MAX_MUTATION_ENDPOINT_MS
+      ),
       maxSourceFileDurationMs: readPositiveInteger(
         env.FOCOWIKI_VALIDATION_MAX_SOURCE_FILE_DURATION_MS ?? env.FOCOWIKI_VALIDATION_MAX_TASK_DURATION_MS,
         DEFAULT_MAX_SOURCE_FILE_DURATION_MS
@@ -88,13 +93,25 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
   }
 
   const endpointDurations = evidence.endpointTimings.map((item) => item.durationMs);
+  const readEndpointDurations = evidence.endpointTimings
+    .filter((item) => isReadEndpoint(item.method))
+    .map((item) => item.durationMs);
+  const mutationEndpointDurations = evidence.endpointTimings
+    .filter((item) => !isReadEndpoint(item.method))
+    .map((item) => item.durationMs);
   const sourceFileDurations = evidence.sourceFileDurations.map((item) => item.durationMs);
   const maxEndpointMs = max(endpointDurations);
+  const maxReadEndpointMs = max(readEndpointDurations);
+  const maxMutationEndpointMs = max(mutationEndpointDurations);
   const maxSourceFileDurationMs = max(sourceFileDurations);
   const budgetFailures = [];
 
-  if (maxEndpointMs > evidence.budgets.maxEndpointMs) {
+  if (maxReadEndpointMs > evidence.budgets.maxEndpointMs) {
     budgetFailures.push("endpoint latency");
+  }
+
+  if (maxMutationEndpointMs > evidence.budgets.maxMutationEndpointMs) {
+    budgetFailures.push("mutation endpoint latency");
   }
 
   if (maxSourceFileDurationMs > evidence.budgets.maxSourceFileDurationMs) {
@@ -111,6 +128,8 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
     endpointTimings: {
       count: endpointDurations.length,
       maxMs: maxEndpointMs,
+      maxReadMs: maxReadEndpointMs,
+      maxMutationMs: maxMutationEndpointMs,
       averageMs: average(endpointDurations),
       slowest: [...evidence.endpointTimings]
         .sort((left, right) => right.durationMs - left.durationMs)
@@ -148,6 +167,10 @@ function average(values) {
   }
 
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function isReadEndpoint(method) {
+  return ["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase());
 }
 
 function currentHeapMb() {

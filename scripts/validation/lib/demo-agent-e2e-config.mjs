@@ -3,7 +3,8 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { randomUUID } from "node:crypto";
 
-export const DEMO_E2E_CHANGE_ID = "validate-demo-agent-e2e";
+export const DEFAULT_DEMO_E2E_CHANGE_ID = "validate-demo-agent-e2e";
+export const DEMO_E2E_CHANGE_ID_ENV = "FOCOWIKI_DEMO_E2E_CHANGE_ID";
 export const DEMO_REPO_ENV = "FOCOWIKI_DEMO_E2E_DEMO_REPO";
 export const START_SERVICES_ENV = "FOCOWIKI_DEMO_E2E_START_SERVICES";
 export const START_FOCOWIKI_ENV = "FOCOWIKI_DEMO_E2E_START_FOCOWIKI";
@@ -19,7 +20,8 @@ export function loadLocalEnv() {
 }
 
 export function readDemoAgentE2eConfig(env = process.env) {
-  const changeDir = path.resolve("openspec/changes", DEMO_E2E_CHANGE_ID);
+  const changeId = env[DEMO_E2E_CHANGE_ID_ENV]?.trim() || DEFAULT_DEMO_E2E_CHANGE_ID;
+  const changeDir = path.resolve("openspec/changes", changeId);
   const demoRepo = path.resolve(env[DEMO_REPO_ENV]?.trim() || "../focowiki-demo");
   const reportDir = path.resolve(env.FOCOWIKI_DEMO_E2E_REPORT_DIR?.trim() || changeDir);
   const demoBaseUrl = trimTrailingSlash(
@@ -27,7 +29,7 @@ export function readDemoAgentE2eConfig(env = process.env) {
   );
 
   return {
-    changeId: DEMO_E2E_CHANGE_ID,
+    changeId,
     changeDir,
     reportDir,
     runtimeDir: path.join(reportDir, "runtime"),

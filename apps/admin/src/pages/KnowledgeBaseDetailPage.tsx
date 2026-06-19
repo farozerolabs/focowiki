@@ -349,27 +349,29 @@ export function KnowledgeBaseDetailPage({
   }
 
   async function handleDeleteFile() {
-    if (!deleteFileTarget) {
+    const target = deleteFileTarget;
+
+    if (!target) {
       return;
     }
 
     setDeleteFileError("");
+    setSourceFileError("");
+    setActiveView("processing");
+    setDeleteFileTarget(null);
     setIsDeletingFile(true);
     const result = await deleteKnowledgeBaseFile({
       knowledgeBaseId: knowledgeBase.id,
-      path: deleteFileTarget.logicalPath
+      path: target.logicalPath
     });
     setIsDeletingFile(false);
 
     if ("messageKey" in result) {
-      setDeleteFileError(result.messageKey);
+      setSourceFileError(result.messageKey);
       return;
     }
 
-    setActiveView("processing");
-    setDeleteFileTarget(null);
-
-    if (selectedFilePath === deleteFileTarget.logicalPath) {
+    if (selectedFilePath === target.logicalPath) {
       setSelectedFilePath("");
       setSelectedFileTitle("");
       setPreviewHtml("");

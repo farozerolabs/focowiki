@@ -298,14 +298,17 @@ function bestEdgeForCandidate(
     isSpecificSharedSignal
   );
   const sharedTags = intersectUseful(source.tags ?? [], candidate.tags ?? []);
+  const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal);
+  const strongSharedEntities = sharedEntities.filter(isStrongContentSignal);
+  const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal);
   const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
   const hasExplicitReference = matchesExplicitReference(source, candidate);
   const hasTitleMention =
     (candidateTitle.length > 0 && normalizedBody.includes(candidateTitle)) ||
     (candidateStem.length > 0 && normalizedBody.includes(candidateStem));
   const hasContentOverlap =
-    sharedSubjects.length > 0 ||
-    sharedEntities.length > 0 ||
+    strongSharedSubjects.length > 0 ||
+    strongSharedEntities.length > 0 ||
     hasExplicitReference ||
     hasTitleMention;
 
@@ -328,18 +331,18 @@ function bestEdgeForCandidate(
     }));
   }
 
-  if (sharedEntities.length > 0 && (sharedSubjects.length > 0 || sharedKeywords.length >= 2)) {
+  if (strongSharedEntities.length > 0 && (strongSharedSubjects.length > 0 || strongSharedKeywords.length >= 2)) {
     signals.push(createEdge(source, candidate, "shared_entity", 0.68, "Both files share body-derived entities and content terms.", {
-      entities: sharedEntities.slice(0, 8),
-      subjects: sharedSubjects.slice(0, 8),
-      keywords: sharedKeywords.slice(0, 8)
+      entities: strongSharedEntities.slice(0, 8),
+      subjects: strongSharedSubjects.slice(0, 8),
+      keywords: strongSharedKeywords.slice(0, 8)
     }));
   }
 
-  if (sharedSubjects.length >= 2 || (sharedSubjects.length >= 1 && sharedKeywords.length >= 2)) {
+  if (strongSharedSubjects.length >= 2 || (strongSharedSubjects.length >= 1 && strongSharedKeywords.length >= 2)) {
     signals.push(createEdge(source, candidate, "shared_subject", 0.64, "Both files share body-derived subjects.", {
-      subjects: sharedSubjects.slice(0, 8),
-      keywords: sharedKeywords.slice(0, 8)
+      subjects: strongSharedSubjects.slice(0, 8),
+      keywords: strongSharedKeywords.slice(0, 8)
     }));
   }
 
@@ -387,10 +390,7 @@ function createRejectedEdge(edge: OkfGraphEdge, reason: string): OkfGraphEdge {
 }
 
 function matchesExplicitReference(source: OkfGraphNode, candidate: OkfGraphNode): boolean {
-  const references = [
-    ...(source.explicitReferences ?? []),
-    ...(source.relationshipHints ?? [])
-  ];
+  const references = source.explicitReferences ?? [];
   const candidatePath = normalizePublicPath(candidate.path);
   const candidateTitle = normalizeSearchText(candidate.title);
 
@@ -452,6 +452,20 @@ function isSpecificSharedSignal(value: string): boolean {
   }
 
   return normalized.length >= 5;
+}
+
+function isStrongContentSignal(value: string): boolean {
+  const normalized = normalizeTerm(value);
+
+  if (!isSpecificSharedSignal(normalized) || isJurisdictionOnlySignal(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isJurisdictionOnlySignal(value: string): boolean {
+  return /^[\p{Script=Han}]{1,12}(?:省|市|县|区|州|盟|旗)$/u.test(value);
 }
 
 function normalizeSearchText(value: string): string {

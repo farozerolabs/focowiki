@@ -43,7 +43,9 @@ import {
   writeAgentValidationReports
 } from "./lib/agent-openapi-report.mjs";
 
-const CHANGE_ID = "validate-agent-openapi-exploration";
+const CHANGE_ID =
+  process.env.FOCOWIKI_AGENT_VALIDATION_CHANGE_ID?.trim() ||
+  "validate-agent-openapi-exploration";
 const BLACK_BOX = "black-box";
 const WHITE_BOX = "white-box";
 
@@ -186,7 +188,10 @@ function readConfig(env = process.env) {
     pollIntervalMs: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_POLL_INTERVAL_MS, 2_500),
     maxRouteLimit: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_MAX_ROUTE_LIMIT, 100),
     scenarioLimit: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_SCENARIO_LIMIT, 12),
-    demoLogDir: path.resolve(env.FOCOWIKI_AGENT_VALIDATION_DEMO_LOG_DIR?.trim() || "openspec/changes/validate-agent-openapi-exploration/runtime/demo-logs")
+    demoLogDir: path.resolve(
+      env.FOCOWIKI_AGENT_VALIDATION_DEMO_LOG_DIR?.trim() ||
+        `openspec/changes/${CHANGE_ID}/runtime/demo-logs`
+    )
   };
 }
 

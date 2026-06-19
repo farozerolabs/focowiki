@@ -47,6 +47,7 @@ test("full-flow plan switches to large profile commands without reading fixture 
     plan.map((step) => step.args.at(-1)),
     ["large-samples", "large-api", "large-browser"]
   );
+  assert.equal(plan[1].extraEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, "10000");
 });
 
 test("full-flow plan enables demo validation when the demo repository is available", () => {

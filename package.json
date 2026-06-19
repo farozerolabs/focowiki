@@ -51,6 +51,8 @@
     "validate:real-legal:large:browser": "node scripts/validation/cleaned-markdown-browser.mjs large-browser",
     "validate:full-flow:e2e": "node scripts/validation/full-flow-e2e.mjs all",
     "validate:full-flow:large": "node scripts/validation/full-flow-e2e.mjs large",
+    "validate:current:e2e": "FOCOWIKI_FULL_FLOW_CHANGE_ID=validate-current-e2e-full-flow FOCOWIKI_AGENT_VALIDATION_CHANGE_ID=validate-current-e2e-full-flow FOCOWIKI_DEMO_E2E_CHANGE_ID=validate-current-e2e-full-flow node scripts/validation/full-flow-e2e.mjs all",
+    "validate:current:large": "FOCOWIKI_FULL_FLOW_CHANGE_ID=validate-current-e2e-full-flow FOCOWIKI_AGENT_VALIDATION_CHANGE_ID=validate-current-e2e-full-flow FOCOWIKI_DEMO_E2E_CHANGE_ID=validate-current-e2e-full-flow node scripts/validation/full-flow-e2e.mjs large",
     "validate:legal-llm:samples": "FOCOWIKI_VALIDATION_CHANGE_ID=validate-legal-llm-okf-e2e FOCOWIKI_VALIDATION_REQUIRE_MODEL=true node scripts/validation/cleaned-markdown-flow.mjs samples",
     "validate:legal-llm:api": "FOCOWIKI_VALIDATION_CHANGE_ID=validate-legal-llm-okf-e2e FOCOWIKI_VALIDATION_REQUIRE_MODEL=true node scripts/validation/cleaned-markdown-flow.mjs api",
     "validate:legal-llm:browser": "FOCOWIKI_VALIDATION_CHANGE_ID=validate-legal-llm-okf-e2e FOCOWIKI_VALIDATION_REQUIRE_MODEL=true node scripts/validation/cleaned-markdown-browser.mjs browser",

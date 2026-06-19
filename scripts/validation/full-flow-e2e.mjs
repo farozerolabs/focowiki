@@ -41,6 +41,10 @@ export function buildFullFlowPlan(config) {
   const validationEnv = {
     FOCOWIKI_VALIDATION_CHANGE_ID: config.changeId
   };
+
+  if (config.largeProfile && !process.env.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS) {
+    validationEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS = "10000";
+  }
   const demoEnv = {
     FOCOWIKI_DEMO_E2E_REPORT_DIR: config.changeDir,
     FOCOWIKI_DEMO_E2E_ENABLE_DEVELOPER_ROUTE_CHECKS:

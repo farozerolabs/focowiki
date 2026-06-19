@@ -9,6 +9,13 @@ import {
   recordSourceFileDuration
 } from "../lib/performance-evidence.mjs";
 
+test("performance evidence uses separate read and mutation endpoint budgets by default", () => {
+  const evidence = createPerformanceEvidence({});
+
+  assert.equal(evidence.budgets.maxEndpointMs, 5000);
+  assert.equal(evidence.budgets.maxMutationEndpointMs, 30000);
+});
+
 test("performance evidence enforces large-scale batch size and records bounded metrics", () => {
   const evidence = createPerformanceEvidence({
     FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS: "100",
@@ -21,6 +28,12 @@ test("performance evidence enforces large-scale batch size and records bounded m
     pathname: "/admin/api/knowledge-bases/kb-secret-id/files/tree?cursor=opaque",
     status: 200,
     durationMs: 25
+  });
+  recordEndpointTiming(evidence, {
+    method: "DELETE",
+    pathname: "/admin/api/knowledge-bases/kb-secret-id/files/detail",
+    status: 200,
+    durationMs: 250
   });
   recordSourceFileDuration(evidence, {
     id: "source-secret-id",
@@ -39,7 +52,9 @@ test("performance evidence enforces large-scale batch size and records bounded m
   });
 
   assert.equal(summary.ok, true);
-  assert.equal(summary.endpointTimings.count, 1);
+  assert.equal(summary.endpointTimings.count, 2);
+  assert.equal(summary.endpointTimings.maxReadMs, 25);
+  assert.equal(summary.endpointTimings.maxMutationMs, 250);
   assert.equal(summary.sourceFileDurations.count, 1);
   assert.equal(summary.pagination.length, 1);
   assert.equal(JSON.stringify(summary).includes("kb-secret-id"), false);

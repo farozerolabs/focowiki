@@ -58,6 +58,12 @@ const LOW_INFORMATION_TERMS = new Set([
   "本章",
   "本文",
   "本文件",
+  "结合本市实际",
+  "制定本条例",
+  "制定本办法",
+  "有关法律法规",
+  "法律法规",
+  "法规的规定",
   "相关",
   "引用",
   "有效"
@@ -108,9 +114,9 @@ export function buildSourceContentProfile(input: {
     .filter(isUsefulTerm)
     .slice(0, 40);
   const explicitReferences = unique([
-    ...extractInternalMarkdownLinkTargets(input.body),
-    ...extractInternalMarkdownLinkLabels(input.body),
-    ...extractUrls(input.body)
+    ...extractInternalMarkdownLinkTargets(sourceBody),
+    ...extractInternalMarkdownLinkLabels(sourceBody),
+    ...extractUrls(sourceBody)
   ])
     .filter((value) => value.length > 0)
     .slice(0, 40);

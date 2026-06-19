@@ -814,7 +814,7 @@ function readBooleanEnv(value) {
   return /^(1|true|yes)$/i.test(String(value ?? "").trim());
 }
 
-function readValidationTaskTimeoutMs(env, sampleCount) {
+export function readValidationTaskTimeoutMs(env, sampleCount) {
   const configured = env[TASK_TIMEOUT_ENV]?.trim();
 
   if (configured) {
@@ -828,7 +828,7 @@ function readValidationTaskTimeoutMs(env, sampleCount) {
   }
 
   if (!env.MODEL_API_KEY?.trim() || !env.MODEL_NAME?.trim()) {
-    return 180_000;
+    return Math.max(180_000, sampleCount * 60_000 + 180_000);
   }
 
   const concurrency = readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2);
@@ -2111,15 +2111,13 @@ async function validateSourceDeletionFullFlow({
     report
   });
 
-  const postDeleteFiles = await readJson(
+  const { remainingPage, sawDeletedPage } = await findRemainingSourceBackedPageAfterDeletion({
     admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=50`
-  );
-  const remainingPage = postDeleteFiles.items?.find(
-    (file) => String(file.logicalPath).startsWith("pages/") && file.logicalPath !== pageFile.logicalPath
-  );
+    knowledgeBaseId,
+    deletedPagePath: pageFile.logicalPath
+  });
 
-  if (postDeleteFiles.items?.some((file) => file.logicalPath === pageFile.logicalPath)) {
+  if (sawDeletedPage) {
     throw new Error("Deleted page still appears in the active admin bundle file list.");
   }
 
@@ -2148,6 +2146,35 @@ async function validateSourceDeletionFullFlow({
     deletedPagePath: pageFile.logicalPath,
     remainingPagePath: remainingPage.logicalPath
   };
+}
+
+async function findRemainingSourceBackedPageAfterDeletion({ admin, knowledgeBaseId, deletedPagePath }) {
+  let cursor = null;
+  let remainingPage = null;
+  let sawDeletedPage = false;
+
+  do {
+    const body = await readJson(
+      admin,
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=50${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`
+    );
+
+    for (const file of body.items ?? []) {
+      if (file.logicalPath === deletedPagePath) {
+        sawDeletedPage = true;
+      }
+
+      if (!remainingPage && String(file.logicalPath).startsWith("pages/")) {
+        remainingPage = file;
+      }
+    }
+
+    cursor = body.nextCursor ?? null;
+  } while (cursor);
+
+  return { remainingPage, sawDeletedPage };
 }
 
 async function validateDeletionDatabaseBoundaries({

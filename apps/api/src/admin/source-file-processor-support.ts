@@ -9,7 +9,8 @@ export async function waitForPublicationLock(input: {
   maxWaitMs?: number;
   retryIntervalMs?: number;
 }): Promise<boolean> {
-  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, input.maxWaitMs ?? 300_000);
+  const maxWaitMs = input.maxWaitMs ?? input.ttlSeconds * 1_000;
+  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, maxWaitMs);
   const retryIntervalMs = input.retryIntervalMs ?? 1_000;
 
   while (Date.now() <= deadline) {

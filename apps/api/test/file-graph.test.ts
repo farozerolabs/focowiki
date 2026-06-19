@@ -142,14 +142,14 @@ describe("file graph", () => {
   });
 
   it("keeps content-scoped relationships from specific body-derived subjects", async () => {
-    const source = createSourceFile("source-qitaihe-greening", "qitaihe-greening.md");
+    const source = createSourceFile("source-sanya-river", "sanya-river.md");
     const candidates = [
       {
-        ...createGraphNode("source-qitaihe-park", "qitaihe-park.md"),
-        title: "七台河市城市公园条例",
-        subjects: ["七台河市", "城市公园"],
-        entities: ["七台河市"],
-        keywords: ["七台河市", "城市公园"]
+        ...createGraphNode("source-sanya-river-ecology", "sanya-river-ecology.md"),
+        title: "三亚市河道生态保护管理条例",
+        subjects: ["三亚市", "河道生态保护"],
+        entities: ["三亚市", "河道"],
+        keywords: ["三亚市", "河道", "生态保护", "监督管理"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -160,17 +160,18 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "七台河市城市绿化条例",
+        title: "三亚市河道管理条例",
         type: "local regulation",
         tags: []
       },
-      body: "# 七台河市城市绿化条例\n\n本文件规定七台河市城市绿化保护、建设、养护和监督管理。",
+      body:
+        "# 三亚市河道管理条例\n\n本文件规定三亚市河道保护、生态治理、建设、养护和监督管理，并与三亚市河道生态保护管理条例衔接。",
       suggestions: null,
       pageSize: 10
     });
 
     expect(result.edgeCount).toBe(1);
-    expect(storedEdges[0]?.toFileId).toBe("source-qitaihe-park");
+    expect(storedEdges[0]?.toFileId).toBe("source-sanya-river-ecology");
   });
 
   it("does not publish cross-scope relationships from boilerplate body phrases", async () => {
@@ -198,6 +199,90 @@ describe("file graph", () => {
       },
       body:
         "# 七台河市城市公园条例\n\n为了加强城市公园管理，根据有关法律法规的规定，结合本市实际，制定本条例。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not promote model related-link hints to explicit references without content evidence", async () => {
+    const source = createSourceFile("source-hunan-traffic", "hunan-traffic.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-hunan-seed", "hunan-seed.md"),
+        title: "《湖南省实施<中华人民共和国种子法>办法》",
+        subjects: ["湖南省", "种子法"],
+        entities: ["湖南省", "种子"],
+        keywords: ["湖南省", "种子", "农业"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "《湖南省水上交通安全条例》",
+        type: "local regulation",
+        tags: []
+      },
+      body: "# 《湖南省水上交通安全条例》\n\n本文件规定水上交通安全、船舶航行和港口监督管理。",
+      suggestions: {
+        type: "local regulation",
+        title: "《湖南省水上交通安全条例》",
+        description: "",
+        tags: [],
+        keywords: [],
+        related_links: [
+          {
+            title: "《湖南省实施<中华人民共和国种子法>办法》",
+            path: "pages/hunan-seed.md"
+          }
+        ]
+      },
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not promote stale generated Related sections to explicit references", async () => {
+    const source = createSourceFile("source-hunan-traffic", "hunan-traffic.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-hunan-seed", "hunan-seed.md"),
+        title: "《湖南省实施<中华人民共和国种子法>办法》",
+        subjects: ["湖南省", "种子法"],
+        entities: ["湖南省", "种子"],
+        keywords: ["湖南省", "种子", "农业"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "《湖南省水上交通安全条例》",
+        type: "local regulation",
+        tags: []
+      },
+      body: [
+        "# 《湖南省水上交通安全条例》",
+        "",
+        "本文件规定水上交通安全、船舶航行和港口监督管理。",
+        "",
+        "## Related",
+        "",
+        "- [《湖南省实施<中华人民共和国种子法>办法》](hunan-seed.md)"
+      ].join("\n"),
       suggestions: null,
       pageSize: 10
     });
