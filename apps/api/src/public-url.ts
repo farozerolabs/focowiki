@@ -1,6 +1,19 @@
 import { StorageKeyError } from "./storage/keys.js";
 
-const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+const UNSAFE_PUBLIC_SEGMENT_PATTERN = /[\u0000-\u001F\u007F\\]/u;
+const ALLOWED_PUBLIC_PATH_PATTERNS = [
+  /^index\.md$/u,
+  /^schema\.md$/u,
+  /^log\.md$/u,
+  /^pages\/[^/]+\.md$/u,
+  /^_index\/(?:manifest|search|links)\.json$/u,
+  /^_graph\/index\.md$/u,
+  /^_graph\/manifest\.json$/u,
+  /^_graph\/nodes\.jsonl$/u,
+  /^_graph\/edges\/[0-9]{4}\.jsonl$/u,
+  /^_graph\/by-file\/[^/]+\.json$/u
+];
 
 export function buildPublicFileUrl(
   baseUrl: string,
@@ -17,7 +30,7 @@ export function buildPublicFileUrl(
 function normalizeId(value: string, fieldName: string): string {
   const normalized = decodeForValidation(value);
 
-  if (!isSafeSegment(normalized)) {
+  if (!isSafeIdSegment(normalized)) {
     throw new StorageKeyError(`${fieldName} must be a safe path segment`);
   }
 
@@ -28,20 +41,34 @@ function normalizePublicPath(rawPath: string): string {
   const normalized = decodeForValidation(rawPath).replace(/^\/+/, "");
   const segments = normalized.split("/");
 
-  if (segments.some((segment) => !isSafeSegment(segment))) {
+  if (
+    segments.some((segment) => !isSafePublicPathSegment(segment)) ||
+    !ALLOWED_PUBLIC_PATH_PATTERNS.some((pattern) => pattern.test(normalized))
+  ) {
     throw new StorageKeyError("path must stay inside the public knowledge base route");
   }
 
   return segments.join("/");
 }
 
-function isSafeSegment(segment: string): boolean {
+function isSafeIdSegment(segment: string): boolean {
   return (
-    SAFE_TOKEN_PATTERN.test(segment) &&
+    SAFE_ID_PATTERN.test(segment) &&
     segment !== "." &&
     segment !== ".." &&
     !segment.includes("..") &&
     !segment.includes("\\") &&
+    !segment.includes("/")
+  );
+}
+
+function isSafePublicPathSegment(segment: string): boolean {
+  return (
+    segment.length > 0 &&
+    segment !== "." &&
+    segment !== ".." &&
+    !segment.includes("..") &&
+    !UNSAFE_PUBLIC_SEGMENT_PATTERN.test(segment) &&
     !segment.includes("/")
   );
 }

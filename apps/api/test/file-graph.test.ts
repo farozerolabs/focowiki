@@ -51,7 +51,7 @@ describe("file graph", () => {
         type: "page",
         tags: ["shared"]
       },
-      body: "# Current\n\nThis file is related.",
+      body: "# Current\n\nThis file mentions related-0, related-1, and related-2 as relevant documents.",
       suggestions: null,
       pageSize: 2,
       maxCandidateNodes: 3
@@ -63,7 +63,271 @@ describe("file graph", () => {
     expect(storedEdges.map((edge) => edge.toFileId)).toEqual(["source-0", "source-1", "source-2"]);
     expect(nodePageCalls).toBe(2);
   });
+
+  it("does not publish relationships from weak shared metadata alone", async () => {
+    const source = createSourceFile("source-zunyi-gas", "zunyi-gas.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-national-prosecutor", "national-prosecutor.md"),
+        title: "National prosecutor guidance",
+        tags: ["effective"],
+        headings: ["Related", "Citations"],
+        keywords: ["effective"],
+        metadata: {
+          title: "National prosecutor guidance",
+          type: "local regulation",
+          tags: ["effective"],
+          status: "effective"
+        }
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Zunyi gas safety",
+        type: "local regulation",
+        tags: ["effective"],
+        status: "effective"
+      },
+      body: "# Zunyi gas safety\n\nThis document regulates city gas safety and facility operation.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not publish relationships from external source links or generic fragments", async () => {
+    const source = createSourceFile("source-zunyi-heritage", "zunyi-heritage.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-prosecutor", "prosecutor.md"),
+        title: "Supreme prosecutor salt case interpretation",
+        subjects: ["official source", "protection regulation"],
+        entities: ["Official source", "Protection regulation"],
+        keywords: ["official", "source", "protection", "regulation"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Zunyi heritage protection regulation",
+        type: "local regulation",
+        tags: ["effective"]
+      },
+      body: [
+        "# Zunyi heritage protection regulation",
+        "",
+        "This source describes cultural heritage protection in one city.",
+        "",
+        "[Official source](https://example.com/source)"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("keeps content-scoped relationships from specific body-derived subjects", async () => {
+    const source = createSourceFile("source-qitaihe-greening", "qitaihe-greening.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-qitaihe-park", "qitaihe-park.md"),
+        title: "七台河市城市公园条例",
+        subjects: ["七台河市", "城市公园"],
+        entities: ["七台河市"],
+        keywords: ["七台河市", "城市公园"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "七台河市城市绿化条例",
+        type: "local regulation",
+        tags: []
+      },
+      body: "# 七台河市城市绿化条例\n\n本文件规定七台河市城市绿化保护、建设、养护和监督管理。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges[0]?.toFileId).toBe("source-qitaihe-park");
+  });
+
+  it("does not publish cross-scope relationships from boilerplate body phrases", async () => {
+    const source = createSourceFile("source-qitaihe-park", "qitaihe-park.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-zunyi-gas", "zunyi-gas.md"),
+        title: "遵义市城镇燃气安全管理条例",
+        subjects: ["遵义市", "城镇燃气安全管理"],
+        entities: ["遵义市", "城镇燃气安全管理"],
+        keywords: ["结合本市实际", "制定本条例", "法规的规定"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "七台河市城市公园条例",
+        type: "local regulation",
+        tags: []
+      },
+      body:
+        "# 七台河市城市公园条例\n\n为了加强城市公园管理，根据有关法律法规的规定，结合本市实际，制定本条例。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("excludes generated headings from graph node signals", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const storedNodes = new Map<string, OkfGraphNode>();
+    const graph = createMemoryGraphRepository({
+      candidates: [],
+      storedNodes
+    });
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "page",
+        tags: []
+      },
+      body: [
+        "# Current",
+        "",
+        "This source describes park management.",
+        "",
+        "## Related",
+        "",
+        "- [Other](/pages/other.md)",
+        "",
+        "# Citations",
+        "",
+        "- https://example.com"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedNodes.get(source.id)?.headings).toEqual(["Current"]);
+    expect(storedNodes.get(source.id)?.keywords).not.toContain("related");
+    expect(storedNodes.get(source.id)?.keywords).not.toContain("citations");
+  });
+
+  it("does not publish model-rejected candidate edges", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const candidates = [createGraphNode("source-related", "related.md")];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "page",
+        tags: []
+      },
+      body: "# Current\n\nThis file mentions related.",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: JSON.stringify({
+                relationships: [
+                  {
+                    targetFileId: "source-related",
+                    accepted: false,
+                    relationType: "title_mention",
+                    weight: 0,
+                    reason: "The title mention is not enough evidence."
+                  }
+                ]
+              })
+            })
+          }
+        }
+      }
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
 });
+
+function createMemoryGraphRepository(input: {
+  candidates: OkfGraphNode[];
+  storedNodes?: Map<string, OkfGraphNode>;
+  storedEdges?: OkfGraphEdge[];
+}): FileGraphRepository {
+  return {
+    async upsertGraphNode(request) {
+      input.storedNodes?.set(request.node.fileId, request.node);
+    },
+    async upsertGraphEdges(request) {
+      input.storedEdges?.push(...request.edges);
+    },
+    async listGraphNodes(request) {
+      const offset = request.cursor ? Number(request.cursor) : 0;
+      const items = input.candidates.slice(offset, offset + request.limit);
+      const nextOffset = offset + request.limit;
+      return {
+        items,
+        nextCursor: nextOffset < input.candidates.length ? String(nextOffset) : null
+      };
+    },
+    async listGraphEdges() {
+      return { items: input.storedEdges ?? [], nextCursor: null };
+    },
+    async listGraphNeighborhood() {
+      return { items: [], nextCursor: null };
+    },
+    async deleteGraphForSourceFile() {
+      return undefined;
+    }
+  };
+}
 
 function createSourceFile(id: string, originalName: string): SourceFileRecord {
   return {

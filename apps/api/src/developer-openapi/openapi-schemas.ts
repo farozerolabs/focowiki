@@ -270,6 +270,9 @@ function sourceFileSchema(): SchemaObject {
       modelInvocationEndedAt: nullableTimestampSchema(),
       modelInvocationWarningCount: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
       modelInvocationErrorCode: nullableString("Stable model error code when model assistance fails."),
+      generatedFileAvailable: { type: "boolean" },
+      generatedFileId: nullableString("Generated bundle file identifier when visible in the active bundle."),
+      generatedFilePath: nullableString("Logical generated file path when visible in the active bundle."),
       createdAt: timestampSchema()
     },
     [
@@ -293,6 +296,9 @@ function sourceFileSchema(): SchemaObject {
       "modelInvocationEndedAt",
       "modelInvocationWarningCount",
       "modelInvocationErrorCode",
+      "generatedFileAvailable",
+      "generatedFileId",
+      "generatedFilePath",
       "createdAt"
     ]
   );

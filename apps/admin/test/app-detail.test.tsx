@@ -196,6 +196,7 @@ describe("Admin knowledge base detail", () => {
     expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Operation" })).toBeNull();
     expect(screen.getByRole("columnheader", { name: "Current stage" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Generated file" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "File name" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "File ID" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Started" })).toBeTruthy();
@@ -210,7 +211,73 @@ describe("Admin knowledge base detail", () => {
     expect(within(table).getByText("Queued")).toBeTruthy();
     expect(within(table).getByText("Upload storage")).toBeTruthy();
     expect(within(table).getByText("Metadata resolution")).toBeTruthy();
+    expect(within(table).getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
+  });
+
+  it("opens a generated file directly from a completed source-file row", async () => {
+    vi.mocked(listSourceFiles).mockResolvedValue({
+      items: [
+        {
+          id: "source-001",
+          originalName: "intro.md",
+          processingStatus: "completed",
+          processingStage: "release_activation",
+          processingStartedAt: "2026-06-14T00:00:00.000Z",
+          processingEndedAt: "2026-06-14T00:00:10.000Z",
+          processingErrorCode: null,
+          generatedFileAvailable: true,
+          generatedFileId: "file-001",
+          generatedFilePath: "pages/intro.md",
+          createdAt: "2026-06-14T00:00:00.000Z"
+        }
+      ],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    expect(await screen.findByText("Available")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
+
+    await waitFor(() => {
+      expect(fetchKnowledgeBaseFileDetail).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        path: "pages/intro.md"
+      });
+    });
+  });
+
+  it("keeps failed source files out of the generated tree and keeps manual retry visible", async () => {
+    vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
+      items: [],
+      nextCursor: null
+    });
+    vi.mocked(listSourceFiles).mockResolvedValueOnce({
+      items: [
+        {
+          id: "source-failed",
+          originalName: "broken.md",
+          processingStatus: "failed",
+          processingStage: "llm_suggestion",
+          processingStartedAt: "2026-06-14T00:00:00.000Z",
+          processingEndedAt: "2026-06-14T00:00:10.000Z",
+          processingErrorCode: "MODEL_OUTPUT_INVALID",
+          generatedFileAvailable: false,
+          generatedFileId: null,
+          generatedFilePath: null,
+          createdAt: "2026-06-14T00:00:00.000Z"
+        }
+      ],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    expect(screen.queryByRole("button", { name: "broken.md" })).toBeNull();
+    expect(await screen.findByText("Pending")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry parsing" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open file" })).toBeNull();
   });
 
   it("appends source-file pages with bounded cursor requests", async () => {
@@ -282,20 +349,20 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
-  it("copies public knowledge base URLs without exposing storage paths", async () => {
+  it("copies the selected generated file URL without exposing storage paths", async () => {
     await openDetail();
 
     fireEvent.click(await screen.findByRole("button", { name: "intro.md" }));
     expect(screen.queryByRole("button", { name: "Copy search URL" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy links URL" })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy index URL" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy file URL" }));
 
     await waitFor(() => {
       expect(fetchKnowledgeBasePublicUrls).toHaveBeenCalledWith({
         knowledgeBaseId: "kb-docs"
       });
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=index.md"
+        "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=pages%2Fintro.md"
       );
     });
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(

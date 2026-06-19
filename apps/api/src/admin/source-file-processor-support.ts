@@ -6,8 +6,11 @@ export async function waitForPublicationLock(input: {
   knowledgeBaseId: string;
   ownerId: string;
   ttlSeconds: number;
+  maxWaitMs?: number;
+  retryIntervalMs?: number;
 }): Promise<boolean> {
-  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, 60_000);
+  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, input.maxWaitMs ?? 300_000);
+  const retryIntervalMs = input.retryIntervalMs ?? 1_000;
 
   while (Date.now() <= deadline) {
     const acquired = await input.redis.acquireKnowledgeBasePublicationLock(
@@ -20,7 +23,7 @@ export async function waitForPublicationLock(input: {
       return true;
     }
 
-    await sleep(1_000);
+    await sleep(retryIntervalMs);
   }
 
   return false;

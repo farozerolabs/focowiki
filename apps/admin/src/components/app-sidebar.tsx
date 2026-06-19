@@ -71,10 +71,13 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     ended: string;
     deleteFile: string;
     fileActions: string;
+    emptyFiles: string;
+    loadingFiles: string;
   };
   activeView: "file" | "processing";
   tree: AdminSidebarTreeNode[];
   rootNextCursor: string | null;
+  rootLoading: boolean;
   sourceFiles: AdminSidebarSourceFile[];
   onBack: () => void;
   onLogout: () => void;
@@ -92,6 +95,7 @@ export function AppSidebar({
   activeView,
   tree,
   rootNextCursor,
+  rootLoading,
   sourceFiles,
   onBack,
   onLogout,
@@ -142,6 +146,13 @@ export function AppSidebar({
           <SidebarGroupLabel>{labels.files}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
+              {tree.length === 0 ? (
+                <SidebarMenuItem>
+                  <p className="px-2 py-2 text-xs text-sidebar-foreground/60">
+                    {rootLoading ? labels.loadingFiles : labels.emptyFiles}
+                  </p>
+                </SidebarMenuItem>
+              ) : null}
               {tree.map((node) => (
                 <TreeNode
                   key={node.id}

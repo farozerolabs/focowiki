@@ -21,6 +21,7 @@ type SourceFileProgressPanelProps = {
   errorMessageKey?: string;
   retryingSourceFileId?: string | null | undefined;
   onRetrySourceFile: (sourceFile: SourceFileRecord) => void;
+  onOpenGeneratedFile: (sourceFile: SourceFileRecord) => void;
 };
 
 export function SourceFileProgressPanel({
@@ -30,7 +31,8 @@ export function SourceFileProgressPanel({
   onUpload,
   errorMessageKey,
   retryingSourceFileId,
-  onRetrySourceFile
+  onRetrySourceFile,
+  onOpenGeneratedFile
 }: SourceFileProgressPanelProps) {
   const { t } = useTranslation();
 
@@ -57,6 +59,7 @@ export function SourceFileProgressPanel({
             sourceFiles={sourceFiles}
             retryingSourceFileId={retryingSourceFileId}
             onRetrySourceFile={onRetrySourceFile}
+            onOpenGeneratedFile={onOpenGeneratedFile}
           />
           {sourceFileCursor ? (
             <Button type="button" variant="outline" onClick={onLoadMore}>

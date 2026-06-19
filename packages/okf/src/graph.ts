@@ -4,9 +4,17 @@ export type OkfGraphNode = {
   title: string;
   type?: string | null;
   description?: string | null;
+  summary?: string | null;
+  subjects?: string[];
   tags?: string[];
+  entities?: string[];
+  explicitReferences?: string[];
+  relationshipHints?: string[];
   headings?: string[];
   keywords?: string[];
+  language?: string | null;
+  profileVersion?: string | null;
+  profileSource?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -176,9 +184,12 @@ export function listPageRelatedGraphLinks(
   }
 
   const count = limit ?? graph.limits.pageRelatedLimit;
-  return listGraphRelationships(graph, fileId, count).filter((relationship) =>
-    publicPaths.has(relationship.path)
-  );
+  return uniqueBy(
+    listGraphRelationships(graph, fileId, graph.limits.perFileLimit).filter((relationship) =>
+      publicPaths.has(relationship.path)
+    ),
+    (relationship) => relationship.fileId || relationship.path
+  ).slice(0, count);
 }
 
 export function buildGraphLinkIndexEntries(graph: NormalizedOkfGraph): Array<{
@@ -261,9 +272,17 @@ function normalizeNode(node: OkfGraphNode): OkfGraphNode {
     title: node.title.trim(),
     ...(node.type ? { type: node.type } : {}),
     ...(node.description ? { description: node.description } : {}),
+    ...(node.summary ? { summary: node.summary } : {}),
+    subjects: readStrings(node.subjects),
     tags: readStrings(node.tags),
+    entities: readStrings(node.entities),
+    explicitReferences: readStrings(node.explicitReferences),
+    relationshipHints: readStrings(node.relationshipHints),
     headings: readStrings(node.headings),
     keywords: readStrings(node.keywords),
+    ...(node.language ? { language: node.language } : {}),
+    ...(node.profileVersion ? { profileVersion: node.profileVersion } : {}),
+    ...(node.profileSource ? { profileSource: node.profileSource } : {}),
     ...(node.metadata ? { metadata: node.metadata } : {})
   };
 }
@@ -324,9 +343,12 @@ function compareEdges(left: OkfGraphEdge, right: OkfGraphEdge): number {
 }
 
 function compareRelationships(left: OkfGraphRelationship, right: OkfGraphRelationship): number {
+  const leftDirectionScore = left.direction === "outgoing" ? 0 : 1;
+  const rightDirectionScore = right.direction === "outgoing" ? 0 : 1;
+
   return (
     right.weight - left.weight ||
-    left.direction.localeCompare(right.direction) ||
+    leftDirectionScore - rightDirectionScore ||
     left.title.localeCompare(right.title) ||
     left.fileId.localeCompare(right.fileId)
   );

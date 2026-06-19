@@ -16,10 +16,13 @@ Focowiki 把关系生成拆成两层：
 
 | 层级 | 作用 |
 | --- | --- |
-| 确定性候选 | 使用有界数据库读取和安全文档信号，例如 Markdown links、标题提及、共享标签、共享类型、标题重合和已有互相关系。 |
-| 可选模型确认 | 只把当前文件卡片和候选文件卡片发送给配置好的模型。模型只能确认、拒绝、分类、打权重和解释已有候选。 |
+| 内容画像 | 从每个 Markdown 正文生成通用画像，包括摘要、主题、关键词、实体、显式引用、标题结构和安全 frontmatter context。 |
+| 确定性候选 | 使用有界数据库读取和内容证据，例如 Markdown links、标题提及、共享实体、共享主题、显式引用和已有互相关系。 |
+| 可选模型确认 | 只把当前文件画像、有界正文视图和候选文件卡片发送给配置好的模型。模型只能确认、拒绝、分类、打权重和解释已有候选。 |
 
-模型不能发明目标文件。模型确认失败时，安全的确定性关系仍然可以发布。
+模型不能发明目标文件。模型确认拒绝某个候选时，这个候选不会作为 accepted relationship 发布。模型确认失败时，具有强正文证据的确定性关系仍然可以发布。
+
+共享状态、宽泛类型、低信息量标签或生成的系统标题不会单独生成页面 `Related` link。metadata 可以作为辅助证据，但关系需要先有正文画像中的内容证据。
 
 ## 生成文件
 
@@ -66,7 +69,7 @@ graph: "../_graph/by-file/source-file-123.json"
 | `fileId` | 相关 source-backed file identifier。 |
 | `path` | 相关生成 Markdown 路径，例如 `pages/example.md`。 |
 | `title` | 相关文件标题。 |
-| `relationType` | 关系类型，例如 `title_mention`、`shared_tag`、`shared_heading`、`type_affinity` 或 `model_related_link`。 |
+| `relationType` | 关系类型，例如 `explicit_reference`、`title_mention`、`shared_entity`、`shared_subject`、`metadata_supported_content` 或 `model_related_link`。 |
 | `direction` | 当前文件指向相关文件时为 `outgoing`，其他文件指向当前文件时为 `incoming`。 |
 | `weight` | `0` 到 `1` 的有界优先级分数。 |
 | `reason` | 面向用户、开发者和 Agent 的安全解释。 |
@@ -87,6 +90,8 @@ graph: "../_graph/by-file/source-file-123.json"
 8. 根据任务需要继续沿 Markdown links 和图关系读取证据。
 
 Developer OpenAPI 也提供一个有界 related-file endpoint，方便偏好 JSON list 的后端集成。文件读取仍然是 Agent-facing 的主要契约。
+
+管理后台预览页复制的是当前选中生成文件的 Developer OpenAPI content URL。`pages/示例.md` 这样的安全 Unicode 页面路径会在复制 URL 中被编码，并由 Developer OpenAPI 解析到 active generated file。
 
 ## 运行说明
 

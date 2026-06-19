@@ -8,6 +8,12 @@ import {
   type SourceModelSuggestions
 } from "@focowiki/okf";
 import type { FileGraphRepository, SourceFileRecord } from "../db/admin-repositories.js";
+import {
+  buildSourceContentProfile,
+  isUsefulTerm,
+  normalizeTerm,
+  stripGeneratedSections
+} from "./content-profile.js";
 
 export type BuildSourceFileGraphInput = {
   graph: FileGraphRepository;
@@ -30,6 +36,7 @@ export type GraphModelConfirmationOptions = {
 
 export type BuildSourceFileGraphResult = {
   edgeCount: number;
+  rejectedEdgeCount: number;
   warnings: string[];
 };
 
@@ -70,35 +77,70 @@ export async function buildSourceFileGraph(
     });
   }
 
+  if (confirmation.rejectedEdges.length > 0) {
+    await input.graph.upsertRejectedGraphEdges?.({
+      knowledgeBaseId: input.knowledgeBaseId,
+      edges: confirmation.rejectedEdges
+    });
+  }
+
   return {
     edgeCount: confirmation.edges.length,
+    rejectedEdgeCount: confirmation.rejectedEdges.length,
     warnings: confirmation.warnings
   };
 }
 
 function createGraphNode(input: BuildSourceFileGraphInput): OkfGraphNode {
   const title = readString(input.metadata.title) || stripMarkdownExtension(input.source.originalName);
-  const tags = readStringArray(input.metadata.tags);
-  const headings = extractHeadings(input.body);
+  const profile = buildSourceContentProfile({
+    title,
+    body: input.body,
+    metadata: input.metadata,
+    suggestions: input.suggestions
+  });
+  const tags = unique([...readStringArray(input.metadata.tags), ...profile.tags]).filter(isUsefulTerm);
   const keywords = unique([
-    ...tokenize(title),
-    ...tags.flatMap(tokenize),
-    ...headings.flatMap(tokenize),
-    ...(input.suggestions?.keywords ?? []).flatMap(tokenize)
-  ]).slice(0, 50);
+    ...profile.keywords,
+    ...profile.subjects,
+    ...profile.entities,
+    ...extractSearchTerms(title)
+  ])
+    .filter(isUsefulTerm)
+    .slice(0, 80);
 
   return {
     fileId: input.source.id,
     path: `pages/${input.source.originalName}`,
     title,
     ...(readString(input.metadata.type) ? { type: readString(input.metadata.type) } : {}),
-    ...(readString(input.metadata.description)
-      ? { description: readString(input.metadata.description) }
-      : {}),
+    ...(profile.description ? { description: profile.description } : {}),
+    ...(profile.summary ? { summary: profile.summary } : {}),
+    subjects: profile.subjects,
     tags,
-    headings,
+    entities: profile.entities,
+    explicitReferences: profile.explicitReferences,
+    relationshipHints: profile.relationshipHints,
+    headings: profile.headingOutline,
     keywords,
-    metadata: input.metadata
+    language: profile.language,
+    profileVersion: profile.profileVersion,
+    profileSource: profile.profileSource,
+    metadata: {
+      ...input.metadata,
+      contentProfile: {
+        summary: profile.summary,
+        subjects: profile.subjects,
+        keywords: profile.keywords,
+        entities: profile.entities,
+        explicitReferences: profile.explicitReferences,
+        relationshipHints: profile.relationshipHints,
+        headingOutline: profile.headingOutline,
+        language: profile.language,
+        profileVersion: profile.profileVersion,
+        profileSource: profile.profileSource
+      }
+    }
   };
 }
 
@@ -158,10 +200,11 @@ async function confirmGraphEdges(input: {
   candidates: OkfGraphNode[];
   edges: OkfGraphEdge[];
   modelConfirmation: GraphModelConfirmationOptions | null;
-}): Promise<{ edges: OkfGraphEdge[]; warnings: string[] }> {
+}): Promise<{ edges: OkfGraphEdge[]; rejectedEdges: OkfGraphEdge[]; warnings: string[] }> {
   if (!input.modelConfirmation || input.edges.length === 0) {
     return {
       edges: input.edges,
+      rejectedEdges: [],
       warnings: []
     };
   }
@@ -180,6 +223,7 @@ async function confirmGraphEdges(input: {
   if (result.confirmations.length === 0) {
     return {
       edges: input.edges,
+      rejectedEdges: [],
       warnings: result.warnings
     };
   }
@@ -187,27 +231,39 @@ async function confirmGraphEdges(input: {
   const confirmationByTarget = new Map(
     result.confirmations.map((confirmation) => [confirmation.targetFileId, confirmation])
   );
-  return {
-    edges: input.edges.map((edge) => {
-      const confirmation = confirmationByTarget.get(edge.toFileId);
+  const acceptedEdges: OkfGraphEdge[] = [];
+  const rejectedEdges: OkfGraphEdge[] = [];
 
-      if (!confirmation?.accepted) {
-        return edge;
+  for (const edge of input.edges) {
+    const confirmation = confirmationByTarget.get(edge.toFileId);
+
+    if (!confirmation) {
+      acceptedEdges.push(edge);
+      continue;
+    }
+
+    if (!confirmation.accepted) {
+      rejectedEdges.push(createRejectedEdge(edge, confirmation.reason));
+      continue;
+    }
+
+    acceptedEdges.push({
+      ...edge,
+      relationType: confirmation.relationType.trim() || edge.relationType,
+      weight: Math.max(edge.weight, confirmation.weight),
+      reason: confirmation.reason.trim() || edge.reason,
+      source: "model_confirmed",
+      evidence: {
+        ...(edge.evidence ?? {}),
+        deterministicSource: edge.source,
+        deterministicRelationType: edge.relationType
       }
+    });
+  }
 
-      return {
-        ...edge,
-        relationType: confirmation.relationType.trim() || edge.relationType,
-        weight: Math.max(edge.weight, confirmation.weight),
-        reason: confirmation.reason.trim() || edge.reason,
-        source: "model_confirmed",
-        evidence: {
-          ...(edge.evidence ?? {}),
-          deterministicSource: edge.source,
-          deterministicRelationType: edge.relationType
-        }
-      };
-    }),
+  return {
+    edges: acceptedEdges,
+    rejectedEdges,
     warnings: result.warnings
   };
 }
@@ -229,38 +285,67 @@ function bestEdgeForCandidate(
   candidate: OkfGraphNode
 ): OkfGraphEdge | null {
   const signals: OkfGraphEdge[] = [];
-  const sharedTags = intersect(source.tags ?? [], candidate.tags ?? []);
-  const sharedHeadings = intersect(source.headings ?? [], candidate.headings ?? []);
-  const normalizedBody = body.toLowerCase();
-  const candidateTitle = candidate.title.toLowerCase();
+  const normalizedBody = normalizeSearchText(stripGeneratedSections(body));
+  const candidateTitle = normalizeSearchText(candidate.title);
+  const candidateStem = normalizeSearchText(stripMarkdownExtension(candidate.path.split("/").at(-1) ?? candidate.title));
+  const sharedSubjects = intersectUseful(source.subjects ?? [], candidate.subjects ?? []).filter(
+    isSpecificSharedSignal
+  );
+  const sharedEntities = intersectUseful(source.entities ?? [], candidate.entities ?? []).filter(
+    isSpecificSharedSignal
+  );
+  const sharedKeywords = intersectUseful(source.keywords ?? [], candidate.keywords ?? []).filter(
+    isSpecificSharedSignal
+  );
+  const sharedTags = intersectUseful(source.tags ?? [], candidate.tags ?? []);
+  const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
+  const hasExplicitReference = matchesExplicitReference(source, candidate);
+  const hasTitleMention =
+    (candidateTitle.length > 0 && normalizedBody.includes(candidateTitle)) ||
+    (candidateStem.length > 0 && normalizedBody.includes(candidateStem));
+  const hasContentOverlap =
+    sharedSubjects.length > 0 ||
+    sharedEntities.length > 0 ||
+    hasExplicitReference ||
+    hasTitleMention;
 
-  if (suggestedPaths.has(normalizePublicPath(candidate.path))) {
-    signals.push(createEdge(source, candidate, "model_related_link", 0.9, "The model selected this existing file path.", {
+  if (hasExplicitReference) {
+    signals.push(createEdge(source, candidate, "explicit_reference", 0.95, "The source explicitly references this file.", {
+      targetPath: candidate.path,
+      targetTitle: candidate.title
+    }));
+  }
+
+  if (hasSuggestedPath && hasContentOverlap) {
+    signals.push(createEdge(source, candidate, "model_related_link", 0.82, "The model selected this existing file path with content evidence.", {
       path: candidate.path
-    }));
+    }, "model_suggested"));
   }
 
-  if (sharedTags.length > 0) {
-    signals.push(createEdge(source, candidate, "shared_tag", 0.8, "Both files share tags.", {
-      tags: sharedTags
-    }));
-  }
-
-  if (candidateTitle && normalizedBody.includes(candidateTitle)) {
+  if (hasTitleMention) {
     signals.push(createEdge(source, candidate, "title_mention", 0.7, "The source body mentions the related file title.", {
       title: candidate.title
     }));
   }
 
-  if (sharedHeadings.length > 0) {
-    signals.push(createEdge(source, candidate, "shared_heading", 0.55, "Both files share headings.", {
-      headings: sharedHeadings
+  if (sharedEntities.length > 0 && (sharedSubjects.length > 0 || sharedKeywords.length >= 2)) {
+    signals.push(createEdge(source, candidate, "shared_entity", 0.68, "Both files share body-derived entities and content terms.", {
+      entities: sharedEntities.slice(0, 8),
+      subjects: sharedSubjects.slice(0, 8),
+      keywords: sharedKeywords.slice(0, 8)
     }));
   }
 
-  if (source.type && candidate.type && source.type === candidate.type) {
-    signals.push(createEdge(source, candidate, "type_affinity", 0.35, "Both files share the same type.", {
-      type: source.type
+  if (sharedSubjects.length >= 2 || (sharedSubjects.length >= 1 && sharedKeywords.length >= 2)) {
+    signals.push(createEdge(source, candidate, "shared_subject", 0.64, "Both files share body-derived subjects.", {
+      subjects: sharedSubjects.slice(0, 8),
+      keywords: sharedKeywords.slice(0, 8)
+    }));
+  }
+
+  if (hasContentOverlap && sharedTags.length > 0) {
+    signals.push(createEdge(source, candidate, "metadata_supported_content", 0.58, "Shared metadata is supported by body-derived content evidence.", {
+      tags: sharedTags.slice(0, 8)
     }));
   }
 
@@ -273,7 +358,8 @@ function createEdge(
   relationType: string,
   weight: number,
   reason: string,
-  evidence: Record<string, unknown>
+  evidence: Record<string, unknown>,
+  sourceKind: OkfGraphEdge["source"] = "deterministic"
 ): OkfGraphEdge {
   return {
     fromFileId: source.fileId,
@@ -281,18 +367,97 @@ function createEdge(
     relationType,
     weight,
     reason,
-    source: "deterministic",
+    source: sourceKind,
     evidence
   };
 }
 
-function extractHeadings(body: string): string[] {
+function createRejectedEdge(edge: OkfGraphEdge, reason: string): OkfGraphEdge {
+  return {
+    ...edge,
+    weight: 0,
+    source: "model_rejected",
+    reason: reason.trim() || "The model rejected this candidate relationship.",
+    evidence: {
+      ...(edge.evidence ?? {}),
+      rejectedRelationType: edge.relationType,
+      rejectedWeight: edge.weight
+    }
+  };
+}
+
+function matchesExplicitReference(source: OkfGraphNode, candidate: OkfGraphNode): boolean {
+  const references = [
+    ...(source.explicitReferences ?? []),
+    ...(source.relationshipHints ?? [])
+  ];
+  const candidatePath = normalizePublicPath(candidate.path);
+  const candidateTitle = normalizeSearchText(candidate.title);
+
+  return references.some((reference) => {
+    const normalizedReference = normalizePublicPath(reference);
+    return (
+      normalizedReference === candidatePath ||
+      normalizedReference.endsWith(`/${candidatePath}`) ||
+      (candidateTitle.length > 0 && normalizeSearchText(reference).includes(candidateTitle))
+    );
+  });
+}
+
+function extractSearchTerms(value: string): string[] {
   return unique(
-    body
-      .split(/\r?\n/u)
-      .map((line) => line.match(/^#{1,6}\s+(.+)$/u)?.[1]?.trim() ?? "")
-      .filter(Boolean)
-  ).slice(0, 50);
+    value
+      .split(/[^\p{L}\p{N}]+/u)
+      .map(normalizeTerm)
+      .filter(isUsefulTerm)
+  );
+}
+
+function intersectUseful(left: string[], right: string[]): string[] {
+  return intersect(
+    left.map(normalizeTerm).filter(isUsefulTerm),
+    right.map(normalizeTerm).filter(isUsefulTerm)
+  );
+}
+
+function isSpecificSharedSignal(value: string): boolean {
+  const normalized = normalizeTerm(value);
+
+  if (!isUsefulTerm(normalized) || /^https?:\/\//iu.test(normalized)) {
+    return false;
+  }
+
+  if (/official|source|citation|reference/iu.test(normalized)) {
+    return false;
+  }
+
+  if (/^\d+$/u.test(normalized) || /^[年月日号第届次条款章节]+$/u.test(normalized)) {
+    return false;
+  }
+
+  if (/\p{Script=Han}/u.test(normalized)) {
+    if (normalized.length < 3 || normalized.length > 30) {
+      return false;
+    }
+
+    if (/^(日|年|月|第|号)/u.test(normalized)) {
+      return false;
+    }
+
+    if (/人民代表大会常务委员会/u.test(normalized) && normalized.length > 12) {
+      return false;
+    }
+
+    return true;
+  }
+
+  return normalized.length >= 5;
+}
+
+function normalizeSearchText(value: string): string {
+  return normalizeTerm(value)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 function normalizePublicPath(path: string): string {
@@ -311,17 +476,9 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function tokenize(value: string): string[] {
-  return value
-    .toLowerCase()
-    .split(/[^a-z0-9]+/u)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2);
-}
-
 function intersect(left: string[], right: string[]): string[] {
-  const rightValues = new Set(right.map((value) => value.toLowerCase()));
-  return unique(left.filter((value) => rightValues.has(value.toLowerCase())));
+  const rightValues = new Set(right.map(normalizeTerm));
+  return unique(left.filter((value) => rightValues.has(normalizeTerm(value))));
 }
 
 function unique(values: string[]): string[] {

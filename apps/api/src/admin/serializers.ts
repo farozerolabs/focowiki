@@ -2,6 +2,7 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   FileGraphSummaryRecord,
+  GeneratedSourceFileOutputRecord,
   ReleaseRecord,
   SourceFileEventRecord,
   SourceFileRecord
@@ -39,7 +40,11 @@ export function toAdminBundleFile(file: BundleFileRecord) {
   };
 }
 
-export function toAdminSourceFile(file: SourceFileRecord, graphSummary?: FileGraphSummaryRecord | null) {
+export function toAdminSourceFile(
+  file: SourceFileRecord,
+  graphSummary?: FileGraphSummaryRecord | null,
+  generatedOutput?: GeneratedSourceFileOutputRecord | null
+) {
   return {
     id: file.id,
     originalName: file.originalName,
@@ -61,6 +66,9 @@ export function toAdminSourceFile(file: SourceFileRecord, graphSummary?: FileGra
     modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
+    generatedFileAvailable: Boolean(generatedOutput),
+    generatedFilePath: generatedOutput?.logicalPath ?? null,
+    generatedFileId: generatedOutput?.bundleFileId ?? null,
     graphSummary: graphSummary ? toAdminGraphSummary(graphSummary) : null,
     createdAt: file.createdAt
   };

@@ -95,6 +95,7 @@ export const resources = {
         back: "Back",
         toggleSidebar: "Toggle sidebar",
         emptyFiles: "Generated files will appear after upload parsing finishes.",
+        loadingFiles: "Loading generated files...",
         noFileSelected: "No file selected",
         sourceFiles: "Source files",
         releases: "Releases",
@@ -119,6 +120,7 @@ export const resources = {
           fileId: "File ID",
           stage: "Current stage",
           model: "LLM",
+          generatedFile: "Generated file",
           startedAt: "Started",
           endedAt: "Ended",
           error: "Error",
@@ -126,7 +128,12 @@ export const resources = {
         },
         retryFile: "Retry parsing",
         retryingFile: "Retrying",
+        openGeneratedFile: "Open file",
         noAction: "No action",
+        generatedFile: {
+          available: "Available",
+          pending: "Pending"
+        },
         fileStatus: {
           queued: "Queued",
           pending: "Queued",
@@ -198,6 +205,7 @@ export const resources = {
         title: "Generated files",
         preview: "Preview",
         fileTree: "File tree",
+        copyFile: "Copy file URL",
         copyIndex: "Copy index URL",
         copySearch: "Copy search URL",
         copyLinks: "Copy links URL",
@@ -316,6 +324,7 @@ export const resources = {
         back: "返回",
         toggleSidebar: "切换侧边栏",
         emptyFiles: "上传解析完成后会显示生成文件。",
+        loadingFiles: "正在加载生成文件...",
         noFileSelected: "尚未选择文件",
         sourceFiles: "来源文件",
         releases: "发布版本",
@@ -340,6 +349,7 @@ export const resources = {
           fileId: "文件 ID",
           stage: "当前阶段",
           model: "LLM",
+          generatedFile: "生成文件",
           startedAt: "开始时间",
           endedAt: "结束时间",
           error: "错误",
@@ -347,7 +357,12 @@ export const resources = {
         },
         retryFile: "重新解析",
         retryingFile: "解析中",
+        openGeneratedFile: "打开文件",
         noAction: "无操作",
+        generatedFile: {
+          available: "可用",
+          pending: "待生成"
+        },
         fileStatus: {
           queued: "排队中",
           pending: "排队中",
@@ -419,6 +434,7 @@ export const resources = {
         title: "生成文件",
         preview: "预览",
         fileTree: "文件树",
+        copyFile: "复制文件 URL",
         copyIndex: "复制 index URL",
         copySearch: "复制 search URL",
         copyLinks: "复制 links URL",

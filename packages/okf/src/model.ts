@@ -297,7 +297,11 @@ export function buildGraphRelationshipConfirmationRequest(
       targetPath: target?.path ?? "",
       targetTitle: target?.title ?? "",
       targetType: target?.type ?? "",
+      targetSummary: target?.summary ?? "",
+      targetSubjects: target?.subjects ?? [],
       targetTags: target?.tags ?? [],
+      targetKeywords: target?.keywords ?? [],
+      targetEntities: target?.entities ?? [],
       candidateRelationType: candidate.relationType,
       candidateWeight: candidate.weight,
       deterministicReason: candidate.reason,
@@ -321,7 +325,11 @@ export function buildGraphRelationshipConfirmationRequest(
       `Current path: ${input.currentFile.path}`,
       `Current title: ${input.currentFile.title}`,
       input.currentFile.type ? `Current type: ${input.currentFile.type}` : "",
+      input.currentFile.summary ? `Current summary: ${input.currentFile.summary}` : "",
+      input.currentFile.subjects?.length ? `Current subjects: ${input.currentFile.subjects.join(", ")}` : "",
       input.currentFile.tags?.length ? `Current tags: ${input.currentFile.tags.join(", ")}` : "",
+      input.currentFile.keywords?.length ? `Current keywords: ${input.currentFile.keywords.join(", ")}` : "",
+      input.currentFile.entities?.length ? `Current entities: ${input.currentFile.entities.join(", ")}` : "",
       ...(input.repair
         ? ["", "Previous attempt error:", sanitizeRepairText(input.repair.previousError)]
         : []),

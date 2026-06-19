@@ -153,6 +153,14 @@ curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/c
   --data-urlencode "path=$FIRST_PATH"
 ```
 
+只要路径属于生成后的公开文件树，Unicode 页面路径也可以读取。使用 `--data-urlencode`，让 `pages/遵义市城镇燃气安全管理条例.md` 这类文件名被安全编码：
+
+```bash
+curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "path=pages/遵义市城镇燃气安全管理条例.md"
+```
+
 按文件标识符读取生成文件内容：
 
 ```bash
@@ -175,7 +183,7 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-图关系文件属于逻辑生成文件。可以通过文件树、按路径读取、按 ID 读取或 related-file endpoint 访问。API 返回逻辑路径和安全原因，不返回 S3 object keys 或运行时内部信息。
+图关系文件属于逻辑生成文件。可以通过文件树、按路径读取、按 ID 读取或 related-file endpoint 访问。发布出的关系来自 accepted content-evidenced graph edges。API 返回逻辑路径和安全原因，不返回 S3 object keys 或运行时内部信息。
 
 读取上传响应返回的来源文件元数据：
 

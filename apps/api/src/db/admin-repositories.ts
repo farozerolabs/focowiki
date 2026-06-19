@@ -94,6 +94,12 @@ export type BundleFileRecord = {
   frontmatter: Record<string, unknown>;
 };
 
+export type GeneratedSourceFileOutputRecord = {
+  sourceFileId: string;
+  bundleFileId: string;
+  logicalPath: string;
+};
+
 export type SourceFileProcessingStatus = "queued" | "running" | "completed" | "failed";
 
 export type SourceFileProcessingStage =
@@ -288,6 +294,11 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<SourceFileRecord>>;
+  listGeneratedOutputsForSourceFiles?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    sourceFileIds: string[];
+  }) => Promise<GeneratedSourceFileOutputRecord[]>;
   listReleases: (request: {
     knowledgeBaseId: string;
     limit: number;
@@ -443,6 +454,10 @@ export type FileGraphRepository = {
     knowledgeBaseId: string;
     edges: OkfGraphEdge[];
   }) => Promise<void>;
+  upsertRejectedGraphEdges?: (input: {
+    knowledgeBaseId: string;
+    edges: OkfGraphEdge[];
+  }) => Promise<void>;
   listGraphNodes: (request: {
     knowledgeBaseId: string;
     limit: number;
@@ -530,6 +545,12 @@ type BundleFileRow = {
   description: string | null;
   tags_json: unknown;
   frontmatter_json: unknown;
+};
+
+type GeneratedSourceFileOutputRow = {
+  source_file_id: string;
+  bundle_file_id: string;
+  logical_path: string;
 };
 
 type SourceFileRow = {
@@ -1188,6 +1209,33 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               : null
         };
       },
+      async listGeneratedOutputsForSourceFiles({ knowledgeBaseId, releaseId, sourceFileIds }) {
+        if (sourceFileIds.length === 0) {
+          return [];
+        }
+
+        const rows = await sql<GeneratedSourceFileOutputRow[]>`
+          SELECT
+            source_file_id,
+            id AS bundle_file_id,
+            logical_path
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND release_id = ${releaseId}
+            AND source_file_id = ANY(${sourceFileIds})
+            AND file_kind = 'page'
+          ORDER BY source_file_id ASC, logical_path ASC, id ASC
+        `;
+        const firstBySourceFile = new Map<string, GeneratedSourceFileOutputRecord>();
+
+        for (const row of rows) {
+          if (!firstBySourceFile.has(row.source_file_id)) {
+            firstBySourceFile.set(row.source_file_id, mapGeneratedSourceFileOutputRow(row));
+          }
+        }
+
+        return Array.from(firstBySourceFile.values());
+      },
       async listReleases({ knowledgeBaseId, limit, cursor }) {
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
@@ -1788,6 +1836,16 @@ function mapBundleFileRow(row: BundleFileRow): BundleFileRecord {
     description: row.description,
     tags: readStringArray(row.tags_json),
     frontmatter: readRecord(row.frontmatter_json)
+  };
+}
+
+function mapGeneratedSourceFileOutputRow(
+  row: GeneratedSourceFileOutputRow
+): GeneratedSourceFileOutputRecord {
+  return {
+    sourceFileId: row.source_file_id,
+    bundleFileId: row.bundle_file_id,
+    logicalPath: row.logical_path
   };
 }
 

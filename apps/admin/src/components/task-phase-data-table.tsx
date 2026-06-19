@@ -16,12 +16,14 @@ type SourceFileDataTableProps = {
   sourceFiles: SourceFileRecord[];
   retryingSourceFileId?: string | null | undefined;
   onRetrySourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
+  onOpenGeneratedFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
 };
 
 export function SourceFileDataTable({
   sourceFiles,
   retryingSourceFileId,
-  onRetrySourceFile
+  onRetrySourceFile,
+  onOpenGeneratedFile
 }: SourceFileDataTableProps) {
   const { i18n, t } = useTranslation();
 
@@ -39,6 +41,7 @@ export function SourceFileDataTable({
             <TableHead>{t("tasks.filesTable.fileId")}</TableHead>
             <TableHead>{t("tasks.filesTable.stage")}</TableHead>
             <TableHead>{t("tasks.filesTable.model")}</TableHead>
+            <TableHead>{t("tasks.filesTable.generatedFile")}</TableHead>
             <TableHead>{t("tasks.filesTable.startedAt")}</TableHead>
             <TableHead>{t("tasks.filesTable.endedAt")}</TableHead>
             <TableHead>{t("tasks.filesTable.error")}</TableHead>
@@ -61,6 +64,13 @@ export function SourceFileDataTable({
               <TableCell className="text-muted-foreground">
                 {formatModelInvocation(file, t)}
               </TableCell>
+              <TableCell>
+                {file.generatedFileAvailable ? (
+                  <span className="text-foreground">{t("tasks.generatedFile.available")}</span>
+                ) : (
+                  <span className="text-muted-foreground">{t("tasks.generatedFile.pending")}</span>
+                )}
+              </TableCell>
               <TableCell className="text-muted-foreground">
                 {formatSourceFileTime(
                   file.processingStartedAt ?? file.createdAt,
@@ -75,7 +85,16 @@ export function SourceFileDataTable({
                 {file.processingErrorCode ?? t("tasks.noError")}
               </TableCell>
               <TableCell>
-                {file.processingStatus === "failed" && onRetrySourceFile ? (
+                {file.generatedFileAvailable && onOpenGeneratedFile ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onOpenGeneratedFile(file)}
+                  >
+                    {t("tasks.openGeneratedFile")}
+                  </Button>
+                ) : file.processingStatus === "failed" && onRetrySourceFile ? (
                   <Button
                     type="button"
                     variant="outline"

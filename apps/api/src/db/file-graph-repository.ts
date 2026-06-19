@@ -14,9 +14,18 @@ type FileGraphNodeRow = {
   title: string;
   type: string | null;
   description: string | null;
+  summary: string | null;
+  subjects_json: unknown;
   tags_json: unknown;
+  entities_json: unknown;
+  explicit_references_json: unknown;
+  relationship_hints_json: unknown;
   headings_json: unknown;
   keywords_json: unknown;
+  language: string | null;
+  profile_version: string | null;
+  profile_source: string | null;
+  profile_json: unknown;
   metadata_json: unknown;
   updated_at: Date;
 };
@@ -30,6 +39,7 @@ type FileGraphEdgeRow = {
   weight: string | number;
   reason: string;
   source: string;
+  status: "accepted" | "rejected";
   evidence_json: unknown;
   updated_at: Date;
 };
@@ -114,9 +124,18 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           title,
           type,
           description,
+          summary,
+          subjects_json,
           tags_json,
+          entities_json,
+          explicit_references_json,
+          relationship_hints_json,
           headings_json,
           keywords_json,
+          language,
+          profile_version,
+          profile_source,
+          profile_json,
           metadata_json,
           updated_at
         )
@@ -127,9 +146,18 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           ${node.title},
           ${node.type ?? null},
           ${node.description ?? null},
+          ${node.summary ?? null},
+          ${sql.json((node.subjects ?? []) as never)},
           ${sql.json((node.tags ?? []) as never)},
+          ${sql.json((node.entities ?? []) as never)},
+          ${sql.json((node.explicitReferences ?? []) as never)},
+          ${sql.json((node.relationshipHints ?? []) as never)},
           ${sql.json((node.headings ?? []) as never)},
           ${sql.json((node.keywords ?? []) as never)},
+          ${node.language ?? null},
+          ${node.profileVersion ?? null},
+          ${node.profileSource ?? null},
+          ${sql.json(readRecord(node.metadata?.contentProfile) as never)},
           ${sql.json((node.metadata ?? {}) as never)},
           now()
         )
@@ -139,9 +167,18 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           title = EXCLUDED.title,
           type = EXCLUDED.type,
           description = EXCLUDED.description,
+          summary = EXCLUDED.summary,
+          subjects_json = EXCLUDED.subjects_json,
           tags_json = EXCLUDED.tags_json,
+          entities_json = EXCLUDED.entities_json,
+          explicit_references_json = EXCLUDED.explicit_references_json,
+          relationship_hints_json = EXCLUDED.relationship_hints_json,
           headings_json = EXCLUDED.headings_json,
           keywords_json = EXCLUDED.keywords_json,
+          language = EXCLUDED.language,
+          profile_version = EXCLUDED.profile_version,
+          profile_source = EXCLUDED.profile_source,
+          profile_json = EXCLUDED.profile_json,
           metadata_json = EXCLUDED.metadata_json,
           updated_at = now()
       `;
@@ -158,6 +195,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             weight,
             reason,
             source,
+            status,
             evidence_json,
             updated_at
           )
@@ -170,6 +208,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             ${edge.weight},
             ${edge.reason},
             ${edge.source},
+            'accepted',
             ${sql.json((edge.evidence ?? {}) as never)},
             now()
           )
@@ -178,6 +217,47 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             weight = EXCLUDED.weight,
             reason = EXCLUDED.reason,
             source = EXCLUDED.source,
+            status = 'accepted',
+            evidence_json = EXCLUDED.evidence_json,
+            updated_at = now()
+        `;
+      }
+    },
+    async upsertRejectedGraphEdges({ knowledgeBaseId, edges }) {
+      for (const edge of edges) {
+        await sql`
+          INSERT INTO focowiki.source_file_graph_edges (
+            id,
+            knowledge_base_id,
+            from_source_file_id,
+            to_source_file_id,
+            relation_type,
+            weight,
+            reason,
+            source,
+            status,
+            evidence_json,
+            updated_at
+          )
+          VALUES (
+            ${createSourceFileGraphEdgeId()},
+            ${knowledgeBaseId},
+            ${edge.fromFileId},
+            ${edge.toFileId},
+            ${edge.relationType},
+            ${edge.weight},
+            ${edge.reason},
+            ${edge.source},
+            'rejected',
+            ${sql.json((edge.evidence ?? {}) as never)},
+            now()
+          )
+          ON CONFLICT (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type)
+          DO UPDATE SET
+            weight = EXCLUDED.weight,
+            reason = EXCLUDED.reason,
+            source = EXCLUDED.source,
+            status = 'rejected',
             evidence_json = EXCLUDED.evidence_json,
             updated_at = now()
         `;
@@ -187,7 +267,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
       const rows = cursorValue
         ? await sql<FileGraphNodeRow[]>`
-            SELECT knowledge_base_id, source_file_id, path, title, type, description, tags_json, headings_json, keywords_json, metadata_json, updated_at
+            SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
             FROM focowiki.source_file_graph_nodes
             WHERE knowledge_base_id = ${knowledgeBaseId}
               AND source_file_id > ${cursorValue.id}
@@ -195,7 +275,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             LIMIT ${limit + 1}
           `
         : await sql<FileGraphNodeRow[]>`
-            SELECT knowledge_base_id, source_file_id, path, title, type, description, tags_json, headings_json, keywords_json, metadata_json, updated_at
+            SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
             FROM focowiki.source_file_graph_nodes
             WHERE knowledge_base_id = ${knowledgeBaseId}
             ORDER BY source_file_id ASC
@@ -216,17 +296,19 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
       const rows = cursorValue
         ? await sql<FileGraphEdgeRow[]>`
-            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, evidence_json, updated_at
+            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, status, evidence_json, updated_at
             FROM focowiki.source_file_graph_edges
             WHERE knowledge_base_id = ${knowledgeBaseId}
+              AND status = 'accepted'
               AND id > ${cursorValue.id}
             ORDER BY id ASC
             LIMIT ${limit + 1}
           `
         : await sql<FileGraphEdgeRow[]>`
-            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, evidence_json, updated_at
+            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, status, evidence_json, updated_at
             FROM focowiki.source_file_graph_edges
             WHERE knowledge_base_id = ${knowledgeBaseId}
+              AND status = 'accepted'
             ORDER BY id ASC
             LIMIT ${limit + 1}
           `;
@@ -273,6 +355,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
         SELECT count(*)::int AS relationship_count
         FROM focowiki.source_file_graph_edges
         WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND status = 'accepted'
           AND (
             from_source_file_id = ${sourceFileId}
             OR to_source_file_id = ${sourceFileId}
@@ -334,6 +417,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           edge.evidence_json
         FROM focowiki.source_file_graph_edges edge
         WHERE edge.knowledge_base_id = ${knowledgeBaseId}
+          AND edge.status = 'accepted'
           AND edge.from_source_file_id = ${sourceFileId}
         UNION ALL
         SELECT
@@ -346,6 +430,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           edge.evidence_json
         FROM focowiki.source_file_graph_edges edge
         WHERE edge.knowledge_base_id = ${knowledgeBaseId}
+          AND edge.status = 'accepted'
           AND edge.to_source_file_id = ${sourceFileId}
       )
       SELECT
@@ -390,9 +475,17 @@ function mapFileGraphNodeRow(row: FileGraphNodeRow): OkfGraphNode {
     title: row.title,
     ...(row.type ? { type: row.type } : {}),
     ...(row.description ? { description: row.description } : {}),
+    ...(row.summary ? { summary: row.summary } : {}),
+    subjects: readStringArray(row.subjects_json),
     tags: readStringArray(row.tags_json),
+    entities: readStringArray(row.entities_json),
+    explicitReferences: readStringArray(row.explicit_references_json),
+    relationshipHints: readStringArray(row.relationship_hints_json),
     headings: readStringArray(row.headings_json),
     keywords: readStringArray(row.keywords_json),
+    ...(row.language ? { language: row.language } : {}),
+    ...(row.profile_version ? { profileVersion: row.profile_version } : {}),
+    ...(row.profile_source ? { profileSource: row.profile_source } : {}),
     metadata: readRecord(row.metadata_json)
   };
 }

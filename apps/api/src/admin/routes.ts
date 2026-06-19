@@ -5,6 +5,7 @@ import { type RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
 import type {
   AdminRepositories,
+  GeneratedSourceFileOutputRecord,
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
@@ -21,6 +22,7 @@ import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
 import { createDeletionService } from "./deletion-service.js";
+import { readGeneratedOutputsForSourceFiles } from "./source-file-generated-output.js";
 import {
   adminUnauthorized,
   createAdminAuthMiddleware,
@@ -635,12 +637,18 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         limit,
         cursor: repositoryCursor
       });
+      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+        repositories,
+        knowledgeBase,
+        sourceFiles: page.items
+      });
       const items = await Promise.all(
         page.items.map((file) =>
           readAdminSourceFileWithGraphSummary({
             repositories,
             knowledgeBaseId: knowledgeBase.id,
-            sourceFile: file
+            sourceFile: file,
+            generatedOutput: generatedOutputs.get(file.id) ?? null
           })
         )
       );
@@ -726,7 +734,15 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         file: await readAdminSourceFileWithGraphSummary({
           repositories,
           knowledgeBaseId: knowledgeBase.id,
-          sourceFile
+          sourceFile,
+          generatedOutput:
+            (
+              await readGeneratedOutputsForSourceFiles({
+                repositories,
+                knowledgeBase,
+                sourceFiles: [sourceFile]
+              })
+            ).get(sourceFile.id) ?? null
         }),
         events: {
           items: events.items.map(toAdminSourceFileEvent),
@@ -940,9 +956,10 @@ async function readAdminSourceFileWithGraphSummary(input: {
   repositories: AdminRepositories;
   knowledgeBaseId: string;
   sourceFile: SourceFileRecord;
+  generatedOutput?: GeneratedSourceFileOutputRecord | null;
 }) {
   if (!input.repositories.graph?.getGraphSummary) {
-    return toAdminSourceFile(input.sourceFile);
+    return toAdminSourceFile(input.sourceFile, null, input.generatedOutput ?? null);
   }
 
   const summary = await input.repositories.graph.getGraphSummary({
@@ -951,7 +968,7 @@ async function readAdminSourceFileWithGraphSummary(input: {
     limit: 3
   });
 
-  return toAdminSourceFile(input.sourceFile, summary);
+  return toAdminSourceFile(input.sourceFile, summary, input.generatedOutput ?? null);
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {

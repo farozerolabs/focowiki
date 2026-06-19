@@ -300,6 +300,15 @@ function createRepositories(): AdminRepositories & {
       async listSourceFiles() {
         return { items: [sourceFile], nextCursor: null };
       },
+      async listGeneratedOutputsForSourceFiles() {
+        return [
+          {
+            sourceFileId: "source-guide",
+            bundleFileId: "bundle-guide",
+            logicalPath: "pages/guide.md"
+          }
+        ];
+      },
       async listReleases() {
         return { items: [], nextCursor: null };
       },
@@ -487,9 +496,14 @@ describe("Developer OpenAPI", () => {
     expect(body.items[0]).toMatchObject({
       fileId: "source-guide",
       originalFilename: "guide.md",
-      processingState: "completed"
+      processingState: "completed",
+      generatedFileAvailable: true,
+      generatedFileId: "bundle-guide",
+      generatedFilePath: "pages/guide.md"
     });
     expect(body.items[0]).not.toHaveProperty("taskId");
+    expect(body.items[0]).not.toHaveProperty("releaseId");
+    expect(body.items[0]).not.toHaveProperty("objectKey");
   });
 
   it("returns bounded related files for a generated source-backed file", async () => {

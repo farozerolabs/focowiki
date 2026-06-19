@@ -94,6 +94,16 @@ describe("Admin upload file picker", () => {
             processingEndedAt: null,
             processingErrorCode: null,
             createdAt: "2026-06-14T00:00:00.000Z"
+          },
+          {
+            id: "source-ongoing",
+            originalName: "ongoing.md",
+            processingStatus: "running",
+            processingStage: "llm_suggestion",
+            processingStartedAt: "2026-06-14T00:00:01.000Z",
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:01.000Z"
           }
         ],
         nextCursor: null
@@ -265,7 +275,20 @@ describe("Admin upload file picker", () => {
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:05.000Z",
             processingErrorCode: null,
+            generatedFileAvailable: true,
+            generatedFileId: "bundle-intro",
+            generatedFilePath: "pages/intro.md",
             createdAt: "2026-06-14T00:00:00.000Z"
+          },
+          {
+            id: "source-ongoing",
+            originalName: "ongoing.md",
+            processingStatus: "running",
+            processingStage: "llm_suggestion",
+            processingStartedAt: "2026-06-14T00:00:01.000Z",
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:01.000Z"
           }
         ],
         nextCursor: null

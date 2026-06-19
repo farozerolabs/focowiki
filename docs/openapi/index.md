@@ -153,6 +153,14 @@ curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/c
   --data-urlencode "path=$FIRST_PATH"
 ```
 
+Unicode page paths are supported when they belong to the generated public tree. Use `--data-urlencode` so filenames such as `pages/遵义市城镇燃气安全管理条例.md` are encoded safely:
+
+```bash
+curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "path=pages/遵义市城镇燃气安全管理条例.md"
+```
+
 Read generated file content by file identifier:
 
 ```bash
@@ -175,7 +183,7 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/fil
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-Graph files are logical generated files. Use tree listing, content by path, content by ID, or the related-file endpoint. The API returns logical paths and safe reasons, not S3 object keys or runtime internals.
+Graph files are logical generated files. Use tree listing, content by path, content by ID, or the related-file endpoint. Published relationships come from accepted content-evidenced graph edges. The API returns logical paths and safe reasons, not S3 object keys or runtime internals.
 
 Read source file metadata returned by the upload response:
 

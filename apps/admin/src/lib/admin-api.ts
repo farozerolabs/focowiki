@@ -84,6 +84,9 @@ export type SourceFileRecord = {
   modelInvocationEndedAt?: string | null;
   modelInvocationWarningCount?: number | null;
   modelInvocationErrorCode?: string | null;
+  generatedFileAvailable?: boolean;
+  generatedFilePath?: string | null;
+  generatedFileId?: string | null;
   graphSummary?: {
     sourceFileId: string;
     relationshipCount: number;

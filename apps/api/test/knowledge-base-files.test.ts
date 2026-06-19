@@ -103,6 +103,7 @@ function createRepositories() {
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
   const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
+  const generatedOutputCalls: Array<{ knowledgeBaseId: string; releaseId: string; sourceFileIds: string[] }> = [];
   const bundleFile = {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
@@ -131,7 +132,8 @@ function createRepositories() {
       sourceCalls,
       releaseCalls,
       bundleCalls,
-      graphSummaryCalls
+      graphSummaryCalls,
+      generatedOutputCalls
     },
     repositories: {
       knowledgeBases: {
@@ -207,6 +209,20 @@ function createRepositories() {
             ].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
             nextCursor: null
           };
+        },
+        async listGeneratedOutputsForSourceFiles(input: {
+          knowledgeBaseId: string;
+          releaseId: string;
+          sourceFileIds: string[];
+        }) {
+          generatedOutputCalls.push(input);
+          return [
+            {
+              sourceFileId: "source-001",
+              bundleFileId: "bundle-file-001",
+              logicalPath: "pages/intro.md"
+            }
+          ];
         },
         async listReleases(request: { limit: number; cursor: string | null }) {
           releaseCalls.push(request);
@@ -453,6 +469,13 @@ describe("Knowledge base file Admin API", () => {
     expect(releases.status).toBe(200);
     expect(bundleFiles.status).toBe(200);
     expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
+    expect(sourceBody.items[0]).toMatchObject({
+      generatedFileAvailable: true,
+      generatedFileId: "bundle-file-001",
+      generatedFilePath: "pages/intro.md"
+    });
+    expect(sourceBody.items[0]).not.toHaveProperty("releaseId");
+    expect(sourceBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(sourceBody.items[0]?.graphSummary).toMatchObject({
       relationshipCount: 1,
       relationships: [expect.objectContaining({ path: "pages/related.md" })]
@@ -462,6 +485,13 @@ describe("Knowledge base file Admin API", () => {
     expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.graphSummaryCalls).toEqual([
       expect.objectContaining({ sourceFileId: "source-001", limit: 3 })
+    ]);
+    expect(records.generatedOutputCalls).toEqual([
+      expect.objectContaining({
+        knowledgeBaseId: "kb-001",
+        releaseId: "release-001",
+        sourceFileIds: ["source-001"]
+      })
     ]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);

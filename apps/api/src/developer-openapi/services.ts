@@ -12,6 +12,7 @@ import { createSourceFileQueueProcessor } from "../admin/source-file-processor.j
 import { acceptUploadSourceFiles } from "../admin/source-file-upload.js";
 import type { LoadedUploadFile } from "../admin/upload-processor-utils.js";
 import { createDeletionService } from "../admin/deletion-service.js";
+import { readGeneratedOutputsForSourceFiles } from "../admin/source-file-generated-output.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
 import type { OpenAIResponsesClient } from "@focowiki/okf";
 import {
@@ -269,7 +270,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
       return {
         knowledgeBaseId: knowledgeBase.id,
-        files: sourceFiles.map(toDeveloperSourceFile)
+        files: sourceFiles.map((file) => toDeveloperSourceFile(file))
       };
     },
     async listSourceFiles(input: { knowledgeBaseId: string; limit: number; cursor: string | null }) {
@@ -279,12 +280,17 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw repositoryUnavailable();
       }
 
-      await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
       const scope = `developer-openapi:source-files:${input.knowledgeBaseId}`;
       const page = await repo.files.listSourceFiles({
         knowledgeBaseId: input.knowledgeBaseId,
         limit: input.limit,
         cursor: await readCursor(requireRedis(), scope, input.cursor)
+      });
+      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+        repositories: repo,
+        knowledgeBase,
+        sourceFiles: page.items
       });
 
       return pageResponse(
@@ -292,7 +298,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         scope,
         config.pagination.cursorTtlSeconds,
         requireRedis(),
-        toDeveloperSourceFile
+        (file) => toDeveloperSourceFile(file, generatedOutputs.get(file.id) ?? null)
       );
     },
     async getSourceFile(input: {
@@ -305,6 +311,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw repositoryUnavailable();
       }
 
+      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
       const sourceFile = await repo.files.getSourceFile({
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId: input.sourceFileId
@@ -314,8 +321,14 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw notFound();
       }
 
+      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+        repositories: repo,
+        knowledgeBase,
+        sourceFiles: [sourceFile]
+      });
+
       return {
-        file: toDeveloperSourceFile(sourceFile)
+        file: toDeveloperSourceFile(sourceFile, generatedOutputs.get(sourceFile.id) ?? null)
       };
     },
     async listSourceFileEvents(input: {

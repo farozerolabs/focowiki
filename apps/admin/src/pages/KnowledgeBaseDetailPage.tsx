@@ -29,6 +29,11 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
 import {
+  rememberSourceFileRefreshSnapshots,
+  shouldRefreshGeneratedFiles,
+  type SourceFileRefreshSnapshot
+} from "@/lib/source-file-refresh";
+import {
   deleteKnowledgeBaseFile,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
@@ -64,7 +69,7 @@ export function KnowledgeBaseDetailPage({
   onLogout
 }: KnowledgeBaseDetailPageProps) {
   const { t } = useTranslation();
-  const hasRunningSourceFilesRef = useRef(false);
+  const sourceFileRefreshSnapshotsRef = useRef<Map<string, SourceFileRefreshSnapshot>>(new Map());
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("processing");
@@ -106,6 +111,7 @@ export function KnowledgeBaseDetailPage({
     setRetryingSourceFileId(null);
     setPublicUrls(null);
     setCopiedUrl("");
+    sourceFileRefreshSnapshotsRef.current = new Map();
     loadedTreeParentsRef.current = new Set();
 
     void loadFileTree({ parentPath: ROOT_PARENT_PATH, replace: true });
@@ -203,20 +209,20 @@ export function KnowledgeBaseDetailPage({
       knowledgeBaseId: knowledgeBase.id,
       cursor: input.replace ? null : sourceFileCursor
     });
-    const hasRunningFiles = page.items.some(
-      (file) => file.processingStatus === "queued" || file.processingStatus === "running"
-    );
-    const shouldRefreshGeneratedFiles =
-      input.replace && hasRunningSourceFilesRef.current && !hasRunningFiles;
+    const hasSourceFileSnapshot = sourceFileRefreshSnapshotsRef.current.size > 0;
+    const shouldRefreshGeneratedTree =
+      input.replace &&
+      hasSourceFileSnapshot &&
+      shouldRefreshGeneratedFiles(sourceFileRefreshSnapshotsRef.current, page.items);
 
     setSourceFiles((current) => (input.replace ? page.items : [...current, ...page.items]));
     setSourceFileCursor(page.nextCursor);
 
     if (input.replace) {
-      hasRunningSourceFilesRef.current = hasRunningFiles;
+      sourceFileRefreshSnapshotsRef.current = rememberSourceFileRefreshSnapshots(page.items);
     }
 
-    if (shouldRefreshGeneratedFiles) {
+    if (shouldRefreshGeneratedTree) {
       await refreshGeneratedFiles();
     }
   }
@@ -308,11 +314,14 @@ export function KnowledgeBaseDetailPage({
           running: t("tasks.runningShort"),
           ended: t("tasks.endedShort"),
           deleteFile: t("delete.action"),
-          fileActions: t("delete.fileMenu")
+          fileActions: t("delete.fileMenu"),
+          emptyFiles: t("detail.emptyFiles"),
+          loadingFiles: t("detail.loadingFiles")
         }}
         activeView={activeView}
         tree={sidebarTree}
         rootNextCursor={rootTreePage?.nextCursor ?? null}
+        rootLoading={Boolean(rootTreePage?.isLoading)}
         sourceFiles={sourceFiles}
         onBack={onBack}
         onLogout={onLogout}
@@ -351,6 +360,14 @@ export function KnowledgeBaseDetailPage({
               errorMessageKey={sourceFileError}
               retryingSourceFileId={retryingSourceFileId}
               onRetrySourceFile={(sourceFile) => void handleRetrySourceFile(sourceFile)}
+              onOpenGeneratedFile={(sourceFile) => {
+                if (sourceFile.generatedFilePath) {
+                  void openPreviewPath(
+                    sourceFile.generatedFilePath,
+                    sourceFile.generatedFilePath.split("/").at(-1) ?? sourceFile.originalName
+                  );
+                }
+              }}
             />
           ) : (
             <FilePreviewPanel
@@ -429,6 +446,9 @@ function FilePreviewPanel({
   onOpenPreviewPath: (path: string, title: string) => void;
 }) {
   const { t } = useTranslation();
+  const selectedPublicUrl =
+    publicUrls && selectedFilePath ? buildSelectedFilePublicUrl(publicUrls.index, selectedFilePath) : null;
+  const copyUrl = selectedPublicUrl ?? publicUrls?.index ?? null;
 
   function handlePreviewClick(event: MouseEvent<HTMLElement>) {
     const target = event.target;
@@ -454,14 +474,14 @@ function FilePreviewPanel({
       <CardHeader>
         <CardTitle>{selectedFileTitle || selectedFilePath || t("detail.noFileSelected")}</CardTitle>
         <CardDescription>{t("result.preview")}</CardDescription>
-        {publicUrls ? (
+        {copyUrl ? (
           <CardAction>
             <Button
               type="button"
               variant="outline"
               size="icon-sm"
-              aria-label={t("result.copyIndex")}
-              onClick={() => onCopy(publicUrls.index)}
+              aria-label={t(selectedFilePath ? "result.copyFile" : "result.copyIndex")}
+              onClick={() => onCopy(copyUrl)}
             >
               <CopyIcon />
             </Button>
@@ -484,6 +504,12 @@ function FilePreviewPanel({
       </CardContent>
     </Card>
   );
+}
+
+function buildSelectedFilePublicUrl(indexUrl: string, logicalPath: string): string {
+  const url = new URL(indexUrl);
+  url.searchParams.set("path", logicalPath);
+  return url.toString();
 }
 
 function buildSidebarTree(

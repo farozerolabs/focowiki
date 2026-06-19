@@ -2,6 +2,7 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   FileGraphRelatedRecord,
+  GeneratedSourceFileOutputRecord,
   KnowledgeBaseRecord,
   SourceFileEventRecord,
   SourceFileRecord,
@@ -20,7 +21,10 @@ export function toDeveloperKnowledgeBase(record: KnowledgeBaseRecord) {
   };
 }
 
-export function toDeveloperSourceFile(record: SourceFileRecord) {
+export function toDeveloperSourceFile(
+  record: SourceFileRecord,
+  generatedOutput?: GeneratedSourceFileOutputRecord | null
+) {
   return {
     fileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
@@ -43,6 +47,9 @@ export function toDeveloperSourceFile(record: SourceFileRecord) {
     modelInvocationEndedAt: record.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: record.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: record.modelInvocationErrorCode ?? null,
+    generatedFileAvailable: Boolean(generatedOutput),
+    generatedFileId: generatedOutput?.bundleFileId ?? null,
+    generatedFilePath: generatedOutput?.logicalPath ?? null,
     createdAt: record.createdAt
   };
 }
@@ -113,11 +120,14 @@ export function toDeveloperRelatedFile(record: FileGraphRelatedRecord) {
   };
 }
 
-export function toDeveloperSourceFileDetail(record: SourceFileRecord) {
+export function toDeveloperSourceFileDetail(
+  record: SourceFileRecord,
+  generatedOutput?: GeneratedSourceFileOutputRecord | null
+) {
   return {
     fileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
-    path: null,
+    path: generatedOutput?.logicalPath ?? null,
     originalFilename: record.originalName,
     fileKind: "source",
     contentType: record.contentType,
@@ -125,7 +135,10 @@ export function toDeveloperSourceFileDetail(record: SourceFileRecord) {
     checksumSha256: record.checksumSha256,
     processingState: record.processingStatus ?? "completed",
     currentStage: record.processingStage ?? "release_activation",
-    contentAvailable: false
+    contentAvailable: Boolean(generatedOutput),
+    generatedFileAvailable: Boolean(generatedOutput),
+    generatedFileId: generatedOutput?.bundleFileId ?? null,
+    generatedFilePath: generatedOutput?.logicalPath ?? null
   };
 }
 

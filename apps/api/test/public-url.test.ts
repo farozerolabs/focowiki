@@ -26,10 +26,34 @@ describe("public URL builder", () => {
     expect(url).not.toContain("object_key");
   });
 
+  it("builds URLs for safe Unicode generated file paths", () => {
+    expect(
+      buildPublicFileUrl(
+        "https://kb.example.com",
+        "kb-001",
+        "pages/遵义市城镇燃气安全管理条例__2024-10-11__有效__752a7652a90e.md"
+      )
+    ).toBe(
+      "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2F%E9%81%B5%E4%B9%89%E5%B8%82%E5%9F%8E%E9%95%87%E7%87%83%E6%B0%94%E5%AE%89%E5%85%A8%E7%AE%A1%E7%90%86%E6%9D%A1%E4%BE%8B__2024-10-11__%E6%9C%89%E6%95%88__752a7652a90e.md"
+    );
+  });
+
   it("rejects unsafe public URL path segments", () => {
     expect(() => buildPublicFileUrl("https://kb.example.com", "kb-001", "../index.md")).toThrow(
       /path/
     );
+    expect(() =>
+      buildPublicFileUrl("https://kb.example.com", "kb-001", "%252e%252e/index.md")
+    ).toThrow(/path/);
+    expect(() =>
+      buildPublicFileUrl("https://kb.example.com", "kb-001", "pages\\intro.md")
+    ).toThrow(/path/);
+    expect(() =>
+      buildPublicFileUrl("https://kb.example.com", "kb-001", "pages/intro\u0000.md")
+    ).toThrow(/path/);
+    expect(() =>
+      buildPublicFileUrl("https://kb.example.com", "kb-001", "sources/intro.md")
+    ).toThrow(/path/);
     expect(() =>
       buildPublicFileUrl("https://kb.example.com", "../kb", "index.md")
     ).toThrow(/knowledgeBaseId/);

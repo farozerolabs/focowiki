@@ -38,6 +38,9 @@ const sourceFile = {
   modelInvocationEndedAt: exampleTimestamp,
   modelInvocationWarningCount: 0,
   modelInvocationErrorCode: null,
+  generatedFileAvailable: true,
+  generatedFileId: bundleFileId,
+  generatedFilePath: "pages/guide.md",
   createdAt: exampleTimestamp
 };
 
@@ -81,13 +84,13 @@ const relatedFile = {
   bundleFileId: "file_page_456",
   path: "pages/reference.md",
   title: "Reference",
-  relationType: "shared_tag",
+  relationType: "shared_subject",
   direction: "outgoing",
-  weight: 0.8,
-  reason: "Both files share a topic.",
+  weight: 0.72,
+  reason: "Both files share body-derived subjects.",
   source: "deterministic",
   evidence: {
-    tags: ["guide"]
+    subjects: ["integration", "configuration"]
   },
   contentAvailable: true
 };

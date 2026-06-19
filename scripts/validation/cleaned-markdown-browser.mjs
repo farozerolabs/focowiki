@@ -152,6 +152,7 @@ try {
   await openPagesDirectoryIfNeeded(page, firstSampleName);
   await page.getByRole("button", { name: firstSampleName, exact: true }).click();
   await waitForPreviewText(page, singleSample.title);
+  const firstCopiedUrl = await copySelectedFileUrl(page);
 
   report.checks.push(okCheck("single-file-preview", "Opened generated single-upload file preview in browser."));
 
@@ -173,21 +174,17 @@ try {
   await page.getByRole("button", { name: secondSampleName, exact: true }).click();
   await waitForPreviewText(page, batchSamples[0].title);
   await waitForPreviewText(page, "Related");
+  const secondCopiedUrl = await copySelectedFileUrl(page);
+
+  if (firstCopiedUrl === secondCopiedUrl) {
+    throw new Error("Different selected generated files copied the same public URL.");
+  }
 
   report.checks.push(okCheck("batch-file-preview", "Opened generated batch-upload file preview in browser."));
   report.checks.push(okCheck("graph-related-preview", "Generated page preview shows graph-backed related links."));
+  report.checks.push(okCheck("copy-url", "Selected generated files copied distinct Developer OpenAPI URLs."));
 
   await validateGraphFilePreview(page, batchSourceFileIds[0]);
-
-  const copyButton = page.getByRole("button", { name: "Copy index URL" });
-  await copyButton.click();
-  const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
-
-  if (!clipboardText.includes("/openapi/v1/knowledge-bases/") || clipboardText.includes("S3_")) {
-    throw new Error("Copied public URL does not look like a Developer OpenAPI file URL.");
-  }
-
-  report.checks.push(okCheck("copy-url", "Public URL copy action produced a Developer OpenAPI URL."));
 
   await page.getByRole("button", { name: `File actions: ${secondSampleName}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
@@ -402,6 +399,27 @@ async function validateGraphFilePreview(page, sourceFileId) {
   await waitForPreviewText(page, sourceFileId);
   await waitForPreviewText(page, "relationships");
   report.checks.push(okCheck("graph-file-preview", "Opened generated file-first graph JSON preview in browser."));
+}
+
+async function copySelectedFileUrl(page) {
+  const copyFileButton = page.getByRole("button", { name: "Copy file URL" });
+
+  if ((await copyFileButton.count()) === 0) {
+    throw new Error("Selected generated file did not expose the file URL copy action.");
+  }
+
+  await copyFileButton.click();
+  const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+
+  if (!clipboardText.includes("/openapi/v1/knowledge-bases/") || clipboardText.includes("S3_")) {
+    throw new Error("Copied public URL does not look like a Developer OpenAPI file URL.");
+  }
+
+  if (clipboardText.includes("path=index.md")) {
+    throw new Error("Selected generated file copied the root index URL.");
+  }
+
+  return clipboardText;
 }
 
 async function waitForPreviewText(page, expectedText) {

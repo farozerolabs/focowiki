@@ -228,9 +228,18 @@ CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_nodes (
   title text NOT NULL,
   type text,
   description text,
+  summary text,
+  subjects_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  entities_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  explicit_references_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  relationship_hints_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   headings_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   keywords_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  language text,
+  profile_version text,
+  profile_source text,
+  profile_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (knowledge_base_id, source_file_id)
@@ -245,9 +254,11 @@ CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_edges (
   weight numeric NOT NULL CHECK (weight >= 0 AND weight <= 1),
   reason text NOT NULL,
   source text NOT NULL,
+  status text NOT NULL DEFAULT 'accepted',
   evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type),
+  CHECK (status IN ('accepted', 'rejected')),
   CHECK (from_source_file_id <> to_source_file_id)
 );
 
@@ -263,6 +274,25 @@ CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_jobs (
   CHECK (status IN ('running', 'completed', 'failed')),
   CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
+
+ALTER TABLE focowiki.source_file_graph_nodes
+  ADD COLUMN IF NOT EXISTS summary text,
+  ADD COLUMN IF NOT EXISTS subjects_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS entities_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS explicit_references_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS relationship_hints_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS language text,
+  ADD COLUMN IF NOT EXISTS profile_version text,
+  ADD COLUMN IF NOT EXISTS profile_source text,
+  ADD COLUMN IF NOT EXISTS profile_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE focowiki.source_file_graph_edges
+  ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'accepted';
+
+ALTER TABLE focowiki.source_file_graph_edges
+  DROP CONSTRAINT IF EXISTS source_file_graph_edges_status_check,
+  ADD CONSTRAINT source_file_graph_edges_status_check
+  CHECK (status IN ('accepted', 'rejected'));
 
 CREATE TABLE IF NOT EXISTS focowiki.bundle_tree_entries (
   id text PRIMARY KEY,
@@ -340,6 +370,33 @@ CREATE TABLE IF NOT EXISTS focowiki.webhook_deliveries (
   CHECK (id ~ '^delivery-[a-zA-Z0-9-]+$'),
   CHECK (status IN ('pending', 'success', 'failed'))
 );
+
+CREATE TABLE IF NOT EXISTS focowiki.internal_migration_markers (
+  marker_key text PRIMARY KEY,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM focowiki.internal_migration_markers
+    WHERE marker_key = 'content-driven-file-graph-v1'
+  ) THEN
+    UPDATE focowiki.knowledge_bases
+    SET active_release_id = NULL;
+
+    DELETE FROM focowiki.bundle_tree_entries;
+    DELETE FROM focowiki.bundle_files;
+    DELETE FROM focowiki.releases;
+    DELETE FROM focowiki.source_file_graph_edges;
+    DELETE FROM focowiki.source_file_graph_nodes;
+    DELETE FROM focowiki.source_file_graph_jobs;
+
+    INSERT INTO focowiki.internal_migration_markers(marker_key)
+    VALUES ('content-driven-file-graph-v1');
+  END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -428,14 +485,20 @@ CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_logical_cursor_idx
 CREATE INDEX IF NOT EXISTS source_file_graph_nodes_kb_path_cursor_idx
   ON focowiki.source_file_graph_nodes(knowledge_base_id, path, source_file_id);
 
+CREATE INDEX IF NOT EXISTS source_file_graph_nodes_profile_version_idx
+  ON focowiki.source_file_graph_nodes(knowledge_base_id, profile_version, source_file_id);
+
 CREATE INDEX IF NOT EXISTS source_file_graph_edges_from_weight_idx
-  ON focowiki.source_file_graph_edges(knowledge_base_id, from_source_file_id, weight DESC, to_source_file_id);
+  ON focowiki.source_file_graph_edges(knowledge_base_id, from_source_file_id, weight DESC, to_source_file_id)
+  WHERE status = 'accepted';
 
 CREATE INDEX IF NOT EXISTS source_file_graph_edges_to_weight_idx
-  ON focowiki.source_file_graph_edges(knowledge_base_id, to_source_file_id, weight DESC, from_source_file_id);
+  ON focowiki.source_file_graph_edges(knowledge_base_id, to_source_file_id, weight DESC, from_source_file_id)
+  WHERE status = 'accepted';
 
 CREATE INDEX IF NOT EXISTS source_file_graph_edges_relation_weight_idx
-  ON focowiki.source_file_graph_edges(knowledge_base_id, relation_type, weight DESC, id);
+  ON focowiki.source_file_graph_edges(knowledge_base_id, relation_type, weight DESC, id)
+  WHERE status = 'accepted';
 
 CREATE INDEX IF NOT EXISTS source_file_graph_jobs_source_created_idx
   ON focowiki.source_file_graph_jobs(knowledge_base_id, source_file_id, created_at DESC, id);

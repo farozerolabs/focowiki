@@ -16,10 +16,13 @@ Focowiki handles this by separating relationship work into two layers:
 
 | Layer | Purpose |
 | --- | --- |
-| Deterministic candidates | Use bounded database reads and safe document signals such as Markdown links, title mentions, shared tags, shared type, headings, and existing reciprocal relationships. |
-| Optional model confirmation | Send only the current file card and selected candidate cards to the configured model. The model can confirm, reject, classify, weight, and explain provided candidates. |
+| Content profile | Build one generic profile from each Markdown body, including summary, subjects, keywords, entities, explicit references, heading outline, and safe frontmatter context. |
+| Deterministic candidates | Use bounded database reads and content evidence such as Markdown links, title mentions, shared entities, shared subjects, explicit references, and existing reciprocal relationships. |
+| Optional model confirmation | Send only the current file profile, bounded source view, and selected candidate cards to the configured model. The model can confirm, reject, classify, weight, and explain provided candidates. |
 
-The model cannot invent target files. If model confirmation fails, deterministic relationships can still be published when they are safe.
+The model cannot invent target files. If model confirmation rejects a candidate, that candidate is not published as an accepted relationship. If model confirmation fails, deterministic relationships can still be published when they have strong content evidence.
+
+Generic metadata such as one shared status, one broad type, one low-information tag, or a generated system heading does not create a page `Related` link by itself. Metadata can support a relationship when the body profile already shows content evidence.
 
 ## Generated Files
 
@@ -66,7 +69,7 @@ Each relationship record contains safe public fields.
 | `fileId` | Related source-backed file identifier. |
 | `path` | Related generated Markdown path, such as `pages/example.md`. |
 | `title` | Related file title. |
-| `relationType` | Relationship type, such as `title_mention`, `shared_tag`, `shared_heading`, `type_affinity`, or `model_related_link`. |
+| `relationType` | Relationship type, such as `explicit_reference`, `title_mention`, `shared_entity`, `shared_subject`, `metadata_supported_content`, or `model_related_link`. |
 | `direction` | `outgoing` when the current file points to the related file, `incoming` when another file points to the current file. |
 | `weight` | Bounded priority score from `0` to `1`. |
 | `reason` | Safe explanation for users, developers, and Agents. |
@@ -87,6 +90,8 @@ Graph files expose logical identifiers and paths. They do not expose S3 object k
 8. Continue following Markdown links and graph relationships while the task needs more evidence.
 
 Developer OpenAPI also exposes a bounded related-file endpoint for backend integrations that prefer JSON lists. File reads remain the primary Agent-facing contract.
+
+Admin previews copy a Developer OpenAPI content URL for the selected generated file. Safe Unicode page paths such as `pages/示例.md` are encoded in the copied URL and resolved back to the active generated file by the Developer OpenAPI.
 
 ## Operational Notes
 
