@@ -12,6 +12,7 @@ const gitignorePath = resolve(rootDir, ".gitignore");
 const packageJsonPath = resolve(rootDir, "package.json");
 const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
+const ciWorkflowPath = resolve(rootDir, ".github/workflows/ci.yml");
 const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
 
 describe("Docker Compose infrastructure", () => {
@@ -212,6 +213,19 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}");
     expect(workflow).toContain("actions/attest-build-provenance@v4.1.0");
     expect(workflow).toContain("push-to-registry: true");
+  });
+
+  it("runs release-sensitive validation in default CI", () => {
+    const workflow = readFileSync(ciWorkflowPath, "utf8");
+
+    expect(workflow).toContain("pnpm test:validation");
+    expect(workflow).toContain("pnpm openapi:validate");
+    expect(workflow).toContain("FOCOWIKI_RELEASE_VERSION: 0.0.0-ci");
+    expect(workflow).toContain(
+      "docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci ."
+    );
+    expect(workflow).toContain("grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'");
+    expect(workflow).toContain("docker build --target admin -t focowiki-admin:ci .");
   });
 
   it("keeps env template keys and Compose references synchronized", () => {

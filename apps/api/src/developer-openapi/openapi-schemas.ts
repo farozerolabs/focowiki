@@ -257,6 +257,10 @@ function sourceFileSchema(): SchemaObject {
       sizeBytes: { type: "integer", minimum: 0 },
       checksumSha256: { type: "string" },
       metadata: { type: "object", additionalProperties: true },
+      modelSuggestions: {
+        anyOf: [modelSuggestionsSchema(), { type: "null" }],
+        description: "Model-generated presentation suggestions stored for the source file, when available."
+      },
       processingState: { type: "string" },
       currentStage: { type: "string" },
       processingStartedAt: timestampSchema(),
@@ -283,6 +287,7 @@ function sourceFileSchema(): SchemaObject {
       "sizeBytes",
       "checksumSha256",
       "metadata",
+      "modelSuggestions",
       "processingState",
       "currentStage",
       "processingStartedAt",
@@ -400,7 +405,7 @@ function sourceFileDetailSchema(): SchemaObject {
     {
       fileId: idSchema("Source file identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      path: { type: "null" },
+      path: nullableString("Logical generated file path when this source file has published output."),
       originalFilename: { type: "string" },
       fileKind: { type: "string", const: "source" },
       contentType: { type: "string" },
@@ -408,7 +413,10 @@ function sourceFileDetailSchema(): SchemaObject {
       checksumSha256: { type: "string" },
       processingState: { type: "string" },
       currentStage: { type: "string" },
-      contentAvailable: { type: "boolean", const: false }
+      contentAvailable: { type: "boolean" },
+      generatedFileAvailable: { type: "boolean" },
+      generatedFileId: nullableString("Generated bundle file identifier when visible in the active bundle."),
+      generatedFilePath: nullableString("Logical generated file path when visible in the active bundle.")
     },
     [
       "fileId",
@@ -421,7 +429,33 @@ function sourceFileDetailSchema(): SchemaObject {
       "checksumSha256",
       "processingState",
       "currentStage",
-      "contentAvailable"
+      "contentAvailable",
+      "generatedFileAvailable",
+      "generatedFileId",
+      "generatedFilePath"
     ]
+  );
+}
+
+function modelSuggestionsSchema(): SchemaObject {
+  return objectSchema(
+    {
+      title: { type: "string" },
+      type: { type: "string" },
+      description: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+      related_links: {
+        type: "array",
+        items: objectSchema(
+          {
+            path: { type: "string" },
+            title: { type: "string" }
+          },
+          ["path", "title"]
+        )
+      },
+      keywords: { type: "array", items: { type: "string" } }
+    },
+    ["title", "type", "description", "tags", "related_links", "keywords"]
   );
 }

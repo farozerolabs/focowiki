@@ -2,13 +2,14 @@ import { createDeveloperOpenApiFieldContinuity } from "./openapi-field-continuit
 import { createDeveloperOpenApiPaths } from "./openapi-paths.js";
 import { createDeveloperOpenApiSchemas } from "./openapi-schemas.js";
 import { bearerSecurity } from "./openapi-shared.js";
+import { readProductReleaseVersion } from "../release-version.js";
 
 export function createDeveloperOpenApiDocument() {
   return {
     openapi: "3.1.0",
     info: {
       title: "Focowiki Developer OpenAPI",
-      version: "0.1.0",
+      version: readProductReleaseVersion(),
       description:
         "Authenticated API for integrating Focowiki knowledge bases, uploads, generated files, and webhooks.",
       license: {

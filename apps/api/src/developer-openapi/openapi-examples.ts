@@ -1,3 +1,5 @@
+import { apiVersion, readProductReleaseVersion } from "../release-version.js";
+
 const exampleTimestamp = "2026-06-17T00:00:00.000Z";
 const knowledgeBaseId = "kb_123";
 const sourceFileId = "file_source_123";
@@ -24,6 +26,19 @@ const sourceFile = {
   checksumSha256: "sha256_example",
   metadata: {
     title: "Guide"
+  },
+  modelSuggestions: {
+    title: "Guide",
+    type: "guide",
+    description: "A short guide for product documentation.",
+    tags: ["guide", "documentation"],
+    related_links: [
+      {
+        path: "pages/reference.md",
+        title: "Reference"
+      }
+    ],
+    keywords: ["guide", "product documentation"]
   },
   processingState: "completed",
   currentStage: "release_activation",
@@ -216,141 +231,145 @@ export const requestExamples = {
   }
 } as const;
 
-export const responseExamples = {
-  getDeveloperOpenApiHealth: {
-    status: "ok"
-  },
-  getDeveloperOpenApiVersion: {
-    product: "focowiki",
-    version: "0.1.0",
-    apiVersion: "v1"
-  },
-  getDeveloperOpenApiContract: {
-    openapi: "3.1.0",
-    info: {
-      title: "Focowiki Developer OpenAPI",
-      version: "0.1.0"
+export function createDeveloperOpenApiResponseExamples() {
+  const productVersion = readProductReleaseVersion();
+
+  return {
+    getDeveloperOpenApiHealth: {
+      status: "ok"
     },
-    paths: {
-      "/openapi/v1/knowledge-bases": {
-        get: {
-          operationId: "listKnowledgeBases",
-          summary: "List knowledge bases"
-        },
-        post: {
-          operationId: "createKnowledgeBase",
-          summary: "Create a knowledge base"
+    getDeveloperOpenApiVersion: {
+      product: "focowiki",
+      version: productVersion,
+      apiVersion
+    },
+    getDeveloperOpenApiContract: {
+      openapi: "3.1.0",
+      info: {
+        title: "Focowiki Developer OpenAPI",
+        version: productVersion
+      },
+      paths: {
+        "/openapi/v1/knowledge-bases": {
+          get: {
+            operationId: "listKnowledgeBases",
+            summary: "List knowledge bases"
+          },
+          post: {
+            operationId: "createKnowledgeBase",
+            summary: "Create a knowledge base"
+          }
         }
       }
-    }
-  },
-  listKnowledgeBases: {
-    items: [knowledgeBase],
-    nextCursor: null
-  },
-  createKnowledgeBase: {
-    knowledgeBase
-  },
-  getKnowledgeBase: {
-    knowledgeBase
-  },
-  deleteKnowledgeBase: {
-    deleted: true,
-    knowledgeBaseId
-  },
-  uploadMarkdownFiles: {
-    knowledgeBaseId,
-    files: [
-      {
-        fileId: sourceFileId,
-        originalFilename: "guide.md",
-        sizeBytes: 1024,
+    },
+    listKnowledgeBases: {
+      items: [knowledgeBase],
+      nextCursor: null
+    },
+    createKnowledgeBase: {
+      knowledgeBase
+    },
+    getKnowledgeBase: {
+      knowledgeBase
+    },
+    deleteKnowledgeBase: {
+      deleted: true,
+      knowledgeBaseId
+    },
+    uploadMarkdownFiles: {
+      knowledgeBaseId,
+      files: [
+        {
+          fileId: sourceFileId,
+          originalFilename: "guide.md",
+          sizeBytes: 1024,
+          processingState: "queued",
+          currentStage: "upload_storage"
+        },
+        {
+          fileId: "file_source_456",
+          originalFilename: "faq.md",
+          sizeBytes: 2048,
+          processingState: "queued",
+          currentStage: "upload_storage"
+        }
+      ]
+    },
+    listKnowledgeBaseSourceFiles: {
+      items: [sourceFile],
+      nextCursor: null
+    },
+    getKnowledgeBaseSourceFile: {
+      file: sourceFile
+    },
+    listKnowledgeBaseSourceFileEvents: {
+      items: [sourceFileEvent],
+      nextCursor: null
+    },
+    retryKnowledgeBaseSourceFile: {
+      file: {
+        ...sourceFile,
         processingState: "queued",
-        currentStage: "upload_storage"
-      },
-      {
-        fileId: "file_source_456",
-        originalFilename: "faq.md",
-        sizeBytes: 2048,
-        processingState: "queued",
-        currentStage: "upload_storage"
+        currentStage: "upload_storage",
+        processingStartedAt: exampleTimestamp,
+        processingEndedAt: null,
+        retryCount: 1
       }
-    ]
-  },
-  listKnowledgeBaseSourceFiles: {
-    items: [sourceFile],
-    nextCursor: null
-  },
-  getKnowledgeBaseSourceFile: {
-    file: sourceFile
-  },
-  listKnowledgeBaseSourceFileEvents: {
-    items: [sourceFileEvent],
-    nextCursor: null
-  },
-  retryKnowledgeBaseSourceFile: {
-    file: {
-      ...sourceFile,
-      processingState: "queued",
-      currentStage: "upload_storage",
-      processingStartedAt: exampleTimestamp,
-      processingEndedAt: null,
-      retryCount: 1
+    },
+    listKnowledgeBaseTree: {
+      items: [treeEntry],
+      nextCursor: null
+    },
+    getFileContentByPath: {
+      file: bundleFile,
+      content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
+    },
+    getFileById: {
+      file: bundleFile
+    },
+    listRelatedFiles: {
+      fileId: bundleFileId,
+      sourceFileId,
+      items: [relatedFile],
+      nextCursor: null
+    },
+    deleteFileById: {
+      knowledgeBaseId,
+      deleted: true,
+      releaseId: "release_456",
+      file: bundleFile
+    },
+    getFileContentById: {
+      file: bundleFile,
+      content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
+    },
+    deleteFileByPath: {
+      knowledgeBaseId,
+      deleted: true,
+      releaseId: "release_456",
+      file: bundleFile
+    },
+    createWebhook: {
+      webhook,
+      signingSecret: "<webhook-signing-secret>"
+    },
+    listWebhooks: {
+      items: [webhook],
+      nextCursor: null
+    },
+    deleteWebhook: {
+      deleted: true,
+      webhookId
+    },
+    listWebhookDeliveries: {
+      items: [delivery],
+      nextCursor: null
+    },
+    redeliverWebhook: {
+      delivery
     }
-  },
-  listKnowledgeBaseTree: {
-    items: [treeEntry],
-    nextCursor: null
-  },
-  getFileContentByPath: {
-    file: bundleFile,
-    content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
-  },
-  getFileById: {
-    file: bundleFile
-  },
-  listRelatedFiles: {
-    fileId: bundleFileId,
-    sourceFileId,
-    items: [relatedFile],
-    nextCursor: null
-  },
-  deleteFileById: {
-    knowledgeBaseId,
-    deleted: true,
-    releaseId: "release_456",
-    file: bundleFile
-  },
-  getFileContentById: {
-    file: bundleFile,
-    content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
-  },
-  deleteFileByPath: {
-    knowledgeBaseId,
-    deleted: true,
-    releaseId: "release_456",
-    file: bundleFile
-  },
-  createWebhook: {
-    webhook,
-    signingSecret: "<webhook-signing-secret>"
-  },
-  listWebhooks: {
-    items: [webhook],
-    nextCursor: null
-  },
-  deleteWebhook: {
-    deleted: true,
-    webhookId
-  },
-  listWebhookDeliveries: {
-    items: [delivery],
-    nextCursor: null
-  },
-  redeliverWebhook: {
-    delivery
-  }
-} as const;
+  } as const;
+}
 
 export function errorExample(code: string, httpStatus: number, message: string) {
   return {
@@ -367,4 +386,5 @@ export function payloadTooLargeExample() {
   return errorExample("PAYLOAD_TOO_LARGE", 413, "Uploaded files exceed configured limits.");
 }
 
-export type DeveloperOpenApiOperationId = keyof typeof requestExamples & keyof typeof responseExamples;
+export type DeveloperOpenApiOperationId = keyof typeof requestExamples &
+  keyof ReturnType<typeof createDeveloperOpenApiResponseExamples>;

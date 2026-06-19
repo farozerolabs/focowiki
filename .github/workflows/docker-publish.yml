@@ -98,6 +98,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
+          build-args: |
+            FOCOWIKI_RELEASE_VERSION=${{ steps.release.outputs.version }}
           provenance: mode=max
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api

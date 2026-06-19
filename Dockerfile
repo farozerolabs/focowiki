@@ -20,7 +20,9 @@ RUN pnpm build
 RUN pnpm --filter @focowiki/api build:runtime
 
 FROM node:24-alpine AS api
+ARG FOCOWIKI_RELEASE_VERSION=0.0.0-dev
 ENV NODE_ENV=production
+ENV FOCOWIKI_RELEASE_VERSION=${FOCOWIKI_RELEASE_VERSION}
 WORKDIR /app
 
 COPY --from=build /app/apps/api/runtime ./apps/api/runtime

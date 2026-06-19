@@ -12,9 +12,11 @@ import {
   webhookIdParameter,
   type PathItemObject
 } from "./openapi-shared.js";
-import { requestExamples, responseExamples } from "./openapi-examples.js";
+import { createDeveloperOpenApiResponseExamples, requestExamples } from "./openapi-examples.js";
 
 export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
+  const responseExamples = createDeveloperOpenApiResponseExamples();
+
   return {
     "/openapi/v1/health": {
       get: operation({

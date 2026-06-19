@@ -459,6 +459,89 @@ describe("Developer OpenAPI", () => {
     await expect(response.json()).resolves.toEqual({ status: "ok" });
   });
 
+  it("uses the injected product release version without changing the API version", async () => {
+    const previousVersion = process.env.FOCOWIKI_RELEASE_VERSION;
+    process.env.FOCOWIKI_RELEASE_VERSION = "9.8.7";
+
+    try {
+      const { app } = createApp();
+      const [versionResponse, contractResponse, healthResponse] = await Promise.all([
+        app.request("/openapi/v1/version", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/openapi.json", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/health", {
+          headers: authHeaders()
+        })
+      ]);
+      const versionBody = (await versionResponse.json()) as {
+        product: string;
+        version: string;
+        apiVersion: string;
+      };
+      const contract = (await contractResponse.json()) as {
+        info: { version: string };
+        paths: {
+          "/openapi/v1/version": {
+            get: {
+              responses: {
+                "200": {
+                  content: {
+                    "application/json": {
+                      example: { version: string; apiVersion: string };
+                    };
+                  };
+                };
+              };
+            };
+          };
+          "/openapi/v1/openapi.json": {
+            get: {
+              responses: {
+                "200": {
+                  content: {
+                    "application/json": {
+                      example: { info: { version: string } };
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      };
+      const healthBody = (await healthResponse.json()) as Record<string, unknown>;
+
+      expect(versionBody).toEqual({
+        product: "focowiki",
+        version: "9.8.7",
+        apiVersion: "v1"
+      });
+      expect(contract.info.version).toBe("9.8.7");
+      expect(
+        contract.paths["/openapi/v1/version"].get.responses["200"].content["application/json"].example
+      ).toMatchObject({
+        version: "9.8.7",
+        apiVersion: "v1"
+      });
+      expect(
+        contract.paths["/openapi/v1/openapi.json"].get.responses["200"].content["application/json"].example
+          .info.version
+      ).toBe("9.8.7");
+      expect(healthBody).toEqual({ status: "ok" });
+      expect(healthBody).not.toHaveProperty("version");
+      expect(healthBody).not.toHaveProperty("apiVersion");
+    } finally {
+      if (previousVersion === undefined) {
+        delete process.env.FOCOWIKI_RELEASE_VERSION;
+      } else {
+        process.env.FOCOWIKI_RELEASE_VERSION = previousVersion;
+      }
+    }
+  });
+
   it("requires a valid OpenAPI key", async () => {
     const { app } = createApp();
     const response = await app.request("/openapi/v1/knowledge-bases");
@@ -504,6 +587,50 @@ describe("Developer OpenAPI", () => {
     expect(body.items[0]).not.toHaveProperty("taskId");
     expect(body.items[0]).not.toHaveProperty("releaseId");
     expect(body.items[0]).not.toHaveProperty("objectKey");
+  });
+
+  it("documents every returned source file field in the OpenAPI contract", async () => {
+    const { app } = createApp();
+    const [contractResponse, sourceFilesResponse, sourceFileDetailResponse] = await Promise.all([
+      app.request("/openapi/v1/openapi.json", {
+        headers: authHeaders()
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files", {
+        headers: authHeaders()
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/source-guide", {
+        headers: authHeaders()
+      })
+    ]);
+    const contract = (await contractResponse.json()) as {
+      components: {
+        schemas: Record<string, { properties?: Record<string, unknown> }>;
+      };
+    };
+    const sourceFilesBody = (await sourceFilesResponse.json()) as {
+      items: Array<Record<string, unknown>>;
+    };
+    const sourceFileDetailBody = (await sourceFileDetailResponse.json()) as {
+      file: Record<string, unknown>;
+    };
+    const sourceFileSchema = contract.components.schemas.SourceFile;
+    const sourceFileDetailSchema = contract.components.schemas.SourceFileDetail;
+
+    if (!sourceFileSchema?.properties || !sourceFileDetailSchema?.properties) {
+      throw new Error("Source file schemas are missing from the OpenAPI contract.");
+    }
+    const sourceFile = sourceFilesBody.items[0];
+
+    if (!sourceFile) {
+      throw new Error("Source file fixture did not return an item.");
+    }
+
+    expect(Object.keys(sourceFileSchema.properties).sort()).toEqual(
+      Object.keys(sourceFile).sort()
+    );
+    expect(Object.keys(sourceFileDetailSchema.properties).sort()).toEqual(
+      Object.keys(sourceFileDetailBody.file).sort()
+    );
   });
 
   it("returns bounded related files for a generated source-backed file", async () => {

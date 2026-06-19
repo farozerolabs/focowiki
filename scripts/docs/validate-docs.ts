@@ -3,12 +3,15 @@ import path from "node:path";
 import { createDeveloperOpenApiDocument } from "../../apps/api/src/developer-openapi/openapi-document.js";
 
 type OpenApiDocument = ReturnType<typeof createDeveloperOpenApiDocument> & {
+  info: { version: string };
   paths: Record<string, Record<string, Record<string, unknown>>>;
   components: { schemas: Record<string, Record<string, unknown>> };
 };
 
 const repoRoot = process.cwd();
 const docsRoot = path.join(repoRoot, "docs");
+const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
+const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
 const httpMethods = new Set(["get", "post", "put", "patch", "delete"]);
 const locales = [
   {
@@ -53,6 +56,7 @@ async function main() {
   const markdownFiles = await listMarkdownFiles(docsRoot);
   const openApiDocument = createDeveloperOpenApiDocument() as OpenApiDocument;
   await validateLocaleStructure();
+  await validateGeneratedOpenApiContractVersion(openApiDocument);
   await validateOperationCoverage(openApiDocument);
   await validateOpenApiContractExamples(openApiDocument);
   await validateGeneratedOperationExamples(openApiDocument);
@@ -62,6 +66,33 @@ async function main() {
   await validateSensitiveContent(markdownFiles);
   validateSafeContent("Developer OpenAPI contract", JSON.stringify(openApiDocument));
   console.log("Documentation validation passed.");
+}
+
+async function validateGeneratedOpenApiContractVersion(document: OpenApiDocument) {
+  const generated = readRecord(JSON.parse(await fs.readFile(contractPath, "utf8")));
+  const expectedVersion = document.info.version;
+  const generatedVersion = readRecord(generated.info).version;
+
+  if (generatedVersion !== expectedVersion) {
+    throw new Error(
+      `Generated OpenAPI contract version ${String(generatedVersion)} does not match ${expectedVersion}.`
+    );
+  }
+
+  const paths = readRecord(generated.paths);
+  const versionOperation = readRecord(readRecord(paths["/openapi/v1/version"]).get);
+  const versionResponse = readRecord(readRecord(versionOperation.responses)["200"]);
+  const versionExample = readRecord(readJsonContentExample(versionResponse));
+  if (versionExample.version !== expectedVersion || versionExample.apiVersion !== "v1") {
+    throw new Error("Generated version response example does not match release metadata.");
+  }
+
+  const contractOperation = readRecord(readRecord(paths["/openapi/v1/openapi.json"]).get);
+  const contractResponse = readRecord(readRecord(contractOperation.responses)["200"]);
+  const contractExample = readRecord(readJsonContentExample(contractResponse));
+  if (readRecord(contractExample.info).version !== expectedVersion) {
+    throw new Error("Generated OpenAPI contract example does not match release metadata.");
+  }
 }
 
 async function validateOperationCoverage(document: OpenApiDocument) {

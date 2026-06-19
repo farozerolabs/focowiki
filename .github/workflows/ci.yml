@@ -54,10 +54,26 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test validation scripts
+        run: pnpm test:validation
+
       - name: Build
         run: pnpm build
 
+      - name: Validate OpenAPI contract
+        run: pnpm openapi:validate
+
+      - name: Build API Docker image
+        run: |
+          docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci .
+          docker image inspect focowiki-api:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
+
+      - name: Build Admin Docker image
+        run: docker build --target admin -t focowiki-admin:ci .
+
       - name: Validate documentation
+        env:
+          FOCOWIKI_RELEASE_VERSION: 0.0.0-ci
         run: pnpm docs:validate
 
       - name: Validate local path leaks

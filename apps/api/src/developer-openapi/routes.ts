@@ -5,6 +5,7 @@ import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 import {
   unsupportedRoute,
   validationError,
@@ -45,8 +46,8 @@ export function registerDeveloperOpenApiRoutes(
   app.get("/openapi/v1/version", (context) =>
     context.json({
       product: "focowiki",
-      version: "0.1.0",
-      apiVersion: "v1"
+      version: readProductReleaseVersion(),
+      apiVersion
     })
   );
 
