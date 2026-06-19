@@ -29,6 +29,13 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
 import {
+  completeCursorPageRequest,
+  createInitialCursorPageState,
+  moveToNextCursor,
+  moveToPreviousCursor,
+  type CursorPageState
+} from "@/lib/cursor-page-state";
+import {
   rememberSourceFileRefreshSnapshots,
   shouldRefreshGeneratedFiles,
   type SourceFileRefreshSnapshot
@@ -43,6 +50,7 @@ import {
   type BundleTreeEntry,
   type KnowledgeBasePublicUrls,
   type KnowledgeBase,
+  type SourceFilePage,
   type SourceFileRecord
 } from "@/lib/admin-api";
 
@@ -70,6 +78,7 @@ export function KnowledgeBaseDetailPage({
 }: KnowledgeBaseDetailPageProps) {
   const { t } = useTranslation();
   const sourceFileRefreshSnapshotsRef = useRef<Map<string, SourceFileRefreshSnapshot>>(new Map());
+  const sourceFilePageStateRef = useRef<CursorPageState>(createInitialCursorPageState());
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("processing");
@@ -82,7 +91,10 @@ export function KnowledgeBaseDetailPage({
   const [deleteFileError, setDeleteFileError] = useState("");
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<SourceFileRecord[]>([]);
-  const [sourceFileCursor, setSourceFileCursor] = useState<string | null>(null);
+  const [sourceFilePageState, setSourceFilePageState] = useState<CursorPageState>(
+    createInitialCursorPageState
+  );
+  const [isSourceFilePageLoading, setIsSourceFilePageLoading] = useState(false);
   const [sourceFileError, setSourceFileError] = useState("");
   const [retryingSourceFileId, setRetryingSourceFileId] = useState<string | null>(null);
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
@@ -106,7 +118,10 @@ export function KnowledgeBaseDetailPage({
     setDeleteFileError("");
     setIsDeletingFile(false);
     setSourceFiles([]);
-    setSourceFileCursor(null);
+    const initialSourceFilePageState = createInitialCursorPageState();
+    sourceFilePageStateRef.current = initialSourceFilePageState;
+    setSourceFilePageState(initialSourceFilePageState);
+    setIsSourceFilePageLoading(false);
     setSourceFileError("");
     setRetryingSourceFileId(null);
     setPublicUrls(null);
@@ -115,13 +130,13 @@ export function KnowledgeBaseDetailPage({
     loadedTreeParentsRef.current = new Set();
 
     void loadFileTree({ parentPath: ROOT_PARENT_PATH, replace: true });
-    void loadSourceFiles({ replace: true });
+    void loadFirstSourceFilePage();
     void loadPublicUrls();
   }, [knowledgeBase.id]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      void loadSourceFiles({ replace: true });
+      void loadSourceFiles({ pageState: sourceFilePageStateRef.current });
     }, SOURCE_FILE_REFRESH_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
@@ -204,27 +219,91 @@ export function KnowledgeBaseDetailPage({
     setPreviewHtml(`<pre>${escapeHtml(detail.content)}</pre>`);
   }
 
-  async function loadSourceFiles(input: { replace: boolean }) {
-    const page = await listSourceFiles({
-      knowledgeBaseId: knowledgeBase.id,
-      cursor: input.replace ? null : sourceFileCursor
-    });
+  async function loadSourceFiles(input: { pageState: CursorPageState }) {
+    setIsSourceFilePageLoading(true);
+    let page: SourceFilePage;
+
+    try {
+      page = await listSourceFiles({
+        knowledgeBaseId: knowledgeBase.id,
+        cursor: input.pageState.currentCursor
+      });
+    } catch {
+      const nextPageState = createInitialCursorPageState();
+
+      sourceFilePageStateRef.current = nextPageState;
+      setSourceFilePageState(nextPageState);
+      setSourceFiles([]);
+      setSourceFileError("pagination.expired");
+
+      if (input.pageState.currentCursor) {
+        try {
+          const page = await listSourceFiles({
+            knowledgeBaseId: knowledgeBase.id,
+            cursor: nextPageState.currentCursor
+          });
+
+          await applySourceFilePage(nextPageState, page);
+        } catch {
+          setSourceFiles([]);
+        }
+      }
+      setIsSourceFilePageLoading(false);
+      return;
+    }
+
+    await applySourceFilePage(input.pageState, page);
+    setSourceFileError("");
+    setIsSourceFilePageLoading(false);
+  }
+
+  async function applySourceFilePage(pageState: CursorPageState, page: SourceFilePage) {
     const hasSourceFileSnapshot = sourceFileRefreshSnapshotsRef.current.size > 0;
     const shouldRefreshGeneratedTree =
-      input.replace &&
       hasSourceFileSnapshot &&
       shouldRefreshGeneratedFiles(sourceFileRefreshSnapshotsRef.current, page.items);
+    const nextPageState = completeCursorPageRequest(pageState, page.nextCursor);
 
-    setSourceFiles((current) => (input.replace ? page.items : [...current, ...page.items]));
-    setSourceFileCursor(page.nextCursor);
-
-    if (input.replace) {
-      sourceFileRefreshSnapshotsRef.current = rememberSourceFileRefreshSnapshots(page.items);
-    }
+    setSourceFiles(page.items);
+    sourceFilePageStateRef.current = nextPageState;
+    setSourceFilePageState(nextPageState);
+    sourceFileRefreshSnapshotsRef.current = rememberSourceFileRefreshSnapshots(page.items);
 
     if (shouldRefreshGeneratedTree) {
       await refreshGeneratedFiles();
     }
+  }
+
+  async function loadFirstSourceFilePage() {
+    const nextPageState = createInitialCursorPageState();
+
+    sourceFilePageStateRef.current = nextPageState;
+    setSourceFilePageState(nextPageState);
+    await loadSourceFiles({ pageState: nextPageState });
+  }
+
+  async function handleNextSourceFilePage() {
+    const nextPageState = moveToNextCursor(sourceFilePageStateRef.current);
+
+    if (nextPageState === sourceFilePageStateRef.current) {
+      return;
+    }
+
+    sourceFilePageStateRef.current = nextPageState;
+    setSourceFilePageState(nextPageState);
+    await loadSourceFiles({ pageState: nextPageState });
+  }
+
+  async function handlePreviousSourceFilePage() {
+    const nextPageState = moveToPreviousCursor(sourceFilePageStateRef.current);
+
+    if (nextPageState === sourceFilePageStateRef.current) {
+      return;
+    }
+
+    sourceFilePageStateRef.current = nextPageState;
+    setSourceFilePageState(nextPageState);
+    await loadSourceFiles({ pageState: nextPageState });
   }
 
   async function refreshGeneratedFiles() {
@@ -253,7 +332,7 @@ export function KnowledgeBaseDetailPage({
         return;
       }
 
-      await loadSourceFiles({ replace: true });
+      await loadFirstSourceFilePage();
       await refreshGeneratedFiles();
     } finally {
       setRetryingSourceFileId(null);
@@ -296,7 +375,7 @@ export function KnowledgeBaseDetailPage({
       setPreviewHtml("");
     }
 
-    await loadSourceFiles({ replace: true });
+    await loadFirstSourceFilePage();
     await refreshGeneratedFiles();
   }
 
@@ -354,8 +433,14 @@ export function KnowledgeBaseDetailPage({
           {activeView === "processing" ? (
             <SourceFileProgressPanel
               sourceFiles={sourceFiles}
-              sourceFileCursor={sourceFileCursor}
-              onLoadMore={() => void loadSourceFiles({ replace: false })}
+              pagination={{
+                hasNext: Boolean(sourceFilePageState.nextCursor),
+                hasPrevious: sourceFilePageState.previousCursors.length > 0,
+                isLoading: isSourceFilePageLoading,
+                pageNumber: sourceFilePageState.pageNumber
+              }}
+              onNextPage={() => void handleNextSourceFilePage()}
+              onPreviousPage={() => void handlePreviousSourceFilePage()}
               onUpload={() => setIsUploadDialogOpen(true)}
               errorMessageKey={sourceFileError}
               retryingSourceFileId={retryingSourceFileId}
@@ -389,7 +474,7 @@ export function KnowledgeBaseDetailPage({
         onOpenChange={setIsUploadDialogOpen}
         onAccepted={async () => {
           setActiveView("processing");
-          await loadSourceFiles({ replace: true });
+          await loadFirstSourceFilePage();
         }}
       />
       <AlertDialog

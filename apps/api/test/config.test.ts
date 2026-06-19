@@ -258,21 +258,19 @@ describe("parseRuntimeConfig", () => {
     });
   });
 
-  it("validates admin pagination configuration", () => {
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        ADMIN_LIST_PAGE_SIZE: "201",
-        ADMIN_LIST_MAX_PAGE_SIZE: "200"
-      })
-    ).toThrow(/ADMIN_LIST_PAGE_SIZE/);
+  it("keeps admin pagination configuration internal", () => {
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      ADMIN_LIST_PAGE_SIZE: "201",
+      ADMIN_LIST_MAX_PAGE_SIZE: "1",
+      ADMIN_PAGINATION_CURSOR_TTL_SECONDS: "0"
+    });
 
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        ADMIN_PAGINATION_CURSOR_TTL_SECONDS: "0"
-      })
-    ).toThrow(/ADMIN_PAGINATION_CURSOR_TTL_SECONDS/);
+    expect(config.pagination).toEqual({
+      defaultPageSize: 50,
+      maxPageSize: 200,
+      cursorTtlSeconds: 900
+    });
   });
 
   it("validates upload limits", () => {

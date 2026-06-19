@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { UploadIcon } from "lucide-react";
+import { CursorPaginationControls } from "@/components/cursor-pagination-controls";
 import { SourceFileDataTable } from "@/components/task-phase-data-table";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,8 +16,14 @@ import type { SourceFileRecord } from "@/lib/admin-api";
 
 type SourceFileProgressPanelProps = {
   sourceFiles: SourceFileRecord[];
-  sourceFileCursor: string | null;
-  onLoadMore: () => void;
+  pagination: {
+    hasNext: boolean;
+    hasPrevious: boolean;
+    isLoading: boolean;
+    pageNumber: number;
+  };
+  onNextPage: () => void;
+  onPreviousPage: () => void;
   onUpload: () => void;
   errorMessageKey?: string;
   retryingSourceFileId?: string | null | undefined;
@@ -26,8 +33,9 @@ type SourceFileProgressPanelProps = {
 
 export function SourceFileProgressPanel({
   sourceFiles,
-  sourceFileCursor,
-  onLoadMore,
+  pagination,
+  onNextPage,
+  onPreviousPage,
   onUpload,
   errorMessageKey,
   retryingSourceFileId,
@@ -37,7 +45,7 @@ export function SourceFileProgressPanel({
   const { t } = useTranslation();
 
   return (
-    <Card className="min-h-[calc(100svh-5.5rem)] min-w-0">
+    <Card className="min-h-[calc(100svh-5.5rem)] min-w-0" data-testid="source-file-progress-panel">
       <CardHeader>
         <CardTitle>{t("tasks.title")}</CardTitle>
         <CardDescription>{t("tasks.description")}</CardDescription>
@@ -61,11 +69,18 @@ export function SourceFileProgressPanel({
             onRetrySourceFile={onRetrySourceFile}
             onOpenGeneratedFile={onOpenGeneratedFile}
           />
-          {sourceFileCursor ? (
-            <Button type="button" variant="outline" onClick={onLoadMore}>
-              {t("home.loadMore")}
-            </Button>
-          ) : null}
+          <CursorPaginationControls
+            labels={{
+              currentPage: t("pagination.currentPage", { page: pagination.pageNumber }),
+              next: t("pagination.next"),
+              previous: t("pagination.previous")
+            }}
+            hasNext={pagination.hasNext}
+            hasPrevious={pagination.hasPrevious}
+            isLoading={pagination.isLoading}
+            onNext={onNextPage}
+            onPrevious={onPreviousPage}
+          />
         </div>
       </CardContent>
     </Card>

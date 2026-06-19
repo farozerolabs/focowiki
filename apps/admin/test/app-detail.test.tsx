@@ -280,7 +280,7 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByRole("button", { name: "Open file" })).toBeNull();
   });
 
-  it("appends source-file pages with bounded cursor requests", async () => {
+  it("renders previous and next source-file pagination without load-more", async () => {
     vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [
@@ -318,10 +318,23 @@ describe("Admin knowledge base detail", () => {
     const table = screen.getByRole("table", { name: "File processing" });
     expect(within(table).getByText("intro.md")).toBeTruthy();
     expect(within(table).queryByText("setup.md")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Previous page" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+    expect(screen.getByText("Page 1")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
 
     expect(await within(table).findByText("setup.md")).toBeTruthy();
+    expect(within(table).queryByText("intro.md")).toBeNull();
+    expect((screen.getByRole("button", { name: "Previous page" }) as HTMLButtonElement).disabled).toBe(
+      false
+    );
+    expect((screen.getByRole("button", { name: "Next page" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+    expect(screen.getByText("Page 2")).toBeTruthy();
     expect(listSourceFiles).toHaveBeenNthCalledWith(1, {
       knowledgeBaseId: "kb-docs",
       cursor: null
@@ -415,7 +428,7 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
-  it("appends file processing pages with bounded cursor requests", async () => {
+  it("reloads the previous known source-file page without appending rows", async () => {
     vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [
@@ -446,13 +459,33 @@ describe("Admin knowledge base detail", () => {
           }
         ],
         nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "running",
+            processingStage: "metadata_resolution",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
+          }
+        ],
+        nextCursor: "source-cursor-001"
       });
 
     await openDetail();
     expect(await screen.findByTestId("source-file-row-source-001")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
 
     expect(await screen.findByTestId("source-file-row-source-002")).toBeTruthy();
+    expect(screen.queryByTestId("source-file-row-source-001")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+
+    expect(await screen.findByTestId("source-file-row-source-001")).toBeTruthy();
+    expect(screen.queryByTestId("source-file-row-source-002")).toBeNull();
     expect(listSourceFiles).toHaveBeenNthCalledWith(1, {
       knowledgeBaseId: "kb-docs",
       cursor: null
@@ -460,6 +493,10 @@ describe("Admin knowledge base detail", () => {
     expect(listSourceFiles).toHaveBeenNthCalledWith(2, {
       knowledgeBaseId: "kb-docs",
       cursor: "source-cursor-001"
+    });
+    expect(listSourceFiles).toHaveBeenNthCalledWith(3, {
+      knowledgeBaseId: "kb-docs",
+      cursor: null
     });
   });
 

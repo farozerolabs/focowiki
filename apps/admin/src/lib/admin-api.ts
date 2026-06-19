@@ -450,10 +450,7 @@ export async function listSourceFiles(input: {
   );
 
   if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null
-    };
+    throw new Error("pagination.expired");
   }
 
   return (await response.json()) as SourceFilePage;

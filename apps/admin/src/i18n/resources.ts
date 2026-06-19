@@ -33,6 +33,13 @@ export const resources = {
         copy: "Copy",
         copied: "Copied"
       },
+      pagination: {
+        currentPage: "Page {{page}}",
+        next: "Next page",
+        previous: "Previous page",
+        loading: "Loading page",
+        expired: "This page expired. Reload the first page."
+      },
       delete: {
         action: "Delete",
         confirm: "Delete",
@@ -261,6 +268,13 @@ export const resources = {
         close: "关闭",
         copy: "复制",
         copied: "已复制"
+      },
+      pagination: {
+        currentPage: "第 {{page}} 页",
+        next: "下一页",
+        previous: "上一页",
+        loading: "正在加载页面",
+        expired: "当前分页已过期，请重新加载第一页。"
       },
       delete: {
         action: "删除",

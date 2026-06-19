@@ -184,7 +184,7 @@ try {
   report.checks.push(okCheck("graph-related-preview", "Generated page preview shows graph-backed related links."));
   report.checks.push(okCheck("copy-url", "Selected generated files copied distinct Developer OpenAPI URLs."));
 
-  await validateGraphFilePreview(page, batchSourceFileIds[0]);
+  await validateGraphFilePreview(page, [...batchSourceFileIds].sort()[0]);
 
   await page.getByRole("button", { name: `File actions: ${secondSampleName}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
@@ -327,7 +327,8 @@ async function waitForSourceFilesCompleted(page, sourceFileIds, timeout) {
 }
 
 async function validateSourceFileRows(page, sourceFileIds, samples, { checkName, message }) {
-  const table = page.getByRole("table", { name: "File processing" });
+  const panel = page.getByTestId("source-file-progress-panel");
+  const table = panel.getByRole("table", { name: "File processing" });
   await table.waitFor({ timeout: 30_000 });
 
   for (const [index, sourceFileId] of sourceFileIds.entries()) {
@@ -357,16 +358,31 @@ async function validateSourceFileRows(page, sourceFileIds, samples, { checkName,
     throw new Error("Source-file rows did not include stable file ids.");
   }
 
-  const loadMoreFiles = page.getByRole("button", { name: "Load more" });
+  if ((await panel.getByRole("button", { name: "Load more" }).count()) > 0) {
+    throw new Error("File processing list still exposes the removed load-more action.");
+  }
 
-  if ((await loadMoreFiles.count()) > 0) {
-    await loadMoreFiles.click();
-    await table.getByText(samples.at(-1).basename, { exact: true }).waitFor({
-      timeout: 30_000
-    });
-    report.checks.push(okCheck("source-file-pagination", "Browser loaded another source-file page."));
+  const previousPage = panel.getByRole("button", { name: "Previous page" });
+  const nextPage = panel.getByRole("button", { name: "Next page" });
+  await previousPage.waitFor({ timeout: 30_000 });
+  await nextPage.waitFor({ timeout: 30_000 });
+
+  if (await nextPage.isEnabled()) {
+    const firstVisibleSourceFileId = sourceFileIds[0];
+    await nextPage.click();
+    await page
+      .getByTestId(`source-file-row-${firstVisibleSourceFileId}`)
+      .waitFor({ state: "detached", timeout: 30_000 });
+    await previousPage.waitFor({ timeout: 30_000 });
+    await previousPage.click();
+    await page.getByTestId(`source-file-row-${firstVisibleSourceFileId}`).waitFor({ timeout: 30_000 });
+    report.checks.push(
+      okCheck("source-file-pagination", "Browser navigated source-file pages with previous and next controls.")
+    );
   } else {
-    report.checks.push(okCheck("source-file-pagination", "Source-file rows fit within the configured browser page size."));
+    report.checks.push(
+      okCheck("source-file-pagination", "Source-file rows fit within the configured browser page size.")
+    );
   }
 
   report.checks.push(okCheck(checkName, message));

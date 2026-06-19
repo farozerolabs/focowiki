@@ -137,6 +137,105 @@ describe("Admin upload file picker", () => {
     });
   });
 
+  it("resets source-file pagination to the first page after upload is accepted", async () => {
+    vi.mocked(uploadKnowledgeBaseSources).mockResolvedValueOnce({
+      files: [
+        {
+          id: "source-new",
+          originalName: "new.md",
+          processingStatus: "queued",
+          processingStage: "upload_storage",
+          processingStartedAt: null,
+          processingEndedAt: null,
+          processingErrorCode: null,
+          createdAt: "2026-06-14T00:00:03.000Z"
+        }
+      ]
+    });
+    vi.mocked(listSourceFiles)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-page-one",
+            originalName: "page-one.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: "2026-06-14T00:00:01.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
+          }
+        ],
+        nextCursor: "cursor-page-two"
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-page-two",
+            originalName: "page-two.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:01.000Z",
+            processingEndedAt: "2026-06-14T00:00:02.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:01.000Z"
+          }
+        ],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-new",
+            originalName: "new.md",
+            processingStatus: "queued",
+            processingStage: "upload_storage",
+            processingStartedAt: null,
+            processingEndedAt: null,
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:03.000Z"
+          }
+        ],
+        nextCursor: "cursor-page-two"
+      });
+    render(<App />);
+
+    await openKnowledgeBaseDetailPage();
+    expect(await screen.findByTestId("source-file-row-source-page-one")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+
+    expect(await screen.findByTestId("source-file-row-source-page-two")).toBeTruthy();
+    expect(screen.queryByTestId("source-file-row-source-page-one")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+    const input = document.querySelector<HTMLInputElement>("#source-files");
+    const file = new File(["# New"], "new.md", { type: "text/markdown" });
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [file]
+      }
+    });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Upload" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByTestId("source-file-row-source-new")).toBeTruthy();
+      expect(screen.queryByTestId("source-file-row-source-page-two")).toBeNull();
+      expect(screen.getByText("Page 1")).toBeTruthy();
+    });
+    expect(listSourceFiles).toHaveBeenNthCalledWith(1, {
+      knowledgeBaseId: "kb-docs",
+      cursor: null
+    });
+    expect(listSourceFiles).toHaveBeenNthCalledWith(2, {
+      knowledgeBaseId: "kb-docs",
+      cursor: "cursor-page-two"
+    });
+    expect(listSourceFiles).toHaveBeenNthCalledWith(3, {
+      knowledgeBaseId: "kb-docs",
+      cursor: null
+    });
+  });
+
   it("shows a multi-file batch summary before upload", async () => {
     render(<App />);
 

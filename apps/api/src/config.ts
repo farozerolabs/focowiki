@@ -4,6 +4,9 @@ export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
+const INTERNAL_PAGINATION_DEFAULT_PAGE_SIZE = 50;
+const INTERNAL_PAGINATION_MAX_PAGE_SIZE = 200;
+const INTERNAL_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
@@ -155,7 +158,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY,
     issues
   );
-  const pagination = parsePaginationConfig(env, issues);
+  const pagination = createDefaultPaginationConfig();
   const okf = parseOkfConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model = parseModelConfig(env, issues);
@@ -359,27 +362,11 @@ function optionalHighPort(
   return parsed;
 }
 
-function parsePaginationConfig(
-  env: RuntimeEnv,
-  issues: string[]
-): RuntimeConfig["pagination"] {
-  const defaultPageSize = optionalPositiveInteger(env, "ADMIN_LIST_PAGE_SIZE", 50, issues);
-  const maxPageSize = optionalPositiveInteger(env, "ADMIN_LIST_MAX_PAGE_SIZE", 200, issues);
-  const cursorTtlSeconds = optionalPositiveInteger(
-    env,
-    "ADMIN_PAGINATION_CURSOR_TTL_SECONDS",
-    900,
-    issues
-  );
-
-  if (defaultPageSize > maxPageSize) {
-    issues.push("ADMIN_LIST_PAGE_SIZE must be less than or equal to ADMIN_LIST_MAX_PAGE_SIZE");
-  }
-
+function createDefaultPaginationConfig(): RuntimeConfig["pagination"] {
   return {
-    defaultPageSize,
-    maxPageSize,
-    cursorTtlSeconds
+    defaultPageSize: INTERNAL_PAGINATION_DEFAULT_PAGE_SIZE,
+    maxPageSize: INTERNAL_PAGINATION_MAX_PAGE_SIZE,
+    cursorTtlSeconds: INTERNAL_PAGINATION_CURSOR_TTL_SECONDS
   };
 }
 
