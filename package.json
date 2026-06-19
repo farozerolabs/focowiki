@@ -60,6 +60,7 @@
     "validate:demo-agent:samples": "node scripts/validation/demo-agent-e2e.mjs samples",
     "validate:demo-agent:e2e": "node scripts/validation/demo-agent-e2e.mjs e2e",
     "validate:agent-openapi:exploration": "node scripts/validation/agent-openapi-exploration.mjs",
+    "validate:demo-skill:data": "FOCOWIKI_AGENT_VALIDATION_CHANGE_ID=validate-demo-skill-data-evaluation FOCOWIKI_DEMO_E2E_CHANGE_ID=validate-demo-skill-data-evaluation FOCOWIKI_VALIDATION_SAMPLE_COUNT=50 node scripts/validation/agent-openapi-exploration.mjs",
     "validate:no-local-paths": "node scripts/validation/no-local-path-leaks.mjs",
     "openapi:export": "tsx scripts/openapi/export-developer-openapi.ts",
     "openapi:validate": "tsx scripts/openapi/validate-developer-openapi.ts",

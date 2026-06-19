@@ -5,6 +5,7 @@ import {
   MIN_AGENT_VALIDATION_SAMPLE_COUNT,
   assertAgentEvidenceBoundary,
   buildAgentScenarioPlan,
+  defaultAgentProcessingTimeoutMs,
   requireQuantifiedFindings,
   requireValidationSampleCount,
   scorePersonaResults,
@@ -18,6 +19,11 @@ test("agent validation requires at least 50 legal Markdown samples", () => {
     () => requireValidationSampleCount(new Array(49).fill({ basename: "sample.md" })),
     /at least 50/
   );
+});
+
+test("agent validation processing timeout scales for 50-file model runs", () => {
+  assert.equal(defaultAgentProcessingTimeoutMs(50), 4_500_000);
+  assert.equal(defaultAgentProcessingTimeoutMs(10), 1_800_000);
 });
 
 test("agent scenario plan includes generic and legal-domain personas with legal task variety", () => {

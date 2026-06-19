@@ -27,6 +27,7 @@ import {
   chooseCandidates,
   classifyScenarioResult,
   createRound,
+  defaultAgentProcessingTimeoutMs,
   extractContent,
   extractSearchEntries,
   latencySummary,
@@ -42,6 +43,7 @@ import {
   reportPaths,
   writeAgentValidationReports
 } from "./lib/agent-openapi-report.mjs";
+import { validateSkillCurlCommands } from "./lib/skill-curl-validation.mjs";
 
 const CHANGE_ID =
   process.env.FOCOWIKI_AGENT_VALIDATION_CHANGE_ID?.trim() ||
@@ -79,6 +81,7 @@ async function main() {
     await ensureDemo(config, openApiKey, knowledgeBaseId, report, managedProcesses);
     const demo = createDemoClient(config, report);
     await validateDemoSurface(demo, generated, report);
+    await validateSkillCurlSurface(config, generated, report);
     await runAgentScenarios(api, demo, knowledgeBaseId, generated, samples, report);
     await validateSafeErrors(api, demo, knowledgeBaseId, generated, report);
     await validatePagination(api, knowledgeBaseId, report);
@@ -86,6 +89,7 @@ async function main() {
     requireQuantifiedFindings([
       { claim: "Agent exploration results are quantified", metrics: aggregateCounts(report.agentResults), rounds: report.agentResults.flatMap((item) => item.rounds) },
       { claim: "Developer integration results are quantified", metrics: report.developer.routeCoverage, evidence: report.developer.identifierHandoffs },
+      { claim: "Skill curl command results are quantified", metrics: report.skillCommandSummary, evidence: report.skillCommands },
       { claim: "OKF alignment results are quantified", metrics: report.okf, evidence: report.okf.inventory }
     ]);
 
@@ -95,14 +99,14 @@ async function main() {
       completedSourceFileCount: sourceFiles.length,
       directSurface: config.openApiBaseUrl,
       demoSurface: config.demoBaseUrl,
-      reportFiles: reportPaths()
+      reportFiles: reportPaths(report.change)
     };
     report.finishedAt = new Date().toISOString();
     report.agentMetrics = aggregateCounts(report.agentResults);
     report.latencies = report.latencies;
     report.ok = calculateFinalOk(report);
     writeAgentValidationReports(report);
-    await verifyReportRedaction(reportPaths(), report);
+    await verifyReportRedaction(reportPaths(report.change), report);
 
     if (!report.ok) {
       throw new Error("Agent OpenAPI exploration validation finished with failed checks. See local ReferenceDocs reports.");
@@ -184,7 +188,12 @@ function readConfig(env = process.env) {
     cleanupKnowledgeBase: readBoolean(env.FOCOWIKI_AGENT_VALIDATION_CLEANUP_KNOWLEDGE_BASE, true),
     requestTimeoutMs: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_REQUEST_TIMEOUT_MS, 45_000),
     serviceTimeoutMs: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_SERVICE_TIMEOUT_MS, 180_000),
-    processingTimeoutMs: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_PROCESSING_TIMEOUT_MS, 1_800_000),
+    processingTimeoutMs: readPositiveInteger(
+      env.FOCOWIKI_AGENT_VALIDATION_PROCESSING_TIMEOUT_MS,
+      defaultAgentProcessingTimeoutMs(
+        readPositiveInteger(env[SAMPLE_COUNT_ENV], MIN_AGENT_VALIDATION_SAMPLE_COUNT)
+      )
+    ),
     pollIntervalMs: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_POLL_INTERVAL_MS, 2_500),
     maxRouteLimit: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_MAX_ROUTE_LIMIT, 100),
     scenarioLimit: readPositiveInteger(env.FOCOWIKI_AGENT_VALIDATION_SCENARIO_LIMIT, 12),
@@ -266,6 +275,16 @@ function createBaseReport(config, samples, startedAt) {
     unsupportedFindings: [],
     unresolvedBlockers: [],
     securityLeakageCount: 0,
+    skillCommands: [],
+    skillCommandSummary: {
+      total: 0,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      leaked: 0,
+      identifierContinuityPassed: 0,
+      identifierContinuityFailed: 0
+    },
     validationRun: null
   };
 }
@@ -666,6 +685,38 @@ async function validateDemoSurface(demo, generated, report) {
     report.developer.demo.failed += 1;
   }
   pass(report, "demo-agent-surface", "Demo backend supports summary, tree, content, search, and graph reads.", BLACK_BOX);
+}
+
+async function validateSkillCurlSurface(config, generated, report) {
+  const result = await validateSkillCurlCommands({
+    demoBaseUrl: `${config.demoBaseUrl}/agent/v1`,
+    generated,
+    requestTimeoutMs: config.requestTimeoutMs
+  });
+  report.skillCommands = result.commands;
+  report.skillCommandSummary = result.summary;
+  report.latencies.push(
+    ...result.commands
+      .map((command) => command.latencyMs)
+      .filter((latencyMs) => Number.isFinite(latencyMs))
+  );
+  report.developer.demo.passed += result.summary.passed;
+  report.developer.demo.failed +=
+    result.summary.failed +
+    result.summary.skipped +
+    result.summary.leaked +
+    result.summary.identifierContinuityFailed;
+
+  const issueCount =
+    result.summary.failed +
+    result.summary.skipped +
+    result.summary.leaked +
+    result.summary.identifierContinuityFailed;
+  if (issueCount === 0 && result.summary.passed === result.summary.total) {
+    pass(report, "skill-curl-commands", `Executed ${result.summary.passed} Skill curl commands.`, BLACK_BOX);
+  } else {
+    fail(report, "skill-curl-commands", `Skill curl commands had ${issueCount} validation issues.`, BLACK_BOX);
+  }
 }
 
 async function runAgentScenarios(api, demo, knowledgeBaseId, generated, samples, report) {

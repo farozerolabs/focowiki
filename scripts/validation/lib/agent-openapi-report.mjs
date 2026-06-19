@@ -5,6 +5,10 @@ import { aggregateCounts, latencySummary, scorePersonaResults, summarizeReportSt
 export const AGENT_REPORT_PATH = "ReferenceDocs/agent-openapi-exploration-agent-report.md";
 export const DEVELOPER_REPORT_PATH = "ReferenceDocs/agent-openapi-exploration-developer-report.md";
 export const OKF_REPORT_PATH = "ReferenceDocs/agent-openapi-exploration-okf-alignment-report.md";
+export const DEMO_SKILL_CHANGE_ID = "validate-demo-skill-data-evaluation";
+export const DEMO_SKILL_AGENT_REPORT_PATH = "ReferenceDocs/demo-skill-agent-exploration-report.md";
+export const DEMO_SKILL_DEVELOPER_REPORT_PATH = "ReferenceDocs/demo-skill-data-evaluation-report.md";
+export const DEMO_SKILL_OKF_REPORT_PATH = "ReferenceDocs/demo-skill-okf-alignment-report.md";
 
 const REPORT_LOCALE = JSON.parse(
   fs.readFileSync(new URL("./agent-openapi-report.zh-CN.json", import.meta.url), "utf8")
@@ -31,12 +35,16 @@ export function redactAgentValidationText(value) {
 
 export function writeAgentValidationReports(report) {
   fs.mkdirSync("ReferenceDocs", { recursive: true });
-  writeRedacted(AGENT_REPORT_PATH, renderAgentReport(report));
-  writeRedacted(DEVELOPER_REPORT_PATH, renderDeveloperReport(report));
-  writeRedacted(OKF_REPORT_PATH, renderOkfReport(report));
+  const [agentReportPath, developerReportPath, okfReportPath] = reportPaths(report.change);
+  writeRedacted(agentReportPath, renderAgentReport(report));
+  writeRedacted(developerReportPath, renderDeveloperReport(report));
+  writeRedacted(okfReportPath, renderOkfReport(report));
 }
 
-export function reportPaths() {
+export function reportPaths(changeId = process.env.FOCOWIKI_AGENT_VALIDATION_CHANGE_ID || "") {
+  if (changeId === DEMO_SKILL_CHANGE_ID) {
+    return [DEMO_SKILL_AGENT_REPORT_PATH, DEMO_SKILL_DEVELOPER_REPORT_PATH, DEMO_SKILL_OKF_REPORT_PATH];
+  }
   return [AGENT_REPORT_PATH, DEVELOPER_REPORT_PATH, OKF_REPORT_PATH];
 }
 
@@ -103,6 +111,12 @@ function renderDeveloperReport(report) {
     line("errorClarityChecksFailed", report.developer.errors.failed),
     line("demoBackendCoverageChecksPassed", report.developer.demo.passed),
     line("demoBackendCoverageChecksFailed", report.developer.demo.failed),
+    line("skillCommandTotal", report.skillCommandSummary?.total ?? 0),
+    line("skillCommandPassed", report.skillCommandSummary?.passed ?? 0),
+    line("skillCommandFailed", report.skillCommandSummary?.failed ?? 0),
+    line("skillCommandSkipped", report.skillCommandSummary?.skipped ?? 0),
+    line("skillIdentifierContinuityPassed", report.skillCommandSummary?.identifierContinuityPassed ?? 0),
+    line("skillIdentifierContinuityFailed", report.skillCommandSummary?.identifierContinuityFailed ?? 0),
     line("developerIntegrationScore", report.developer.score),
     "",
     `## ${REPORT_LOCALE.headings.identifierContinuity}`,
@@ -118,6 +132,12 @@ function renderDeveloperReport(report) {
     `## ${REPORT_LOCALE.headings.errorChecks}`,
     "",
     ...report.developer.errorChecks.map((item) => `- ${item.name}: ${metric("httpStatus", item.status)}, ${metric("errorCode", item.code || REPORT_LOCALE.fallbacks.none)}`),
+    "",
+    `## ${REPORT_LOCALE.headings.skillCommandCoverage}`,
+    "",
+    ...(report.skillCommands?.length
+      ? report.skillCommands.map(renderSkillCommand)
+      : [REPORT_LOCALE.fallbacks.noneList]),
     ""
   ].join("\n");
 }
@@ -181,6 +201,15 @@ function renderScenarioResult(result) {
       : [REPORT_LOCALE.fallbacks.noneList]),
     ""
   ];
+}
+
+function renderSkillCommand(command) {
+  return [
+    `- ${command.ok ? "PASS" : command.skipped ? "SKIP" : "FAIL"} ${command.name}: ${metric("httpStatus", command.httpStatus ?? REPORT_LOCALE.fallbacks.none)}, ${metric("latencyMs", command.latencyMs ?? 0)}, ${metric("identifierContinuity", command.identifierContinuity ? REPORT_LOCALE.fallbacks.yes : REPORT_LOCALE.fallbacks.no)}`,
+    `  - ${REPORT_LOCALE.labels.command}: \`${command.command}\``,
+    `  - ${REPORT_LOCALE.labels.responseShape}: \`${JSON.stringify(command.responseShape || {})}\``,
+    command.errorCode ? `  - ${REPORT_LOCALE.labels.errorCode}: ${command.errorCode}` : ""
+  ].filter(Boolean).join("\n");
 }
 
 function fenced(value) {

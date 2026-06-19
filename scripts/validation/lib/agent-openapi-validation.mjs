@@ -1,4 +1,6 @@
 export const MIN_AGENT_VALIDATION_SAMPLE_COUNT = 50;
+export const DEFAULT_AGENT_PROCESSING_TIMEOUT_MS = 1_800_000;
+export const AGENT_PROCESSING_TIMEOUT_PER_SAMPLE_MS = 90_000;
 export const AGENT_PERSONAS = ["generic", "legal-domain"];
 export const LEGAL_SCENARIO_TYPES = [
   "precise_lookup",
@@ -21,6 +23,16 @@ export function requireValidationSampleCount(samples) {
   if (!Array.isArray(samples) || samples.length < MIN_AGENT_VALIDATION_SAMPLE_COUNT) {
     throw new Error(`Agent OpenAPI exploration validation requires at least 50 Markdown samples.`);
   }
+}
+
+export function defaultAgentProcessingTimeoutMs(sampleCount) {
+  const normalizedCount = Number.isSafeInteger(sampleCount) && sampleCount > 0
+    ? sampleCount
+    : MIN_AGENT_VALIDATION_SAMPLE_COUNT;
+  return Math.max(
+    DEFAULT_AGENT_PROCESSING_TIMEOUT_MS,
+    normalizedCount * AGENT_PROCESSING_TIMEOUT_PER_SAMPLE_MS
+  );
 }
 
 export function buildAgentScenarioPlan(samples) {
