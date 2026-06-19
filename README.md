@@ -16,6 +16,7 @@ Use the documentation for:
 
 - [Project introduction](https://docs.focowiki.com/)
 - [Docker Compose deployment](https://docs.focowiki.com/deployment/docker-compose)
+- [Agent-assisted deployment](https://docs.focowiki.com/deployment/agent-deployment)
 - [Developer OpenAPI](https://docs.focowiki.com/openapi/)
 - [Agent integration](https://docs.focowiki.com/agent-integration/)
 - [Open Knowledge Format guide](https://docs.focowiki.com/guide/open-knowledge-format)
@@ -77,6 +78,17 @@ cp docker-compose.yml.example docker-compose.yml
 docker compose -f docker-compose.yml pull
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
+```
+
+### Agent-assisted Deployment
+
+If you use Codex, Claude Code, or a similar coding Agent, you can ask the Agent to read this repository and help deploy Focowiki with Docker Compose.
+
+```text
+Review the farozerolabs/focowiki repository:
+https://github.com/farozerolabs/focowiki
+
+Read README.md and help me deploy Focowiki with Docker Compose.
 ```
 
 Default production images:

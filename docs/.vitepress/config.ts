@@ -60,12 +60,16 @@ function englishThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "Project Introduction", link: "/" },
           { text: "Open Knowledge Format", link: "/guide/open-knowledge-format" },
-          { text: "File-first Graph", link: "/guide/file-first-graph" }
+          { text: "File-first Graph", link: "/guide/file-first-graph" },
+          { text: "File Cleaning and Ingestion Guide", link: "/guide/file-cleaning-ingestion" }
         ]
       },
       {
         text: "Deployment",
-        items: [{ text: "Docker Compose", link: "/deployment/docker-compose" }]
+        items: [
+          { text: "Docker Compose", link: "/deployment/docker-compose" },
+          { text: "Agent-assisted Deployment", link: "/deployment/agent-deployment" }
+        ]
       },
       {
         text: "Developer OpenAPI",
@@ -112,12 +116,16 @@ function chineseThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "项目介绍", link: "/zh-CN/" },
           { text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format" },
-          { text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph" }
+          { text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph" },
+          { text: "文件清洗入库指南", link: "/zh-CN/guide/file-cleaning-ingestion" }
         ]
       },
       {
         text: "部署",
-        items: [{ text: "Docker Compose", link: "/zh-CN/deployment/docker-compose" }]
+        items: [
+          { text: "Docker Compose", link: "/zh-CN/deployment/docker-compose" },
+          { text: "使用 Agent 部署", link: "/zh-CN/deployment/agent-deployment" }
+        ]
       },
       {
         text: "Developer OpenAPI",

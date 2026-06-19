@@ -10,6 +10,7 @@ type OpenApiDocument = ReturnType<typeof createDeveloperOpenApiDocument> & {
 
 const repoRoot = process.cwd();
 const docsRoot = path.join(repoRoot, "docs");
+const vitePressConfigPath = path.join(docsRoot, ".vitepress", "config.ts");
 const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
 const httpMethods = new Set(["get", "post", "put", "patch", "delete"]);
@@ -17,8 +18,16 @@ const locales = [
   {
     name: "English",
     projectPage: path.join(docsRoot, "index.md"),
-    deploymentPage: path.join(docsRoot, "deployment", "docker-compose.md"),
+    deploymentPages: [
+      path.join(docsRoot, "deployment", "docker-compose.md"),
+      path.join(docsRoot, "deployment", "agent-deployment.md")
+    ],
     openApiPage: path.join(docsRoot, "openapi", "index.md"),
+    guidePages: [
+      path.join(docsRoot, "guide", "open-knowledge-format.md"),
+      path.join(docsRoot, "guide", "file-first-graph.md"),
+      path.join(docsRoot, "guide", "file-cleaning-ingestion.md")
+    ],
     agentIntegrationPages: [
       path.join(docsRoot, "agent-integration", "index.md"),
       path.join(docsRoot, "agent-integration", "backend-adapter.md"),
@@ -31,8 +40,16 @@ const locales = [
   {
     name: "Simplified Chinese",
     projectPage: path.join(docsRoot, "zh-CN", "index.md"),
-    deploymentPage: path.join(docsRoot, "zh-CN", "deployment", "docker-compose.md"),
+    deploymentPages: [
+      path.join(docsRoot, "zh-CN", "deployment", "docker-compose.md"),
+      path.join(docsRoot, "zh-CN", "deployment", "agent-deployment.md")
+    ],
     openApiPage: path.join(docsRoot, "zh-CN", "openapi", "index.md"),
+    guidePages: [
+      path.join(docsRoot, "zh-CN", "guide", "open-knowledge-format.md"),
+      path.join(docsRoot, "zh-CN", "guide", "file-first-graph.md"),
+      path.join(docsRoot, "zh-CN", "guide", "file-cleaning-ingestion.md")
+    ],
     agentIntegrationPages: [
       path.join(docsRoot, "zh-CN", "agent-integration", "index.md"),
       path.join(docsRoot, "zh-CN", "agent-integration", "backend-adapter.md"),
@@ -56,6 +73,8 @@ async function main() {
   const markdownFiles = await listMarkdownFiles(docsRoot);
   const openApiDocument = createDeveloperOpenApiDocument() as OpenApiDocument;
   await validateLocaleStructure();
+  await validateGuideNavigation();
+  await validateDeploymentNavigation();
   await validateGeneratedOpenApiContractVersion(openApiDocument);
   await validateOperationCoverage(openApiDocument);
   await validateOpenApiContractExamples(openApiDocument);
@@ -252,10 +271,56 @@ async function validateGeneratedOperationTables() {
 
 async function validateLocaleStructure() {
   for (const locale of locales) {
-    for (const file of [locale.projectPage, locale.deploymentPage, locale.openApiPage, ...locale.agentIntegrationPages]) {
+    for (const file of [
+      locale.projectPage,
+      ...locale.deploymentPages,
+      locale.openApiPage,
+      ...locale.guidePages,
+      ...locale.agentIntegrationPages
+    ]) {
       await assertFileExists(file, `${locale.name} documentation page is missing`);
     }
     await assertFileExists(path.join(locale.operationsDir, "index.md"), `${locale.name} operation index is missing`);
+  }
+}
+
+async function validateGuideNavigation() {
+  const config = await fs.readFile(vitePressConfigPath, "utf8");
+  assertOrderedSnippets(config, [
+    'text: "Open Knowledge Format", link: "/guide/open-knowledge-format"',
+    'text: "File-first Graph", link: "/guide/file-first-graph"',
+    'text: "File Cleaning and Ingestion Guide", link: "/guide/file-cleaning-ingestion"'
+  ], "English guide sidebar");
+  assertOrderedSnippets(config, [
+    'text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format"',
+    'text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph"',
+    'text: "文件清洗入库指南", link: "/zh-CN/guide/file-cleaning-ingestion"'
+  ], "Simplified Chinese guide sidebar");
+}
+
+async function validateDeploymentNavigation() {
+  const config = await fs.readFile(vitePressConfigPath, "utf8");
+  assertOrderedSnippets(config, [
+    'text: "Docker Compose", link: "/deployment/docker-compose"',
+    'text: "Agent-assisted Deployment", link: "/deployment/agent-deployment"'
+  ], "English deployment sidebar");
+  assertOrderedSnippets(config, [
+    'text: "Docker Compose", link: "/zh-CN/deployment/docker-compose"',
+    'text: "使用 Agent 部署", link: "/zh-CN/deployment/agent-deployment"'
+  ], "Simplified Chinese deployment sidebar");
+}
+
+function assertOrderedSnippets(content: string, snippets: string[], label: string) {
+  let previousIndex = -1;
+  for (const snippet of snippets) {
+    const index = content.indexOf(snippet);
+    if (index === -1) {
+      throw new Error(`${label} is missing sidebar item: ${snippet}`);
+    }
+    if (index <= previousIndex) {
+      throw new Error(`${label} sidebar items are not in the expected order.`);
+    }
+    previousIndex = index;
   }
 }
 
