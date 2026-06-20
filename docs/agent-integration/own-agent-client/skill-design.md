@@ -4,149 +4,151 @@ title: Skill Design
 
 # Skill Design
 
-Use this page when developers want a Skill for their own Agent client. The default design uses terminal `curl` commands against a developer-provided read-only knowledge endpoint. It does not require Node.js, npm packages, or local helper scripts.
+Use this page when developers control their own Agent client or runtime and can register knowledge-base tools. This Skill guides the Agent to call registered tools when it needs knowledge-base evidence.
+
+HTTP requests, OpenAPI keys, Focowiki service URLs, and backend adapter logic belong in the developer-owned runtime. The Skill exposes only the tool usage pattern to the Agent.
 
 ## File Design
 
 ```text
-focowiki-knowledge/
+focowiki-knowledge-tools/
 ├── SKILL.md
 └── references/
-    ├── curl-contract.md
+    ├── tool-contract.md
     ├── exploration-workflow.md
     └── answer-style.md
 ```
-
-The Skill is pure Markdown. The Agent reads the instructions and uses terminal `curl` commands to query the knowledge endpoint.
-
-The `/search` examples refer to a developer-provided read-only endpoint. Focowiki Developer OpenAPI does not expose `/search` directly. Implement this endpoint in your backend when Agent search is needed, commonly by reading the generated `_index/search.json` file or by using your own search layer.
 
 ## `SKILL.md`
 
 ```md
 ---
-name: focowiki-knowledge
+name: focowiki-knowledge-tools
 description: Use when the user asks questions that should be answered from the configured knowledge base.
 ---
 
-# Focowiki Knowledge
+# Focowiki Knowledge Tools
 
-Use terminal `curl` commands to query the configured read-only knowledge endpoint.
-
-## Knowledge Endpoint
-
-Base URL: `https://knowledge.example.com`
+Use the registered knowledge-base tools to inspect files, read Markdown content, follow file links, and explore graph relationships.
 
 ## When To Use
 
 Use this Skill when the user asks about knowledge-base content, asks to inspect files, or asks for answers with file citations.
 
-## Curl Commands
+## Available Tools
 
-- List files: `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "parentPath=" --data-urlencode "limit=50"`
-- Read metadata: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}"`
-- Read content by ID: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"`
-- Read content by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`
-- Read graph by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=_graph/by-file/{fileId}.json"`
-- Read related files: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"`
-- Search files: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..." --data-urlencode "limit=10"`
+- `list_tree`: discover files and folders in the configured knowledge base.
+- `get_file`: read safe metadata for one file.
+- `read_file`: read Markdown content by `fileId` or logical `path`.
+- `read_related`: read bounded related files for a file.
+- `search_files`: find candidate files for a question when the host runtime provides search.
 
 ## Process
 
-1. Read `index.md` for broad questions.
-2. Read `schema.md` when metadata fields are unclear.
-3. Use `/search` for direct questions when search is available.
-4. Use `/tree` when search is unavailable or incomplete.
-5. Read one file at a time.
-6. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when related context is needed.
+1. Call `read_file` with `path: "index.md"` for broad questions.
+2. Call `read_file` with `path: "schema.md"` when metadata fields are unclear.
+3. Call `search_files` for direct questions when the tool is available.
+4. Call `list_tree` when search is unavailable or incomplete.
+5. Read one relevant file at a time with `read_file`.
+6. Call `read_related` or read `_graph/by-file/{fileId}.json` when related context is needed.
 7. Follow Markdown links and graph relationships when they add evidence.
 8. Cite file titles or paths in the final answer.
 
 ## Boundaries
 
-- Use only read-only `curl` requests described in this Skill.
-- Do not expose credentials, tokens, storage paths, or internal service details.
-- Do not use write, delete, admin, or key-management endpoints.
+- Use only the registered read-only tools described in this Skill.
+- Do not expose credentials, tokens, storage paths, service URLs, or internal service details.
+- Do not use write, delete, admin, or key-management tools unless the host runtime explicitly registers separate tools for those workflows.
 
 ## References
 
-- `references/curl-contract.md`
+- `references/tool-contract.md`
 - `references/exploration-workflow.md`
 - `references/answer-style.md`
 ```
 
-## `references/curl-contract.md`
+## `references/tool-contract.md`
 
 ````md
-# Curl Contract
+# Tool Contract
 
-Set the endpoint before running commands:
+The host Agent client registers these read-only tools. Tool implementations may call a backend, cache results, enforce credentials, or read Focowiki OpenAPI. The Agent only sees the tool names, inputs, and outputs.
 
-```bash
-KNOWLEDGE_BASE_URL="https://knowledge.example.com"
+## list_tree
+
+Input:
+
+```json
+{
+  "parentPath": "",
+  "cursor": null,
+  "limit": 50
+}
 ```
 
-## Tree
+Output: `items`, `nextCursor`
 
-```bash
-curl -sS -G "$KNOWLEDGE_BASE_URL/tree" \
-  --data-urlencode "parentPath=" \
-  --data-urlencode "limit=50"
+## get_file
+
+Input:
+
+```json
+{
+  "fileId": "file_123"
+}
 ```
 
-Response: `items`, `nextCursor`
+Output: file metadata with `fileId`, `path`, `title`, `type`, `description`, and `metadata`.
 
-## Content by path
+## read_file
 
-```bash
-curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" \
-  --data-urlencode "path=index.md"
+Input by ID:
+
+```json
+{
+  "fileId": "file_123"
+}
 ```
 
-Response: `fileId`, `path`, `title`, `content`, `metadata`
+Input by path:
 
-## Content by ID
-
-```bash
-curl -sS "$KNOWLEDGE_BASE_URL/files/file_123/content"
+```json
+{
+  "path": "index.md"
+}
 ```
 
-Response: `fileId`, `path`, `title`, `content`, `metadata`
+Output: `fileId`, `path`, `title`, `content`, and `metadata`.
 
-## Metadata
+## read_related
 
-```bash
-curl -sS "$KNOWLEDGE_BASE_URL/files/file_123"
+Input:
+
+```json
+{
+  "fileId": "file_123",
+  "cursor": null,
+  "limit": 20
+}
 ```
 
-Response: file metadata
+Output: bounded related file entries and `nextCursor`.
 
-## Graph by file
+## search_files
 
-```bash
-curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" \
-  --data-urlencode "path=_graph/by-file/file_123.json"
+Input:
+
+```json
+{
+  "query": "upload lifecycle",
+  "cursor": null,
+  "limit": 10
+}
 ```
 
-Response: related file records with `path`, `title`, `relationType`, `direction`, `weight`, and `reason`
+Output: candidate file entries and `nextCursor`.
 
-## Related files
-
-```bash
-curl -sS "$KNOWLEDGE_BASE_URL/files/file_123/related?limit=20"
-```
-
-Response: bounded related file entries and `nextCursor`
-
-## Search
-
-```bash
-curl -sS -G "$KNOWLEDGE_BASE_URL/search" \
-  --data-urlencode "query=upload lifecycle" \
-  --data-urlencode "limit=10"
-```
-
-Response: candidate file entries and `nextCursor`
+`search_files` is optional. Use `list_tree` and graph exploration when search is unavailable.
 ````
 
 ## `references/exploration-workflow.md`
@@ -156,27 +158,27 @@ Response: candidate file entries and `nextCursor`
 
 ## Broad Questions
 
-1. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`.
+1. Call `read_file` with `path: "index.md"`.
 2. Read the returned title, summary, and links.
-3. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=schema.md"` when metadata fields are unclear.
-4. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "parentPath=" --data-urlencode "limit=50"` to inspect available pages.
-5. Read one relevant candidate file with content by ID or content by path.
-6. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when relationship context is useful.
+3. Call `read_file` with `path: "schema.md"` when metadata fields are unclear.
+4. Call `list_tree` with `parentPath: ""` and `limit: 50` to inspect available pages.
+5. Read one relevant candidate file with `read_file`.
+6. Call `read_related` or read `_graph/by-file/{fileId}.json` when relationship context is useful.
 7. Follow Markdown links only when they help answer the user request.
 
 ## Direct Questions
 
-1. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..." --data-urlencode "limit=10"` when search is available.
-2. Read the top candidate with `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"`.
+1. Call `search_files` with the user question when search is available.
+2. Read the top candidate with `read_file`.
 3. Read another candidate only when the first file does not contain enough evidence.
-4. Read `_graph/by-file/{fileId}.json` or `/files/{fileId}/related` when related context is needed.
-5. Follow related page paths returned by the graph file.
+4. Call `read_related` when related context is needed.
+5. Follow related page paths returned by graph data.
 
 ## File Inspection
 
-1. Run `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}"` when the Agent only needs metadata.
-2. Run `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` when the Agent needs Markdown content.
-3. Run `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "parentPath=pages" --data-urlencode "limit=50"` for folder exploration.
+1. Call `get_file` when only metadata is needed.
+2. Call `read_file` when Markdown content is needed.
+3. Call `list_tree` with `parentPath: "pages"` for folder exploration.
 
 ## Stop Conditions
 
@@ -192,7 +194,7 @@ Response: candidate file entries and `nextCursor`
 
 ## Evidence
 
-- Use only content returned by the knowledge endpoint.
+- Use only content returned by the registered tools.
 - Cite file titles or paths used as evidence.
 - Mention when the available files do not answer the question.
 
@@ -215,17 +217,17 @@ Response: candidate file entries and `nextCursor`
 ```text
 User: What does the knowledge base say about the upload lifecycle?
 
-Terminal command:
-curl -sS -G "https://knowledge.example.com/files/content" --data-urlencode "path=index.md"
+Tool call:
+read_file({ "path": "index.md" })
 
-Terminal command:
-curl -sS -G "https://knowledge.example.com/search" --data-urlencode "query=upload lifecycle" --data-urlencode "limit=10"
+Tool call:
+search_files({ "query": "upload lifecycle", "limit": 10 })
 
-Terminal command:
-curl -sS "https://knowledge.example.com/files/file_upload_lifecycle/content"
+Tool call:
+read_file({ "fileId": "file_upload_lifecycle" })
 
-Terminal command:
-curl -sS -G "https://knowledge.example.com/files/content" --data-urlencode "path=_graph/by-file/file_upload_lifecycle.json"
+Tool call:
+read_related({ "fileId": "file_upload_lifecycle", "limit": 20 })
 
 Agent answer:
 The upload lifecycle starts with Markdown submission, then runs parsing, knowledge package generation, validation, index publishing, and activation. Evidence: `index.md`, `pages/upload-lifecycle.md`.
