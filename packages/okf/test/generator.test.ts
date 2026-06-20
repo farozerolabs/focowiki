@@ -114,6 +114,33 @@ describe("generateOkfBundle", () => {
     expect(schema.content).not.toContain("Focowiki bundle schema");
   });
 
+  it("keeps duplicate original filenames by assigning unique public paths", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {
+        type: "page"
+      },
+      sources: [
+        {
+          id: "source-file-alpha-001",
+          fileName: "guide.md",
+          content: "# First guide"
+        },
+        {
+          id: "source-file-beta-002",
+          fileName: "guide.md",
+          content: "# Second guide"
+        }
+      ]
+    });
+
+    const files = filesByPath(bundle.files);
+    expect(files["pages/guide.md"]).toContain("# First guide");
+    expect(files["pages/guide--source-file-beta-002.md"]).toContain("# Second guide");
+    expect(files["index.md"]).toContain("[First guide](/pages/guide.md)");
+    expect(files["index.md"]).toContain("[Second guide](/pages/guide--source-file-beta-002.md)");
+  });
+
   it("generates manifest, search, and link indexes", () => {
     const bundle = generateOkfBundle({
       generatedAt: "2026-06-14T00:00:00.000Z",

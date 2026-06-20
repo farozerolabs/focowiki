@@ -95,11 +95,11 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
       defaults: input.defaults,
       suggestions: source.suggestions ?? null
     });
-    const publicFileName = normalizePublicMarkdownFileName(source.fileName);
-
-    if (publicFileNames.has(publicFileName)) {
-      throw new Error(`Duplicate source file name: ${source.fileName}`);
-    }
+    const publicFileName = uniquePublicMarkdownFileName({
+      fileName: normalizePublicMarkdownFileName(source.fileName),
+      discriminator: source.id?.trim() || String(publicFileNames.size + 1),
+      usedNames: publicFileNames
+    });
 
     publicFileNames.add(publicFileName);
     const pagePath = `pages/${publicFileName}`;
@@ -326,6 +326,34 @@ function normalizePublicMarkdownFileName(fileName: string): string {
   }
 
   return normalized;
+}
+
+function uniquePublicMarkdownFileName(input: {
+  fileName: string;
+  discriminator: string;
+  usedNames: Set<string>;
+}): string {
+  if (!input.usedNames.has(input.fileName)) return input.fileName;
+
+  const suffix = safeFileNameSuffix(input.discriminator) || "duplicate";
+  const baseName = input.fileName.slice(0, -".md".length);
+  let candidate = `${baseName}--${suffix}.md`;
+  let counter = 2;
+
+  while (input.usedNames.has(candidate)) {
+    candidate = `${baseName}--${suffix}-${counter}.md`;
+    counter += 1;
+  }
+
+  return candidate;
+}
+
+function safeFileNameSuffix(value: string): string {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
 }
 
 function isSafePublicPathSegment(segment: string): boolean {

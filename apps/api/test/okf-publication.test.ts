@@ -165,6 +165,43 @@ describe("publishOkfRelease", () => {
     );
   });
 
+  it("publishes duplicate original filenames with unique public paths", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-001", "guide.md", "tenant/demo/source/guide-1.md"),
+      sourceRecord("source-002", "guide.md", "tenant/demo/source/guide-2.md")
+    ];
+    const fileBatches: BundleFileDraft[][] = [];
+    const treeBatches: BundleTreeEntryDraft[][] = [];
+    const storage = new PublicationStorage(sources);
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 10,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async (files) => {
+        fileBatches.push(files);
+      },
+      persistBundleTreeEntries: async (entries) => {
+        treeBatches.push(entries);
+      }
+    });
+
+    const logicalPaths = fileBatches.flat().map((file) => file.logicalPath).sort();
+    expect(result.fileCount).toBe(8);
+    expect(logicalPaths).toContain("pages/guide.md");
+    expect(logicalPaths).toContain("pages/guide--source-002.md");
+    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("[guide](/pages/guide.md)");
+    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain(
+      "[guide](/pages/guide--source-002.md)"
+    );
+    expect(treeBatches.flat().map((entry) => entry.logicalPath)).toContain("pages/guide--source-002.md");
+  });
+
   it("keeps original Markdown file names in public bundle paths", async () => {
     const sourceName = "外国企业常驻代表机构登记管理条例.md";
     const sources: SourceRecord[] = [
