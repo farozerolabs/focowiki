@@ -10,6 +10,10 @@ on:
         description: "Release tag to deploy, for example v0.2.1."
         required: true
         type: string
+      docs_ref:
+        description: "Git ref that contains the docs source. Leave empty to use release_tag."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -31,27 +35,35 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG_INPUT: ${{ inputs.release_tag || '' }}
+          DOCS_REF_INPUT: ${{ inputs.docs_ref || '' }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             tag="${RELEASE_TAG_INPUT}"
+            docs_ref="${DOCS_REF_INPUT:-${tag}}"
           else
             if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
               echo "::error::Documentation deployment requires a release tag."
               exit 1
             fi
             tag="${GITHUB_REF_NAME}"
+            docs_ref="${tag}"
           fi
           if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Documentation releases require a semantic version tag like v1.2.3."
             exit 1
           fi
+          if [[ -z "${docs_ref}" ]]; then
+            echo "::error::docs_ref cannot be empty."
+            exit 1
+          fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "docs_ref=${docs_ref}" >> "${GITHUB_OUTPUT}"
           echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout
         uses: actions/checkout@v6.0.3
         with:
-          ref: ${{ steps.release.outputs.tag }}
+          ref: ${{ steps.release.outputs.docs_ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6.4.0
