@@ -94,6 +94,11 @@ vi.mock("../src/lib/admin-api", () => ({
 describe("Admin knowledge base home", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn(async () => undefined)
+      }
+    });
     await initI18n("en-US");
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
@@ -236,6 +241,42 @@ describe("Admin knowledge base home", () => {
     );
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
     expect(screen.queryByText("No file selected")).toBeNull();
+  });
+
+  it("shows knowledge base IDs on cards and copies them without opening the card", async () => {
+    vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
+      items: [
+        {
+          id: "kb-docs",
+          name: "Developer docs",
+          description: "Markdown product knowledge",
+          activeReleaseId: null
+        }
+      ],
+      nextCursor: null
+    });
+    render(<App />);
+
+    await login();
+
+    const cardButton = await screen.findByRole("button", { name: "Developer docs" });
+    expect(screen.getByText("Markdown product knowledge")).toBeTruthy();
+    expect(screen.getByText("Knowledge base ID")).toBeTruthy();
+    expect(screen.getByText("kb-docs")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Knowledge base actions for Developer docs" })
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy knowledge base ID kb-docs" }));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith("kb-docs");
+    });
+    expect(await screen.findByText("Copied")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+
+    fireEvent.click(cardButton);
+    expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
   });
 
   it("switches home page language from the page controls", async () => {

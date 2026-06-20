@@ -67,7 +67,9 @@ export const resources = {
         loadMore: "Load more",
         nameLabel: "Knowledge base name",
         descriptionLabel: "Description",
-        noDescription: "No description"
+        noDescription: "No description",
+        knowledgeBaseIdLabel: "Knowledge base ID",
+        copyKnowledgeBaseId: "Copy knowledge base ID {{id}}"
       },
       openapiKeys: {
         title: "OpenAPI keys",
@@ -303,7 +305,9 @@ export const resources = {
         loadMore: "加载更多",
         nameLabel: "知识库名称",
         descriptionLabel: "描述",
-        noDescription: "暂无描述"
+        noDescription: "暂无描述",
+        knowledgeBaseIdLabel: "知识库 ID",
+        copyKnowledgeBaseId: "复制知识库 ID {{id}}"
       },
       openapiKeys: {
         title: "OpenAPI keys",

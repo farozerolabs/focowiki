@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { MoreHorizontalIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { CheckIcon, CopyIcon, MoreHorizontalIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { OpenApiKeysPanel } from "@/components/openapi-keys-panel";
 import {
@@ -102,6 +102,7 @@ export function AdminHomePage({
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeBase | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
+  const [copiedKnowledgeBaseId, setCopiedKnowledgeBaseId] = useState("");
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -138,6 +139,11 @@ export function AdminHomePage({
     }
 
     setDeleteTarget(null);
+  }
+
+  async function handleCopyKnowledgeBaseId(knowledgeBaseId: string) {
+    await navigator.clipboard.writeText(knowledgeBaseId);
+    setCopiedKnowledgeBaseId(knowledgeBaseId);
   }
 
   return (
@@ -207,16 +213,15 @@ export function AdminHomePage({
             ) : null}
 
             {knowledgeBases.length > 0 ? (
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {knowledgeBases.map((knowledgeBase) => (
                   <Card
                     key={knowledgeBase.id}
-                    size="sm"
-                    className="relative transition-colors hover:bg-muted/40 focus-within:ring-3 focus-within:ring-ring/50"
+                    className="relative min-h-44 transition-colors hover:bg-muted/40 focus-within:ring-3 focus-within:ring-ring/50"
                   >
-                    <CardHeader>
-                      <CardTitle>{knowledgeBase.name}</CardTitle>
-                      <CardDescription>
+                    <CardHeader className="gap-2">
+                      <CardTitle className="text-base">{knowledgeBase.name}</CardTitle>
+                      <CardDescription className="line-clamp-2 min-h-10">
                         {knowledgeBase.description || t("home.noDescription")}
                       </CardDescription>
                       <CardAction className="relative z-10">
@@ -250,6 +255,42 @@ export function AdminHomePage({
                         </DropdownMenu>
                       </CardAction>
                     </CardHeader>
+                    <CardContent className="relative z-10 mt-auto pointer-events-none">
+                      <div className="flex min-w-0 items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {t("home.knowledgeBaseIdLabel")}
+                          </p>
+                          <p className="truncate font-mono text-xs text-foreground/80">
+                            {knowledgeBase.id}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="pointer-events-auto"
+                          aria-label={t("home.copyKnowledgeBaseId", {
+                            id: knowledgeBase.id
+                          })}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleCopyKnowledgeBaseId(knowledgeBase.id);
+                          }}
+                        >
+                          {copiedKnowledgeBaseId === knowledgeBase.id ? (
+                            <CheckIcon />
+                          ) : (
+                            <CopyIcon />
+                          )}
+                        </Button>
+                      </div>
+                      {copiedKnowledgeBaseId === knowledgeBase.id ? (
+                        <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+                          {t("common.copied")}
+                        </p>
+                      ) : null}
+                    </CardContent>
                     <button
                       type="button"
                       className="absolute inset-0 rounded-xl outline-none"
