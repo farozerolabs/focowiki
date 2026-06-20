@@ -25,6 +25,8 @@ Keep the real `.env` file out of git. Use long random values for passwords, sess
 
 Focowiki writes product runtime logs to files and continues writing stdout/stderr logs. Docker Compose templates also limit Docker-managed logs to `50m` and `3` files per container.
 
+The API image creates the mounted `/app/logs` directory and assigns it to the runtime user before starting the server or migration process.
+
 ## Deployment Images
 
 | Variable | Required | How to fill |

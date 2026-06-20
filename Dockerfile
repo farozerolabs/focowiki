@@ -25,11 +25,14 @@ ENV NODE_ENV=production
 ENV FOCOWIKI_RELEASE_VERSION=${FOCOWIKI_RELEASE_VERSION}
 WORKDIR /app
 
+RUN apk add --no-cache su-exec
 COPY --from=build /app/apps/api/runtime ./apps/api/runtime
 COPY --from=build /app/apps/api/migrations ./apps/api/runtime/migrations
+COPY deploy/docker/api-entrypoint.sh /usr/local/bin/focowiki-api-entrypoint
+RUN chmod +x /usr/local/bin/focowiki-api-entrypoint
 
-USER node
 EXPOSE 43000 43200
+ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]
 CMD ["node", "apps/api/runtime/main.mjs"]
 
 FROM nginx:1.29-alpine AS admin

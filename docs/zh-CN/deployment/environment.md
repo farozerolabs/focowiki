@@ -25,6 +25,8 @@ cp .env.example .env
 
 Focowiki 会把产品运行日志写入文件，同时继续输出 stdout/stderr。Docker Compose 模板也会把 Docker 自身日志限制为每个容器 `50m`、`3` 个文件。
 
+API 镜像会在启动 server 或 migration 前创建挂载的 `/app/logs` 目录，并把目录权限交给运行时用户。
+
 ## 部署镜像
 
 | 变量 | 是否必填 | 填写方式 |

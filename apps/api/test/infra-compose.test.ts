@@ -126,6 +126,9 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("pnpm build");
     expect(dockerfile).toContain("pnpm --filter @focowiki/api build:runtime");
     expect(dockerfile).toContain("node");
+    expect(dockerfile).toContain("apk add --no-cache su-exec");
+    expect(dockerfile).toContain("deploy/docker/api-entrypoint.sh");
+    expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]');
     expect(dockerfile).toContain("apps/api/runtime/main.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
     expect(dockerfile).not.toMatch(/pnpm\s+--filter\s+@focowiki\/admin\s+dev|vite\s+--host|pnpm\s+dev/);
@@ -138,6 +141,17 @@ describe("Docker Compose infrastructure", () => {
     expect(apiRuntime).not.toContain("node_modules");
     expect(apiRuntime).not.toContain("production-dependencies");
     expect(apiRuntime).toContain("apps/api/runtime");
+    expect(apiRuntime).toContain("focowiki-api-entrypoint");
+  });
+
+  it("initializes mounted API log directories before dropping privileges", () => {
+    const entrypointPath = resolve(rootDir, "deploy/docker/api-entrypoint.sh");
+    const entrypoint = readFileSync(entrypointPath, "utf8");
+
+    expect(entrypoint).toContain("LOG_FILE_DIR");
+    expect(entrypoint).toContain("mkdir -p");
+    expect(entrypoint).toContain("chown -R node:node");
+    expect(entrypoint).toContain("exec su-exec node:node");
   });
 
   it("excludes local-only files from the Docker build context", () => {
