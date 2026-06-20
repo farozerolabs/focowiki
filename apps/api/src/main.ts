@@ -8,10 +8,12 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createAdminApiApp, createPublicOpenApiApp } from "./server.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
+import { createRuntimeLogger } from "./logger.js";
 
 loadLocalEnvFile();
 
 const config = loadRuntimeConfig();
+const logger = createRuntimeLogger(config);
 const storage = createS3StorageAdapter(config.storage);
 const sql = createDatabaseClient(config);
 const repositories = createPostgresAdminRepositories(sql);
@@ -29,8 +31,8 @@ serve({
   port: config.ports.publicOpenApi
 });
 
-console.info(`Admin API listening on http://127.0.0.1:${config.ports.adminApi}`);
-console.info(`Public OpenAPI listening on http://127.0.0.1:${config.ports.publicOpenApi}`);
+logger.info("Admin API service started");
+logger.info("Public OpenAPI service started");
 
 function loadLocalEnvFile() {
   if (process.env.ENV_FILE) {

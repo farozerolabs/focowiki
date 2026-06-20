@@ -36,9 +36,15 @@ Fill `.env` before starting the stack. Important groups include:
 | Redis | `REDIS_URL` |
 | S3-compatible storage | `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` |
 | Model provider | `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_CONTEXT_WINDOW_TOKENS` |
-| Runtime limits | Upload, task, model, and API concurrency settings |
+| Runtime logging and limits | `LOG_LEVEL`, upload, task, model, and API concurrency settings |
 
 Keep real `.env` files and copied Compose files out of git.
+
+## Runtime Logging
+
+`APP_ENV=production` uses production-safe runtime behavior. API error responses keep internal diagnostics out of the response body, and Admin UI production builds remove product-authored `console.log`, `console.debug`, `console.info`, and `debugger` statements.
+
+`LOG_LEVEL` controls API and migration process logs. Supported values are `error`, `warn`, `info`, and `debug`. The production template uses `LOG_LEVEL=info`. The development template uses `LOG_LEVEL=debug`.
 
 ## Pull Images
 

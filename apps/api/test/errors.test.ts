@@ -17,4 +17,14 @@ describe("redactSecrets", () => {
       "provider failed with Authorization: Bearer <redacted>"
     );
   });
+
+  it("redacts infrastructure connection settings", () => {
+    expect(
+      redactSecrets(
+        "DATABASE_URL=postgres://user:password@db:5432/focowiki REDIS_URL=redis://:redis-secret@redis:6379/0 POSTGRES_PASSWORD=db-secret REDIS_PASSWORD=redis-secret"
+      )
+    ).toBe(
+      "DATABASE_URL=<redacted> REDIS_URL=<redacted> POSTGRES_PASSWORD=<redacted> REDIS_PASSWORD=<redacted>"
+    );
+  });
 });

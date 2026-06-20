@@ -15,6 +15,8 @@ const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
 
+export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
+
 export type RateLimitConfig = {
   max: number;
   windowSeconds: number;
@@ -94,6 +96,9 @@ export type RuntimeConfig = {
       maxBytes: number;
     };
   } | undefined;
+  logging?: {
+    level: RuntimeLogLevel;
+  };
   model:
     | {
         enabled: true;
@@ -174,6 +179,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     },
     issues
   );
+  const logging = parseLoggingConfig(env, security.environment, issues);
 
   if (issues.length > 0) {
     throw new ConfigValidationError(issues.map((issue) => redactSecrets(issue)));
@@ -214,6 +220,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       fileProcessingConcurrency
     },
     model,
+    logging,
     corsOrigins,
     security
   };
@@ -729,6 +736,26 @@ function parseRateLimit(
       issues
     )
   };
+}
+
+function parseLoggingConfig(
+  env: RuntimeEnv,
+  environment: RuntimeSecurityConfig["environment"],
+  issues: string[]
+): NonNullable<RuntimeConfig["logging"]> {
+  const fallback: RuntimeLogLevel = environment === "production" ? "info" : "debug";
+  const value = optionalString(env, "LOG_LEVEL") ?? fallback;
+
+  if (isRuntimeLogLevel(value)) {
+    return { level: value };
+  }
+
+  issues.push("LOG_LEVEL must be error, warn, info, or debug");
+  return { level: fallback };
+}
+
+function isRuntimeLogLevel(value: string): value is RuntimeLogLevel {
+  return value === "error" || value === "warn" || value === "info" || value === "debug";
 }
 
 function optionalOrigin(

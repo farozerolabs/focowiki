@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 
 loadLocalEnvFile();
 
@@ -26,11 +26,14 @@ const contentSecurityPolicy = [
 ].join("; ");
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [stripProductionDebugOutput(), react(), tailwindcss()],
   resolve: {
     alias: {
       "@": new URL("./src", import.meta.url).pathname
     }
+  },
+  build: {
+    sourcemap: false
   },
   server: {
     host: adminUiHost,
@@ -81,4 +84,24 @@ function readHost(field: string, fallback: string): string {
   }
 
   return value;
+}
+
+function stripProductionDebugOutput(): Plugin {
+  return {
+    name: "focowiki-strip-production-debug-output",
+    apply: "build",
+    transform(code, id) {
+      const path = id.split("?")[0] ?? id;
+
+      if (!path.includes("/src/") || !/\.[cm]?[jt]sx?$/.test(path)) {
+        return null;
+      }
+
+      const stripped = code
+        .replace(/\bdebugger\s*;?/g, "")
+        .replace(/^\s*console\.(?:log|debug|info)\([^;\n]*(?:\n[^;]*)?\);\s*$/gm, "");
+
+      return stripped === code ? null : { code: stripped, map: null };
+    }
+  };
 }

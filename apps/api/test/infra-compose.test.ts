@@ -180,8 +180,10 @@ describe("Docker Compose infrastructure", () => {
     const deploymentEnv = readFileSync(deploymentEnvTemplatePath, "utf8");
 
     expect(devEnv).toContain("APP_ENV=development");
+    expect(devEnv).toContain("LOG_LEVEL=debug");
     expect(devEnv).toContain("DATABASE_URL=postgres://focowiki:focowiki@127.0.0.1:55432/focowiki");
     expect(deploymentEnv).toContain("APP_ENV=production");
+    expect(deploymentEnv).toContain("LOG_LEVEL=info");
     expect(deploymentEnv).toContain("DATABASE_URL=postgres://");
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");

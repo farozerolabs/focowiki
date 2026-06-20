@@ -36,9 +36,15 @@ cp docker-compose.yml.example docker-compose.yml
 | Redis | `REDIS_URL` |
 | S3 兼容存储 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` |
 | Model provider | `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_CONTEXT_WINDOW_TOKENS` |
-| Runtime limits | Upload、task、model 和 API concurrency settings |
+| Runtime logging 和 limits | `LOG_LEVEL`、upload、task、model 和 API concurrency settings |
 
 真实 `.env` 文件和复制后的 Compose 文件应留在 git 之外。
+
+## Runtime logging
+
+`APP_ENV=production` 会启用生产安全运行方式。API error responses 不会把内部诊断信息写入 response body。Admin UI 生产构建会移除产品代码中的 `console.log`、`console.debug`、`console.info` 和 `debugger` statements。
+
+`LOG_LEVEL` 控制 API 和迁移进程日志。可选值为 `error`、`warn`、`info` 和 `debug`。生产模板使用 `LOG_LEVEL=info`。开发模板使用 `LOG_LEVEL=debug`。
 
 ## 拉取镜像
 

@@ -2,17 +2,19 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { loadRuntimeConfig } from "../config.js";
+import { createRuntimeLogger } from "../logger.js";
 import { closeDatabaseClient, createDatabaseClient } from "./client.js";
 import { applyMigrations } from "./migrations.js";
 
 loadLocalEnvFile();
 
 const config = loadRuntimeConfig();
+const logger = createRuntimeLogger(config);
 const sql = createDatabaseClient(config);
 
 try {
   await applyMigrations(sql);
-  console.info("Database migrations applied");
+  logger.info("Database migrations applied");
 } finally {
   await closeDatabaseClient(sql);
 }

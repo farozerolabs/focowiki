@@ -8,12 +8,12 @@ import {
   createAdminSessionManager,
   type AdminSessionManager
 } from "./auth/session.js";
+import { createBaseApp } from "./app/base.js";
 import type { AdminRepositories } from "./db/admin-repositories.js";
 import type { RedisCoordinator } from "./redis/coordination.js";
 import { registerAdminApiRoutes } from "./admin/routes.js";
 import { registerDeveloperOpenApiRoutes } from "./developer-openapi/routes.js";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage/s3.js";
-import { applySecurityHeaders } from "./security/headers.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -83,61 +83,4 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     redis: options.redis ?? null,
     repositories: options.repositories ?? null
   };
-}
-
-function createBaseApp(config: RuntimeConfig): Hono {
-  const app = new Hono();
-
-  app.use("*", applySecurityHeaders(config));
-  app.use("*", async (context, next) => {
-    if (containsTraversal(context.req.raw.url)) {
-      return context.json(
-        {
-          error: {
-            code: "INVALID_PATH"
-          }
-        },
-        400
-      );
-    }
-
-    await next();
-  });
-  app.get("/healthz", (context) => context.json({ status: "ok" }));
-  app.notFound((context) =>
-    context.json(
-      {
-        error: {
-          code: "NOT_FOUND"
-        }
-      },
-      404
-    )
-  );
-
-  return app;
-}
-
-
-function containsTraversal(rawUrl: string): boolean {
-  const path = rawUrl.replace(/^[a-z]+:\/\/[^/]+/i, "").split("?")[0] ?? "";
-  let decoded = path;
-
-  for (let index = 0; index < 3; index += 1) {
-    try {
-      const next = decodeURIComponent(decoded);
-
-      if (next === decoded) {
-        break;
-      }
-
-      decoded = next;
-    } catch {
-      return true;
-    }
-  }
-
-  return decoded
-    .split("/")
-    .some((segment) => segment === ".." || segment.includes("\\"));
 }

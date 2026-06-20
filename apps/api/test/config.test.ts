@@ -54,6 +54,9 @@ describe("parseRuntimeConfig", () => {
       taskConcurrency: 1,
       fileProcessingConcurrency: 1
     });
+    expect(config.logging).toEqual({
+      level: "debug"
+    });
     expect(config.okf).toEqual({
       log: {
         maxEntries: 100,
@@ -187,6 +190,37 @@ describe("parseRuntimeConfig", () => {
         ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com"
       })
     ).not.toThrow(/change-me/);
+  });
+
+  it("defaults log level by runtime environment and validates explicit values", () => {
+    expect(parseRuntimeConfig(validEnv).logging).toEqual({ level: "debug" });
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "production-admin-password",
+        ADMIN_SESSION_SECRET: "production-session-secret-with-enough-entropy",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+        S3_ACCESS_KEY_ID: "production-s3-access",
+        S3_SECRET_ACCESS_KEY: "production-s3-secret"
+      }).logging
+    ).toEqual({ level: "info" });
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_LEVEL: "warn"
+      }).logging
+    ).toEqual({ level: "warn" });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_LEVEL: "trace"
+      })
+    ).toThrow(/LOG_LEVEL/);
   });
 
   it("validates trusted origins, CORS, and rate limit settings", () => {
