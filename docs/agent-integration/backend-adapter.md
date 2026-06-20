@@ -52,9 +52,9 @@ The exact routes belong to your product. This example shows a small shape that w
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown content. |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | Markdown content by logical path. |
 | `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | Bounded related file records. |
-| `GET /agent/knowledge/search?query=...` | Your search layer or generated index files | Candidate files for the Agent to read. |
+| `GET /agent/knowledge/search?query=<agent-generated phrase>` | Your search layer or generated index files | Candidate files for the Agent to read. |
 
-The `search` route is optional. A simple first version can start with tree listing and file reads.
+The `search` route is optional. The Agent should create the query phrase, and the route should return ranked file-level candidates for that phrase. Empty search responses should include safe continuation guidance so the Agent can continue with `index.md`, tree listing, shorter phrases, links, graph files, or related-file reads. A simple first version can start with tree listing and file reads.
 
 For third-party Agent clients, you can publish the read-only base URL as `https://knowledge.example.com` and route it internally to the same `/agent/knowledge` adapter. The Skill then sees shorter paths such as `/tree`, `/files/{fileId}`, and `/files/content?path=index.md`, while your backend still controls authentication, authorization, and Focowiki OpenAPI access.
 
@@ -66,7 +66,7 @@ For own Agent clients, register tools with the same contract:
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` or `GET /agent/knowledge/files/content?path=...` |
 | `read_related` | `GET /agent/knowledge/files/{fileId}/related` or `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
-| `search_files` | `GET /agent/knowledge/search?query=...` |
+| `search_files` | `GET /agent/knowledge/search?query=<agent-generated phrase>` |
 
 ## Identifier Flow
 
@@ -75,12 +75,15 @@ The backend should preserve the same identifiers that Focowiki returns:
 | Identifier | Source | Later use |
 | --- | --- | --- |
 | `knowledgeBaseId` | Admin UI, `listKnowledgeBases`, or backend configuration | Scope all Focowiki calls. |
-| `fileId` | Upload responses, source-file processing rows, tree entries, or file detail responses | Read file metadata and content. |
-| `path` | Tree entries | Read file content by logical path. |
+| `sourceFileId` | Upload responses and source-file processing rows | Read processing status, read events, retry failed processing, and resolve generated output fields. |
+| `generatedFileId` or generated `fileId` | Tree entries, search results, generated file detail responses, or `generatedFileId` from source-file detail | Read generated file metadata and Markdown content. |
+| `generatedFilePath` or `path` | Tree entries, search results, links, or `generatedFilePath` from source-file detail | Read generated file content by logical path. |
 | `graphRef` | Page frontmatter or `_index/search.json` | Read `_graph/by-file/{fileId}.json` for related files. |
 | `cursor` | List responses | Continue pagination. |
 
 This makes the Agent workflow continuous. The value returned by one call can be used by the next call.
+
+When a workflow starts from a source-file row, call the source-file detail endpoint first. Use `generatedFileId` with `/files/{fileId}/content` or `generatedFilePath` with `/files/content?path=...` after `generatedFileAvailable` is true.
 
 ## Security Rules
 

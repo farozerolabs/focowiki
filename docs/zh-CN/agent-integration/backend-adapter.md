@@ -52,9 +52,9 @@ title: 后端适配
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown 内容。 |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | 按逻辑路径读取的 Markdown 内容。 |
 | `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | 有界相关文件记录。 |
-| `GET /agent/knowledge/search?query=...` | 你的搜索层或生成索引文件 | 供 Agent 继续读取的候选文件。 |
+| `GET /agent/knowledge/search?query=<agent-generated phrase>` | 你的搜索层或生成索引文件 | 供 Agent 继续读取的候选文件。 |
 
-`search` 路由是可选项。第一版可以只提供文件树和文件读取。
+`search` 路由是可选项。查询短语应由 Agent 生成，路由返回该短语对应的文件级排序候选。空搜索响应应包含安全的继续探索建议，方便 Agent 继续读取 `index.md`、文件树、较短短语、链接、图文件或相关文件。第一版可以只提供文件树和文件读取。
 
 第三方 Agent 客户端可以使用 `https://knowledge.example.com` 作为只读 base URL，并在后端内部路由到同一套 `/agent/knowledge` adapter。这样 Skill 看到的是 `/tree`、`/files/{fileId}`、`/files/content?path=index.md` 这类短路径，同时鉴权、授权和 Focowiki OpenAPI 调用仍然由开发者后端控制。
 
@@ -66,7 +66,7 @@ title: 后端适配
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` 或 `GET /agent/knowledge/files/content?path=...` |
 | `read_related` | `GET /agent/knowledge/files/{fileId}/related` 或 `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
-| `search_files` | `GET /agent/knowledge/search?query=...` |
+| `search_files` | `GET /agent/knowledge/search?query=<agent-generated phrase>` |
 
 ## 标识符流转
 
@@ -75,12 +75,15 @@ title: 后端适配
 | 标识符 | 来源 | 后续用途 |
 | --- | --- | --- |
 | `knowledgeBaseId` | Admin UI、`listKnowledgeBases` 或后端配置 | 限定所有 Focowiki 调用范围。 |
-| `fileId` | 上传响应、源文件处理记录、文件树条目或文件详情响应 | 读取文件元数据和内容。 |
-| `path` | 文件树条目 | 按逻辑路径读取文件内容。 |
+| `sourceFileId` | 上传响应和源文件处理记录 | 读取处理状态、读取事件、重试失败处理，并解析生成文件字段。 |
+| `generatedFileId` 或生成文件 `fileId` | 文件树条目、搜索结果、生成文件详情响应，或 source-file detail 返回的 `generatedFileId` | 读取生成文件元数据和 Markdown 内容。 |
+| `generatedFilePath` 或 `path` | 文件树条目、搜索结果、链接，或 source-file detail 返回的 `generatedFilePath` | 按逻辑路径读取生成文件内容。 |
 | `graphRef` | 页面 frontmatter 或 `_index/search.json` | 读取 `_graph/by-file/{fileId}.json` 关系文件。 |
 | `cursor` | 列表响应 | 继续分页。 |
 
 这样可以保证 Agent 调用流程连续。上一个调用返回的值可以直接用于下一个调用。
+
+工作流从源文件处理记录开始时，先调用 source-file detail endpoint。`generatedFileAvailable` 为 true 后，使用 `generatedFileId` 调用 `/files/{fileId}/content`，或使用 `generatedFilePath` 调用 `/files/content?path=...`。
 
 ## 安全规则
 

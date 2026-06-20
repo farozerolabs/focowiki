@@ -95,7 +95,8 @@ function englishThemeConfig(): DefaultTheme.Config {
             items: [
               { text: "Skill Design", link: "/agent-integration/third-party-agent-client/skill-design" }
             ]
-          }
+          },
+          { text: "Demo Agent Result", link: "/agent-integration/demo-agent-result" }
         ]
       }
     ]
@@ -152,7 +153,8 @@ function chineseThemeConfig(): DefaultTheme.Config {
             items: [
               { text: "Skill 设计", link: "/zh-CN/agent-integration/third-party-agent-client/skill-design" }
             ]
-          }
+          },
+          { text: "Demo 运行测试结果示例", link: "/zh-CN/agent-integration/demo-agent-result" }
         ]
       }
     ]

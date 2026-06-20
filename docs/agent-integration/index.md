@@ -58,7 +58,7 @@ A minimal Agent-facing backend can expose these operations. In an own Agent clie
 | `list_tree` | Return paginated generated file entries for one selected knowledge base. |
 | `read_file` | Return Markdown content by `fileId` or logical `path`. |
 | `get_file` | Return safe metadata for a file. |
-| `search_files` | Optional operation backed by your own search layer or by generated index files. |
+| `search_files` | Optional candidate lookup for Agent-generated search phrases, backed by your own search layer or by generated index files. |
 | `read_related` | Optional shortcut for bounded related files. Agents can also read `_graph/by-file/{fileId}.json`. |
 
 Keep this interface small. Agents work better when they can discover a file tree, read one file, follow links, and repeat the loop.
@@ -68,19 +68,21 @@ Keep this interface small. Agents work better when they can discover a file tree
 | Mode | Interface example |
 | --- | --- |
 | Own Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "limit=50"`, `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
-| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..."` |
+| Third-party Agent client | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`, `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>"` |
 
 ## Exploration Flow
 
-1. Start with `index.md` to understand the knowledge base.
-2. Read `schema.md` to understand generated file conventions and metadata fields.
-3. List the file tree with pagination.
-4. Read the most relevant page by `fileId` or `path`.
-5. Read the page `graph` reference or `_graph/by-file/{fileId}.json` when relationship exploration is useful.
-6. Follow Markdown links and graph relationships to related files.
-7. Avoid fetching every file unless the task explicitly needs a full export.
+Agent reads should run as a small loop with broad discovery, deep file reading, lead extraction, and evidence checks before answering.
 
-This keeps requests predictable and limits memory, CPU, and token usage.
+1. Start with `index.md`, or derive initial search phrases when the question names a concrete concept.
+2. Discover candidate files through search, tree entries, graph files, related files, or Markdown links.
+3. Read useful candidates by `fileId` or logical `path`.
+4. Extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the files read.
+5. Repeat breadth and depth while new leads can add useful evidence.
+6. Track visited `fileId` and `path` values.
+7. Stop after the collected evidence covers the user's scope, no new relevant candidates remain for the remaining gap, or additional rounds repeat already-visited files.
+
+This keeps requests predictable while reducing shallow answers from one-file reads.
 
 ## Next Steps
 
@@ -88,3 +90,4 @@ This keeps requests predictable and limits memory, CPU, and token usage.
 - [Own Agent Client Tools Design](./own-agent-client/tools-design.md)
 - [Own Agent Client Skill Design](./own-agent-client/skill-design.md)
 - [Third-party Agent Client Skill Design](./third-party-agent-client/skill-design.md)
+- [Demo Agent Result](./demo-agent-result.md)

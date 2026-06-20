@@ -58,7 +58,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | `list_tree` | 返回一个知识库的分页生成文件条目。 |
 | `read_file` | 按 `fileId` 或逻辑 `path` 返回 Markdown 内容。 |
 | `get_file` | 返回文件的安全元数据。 |
-| `search_files` | 可选操作，由你的搜索层或生成索引文件支持。 |
+| `search_files` | 可选候选查找操作，由你的搜索层或生成索引文件支持，查询短语由 Agent 生成。 |
 | `read_related` | 可选的有界相关文件快捷接口。Agent 也可以读取 `_graph/by-file/{fileId}.json`。 |
 
 接口保持小而稳定。Agent 可以发现文件树、读取单个文件、沿着链接继续探索，并重复这个过程。
@@ -68,19 +68,21 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 模式 | 接口示例 |
 | --- | --- |
 | 自有 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/tree" --data-urlencode "limit=50"`、`curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
-| 第三方 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`、`curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=..."` |
+| 第三方 Agent 客户端 | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`、`curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>"` |
 
 ## 探索流程
 
-1. 先读取 `index.md`，了解知识库整体结构。
-2. 再读取 `schema.md`，理解生成文件约定和 metadata 字段。
-3. 分页列出文件树。
-4. 按 `fileId` 或 `path` 读取最相关页面。
-5. 需要关系探索时读取页面 `graph` 引用或 `_graph/by-file/{fileId}.json`。
-6. 沿着 Markdown links 和图关系继续读取相关文件。
-7. 任务没有要求完整导出时，避免一次性读取所有文件。
+Agent 读取应采用小型循环，在回答前完成广度发现、深度阅读、线索提取和证据检查。
 
-这个流程可以让请求更稳定，并限制内存、CPU 和 token 消耗。
+1. 从 `index.md` 开始，或在问题包含明确概念时先拆解初始查询短语。
+2. 通过搜索、文件树、图文件、相关文件或 Markdown links 发现候选文件。
+3. 按 `fileId` 或逻辑 `path` 读取有价值的候选文件。
+4. 从已读文件中提取新的短语、路径、链接、标题、heading、metadata terms、图关系和剩余缺口。
+5. 当新线索可以补充证据时，继续重复广度发现和深度阅读。
+6. 记录已经访问过的 `fileId` 和 `path`。
+7. 当已收集证据覆盖用户范围、剩余缺口没有新的相关候选，或后续轮次只会重复已读文件时停止。
+
+这个流程可以保持请求可控，并减少浅层回答。
 
 ## 下一步
 
@@ -88,3 +90,4 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 - [自有 Agent 客户端 Tools 设计](./own-agent-client/tools-design.md)
 - [自有 Agent 客户端 Skill 设计](./own-agent-client/skill-design.md)
 - [第三方 Agent 客户端 Skill 设计](./third-party-agent-client/skill-design.md)
+- [Demo 运行测试结果示例](./demo-agent-result.md)

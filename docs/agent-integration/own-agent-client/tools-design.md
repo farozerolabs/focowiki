@@ -6,7 +6,7 @@ title: Tools Design
 
 Use this page when developers control their own Agent client or runtime. In this mode, the Agent calls built-in tools registered by the developer.
 
-The Skill should describe the tools from the Agent user's perspective. It should not expose service credentials, storage paths, or internal implementation details.
+The Skill should describe only user-visible tool behavior and knowledge evidence rules.
 
 ## Recommended Tools
 
@@ -15,8 +15,8 @@ The Skill should describe the tools from the Agent user's perspective. It should
 | `list_tree` | Discover files in the configured knowledge base. | none | `items`, `nextCursor` |
 | `get_file` | Read safe metadata for one file. | `fileId` | file metadata |
 | `read_file` | Read one Markdown file. | `fileId` or `path` | Markdown content and metadata |
-| `read_related` | Read bounded related files for one source-backed page. | `fileId` | related file records |
-| `search_files` | Find candidate files for a question. | `query` | matching file entries |
+| `read_related` | Read bounded related files for one generated page. | `fileId` | related file records |
+| `search_files` | Return candidate files for an Agent-generated search phrase. | `query` | `items`, `searchStatus`, `nextActions` |
 
 ## `list_tree`
 
@@ -108,7 +108,7 @@ Output:
 }
 ```
 
-Prefer `fileId` when the Agent already has it. Use `path` for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, `_graph/by-file/{fileId}.json`, or pages discovered from links.
+Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, `_graph/by-file/{fileId}.json`, visible `generatedFilePath`, or pages discovered from links.
 
 ## `read_related`
 
@@ -127,7 +127,6 @@ Output:
 ```json
 {
   "fileId": "file_123",
-  "sourceFileId": "source_123",
   "items": [
     {
       "fileId": "file_456",
@@ -148,13 +147,15 @@ This tool is optional. The Agent can also read `_graph/by-file/{fileId}.json` th
 
 ## `search_files`
 
-This tool is optional. Focowiki Developer OpenAPI does not expose a direct search route. Implement `search_files` in your backend when the Agent needs search, commonly by reading the generated `_index/search.json` file or by using your own search layer.
+This tool is optional. Implement `search_files` when the Agent needs candidate lookup, commonly by reading the generated `_index/search.json` file or by using your own search layer.
+
+The Agent owns query planning. It should derive short phrases from the user question, the knowledge-base overview, schema hints, already-read files, and remaining evidence gaps. The tool should return candidates for one phrase at a time.
 
 Input:
 
 ```json
 {
-  "query": "contract renewal",
+  "query": "renewal notice",
   "cursor": null,
   "limit": 10
 }
@@ -169,14 +170,20 @@ Output:
       "fileId": "file_123",
       "path": "pages/example.md",
       "title": "Example",
-      "description": "Short summary."
+      "description": "Short summary.",
+      "score": 12,
+      "matchedTerms": ["renewal", "notice"],
+      "matchedFields": ["title", "description"]
     }
   ],
+  "searchStatus": "ok",
+  "message": null,
+  "nextActions": [],
   "nextCursor": null
 }
 ```
 
-Use search as a shortcut for direct questions. If search is unavailable or insufficient, use `list_tree`.
+For direct questions, the Agent derives concise phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, it can derive new phrases and continue with `search_files`, `nextActions`, `list_tree`, links, graph files, and related files.
 
 ## Error Shape
 

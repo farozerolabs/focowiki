@@ -6,7 +6,7 @@ Focowiki is an open-source Markdown knowledge-base platform for developers and p
 
 The project is designed for teams that want a small self-hosted system for file-based knowledge. Generated bundles can be read by people, applications, and agents through documented product interfaces.
 
-![Focowiki architecture](./docs/public/images/focowiki-architecture.png)
+<img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki architecture" width="880" />
 
 ## Documentation
 
@@ -43,7 +43,17 @@ Focowiki uses this model as a practical product direction. Uploaded Markdown fil
 
 ## Admin UI Preview
 
-![Focowiki Admin UI knowledge base detail](./docs/public/images/focowiki-admin-detail.png)
+<img src="./docs/public/images/focowiki-admin-detail.png" alt="Focowiki Admin UI knowledge base detail" width="880" />
+
+## Agent Demo Result
+
+The demo Agent result shows a third-party Agent reading a Focowiki-backed legal knowledge base through the demo backend and Skill.
+
+<img src="./docs/public/images/demo-agent-en-us-1.png" alt="Demo Agent result in English, part 1" width="880" />
+
+<img src="./docs/public/images/demo-agent-en-us-2.png" alt="Demo Agent result in English, part 2" width="880" />
+
+See the [Agent demo result documentation](https://docs.focowiki.com/agent-integration/demo-agent-result) for the integration context.
 
 ## Markdown Input
 
