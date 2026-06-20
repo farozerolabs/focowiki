@@ -1,5 +1,6 @@
 import type { RuntimeConfig, RuntimeLogLevel } from "./config.js";
 import { redactSecrets } from "./errors.js";
+import { createRuntimeFileLogSink, type RuntimeFileLogSink } from "./file-log-sink.js";
 
 export type RuntimeLogger = {
   error(...parts: unknown[]): void;
@@ -15,6 +16,10 @@ export type RuntimeLogSink = {
   debug(...parts: unknown[]): void;
 };
 
+export type RuntimeLoggerOptions = {
+  streamName?: string;
+};
+
 const DEFAULT_LOG_LEVEL: RuntimeLogLevel = "info";
 const LOG_LEVEL_WEIGHT: Record<RuntimeLogLevel, number> = {
   error: 0,
@@ -25,22 +30,26 @@ const LOG_LEVEL_WEIGHT: Record<RuntimeLogLevel, number> = {
 
 export function createRuntimeLogger(
   config: Pick<RuntimeConfig, "logging">,
-  sink: RuntimeLogSink = console
+  sink: RuntimeLogSink = console,
+  options: RuntimeLoggerOptions = {}
 ): RuntimeLogger {
   const configuredLevel = config.logging?.level ?? DEFAULT_LOG_LEVEL;
+  const fileSink = config.logging?.file
+    ? createRuntimeFileLogSink(config.logging.file, options.streamName ?? "runtime")
+    : null;
 
   return {
     error(...parts) {
-      write("error", configuredLevel, sink, parts);
+      write("error", configuredLevel, sink, fileSink, parts);
     },
     warn(...parts) {
-      write("warn", configuredLevel, sink, parts);
+      write("warn", configuredLevel, sink, fileSink, parts);
     },
     info(...parts) {
-      write("info", configuredLevel, sink, parts);
+      write("info", configuredLevel, sink, fileSink, parts);
     },
     debug(...parts) {
-      write("debug", configuredLevel, sink, parts);
+      write("debug", configuredLevel, sink, fileSink, parts);
     }
   };
 }
@@ -49,13 +58,25 @@ function write(
   level: RuntimeLogLevel,
   configuredLevel: RuntimeLogLevel,
   sink: RuntimeLogSink,
+  fileSink: RuntimeFileLogSink | null,
   parts: unknown[]
 ): void {
   if (LOG_LEVEL_WEIGHT[level] > LOG_LEVEL_WEIGHT[configuredLevel]) {
     return;
   }
 
-  sink[level](...parts.map(formatLogPart));
+  const formattedParts = parts.map(formatLogPart);
+  sink[level](...formattedParts);
+
+  if (!fileSink) {
+    return;
+  }
+
+  try {
+    fileSink.write(level, formattedParts);
+  } catch (error) {
+    sink.warn("Runtime file logging failed", formatLogPart(error));
+  }
 }
 
 function formatLogPart(part: unknown): string {

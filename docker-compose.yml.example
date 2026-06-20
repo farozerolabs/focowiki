@@ -1,3 +1,9 @@
+x-docker-logging: &docker-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   admin:
     image: ${FOCOWIKI_ADMIN_IMAGE:-ghcr.io/farozerolabs/focowiki-admin:latest}
@@ -14,6 +20,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    logging: *docker-logging
     restart: unless-stopped
 
   api:
@@ -23,6 +30,8 @@ services:
     ports:
       - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
       - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
+    volumes:
+      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -36,6 +45,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    logging: *docker-logging
     restart: unless-stopped
 
   migrate:
@@ -43,11 +53,14 @@ services:
     command: ["node", "apps/api/runtime/migrate.mjs"]
     env_file:
       - .env
+    volumes:
+      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    logging: *docker-logging
     restart: "no"
 
   postgres:
@@ -64,6 +77,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    logging: *docker-logging
     restart: unless-stopped
 
   redis:
@@ -77,6 +91,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    logging: *docker-logging
     restart: unless-stopped
 volumes:
   postgres-data:

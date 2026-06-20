@@ -28,15 +28,7 @@ cp docker-compose.yml.example docker-compose.yml
 
 启动前填写 `.env`。重点配置分组：
 
-| 分组 | 示例 |
-| --- | --- |
-| Admin | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` |
-| 端口和 origins | `ADMIN_UI_PORT`, `ADMIN_API_PORT`, `PUBLIC_OPENAPI_PORT`, `ADMIN_API_PROXY_TARGET`, `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_BASE_URL`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN` |
-| Database | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL` |
-| Redis | `REDIS_URL` |
-| S3 兼容存储 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` |
-| Model provider | `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_CONTEXT_WINDOW_TOKENS` |
-| Runtime logging 和 limits | `LOG_LEVEL`、upload、task、model 和 API concurrency settings |
+所有变量、必填项、可选项和生产填写方式见 [环境变量配置](./environment.md)。
 
 真实 `.env` 文件和复制后的 Compose 文件应留在 git 之外。
 
@@ -44,7 +36,7 @@ cp docker-compose.yml.example docker-compose.yml
 
 `APP_ENV=production` 会启用生产安全运行方式。API error responses 不会把内部诊断信息写入 response body。Admin UI 生产构建会移除产品代码中的 `console.log`、`console.debug`、`console.info` 和 `debugger` statements。
 
-`LOG_LEVEL` 控制 API 和迁移进程日志。可选值为 `error`、`warn`、`info` 和 `debug`。生产模板使用 `LOG_LEVEL=info`。开发模板使用 `LOG_LEVEL=debug`。
+文件日志、日志轮转和 Docker 日志限制见 [环境变量配置](./environment.md#运行模式)。
 
 ## 拉取镜像
 
@@ -102,6 +94,8 @@ pnpm compose:logs
 pnpm compose:down
 pnpm compose:clean
 ```
+
+`docker compose logs -f` 用于查看 container stdout/stderr 日志。产品运行日志文件见 [环境变量配置](./environment.md#运行模式)。
 
 `pnpm compose:clean` 会删除生产 Compose stack 使用的 deployment containers、named volumes、orphans 和本地镜像副本。它也会删除该 stack 拥有的本地 PostgreSQL 和 Redis 数据。
 

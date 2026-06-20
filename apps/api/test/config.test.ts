@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolve } from "node:path";
 import { parseRuntimeConfig } from "../src/config.js";
 
 const validEnv = {
@@ -55,7 +56,12 @@ describe("parseRuntimeConfig", () => {
       fileProcessingConcurrency: 1
     });
     expect(config.logging).toEqual({
-      level: "debug"
+      level: "debug",
+      file: {
+        directory: resolve(process.cwd(), "logs"),
+        maxBytes: 10_485_760,
+        maxFiles: 5
+      }
     });
     expect(config.okf).toEqual({
       log: {
@@ -193,7 +199,14 @@ describe("parseRuntimeConfig", () => {
   });
 
   it("defaults log level by runtime environment and validates explicit values", () => {
-    expect(parseRuntimeConfig(validEnv).logging).toEqual({ level: "debug" });
+    expect(parseRuntimeConfig(validEnv).logging).toEqual({
+      level: "debug",
+      file: {
+        directory: resolve(process.cwd(), "logs"),
+        maxBytes: 10_485_760,
+        maxFiles: 5
+      }
+    });
     expect(
       parseRuntimeConfig({
         ...validEnv,
@@ -207,13 +220,27 @@ describe("parseRuntimeConfig", () => {
         S3_ACCESS_KEY_ID: "production-s3-access",
         S3_SECRET_ACCESS_KEY: "production-s3-secret"
       }).logging
-    ).toEqual({ level: "info" });
+    ).toEqual({
+      level: "info",
+      file: {
+        directory: resolve(process.cwd(), "logs"),
+        maxBytes: 10_485_760,
+        maxFiles: 5
+      }
+    });
     expect(
       parseRuntimeConfig({
         ...validEnv,
         LOG_LEVEL: "warn"
       }).logging
-    ).toEqual({ level: "warn" });
+    ).toEqual({
+      level: "warn",
+      file: {
+        directory: resolve(process.cwd(), "logs"),
+        maxBytes: 10_485_760,
+        maxFiles: 5
+      }
+    });
 
     expect(() =>
       parseRuntimeConfig({
@@ -221,6 +248,40 @@ describe("parseRuntimeConfig", () => {
         LOG_LEVEL: "trace"
       })
     ).toThrow(/LOG_LEVEL/);
+  });
+
+  it("defaults, resolves, and validates file logging settings", () => {
+    expect(parseRuntimeConfig(validEnv).logging?.file).toEqual({
+      directory: resolve(process.cwd(), "logs"),
+      maxBytes: 10_485_760,
+      maxFiles: 5
+    });
+
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_DIR: "runtime-logs",
+        LOG_FILE_MAX_BYTES: "1024",
+        LOG_FILE_MAX_FILES: "3"
+      }).logging?.file
+    ).toEqual({
+      directory: resolve(process.cwd(), "runtime-logs"),
+      maxBytes: 1_024,
+      maxFiles: 3
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_MAX_BYTES: "0"
+      })
+    ).toThrow(/LOG_FILE_MAX_BYTES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_MAX_FILES: "-1"
+      })
+    ).toThrow(/LOG_FILE_MAX_FILES/);
   });
 
   it("validates trusted origins, CORS, and rate limit settings", () => {

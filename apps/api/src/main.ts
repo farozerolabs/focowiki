@@ -13,7 +13,7 @@ import { createRuntimeLogger } from "./logger.js";
 loadLocalEnvFile();
 
 const config = loadRuntimeConfig();
-const logger = createRuntimeLogger(config);
+const logger = createRuntimeLogger(config, console, { streamName: "api" });
 const storage = createS3StorageAdapter(config.storage);
 const sql = createDatabaseClient(config);
 const repositories = createPostgresAdminRepositories(sql);

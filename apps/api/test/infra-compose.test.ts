@@ -29,6 +29,10 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("image: redis:8-alpine");
     expect(compose).toContain("redis-cli");
     expect(compose).toContain("redis-data:");
+    expect(compose).toContain("x-docker-logging: &docker-logging");
+    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-file: "3"');
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(2);
     expect(compose).not.toContain("api:");
     expect(compose).not.toContain("admin:");
     expect(compose).not.toContain("migrate:");
@@ -53,6 +57,11 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("target: api");
     expect(compose).toContain("target: admin");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
+    expect(compose).toContain("x-docker-logging: &docker-logging");
+    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-file: "3"');
+    expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(5);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
@@ -80,6 +89,11 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("condition: service_healthy");
     expect(compose).toContain("env_file:");
     expect(compose).toContain("- .env");
+    expect(compose).toContain("x-docker-logging: &docker-logging");
+    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-file: "3"');
+    expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(5);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -181,9 +195,21 @@ describe("Docker Compose infrastructure", () => {
 
     expect(devEnv).toContain("APP_ENV=development");
     expect(devEnv).toContain("LOG_LEVEL=debug");
+    expect(devEnv).toContain("LOG_FILE_DIR=logs");
+    expect(devEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
+    expect(devEnv).toContain("LOG_FILE_MAX_FILES=5");
+    expect(devEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(devEnv).not.toContain("DOCKER_LOG_MAX_SIZE");
+    expect(devEnv).not.toContain("DOCKER_LOG_MAX_FILE");
     expect(devEnv).toContain("DATABASE_URL=postgres://focowiki:focowiki@127.0.0.1:55432/focowiki");
     expect(deploymentEnv).toContain("APP_ENV=production");
     expect(deploymentEnv).toContain("LOG_LEVEL=info");
+    expect(deploymentEnv).toContain("LOG_FILE_DIR=logs");
+    expect(deploymentEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
+    expect(deploymentEnv).toContain("LOG_FILE_MAX_FILES=5");
+    expect(deploymentEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(deploymentEnv).not.toContain("DOCKER_LOG_MAX_SIZE");
+    expect(deploymentEnv).not.toContain("DOCKER_LOG_MAX_FILE");
     expect(deploymentEnv).toContain("DATABASE_URL=postgres://");
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");

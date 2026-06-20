@@ -28,15 +28,7 @@ cp docker-compose.yml.example docker-compose.yml
 
 Fill `.env` before starting the stack. Important groups include:
 
-| Group | Examples |
-| --- | --- |
-| Admin | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` |
-| Ports and origins | `ADMIN_UI_PORT`, `ADMIN_API_PORT`, `PUBLIC_OPENAPI_PORT`, `ADMIN_API_PROXY_TARGET`, `ADMIN_PUBLIC_ORIGIN`, `ADMIN_API_PUBLIC_ORIGIN`, `PUBLIC_BASE_URL`, `PUBLIC_OPENAPI_PUBLIC_ORIGIN` |
-| Database | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL` |
-| Redis | `REDIS_URL` |
-| S3-compatible storage | `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` |
-| Model provider | `MODEL_BASE_URL`, `MODEL_API_KEY`, `MODEL_NAME`, `MODEL_CONTEXT_WINDOW_TOKENS` |
-| Runtime logging and limits | `LOG_LEVEL`, upload, task, model, and API concurrency settings |
+See [Environment Configuration](./environment.md) for every variable, required values, optional values, and production examples.
 
 Keep real `.env` files and copied Compose files out of git.
 
@@ -44,7 +36,7 @@ Keep real `.env` files and copied Compose files out of git.
 
 `APP_ENV=production` uses production-safe runtime behavior. API error responses keep internal diagnostics out of the response body, and Admin UI production builds remove product-authored `console.log`, `console.debug`, `console.info`, and `debugger` statements.
 
-`LOG_LEVEL` controls API and migration process logs. Supported values are `error`, `warn`, `info`, and `debug`. The production template uses `LOG_LEVEL=info`. The development template uses `LOG_LEVEL=debug`.
+See [Environment Configuration](./environment.md#runtime) for file logging, log rotation, and Docker log limits.
 
 ## Pull Images
 
@@ -102,6 +94,8 @@ pnpm compose:logs
 pnpm compose:down
 pnpm compose:clean
 ```
+
+Use `docker compose logs -f` for container stdout/stderr logs. See [Environment Configuration](./environment.md#runtime) for product runtime log files.
 
 `pnpm compose:clean` removes deployment containers, named volumes, orphans, and local image copies used by the production Compose stack. It also removes local PostgreSQL and Redis data owned by that stack.
 

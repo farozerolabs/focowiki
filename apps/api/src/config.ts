@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
 
 export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
@@ -14,6 +15,8 @@ const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
+const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
+const DEFAULT_LOG_FILE_MAX_FILES = 5;
 
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
 
@@ -98,6 +101,11 @@ export type RuntimeConfig = {
   } | undefined;
   logging?: {
     level: RuntimeLogLevel;
+    file?: {
+      directory: string;
+      maxBytes: number;
+      maxFiles: number;
+    };
   };
   model:
     | {
@@ -745,13 +753,35 @@ function parseLoggingConfig(
 ): NonNullable<RuntimeConfig["logging"]> {
   const fallback: RuntimeLogLevel = environment === "production" ? "info" : "debug";
   const value = optionalString(env, "LOG_LEVEL") ?? fallback;
+  const file = parseFileLoggingConfig(env, issues);
 
   if (isRuntimeLogLevel(value)) {
-    return { level: value };
+    return { level: value, file };
   }
 
   issues.push("LOG_LEVEL must be error, warn, info, or debug");
-  return { level: fallback };
+  return { level: fallback, file };
+}
+
+function parseFileLoggingConfig(
+  env: RuntimeEnv,
+  issues: string[]
+): NonNullable<NonNullable<RuntimeConfig["logging"]>["file"]> {
+  return {
+    directory: resolve(process.cwd(), optionalString(env, "LOG_FILE_DIR") ?? "logs"),
+    maxBytes: optionalPositiveInteger(
+      env,
+      "LOG_FILE_MAX_BYTES",
+      DEFAULT_LOG_FILE_MAX_BYTES,
+      issues
+    ),
+    maxFiles: optionalPositiveInteger(
+      env,
+      "LOG_FILE_MAX_FILES",
+      DEFAULT_LOG_FILE_MAX_FILES,
+      issues
+    )
+  };
 }
 
 function isRuntimeLogLevel(value: string): value is RuntimeLogLevel {

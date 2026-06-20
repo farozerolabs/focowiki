@@ -9,7 +9,7 @@ import { applyMigrations } from "./migrations.js";
 loadLocalEnvFile();
 
 const config = loadRuntimeConfig();
-const logger = createRuntimeLogger(config);
+const logger = createRuntimeLogger(config, console, { streamName: "migrate" });
 const sql = createDatabaseClient(config);
 
 try {
