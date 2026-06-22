@@ -135,11 +135,11 @@ test("selectSingleAndBatchSamplesFromEnvironment supports explicit single sample
   }
 });
 
-test("selectSingleAndBatchSamplesFromEnvironment supports a large-scale profile with at least 50 batch files", () => {
+test("selectSingleAndBatchSamplesFromEnvironment supports a large-scale profile with at least 99 batch files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-large-profile-"));
   const markdownDir = path.join(root, "markdown");
   fs.mkdirSync(markdownDir);
-  writeCoverageFiles(markdownDir, 56);
+  writeCoverageFiles(markdownDir, 106);
 
   const originalReadFileSync = fs.readFileSync;
   fs.readFileSync = () => {
@@ -156,9 +156,9 @@ test("selectSingleAndBatchSamplesFromEnvironment supports a large-scale profile 
       [SAMPLE_PROFILE_ENV]: "large-scale"
     });
 
-    assert.equal(result.batchSampleCount, 50);
-    assert.equal(result.batchSamples.length, 50);
-    assert.equal(result.sampleCount, 51);
+    assert.equal(result.batchSampleCount, 99);
+    assert.equal(result.batchSamples.length, 99);
+    assert.equal(result.sampleCount, 100);
     assert.equal(result.profile, "large-scale");
     assert.deepEqual(
       result.samples.map((sample) => sample.basename),
@@ -172,11 +172,11 @@ test("selectSingleAndBatchSamplesFromEnvironment supports a large-scale profile 
   }
 });
 
-test("selectSingleAndBatchSamplesFromEnvironment fails clearly when large-scale profile has fewer than 50 files", () => {
+test("selectSingleAndBatchSamplesFromEnvironment fails clearly when large-scale profile has fewer than 99 batch files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-large-profile-small-"));
   const markdownDir = path.join(root, "markdown");
   fs.mkdirSync(markdownDir);
-  writeCoverageFiles(markdownDir, 20);
+  writeCoverageFiles(markdownDir, 60);
 
   try {
     assert.throws(
@@ -185,7 +185,7 @@ test("selectSingleAndBatchSamplesFromEnvironment fails clearly when large-scale 
           [SAMPLE_SOURCE_ENV]: root,
           [SAMPLE_PROFILE_ENV]: "large-scale"
         }),
-      new RegExp(`${LARGE_SCALE_MIN_BATCH_FILES_ENV} requires at least 50 batch Markdown files`)
+      new RegExp(`${LARGE_SCALE_MIN_BATCH_FILES_ENV} requires at least 99 batch Markdown files`)
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

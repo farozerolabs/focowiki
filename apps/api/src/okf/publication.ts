@@ -103,6 +103,7 @@ export type PublishOkfReleaseInput = {
   persistBundleFiles: (files: BundleFileDraft[]) => Promise<void>;
   persistBundleTreeEntries: (entries: BundleTreeEntryDraft[]) => Promise<void>;
   onSourcePageStage?: (input: { sourceFileIds: string[]; stage: SourcePageStage }) => Promise<void>;
+  indexShardSize?: number | undefined;
   graph?: OkfGraphLimits | undefined;
 };
 
@@ -231,7 +232,9 @@ export async function publishOkfRelease(
     }
   }
 
-  const indexFiles = renderIndexFiles(pageIndexEntries, manifestEntries, input.generatedAt, graph);
+  const indexFiles = renderIndexFiles(pageIndexEntries, manifestEntries, input.generatedAt, graph, {
+    shardSize: input.indexShardSize
+  });
   for (const file of indexFiles) {
     const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
     fileCount += 1;

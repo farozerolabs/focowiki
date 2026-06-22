@@ -40,10 +40,16 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
   processing_ended_at timestamptz,
   processing_error_code text,
   processing_error_message text,
+  generated_output_status text NOT NULL DEFAULT 'pending',
+  publication_dirty_at timestamptz,
+  publication_visible_at timestamptz,
+  publication_error_code text,
+  publication_error_message text,
   retry_count integer NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
   CHECK (processing_status IN ('queued', 'running', 'completed', 'failed')),
+  CHECK (generated_output_status IN ('pending', 'visible', 'unavailable')),
   CHECK (processing_stage IN (
     'upload_storage',
     'metadata_resolution',
@@ -65,6 +71,11 @@ ALTER TABLE focowiki.source_files
   ADD COLUMN IF NOT EXISTS processing_ended_at timestamptz,
   ADD COLUMN IF NOT EXISTS processing_error_code text,
   ADD COLUMN IF NOT EXISTS processing_error_message text,
+  ADD COLUMN IF NOT EXISTS generated_output_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS publication_dirty_at timestamptz,
+  ADD COLUMN IF NOT EXISTS publication_visible_at timestamptz,
+  ADD COLUMN IF NOT EXISTS publication_error_code text,
+  ADD COLUMN IF NOT EXISTS publication_error_message text,
   ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
 
 UPDATE focowiki.source_files
@@ -91,6 +102,11 @@ ALTER TABLE focowiki.source_files
   CHECK (processing_status IN ('queued', 'running', 'completed', 'failed'));
 
 ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_generated_output_status_check,
+  ADD CONSTRAINT source_files_generated_output_status_check
+  CHECK (generated_output_status IN ('pending', 'visible', 'unavailable'));
+
+ALTER TABLE focowiki.source_files
   DROP CONSTRAINT IF EXISTS source_files_processing_stage_check,
   ADD CONSTRAINT source_files_processing_stage_check
   CHECK (processing_stage IN (
@@ -103,6 +119,14 @@ ALTER TABLE focowiki.source_files
     'index_publication',
     'release_activation'
   ));
+
+UPDATE focowiki.source_files
+SET
+  processing_stage = 'release_activation',
+  processing_ended_at = COALESCE(publication_visible_at, processing_ended_at)
+WHERE processing_status = 'completed'
+  AND generated_output_status = 'visible'
+  AND processing_stage = 'index_publication';
 
 CREATE TABLE IF NOT EXISTS focowiki.model_invocations (
   id text PRIMARY KEY,
@@ -143,6 +167,26 @@ CREATE TABLE IF NOT EXISTS focowiki.releases (
   file_count integer NOT NULL DEFAULT 0 CHECK (file_count >= 0),
   manifest_checksum_sha256 text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.publication_jobs (
+  id text PRIMARY KEY,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  mode text NOT NULL,
+  reason text NOT NULL,
+  status text NOT NULL DEFAULT 'queued',
+  dirty_source_count integer NOT NULL DEFAULT 0 CHECK (dirty_source_count >= 0),
+  release_id text REFERENCES focowiki.releases(id),
+  started_at timestamptz,
+  ended_at timestamptz,
+  error_code text,
+  error_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (mode IN ('batch', 'manual', 'per_file')),
+  CHECK (reason IN ('bootstrap', 'batch_threshold', 'batch_interval', 'manual', 'per_file', 'deletion')),
+  CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+  CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
 );
 
 CREATE TABLE IF NOT EXISTS focowiki.source_file_events (
@@ -207,8 +251,11 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
     'log',
     'schema',
     'manifest_index',
+    'manifest_index_shard',
     'search_index',
+    'search_index_shard',
     'link_index',
+    'link_index_shard',
     'graph_index',
     'graph_manifest',
     'graph_node_index',
@@ -388,6 +435,7 @@ BEGIN
 
     DELETE FROM focowiki.bundle_tree_entries;
     DELETE FROM focowiki.bundle_files;
+    DELETE FROM focowiki.publication_jobs;
     DELETE FROM focowiki.releases;
     DELETE FROM focowiki.source_file_graph_edges;
     DELETE FROM focowiki.source_file_graph_nodes;
@@ -454,6 +502,22 @@ CREATE INDEX IF NOT EXISTS source_files_kb_active_created_cursor_idx
 
 CREATE INDEX IF NOT EXISTS source_files_kb_processing_idx
   ON focowiki.source_files(knowledge_base_id, processing_status, processing_stage, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_files_kb_publication_dirty_idx
+  ON focowiki.source_files(knowledge_base_id, publication_dirty_at, id)
+  WHERE deleted_at IS NULL
+    AND processing_status = 'completed'
+    AND publication_dirty_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_generated_output_status_idx
+  ON focowiki.source_files(knowledge_base_id, generated_output_status, created_at DESC, id)
+  WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS publication_jobs_kb_status_created_idx
+  ON focowiki.publication_jobs(knowledge_base_id, status, created_at, id);
+
+CREATE INDEX IF NOT EXISTS publication_jobs_kb_created_idx
+  ON focowiki.publication_jobs(knowledge_base_id, created_at DESC, id);
 
 CREATE INDEX IF NOT EXISTS model_invocations_source_created_idx
   ON focowiki.model_invocations(source_file_id, created_at DESC, id);

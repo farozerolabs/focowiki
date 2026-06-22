@@ -24,4 +24,27 @@ describe("createBoundedTaskRunner", () => {
   it("rejects invalid concurrency", () => {
     expect(() => createBoundedTaskRunner(0)).toThrow(/positive integer/i);
   });
+
+  it("spaces queued task starts when a minimum interval is configured", async () => {
+    const runner = createBoundedTaskRunner(1, { minStartIntervalMs: 10 });
+    const startedAt: number[] = [];
+
+    await Promise.all(
+      Array.from({ length: 3 }, () =>
+        runner.run(async () => {
+          startedAt.push(Date.now());
+        })
+      )
+    );
+
+    expect(startedAt).toHaveLength(3);
+    expect((startedAt[1] ?? 0) - (startedAt[0] ?? 0)).toBeGreaterThanOrEqual(8);
+    expect((startedAt[2] ?? 0) - (startedAt[1] ?? 0)).toBeGreaterThanOrEqual(8);
+  });
+
+  it("rejects invalid minimum start intervals", () => {
+    expect(() => createBoundedTaskRunner(1, { minStartIntervalMs: -1 })).toThrow(
+      /non-negative integer/i
+    );
+  });
 });

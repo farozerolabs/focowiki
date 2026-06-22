@@ -4,6 +4,7 @@ import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
+import { createModelSuggestionTaskRunner } from "../runtime/model-task-runner.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 import {
@@ -32,8 +33,12 @@ export function registerDeveloperOpenApiRoutes(
 ): void {
   const keyService = createDeveloperOpenApiKeyService(services);
   const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
-  const api = createDeveloperOpenApiService(services);
   const taskRunner = createBoundedTaskRunner(services.config.upload.taskConcurrency);
+  const modelSuggestionRunner = createModelSuggestionTaskRunner(services.config);
+  const api = createDeveloperOpenApiService({
+    ...services,
+    modelSuggestionRunner
+  });
 
   app.use("/openapi/v1/*", requireAuth);
 

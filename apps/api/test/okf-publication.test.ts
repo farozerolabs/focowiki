@@ -354,6 +354,81 @@ describe("publishOkfRelease", () => {
     expect(searchPage?.metadata).not.toHaveProperty("providerPayload");
   });
 
+  it("shards large index files with bounded JSONL entries", async () => {
+    const sources: SourceRecord[] = Array.from({ length: 3 }, (_value, index) =>
+      sourceRecord(
+        `source-${index + 1}`,
+        `guide-${index + 1}.md`,
+        `tenant/demo/source/guide-${index + 1}.md`
+      )
+    );
+    const storage = new PublicationStorage(sources);
+    const persistedFiles: BundleFileDraft[] = [];
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 3,
+      concurrency: 1,
+      indexShardSize: 2,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async (files) => {
+        persistedFiles.push(...files);
+      },
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const searchDescriptor = JSON.parse(
+      storage.objects.get(`${result.bundleRootKey}_index/search.json`) ?? "{}"
+    ) as {
+      mode: string;
+      item_count: number;
+      shard_size: number;
+      shards: Array<{ path: string; count: number }>;
+    };
+    const manifestDescriptor = JSON.parse(
+      storage.objects.get(`${result.bundleRootKey}_index/manifest.json`) ?? "{}"
+    ) as {
+      mode: string;
+      shards: Array<{ path: string; count: number }>;
+    };
+
+    expect(searchDescriptor).toMatchObject({
+      mode: "sharded",
+      item_count: 3,
+      shard_size: 2,
+      shards: [
+        { path: "_index/search/000001.jsonl", count: 2 },
+        { path: "_index/search/000002.jsonl", count: 1 }
+      ]
+    });
+    expect(manifestDescriptor.mode).toBe("sharded");
+    expect(storage.objects.get(`${result.bundleRootKey}_index/search/000001.jsonl`))
+      .toContain("\"pages/guide-1.md\"");
+    expect(storage.objects.get(`${result.bundleRootKey}_index/links/000001.jsonl`))
+      .toContain("\"index.md\"");
+    const manifestShardContent = manifestDescriptor.shards
+      .map((shard) => storage.objects.get(`${result.bundleRootKey}${shard.path}`) ?? "")
+      .join("\n");
+    expect(manifestShardContent)
+      .toContain("\"_index/search/000001.jsonl\"");
+    expect(persistedFiles).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "_index/search/000001.jsonl",
+        fileKind: "search_index_shard"
+      })
+    );
+    expect(persistedFiles).toContainEqual(
+      expect.objectContaining({
+        logicalPath: "_index/manifest/000001.jsonl",
+        fileKind: "manifest_index_shard"
+      })
+    );
+  });
+
   it("limits source file processing with the configured publication concurrency", async () => {
     const sources: SourceRecord[] = Array.from({ length: 4 }, (_value, index) =>
       sourceRecord(

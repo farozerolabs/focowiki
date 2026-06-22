@@ -8,6 +8,7 @@ const ALLOWED_PUBLIC_PATH_PATTERNS = [
   /^log\.md$/u,
   /^pages\/[^/]+\.md$/u,
   /^_index\/(?:manifest|search|links)\.json$/u,
+  /^_index\/(?:manifest|search|links)\/[0-9]{6}\.jsonl$/u,
   /^_graph\/index\.md$/u,
   /^_graph\/manifest\.json$/u,
   /^_graph\/nodes\.jsonl$/u,

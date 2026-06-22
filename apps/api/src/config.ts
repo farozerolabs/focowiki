@@ -5,11 +5,19 @@ export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
+const DEFAULT_MODEL_TRANSIENT_RETRY_DELAY_MS = 60_000;
+const DEFAULT_MODEL_REQUEST_MIN_INTERVAL_MS = 2_000;
 const INTERNAL_PAGINATION_DEFAULT_PAGE_SIZE = 50;
 const INTERNAL_PAGINATION_MAX_PAGE_SIZE = 200;
 const INTERNAL_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
+const DEFAULT_UPLOAD_STORAGE_CONCURRENCY = 4;
+const DEFAULT_PUBLICATION_MODE = "batch";
+const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
+const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
+const DEFAULT_INDEX_SHARD_SIZE = 1_000;
+const DEFAULT_GRAPH_EDGE_SHARD_SIZE = 5_000;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
@@ -19,6 +27,7 @@ const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
 
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
+export type PublicationMode = "batch" | "manual" | "per_file";
 
 export type RateLimitConfig = {
   max: number;
@@ -87,6 +96,14 @@ export type RuntimeConfig = {
     generationBatchSize: number;
     taskConcurrency: number;
     fileProcessingConcurrency: number;
+    storageConcurrency: number;
+  };
+  publication: {
+    mode: PublicationMode;
+    batchSize: number;
+    intervalSeconds: number;
+    indexShardSize: number;
+    graphEdgeShardSize: number;
   };
   pagination: {
     defaultPageSize: number;
@@ -117,6 +134,8 @@ export type RuntimeConfig = {
         requestMaxTimeoutMs: number;
         requestIdleTimeoutMs: number;
         suggestionConcurrency: number;
+        transientRetryDelayMs: number;
+        requestMinIntervalMs: number;
       }
     | {
         enabled: false;
@@ -171,6 +190,13 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY,
     issues
   );
+  const storageConcurrency = optionalPositiveInteger(
+    env,
+    "UPLOAD_STORAGE_CONCURRENCY",
+    DEFAULT_UPLOAD_STORAGE_CONCURRENCY,
+    issues
+  );
+  const publication = parsePublicationConfig(env, issues);
   const pagination = createDefaultPaginationConfig();
   const okf = parseOkfConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
@@ -225,8 +251,10 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       maxFiles,
       generationBatchSize,
       taskConcurrency,
-      fileProcessingConcurrency
+      fileProcessingConcurrency,
+      storageConcurrency
     },
+    publication,
     model,
     logging,
     corsOrigins,
@@ -345,6 +373,28 @@ function optionalPositiveInteger(
   return parsed;
 }
 
+function optionalNonNegativeInteger(
+  env: RuntimeEnv,
+  field: string,
+  fallback: number,
+  issues: string[]
+): number {
+  const value = optionalString(env, field);
+
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    issues.push(`${field} must be a non-negative integer`);
+    return fallback;
+  }
+
+  return parsed;
+}
+
 function parseServicePorts(env: RuntimeEnv, issues: string[]): RuntimeConfig["ports"] {
   const ports = {
     adminApi: optionalHighPort(env, "ADMIN_API_PORT", 43_000, issues),
@@ -383,6 +433,50 @@ function createDefaultPaginationConfig(): RuntimeConfig["pagination"] {
     maxPageSize: INTERNAL_PAGINATION_MAX_PAGE_SIZE,
     cursorTtlSeconds: INTERNAL_PAGINATION_CURSOR_TTL_SECONDS
   };
+}
+
+function parsePublicationConfig(
+  env: RuntimeEnv,
+  issues: string[]
+): RuntimeConfig["publication"] {
+  return {
+    mode: parsePublicationMode(env, issues),
+    batchSize: optionalPositiveInteger(
+      env,
+      "PUBLICATION_BATCH_SIZE",
+      DEFAULT_PUBLICATION_BATCH_SIZE,
+      issues
+    ),
+    intervalSeconds: optionalPositiveInteger(
+      env,
+      "PUBLICATION_INTERVAL_SECONDS",
+      DEFAULT_PUBLICATION_INTERVAL_SECONDS,
+      issues
+    ),
+    indexShardSize: optionalPositiveInteger(
+      env,
+      "INDEX_SHARD_SIZE",
+      DEFAULT_INDEX_SHARD_SIZE,
+      issues
+    ),
+    graphEdgeShardSize: optionalPositiveInteger(
+      env,
+      "GRAPH_EDGE_SHARD_SIZE",
+      DEFAULT_GRAPH_EDGE_SHARD_SIZE,
+      issues
+    )
+  };
+}
+
+function parsePublicationMode(env: RuntimeEnv, issues: string[]): PublicationMode {
+  const value = optionalString(env, "PUBLICATION_MODE") ?? DEFAULT_PUBLICATION_MODE;
+
+  if (value === "batch" || value === "manual" || value === "per_file") {
+    return value;
+  }
+
+  issues.push("PUBLICATION_MODE must be batch, manual, or per_file");
+  return DEFAULT_PUBLICATION_MODE;
 }
 
 function parseOkfConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig["okf"] {
@@ -514,6 +608,18 @@ function parseModelConfig(
     DEFAULT_MODEL_SUGGESTION_CONCURRENCY,
     issues
   );
+  const transientRetryDelayMs = optionalPositiveInteger(
+    env,
+    "MODEL_TRANSIENT_RETRY_DELAY_MS",
+    DEFAULT_MODEL_TRANSIENT_RETRY_DELAY_MS,
+    issues
+  );
+  const requestMinIntervalMs = optionalNonNegativeInteger(
+    env,
+    "MODEL_REQUEST_MIN_INTERVAL_MS",
+    DEFAULT_MODEL_REQUEST_MIN_INTERVAL_MS,
+    issues
+  );
 
   if (requestIdleTimeoutMs > requestMaxTimeoutMs) {
     issues.push("MODEL_REQUEST_IDLE_TIMEOUT_MS must be less than or equal to MODEL_REQUEST_MAX_TIMEOUT_MS");
@@ -527,7 +633,9 @@ function parseModelConfig(
     contextWindowTokens,
     requestMaxTimeoutMs,
     requestIdleTimeoutMs,
-    suggestionConcurrency
+    suggestionConcurrency,
+    transientRetryDelayMs,
+    requestMinIntervalMs
   };
 }
 

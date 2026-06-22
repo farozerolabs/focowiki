@@ -60,6 +60,7 @@ export function isAllowedPublicLogicalPath(path: string): boolean {
 
   return (
     /^pages\/[^/\\\u0000-\u001f\u007f]+\.md$/u.test(path) ||
+    /^_index\/(?:manifest|search|links)\/[0-9]{6}\.jsonl$/u.test(path) ||
     /^_graph\/edges\/[0-9]{4}\.jsonl$/u.test(path) ||
     /^_graph\/by-file\/[^/\\\u0000-\u001f\u007f]+\.json$/u.test(path)
   );

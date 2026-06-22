@@ -10,6 +10,10 @@ import type { OkfGraphEdge, OkfGraphNode } from "./graph.js";
 export { receiveWithProgressTimeout } from "./model-receive.js";
 export type { ModelReceiveTimeouts } from "./model-receive.js";
 
+const DEFAULT_TRANSIENT_RETRY_DELAY_MS = 15_000;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+const DEFAULT_COOLING_DOWN_RETRY_DELAY_MS = 60_000;
+
 export const MODEL_SUGGESTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -148,6 +152,7 @@ export type BuildModelSuggestionRequestInput = {
   body: string;
   candidatePaths: string[];
   contextWindowTokens: number;
+  transientRetryDelayMs?: number;
   repair?: {
     previousError: string;
   };
@@ -184,6 +189,7 @@ export type BuildGraphRelationshipConfirmationRequestInput = {
   candidates: OkfGraphEdge[];
   candidateFiles: OkfGraphNode[];
   contextWindowTokens: number;
+  transientRetryDelayMs?: number;
   repair?: {
     previousError: string;
   };
@@ -389,6 +395,10 @@ export async function requestModelSuggestions(
     }
 
     previousError = result.warnings[0] ?? "Model suggestions failed";
+
+    if (attempt === 0 && isTransientModelWarning(previousError)) {
+      await sleep(resolveTransientRetryDelayMs(previousError, input.transientRetryDelayMs));
+    }
   }
 
   return warning(previousError ?? "Model suggestions failed");
@@ -425,6 +435,10 @@ export async function requestGraphRelationshipConfirmations(
     }
 
     previousError = result.warnings[0] ?? "Graph relationship confirmation failed";
+
+    if (attempt === 0 && isTransientModelWarning(previousError)) {
+      await sleep(resolveTransientRetryDelayMs(previousError, input.transientRetryDelayMs));
+    }
   }
 
   return {
@@ -473,7 +487,7 @@ async function runModelSuggestionAttempt(input: {
     }
 
     return {
-      suggestions: validateModelSuggestions(JSON.parse(outputText)),
+      suggestions: validateModelSuggestions(parseModelOutputJson(outputText)),
       warnings: []
     };
   } catch (error) {
@@ -521,10 +535,10 @@ async function runGraphRelationshipConfirmationAttempt(input: {
       return graphWarning("Graph relationship confirmation failed local schema validation");
     }
 
-    return {
-      confirmations: validateGraphRelationshipConfirmations(JSON.parse(outputText)),
-      warnings: []
-    };
+      return {
+        confirmations: validateGraphRelationshipConfirmations(parseModelOutputJson(outputText)),
+        warnings: []
+      };
   } catch (error) {
     if (error instanceof z.ZodError) {
       return graphWarning(
@@ -547,6 +561,40 @@ function graphWarning(message: string): GraphRelationshipConfirmationResult {
     confirmations: [],
     warnings: [message]
   };
+}
+
+function isTransientModelWarning(message: string) {
+  const normalized = message.toLowerCase();
+
+  return (
+    normalized.includes("429") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("cooling down") ||
+    normalized.includes("timeout") ||
+    normalized.includes("temporarily unavailable")
+  );
+}
+
+function resolveTransientRetryDelayMs(message: string, override?: number) {
+  if (Number.isFinite(override) && Number(override) >= 0) {
+    return Number(override);
+  }
+
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("cooling down")) {
+    return DEFAULT_COOLING_DOWN_RETRY_DELAY_MS;
+  }
+
+  if (normalized.includes("429") || normalized.includes("rate limit")) {
+    return DEFAULT_RATE_LIMIT_RETRY_DELAY_MS;
+  }
+
+  return DEFAULT_TRANSIENT_RETRY_DELAY_MS;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function formatZodIssues(error: z.ZodError): string {
@@ -642,6 +690,75 @@ function readModelOutputText(response: unknown): string | null {
         if (text) {
           return text;
         }
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseModelOutputJson(outputText: string): unknown {
+  try {
+    return JSON.parse(outputText);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+  }
+
+  const trimmed = outputText.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(trimmed);
+
+  if (fenced?.[1]) {
+    return JSON.parse(fenced[1]);
+  }
+
+  const objectText = extractFirstJsonObject(trimmed);
+
+  if (objectText) {
+    return JSON.parse(objectText);
+  }
+
+  return JSON.parse(outputText);
+}
+
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+
+  if (start < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return text.slice(start, index + 1);
       }
     }
   }

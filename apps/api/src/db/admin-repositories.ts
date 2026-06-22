@@ -68,8 +68,11 @@ export type BundleFileKind =
   | "log"
   | "schema"
   | "manifest_index"
+  | "manifest_index_shard"
   | "search_index"
+  | "search_index_shard"
   | "link_index"
+  | "link_index_shard"
   | "graph_index"
   | "graph_manifest"
   | "graph_node_index"
@@ -101,6 +104,16 @@ export type GeneratedSourceFileOutputRecord = {
 };
 
 export type SourceFileProcessingStatus = "queued" | "running" | "completed" | "failed";
+export type GeneratedOutputStatus = "pending" | "visible" | "unavailable";
+export type PublicationJobStatus = "queued" | "running" | "completed" | "failed";
+export type PublicationJobMode = "batch" | "manual" | "per_file";
+export type PublicationJobReason =
+  | "bootstrap"
+  | "batch_threshold"
+  | "batch_interval"
+  | "manual"
+  | "per_file"
+  | "deletion";
 
 export type SourceFileProcessingStage =
   | "upload_storage"
@@ -128,6 +141,11 @@ export type SourceFileRecord = {
   processingEndedAt?: string | null;
   processingErrorCode?: string | null;
   processingErrorMessage?: string | null;
+  generatedOutputStatus?: GeneratedOutputStatus;
+  publicationDirtyAt?: string | null;
+  publicationVisibleAt?: string | null;
+  publicationErrorCode?: string | null;
+  publicationErrorMessage?: string | null;
   retryCount?: number;
   modelInvocationStatus?: ModelInvocationStatus | null;
   modelInvocationModelName?: string | null;
@@ -164,6 +182,22 @@ export type ReleaseRecord = {
 };
 
 export type ReleaseDraft = Omit<ReleaseRecord, "createdAt">;
+
+export type PublicationJobRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  mode: PublicationJobMode;
+  reason: PublicationJobReason;
+  status: PublicationJobStatus;
+  dirtySourceCount: number;
+  releaseId: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type SourceFileEventRecord = {
   id: string;
@@ -317,6 +351,52 @@ export type BundleFileRepository = {
     entries: OkfLogEntry[];
     summaries: OkfLogMonthlySummary[];
   }>;
+  markSourceFilesPublicationDirty?: (input: {
+    knowledgeBaseId: string;
+    sourceFileIds: string[];
+    dirtyAt: string;
+  }) => Promise<void>;
+  countDirtySourceFiles?: (input: {
+    knowledgeBaseId: string;
+  }) => Promise<{ count: number; oldestDirtyAt: string | null }>;
+  listDirtySourceFiles?: (request: {
+    knowledgeBaseId: string;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<SourceFileRecord>>;
+  markSourceFilesPublicationVisible?: (input: {
+    knowledgeBaseId: string;
+    sourceFileIds: string[];
+    visibleAt: string;
+  }) => Promise<void>;
+  markSourceFilesPublicationFailed?: (input: {
+    knowledgeBaseId: string;
+    sourceFileIds: string[];
+    errorCode: string;
+    errorMessage: string;
+  }) => Promise<void>;
+  createPublicationJob?: (input: {
+    id: string;
+    knowledgeBaseId: string;
+    mode: PublicationJobMode;
+    reason: PublicationJobReason;
+    dirtySourceCount: number;
+  }) => Promise<PublicationJobRecord>;
+  startPublicationJob?: (input: {
+    id: string;
+    startedAt: string;
+  }) => Promise<PublicationJobRecord | null>;
+  completePublicationJob?: (input: {
+    id: string;
+    releaseId: string;
+    endedAt: string;
+  }) => Promise<PublicationJobRecord | null>;
+  failPublicationJob?: (input: {
+    id: string;
+    endedAt: string;
+    errorCode: string;
+    errorMessage: string;
+  }) => Promise<PublicationJobRecord | null>;
   softDeleteSourceFile?: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -569,6 +649,11 @@ type SourceFileRow = {
   processing_ended_at: Date | null;
   processing_error_code: string | null;
   processing_error_message: string | null;
+  generated_output_status: GeneratedOutputStatus;
+  publication_dirty_at: Date | null;
+  publication_visible_at: Date | null;
+  publication_error_code: string | null;
+  publication_error_message: string | null;
   retry_count: string | number;
   model_invocation_status?: ModelInvocationStatus | null;
   model_invocation_model_name?: string | null;
@@ -590,6 +675,22 @@ type ReleaseRow = {
   file_count: number;
   manifest_checksum_sha256: string;
   created_at: Date;
+};
+
+type PublicationJobRow = {
+  id: string;
+  knowledge_base_id: string;
+  mode: PublicationJobMode;
+  reason: PublicationJobReason;
+  status: PublicationJobStatus;
+  dirty_source_count: string | number;
+  release_id: string | null;
+  started_at: Date | null;
+  ended_at: Date | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: Date;
+  updated_at: Date;
 };
 
 type PublicationLogEntryRow = {
@@ -1145,7 +1246,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       },
       async getSourceFile({ knowledgeBaseId, sourceFileId }) {
         const rows = await sql<SourceFileRow[]>`
-          SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+          SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
           FROM focowiki.source_files source
           LEFT JOIN LATERAL (
             SELECT status, model_name, started_at, ended_at, warning_count, error_code
@@ -1166,7 +1267,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
-              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
               FROM focowiki.source_files source
               LEFT JOIN LATERAL (
                 SELECT status, model_name, started_at, ended_at, warning_count, error_code
@@ -1185,7 +1286,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<SourceFileRow[]>`
-              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
               FROM focowiki.source_files source
               LEFT JOIN LATERAL (
                 SELECT status, model_name, started_at, ended_at, warning_count, error_code
@@ -1348,6 +1449,192 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             changedFileCount: Number(row.changed_file_count)
           }))
         };
+      },
+      async markSourceFilesPublicationDirty({ knowledgeBaseId, sourceFileIds, dirtyAt }) {
+        if (sourceFileIds.length === 0) {
+          return;
+        }
+
+        await sql`
+          UPDATE focowiki.source_files
+          SET
+            generated_output_status = 'pending',
+            publication_dirty_at = ${dirtyAt},
+            publication_error_code = NULL,
+            publication_error_message = NULL
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ANY(${sourceFileIds})
+            AND deleted_at IS NULL
+        `;
+      },
+      async countDirtySourceFiles({ knowledgeBaseId }) {
+        const rows = await sql<Array<{ count: string | number; oldest_dirty_at: Date | null }>>`
+          SELECT
+            count(*) AS count,
+            min(publication_dirty_at) AS oldest_dirty_at
+          FROM focowiki.source_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND deleted_at IS NULL
+            AND processing_status = 'completed'
+            AND publication_dirty_at IS NOT NULL
+        `;
+        const row = rows[0];
+
+        return {
+          count: Number(row?.count ?? 0),
+          oldestDirtyAt: row?.oldest_dirty_at?.toISOString() ?? null
+        };
+      },
+      async listDirtySourceFiles({ knowledgeBaseId, limit, cursor }) {
+        const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const rows = cursorValue
+          ? await sql<SourceFileRow[]>`
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at
+              FROM focowiki.source_files source
+              WHERE source.knowledge_base_id = ${knowledgeBaseId}
+                AND source.deleted_at IS NULL
+                AND source.processing_status = 'completed'
+                AND source.publication_dirty_at IS NOT NULL
+                AND (
+                  source.publication_dirty_at > ${cursorValue.createdAt}
+                  OR (source.publication_dirty_at = ${cursorValue.createdAt} AND source.id > ${cursorValue.id})
+                )
+              ORDER BY source.publication_dirty_at ASC, source.id ASC
+              LIMIT ${limit + 1}
+            `
+          : await sql<SourceFileRow[]>`
+              SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at
+              FROM focowiki.source_files source
+              WHERE source.knowledge_base_id = ${knowledgeBaseId}
+                AND source.deleted_at IS NULL
+                AND source.processing_status = 'completed'
+                AND source.publication_dirty_at IS NOT NULL
+              ORDER BY source.publication_dirty_at ASC, source.id ASC
+              LIMIT ${limit + 1}
+            `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+
+        return {
+          items: pageRows.map(mapSourceFileRow),
+          nextCursor:
+            rows.length > limit && lastRow?.publication_dirty_at
+              ? serializeTimedCursor({
+                  createdAt: lastRow.publication_dirty_at.toISOString(),
+                  id: lastRow.id
+                })
+              : null
+        };
+      },
+      async markSourceFilesPublicationVisible({ knowledgeBaseId, sourceFileIds, visibleAt }) {
+        if (sourceFileIds.length === 0) {
+          return;
+        }
+
+        await sql`
+          UPDATE focowiki.source_files
+          SET
+            processing_stage = 'release_activation',
+            processing_ended_at = ${visibleAt},
+            generated_output_status = 'visible',
+            publication_dirty_at = NULL,
+            publication_visible_at = ${visibleAt},
+            publication_error_code = NULL,
+            publication_error_message = NULL
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ANY(${sourceFileIds})
+            AND deleted_at IS NULL
+        `;
+      },
+      async markSourceFilesPublicationFailed({
+        knowledgeBaseId,
+        sourceFileIds,
+        errorCode,
+        errorMessage
+      }) {
+        if (sourceFileIds.length === 0) {
+          return;
+        }
+
+        await sql`
+          UPDATE focowiki.source_files
+          SET
+            generated_output_status = 'unavailable',
+            publication_error_code = ${errorCode},
+            publication_error_message = ${errorMessage}
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND id = ANY(${sourceFileIds})
+            AND deleted_at IS NULL
+        `;
+      },
+      async createPublicationJob(input) {
+        const rows = await sql<PublicationJobRow[]>`
+          INSERT INTO focowiki.publication_jobs (
+            id,
+            knowledge_base_id,
+            mode,
+            reason,
+            dirty_source_count
+          )
+          VALUES (
+            ${input.id},
+            ${input.knowledgeBaseId},
+            ${input.mode},
+            ${input.reason},
+            ${input.dirtySourceCount}
+          )
+          RETURNING id, knowledge_base_id, mode, reason, status, dirty_source_count, release_id, started_at, ended_at, error_code, error_message, created_at, updated_at
+        `;
+        const row = rows[0];
+
+        if (!row) {
+          throw new Error("Publication job creation did not return a row");
+        }
+
+        return mapPublicationJobRow(row);
+      },
+      async startPublicationJob({ id, startedAt }) {
+        const rows = await sql<PublicationJobRow[]>`
+          UPDATE focowiki.publication_jobs
+          SET
+            status = 'running',
+            started_at = ${startedAt},
+            updated_at = now()
+          WHERE id = ${id}
+            AND status = 'queued'
+          RETURNING id, knowledge_base_id, mode, reason, status, dirty_source_count, release_id, started_at, ended_at, error_code, error_message, created_at, updated_at
+        `;
+        const row = rows[0];
+        return row ? mapPublicationJobRow(row) : null;
+      },
+      async completePublicationJob({ id, releaseId, endedAt }) {
+        const rows = await sql<PublicationJobRow[]>`
+          UPDATE focowiki.publication_jobs
+          SET
+            status = 'completed',
+            release_id = ${releaseId},
+            ended_at = ${endedAt},
+            updated_at = now()
+          WHERE id = ${id}
+          RETURNING id, knowledge_base_id, mode, reason, status, dirty_source_count, release_id, started_at, ended_at, error_code, error_message, created_at, updated_at
+        `;
+        const row = rows[0];
+        return row ? mapPublicationJobRow(row) : null;
+      },
+      async failPublicationJob({ id, endedAt, errorCode, errorMessage }) {
+        const rows = await sql<PublicationJobRow[]>`
+          UPDATE focowiki.publication_jobs
+          SET
+            status = 'failed',
+            ended_at = ${endedAt},
+            error_code = ${errorCode},
+            error_message = ${errorMessage},
+            updated_at = now()
+          WHERE id = ${id}
+          RETURNING id, knowledge_base_id, mode, reason, status, dirty_source_count, release_id, started_at, ended_at, error_code, error_message, created_at, updated_at
+        `;
+        const row = rows[0];
+        return row ? mapPublicationJobRow(row) : null;
       },
       async softDeleteSourceFile({ knowledgeBaseId, sourceFileId, deletedAt }) {
         const rows = await sql<Array<{ id: string }>>`
@@ -1866,6 +2153,11 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
     processingEndedAt: row.processing_ended_at?.toISOString() ?? null,
     processingErrorCode: row.processing_error_code,
     processingErrorMessage: row.processing_error_message,
+    generatedOutputStatus: row.generated_output_status,
+    publicationDirtyAt: row.publication_dirty_at?.toISOString() ?? null,
+    publicationVisibleAt: row.publication_visible_at?.toISOString() ?? null,
+    publicationErrorCode: row.publication_error_code,
+    publicationErrorMessage: row.publication_error_message,
     retryCount: Number(row.retry_count),
     modelInvocationStatus: row.model_invocation_status ?? null,
     modelInvocationModelName: row.model_invocation_model_name ?? null,
@@ -1879,6 +2171,24 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
     modelInvocationErrorCode: row.model_invocation_error_code ?? null,
     createdAt: row.created_at.toISOString(),
     deletedAt: row.deleted_at?.toISOString() ?? null
+  };
+}
+
+function mapPublicationJobRow(row: PublicationJobRow): PublicationJobRecord {
+  return {
+    id: row.id,
+    knowledgeBaseId: row.knowledge_base_id,
+    mode: row.mode,
+    reason: row.reason,
+    status: row.status,
+    dirtySourceCount: Number(row.dirty_source_count),
+    releaseId: row.release_id,
+    startedAt: row.started_at?.toISOString() ?? null,
+    endedAt: row.ended_at?.toISOString() ?? null,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString()
   };
 }
 

@@ -1,10 +1,12 @@
-import { randomUUID } from "node:crypto";
 import type { OkfLogLimits } from "@focowiki/okf";
 import type { AdminRepositories } from "../db/admin-repositories.js";
-import { publishOkfRelease } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
+import {
+  createKnowledgeBasePublicationService,
+  type PublicationRuntimeOptions
+} from "./publication-scheduler.js";
 
 export type AdminDeletionService = {
   deleteKnowledgeBase: (input: {
@@ -21,6 +23,7 @@ export type AdminDeletionService = {
     cursorTtlSeconds: number;
     fileProcessingConcurrency: number;
     okfLog?: Partial<OkfLogLimits> | undefined;
+    publication: PublicationRuntimeOptions;
   }) => Promise<SourcePageDeletionResult>;
 };
 
@@ -44,10 +47,6 @@ export function createDeletionService(
   if (
     !repositories.knowledgeBases.softDeleteKnowledgeBase ||
     !files?.softDeleteSourceFile ||
-    !files.createRelease ||
-    !files.createBundleFiles ||
-    !files.createBundleTreeEntries ||
-    !files.activateRelease ||
     !files.listSourceFiles ||
     !files.getBundleFile ||
     !files.createSourceFileEvent
@@ -55,14 +54,15 @@ export function createDeletionService(
     return null;
   }
 
+  const publicationService = createKnowledgeBasePublicationService(repositories, storage, redis);
+
+  if (!publicationService) {
+    return null;
+  }
+
   const softDeleteKnowledgeBase = repositories.knowledgeBases.softDeleteKnowledgeBase;
   const softDeleteSourceFile = files.softDeleteSourceFile;
-  const createRelease = files.createRelease;
-  const createBundleFiles = files.createBundleFiles;
-  const createBundleTreeEntries = files.createBundleTreeEntries;
-  const activateRelease = files.activateRelease;
   const listSourceFiles = files.listSourceFiles;
-  const listPublicationLogHistory = files.listPublicationLogHistory;
   const getBundleFile = files.getBundleFile;
   const createSourceFileEvent = files.createSourceFileEvent;
 
@@ -121,132 +121,69 @@ export function createDeletionService(
         return { ok: false, reason: "not_deletable" };
       }
 
-      const ownerId = `source-delete-${randomUUID()}`;
-      const lockAcquired = await waitForPublicationLock({
+      await createSourceFileEvent({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: file.sourceFileId,
+        stageKey: "source_deletion",
+        messageKey: "sourceFiles.stage.sourceDeletion",
+        startedAt: input.generatedAt,
+        endedAt: null,
+        severity: "info"
+      });
+
+      const deleted = await softDeleteSourceFile({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: file.sourceFileId,
+        deletedAt: input.deletedAt
+      });
+
+      if (!deleted) {
+        return { ok: false, reason: "not_found" };
+      }
+
+      await repositories.graph?.deleteGraphForSourceFile({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: file.sourceFileId
+      });
+
+      const publication = await publicationService.publishNow({
+        knowledgeBaseId: knowledgeBase.id,
+        knowledgeBaseName: knowledgeBase.name,
+        generatedAt: input.generatedAt,
+        pageSize: input.batchSize,
+        cursorTtlSeconds: input.cursorTtlSeconds,
+        fileProcessingConcurrency: input.fileProcessingConcurrency,
+        okfLog: input.okfLog,
+        options: input.publication,
+        reason: "deletion",
+        allowEmptyPublication: true
+      });
+
+      if (!publication.published || !publication.releaseId) {
+        throw new Error("Knowledge base deletion publication was not completed");
+      }
+
+      await createSourceFileEvent({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileId: file.sourceFileId,
+        stageKey: "source_deletion",
+        messageKey: "sourceFiles.stage.sourceDeletion",
+        startedAt: null,
+        endedAt: new Date().toISOString(),
+        severity: "info"
+      });
+      await invalidateKnowledgeBaseCaches({
         redis,
         knowledgeBaseId: knowledgeBase.id,
-        ownerId,
+        releaseId: publication.releaseId,
+        sourceFileId: file.sourceFileId,
         ttlSeconds: input.cursorTtlSeconds
       });
 
-      if (!lockAcquired) {
-        throw new Error("Knowledge base publication lock was not acquired");
-      }
-
-      try {
-        await createSourceFileEvent({
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFileId: file.sourceFileId,
-          stageKey: "source_deletion",
-          messageKey: "sourceFiles.stage.sourceDeletion",
-          startedAt: input.generatedAt,
-          endedAt: null,
-          severity: "info"
-        });
-
-        const deleted = await softDeleteSourceFile({
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFileId: file.sourceFileId,
-          deletedAt: input.deletedAt
-        });
-
-        if (!deleted) {
-          return { ok: false, reason: "not_found" };
-        }
-        await repositories.graph?.deleteGraphForSourceFile({
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFileId: file.sourceFileId
-        });
-
-        const releaseId = `release-${randomUUID()}`;
-        const bundleRootKey = storage.keyspace.releaseRootKey(knowledgeBase.id, releaseId);
-        await createRelease({
-          id: releaseId,
-          knowledgeBaseId: knowledgeBase.id,
-          bundleRootKey,
-          generatedAt: input.generatedAt,
-          publishedAt: null,
-          fileCount: 0,
-          manifestChecksumSha256: "pending"
-        });
-
-        const publication = await publishOkfRelease({
-          knowledgeBaseId: knowledgeBase.id,
-          knowledgeBaseName: knowledgeBase.name,
-          releaseId,
-          generatedAt: input.generatedAt,
-          pageSize: input.batchSize,
-          concurrency: input.fileProcessingConcurrency,
-          log: input.okfLog,
-          storage,
-          fetchPublicationLogHistory: listPublicationLogHistory
-            ? ({ knowledgeBaseId, maxEntries }) =>
-                listPublicationLogHistory({
-                  knowledgeBaseId,
-                  maxEntries
-                })
-            : undefined,
-          fetchGraphNodePage: repositories.graph
-            ? ({ cursor, limit }) =>
-                repositories.graph!.listGraphNodes({
-                  knowledgeBaseId: knowledgeBase.id,
-                  cursor,
-                  limit
-                })
-            : undefined,
-          fetchGraphEdgePage: repositories.graph
-            ? ({ cursor, limit }) =>
-                repositories.graph!.listGraphEdges({
-                  knowledgeBaseId: knowledgeBase.id,
-                  cursor,
-                  limit
-                })
-            : undefined,
-          fetchSourcePage: ({ cursor, limit }) =>
-            listSourceFiles({
-              knowledgeBaseId: knowledgeBase.id,
-              cursor,
-              limit
-            }).then((page) => ({
-              ...page,
-              items: page.items.filter((source) => source.processingStatus === "completed")
-            })),
-          persistBundleFiles: (bundleFiles) => createBundleFiles(bundleFiles),
-          persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries)
-        });
-        const endedAt = new Date().toISOString();
-
-        await activateRelease({
-          knowledgeBaseId: knowledgeBase.id,
-          releaseId,
-          publishedAt: endedAt,
-          fileCount: publication.fileCount,
-          manifestChecksumSha256: publication.manifestChecksumSha256
-        });
-        await createSourceFileEvent({
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFileId: file.sourceFileId,
-          stageKey: "source_deletion",
-          messageKey: "sourceFiles.stage.sourceDeletion",
-          startedAt: null,
-          endedAt,
-          severity: "info"
-        });
-        await invalidateKnowledgeBaseCaches({
-          redis,
-          knowledgeBaseId: knowledgeBase.id,
-          releaseId,
-          sourceFileId: file.sourceFileId,
-          ttlSeconds: input.cursorTtlSeconds
-        });
-
-        return {
-          ok: true,
-          releaseId
-        };
-      } finally {
-        await redis.releaseKnowledgeBasePublicationLock(knowledgeBase.id, ownerId);
-      }
+      return {
+        ok: true,
+        releaseId: publication.releaseId
+      };
     }
   };
 }
@@ -278,35 +215,4 @@ async function cleanupKnowledgeBaseGraph(input: {
 
     cursor = page.nextCursor;
   } while (cursor);
-}
-
-async function waitForPublicationLock(input: {
-  redis: RedisCoordinator;
-  knowledgeBaseId: string;
-  ownerId: string;
-  ttlSeconds: number;
-}): Promise<boolean> {
-  const deadline = Date.now() + Math.min(input.ttlSeconds * 1_000, 60_000);
-
-  while (Date.now() <= deadline) {
-    const acquired = await input.redis.acquireKnowledgeBasePublicationLock(
-      input.knowledgeBaseId,
-      input.ownerId,
-      input.ttlSeconds
-    );
-
-    if (acquired) {
-      return true;
-    }
-
-    await sleep(1_000);
-  }
-
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

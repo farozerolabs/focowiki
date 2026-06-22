@@ -53,7 +53,15 @@ describe("parseRuntimeConfig", () => {
       maxFiles: 8,
       generationBatchSize: 50,
       taskConcurrency: 1,
-      fileProcessingConcurrency: 1
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    });
+    expect(config.publication).toEqual({
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      graphEdgeShardSize: 5_000
     });
     expect(config.logging).toEqual({
       level: "debug",
@@ -421,17 +429,20 @@ describe("parseRuntimeConfig", () => {
   it("defaults and validates upload and model concurrency limits", () => {
     expect(parseRuntimeConfig(validEnv).upload).toMatchObject({
       taskConcurrency: 1,
-      fileProcessingConcurrency: 1
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
     });
     expect(
       parseRuntimeConfig({
         ...validEnv,
         UPLOAD_TASK_CONCURRENCY: "2",
-        UPLOAD_FILE_PROCESSING_CONCURRENCY: "4"
+        UPLOAD_FILE_PROCESSING_CONCURRENCY: "4",
+        UPLOAD_STORAGE_CONCURRENCY: "6"
       }).upload
     ).toMatchObject({
       taskConcurrency: 2,
-      fileProcessingConcurrency: 4
+      fileProcessingConcurrency: 4,
+      storageConcurrency: 6
     });
 
     expect(() =>
@@ -449,12 +460,81 @@ describe("parseRuntimeConfig", () => {
     expect(() =>
       parseRuntimeConfig({
         ...validEnv,
+        UPLOAD_STORAGE_CONCURRENCY: "0"
+      })
+    ).toThrow(/UPLOAD_STORAGE_CONCURRENCY/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2",
+        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
+        MODEL_TRANSIENT_RETRY_DELAY_MS: "0"
+      })
+    ).toThrow(/MODEL_TRANSIENT_RETRY_DELAY_MS/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MODEL_API_KEY: "model-secret",
+        MODEL_NAME: "gpt-5.2",
+        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
+        MODEL_REQUEST_MIN_INTERVAL_MS: "-1"
+      })
+    ).toThrow(/MODEL_REQUEST_MIN_INTERVAL_MS/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
         MODEL_API_KEY: "model-secret",
         MODEL_NAME: "gpt-5.2",
         MODEL_CONTEXT_WINDOW_TOKENS: "200000",
         MODEL_SUGGESTION_CONCURRENCY: "0"
       })
     ).toThrow(/MODEL_SUGGESTION_CONCURRENCY/);
+  });
+
+  it("defaults and validates publication settings", () => {
+    expect(parseRuntimeConfig(validEnv).publication).toEqual({
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      graphEdgeShardSize: 5_000
+    });
+    expect(
+      parseRuntimeConfig({
+        ...validEnv,
+        PUBLICATION_MODE: "manual",
+        PUBLICATION_BATCH_SIZE: "400",
+        PUBLICATION_INTERVAL_SECONDS: "120",
+        INDEX_SHARD_SIZE: "2000",
+        GRAPH_EDGE_SHARD_SIZE: "6000"
+      }).publication
+    ).toEqual({
+      mode: "manual",
+      batchSize: 400,
+      intervalSeconds: 120,
+      indexShardSize: 2_000,
+      graphEdgeShardSize: 6_000
+    });
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        PUBLICATION_MODE: "stream"
+      })
+    ).toThrow(/PUBLICATION_MODE/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        PUBLICATION_BATCH_SIZE: "0"
+      })
+    ).toThrow(/PUBLICATION_BATCH_SIZE/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        INDEX_SHARD_SIZE: "-1"
+      })
+    ).toThrow(/INDEX_SHARD_SIZE/);
   });
 
   it("enables model assistance when key and model are configured", () => {
@@ -466,6 +546,8 @@ describe("parseRuntimeConfig", () => {
       MODEL_CONTEXT_WINDOW_TOKENS: "200000",
       MODEL_REQUEST_MAX_TIMEOUT_MS: "600000",
       MODEL_REQUEST_IDLE_TIMEOUT_MS: "120000",
+      MODEL_TRANSIENT_RETRY_DELAY_MS: "45000",
+      MODEL_REQUEST_MIN_INTERVAL_MS: "3000",
       MODEL_SUGGESTION_CONCURRENCY: "4"
     });
 
@@ -477,6 +559,8 @@ describe("parseRuntimeConfig", () => {
       contextWindowTokens: 200_000,
       requestMaxTimeoutMs: 600_000,
       requestIdleTimeoutMs: 120_000,
+      transientRetryDelayMs: 45_000,
+      requestMinIntervalMs: 3_000,
       suggestionConcurrency: 4
     });
   });
@@ -496,7 +580,9 @@ describe("parseRuntimeConfig", () => {
       modelName: "gpt-5.2",
       baseUrl: "https://api.openai.com/v1",
       contextWindowTokens: 200_000,
-      suggestionConcurrency: 2
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 2_000
     });
     expect(config.model.enabled ? config.model.requestMaxTimeoutMs : 0).toBeGreaterThan(0);
     expect(config.model.enabled ? config.model.requestIdleTimeoutMs : 0).toBeGreaterThan(0);

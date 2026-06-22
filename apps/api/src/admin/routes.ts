@@ -21,6 +21,7 @@ import {
 import { buildPublicFileUrl } from "../public-url.js";
 import { type StorageAdapter } from "../storage/s3.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
+import { createModelSuggestionTaskRunner } from "../runtime/model-task-runner.js";
 import { createDeletionService } from "./deletion-service.js";
 import { readGeneratedOutputsForSourceFiles } from "./source-file-generated-output.js";
 import {
@@ -55,6 +56,7 @@ export type AdminApiServices = {
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
   const { config, storage, modelClient, sessionManager, redis, repositories } = services;
   const adminTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
+  const modelSuggestionRunner = createModelSuggestionTaskRunner(config);
   const requireAuth = createAdminAuthMiddleware({
     config,
     sessionManager,
@@ -86,14 +88,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminSourceFileRetryRoutes(
     app,
-    {
-      config,
-      storage,
-      modelClient,
-      redis,
-      repositories,
-      taskRunner: adminTaskRunner
-    },
+    { config, storage, modelClient, redis, repositories, taskRunner: adminTaskRunner, modelSuggestionRunner },
     {
       requireAuth,
       requireWriteProtection
@@ -446,7 +441,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         batchSize: config.upload.generationBatchSize,
         cursorTtlSeconds: config.pagination.cursorTtlSeconds,
         fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-        okfLog: config.okf?.log
+        okfLog: config.okf?.log,
+        publication: config.publication
       });
 
       if (!result.ok) {
@@ -778,7 +774,9 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
                 maxMs: config.model.requestMaxTimeoutMs,
                 idleMs: config.model.requestIdleTimeoutMs
               },
-              suggestionConcurrency: config.model.suggestionConcurrency
+              suggestionConcurrency: config.model.suggestionConcurrency,
+              transientRetryDelayMs: config.model.transientRetryDelayMs,
+              requestRunner: modelSuggestionRunner
             }
           : null
       );
@@ -909,7 +907,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       const sourceFileIds = await acceptUploadSourceFiles({
         files: loadedFiles,
-        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+        storageConcurrency: config.upload.storageConcurrency,
         knowledgeBaseId: knowledgeBase.id,
         storage,
         createSourceFiles: repositories.files.createSourceFiles
@@ -936,7 +934,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
               batchSize: config.upload.generationBatchSize,
               cursorTtlSeconds: config.pagination.cursorTtlSeconds,
               fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-              okfLog: config.okf?.log
+              okfLog: config.okf?.log,
+              publication: config.publication
             })
           )
           .catch(() => undefined);

@@ -337,6 +337,50 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(providerResult.warnings[0]).not.toContain("model-secret");
   });
 
+  it("backs off before retrying transient provider failures", async () => {
+    let attempts = 0;
+    const result = await requestModelSuggestions({
+      modelName: "gpt-5.2",
+      title: "Retry",
+      body: "# Retry",
+      candidatePaths: [],
+      contextWindowTokens: 200_000,
+      transientRetryDelayMs: 1,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      },
+      client: {
+        responses: {
+          create: async () => {
+            attempts += 1;
+
+            if (attempts === 1) {
+              throw new Error("429 model credentials are cooling down");
+            }
+
+            return {
+              status: "completed",
+              output_text: JSON.stringify({
+                description: "Recovered after provider retry",
+                title: "",
+                type: "",
+                tags: ["retry"],
+                related_links: [],
+                keywords: ["retry"]
+              }),
+              output: []
+            };
+          }
+        }
+      }
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.suggestions?.description).toBe("Recovered after provider retry");
+    expect(result.warnings).toEqual([]);
+  });
+
   it("repairs one retryable invalid output with the same bounded source view and sanitized error", async () => {
     const requests: Array<{ input: string }> = [];
     const result = await requestModelSuggestions({
@@ -481,6 +525,152 @@ describe("OpenAI Structured Outputs model suggestions", () => {
         description: "From choices",
         keywords: ["choices"]
       },
+      warnings: []
+    });
+  });
+
+  it("accepts fenced or surrounding text around valid model JSON output", async () => {
+    const commonInput = {
+      modelName: "gpt-5.2",
+      title: "Compatibility",
+      body: "# Compatibility",
+      candidatePaths: [],
+      contextWindowTokens: 200_000,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      }
+    };
+
+    await expect(
+      requestModelSuggestions({
+        ...commonInput,
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: [
+                "```json",
+                JSON.stringify({
+                  description: "From fenced JSON",
+                  title: "",
+                  type: "",
+                  tags: [],
+                  related_links: [],
+                  keywords: ["fenced"]
+                }),
+                "```"
+              ].join("\n"),
+              output: []
+            })
+          }
+        }
+      })
+    ).resolves.toMatchObject({
+      suggestions: {
+        description: "From fenced JSON",
+        keywords: ["fenced"]
+      },
+      warnings: []
+    });
+
+    await expect(
+      requestModelSuggestions({
+        ...commonInput,
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: [
+                "Here is the JSON object:",
+                JSON.stringify({
+                  description: "From embedded JSON",
+                  title: "",
+                  type: "",
+                  tags: [],
+                  related_links: [],
+                  keywords: ["embedded"]
+                }),
+                "Done."
+              ].join("\n"),
+              output: []
+            })
+          }
+        }
+      })
+    ).resolves.toMatchObject({
+      suggestions: {
+        description: "From embedded JSON",
+        keywords: ["embedded"]
+      },
+      warnings: []
+    });
+  });
+
+  it("accepts fenced graph relationship confirmation JSON output", async () => {
+    await expect(
+      requestGraphRelationshipConfirmations({
+        modelName: "gpt-5.2",
+        currentFile: {
+          fileId: "source-a",
+          path: "pages/a.md",
+          title: "A"
+        },
+        body: "# A",
+        candidates: [
+          {
+            fromFileId: "source-a",
+            toFileId: "source-b",
+            relationType: "shared_topic",
+            weight: 0.7,
+            reason: "Both files share a stable topic.",
+            source: "deterministic"
+          }
+        ],
+        candidateFiles: [
+          {
+            fileId: "source-b",
+            path: "pages/b.md",
+            title: "B"
+          }
+        ],
+        contextWindowTokens: 200_000,
+        receiveTimeouts: {
+          maxMs: 5_000,
+          idleMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: [
+                "```json",
+                JSON.stringify({
+                  relationships: [
+                    {
+                      targetFileId: "source-b",
+                      accepted: true,
+                      relationType: "shared_topic",
+                      weight: 0.8,
+                      reason: "The files share a stable topic."
+                    }
+                  ]
+                }),
+                "```"
+              ].join("\n")
+            })
+          }
+        }
+      })
+    ).resolves.toMatchObject({
+      confirmations: [
+        {
+          targetFileId: "source-b",
+          accepted: true,
+          relationType: "shared_topic",
+          weight: 0.8
+        }
+      ],
       warnings: []
     });
   });

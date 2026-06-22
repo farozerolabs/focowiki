@@ -53,6 +53,7 @@ const sourceFile = {
   modelInvocationEndedAt: exampleTimestamp,
   modelInvocationWarningCount: 0,
   modelInvocationErrorCode: null,
+  generatedOutputStatus: "visible",
   generatedFileAvailable: true,
   generatedFileId: bundleFileId,
   generatedFilePath: "pages/guide.md",

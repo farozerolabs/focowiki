@@ -38,7 +38,15 @@ function createProductionConfig(): RuntimeConfig {
       maxFiles: 8,
       generationBatchSize: 50,
       taskConcurrency: 1,
-      fileProcessingConcurrency: 1
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    },
+    publication: {
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      graphEdgeShardSize: 5_000
     },
     pagination: {
       defaultPageSize: 50,
@@ -53,7 +61,9 @@ function createProductionConfig(): RuntimeConfig {
       contextWindowTokens: 200_000,
       requestMaxTimeoutMs: 600_000,
       requestIdleTimeoutMs: 120_000,
-      suggestionConcurrency: 2
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 2_000
     },
     corsOrigins: [],
     logging: {

@@ -121,10 +121,22 @@ OpenAPI key 通过 Admin UI 创建，存储在数据库中，不应写入 `.env`
 | `GENERATION_BATCH_SIZE` | 是 | 生成和索引工作的批大小。保持有界，避免进程内存一次承载过多数据。 |
 | `UPLOAD_TASK_CONCURRENCY` | 是 | 上传任务 worker 数。小服务器使用 `1`，观察稳定后再谨慎增加。 |
 | `UPLOAD_FILE_PROCESSING_CONCURRENCY` | 是 | 文件并发处理数。使用 `1` 可以让内存和模型请求更稳定。 |
+| `UPLOAD_STORAGE_CONCURRENCY` | 否 | 上传源文件写入 S3 兼容存储的并发数。该配置与模型处理并发分开。 |
 | `OKF_LOG_MAX_ENTRIES` | 是 | 生成 OKF 文件中保留的 update log 条数。 |
 | `OKF_LOG_MAX_BYTES` | 是 | 生成 update log 的最大字节数。 |
+| `PUBLICATION_MODE` | 是 | 发布模式。常规部署使用 `batch`，需要即时发布时使用 `per_file`，需要显式发布流程时使用 `manual`。 |
+| `PUBLICATION_BATCH_SIZE` | 是 | 触发批量发布的已完成脏文件数量。 |
+| `PUBLICATION_INTERVAL_SECONDS` | 是 | 待发布脏文件达到该等待时间后，下一次处理过程可以触发发布。 |
+| `INDEX_SHARD_SIZE` | 是 | 生成 `_index` 分片时每个分片的最大条目数。 |
+| `GRAPH_EDGE_SHARD_SIZE` | 是 | 生成图关系分片时每个分片的最大边数量。 |
 
-8 核 32 GB 服务器建议从 `UPLOAD_TASK_CONCURRENCY=1` 和 `UPLOAD_FILE_PROCESSING_CONCURRENCY=1` 开始。增加并发前先观察 CPU、内存、S3 吞吐、数据库延迟和模型延迟。
+8 核 32 GB 服务器建议从 `UPLOAD_TASK_CONCURRENCY=1`、`UPLOAD_FILE_PROCESSING_CONCURRENCY=1` 和 `UPLOAD_STORAGE_CONCURRENCY=4` 开始。增加并发前先观察 CPU、内存、S3 吞吐、数据库延迟和模型延迟。
+
+### 大批量导入和发布可见性
+
+文件处理和生成结果发布是两个运行步骤。文件可以先完成解析、模型辅助、图关系生成和页面准备，然后等待进入 active file tree。`batch` 模式下，Focowiki 会把已完成文件标记为待发布，并在脏文件数量达到 `PUBLICATION_BATCH_SIZE` 或处理过程中达到配置间隔时发布新的 active OKF-style 知识库。
+
+文件处理列表展示单个文件的生命周期和生成结果可见性。文件树和 Developer OpenAPI 内容读取始终读取当前 active published release。大型索引超过 `INDEX_SHARD_SIZE` 后会写成 shard descriptor 和 JSONL shard files，Agent 可以从 `_index/search.json`、`_index/links.json` 和 `_index/manifest.json` 发现 shard paths。
 
 ## 安全限制
 
@@ -152,6 +164,8 @@ OpenAPI key 通过 Admin UI 创建，存储在数据库中，不应写入 `.env`
 | `MODEL_CONTEXT_WINDOW_TOKENS` | 可选 | 近似上下文窗口，用于决定发送给模型的 Markdown 内容长度。 |
 | `MODEL_REQUEST_MAX_TIMEOUT_MS` | 可选 | 模型请求最大总耗时。 |
 | `MODEL_REQUEST_IDLE_TIMEOUT_MS` | 可选 | 等待模型输出时允许的最大空闲时间。 |
+| `MODEL_TRANSIENT_RETRY_DELAY_MS` | 可选 | 模型服务限流、凭证冷却等临时错误后，第二次请求前等待的时间。 |
+| `MODEL_REQUEST_MIN_INTERVAL_MS` | 可选 | 模型请求开始之间的最小间隔。长时间导入触发 provider rate limits 时可以调大。 |
 | `MODEL_SUGGESTION_CONCURRENCY` | 可选 | 模型建议请求并发数。生产环境保持较低，便于控制稳定性和 provider rate limits。 |
 
 模型辅助使用 OpenAI-compatible Structured Outputs。`MODEL_API_KEY` 或 `MODEL_NAME` 为空时，上传和 OKF 生成会继续执行，并跳过模型建议。

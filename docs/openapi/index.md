@@ -69,11 +69,46 @@ Error responses use:
 | `error.details` | Optional safe details. |
 | `requestId` | Request identifier for troubleshooting. |
 
+## Source-File Status Fields
+
+Upload APIs return source-file records. Source-file records use two status fields:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `processingState` | `queued`, `running`, `completed`, `failed` | Source-file processing lifecycle. |
+| `generatedOutputStatus` | `pending`, `visible`, `unavailable` | Generated output visibility in the active knowledge-base tree. |
+
+`processingState` values:
+
+| Value | Meaning |
+| --- | --- |
+| `queued` | The file was accepted and is waiting for processing. |
+| `running` | Storage, metadata, model, graph, bundle, validation, or publication work is in progress. |
+| `completed` | Source-file processing finished. |
+| `failed` | Processing stopped for this source file. The file can be retried with the source-file retry API. |
+
+`generatedOutputStatus` values:
+
+| Value | Meaning |
+| --- | --- |
+| `pending` | Generated output has not been published into the active tree yet. |
+| `visible` | The generated page is published in the active tree and can be read by generated file APIs. |
+| `unavailable` | Generated output is not currently available for this source file. |
+
+Treat a source file as fully complete and readable when both conditions are true:
+
+- `processingState` is `completed`.
+- `generatedOutputStatus` is `visible`.
+
+`processingState=completed` alone means processing finished. The generated file tree and content APIs become reliable after `generatedOutputStatus=visible`.
+
+`currentStage` shows the latest processing stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `bundle_generation`, `okf_validation`, `index_publication`, and `release_activation`.
+
 ## Workflow
 
 1. Create or list knowledge bases and keep `knowledgeBaseId`.
 2. Upload one or more `.md` files to the knowledge base and keep returned source-file `fileId` values.
-3. Poll source-file detail or source-file events until each file reaches `completed` or `failed`.
+3. Poll source-file detail or source-file events until each file reaches `processingState=failed`, or reaches `processingState=completed` with `generatedOutputStatus=visible`.
 4. Read the generated tree and keep `path` or `fileId` values.
 5. Read file content by `path` or `fileId`.
 6. Read `_graph/by-file/{fileId}.json` or the related-file endpoint when the application needs relationship exploration.
@@ -121,12 +156,25 @@ upload_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases
 FIRST_SOURCE_FILE_ID=$(printf "%s" "$upload_response" | jq -r ".files[0].fileId")
 ```
 
-Poll source-file processing until the file reaches a terminal state:
+Poll source-file processing until the file is fully complete or failed:
 
 ```bash
 curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
+
+The file is fully complete when the response contains:
+
+```json
+{
+  "file": {
+    "processingState": "completed",
+    "generatedOutputStatus": "visible"
+  }
+}
+```
+
+If the response contains `processingState=failed`, read `processingErrorCode`, `processingErrorMessage`, and source-file events before retrying.
 
 Read detailed processing events when you need stage history:
 

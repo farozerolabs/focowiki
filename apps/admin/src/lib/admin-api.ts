@@ -37,7 +37,23 @@ export type BundleTreeEntry = {
   entryType: "directory" | "file";
   bundleFileId: string | null;
   sourceFileId?: string | null;
-  fileKind?: "page" | "index" | "schema" | "manifest_index" | "search_index" | "link_index" | null;
+  fileKind?:
+    | "page"
+    | "index"
+    | "log"
+    | "schema"
+    | "manifest_index"
+    | "manifest_index_shard"
+    | "search_index"
+    | "search_index_shard"
+    | "link_index"
+    | "link_index_shard"
+    | "graph_index"
+    | "graph_manifest"
+    | "graph_node_index"
+    | "graph_edge_shard"
+    | "graph_file"
+    | null;
   deletable?: boolean;
 };
 
@@ -50,7 +66,22 @@ export type BundleFileDetail = {
   file: {
     id: string;
     sourceFileId: string | null;
-    fileKind: "page" | "index" | "schema" | "manifest_index" | "search_index" | "link_index";
+    fileKind:
+      | "page"
+      | "index"
+      | "log"
+      | "schema"
+      | "manifest_index"
+      | "manifest_index_shard"
+      | "search_index"
+      | "search_index_shard"
+      | "link_index"
+      | "link_index_shard"
+      | "graph_index"
+      | "graph_manifest"
+      | "graph_node_index"
+      | "graph_edge_shard"
+      | "graph_file";
     logicalPath: string;
     contentType: string;
     title: string | null;
@@ -84,6 +115,7 @@ export type SourceFileRecord = {
   modelInvocationEndedAt?: string | null;
   modelInvocationWarningCount?: number | null;
   modelInvocationErrorCode?: string | null;
+  generatedOutputStatus?: "pending" | "visible" | "unavailable";
   generatedFileAvailable?: boolean;
   generatedFilePath?: string | null;
   generatedFileId?: string | null;

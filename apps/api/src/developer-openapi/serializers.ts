@@ -47,6 +47,8 @@ export function toDeveloperSourceFile(
     modelInvocationEndedAt: record.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: record.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: record.modelInvocationErrorCode ?? null,
+    generatedOutputStatus:
+      record.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
     generatedFileAvailable: Boolean(generatedOutput),
     generatedFileId: generatedOutput?.bundleFileId ?? null,
     generatedFilePath: generatedOutput?.logicalPath ?? null,
@@ -135,6 +137,8 @@ export function toDeveloperSourceFileDetail(
     checksumSha256: record.checksumSha256,
     processingState: record.processingStatus ?? "completed",
     currentStage: record.processingStage ?? "release_activation",
+    generatedOutputStatus:
+      record.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
     contentAvailable: Boolean(generatedOutput),
     generatedFileAvailable: Boolean(generatedOutput),
     generatedFileId: generatedOutput?.bundleFileId ?? null,

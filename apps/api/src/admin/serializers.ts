@@ -66,6 +66,8 @@ export function toAdminSourceFile(
     modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
+    generatedOutputStatus:
+      file.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
     generatedFileAvailable: Boolean(generatedOutput),
     generatedFilePath: generatedOutput?.logicalPath ?? null,
     generatedFileId: generatedOutput?.bundleFileId ?? null,

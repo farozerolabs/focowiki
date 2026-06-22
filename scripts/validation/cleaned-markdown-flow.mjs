@@ -17,6 +17,10 @@ import {
   recordSourceFileDuration
 } from "./lib/performance-evidence.mjs";
 import { redactPotentialPathText, redactReportText } from "./lib/redaction.mjs";
+import {
+  readContentQualitySampleLimit,
+  validateGeneratedContentQuality
+} from "./lib/content-quality.mjs";
 
 export {
   selectSamples,
@@ -26,9 +30,7 @@ export {
 } from "./lib/sample-selector.mjs";
 
 const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
-const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
-const REPORT_JSON = path.join(CHANGE_DIR, "validation-report.json");
-const REPORT_MD = path.join(CHANGE_DIR, "validation-report.md");
+const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const REQUIRE_MODEL_ENV = "FOCOWIKI_VALIDATION_REQUIRE_MODEL";
 const WHITE_BOX = "white-box";
@@ -265,6 +267,7 @@ export async function runApiValidation() {
     });
     await validatePublicOpenApi(publicApi, knowledgeBase.id, singleAdminFiles, env, report, {
       sourceFileId: completedSingleFiles[0].id,
+      expectedSamples: singleSamples,
       checkName: "single-public-openapi",
       message: "Public scoped Markdown, JSON, source-file, auth, source hiding, and error checks passed after single upload."
     });
@@ -360,6 +363,7 @@ export async function runApiValidation() {
     );
     await validatePublicOpenApi(publicApi, knowledgeBase.id, batchAdminFiles, env, report, {
       sourceFileId: completedBatchFiles[0].id,
+      expectedSamples: allSamples,
       checkName: "batch-public-openapi",
       message:
         "Public scoped Markdown, JSON, source-file, auth, source hiding, and error checks passed after batch upload."
@@ -475,6 +479,7 @@ function createBaseReport(kind, startedAt, sampleProfile = process.env.FOCOWIKI_
     scannedCandidateProfiles: null,
     validationRun: null,
     performance: null,
+    contentQuality: [],
     modelAssistance: readModelAssistanceMode(process.env),
     commandsRun: defaultCommandsRun(kind, sampleProfile),
     testsRun: defaultTestsRun(kind),
@@ -524,7 +529,8 @@ function failCheck(name, message, details = {}, layer = BLACK_BOX) {
 }
 
 function writeReport(report) {
-  fs.mkdirSync(CHANGE_DIR, { recursive: true });
+  const reportDir = resolveReportDir();
+  fs.mkdirSync(reportDir, { recursive: true });
   const whiteBoxChecks = report.checks.filter((check) => check.layer === WHITE_BOX);
   const blackBoxChecks = report.checks.filter((check) => check.layer === BLACK_BOX);
   const lines = [
@@ -590,6 +596,22 @@ function writeReport(report) {
     "",
     ...report.manualReviewItems.map((item) => `- ${item}`),
     "",
+    "## Content Quality",
+    "",
+    ...(report.contentQuality?.length
+      ? report.contentQuality.flatMap((quality) => [
+          `- Scope: ${quality.scope}`,
+          `  - Structural samples: ${quality.structuralSamples}`,
+          `  - Semantic samples: ${quality.semanticSamples}`,
+          `  - Source-supported pages: ${quality.sourceSupportedPages}`,
+          `  - Model-checked pages: ${quality.modelCheckedPages}`,
+          `  - Graph links: ${quality.graphLinks}`,
+          `  - Questionable graph links: ${quality.questionableGraphLinks}`,
+          `  - Pages with graph links: ${quality.pagesWithGraphLinks}`,
+          `  - Warnings: ${quality.warnings.length ? quality.warnings.join("; ") : "none"}`
+        ])
+      : ["- Not recorded."]),
+    "",
     "## Single Upload File",
     "",
     ...(report.singleSample
@@ -646,10 +668,24 @@ function writeReport(report) {
     ""
   ];
 
-  fs.writeFileSync(REPORT_MD, lines.join("\n"));
+  fs.writeFileSync(path.join(reportDir, "validation-report.md"), lines.join("\n"));
 }
 
 function defaultCommandsRun(kind, sampleProfile = "default") {
+  if (CHANGE_ID === "validate-large-legal-e2e-full-coverage") {
+    const command =
+      kind === "samples"
+        ? "pnpm validate:large-legal:full-coverage:samples"
+        : "FOCOWIKI_VALIDATION_ALLOW_CONFIGURED_EXTERNALS=true pnpm validate:large-legal:full-coverage:api";
+
+    return Array.from(new Set([
+      "pnpm validate:large-legal:full-coverage:samples",
+      command,
+      "pnpm test:validation",
+      `openspec validate ${CHANGE_ID} --strict`
+    ]));
+  }
+
   const prefix = readBooleanEnv(process.env[REQUIRE_MODEL_ENV])
     ? "pnpm validate:legal-llm"
     : sampleProfile === "large-scale"
@@ -713,8 +749,19 @@ function defaultManualReviewItems() {
 }
 
 function writeJson(report) {
-  fs.mkdirSync(CHANGE_DIR, { recursive: true });
-  fs.writeFileSync(REPORT_JSON, `${JSON.stringify(report, null, 2)}\n`);
+  const reportDir = resolveReportDir();
+  fs.mkdirSync(reportDir, { recursive: true });
+  fs.writeFileSync(path.join(reportDir, "validation-report.json"), `${JSON.stringify(report, null, 2)}\n`);
+}
+
+function resolveReportDir() {
+  const configured = process.env[REPORT_DIR_ENV]?.trim();
+
+  if (configured) {
+    return path.resolve(configured);
+  }
+
+  return path.resolve("openspec/changes", CHANGE_ID);
 }
 
 function readRuntimeEnv() {
@@ -1236,10 +1283,16 @@ async function pollSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds, t
       throw new Error(`Source file processing failed for ${failedFile.id}: ${failedFile.processingErrorCode ?? "UNKNOWN"}.`);
     }
 
-    if (selectedFiles.length === expectedIds.size && selectedFiles.every((file) => file.processingStatus === "completed")) {
+    if (
+      selectedFiles.length === expectedIds.size &&
+      selectedFiles.every(
+        (file) => file.processingStatus === "completed" && file.generatedOutputStatus === "visible"
+      )
+    ) {
       report.checks.push(
         okCheck(options.checkName ?? "source-files-completed", options.message ?? "Source files reached completed lifecycle state.", {
-          timeoutMs
+          timeoutMs,
+          generatedOutputStatus: "visible"
         })
       );
       return selectedFiles;
@@ -1265,6 +1318,25 @@ async function listAdminSourceFiles(admin, knowledgeBaseId, limit = 50) {
   } while (cursor);
 
   return files;
+}
+
+async function listAdminBundleFiles(admin, knowledgeBaseId, limit = 100) {
+  const files = [];
+  let cursor = null;
+
+  do {
+    const pathWithCursor = `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=${limit}${
+      cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+    }`;
+    const body = await readJson(admin, pathWithCursor);
+    files.push(...(body.items ?? []));
+    cursor = body.nextCursor ?? null;
+  } while (cursor);
+
+  return {
+    items: files,
+    nextCursor: null
+  };
 }
 
 async function fetchSourceFileDetail(admin, knowledgeBaseId, sourceFileId, report, options = {}) {
@@ -1435,14 +1507,14 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   const expectedSamples = options.expectedSamples ?? [];
   const [releases, bundleFiles, tree, urls] = await Promise.all([
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/releases?limit=10`),
-    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=200`),
+    listAdminBundleFiles(admin, knowledgeBaseId),
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=50`),
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/public-urls`)
   ]);
 
   const release = releases.items?.[0];
 
-  if (!release?.publishedAt || (bundleFiles.items?.length ?? 0) === 0 || (tree.items?.length ?? 0) === 0) {
+  if (!release?.publishedAt || bundleFiles.items.length === 0 || (tree.items?.length ?? 0) === 0) {
     throw new Error("Expected published release, bundle files, and root tree entries.");
   }
 
@@ -1729,7 +1801,7 @@ async function pollDeveloperSourceFileCompleted(publicApi, knowledgeBaseId, sour
       throw new Error(`Developer OpenAPI source file failed with ${file.processingErrorCode ?? "UNKNOWN"}.`);
     }
 
-    if (file?.processingState === "completed") {
+    if (file?.processingState === "completed" && file?.generatedOutputStatus === "visible") {
       if (file.processingErrorCode) {
         throw new Error(`Developer OpenAPI source file completed with ${file.processingErrorCode}.`);
       }
@@ -1786,11 +1858,39 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
     bodies.set(logicalPath, body);
   }
+  const indexes = {
+    manifest: await readJsonIndexWithShards({
+      publicApi,
+      knowledgeBaseId,
+      authHeaders,
+      bodies,
+      rootPath: "_index/manifest.json",
+      collectionKey: "files"
+    }),
+    search: await readJsonIndexWithShards({
+      publicApi,
+      knowledgeBaseId,
+      authHeaders,
+      bodies,
+      rootPath: "_index/search.json",
+      collectionKey: "items"
+    }),
+    links: await readJsonIndexWithShards({
+      publicApi,
+      knowledgeBaseId,
+      authHeaders,
+      bodies,
+      rootPath: "_index/links.json",
+      collectionKey: "links"
+    })
+  };
 
   validateOkfPublicArtifactBodies({
     bodies,
     pagePaths: adminFiles.pageFiles.map((file) => file.logicalPath),
-    report
+    report,
+    indexes,
+    samples: options.expectedSamples ?? []
   });
 
   const sourceFileStatus = await readJson(
@@ -1869,12 +1969,12 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   );
 }
 
-function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
+function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, samples = [] }) {
   const index = bodies.get("index.md") ?? "";
   const log = bodies.get("log.md") ?? "";
-  const manifest = parseJsonIndex(bodies.get("_index/manifest.json"), "_index/manifest.json");
-  const search = parseJsonIndex(bodies.get("_index/search.json"), "_index/search.json");
-  const links = parseJsonIndex(bodies.get("_index/links.json"), "_index/links.json");
+  const manifest = indexes.manifest;
+  const search = indexes.search;
+  const links = indexes.links;
 
   if (index.startsWith("---\n") || !index.startsWith("# ")) {
     throw new Error("Public index.md must be a reserved Markdown file without frontmatter.");
@@ -1980,6 +2080,29 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report }) {
       links: links.links.length
     }, WHITE_BOX)
   );
+
+  if (samples.length > 0) {
+    const summary = validateGeneratedContentQuality({
+      samples,
+      bodies,
+      indexes,
+      modelAssistance: report.modelAssistance,
+      semanticSampleLimit: readContentQualitySampleLimit(process.env)
+    });
+
+    report.contentQuality.push({
+      scope: pagePaths.length === samples.length ? "full-public-artifacts" : "sampled-public-artifacts",
+      ...summary
+    });
+    report.checks.push(
+      okCheck(
+        "generated-content-quality",
+        "Generated pages, indexes, LLM-derived fields, and graph relationships pass bounded content quality checks.",
+        summary,
+        WHITE_BOX
+      )
+    );
+  }
 }
 
 function assertPublicIndexMetadata({ pagePath, pageMetadata, manifestEntry, searchItem }) {
@@ -2303,9 +2426,30 @@ async function validatePublicDeletionState({
     }
   }
 
-  const manifest = parseJsonIndex(publicBodies.get("_index/manifest.json"), "_index/manifest.json");
-  const search = parseJsonIndex(publicBodies.get("_index/search.json"), "_index/search.json");
-  const links = parseJsonIndex(publicBodies.get("_index/links.json"), "_index/links.json");
+  const manifest = await readJsonIndexWithShards({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    rootPath: "_index/manifest.json",
+    collectionKey: "files"
+  });
+  const search = await readJsonIndexWithShards({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    rootPath: "_index/search.json",
+    collectionKey: "items"
+  });
+  const links = await readJsonIndexWithShards({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    rootPath: "_index/links.json",
+    collectionKey: "links"
+  });
 
   if (
     manifest.files.some((file) => file.path === deletedPagePath) ||
@@ -2854,6 +2998,60 @@ function parseJsonIndex(raw, logicalPath) {
   } catch {
     throw new Error(`Public index is not valid JSON: ${logicalPath}`);
   }
+}
+
+async function readJsonIndexWithShards({
+  publicApi,
+  knowledgeBaseId,
+  authHeaders,
+  bodies,
+  rootPath,
+  collectionKey
+}) {
+  const root = parseJsonIndex(bodies.get(rootPath), rootPath);
+
+  if (root.mode !== "sharded") {
+    return root;
+  }
+
+  if (root.collection !== collectionKey || !Array.isArray(root.shards)) {
+    throw new Error(`Public sharded index descriptor is malformed: ${rootPath}`);
+  }
+
+  const items = [];
+
+  for (const shard of root.shards) {
+    if (!shard || typeof shard.path !== "string") {
+      throw new Error(`Public sharded index includes an invalid shard descriptor: ${rootPath}`);
+    }
+
+    const body = await readPublicText(
+      publicApi,
+      developerFileContentPath(knowledgeBaseId, shard.path),
+      authHeaders
+    );
+    bodies.set(shard.path, body);
+    items.push(...parseJsonLines(body, shard.path));
+  }
+
+  return {
+    ...root,
+    [collectionKey]: items
+  };
+}
+
+function parseJsonLines(raw, logicalPath) {
+  return String(raw ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        throw new Error(`Public index shard is not valid JSONL: ${logicalPath}`);
+      }
+    });
 }
 
 async function getS3ObjectText(client, bucket, key) {

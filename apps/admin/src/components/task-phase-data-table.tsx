@@ -65,11 +65,7 @@ export function SourceFileDataTable({
                 {formatModelInvocation(file, t)}
               </TableCell>
               <TableCell>
-                {file.generatedFileAvailable ? (
-                  <span className="text-foreground">{t("tasks.generatedFile.available")}</span>
-                ) : (
-                  <span className="text-muted-foreground">{t("tasks.generatedFile.pending")}</span>
-                )}
+                {formatGeneratedFileStatus(file, t)}
               </TableCell>
               <TableCell className="text-muted-foreground">
                 {formatSourceFileTime(
@@ -116,6 +112,21 @@ export function SourceFileDataTable({
       </Table>
     </div>
   );
+}
+
+function formatGeneratedFileStatus(
+  file: SourceFileRecord,
+  t: ReturnType<typeof useTranslation>["t"]
+) {
+  if (file.generatedFileAvailable || file.generatedOutputStatus === "visible") {
+    return <span className="text-foreground">{t("tasks.generatedFile.available")}</span>;
+  }
+
+  if (file.generatedOutputStatus === "unavailable") {
+    return <span className="text-destructive">{t("tasks.generatedFile.unavailable")}</span>;
+  }
+
+  return <span className="text-muted-foreground">{t("tasks.generatedFile.pending")}</span>;
 }
 
 function formatFileStatus(file: SourceFileRecord, t: ReturnType<typeof useTranslation>["t"]) {

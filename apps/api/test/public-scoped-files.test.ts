@@ -78,7 +78,15 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
       maxFiles: 8,
       generationBatchSize: 50,
       taskConcurrency: 1,
-      fileProcessingConcurrency: 1
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    },
+    publication: {
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      graphEdgeShardSize: 5_000
     },
     pagination: {
       defaultPageSize: 50,
@@ -108,6 +116,10 @@ class MemoryStorage implements StorageAdapter {
     [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json",
       `${JSON.stringify(publicSearchIndex, null, 2)}\n`
+    ],
+    [
+      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search/000001.jsonl",
+      `${JSON.stringify(publicSearchIndex.items[0])}\n`
     ]
   ]);
 
@@ -199,6 +211,27 @@ function createRepositories(options: { publicKeyStatus?: "active" | "revoked" | 
         objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json",
         contentType: "application/json; charset=utf-8",
         sizeBytes: 18,
+        checksumSha256: "checksum",
+        okfType: null,
+        title: null,
+        description: null,
+        tags: [],
+        frontmatter: {}
+      }
+    ],
+    [
+      "_index/search/000001.jsonl",
+      {
+        id: "bundle-file-search-shard-1",
+        knowledgeBaseId: "kb-001",
+        releaseId: "release-001",
+        sourceFileId: null,
+        fileKind: "search_index_shard" as const,
+        logicalPath: "_index/search/000001.jsonl",
+        objectKey:
+          "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search/000001.jsonl",
+        contentType: "application/x-ndjson; charset=utf-8",
+        sizeBytes: 32,
         checksumSha256: "checksum",
         okfType: null,
         title: null,
@@ -373,6 +406,31 @@ describe("Scoped public file OpenAPI", () => {
       sourceLists: 0,
       releaseLists: 0,
       bundleLists: 0
+    });
+  });
+
+  it("serves generated index shard content through Developer OpenAPI", async () => {
+    const app = createPublicOpenApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      repositories: createRepositories()
+    });
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      file: {
+        path: "_index/search/000001.jsonl",
+        fileKind: "search_index_shard"
+      },
+      content: expect.stringContaining("\"外国企业常驻代表机构登记管理条例\"")
     });
   });
 

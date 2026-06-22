@@ -141,7 +141,8 @@ export const resources = {
         noAction: "No action",
         generatedFile: {
           available: "Available",
-          pending: "Pending"
+          pending: "Pending",
+          unavailable: "Unavailable"
         },
         fileStatus: {
           queued: "Queued",
@@ -379,7 +380,8 @@ export const resources = {
         noAction: "无操作",
         generatedFile: {
           available: "可用",
-          pending: "待生成"
+          pending: "待生成",
+          unavailable: "不可用"
         },
         fileStatus: {
           queued: "排队中",

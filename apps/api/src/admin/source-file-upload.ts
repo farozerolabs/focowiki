@@ -10,14 +10,14 @@ import {
 
 export async function acceptUploadSourceFiles(input: {
   files: LoadedUploadFile[];
-  fileProcessingConcurrency: number;
+  storageConcurrency: number;
   knowledgeBaseId: string;
   storage: StorageAdapter;
   createSourceFiles: NonNullable<NonNullable<AdminRepositories["files"]>["createSourceFiles"]>;
 }): Promise<string[]> {
   const drafts = await mapWithConcurrency(
     input.files,
-    input.fileProcessingConcurrency,
+    input.storageConcurrency,
     async (file): Promise<SourceFileDraft> => {
       const sourceFileId = createSourceFileId();
       const parsed = parseUploadedMarkdownSource({

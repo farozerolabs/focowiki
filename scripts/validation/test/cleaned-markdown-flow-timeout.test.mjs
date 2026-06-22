@@ -9,9 +9,9 @@ test("validation task timeout scales for large no-model source-file batches", ()
         MODEL_API_KEY: "",
         MODEL_NAME: ""
       },
-      51
+      100
     ),
-    3_240_000
+    6_180_000
   );
 });
 

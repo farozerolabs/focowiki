@@ -1,19 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { ModelSuggestionRequest, OpenAIResponsesClient } from "@focowiki/okf";
-import { readModelSuggestions } from "../src/admin/model-suggestions.js";
+import {
+  readModelSuggestions,
+  type ModelAssistanceOptions
+} from "../src/admin/model-suggestions.js";
+import { createBoundedTaskRunner } from "../src/runtime/task-runner.js";
 
 const receiveTimeouts = {
   maxMs: 5_000,
   idleMs: 5_000
 };
 
-function modelAssistance(client: OpenAIResponsesClient) {
+function modelAssistance(
+  client: OpenAIResponsesClient,
+  options: Partial<ModelAssistanceOptions> = {}
+) {
   return {
     client,
     modelName: "gpt-test",
     contextWindowTokens: 200_000,
     receiveTimeouts,
-    suggestionConcurrency: 2
+    suggestionConcurrency: 2,
+    transientRetryDelayMs: 1,
+    ...options
   };
 }
 
@@ -54,6 +63,44 @@ describe("readModelSuggestions", () => {
     });
 
     expect(maxActive).toBeLessThanOrEqual(2);
+  });
+
+  it("limits concurrent model requests across separate calls with a shared runner", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const client: OpenAIResponsesClient = {
+      responses: {
+        create: async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          active -= 1;
+          return {
+            status: "completed",
+            output_text: JSON.stringify({
+              description: "Suggested",
+              title: "",
+              type: "",
+              tags: [],
+              related_links: [],
+              keywords: []
+            })
+          };
+        }
+      }
+    };
+    const requestRunner = createBoundedTaskRunner(1);
+
+    await Promise.all(
+      ["one", "two"].map((id) =>
+        readModelSuggestions({
+          sources: [{ id, fileName: `${id}.md`, title: id, body: `# ${id}` }],
+          modelAssistance: modelAssistance(client, { requestRunner })
+        })
+      )
+    );
+
+    expect(maxActive).toBe(1);
   });
 
   it("passes bounded domain-neutral candidate paths per source", async () => {

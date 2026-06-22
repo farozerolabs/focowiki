@@ -9,6 +9,15 @@ import {
   type SchemaObject
 } from "./openapi-shared.js";
 
+const SOURCE_FILE_PROCESSING_STATE_DESCRIPTION =
+  "`queued` means the file was accepted and is waiting for processing. `running` means storage, metadata, model, graph, bundle, validation, or publication work is in progress. `completed` means source-file processing finished. `failed` means processing stopped for this source file and the file can be retried.";
+
+const SOURCE_FILE_CURRENT_STAGE_DESCRIPTION =
+  "Current source-file stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `bundle_generation`, `okf_validation`, `index_publication`, and `release_activation`.";
+
+const GENERATED_OUTPUT_STATUS_DESCRIPTION =
+  "`pending` means generated output is not published yet. `visible` means the generated page is in the active knowledge-base tree and can be read by generated file APIs. `unavailable` means no generated output is currently available for this source file. Treat a source file as fully complete and readable only when `processingState` is `completed` and `generatedOutputStatus` is `visible`.";
+
 export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
   return {
     Error: objectSchema(
@@ -88,8 +97,12 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
         fileId: idSchema("Source file identifier accepted by source-file status and file detail reads."),
         originalFilename: { type: "string" },
         sizeBytes: { type: "integer", minimum: 0 },
-        processingState: { type: "string", enum: ["queued", "running", "completed", "failed"] },
-        currentStage: { type: "string" }
+        processingState: {
+          type: "string",
+          enum: ["queued", "running", "completed", "failed"],
+          description: SOURCE_FILE_PROCESSING_STATE_DESCRIPTION
+        },
+        currentStage: { type: "string", description: SOURCE_FILE_CURRENT_STAGE_DESCRIPTION }
       },
       ["fileId", "originalFilename", "sizeBytes", "processingState", "currentStage"]
     ),
@@ -261,8 +274,12 @@ function sourceFileSchema(): SchemaObject {
         anyOf: [modelSuggestionsSchema(), { type: "null" }],
         description: "Model-generated presentation suggestions stored for the source file, when available."
       },
-      processingState: { type: "string" },
-      currentStage: { type: "string" },
+      processingState: {
+        type: "string",
+        enum: ["queued", "running", "completed", "failed"],
+        description: SOURCE_FILE_PROCESSING_STATE_DESCRIPTION
+      },
+      currentStage: { type: "string", description: SOURCE_FILE_CURRENT_STAGE_DESCRIPTION },
       processingStartedAt: timestampSchema(),
       processingEndedAt: nullableTimestampSchema(),
       processingErrorCode: nullableString("Stable processing error code when processing fails."),
@@ -274,6 +291,11 @@ function sourceFileSchema(): SchemaObject {
       modelInvocationEndedAt: nullableTimestampSchema(),
       modelInvocationWarningCount: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
       modelInvocationErrorCode: nullableString("Stable model error code when model assistance fails."),
+      generatedOutputStatus: {
+        type: "string",
+        enum: ["pending", "visible", "unavailable"],
+        description: GENERATED_OUTPUT_STATUS_DESCRIPTION
+      },
       generatedFileAvailable: { type: "boolean" },
       generatedFileId: nullableString("Generated bundle file identifier when visible in the active bundle."),
       generatedFilePath: nullableString("Logical generated file path when visible in the active bundle."),
@@ -301,6 +323,7 @@ function sourceFileSchema(): SchemaObject {
       "modelInvocationEndedAt",
       "modelInvocationWarningCount",
       "modelInvocationErrorCode",
+      "generatedOutputStatus",
       "generatedFileAvailable",
       "generatedFileId",
       "generatedFilePath",
@@ -411,8 +434,17 @@ function sourceFileDetailSchema(): SchemaObject {
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
       checksumSha256: { type: "string" },
-      processingState: { type: "string" },
-      currentStage: { type: "string" },
+      processingState: {
+        type: "string",
+        enum: ["queued", "running", "completed", "failed"],
+        description: SOURCE_FILE_PROCESSING_STATE_DESCRIPTION
+      },
+      currentStage: { type: "string", description: SOURCE_FILE_CURRENT_STAGE_DESCRIPTION },
+      generatedOutputStatus: {
+        type: "string",
+        enum: ["pending", "visible", "unavailable"],
+        description: GENERATED_OUTPUT_STATUS_DESCRIPTION
+      },
       contentAvailable: { type: "boolean" },
       generatedFileAvailable: { type: "boolean" },
       generatedFileId: nullableString("Generated bundle file identifier when visible in the active bundle."),
@@ -429,6 +461,7 @@ function sourceFileDetailSchema(): SchemaObject {
       "checksumSha256",
       "processingState",
       "currentStage",
+      "generatedOutputStatus",
       "contentAvailable",
       "generatedFileAvailable",
       "generatedFileId",

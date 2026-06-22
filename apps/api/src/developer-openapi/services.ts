@@ -15,6 +15,7 @@ import { createDeletionService } from "../admin/deletion-service.js";
 import { readGeneratedOutputsForSourceFiles } from "../admin/source-file-generated-output.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
 import type { OpenAIResponsesClient } from "@focowiki/okf";
+import type { BoundedTaskRunner } from "../runtime/task-runner.js";
 import {
   conflict,
   notFound,
@@ -40,10 +41,11 @@ export type DeveloperOpenApiServices = {
   redis: RedisCoordinator | null;
   storage: StorageAdapter;
   modelClient: OpenAIResponsesClient | null;
+  modelSuggestionRunner: BoundedTaskRunner;
 };
 
 export function createDeveloperOpenApiService(services: DeveloperOpenApiServices) {
-  const { config, repositories, redis, storage, modelClient } = services;
+  const { config, repositories, redis, storage, modelClient, modelSuggestionRunner } = services;
 
   function requireRepositories(): AdminRepositories {
     if (!repositories) {
@@ -181,7 +183,9 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
                 maxMs: config.model.requestMaxTimeoutMs,
                 idleMs: config.model.requestIdleTimeoutMs
               },
-              suggestionConcurrency: config.model.suggestionConcurrency
+              suggestionConcurrency: config.model.suggestionConcurrency,
+              transientRetryDelayMs: config.model.transientRetryDelayMs,
+              requestRunner: modelSuggestionRunner
             }
           : null
       );
@@ -192,7 +196,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
       const sourceFileIds = await acceptUploadSourceFiles({
         files: loadedFiles,
-        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+        storageConcurrency: config.upload.storageConcurrency,
         knowledgeBaseId: knowledgeBase.id,
         storage,
         createSourceFiles: repo.files.createSourceFiles
@@ -236,7 +240,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
               batchSize: config.upload.generationBatchSize,
               cursorTtlSeconds: config.pagination.cursorTtlSeconds,
               fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-              okfLog: config.okf?.log
+              okfLog: config.okf?.log,
+              publication: config.publication
             });
             await dispatchWebhookEvent({
               eventType: "source_file.completed",
@@ -410,7 +415,9 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
                 maxMs: config.model.requestMaxTimeoutMs,
                 idleMs: config.model.requestIdleTimeoutMs
               },
-              suggestionConcurrency: config.model.suggestionConcurrency
+              suggestionConcurrency: config.model.suggestionConcurrency,
+              transientRetryDelayMs: config.model.transientRetryDelayMs,
+              requestRunner: modelSuggestionRunner
             }
           : null
       );
@@ -451,7 +458,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,
             fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log
+            okfLog: config.okf?.log,
+            publication: config.publication
           });
           await dispatchWebhookEvent({
             eventType:
@@ -771,7 +779,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       batchSize: config.upload.generationBatchSize,
       cursorTtlSeconds: config.pagination.cursorTtlSeconds,
       fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-      okfLog: config.okf?.log
+      okfLog: config.okf?.log,
+      publication: config.publication
     });
 
     if (!result.ok) {
@@ -951,6 +960,7 @@ function isAllowedGeneratedPath(path: string): boolean {
       path === "schema.md" ||
       /^pages\/[^/].*\.md$/u.test(path) ||
       /^_index\/[^/]+\.json$/u.test(path) ||
+      /^_index\/(?:manifest|search|links)\/[0-9]{6}\.jsonl$/u.test(path) ||
       isAllowedGraphPath(path))
   );
 }

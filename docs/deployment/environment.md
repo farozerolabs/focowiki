@@ -121,10 +121,22 @@ Use a dedicated bucket or prefix for each environment.
 | `GENERATION_BATCH_SIZE` | Yes | Batch size used by generation and indexing work. Keep bounded to avoid large in-memory work. |
 | `UPLOAD_TASK_CONCURRENCY` | Yes | Number of upload task workers. Use `1` for small servers and increase carefully. |
 | `UPLOAD_FILE_PROCESSING_CONCURRENCY` | Yes | Number of files processed concurrently. Use `1` for predictable memory and model usage. |
+| `UPLOAD_STORAGE_CONCURRENCY` | No | Number of uploaded source files written to S3-compatible storage concurrently. Keep this separate from model processing concurrency. |
 | `OKF_LOG_MAX_ENTRIES` | Yes | Maximum update-log entries kept in generated OKF files. |
 | `OKF_LOG_MAX_BYTES` | Yes | Maximum generated update-log size in bytes. |
+| `PUBLICATION_MODE` | Yes | Publication mode. Use `batch` for normal deployments, `per_file` for immediate publication, or `manual` for explicit publication workflows. |
+| `PUBLICATION_BATCH_SIZE` | Yes | Number of dirty completed files that triggers a batch publication. |
+| `PUBLICATION_INTERVAL_SECONDS` | Yes | Maximum age of pending dirty files before the next processing pass can trigger publication. |
+| `INDEX_SHARD_SIZE` | Yes | Maximum number of entries per generated `_index` shard. |
+| `GRAPH_EDGE_SHARD_SIZE` | Yes | Maximum number of graph edges per generated graph shard. |
 
-For an 8-core, 32 GB server, start with `UPLOAD_TASK_CONCURRENCY=1` and `UPLOAD_FILE_PROCESSING_CONCURRENCY=1`. Raise values only after observing CPU, memory, S3 throughput, database latency, and model latency.
+For an 8-core, 32 GB server, start with `UPLOAD_TASK_CONCURRENCY=1`, `UPLOAD_FILE_PROCESSING_CONCURRENCY=1`, and `UPLOAD_STORAGE_CONCURRENCY=4`. Raise values only after observing CPU, memory, S3 throughput, database latency, and model latency.
+
+### Large imports and publication visibility
+
+File processing and generated output publication are separate runtime steps. A file can finish parsing, model assistance, graph generation, and page preparation before it appears in the active file tree. In `batch` mode, Focowiki marks completed files as pending publication and publishes a new active OKF-style knowledge base when the dirty file count reaches `PUBLICATION_BATCH_SIZE` or the configured interval is reached during processing.
+
+The file-processing list shows the per-file lifecycle and the generated-output visibility state. The file tree and Developer OpenAPI content reads always use the active published release. Large indexes are written as shard descriptors and JSONL shard files when they exceed `INDEX_SHARD_SIZE`, so Agents can discover shard paths from `_index/search.json`, `_index/links.json`, and `_index/manifest.json`.
 
 ## Security Limits
 
@@ -152,6 +164,8 @@ Tune these values with your reverse proxy and Cloudflare or other edge-layer lim
 | `MODEL_CONTEXT_WINDOW_TOKENS` | Optional | Approximate context window used to choose how much Markdown content to send to the model. |
 | `MODEL_REQUEST_MAX_TIMEOUT_MS` | Optional | Maximum total model request time. |
 | `MODEL_REQUEST_IDLE_TIMEOUT_MS` | Optional | Maximum idle time while waiting for model output. |
+| `MODEL_TRANSIENT_RETRY_DELAY_MS` | Optional | Delay before the second model attempt after transient provider errors such as rate limits or credential cooling. |
+| `MODEL_REQUEST_MIN_INTERVAL_MS` | Optional | Minimum delay between model request starts. Increase this value when the provider rate-limits long import runs. |
 | `MODEL_SUGGESTION_CONCURRENCY` | Optional | Number of concurrent model suggestion calls. Keep low for stability and provider rate limits. |
 
 Model assistance uses OpenAI-compatible Structured Outputs. When `MODEL_API_KEY` or `MODEL_NAME` is empty, upload and OKF generation continue without model suggestions.

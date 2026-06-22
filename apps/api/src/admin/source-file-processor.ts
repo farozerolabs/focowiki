@@ -4,7 +4,6 @@ import {
   parseUploadedMarkdownSource,
   resolveSourceMetadata,
   type OkfLogLimits,
-  type SourceMetadataDefaults,
   type SourceModelSuggestions
 } from "@focowiki/okf";
 import type {
@@ -12,19 +11,17 @@ import type {
   SourceFileProcessingStage,
   SourceFileRecord
 } from "../db/admin-repositories.js";
-import { publishOkfRelease } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
-import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 import { createModelInvocationTracker } from "./model-invocation-tracker.js";
 import { readModelSuggestions, type ModelAssistanceOptions } from "./model-suggestions.js";
-import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
 import {
-  sourceFileStageMessageKey,
-  waitForPublicationLock
-} from "./source-file-processor-support.js";
+  createKnowledgeBasePublicationService,
+  type PublicationRuntimeOptions
+} from "./publication-scheduler.js";
+import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
+import { sourceFileStageMessageKey } from "./source-file-processor-support.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
-import { createReleaseId } from "./upload-processor-utils.js";
 
 export type SourceFileQueueProcessor = {
   processFile: (input: SourceFileProcessInput) => Promise<SourceFileRecord>;
@@ -39,6 +36,7 @@ export type SourceFileProcessInput = {
   cursorTtlSeconds: number;
   fileProcessingConcurrency: number;
   okfLog?: Partial<OkfLogLimits> | undefined;
+  publication?: Partial<PublicationRuntimeOptions> | undefined;
 };
 
 export function createSourceFileQueueProcessor(
@@ -51,11 +49,6 @@ export function createSourceFileQueueProcessor(
 
   if (
     !files?.getSourceFile ||
-    !files.createRelease ||
-    !files.createBundleFiles ||
-    !files.createBundleTreeEntries ||
-    !files.activateRelease ||
-    !files.listSourceFiles ||
     !files.updateSourceFileProcessingState ||
     !files.updateSourceFileMetadata ||
     !files.updateSourceFileModelSuggestions ||
@@ -65,15 +58,14 @@ export function createSourceFileQueueProcessor(
   }
 
   const getSourceFile = files.getSourceFile;
-  const createRelease = files.createRelease;
-  const createBundleFiles = files.createBundleFiles;
-  const createBundleTreeEntries = files.createBundleTreeEntries;
-  const activateRelease = files.activateRelease;
-  const listSourceFiles = files.listSourceFiles;
-  const listPublicationLogHistory = files.listPublicationLogHistory;
   const updateSourceFileMetadata = files.updateSourceFileMetadata;
   const updateSourceFileModelSuggestions = files.updateSourceFileModelSuggestions;
   const createSourceFileEvent = files.createSourceFileEvent;
+  const publicationService = createKnowledgeBasePublicationService(repositories, storage, redis);
+
+  if (!publicationService) {
+    return null;
+  }
 
   return {
     async processFile(input) {
@@ -86,7 +78,6 @@ export function createSourceFileQueueProcessor(
         ttlSeconds: input.cursorTtlSeconds
       });
       let sourceLockAcquired = false;
-      let publicationLockAcquired = false;
       let currentStage: SourceFileProcessingStage = "upload_storage";
 
       const mark = async (update: {
@@ -242,10 +233,6 @@ export function createSourceFileQueueProcessor(
           });
           suggestions = result.suggestionsBySourceId.get(source.id) ?? null;
 
-          if (!suggestions) {
-            throw new Error("Model suggestions failed");
-          }
-
           await updateSourceFileModelSuggestions({
             knowledgeBaseId: input.knowledgeBaseId,
             sourceFileId: source.id,
@@ -292,159 +279,71 @@ export function createSourceFileQueueProcessor(
 
         currentStage = "bundle_generation";
         await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
-        publicationLockAcquired = await waitForPublicationLock({
-          redis,
-          knowledgeBaseId: input.knowledgeBaseId,
-          ownerId,
-          ttlSeconds: input.cursorTtlSeconds
-        });
-
-        if (!publicationLockAcquired) {
-          throw new Error("Knowledge base publication lock was not acquired");
-        }
-
-        const releaseId = createReleaseId();
-        const bundleRootKey = storage.keyspace.releaseRootKey(input.knowledgeBaseId, releaseId);
-        await createRelease({
-          id: releaseId,
-          knowledgeBaseId: input.knowledgeBaseId,
-          bundleRootKey,
-          generatedAt: input.generatedAt,
-          publishedAt: null,
-          fileCount: 0,
-          manifestChecksumSha256: "pending"
-        });
+        const sourceReadyAt = progressClock();
         await recordStage(currentStage, {
-          startedAt: progressClock(),
-          endedAt: null,
-          severity: "info"
-        });
-
-        const publication = await publishOkfRelease({
-          knowledgeBaseId: input.knowledgeBaseId,
-          knowledgeBaseName: input.knowledgeBaseName,
-          releaseId,
-          generatedAt: input.generatedAt,
-          pageSize: input.batchSize,
-          concurrency: input.fileProcessingConcurrency,
-          log: input.okfLog,
-          storage,
-          fetchPublicationLogHistory: listPublicationLogHistory
-            ? ({ knowledgeBaseId, maxEntries }) =>
-                listPublicationLogHistory({
-                  knowledgeBaseId,
-                  maxEntries
-                })
-            : undefined,
-          fetchGraphNodePage: repositories.graph
-            ? ({ cursor, limit }) =>
-                repositories.graph!.listGraphNodes({
-                  knowledgeBaseId: input.knowledgeBaseId,
-                  cursor,
-                  limit
-                })
-            : undefined,
-          fetchGraphEdgePage: repositories.graph
-            ? ({ cursor, limit }) =>
-                repositories.graph!.listGraphEdges({
-                  knowledgeBaseId: input.knowledgeBaseId,
-                  cursor,
-                  limit
-                })
-            : undefined,
-          fetchSourcePage: ({ cursor, limit }) =>
-            listSourceFiles({
-              knowledgeBaseId: input.knowledgeBaseId,
-              cursor,
-              limit
-            }).then((page) => ({
-              ...page,
-              items: page.items
-                .filter(
-                  (item) =>
-                    item.processingStatus === "completed" || item.id === input.sourceFileId
-                )
-                .map((item) => ({
-                  ...item,
-                  metadata:
-                    item.id === input.sourceFileId
-                      ? (parsed.metadata as SourceMetadataDefaults)
-                      : item.metadata,
-                  suggestions:
-                    item.id === input.sourceFileId ? suggestions : item.modelSuggestions ?? null
-                }))
-            })),
-          persistBundleFiles: (filesToPersist) => createBundleFiles(filesToPersist),
-          persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries),
-          onSourcePageStage: ({ sourceFileIds, stage }) =>
-            sourceFileIds.includes(input.sourceFileId)
-              ? mark({
-                  status: "running",
-                  stage,
-                  endedAt: null,
-                  errorCode: null
-                })
-              : Promise.resolve()
-        });
-
-        const publicationEndedAt = progressClock();
-        await recordStage("bundle_generation", {
-          startedAt: null,
-          endedAt: publicationEndedAt,
-          severity: "info"
-        });
-        await recordStage("okf_validation", {
-          startedAt: null,
-          endedAt: publicationEndedAt,
-          severity: "info"
-        });
-        await recordStage("index_publication", {
-          startedAt: null,
-          endedAt: publicationEndedAt,
-          severity: "info"
-        });
-
-        currentStage = "release_activation";
-        const releaseActivationStartedAt = progressClock();
-        await mark({
-          status: "running",
-          stage: currentStage,
-          endedAt: null,
-          errorCode: null
-        });
-        await recordStage(currentStage, {
-          startedAt: releaseActivationStartedAt,
-          endedAt: null,
-          severity: "info"
-        });
-
-        await activateRelease({
-          knowledgeBaseId: input.knowledgeBaseId,
-          releaseId,
-          publishedAt: releaseActivationStartedAt,
-          fileCount: publication.fileCount,
-          manifestChecksumSha256: publication.manifestChecksumSha256
-        });
-
-        const releaseActivationEndedAt = progressClock();
-        await recordStage(currentStage, {
-          startedAt: null,
-          endedAt: releaseActivationEndedAt,
+          startedAt: sourceReadyAt,
+          endedAt: sourceReadyAt,
           severity: "info"
         });
         await mark({
           status: "completed",
           stage: currentStage,
-          endedAt: releaseActivationEndedAt,
+          endedAt: sourceReadyAt,
           errorCode: null
         });
-        await invalidateKnowledgeBaseCaches({
-          redis,
+        const publication = await publicationService.markSourceFileReady({
           knowledgeBaseId: input.knowledgeBaseId,
-          releaseId,
-          sourceFileId: input.sourceFileId,
-          ttlSeconds: input.cursorTtlSeconds
+          knowledgeBaseName: input.knowledgeBaseName,
+          sourceFileId: source.id,
+          generatedAt: input.generatedAt,
+          pageSize: input.batchSize,
+          cursorTtlSeconds: input.cursorTtlSeconds,
+          fileProcessingConcurrency: input.fileProcessingConcurrency,
+          okfLog: input.okfLog,
+          options: resolvePublicationOptions(input)
         });
+
+        const publicationEndedAt = progressClock();
+
+        if (publication.published) {
+          await recordStage("okf_validation", {
+            startedAt: null,
+            endedAt: publicationEndedAt,
+            severity: "info"
+          });
+          await recordStage("index_publication", {
+            startedAt: null,
+            endedAt: publicationEndedAt,
+            severity: "info"
+          });
+
+          currentStage = "release_activation";
+          const releaseActivationEndedAt = progressClock();
+          await recordStage(currentStage, {
+            startedAt: publicationEndedAt,
+            endedAt: releaseActivationEndedAt,
+            severity: "info"
+          });
+          await mark({
+            status: "completed",
+            stage: currentStage,
+            endedAt: releaseActivationEndedAt,
+            errorCode: null
+          });
+        } else {
+          currentStage = "index_publication";
+          await recordStage(currentStage, {
+            startedAt: publicationEndedAt,
+            endedAt: publicationEndedAt,
+            severity: "info"
+          });
+          await mark({
+            status: "completed",
+            stage: currentStage,
+            endedAt: publicationEndedAt,
+            errorCode: null
+          });
+        }
 
         const completedSource = await getSourceFile({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -481,13 +380,20 @@ export function createSourceFileQueueProcessor(
         }).catch(() => undefined);
         throw error;
       } finally {
-        if (publicationLockAcquired) {
-          await redis.releaseKnowledgeBasePublicationLock(input.knowledgeBaseId, ownerId);
-        }
         if (sourceLockAcquired) {
           await redis.releaseSourceFileLock(input.sourceFileId, ownerId);
         }
       }
     }
+  };
+}
+
+function resolvePublicationOptions(input: SourceFileProcessInput): PublicationRuntimeOptions {
+  return {
+    mode: input.publication?.mode ?? "batch",
+    batchSize: input.publication?.batchSize ?? input.batchSize,
+    intervalSeconds: input.publication?.intervalSeconds ?? 300,
+    indexShardSize: input.publication?.indexShardSize ?? 1_000,
+    graphEdgeShardSize: input.publication?.graphEdgeShardSize ?? 5_000
   };
 }

@@ -28,8 +28,11 @@ export type BundleFileKind =
   | "log"
   | "schema"
   | "manifest_index"
+  | "manifest_index_shard"
   | "search_index"
+  | "search_index_shard"
   | "link_index"
+  | "link_index_shard"
   | "graph_index"
   | "graph_manifest"
   | "graph_node_index"
@@ -208,8 +211,10 @@ export function renderIndexFiles(
   pages: GeneratedPageSummary[],
   files: ManifestFileEntry[],
   generatedAt: string,
-  graph: NormalizedOkfGraph | null = null
+  graph: NormalizedOkfGraph | null = null,
+  options: { shardSize?: number | undefined } = {}
 ): GeneratedOkfFile[] {
+  const shardSize = normalizeShardSize(options.shardSize);
   const searchIndex = buildSearchIndex(
     pages.map((page) => ({
       path: page.pagePath,
@@ -236,8 +241,29 @@ export function renderIndexFiles(
       )
     )
   };
-  const manifestIndex = {
-    generated_at: generatedAt,
+  const searchFiles = renderJsonCollectionIndex({
+    generatedAt,
+    rootPath: "_index/search.json",
+    shardDirectory: "_index/search",
+    rootKind: "search_index",
+    shardKind: "search_index_shard",
+    collectionKey: "items",
+    items: searchIndex.items,
+    shardSize
+  });
+  const linkFiles = renderJsonCollectionIndex({
+    generatedAt,
+    rootPath: "_index/links.json",
+    shardDirectory: "_index/links",
+    rootKind: "link_index",
+    shardKind: "link_index_shard",
+    collectionKey: "links",
+    items: linkIndex.links,
+    shardSize
+  });
+  const manifestFiles = renderManifestIndexFiles({
+    generatedAt,
+    shardSize,
     files: [
       ...files.map((file) => ({
         path: file.path,
@@ -245,44 +271,160 @@ export function renderIndexFiles(
         ...(file.title ? { title: file.title } : {}),
         ...(file.metadata ? { metadata: file.metadata } : {})
       })),
+      ...indexFilesToManifestEntries(searchFiles),
+      ...indexFilesToManifestEntries(linkFiles),
       {
         path: "_index/manifest.json",
         content_type: "application/json; charset=utf-8"
-      },
-      {
-        path: "_index/search.json",
-        content_type: "application/json; charset=utf-8"
-      },
-      {
-        path: "_index/links.json",
-        content_type: "application/json; charset=utf-8"
       }
     ].sort((left, right) => left.path.localeCompare(right.path))
+  });
+
+  return [...manifestFiles, ...searchFiles, ...linkFiles];
+}
+
+function renderManifestIndexFiles(input: {
+  generatedAt: string;
+  shardSize: number;
+  files: ManifestFileEntry[];
+}): GeneratedOkfFile[] {
+  let files = input.files;
+  let rendered = renderJsonCollectionIndex({
+    generatedAt: input.generatedAt,
+    rootPath: "_index/manifest.json",
+    shardDirectory: "_index/manifest",
+    rootKind: "manifest_index",
+    shardKind: "manifest_index_shard",
+    collectionKey: "files",
+    items: files,
+    shardSize: input.shardSize
+  });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const withManifestShards = [
+      ...input.files,
+      ...indexFilesToManifestEntries(rendered).filter((entry) => entry.path !== "_index/manifest.json")
+    ].sort((left, right) => left.path.localeCompare(right.path));
+    const next = renderJsonCollectionIndex({
+      generatedAt: input.generatedAt,
+      rootPath: "_index/manifest.json",
+      shardDirectory: "_index/manifest",
+      rootKind: "manifest_index",
+      shardKind: "manifest_index_shard",
+      collectionKey: "files",
+      items: withManifestShards,
+      shardSize: input.shardSize
+    });
+
+    if (rendered.map((file) => file.logicalPath).join("\n") === next.map((file) => file.logicalPath).join("\n")) {
+      return next;
+    }
+
+    files = withManifestShards;
+    rendered = next;
+  }
+
+  return renderJsonCollectionIndex({
+    generatedAt: input.generatedAt,
+    rootPath: "_index/manifest.json",
+    shardDirectory: "_index/manifest",
+    rootKind: "manifest_index",
+    shardKind: "manifest_index_shard",
+    collectionKey: "files",
+    items: files,
+    shardSize: input.shardSize
+  });
+}
+
+function renderJsonCollectionIndex<T>(input: {
+  generatedAt: string;
+  rootPath: string;
+  shardDirectory: string;
+  rootKind: BundleFileKind;
+  shardKind: BundleFileKind;
+  collectionKey: string;
+  items: T[];
+  shardSize: number;
+}): GeneratedOkfFile[] {
+  if (input.items.length <= input.shardSize) {
+    return [
+      {
+        logicalPath: input.rootPath,
+        sourceFileId: null,
+        fileKind: input.rootKind,
+        metadata: null,
+        content: stringifyJson({
+          generated_at: input.generatedAt,
+          [input.collectionKey]: input.items
+        })
+      }
+    ];
+  }
+
+  const shards = chunk(input.items, input.shardSize).map((items, index) => {
+    const path = `${input.shardDirectory}/${String(index + 1).padStart(6, "0")}.jsonl`;
+    return {
+      path,
+      items
+    };
+  });
+  const descriptor = {
+    generated_at: input.generatedAt,
+    mode: "sharded",
+    collection: input.collectionKey,
+    item_count: input.items.length,
+    shard_size: input.shardSize,
+    shards: shards.map((shard) => ({
+      path: shard.path,
+      count: shard.items.length
+    }))
   };
 
   return [
     {
-      logicalPath: "_index/manifest.json",
+      logicalPath: input.rootPath,
       sourceFileId: null,
-      fileKind: "manifest_index",
+      fileKind: input.rootKind,
       metadata: null,
-      content: stringifyIndex(manifestIndex)
+      content: stringifyJson(descriptor)
     },
-    {
-      logicalPath: "_index/search.json",
+    ...shards.map((shard) => ({
+      logicalPath: shard.path,
       sourceFileId: null,
-      fileKind: "search_index",
+      fileKind: input.shardKind,
       metadata: null,
-      content: stringifyIndex(searchIndex)
-    },
-    {
-      logicalPath: "_index/links.json",
-      sourceFileId: null,
-      fileKind: "link_index",
-      metadata: null,
-      content: stringifyIndex(linkIndex)
-    }
+      content: `${shard.items.map((item) => JSON.stringify(item)).join("\n")}\n`
+    }))
   ];
+}
+
+function indexFilesToManifestEntries(files: GeneratedOkfFile[]): ManifestFileEntry[] {
+  return files.map((file) => ({
+    path: file.logicalPath,
+    content_type: file.logicalPath.endsWith(".jsonl")
+      ? "application/x-ndjson; charset=utf-8"
+      : "application/json; charset=utf-8"
+  }));
+}
+
+function normalizeShardSize(value: number | undefined): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : Number.MAX_SAFE_INTEGER;
+}
+
+function stringifyJson(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    result.push(items.slice(index, index + size));
+  }
+
+  return result;
 }
 
 export function renderGraphFiles(input: PublicationGraphFilesInput): GeneratedOkfFile[] {

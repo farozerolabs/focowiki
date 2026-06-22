@@ -6,6 +6,7 @@ import {
   type OpenAIResponsesClient
 } from "@focowiki/okf";
 import { mapWithConcurrency } from "../runtime/bounded.js";
+import type { BoundedTaskRunner } from "../runtime/task-runner.js";
 import { selectModelCandidatePaths } from "./model-candidates.js";
 
 export type ModelAssistanceOptions = {
@@ -14,6 +15,8 @@ export type ModelAssistanceOptions = {
   contextWindowTokens: number;
   receiveTimeouts: ModelReceiveTimeouts;
   suggestionConcurrency: number;
+  transientRetryDelayMs: number;
+  requestRunner?: BoundedTaskRunner | undefined;
 };
 
 export type ModelSuggestionSource = {
@@ -55,15 +58,20 @@ export async function readModelSuggestions(input: {
       source,
       sources: input.sources
     });
-    const result = await requestModelSuggestions({
-      client: modelAssistance.client,
-      modelName: modelAssistance.modelName,
-      contextWindowTokens: modelAssistance.contextWindowTokens,
-      receiveTimeouts: modelAssistance.receiveTimeouts,
-      title: source.title,
-      body: source.body,
-      candidatePaths
-    });
+    const request = () =>
+      requestModelSuggestions({
+        client: modelAssistance.client,
+        modelName: modelAssistance.modelName,
+        contextWindowTokens: modelAssistance.contextWindowTokens,
+        receiveTimeouts: modelAssistance.receiveTimeouts,
+        transientRetryDelayMs: modelAssistance.transientRetryDelayMs,
+        title: source.title,
+        body: source.body,
+        candidatePaths
+      });
+    const result = modelAssistance.requestRunner
+      ? await modelAssistance.requestRunner.run(request)
+      : await request();
 
     if (result.suggestions) {
       suggestionsBySourceId.set(source.id, result.suggestions);

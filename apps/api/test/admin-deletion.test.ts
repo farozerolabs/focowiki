@@ -55,7 +55,15 @@ function createConfig(): RuntimeConfig {
       maxFiles: 8,
       generationBatchSize: 50,
       taskConcurrency: 1,
-      fileProcessingConcurrency: 1
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    },
+    publication: {
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1,
+      graphEdgeShardSize: 1
     },
     pagination: {
       defaultPageSize: 50,
@@ -74,6 +82,7 @@ class MemoryStorage implements StorageAdapter {
   public readonly objects = new Map<string, string>([
     ["tenant/demo/source/intro.md", "---\ntype: page\ntitle: Intro\n---\n# Intro"],
     ["tenant/demo/source/setup.md", "---\ntype: page\ntitle: Setup\n---\n# Setup"],
+    ["tenant/demo/source/advanced.md", "---\ntype: page\ntitle: Advanced\n---\n# Advanced"],
     [
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
       "---\ntype: page\ntitle: Intro\n---\n# Intro"
@@ -150,6 +159,26 @@ function createRepositories() {
       retryCount: 0,
       createdAt: now,
       deletedAt: null
+    },
+    {
+      id: "source-003",
+      knowledgeBaseId: "kb-001",
+      originalName: "advanced.md",
+      objectKey: "tenant/demo/source/advanced.md",
+      contentType: "text/markdown; charset=utf-8",
+      sizeBytes: 48,
+      checksumSha256: "checksum-advanced",
+      metadata: { type: "page", title: "Advanced" },
+      modelSuggestions: null,
+      processingStatus: "completed",
+      processingStage: "release_activation",
+      processingStartedAt: now,
+      processingEndedAt: now,
+      processingErrorCode: null,
+      processingErrorMessage: null,
+      retryCount: 0,
+      createdAt: now,
+      deletedAt: null
     }
   ];
   const bundleFiles: BundleFileRecord[] = [
@@ -172,9 +201,25 @@ function createRepositories() {
     }
   ];
   const sourceEvents: SourceFileEventDraft[] = [];
+  const publicationJobs: Array<{
+    id: string;
+    knowledgeBaseId: string;
+    mode: "batch" | "manual" | "per_file";
+    reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "deletion";
+    status: "queued" | "running" | "completed" | "failed";
+    dirtySourceCount: number;
+    releaseId: string | null;
+    startedAt: string | null;
+    endedAt: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }> = [];
   const graphNodes = new Map<string, OkfGraphNode>([
     ["source-001", createGraphNode("source-001", "pages/intro.md", "Intro")],
-    ["source-002", createGraphNode("source-002", "pages/setup.md", "Setup")]
+    ["source-002", createGraphNode("source-002", "pages/setup.md", "Setup")],
+    ["source-003", createGraphNode("source-003", "pages/advanced.md", "Advanced")]
   ]);
   const graphEdges: OkfGraphEdge[] = [
     {
@@ -196,7 +241,9 @@ function createRepositories() {
       sourceEvents,
       graphNodes,
       graphEdges,
-      graphDeletedSourceFileIds
+      graphDeletedSourceFileIds,
+      publicationJobs,
+      storageObjects: [] as string[]
     },
     repositories: {
       knowledgeBases: {
@@ -278,6 +325,80 @@ function createRepositories() {
         },
         async listPublicationLogHistory() {
           return { entries: [], summaries: [] };
+        },
+        async markSourceFilesPublicationDirty() {
+          return undefined;
+        },
+        async countDirtySourceFiles() {
+          return { count: 0, oldestDirtyAt: null };
+        },
+        async listDirtySourceFiles() {
+          return { items: [], nextCursor: null };
+        },
+        async markSourceFilesPublicationVisible() {
+          return undefined;
+        },
+        async markSourceFilesPublicationFailed() {
+          return undefined;
+        },
+        async createPublicationJob(input: {
+          id: string;
+          knowledgeBaseId: string;
+          mode: "batch" | "manual" | "per_file";
+          reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "deletion";
+          dirtySourceCount: number;
+        }) {
+          const job = {
+            ...input,
+            status: "queued" as const,
+            releaseId: null,
+            startedAt: null,
+            endedAt: null,
+            errorCode: null,
+            errorMessage: null,
+            createdAt: now,
+            updatedAt: now
+          };
+          publicationJobs.push(job);
+          return job;
+        },
+        async startPublicationJob(input: { id: string; startedAt: string }) {
+          const job = publicationJobs.find((item) => item.id === input.id);
+          if (!job) {
+            return null;
+          }
+          job.status = "running";
+          job.startedAt = input.startedAt;
+          job.updatedAt = input.startedAt;
+          return job;
+        },
+        async completePublicationJob(input: { id: string; releaseId: string; endedAt: string }) {
+          const job = publicationJobs.find((item) => item.id === input.id);
+          if (!job) {
+            return null;
+          }
+          job.status = "completed";
+          job.releaseId = input.releaseId;
+          job.endedAt = input.endedAt;
+          job.updatedAt = input.endedAt;
+          return job;
+        },
+        async failPublicationJob(input: {
+          id: string;
+          endedAt: string;
+          errorCode: string;
+          errorMessage: string;
+        }) {
+          const job = publicationJobs.find((item) => item.id === input.id);
+          if (!job) {
+            return null;
+          }
+          job.status = "failed";
+          job.endedAt = input.endedAt;
+          job.errorCode = input.errorCode;
+          job.errorMessage = input.errorMessage;
+          job.updatedAt = input.endedAt;
+          return job;
         }
       },
       publicApiKeys: {
@@ -386,6 +507,18 @@ describe("admin source deletion", () => {
     expect(records.graphDeletedSourceFileIds).toContain("source-001");
     expect(records.graphNodes.has("source-001")).toBe(false);
     expect(records.graphEdges).toHaveLength(0);
+    expect(records.publicationJobs).toHaveLength(1);
+    expect(records.publicationJobs[0]?.reason).toBe("deletion");
+    expect(
+      Array.from(storage.objects.keys()).some((key) =>
+        key.includes(`/releases/${body.releaseId}/bundle/_index/search/`)
+      )
+    ).toBe(true);
+    expect(
+      Array.from(storage.objects.keys()).some((key) =>
+        key.includes(`/releases/${body.releaseId}/bundle/_index/manifest/`)
+      )
+    ).toBe(true);
   });
 });
 

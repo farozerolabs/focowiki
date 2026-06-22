@@ -18,13 +18,14 @@ export function registerAdminSourceFileRetryRoutes(
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
     taskRunner: BoundedTaskRunner;
+    modelSuggestionRunner: BoundedTaskRunner;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, storage, modelClient, redis, repositories, taskRunner } = services;
+  const { config, storage, modelClient, redis, repositories, taskRunner, modelSuggestionRunner } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
@@ -58,7 +59,9 @@ export function registerAdminSourceFileRetryRoutes(
                 maxMs: config.model.requestMaxTimeoutMs,
                 idleMs: config.model.requestIdleTimeoutMs
               },
-              suggestionConcurrency: config.model.suggestionConcurrency
+              suggestionConcurrency: config.model.suggestionConcurrency,
+              transientRetryDelayMs: config.model.transientRetryDelayMs,
+              requestRunner: modelSuggestionRunner
             }
           : null
       );
@@ -127,7 +130,8 @@ export function registerAdminSourceFileRetryRoutes(
             batchSize: config.upload.generationBatchSize,
             cursorTtlSeconds: config.pagination.cursorTtlSeconds,
             fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log
+            okfLog: config.okf?.log,
+            publication: config.publication
           })
         )
         .catch(() => undefined);

@@ -2,6 +2,7 @@ import { AppError } from "../errors.js";
 
 const BUNDLE_ROOT_FILES = new Set(["index.md", "log.md", "schema.md"]);
 const INDEX_FILES = new Set(["manifest.json", "search.json", "links.json"]);
+const INDEX_SHARD_DIRECTORIES = new Set(["manifest", "search", "links"]);
 const GRAPH_ROOT_FILES = new Set(["index.md", "manifest.json", "nodes.jsonl"]);
 const SAFE_ID_TOKEN_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
@@ -144,17 +145,25 @@ function normalizeBundlePath(rawPath: string): string {
     return normalizeGraphBundlePath(segments);
   }
 
-  if (segments.length !== 2) {
-    throw new StorageKeyError("path is not an allowed public bundle path");
-  }
-
   const [directory, fileName] = segments;
 
   if (directory === "pages") {
+    if (segments.length !== 2) {
+      throw new StorageKeyError("path is not an allowed public bundle path");
+    }
+
     return `${directory}/${normalizeMarkdownFileName(fileName ?? "", "path")}`;
   }
 
   if (directory === "_index") {
+    if (segments.length === 3) {
+      return normalizeIndexShardBundlePath(segments);
+    }
+
+    if (segments.length !== 2) {
+      throw new StorageKeyError("path is not an allowed public bundle path");
+    }
+
     if (!fileName || !INDEX_FILES.has(fileName)) {
       throw new StorageKeyError("path must reference an allowed JSON index file");
     }
@@ -163,6 +172,20 @@ function normalizeBundlePath(rawPath: string): string {
   }
 
   throw new StorageKeyError("path is not an allowed public bundle path");
+}
+
+function normalizeIndexShardBundlePath(segments: string[]): string {
+  const [, directory, fileName] = segments;
+
+  if (!directory || !INDEX_SHARD_DIRECTORIES.has(directory)) {
+    throw new StorageKeyError("path must reference an allowed index shard directory");
+  }
+
+  if (!fileName || !/^[0-9]{6}\.jsonl$/.test(fileName)) {
+    throw new StorageKeyError("path must reference an allowed index shard file");
+  }
+
+  return segments.join("/");
 }
 
 function normalizeGraphBundlePath(segments: string[]): string {

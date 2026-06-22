@@ -11,6 +11,11 @@ describe("public URL builder", () => {
     ).toBe(
       "https://kb.example.com/base/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json"
     );
+    expect(
+      buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/search/000001.jsonl")
+    ).toBe(
+      "https://kb.example.com/base/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl"
+    );
   });
 
   it("does not expose internal storage identifiers", () => {
