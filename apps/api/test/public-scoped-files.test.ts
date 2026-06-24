@@ -3,7 +3,11 @@ import { createPublicOpenApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
-import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
+import {
+  StorageObjectTooLargeError,
+  type StorageAdapter,
+  type StoredObject
+} from "../src/storage/s3.js";
 
 const publicKey = "fwok_test-public-secret";
 
@@ -77,7 +81,6 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     },
@@ -86,12 +89,20 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     },
     pagination: {
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     },
     model: {
       enabled: false
@@ -130,9 +141,22 @@ class MemoryStorage implements StorageAdapter {
     );
   }
 
-  public async getObjectText(key: string): Promise<string | null> {
+  public async getObjectText(
+    key: string,
+    options: { maxBytes?: number } = {}
+  ): Promise<string | null> {
     this.textReads += 1;
-    return this.objects.get(key) ?? null;
+    const value = this.objects.get(key) ?? null;
+
+    if (value !== null && options.maxBytes !== undefined && value.length > options.maxBytes) {
+      throw new StorageObjectTooLargeError({
+        key,
+        sizeBytes: value.length,
+        maxBytes: options.maxBytes
+      });
+    }
+
+    return value;
   }
 
   public async getObjectBody(key: string): Promise<BodyInit | null> {
@@ -407,6 +431,36 @@ describe("Scoped public file OpenAPI", () => {
       releaseLists: 0,
       bundleLists: 0
     });
+  });
+
+  it("rejects generated content reads above the configured byte limit", async () => {
+    const baseConfig = createConfig();
+    const app = createPublicOpenApiApp({
+      config: {
+        ...baseConfig,
+        pagination: {
+          ...baseConfig.pagination,
+          generatedContentMaxBytes: 4
+        }
+      },
+      storage: new MemoryStorage(),
+      repositories: createRepositories()
+    });
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+      {
+        headers: {
+          authorization: `Bearer ${publicKey}`
+        }
+      }
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "PAYLOAD_TOO_LARGE"
+      }
+    });
+    expect(response.status).toBe(413);
   });
 
   it("serves generated index shard content through Developer OpenAPI", async () => {

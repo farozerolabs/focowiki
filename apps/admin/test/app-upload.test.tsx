@@ -21,6 +21,30 @@ vi.mock("../src/lib/admin-api", () => ({
     items: [],
     nextCursor: null
   })),
+  fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
+    sourceFileJobs: {
+      queuedCount: 0,
+      runningCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      deadLetterCount: 0,
+      oldestQueuedAt: null,
+      oldestQueuedAgeSeconds: null
+    },
+    publicationJobs: {
+      queuedCount: 0,
+      runningCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      deadLetterCount: 0,
+      oldestQueuedAt: null,
+      oldestQueuedAgeSeconds: null
+    },
+    dirtySourceFiles: {
+      count: 0,
+      oldestDirtyAt: null
+    }
+  })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),

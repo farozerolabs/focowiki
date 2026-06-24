@@ -34,6 +34,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
                 "PAYLOAD_TOO_LARGE",
                 "VALIDATION_ERROR",
                 "RATE_LIMITED",
+                "QUEUE_BACKPRESSURE",
                 "UNSUPPORTED_ROUTE",
                 "INTERNAL_ERROR",
                 "DATABASE_REPOSITORY_UNAVAILABLE"
@@ -152,10 +153,13 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       {
         knowledgeBaseId: idSchema("Knowledge-base identifier."),
         deleted: { type: "boolean" },
-        releaseId: idSchema("Active release identifier after deletion."),
+        publicationQueued: {
+          type: "boolean",
+          description: "Whether release publication was queued after deletion."
+        },
         file: ref("BundleFile")
       },
-      ["knowledgeBaseId", "deleted", "releaseId", "file"]
+      ["knowledgeBaseId", "deleted", "publicationQueued", "file"]
     ),
     DeleteResponse: objectSchema(
       {
@@ -371,11 +375,32 @@ function bundleTreeEntrySchema(): SchemaObject {
         type: "string",
         description: "Logical generated file path. It is not a storage path."
       },
+      sortKey: {
+        type: "string",
+        description: "Stable tree ordering key for cursor pagination."
+      },
       entryType: { type: "string", enum: ["file", "directory"] },
       fileKind: nullableString("Generated file classification."),
+      childCount: {
+        type: "integer",
+        minimum: 0,
+        description: "Direct child count for directory entries. File entries return 0."
+      },
       deletable: { type: "boolean" }
     },
-    ["id", "fileId", "sourceFileId", "parentPath", "name", "path", "entryType", "fileKind", "deletable"]
+    [
+      "id",
+      "fileId",
+      "sourceFileId",
+      "parentPath",
+      "name",
+      "path",
+      "sortKey",
+      "entryType",
+      "fileKind",
+      "childCount",
+      "deletable"
+    ]
   );
 }
 

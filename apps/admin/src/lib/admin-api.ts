@@ -163,6 +163,25 @@ export type SourceFilePage = {
   nextCursor: string | null;
 };
 
+export type WorkerQueueSummary = {
+  queuedCount: number;
+  runningCount: number;
+  completedCount: number;
+  failedCount: number;
+  deadLetterCount: number;
+  oldestQueuedAt: string | null;
+  oldestQueuedAgeSeconds: number | null;
+};
+
+export type ProcessingSummary = {
+  sourceFileJobs: WorkerQueueSummary;
+  publicationJobs: WorkerQueueSummary;
+  dirtySourceFiles: {
+    count: number;
+    oldestDirtyAt: string | null;
+  };
+};
+
 export type KnowledgeBasePublicUrls = {
   index: string;
   search: string;
@@ -366,7 +385,7 @@ export async function uploadKnowledgeBaseSources(input: {
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
-    return readFailure(body, "errors.invalidMetadata");
+    return readFailure(body, "errors.uploadFailed");
   }
 
   return body as { files: SourceFileRecord[] };
@@ -445,7 +464,7 @@ export async function fetchKnowledgeBaseFileDetail(input: {
 export async function deleteKnowledgeBaseFile(input: {
   knowledgeBaseId: string;
   path: string;
-}): Promise<{ deleted: true; releaseId: string } | ApiFailure> {
+}): Promise<{ deleted: true; publicationQueued: true } | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
@@ -455,14 +474,14 @@ export async function deleteKnowledgeBaseFile(input: {
     }
   );
   const body = (await response.json()) as
-    | { deleted: true; releaseId: string }
+    | { deleted: true; publicationQueued: true }
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
     return readFailure(body, "errors.deleteFailed");
   }
 
-  return body as { deleted: true; releaseId: string };
+  return body as { deleted: true; publicationQueued: true };
 }
 
 export async function listSourceFiles(input: {
@@ -486,6 +505,20 @@ export async function listSourceFiles(input: {
   }
 
   return (await response.json()) as SourceFilePage;
+}
+
+export async function fetchKnowledgeBaseProcessingSummary(input: {
+  knowledgeBaseId: string;
+}): Promise<ProcessingSummary | null> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/processing-summary`
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as ProcessingSummary;
 }
 
 export async function fetchKnowledgeBasePublicUrls(input: {

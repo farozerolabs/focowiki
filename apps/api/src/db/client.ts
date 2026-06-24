@@ -3,9 +3,17 @@ import type { RuntimeConfig } from "../config.js";
 
 export type DatabaseClient = Sql;
 
-export function createDatabaseClient(config: RuntimeConfig): DatabaseClient {
+export function createDatabaseClient(
+  config: RuntimeConfig,
+  options: { role?: "api" | "worker" | "migration" } = {}
+): DatabaseClient {
+  const max =
+    options.role === "worker"
+      ? (config.worker?.databasePoolMax ?? config.database.poolMax ?? 10)
+      : (config.database.poolMax ?? 10);
+
   return postgres(config.database.url, {
-    max: 10,
+    max,
     idle_timeout: 20,
     connect_timeout: 10
   });

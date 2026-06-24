@@ -26,8 +26,11 @@ export function createPerformanceEvidence(env = process.env) {
     pagination: [],
     memory: {
       startHeapMb: currentHeapMb(),
+      startRssMb: currentRssMb(),
       endHeapMb: null,
-      deltaHeapMb: null
+      endRssMb: null,
+      deltaHeapMb: null,
+      deltaRssMb: null
     }
   };
 }
@@ -79,7 +82,9 @@ export function recordPaginationEvidence(evidence, name, details = {}) {
 
 export function finalizePerformanceEvidence(evidence, run = {}) {
   evidence.memory.endHeapMb = currentHeapMb();
+  evidence.memory.endRssMb = currentRssMb();
   evidence.memory.deltaHeapMb = roundMb(evidence.memory.endHeapMb - evidence.memory.startHeapMb);
+  evidence.memory.deltaRssMb = roundMb(evidence.memory.endRssMb - evidence.memory.startRssMb);
 
   const batchMinimum = Number(run.largeScaleMinBatchFiles ?? 0);
 
@@ -130,6 +135,12 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
       maxMs: maxEndpointMs,
       maxReadMs: maxReadEndpointMs,
       maxMutationMs: maxMutationEndpointMs,
+      p50Ms: percentile(endpointDurations, 0.5),
+      p95Ms: percentile(endpointDurations, 0.95),
+      readP50Ms: percentile(readEndpointDurations, 0.5),
+      readP95Ms: percentile(readEndpointDurations, 0.95),
+      mutationP50Ms: percentile(mutationEndpointDurations, 0.5),
+      mutationP95Ms: percentile(mutationEndpointDurations, 0.95),
       averageMs: average(endpointDurations),
       slowest: [...evidence.endpointTimings]
         .sort((left, right) => right.durationMs - left.durationMs)
@@ -138,6 +149,8 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
     sourceFileDurations: {
       count: sourceFileDurations.length,
       maxMs: maxSourceFileDurationMs,
+      p50Ms: percentile(sourceFileDurations, 0.5),
+      p95Ms: percentile(sourceFileDurations, 0.95),
       averageMs: average(sourceFileDurations),
       items: evidence.sourceFileDurations
     },
@@ -169,12 +182,26 @@ function average(values) {
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
+function percentile(values, rank) {
+  if (!values.length) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.ceil(sorted.length * rank) - 1;
+  return sorted[Math.max(0, Math.min(index, sorted.length - 1))] ?? 0;
+}
+
 function isReadEndpoint(method) {
   return ["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase());
 }
 
 function currentHeapMb() {
   return roundMb(process.memoryUsage().heapUsed / 1024 / 1024);
+}
+
+function currentRssMb() {
+  return roundMb(process.memoryUsage().rss / 1024 / 1024);
 }
 
 function roundMb(value) {

@@ -162,7 +162,8 @@ export function generateOkfBundle(input: GenerateOkfBundleInput): GeneratedOkfBu
           "- Source-backed pages may include `fileId` and `graph` frontmatter fields.",
           "- `_graph/index.md` introduces the file graph.",
           "- `_graph/manifest.json` describes graph file counts and path patterns.",
-          "- `_graph/nodes.jsonl` stores one graph node per line.",
+          "- `_graph/nodes.jsonl` stores graph nodes directly or lists graph node shards.",
+          "- `_graph/nodes/*.jsonl` stores sharded graph nodes when present.",
           "- `_graph/edges/*.jsonl` stores sharded graph edges.",
           "- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
         ].join("\n")

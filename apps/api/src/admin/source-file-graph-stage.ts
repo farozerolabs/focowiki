@@ -7,26 +7,7 @@ import type {
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
-
-type GraphStageEvent = {
-  startedAt: string | null;
-  endedAt: string | null;
-  severity: "info" | "warning" | "error";
-};
-
-type GraphStageMarker = (update: {
-  status: SourceFileRecord["processingStatus"];
-  stage: SourceFileProcessingStage;
-  startedAt?: string | null;
-  endedAt?: string | null;
-  errorCode?: string | null;
-  errorMessage?: string | null;
-}) => Promise<void>;
-
-type GraphStageRecorder = (
-  stage: SourceFileProcessingStage,
-  event: GraphStageEvent
-) => Promise<void>;
+import type { SourceFileStageMarker, SourceFileStageRecorder } from "./source-file-stage-types.js";
 
 export async function processSourceFileGraphStage(input: {
   repositories: AdminRepositories;
@@ -37,12 +18,13 @@ export async function processSourceFileGraphStage(input: {
   body: string;
   suggestions: SourceModelSuggestions | null;
   pageSize: number;
+  maxCandidateNodes: number | undefined;
   ttlSeconds: number;
   ownerId: string;
   modelAssistance: ModelAssistanceOptions | null;
   progressClock: () => string;
-  mark: GraphStageMarker;
-  recordStage: GraphStageRecorder;
+  mark: SourceFileStageMarker;
+  recordStage: SourceFileStageRecorder;
 }): Promise<void> {
   const stage: SourceFileProcessingStage = "graph_generation";
   const startedAt = input.progressClock();
@@ -96,6 +78,7 @@ export async function processSourceFileGraphStage(input: {
       body: input.body,
       suggestions: input.suggestions,
       pageSize: input.pageSize,
+      ...(input.maxCandidateNodes ? { maxCandidateNodes: input.maxCandidateNodes } : {}),
       modelConfirmation: input.modelAssistance
         ? {
             client: input.modelAssistance.client,

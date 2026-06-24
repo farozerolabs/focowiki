@@ -1,11 +1,12 @@
-import type { OpenAIResponsesClient } from "@focowiki/okf";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import type { BoundedTaskRunner } from "../runtime/task-runner.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import { createSourceFileQueueProcessor } from "./source-file-processor.js";
+import {
+  assertSourceFileQueueCapacity,
+  enqueueSourceFileProcessingJobs,
+  WorkerQueueBackpressureError
+} from "../worker/source-file-jobs.js";
 import { toAdminSourceFile } from "./serializers.js";
 import { limitAdminUploadRequest } from "./security.js";
 
@@ -13,19 +14,15 @@ export function registerAdminSourceFileRetryRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    storage: StorageAdapter;
-    modelClient: OpenAIResponsesClient | null;
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
-    taskRunner: BoundedTaskRunner;
-    modelSuggestionRunner: BoundedTaskRunner;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, storage, modelClient, redis, repositories, taskRunner, modelSuggestionRunner } = services;
+  const { config, redis, repositories } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
@@ -40,35 +37,12 @@ export function registerAdminSourceFileRetryRoutes(
         !repositories ||
         !getSourceFile ||
         !createSourceFileRetryAttempt ||
+        !repositories.workerJobs ||
         !redis
       ) {
         return missingRepositoryBackend(context);
       }
       const repo = repositories;
-
-      const sourceFileProcessor = createSourceFileQueueProcessor(
-        repo,
-        storage,
-        redis,
-        modelClient && config.model.enabled
-          ? {
-              client: modelClient,
-              modelName: config.model.modelName,
-              contextWindowTokens: config.model.contextWindowTokens,
-              receiveTimeouts: {
-                maxMs: config.model.requestMaxTimeoutMs,
-                idleMs: config.model.requestIdleTimeoutMs
-              },
-              suggestionConcurrency: config.model.suggestionConcurrency,
-              transientRetryDelayMs: config.model.transientRetryDelayMs,
-              requestRunner: modelSuggestionRunner
-            }
-          : null
-      );
-
-      if (!sourceFileProcessor) {
-        return missingRepositoryBackend(context);
-      }
 
       const knowledgeBase = await repo.knowledgeBases.getKnowledgeBase(
         context.req.param("knowledgeBaseId")
@@ -110,6 +84,20 @@ export function registerAdminSourceFileRetryRoutes(
         );
       }
 
+      try {
+        await assertSourceFileQueueCapacity({
+          repositories: repo,
+          knowledgeBaseId: knowledgeBase.id,
+          config
+        });
+      } catch (error) {
+        if (error instanceof WorkerQueueBackpressureError) {
+          return queueBackpressure(context, error);
+        }
+
+        throw error;
+      }
+
       const startedAt = new Date().toISOString();
       await createSourceFileRetryAttempt({
         knowledgeBaseId: knowledgeBase.id,
@@ -120,21 +108,13 @@ export function registerAdminSourceFileRetryRoutes(
         errorCode: null
       });
 
-      void taskRunner
-        .run(() =>
-          sourceFileProcessor.processFile({
-            knowledgeBaseId: knowledgeBase.id,
-            knowledgeBaseName: knowledgeBase.name,
-            sourceFileId: sourceFile.id,
-            generatedAt: startedAt,
-            batchSize: config.upload.generationBatchSize,
-            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log,
-            publication: config.publication
-          })
-        )
-        .catch(() => undefined);
+      await enqueueSourceFileProcessingJobs({
+        repositories: repo,
+        sourceFileIds: [sourceFile.id],
+        knowledgeBaseId: knowledgeBase.id,
+        reason: "retry",
+        config
+      });
 
       return context.json(
         {
@@ -143,6 +123,30 @@ export function registerAdminSourceFileRetryRoutes(
         202
       );
     }
+  );
+}
+
+function queueBackpressure(
+  context: Parameters<MiddlewareHandler>[0],
+  error: WorkerQueueBackpressureError
+): Response {
+  return context.json(
+    {
+      error: {
+        code: error.code,
+        messageKey: "errors.queueBackpressure",
+        details: {
+          activeJobCount: error.activeJobCount,
+          limit: error.limit,
+          knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
+          knowledgeBaseLimit: error.knowledgeBaseLimit,
+          oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
+          maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
+          retryAfterSeconds: error.retryAfterSeconds
+        }
+      }
+    },
+    503
   );
 }
 

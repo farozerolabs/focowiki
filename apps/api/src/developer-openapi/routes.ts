@@ -3,10 +3,9 @@ import type { OpenAIResponsesClient } from "@focowiki/okf";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import { createBoundedTaskRunner } from "../runtime/task-runner.js";
-import { createModelSuggestionTaskRunner } from "../runtime/model-task-runner.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
+import { readTreeEntryTypeFilter } from "../tree-entry-filters.js";
 import {
   unsupportedRoute,
   validationError,
@@ -33,12 +32,7 @@ export function registerDeveloperOpenApiRoutes(
 ): void {
   const keyService = createDeveloperOpenApiKeyService(services);
   const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
-  const taskRunner = createBoundedTaskRunner(services.config.upload.taskConcurrency);
-  const modelSuggestionRunner = createModelSuggestionTaskRunner(services.config);
-  const api = createDeveloperOpenApiService({
-    ...services,
-    modelSuggestionRunner
-  });
+  const api = createDeveloperOpenApiService(services);
 
   app.use("/openapi/v1/*", requireAuth);
 
@@ -92,10 +86,7 @@ export function registerDeveloperOpenApiRoutes(
         const formData = await context.req.formData();
         return api.uploadMarkdown({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
-          files: formData.getAll("files").filter((value): value is File => value instanceof File),
-          runTask: (work) => {
-            void taskRunner.run(work).catch(() => undefined);
-          }
+          files: formData.getAll("files").filter((value): value is File => value instanceof File)
         });
       },
       202
@@ -144,24 +135,33 @@ export function registerDeveloperOpenApiRoutes(
         () =>
           api.retrySourceFile({
             knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            sourceFileId: context.req.param("sourceFileId"),
-            runTask: (work) => {
-              void taskRunner.run(work).catch(() => undefined);
-            }
+            sourceFileId: context.req.param("sourceFileId")
           }),
         202
       )
   );
 
   app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/tree", async (context) =>
-    safe(context, () =>
-      api.listTree({
+    safe(context, () => {
+      const entryType = readTreeEntryTypeFilter(context.req.query("entryType"));
+
+      if (entryType === undefined) {
+        throw validationError("Invalid tree entry type filter.", {
+          allowedValues: ["file", "directory"]
+        });
+      }
+
+      return api.listTree({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         parentPath: context.req.query("parentPath") ?? "",
-        limit: readLimit(context.req.query("limit"), services.config),
+        entryType,
+        limit: readLimit(context.req.query("limit"), services.config, {
+          defaultPageSize: services.config.pagination.treeDefaultPageSize,
+          maxPageSize: services.config.pagination.treeMaxPageSize
+        }),
         cursor: context.req.query("cursor") ?? null
-      })
-    )
+      });
+    })
   );
 
   app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/files/content", async (context) =>
@@ -292,10 +292,14 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
-function readLimit(value: string | undefined, config: RuntimeConfig): number {
-  const parsed = value ? Number(value) : config.pagination.defaultPageSize;
+function readLimit(
+  value: string | undefined,
+  config: RuntimeConfig,
+  limits: { defaultPageSize: number; maxPageSize: number } = config.pagination
+): number {
+  const parsed = value ? Number(value) : limits.defaultPageSize;
 
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > config.pagination.maxPageSize) {
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > limits.maxPageSize) {
     throw validationError("Pagination limit is invalid.", { field: "limit" });
   }
 

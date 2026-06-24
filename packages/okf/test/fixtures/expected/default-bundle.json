@@ -11,7 +11,7 @@
     },
     {
       "path": "schema.md",
-      "content": "---\ntype: schema\ntitle: Knowledge base schema\ndescription: Schema reference for Knowledge base\n---\n# Knowledge base schema\n\nEvery non-reserved Markdown concept file includes parseable YAML frontmatter.\n\nRequired fields:\n\n- type\n- title\n\nFile graph:\n\n- Source-backed pages may include `fileId` and `graph` frontmatter fields.\n- `_graph/index.md` introduces the file graph.\n- `_graph/manifest.json` describes graph file counts and path patterns.\n- `_graph/nodes.jsonl` stores one graph node per line.\n- `_graph/edges/*.jsonl` stores sharded graph edges.\n- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
+      "content": "---\ntype: schema\ntitle: Knowledge base schema\ndescription: Schema reference for Knowledge base\n---\n# Knowledge base schema\n\nEvery non-reserved Markdown concept file includes parseable YAML frontmatter.\n\nRequired fields:\n\n- type\n- title\n\nFile graph:\n\n- Source-backed pages may include `fileId` and `graph` frontmatter fields.\n- `_graph/index.md` introduces the file graph.\n- `_graph/manifest.json` describes graph file counts and path patterns.\n- `_graph/nodes.jsonl` stores graph nodes directly or lists graph node shards.\n- `_graph/nodes/*.jsonl` stores sharded graph nodes when present.\n- `_graph/edges/*.jsonl` stores sharded graph edges.\n- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
     },
     {
       "path": "pages/frontend-routing.md",

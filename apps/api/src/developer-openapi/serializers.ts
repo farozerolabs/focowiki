@@ -78,8 +78,10 @@ export function toDeveloperBundleTreeEntry(record: BundleTreeEntryRecord) {
     parentPath: record.parentPath,
     name: record.name,
     path: record.logicalPath,
+    sortKey: record.sortKey,
     entryType: record.entryType,
     fileKind: record.fileKind,
+    childCount: record.childCount,
     deletable: record.fileKind === "page" && Boolean(record.sourceFileId)
   };
 }

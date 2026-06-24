@@ -17,7 +17,8 @@ await build({
   entryNames: "[name]",
   entryPoints: {
     main: "src/main.ts",
-    migrate: "src/db/migrate.ts"
+    migrate: "src/db/migrate.ts",
+    worker: "src/worker-main.ts"
   },
   format: "esm",
   legalComments: "none",

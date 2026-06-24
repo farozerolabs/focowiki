@@ -2,10 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   buildIndexMetadataFields,
-  normalizeOkfGraph,
   resolveSourceMetadata,
   validateOkfBundle,
-  type NormalizedOkfGraph,
   type OkfGraphEdge,
   type OkfGraphLimits,
   type OkfGraphNode,
@@ -20,20 +18,32 @@ import type { StorageKeyspace } from "../storage/keys.js";
 import type { StoredObject } from "../storage/s3.js";
 import {
   applyPresentationSuggestions,
-  attachGraphToPage,
   normalizeLogLimits,
-  renderGraphFiles,
+  pageToLinkIndexEntries,
+  pageToSearchIndexItem,
   renderIndexFile,
-  renderIndexFiles,
   renderLogFile,
   renderPageFile,
   renderSchemaFile,
   type BundleFileKind,
   type GeneratedOkfFile,
   type GeneratedPageSummary,
+  type LinkIndexEntry,
   type ManifestFileEntry,
-  type PublicationLogHistory
+  type PublicationLogHistory,
+  type SearchIndexItem
 } from "./publication-files.js";
+import {
+  attachPublicationGraphToPage,
+  resolvePublicationGraphState,
+  writePublicationGraphFiles,
+  type PublicationGraphState,
+  type PublicationPublicFilePlans
+} from "./publication-graph-files.js";
+import { copyForwardUnchangedPageFiles } from "./publication-copy-forward.js";
+import { createJsonShardWriter, type JsonShardWriter } from "./publication-index-writer.js";
+import { attachGraphLinksToSummary, readGraphLinks } from "./publication-graph-link-reader.js";
+import { collectPublicFilePlans } from "./publication-public-file-plans.js";
 
 export type SourceFileForPublication = {
   id: string;
@@ -60,6 +70,11 @@ export type BundleFileDraft = {
   tags: string[];
   frontmatter: Record<string, unknown>;
 };
+
+export type PreviousBundleFileForPublication = Omit<
+  BundleFileDraft,
+  "id" | "knowledgeBaseId" | "releaseId"
+>;
 
 export type BundleTreeEntryDraft = {
   id: string;
@@ -90,11 +105,14 @@ export type PublishOkfReleaseInput = {
   fetchSourcePage: (request: CursorPageRequest) => Promise<CursorPage<SourceFileForPublication>>;
   fetchGraphNodePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphNode>>) | undefined;
   fetchGraphEdgePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphEdge>>) | undefined;
+  fetchPreviousBundleFilePage?:
+    | ((request: CursorPageRequest) => Promise<CursorPage<PreviousBundleFileForPublication>>)
+    | undefined;
   fetchGraphNeighborhood?:
     | ((request: {
         sourceFileId: string;
         limit: number;
-      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
+      }) => Promise<{ sourceFileId: string; relationships: OkfGraphRelationship[] }>)
     | undefined;
   fetchPublicationLogHistory?: ((request: {
     knowledgeBaseId: string;
@@ -103,7 +121,11 @@ export type PublishOkfReleaseInput = {
   persistBundleFiles: (files: BundleFileDraft[]) => Promise<void>;
   persistBundleTreeEntries: (entries: BundleTreeEntryDraft[]) => Promise<void>;
   onSourcePageStage?: (input: { sourceFileIds: string[]; stage: SourcePageStage }) => Promise<void>;
+  dirtySourceFileIds?: string[] | undefined;
   indexShardSize?: number | undefined;
+  linkIndexShardSize?: number | undefined;
+  manifestShardSize?: number | undefined;
+  rootSummaryLimit?: number | undefined;
   graph?: OkfGraphLimits | undefined;
 };
 
@@ -122,15 +144,20 @@ type GeneratedSourceFiles = {
   summary: GeneratedPageSummary;
 };
 
-type PublicFilePlans = {
-  bySourceId: Map<string, { publicFileName: string; pagePath: string }>;
-  publicPaths: Set<string>;
-};
+type PublicFilePlans = PublicationPublicFilePlans;
 
 type TreePublicationState = {
   seenDirectories: Set<string>;
   pendingEntries: BundleTreeEntryDraft[];
   entryCount: number;
+};
+
+type PublicationIndexState = {
+  rootSummaryLimit: number;
+  rootSummaries: GeneratedPageSummary[];
+  search: JsonShardWriter<SearchIndexItem>;
+  links: JsonShardWriter<LinkIndexEntry>;
+  manifest: JsonShardWriter<ManifestFileEntry>;
 };
 
 export async function publishOkfRelease(
@@ -143,8 +170,6 @@ export async function publishOkfRelease(
     input.knowledgeBaseId,
     input.releaseId
   );
-  const pageIndexEntries: GeneratedPageSummary[] = [];
-  const manifestEntries: ManifestFileEntry[] = [];
   const treeState: TreePublicationState = {
     seenDirectories: new Set(),
     pendingEntries: [],
@@ -154,26 +179,75 @@ export async function publishOkfRelease(
   let manifestChecksumSha256 = "";
   let cursor: string | null = null;
   const publicFilePlans = await collectPublicFilePlans(input);
-  const graph = await collectPublicationGraph(input, publicFilePlans);
+  const graphState = resolvePublicationGraphState(input);
+  const dirtySourceFileIds = input.dirtySourceFileIds
+    ? new Set(input.dirtySourceFileIds)
+    : null;
 
   const nextFileId = (): string => `bundle-file-${randomUUID()}`;
+  const persistAndRegisterFiles = async (
+    files: GeneratedOkfFile[],
+    options: { addToManifest: boolean } = { addToManifest: true }
+  ): Promise<BundleFileDraft[]> => {
+    const persisted = await writeAndPersistBundleFiles(input, nextFileId, files);
+    fileCount += persisted.length;
+    for (const file of persisted) {
+      await registerPublishedFile(input, treeState, indexState, file, options);
+    }
+    return persisted;
+  };
+  const indexState = createPublicationIndexState({
+    input,
+    treeState,
+    persistFiles: persistAndRegisterFiles
+  });
+  const copiedSourceFileIds = await copyForwardUnchangedPageFiles({
+    publication: input,
+    nextFileId,
+    publicFilePlans,
+    treeState,
+    registerPublishedFile: (file, nextTreeState) =>
+      registerPublishedFile(input, nextTreeState, indexState, file),
+    registerPageSummary: async (summary) =>
+      registerPageSummary(
+        indexState,
+        publicFilePlans.publicPaths,
+        await attachGraphLinksToSummary({
+          summary,
+          graph: graphState,
+          publicFilePlans,
+          fetchGraphNeighborhood: input.fetchGraphNeighborhood,
+          fetchGraphEdgePage: input.fetchGraphEdgePage,
+          pageSize: input.pageSize
+        })
+      )
+  });
+  fileCount += copiedSourceFileIds.size;
 
   do {
     const page = await input.fetchSourcePage({
       cursor,
       limit: input.pageSize
     });
-    const plannedSources = page.items.map((source) => {
+    const plannedSources = page.items.flatMap((source) => {
+      if (copiedSourceFileIds.has(source.id)) {
+        return [];
+      }
+
+      if (dirtySourceFileIds && !dirtySourceFileIds.has(source.id)) {
+        return [];
+      }
+
       const plan = publicFilePlans.bySourceId.get(source.id);
 
       if (!plan) {
         throw new Error(`Source file plan was not found: ${source.id}`);
       }
 
-      return {
+      return [{
         source,
         publicFileName: plan.publicFileName
-      };
+      }];
     });
     const pageSourceIds = plannedSources.map(({ source }) => source.id);
     await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "bundle_generation" });
@@ -186,17 +260,28 @@ export async function publishOkfRelease(
           publicFileName,
           publicPaths: publicFilePlans.publicPaths,
           storage: input.storage,
-          graph,
-          fetchGraphNeighborhood: input.fetchGraphNeighborhood
+          graph: graphState,
+          publicFilePlans,
+          fetchGraphNeighborhood: input.fetchGraphNeighborhood,
+          fetchGraphEdgePage: input.fetchGraphEdgePage,
+          pageSize: input.pageSize
         })
     );
 
     await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "okf_validation" });
-    for (const generated of generatedFiles) {
-      pageIndexEntries.push(generated.summary);
-      const pageFile = await writeAndPersistBundleFile(input, nextFileId, generated.page);
-      fileCount += 1;
-      await registerPublishedFile(input, treeState, manifestEntries, pageFile);
+    const pageFiles = await writeAndPersistBundleFiles(
+      input,
+      nextFileId,
+      generatedFiles.map((generated) => generated.page)
+    );
+    fileCount += pageFiles.length;
+    for (const [index, pageFile] of pageFiles.entries()) {
+      const generated = generatedFiles[index];
+      if (!generated) {
+        throw new Error("Generated page summary was not found for persisted page");
+      }
+      await registerPageSummary(indexState, publicFilePlans.publicPaths, generated.summary);
+      await registerPublishedFile(input, treeState, indexState, pageFile);
     }
     await input.onSourcePageStage?.({ sourceFileIds: pageSourceIds, stage: "index_publication" });
 
@@ -211,39 +296,44 @@ export async function publishOkfRelease(
       })
     : { entries: [], summaries: [] };
   const fixedMarkdownFiles = [
-    renderIndexFile(pageIndexEntries, input.generatedAt, input.knowledgeBaseName),
-    renderLogFile(pageIndexEntries, input.generatedAt, logLimits, logHistory),
+    renderIndexFile(
+      indexState.rootSummaries,
+      input.generatedAt,
+      input.knowledgeBaseName
+    ),
+    renderLogFile(
+      indexState.rootSummaries,
+      input.generatedAt,
+      logLimits,
+      logHistory
+    ),
     renderSchemaFile(input.knowledgeBaseName)
   ];
 
-  for (const file of fixedMarkdownFiles) {
-    const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
-    fileCount += 1;
-    await registerPublishedFile(input, treeState, manifestEntries, persisted);
-  }
+  await persistAndRegisterFiles(fixedMarkdownFiles);
 
-  if (graph) {
-    const graphFiles = renderGraphFiles({ graph, generatedAt: input.generatedAt });
-
-    for (const file of graphFiles) {
-      const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
-      fileCount += 1;
-      await registerPublishedFile(input, treeState, manifestEntries, persisted);
+  await writePublicationGraphFiles({
+    generatedAt: input.generatedAt,
+    pageSize: input.pageSize,
+    concurrency: input.concurrency,
+    plans: publicFilePlans,
+    graphState,
+    fetchGraphNodePage: input.fetchGraphNodePage,
+    fetchGraphEdgePage: input.fetchGraphEdgePage,
+    fetchGraphNeighborhood: input.fetchGraphNeighborhood,
+    writeFiles: async (files) => {
+      await persistAndRegisterFiles(files);
     }
-  }
-
-  const indexFiles = renderIndexFiles(pageIndexEntries, manifestEntries, input.generatedAt, graph, {
-    shardSize: input.indexShardSize
   });
-  for (const file of indexFiles) {
-    const persisted = await writeAndPersistBundleFile(input, nextFileId, file);
-    fileCount += 1;
-    await registerPublishedFile(input, treeState, manifestEntries, persisted);
 
-    if (file.logicalPath === "_index/manifest.json") {
-      manifestChecksumSha256 = persisted.checksumSha256;
-    }
-  }
+  await persistAndRegisterFiles([
+    await indexState.search.finishRoot(),
+    await indexState.links.finishRoot()
+  ]);
+
+  const manifestRoot = await indexState.manifest.finishRoot();
+  const persistedManifestRoot = await persistAndRegisterFiles([manifestRoot], { addToManifest: false });
+  manifestChecksumSha256 = persistedManifestRoot[0]?.checksumSha256 ?? "";
 
   await flushTreeEntries(input, treeState);
 
@@ -256,18 +346,70 @@ export async function publishOkfRelease(
   };
 }
 
+function createPublicationIndexState(input: {
+  input: PublishOkfReleaseInput;
+  treeState: TreePublicationState;
+  persistFiles: (files: GeneratedOkfFile[], options?: { addToManifest: boolean }) => Promise<BundleFileDraft[]>;
+}): PublicationIndexState {
+  const rootSummaryLimit = normalizePositiveInteger(input.input.rootSummaryLimit, 500);
+
+  return {
+    rootSummaryLimit,
+    rootSummaries: [],
+    search: createJsonShardWriter<SearchIndexItem>({
+      generatedAt: input.input.generatedAt,
+      rootPath: "_index/search.json",
+      shardDirectory: "_index/search",
+      rootKind: "search_index",
+      shardKind: "search_index_shard",
+      collectionKey: "items",
+      shardSize: normalizePositiveInteger(input.input.indexShardSize, Number.MAX_SAFE_INTEGER),
+      persistFiles: async (files) => {
+        await input.persistFiles(files);
+      }
+    }),
+    links: createJsonShardWriter<LinkIndexEntry>({
+      generatedAt: input.input.generatedAt,
+      rootPath: "_index/links.json",
+      shardDirectory: "_index/links",
+      rootKind: "link_index",
+      shardKind: "link_index_shard",
+      collectionKey: "links",
+      shardSize: normalizePositiveInteger(input.input.linkIndexShardSize, Number.MAX_SAFE_INTEGER),
+      persistFiles: async (files) => {
+        await input.persistFiles(files);
+      }
+    }),
+    manifest: createJsonShardWriter<ManifestFileEntry>({
+      generatedAt: input.input.generatedAt,
+      rootPath: "_index/manifest.json",
+      shardDirectory: "_index/manifest",
+      rootKind: "manifest_index",
+      shardKind: "manifest_index_shard",
+      collectionKey: "files",
+      shardSize: normalizePositiveInteger(input.input.manifestShardSize, Number.MAX_SAFE_INTEGER),
+      persistFiles: async (files) => {
+        await input.persistFiles(files, { addToManifest: false });
+      }
+    })
+  };
+}
+
 async function generateSourceFiles(input: {
   source: SourceFileForPublication;
   publicFileName: string;
   publicPaths: Set<string>;
   storage: OkfPublicationStorage;
-  graph: NormalizedOkfGraph | null;
+  graph: PublicationGraphState;
+  publicFilePlans: PublicFilePlans;
   fetchGraphNeighborhood:
     | ((request: {
         sourceFileId: string;
         limit: number;
-      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
+      }) => Promise<{ sourceFileId: string; relationships: OkfGraphRelationship[] }>)
     | undefined;
+  fetchGraphEdgePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphEdge>>) | undefined;
+  pageSize: number;
 }): Promise<GeneratedSourceFiles> {
   const content = await input.storage.getObjectText(input.source.objectKey);
 
@@ -288,9 +430,12 @@ async function generateSourceFiles(input: {
   const graphLinks = await readGraphLinks({
     graph: input.graph,
     sourceFileId: input.source.id,
-    fetchGraphNeighborhood: input.fetchGraphNeighborhood
+    publicFilePlans: input.publicFilePlans,
+    fetchGraphNeighborhood: input.fetchGraphNeighborhood,
+    fetchGraphEdgePage: input.fetchGraphEdgePage,
+    pageSize: input.pageSize
   });
-  const summary = attachGraphToPage(
+  const summary = attachPublicationGraphToPage(
     {
       pagePath: `pages/${input.publicFileName}`,
       fileId: input.source.id,
@@ -308,146 +453,31 @@ async function generateSourceFiles(input: {
       logicalPath: summary.pagePath,
       sourceFileId: input.source.id,
       fileKind: "page",
-      content: renderPageFile(summary, resolved.body, input.publicPaths, input.graph),
+      content: renderPageFile(summary, resolved.body, input.publicPaths, null),
       metadata: summary.metadata
     }
   };
 }
 
-async function readGraphLinks(input: {
-  graph: NormalizedOkfGraph | null;
-  sourceFileId: string;
-  fetchGraphNeighborhood:
-    | ((request: {
-        sourceFileId: string;
-        limit: number;
-      }) => Promise<{ sourceFileId: string; edges: OkfGraphEdge[] }>)
-    | undefined;
-}): Promise<OkfGraphRelationship[]> {
-  if (!input.graph || !input.fetchGraphNeighborhood) {
-    return [];
-  }
-
-  const neighborhood = await input.fetchGraphNeighborhood({
-    sourceFileId: input.sourceFileId,
-    limit: input.graph.limits.pageRelatedLimit
-  });
-  const edgeGraph = normalizeOkfGraph({
-    nodes: input.graph.nodes,
-    edges: neighborhood.edges,
-    limits: input.graph.limits
-  });
-
-  if (!edgeGraph) {
-    return [];
-  }
-
-  return edgeGraph.edges.flatMap((edge) => {
-    const relatedFileId =
-      edge.fromFileId === input.sourceFileId
-        ? edge.toFileId
-        : edge.toFileId === input.sourceFileId
-          ? edge.fromFileId
-          : null;
-    const direction = edge.fromFileId === input.sourceFileId ? "outgoing" : "incoming";
-    const node = relatedFileId ? edgeGraph.nodesByFileId.get(relatedFileId) : null;
-
-    if (!node) {
-      return [];
-    }
-
-    return [
-      {
-        fileId: node.fileId,
-        path: node.path,
-        title: node.title,
-        relationType: edge.relationType,
-        direction,
-        weight: edge.weight,
-        reason: edge.reason,
-        source: edge.source,
-        ...(edge.evidence ? { evidence: edge.evidence } : {})
-      }
-    ];
-  });
-}
-
-async function collectPublicationGraph(
+async function writeAndPersistBundleFiles(
   input: PublishOkfReleaseInput,
-  plans: PublicFilePlans
-): Promise<NormalizedOkfGraph | null> {
-  if (!input.fetchGraphNodePage || !input.fetchGraphEdgePage) {
-    return null;
+  nextFileId: () => string,
+  files: GeneratedOkfFile[]
+): Promise<BundleFileDraft[]> {
+  if (files.length === 0) {
+    return [];
   }
 
-  const nodes = (await collectCursorItems(input.fetchGraphNodePage, input.pageSize)).map((node) => {
-    const plan = plans.bySourceId.get(node.fileId);
-    return {
-      ...node,
-      ...(plan ? { path: plan.pagePath } : {})
-    };
-  });
-  const edges = await collectCursorItems(input.fetchGraphEdgePage, input.pageSize);
-
-  return normalizeOkfGraph({
-    nodes,
-    edges,
-    ...(input.graph ? { limits: input.graph } : {})
-  });
+  const persisted = await mapWithConcurrency(files, input.concurrency, async (file) =>
+    writeBundleFileObject(input, nextFileId, file)
+  );
+  for (const batch of chunk(persisted, input.pageSize)) {
+    await input.persistBundleFiles(batch);
+  }
+  return persisted;
 }
 
-async function collectCursorItems<T>(
-  fetchPage: (request: CursorPageRequest) => Promise<CursorPage<T>>,
-  limit: number
-): Promise<T[]> {
-  const items: T[] = [];
-  let cursor: string | null = null;
-
-  do {
-    const page = await fetchPage({ cursor, limit });
-    items.push(...page.items);
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  return items;
-}
-
-async function collectPublicFilePlans(input: PublishOkfReleaseInput): Promise<PublicFilePlans> {
-  const publicFileNames = new Set<string>();
-  const publicPaths = new Set(["index.md", "log.md", "schema.md"]);
-  const bySourceId = new Map<string, { publicFileName: string; pagePath: string }>();
-  let cursor: string | null = null;
-
-  do {
-    const page = await input.fetchSourcePage({
-      cursor,
-      limit: input.pageSize
-    });
-
-    for (const source of page.items) {
-      const publicFileName = uniquePublicMarkdownFileName({
-        fileName: normalizePublicMarkdownFileName(source.originalName),
-        discriminator: source.id,
-        usedNames: publicFileNames
-      });
-
-      if (bySourceId.has(source.id)) {
-        throw new Error(`Duplicate source file id: ${source.id}`);
-      }
-
-      const pagePath = `pages/${publicFileName}`;
-      publicFileNames.add(publicFileName);
-      publicPaths.add(pagePath);
-      bySourceId.set(source.id, { publicFileName, pagePath });
-    }
-
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  return { bySourceId, publicPaths };
-}
-
-async function writeAndPersistBundleFile(
+async function writeBundleFileObject(
   input: PublishOkfReleaseInput,
   nextFileId: () => string,
   file: GeneratedOkfFile
@@ -478,32 +508,50 @@ async function writeAndPersistBundleFile(
     content: file.content,
     metadata: file.metadata
   });
-  await input.persistBundleFiles([persisted]);
   return persisted;
 }
 
 async function registerPublishedFile(
   input: PublishOkfReleaseInput,
   treeState: TreePublicationState,
-  manifestEntries: ManifestFileEntry[],
-  file: BundleFileDraft
+  indexState: PublicationIndexState,
+  file: BundleFileDraft,
+  options: { addToManifest: boolean } = { addToManifest: true }
 ): Promise<void> {
-  const metadata = file.fileKind === "page"
-    ? buildIndexMetadataFields(file.frontmatter).metadata
-    : undefined;
-
-  manifestEntries.push({
-    path: file.logicalPath,
-    content_type: file.contentType,
-    ...(file.title ? { title: file.title } : {}),
-    ...(metadata ? { metadata } : {})
-  });
+  if (options.addToManifest) {
+    await indexState.manifest.add(manifestEntryFromBundleFile(file));
+  }
 
   queueTreeEntries(input, treeState, file);
 
   if (treeState.pendingEntries.length >= input.pageSize) {
     await flushTreeEntries(input, treeState);
   }
+}
+
+async function registerPageSummary(
+  indexState: PublicationIndexState,
+  publicPaths: Set<string>,
+  summary: GeneratedPageSummary
+): Promise<void> {
+  if (indexState.rootSummaries.length < indexState.rootSummaryLimit) {
+    indexState.rootSummaries.push(summary);
+  }
+  await indexState.search.add(pageToSearchIndexItem(summary));
+  await indexState.links.addMany(pageToLinkIndexEntries(summary, publicPaths));
+}
+
+function manifestEntryFromBundleFile(file: BundleFileDraft): ManifestFileEntry {
+  const metadata = file.fileKind === "page"
+    ? buildIndexMetadataFields(file.frontmatter).metadata
+    : undefined;
+
+  return {
+    path: file.logicalPath,
+    content_type: file.contentType,
+    ...(file.title ? { title: file.title } : {}),
+    ...(metadata ? { metadata } : {})
+  };
 }
 
 function queueTreeEntries(
@@ -652,44 +700,6 @@ function decodeTreeLogicalPath(value: string): string {
   return decoded;
 }
 
-function normalizePublicMarkdownFileName(fileName: string): string {
-  const normalized = fileName.trim();
-
-  if (!normalized.toLowerCase().endsWith(".md") || !isSafeTreeSegment(normalized)) {
-    throw new Error("Source file name must be a safe Markdown file name");
-  }
-
-  return normalized;
-}
-
-function uniquePublicMarkdownFileName(input: {
-  fileName: string;
-  discriminator: string;
-  usedNames: Set<string>;
-}): string {
-  if (!input.usedNames.has(input.fileName)) return input.fileName;
-
-  const suffix = safeFileNameSuffix(input.discriminator) || "duplicate";
-  const baseName = input.fileName.slice(0, -".md".length);
-  let candidate = `${baseName}--${suffix}.md`;
-  let counter = 2;
-
-  while (input.usedNames.has(candidate)) {
-    candidate = `${baseName}--${suffix}-${counter}.md`;
-    counter += 1;
-  }
-
-  return candidate;
-}
-
-function safeFileNameSuffix(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-}
-
 function contentTypeForPath(path: string): string {
   if (path.endsWith(".jsonl")) {
     return "application/x-ndjson; charset=utf-8";
@@ -708,6 +718,12 @@ function assertPositiveInteger(value: number, fieldName: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${fieldName} must be a positive integer`);
   }
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {

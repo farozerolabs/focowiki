@@ -68,6 +68,9 @@ jobs:
           docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci .
           docker image inspect focowiki-api:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
 
+      - name: Validate API Docker worker runtime
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/worker.mjs']) fs.accessSync(file);"
+
       - name: Build Admin Docker image
         run: docker build --target admin -t focowiki-admin:ci .
 

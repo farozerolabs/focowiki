@@ -3,10 +3,7 @@ import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
-import {
-  createKnowledgeBasePublicationService,
-  type PublicationRuntimeOptions
-} from "./publication-scheduler.js";
+import type { PublicationRuntimeOptions } from "./publication-scheduler.js";
 
 export type AdminDeletionService = {
   deleteKnowledgeBase: (input: {
@@ -30,7 +27,7 @@ export type AdminDeletionService = {
 export type SourcePageDeletionResult =
   | {
       ok: true;
-      releaseId: string;
+      publicationQueued: true;
     }
   | {
       ok: false;
@@ -49,14 +46,9 @@ export function createDeletionService(
     !files?.softDeleteSourceFile ||
     !files.listSourceFiles ||
     !files.getBundleFile ||
-    !files.createSourceFileEvent
+    !files.createSourceFileEvent ||
+    !repositories.workerJobs
   ) {
-    return null;
-  }
-
-  const publicationService = createKnowledgeBasePublicationService(repositories, storage, redis);
-
-  if (!publicationService) {
     return null;
   }
 
@@ -65,6 +57,7 @@ export function createDeletionService(
   const listSourceFiles = files.listSourceFiles;
   const getBundleFile = files.getBundleFile;
   const createSourceFileEvent = files.createSourceFileEvent;
+  const workerJobs = repositories.workerJobs;
 
   return {
     async deleteKnowledgeBase(input) {
@@ -146,22 +139,12 @@ export function createDeletionService(
         sourceFileId: file.sourceFileId
       });
 
-      const publication = await publicationService.publishNow({
+      await workerJobs.enqueuePublicationJob({
         knowledgeBaseId: knowledgeBase.id,
-        knowledgeBaseName: knowledgeBase.name,
-        generatedAt: input.generatedAt,
-        pageSize: input.batchSize,
-        cursorTtlSeconds: input.cursorTtlSeconds,
-        fileProcessingConcurrency: input.fileProcessingConcurrency,
-        okfLog: input.okfLog,
-        options: input.publication,
         reason: "deletion",
-        allowEmptyPublication: true
+        runAfter: input.generatedAt,
+        maxAttempts: input.publication.workerJobMaxAttempts ?? 3
       });
-
-      if (!publication.published || !publication.releaseId) {
-        throw new Error("Knowledge base deletion publication was not completed");
-      }
 
       await createSourceFileEvent({
         knowledgeBaseId: knowledgeBase.id,
@@ -175,14 +158,14 @@ export function createDeletionService(
       await invalidateKnowledgeBaseCaches({
         redis,
         knowledgeBaseId: knowledgeBase.id,
-        releaseId: publication.releaseId,
+        releaseId: knowledgeBase.activeReleaseId,
         sourceFileId: file.sourceFileId,
         ttlSeconds: input.cursorTtlSeconds
       });
 
       return {
         ok: true,
-        releaseId: publication.releaseId
+        publicationQueued: true
       };
     }
   };

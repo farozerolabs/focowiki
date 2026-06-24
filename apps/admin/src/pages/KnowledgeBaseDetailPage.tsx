@@ -44,12 +44,14 @@ import {
   deleteKnowledgeBaseFile,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
+  fetchKnowledgeBaseProcessingSummary,
   fetchKnowledgeBasePublicUrls,
   listSourceFiles,
   retryKnowledgeBaseSourceFile,
   type BundleTreeEntry,
   type KnowledgeBasePublicUrls,
   type KnowledgeBase,
+  type ProcessingSummary,
   type SourceFilePage,
   type SourceFileRecord
 } from "@/lib/admin-api";
@@ -97,6 +99,7 @@ export function KnowledgeBaseDetailPage({
   const [isSourceFilePageLoading, setIsSourceFilePageLoading] = useState(false);
   const [sourceFileError, setSourceFileError] = useState("");
   const [retryingSourceFileId, setRetryingSourceFileId] = useState<string | null>(null);
+  const [processingSummary, setProcessingSummary] = useState<ProcessingSummary | null>(null);
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
   const [copiedUrl, setCopiedUrl] = useState("");
 
@@ -124,6 +127,7 @@ export function KnowledgeBaseDetailPage({
     setIsSourceFilePageLoading(false);
     setSourceFileError("");
     setRetryingSourceFileId(null);
+    setProcessingSummary(null);
     setPublicUrls(null);
     setCopiedUrl("");
     sourceFileRefreshSnapshotsRef.current = new Map();
@@ -253,6 +257,7 @@ export function KnowledgeBaseDetailPage({
     }
 
     await applySourceFilePage(input.pageState, page);
+    await loadProcessingSummary();
     setSourceFileError("");
     setIsSourceFilePageLoading(false);
   }
@@ -341,6 +346,12 @@ export function KnowledgeBaseDetailPage({
 
   async function loadPublicUrls() {
     setPublicUrls(await fetchKnowledgeBasePublicUrls({ knowledgeBaseId: knowledgeBase.id }));
+  }
+
+  async function loadProcessingSummary() {
+    setProcessingSummary(
+      await fetchKnowledgeBaseProcessingSummary({ knowledgeBaseId: knowledgeBase.id })
+    );
   }
 
   async function handleCopy(url: string) {
@@ -435,6 +446,7 @@ export function KnowledgeBaseDetailPage({
           {activeView === "processing" ? (
             <SourceFileProgressPanel
               sourceFiles={sourceFiles}
+              summary={processingSummary}
               pagination={{
                 hasNext: Boolean(sourceFilePageState.nextCursor),
                 hasPrevious: sourceFilePageState.previousCursors.length > 0,

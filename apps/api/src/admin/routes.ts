@@ -9,7 +9,6 @@ import type {
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import { createSourceFileQueueProcessor } from "./source-file-processor.js";
 import { acceptUploadSourceFiles } from "./source-file-upload.js";
 import { readBoundedUploadFiles } from "./upload-processor-utils.js";
 import {
@@ -18,12 +17,17 @@ import {
   hasUnsafeUploadFileNames,
   isUploadFile
 } from "./upload-input.js";
-import { buildPublicFileUrl } from "../public-url.js";
-import { type StorageAdapter } from "../storage/s3.js";
-import { createBoundedTaskRunner } from "../runtime/task-runner.js";
-import { createModelSuggestionTaskRunner } from "../runtime/model-task-runner.js";
+import {
+  StorageObjectTooLargeError,
+  type StorageAdapter
+} from "../storage/s3.js";
 import { createDeletionService } from "./deletion-service.js";
 import { readGeneratedOutputsForSourceFiles } from "./source-file-generated-output.js";
+import {
+  assertSourceFileQueueCapacity,
+  enqueueSourceFileProcessingJobs,
+  WorkerQueueBackpressureError
+} from "../worker/source-file-jobs.js";
 import {
   adminUnauthorized,
   createAdminAuthMiddleware,
@@ -36,13 +40,20 @@ import {
 } from "./security.js";
 import {
   toAdminBundleFile,
-  toAdminBundleTreeEntry,
   toAdminRelease,
   toAdminSourceFile,
   toAdminSourceFileEvent
 } from "./serializers.js";
+import { registerAdminFileTreeRoutes } from "./file-tree-routes.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
+import { readPageLimit } from "./pagination.js";
+import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
+import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
+import {
+  createSourceFileCursorScope,
+  readSourceFileListFilters
+} from "./source-file-list-filters.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -54,9 +65,7 @@ export type AdminApiServices = {
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
-  const { config, storage, modelClient, sessionManager, redis, repositories } = services;
-  const adminTaskRunner = createBoundedTaskRunner(config.upload.taskConcurrency);
-  const modelSuggestionRunner = createModelSuggestionTaskRunner(config);
+  const { config, storage, sessionManager, redis, repositories } = services;
   const requireAuth = createAdminAuthMiddleware({
     config,
     sessionManager,
@@ -88,10 +97,31 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminSourceFileRetryRoutes(
     app,
-    { config, storage, modelClient, redis, repositories, taskRunner: adminTaskRunner, modelSuggestionRunner },
+    { config, redis, repositories },
     {
       requireAuth,
       requireWriteProtection
+    }
+  );
+  registerAdminFileTreeRoutes(
+    app,
+    { config, redis, repositories },
+    {
+      requireAuth
+    }
+  );
+  registerAdminProcessingSummaryRoutes(
+    app,
+    { repositories },
+    {
+      requireAuth
+    }
+  );
+  registerAdminPublicUrlRoutes(
+    app,
+    { config, repositories },
+    {
+      requireAuth
     }
   );
 
@@ -298,74 +328,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
 
   app.get(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/files/tree",
-    requireAuth,
-    async (context) => {
-      if (!repositories?.files || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      if (!knowledgeBase.activeReleaseId) {
-        return context.json({ items: [], nextCursor: null });
-      }
-
-      const limit = readPageLimit(context.req.query("limit"), config);
-
-      if (!limit) {
-        return invalidPagination(context);
-      }
-
-      const parentPath = context.req.query("parentPath") ?? "";
-      const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = `file-tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}:${parentPath || "root"}`;
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
-
-      if (cursorToken && !repositoryCursor) {
-        return invalidPagination(context);
-      }
-
-      const page = await repositories.files.listBundleTreeEntries({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        parentPath,
-        limit,
-        cursor: repositoryCursor
-      });
-      const nextCursor = await writeOpaqueCursor({
-        redis,
-        scope: cursorScope,
-        cursor: page.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-
-      await redis.setPageCache(
-        cursorScope,
-        `page-${randomUUID()}`,
-        {
-          cursor: cursorToken,
-          itemIds: page.items.map((item) => item.id)
-        },
-        config.pagination.cursorTtlSeconds
-      );
-
-      return context.json({
-        items: page.items.map(toAdminBundleTreeEntry),
-        nextCursor
-      });
-    }
-  );
-
-  app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail",
     requireAuth,
     async (context) => {
@@ -397,7 +359,11 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return notFound(context);
       }
 
-      const content = await storage.getObjectText(file.objectKey);
+      const content = await readGeneratedObjectText(storage, file.objectKey, config);
+
+      if (content instanceof Response) {
+        return content;
+      }
 
       if (content === null) {
         return notFound(context);
@@ -452,44 +418,10 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       return context.json(
         {
           deleted: true,
-          releaseId: result.releaseId
+          publicationQueued: result.publicationQueued
         },
         200
       );
-    }
-  );
-
-  app.get(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/public-urls",
-    requireAuth,
-    async (context) => {
-      if (!repositories) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase?.activeReleaseId) {
-        return notFound(context);
-      }
-
-      return context.json({
-        publicUrls: {
-          index: buildPublicFileUrl(config.publicApi.baseUrl, knowledgeBase.id, "index.md"),
-          search: buildPublicFileUrl(
-            config.publicApi.baseUrl,
-            knowledgeBase.id,
-            "_index/search.json"
-          ),
-          links: buildPublicFileUrl(
-            config.publicApi.baseUrl,
-            knowledgeBase.id,
-            "_index/links.json"
-          )
-        }
-      });
     }
   );
 
@@ -618,8 +550,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
+      const filters = readSourceFileListFilters({
+        processingStatus: context.req.query("processingStatus"),
+        processingStage: context.req.query("processingStage"),
+        generatedOutputStatus: context.req.query("generatedOutputStatus"),
+        errorState: context.req.query("errorState")
+      });
+
+      if (!filters) {
+        return invalidSourceFileFilter(context);
+      }
+
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = `source-files:${knowledgeBase.id}`;
+      const cursorScope = createSourceFileCursorScope(knowledgeBase.id, filters);
       const repositoryCursor = cursorToken
         ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
         : null;
@@ -631,7 +574,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       const page = await repositories.files.listSourceFiles({
         knowledgeBaseId: knowledgeBase.id,
         limit,
-        cursor: repositoryCursor
+        cursor: repositoryCursor,
+        ...filters
       });
       const generatedOutputs = await readGeneratedOutputsForSourceFiles({
         repositories,
@@ -754,36 +698,13 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     requireWriteProtection,
     async (context) => {
       if (
-        !repositories?.files?.createSourceFiles ||
-        !repositories.files.getSourceFile ||
-        !redis
-      ) {
-        return missingRepositoryBackend(context);
-      }
-
-      const sourceFileProcessor = createSourceFileQueueProcessor(
-        repositories,
-        storage,
-        redis,
-        modelClient && config.model.enabled
-          ? {
-              client: modelClient,
-              modelName: config.model.modelName,
-              contextWindowTokens: config.model.contextWindowTokens,
-              receiveTimeouts: {
-                maxMs: config.model.requestMaxTimeoutMs,
-                idleMs: config.model.requestIdleTimeoutMs
-              },
-              suggestionConcurrency: config.model.suggestionConcurrency,
-              transientRetryDelayMs: config.model.transientRetryDelayMs,
-              requestRunner: modelSuggestionRunner
-            }
-          : null
-      );
-
-      if (!sourceFileProcessor) {
-        return missingRepositoryBackend(context);
-      }
+         !repositories?.files?.createSourceFiles ||
+         !repositories.files.getSourceFile ||
+         !repositories.workerJobs ||
+         !redis
+       ) {
+         return missingRepositoryBackend(context);
+       }
 
       const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
         context.req.param("knowledgeBaseId")
@@ -799,9 +720,20 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         repositories,
         context
       });
-
       if (uploadLimited) {
         return uploadLimited;
+      }
+      try {
+        await assertSourceFileQueueCapacity({
+          repositories,
+          knowledgeBaseId: knowledgeBase.id,
+          config
+        });
+      } catch (error) {
+        if (error instanceof WorkerQueueBackpressureError) {
+          return queueBackpressure(context, error);
+        }
+        throw error;
       }
 
       const formData = await context.req.formData();
@@ -923,23 +855,13 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         )
       ).filter(isDefined);
 
-      for (const sourceFileId of sourceFileIds) {
-        void adminTaskRunner
-          .run(() =>
-            sourceFileProcessor.processFile({
-              knowledgeBaseId: knowledgeBase.id,
-              knowledgeBaseName: knowledgeBase.name,
-              sourceFileId,
-              generatedAt: new Date().toISOString(),
-              batchSize: config.upload.generationBatchSize,
-              cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-              fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-              okfLog: config.okf?.log,
-              publication: config.publication
-            })
-          )
-          .catch(() => undefined);
-      }
+       await enqueueSourceFileProcessingJobs({
+         repositories,
+         sourceFileIds,
+         knowledgeBaseId: knowledgeBase.id,
+         reason: "upload",
+         config
+       });
 
       return context.json(
         {
@@ -968,6 +890,36 @@ async function readAdminSourceFileWithGraphSummary(input: {
   });
 
   return toAdminSourceFile(input.sourceFile, summary, input.generatedOutput ?? null);
+}
+
+async function readGeneratedObjectText(
+  storage: StorageAdapter,
+  objectKey: string,
+  config: RuntimeConfig
+): Promise<string | null | Response> {
+  try {
+    return await storage.getObjectText(objectKey, {
+      maxBytes: config.pagination.generatedContentMaxBytes
+    });
+  } catch (error) {
+    if (error instanceof StorageObjectTooLargeError) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: "GENERATED_CONTENT_TOO_LARGE"
+          }
+        }),
+        {
+          status: 413,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    throw error;
+  }
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -1001,6 +953,17 @@ function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response 
   );
 }
 
+function invalidSourceFileFilter(context: Parameters<MiddlewareHandler>[0]): Response {
+  return context.json(
+    {
+      error: {
+        code: "INVALID_SOURCE_FILE_FILTER"
+      }
+    },
+    400
+  );
+}
+
 function containsCredentialQuery(rawUrl: string): boolean {
   const searchParams = new URL(rawUrl).searchParams;
   return (
@@ -1008,24 +971,6 @@ function containsCredentialQuery(rawUrl: string): boolean {
     searchParams.has("username") ||
     searchParams.has("password")
   );
-}
-
-function readPageLimit(rawLimit: string | undefined, config: RuntimeConfig): number | null {
-  if (!rawLimit) {
-    return config.pagination.defaultPageSize;
-  }
-
-  const limit = Number(rawLimit);
-
-  if (
-    !Number.isSafeInteger(limit) ||
-    limit <= 0 ||
-    limit > config.pagination.maxPageSize
-  ) {
-    return null;
-  }
-
-  return limit;
 }
 
 function readKnowledgeBaseCreateInput(
@@ -1088,6 +1033,30 @@ function fileNotDeletable(context: Parameters<MiddlewareHandler>[0]): Response {
       }
     },
     400
+  );
+}
+
+function queueBackpressure(
+  context: Parameters<MiddlewareHandler>[0],
+  error: WorkerQueueBackpressureError
+): Response {
+  return context.json(
+    {
+      error: {
+        code: error.code,
+        messageKey: "errors.queueBackpressure",
+        details: {
+          activeJobCount: error.activeJobCount,
+          limit: error.limit,
+          knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
+          knowledgeBaseLimit: error.knowledgeBaseLimit,
+          oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
+          maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
+          retryAfterSeconds: error.retryAfterSeconds
+        }
+      }
+    },
+    503
   );
 }
 

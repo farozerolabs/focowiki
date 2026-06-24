@@ -48,7 +48,7 @@ describe("Docker Compose infrastructure", () => {
   it("defines the Docker development stack with local build targets", () => {
     const compose = readFileSync(devComposeTemplatePath, "utf8");
 
-    for (const service of ["admin:", "api:", "migrate:", "postgres:", "redis:"]) {
+    for (const service of ["admin:", "api:", "worker:", "migrate:", "postgres:", "redis:"]) {
       expect(compose).toContain(service);
     }
 
@@ -57,18 +57,21 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("target: api");
     expect(compose).toContain("target: admin");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
+    expect(compose).toContain("apps/api/runtime/worker.mjs");
+    expect(compose).toContain("--healthcheck");
+    expect(compose).toContain("stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms");
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(5);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
   it("defines the deployment stack as a committed GHCR Compose template", () => {
     const compose = readFileSync(deploymentComposeTemplatePath, "utf8");
 
-    for (const service of ["admin:", "api:", "migrate:", "postgres:", "redis:"]) {
+    for (const service of ["admin:", "api:", "worker:", "migrate:", "postgres:", "redis:"]) {
       expect(compose).toContain(service);
     }
 
@@ -78,6 +81,9 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).not.toContain("target: admin");
     expect(compose).not.toContain("build:");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
+    expect(compose).toContain("apps/api/runtime/worker.mjs");
+    expect(compose).toContain("--healthcheck");
+    expect(compose).toContain("stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms");
     expect(compose).toContain("${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
     expect(compose).toContain("${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}");
     expect(compose).toContain(
@@ -93,7 +99,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(5);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -106,6 +112,7 @@ describe("Docker Compose infrastructure", () => {
 
     for (const compose of [deploymentCompose, devCompose]) {
       expect(compose).toContain("http://127.0.0.1:8080/healthz");
+      expect(compose).toContain("apps/api/runtime/worker.mjs\", \"--healthcheck");
       expect(compose).toContain("'/healthz'");
       expect(compose).toContain("body?.status==='ok'");
       expect(compose).not.toContain("/admin/api/session");
@@ -130,8 +137,18 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("deploy/docker/api-entrypoint.sh");
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]');
     expect(dockerfile).toContain("apps/api/runtime/main.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
     expect(dockerfile).not.toMatch(/pnpm\s+--filter\s+@focowiki\/admin\s+dev|vite\s+--host|pnpm\s+dev/);
+  });
+
+  it("validates worker runtime artifacts in CI", () => {
+    const workflow = readFileSync(ciWorkflowPath, "utf8");
+
+    expect(workflow).toContain("Validate API Docker worker runtime");
+    expect(workflow).toContain("apps/api/runtime/worker.mjs");
+    expect(workflow).toContain("apps/api/runtime/migrate.mjs");
+    expect(workflow).toContain("apps/api/runtime/main.mjs");
   });
 
   it("keeps the API runtime image free from copied workspace node_modules", () => {

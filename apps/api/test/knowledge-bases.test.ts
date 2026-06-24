@@ -52,7 +52,6 @@ function createConfig(): RuntimeConfig {
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     },
@@ -61,12 +60,20 @@ function createConfig(): RuntimeConfig {
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     },
     pagination: {
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     },
     model: {
       enabled: false

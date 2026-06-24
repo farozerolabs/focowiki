@@ -12,6 +12,7 @@ const ALLOWED_PUBLIC_PATH_PATTERNS = [
   /^_graph\/index\.md$/u,
   /^_graph\/manifest\.json$/u,
   /^_graph\/nodes\.jsonl$/u,
+  /^_graph\/nodes\/[0-9]{4}\.jsonl$/u,
   /^_graph\/edges\/[0-9]{4}\.jsonl$/u,
   /^_graph\/by-file\/[^/]+\.json$/u
 ];

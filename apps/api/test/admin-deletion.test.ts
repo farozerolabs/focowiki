@@ -8,6 +8,7 @@ import type {
   SourceFileEventDraft,
   SourceFileRecord
 } from "../src/db/admin-repositories.js";
+import type { WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
@@ -54,7 +55,6 @@ function createConfig(): RuntimeConfig {
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     },
@@ -63,12 +63,20 @@ function createConfig(): RuntimeConfig {
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1,
-      graphEdgeShardSize: 1
+      linkIndexShardSize: 1,
+      manifestShardSize: 1,
+      graphEdgeShardSize: 1,
+      graphCandidateLimit: 1,
+      graphMaintenanceBatchSize: 1,
+      rootSummaryLimit: 1
     },
     pagination: {
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     },
     model: {
       enabled: false
@@ -216,6 +224,13 @@ function createRepositories() {
     createdAt: string;
     updatedAt: string;
   }> = [];
+  const workerJobs: Array<{
+    kind: "publication";
+    knowledgeBaseId: string;
+    payload: { reason: "deletion" };
+    runAfter: string;
+    maxAttempts: number;
+  }> = [];
   const graphNodes = new Map<string, OkfGraphNode>([
     ["source-001", createGraphNode("source-001", "pages/intro.md", "Intro")],
     ["source-002", createGraphNode("source-002", "pages/setup.md", "Setup")],
@@ -243,6 +258,7 @@ function createRepositories() {
       graphEdges,
       graphDeletedSourceFileIds,
       publicationJobs,
+      workerJobs,
       storageObjects: [] as string[]
     },
     repositories: {
@@ -467,13 +483,114 @@ function createRepositories() {
             }
           }
         }
-      }
+      },
+      workerJobs: {
+        async enqueueWorkerJob() {
+          throw new Error("Not used by admin deletion tests");
+        },
+        async enqueueSourceFileJob() {
+          throw new Error("Not used by admin deletion tests");
+        },
+        async enqueuePublicationJob(input: {
+          knowledgeBaseId: string;
+          reason: string;
+          runAfter: string;
+          maxAttempts: number;
+        }) {
+          if (input.reason !== "deletion") {
+            throw new Error("Admin deletion tests only accept deletion publication jobs");
+          }
+          const job = {
+            kind: "publication" as const,
+            knowledgeBaseId: input.knowledgeBaseId,
+            payload: { reason: "deletion" as const },
+            runAfter: input.runAfter,
+            maxAttempts: input.maxAttempts
+          };
+          workerJobs.push(job);
+          const record: WorkerJobRecord = {
+            id: `worker-job-${workerJobs.length}`,
+            kind: job.kind,
+            status: "queued",
+            knowledgeBaseId: job.knowledgeBaseId,
+            sourceFileId: null,
+            payload: job.payload,
+            runAfter: job.runAfter,
+            attemptCount: 0,
+            maxAttempts: job.maxAttempts,
+            lockedBy: null,
+            lockedAt: null,
+            heartbeatAt: null,
+            startedAt: null,
+            completedAt: null,
+            failedAt: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            createdAt: now,
+            updatedAt: now
+          };
+          return record;
+        },
+        async claimWorkerJobs() {
+          return [];
+        },
+        async completeWorkerJob() {
+          return null;
+        },
+        async failWorkerJob() {
+          return null;
+        },
+        async deadLetterWorkerJob() {
+          return null;
+        },
+        async releaseWorkerJob() {
+          return null;
+        },
+        async heartbeatWorkerJob() {
+          return null;
+        },
+        async recordWorkerHeartbeat(input: {
+          workerId: string;
+          lastSeenAt: string;
+          activeJobCount: number;
+          metadata?: Record<string, unknown>;
+        }) {
+          return {
+            workerId: input.workerId,
+            lastSeenAt: input.lastSeenAt,
+            activeJobCount: input.activeJobCount,
+            metadata: input.metadata ?? {},
+            createdAt: now,
+            updatedAt: now
+          };
+        },
+        async listWorkerHeartbeats() {
+          return [];
+        },
+        async getWorkerQueueSummary() {
+          return {
+            queuedCount: 0,
+            runningCount: 0,
+            completedCount: 0,
+            failedCount: 0,
+            deadLetterCount: 0,
+            oldestQueuedAt: null,
+            oldestQueuedAgeSeconds: null
+          };
+        },
+        async cleanupWorkerJobs() {
+          return 0;
+        },
+        async countActiveWorkerJobs() {
+          return 0;
+        }
+      } satisfies WorkerJobRepository
     }
   };
 }
 
 describe("admin source deletion", () => {
-  it("deletes a source-backed page and republishes the active release", async () => {
+  it("deletes a source-backed page and queues release publication", async () => {
     const config = createConfig();
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
@@ -485,6 +602,7 @@ describe("admin source deletion", () => {
       repositories
     });
     const sessionCookie = await loginAndReadSessionCookie(app);
+    const storageObjectCountBeforeDelete = storage.objects.size;
     const response = await app.request(
       "/admin/api/knowledge-bases/kb-001/files/detail?path=pages/intro.md",
       {
@@ -496,29 +614,21 @@ describe("admin source deletion", () => {
     );
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { deleted: boolean; releaseId: string };
+    const body = (await response.json()) as { deleted: boolean; publicationQueued: boolean };
     expect(body.deleted).toBe(true);
-    expect(body.releaseId).toMatch(/^release-/u);
+    expect(body.publicationQueued).toBe(true);
     expect(records.sourceFiles.find((file) => file.id === "source-001")?.deletedAt).toEqual(
       expect.any(String)
     );
-    expect(records.knowledgeBase.activeReleaseId).toBe(body.releaseId);
+    expect(records.knowledgeBase.activeReleaseId).toBe("release-001");
     expect(records.sourceEvents.some((event) => event.stageKey === "source_deletion")).toBe(true);
     expect(records.graphDeletedSourceFileIds).toContain("source-001");
     expect(records.graphNodes.has("source-001")).toBe(false);
     expect(records.graphEdges).toHaveLength(0);
-    expect(records.publicationJobs).toHaveLength(1);
-    expect(records.publicationJobs[0]?.reason).toBe("deletion");
-    expect(
-      Array.from(storage.objects.keys()).some((key) =>
-        key.includes(`/releases/${body.releaseId}/bundle/_index/search/`)
-      )
-    ).toBe(true);
-    expect(
-      Array.from(storage.objects.keys()).some((key) =>
-        key.includes(`/releases/${body.releaseId}/bundle/_index/manifest/`)
-      )
-    ).toBe(true);
+    expect(records.publicationJobs).toHaveLength(0);
+    expect(records.workerJobs).toHaveLength(1);
+    expect(records.workerJobs[0]?.payload.reason).toBe("deletion");
+    expect(storage.objects.size).toBe(storageObjectCountBeforeDelete);
   });
 });
 

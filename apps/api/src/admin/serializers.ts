@@ -14,10 +14,12 @@ export function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
     parentPath: entry.parentPath,
     name: entry.name,
     logicalPath: entry.logicalPath,
+    sortKey: entry.sortKey,
     entryType: entry.entryType,
     bundleFileId: entry.bundleFileId,
     sourceFileId: entry.sourceFileId,
     fileKind: entry.fileKind,
+    childCount: entry.childCount,
     deletable: entry.fileKind === "page" && Boolean(entry.sourceFileId)
   };
 }

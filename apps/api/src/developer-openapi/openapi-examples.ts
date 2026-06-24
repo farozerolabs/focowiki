@@ -118,8 +118,10 @@ const treeEntry = {
   parentPath: "pages",
   name: "guide.md",
   path: "pages/guide.md",
+  sortKey: "1:guide.md",
   entryType: "file",
   fileKind: "page",
+  childCount: 0,
   deletable: true
 };
 
@@ -188,7 +190,7 @@ export const requestExamples = {
   },
   listKnowledgeBaseTree: {
     path: { knowledgeBaseId },
-    query: { parentPath: "pages", limit: 50 }
+    query: { parentPath: "pages", entryType: "file", limit: 50 }
   },
   getFileContentByPath: {
     path: { knowledgeBaseId },
@@ -337,7 +339,7 @@ export function createDeveloperOpenApiResponseExamples() {
     deleteFileById: {
       knowledgeBaseId,
       deleted: true,
-      releaseId: "release_456",
+      publicationQueued: true,
       file: bundleFile
     },
     getFileContentById: {
@@ -347,7 +349,7 @@ export function createDeveloperOpenApiResponseExamples() {
     deleteFileByPath: {
       knowledgeBaseId,
       deleted: true,
-      releaseId: "release_456",
+      publicationQueued: true,
       file: bundleFile
     },
     createWebhook: {

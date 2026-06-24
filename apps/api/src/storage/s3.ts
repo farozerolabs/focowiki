@@ -1,5 +1,6 @@
 import {
   GetObjectCommand,
+  HeadObjectCommand,
   NoSuchKey,
   PutObjectCommand,
   S3Client,
@@ -21,11 +22,25 @@ export type StoredObject = {
   cacheControl?: string;
 };
 
+export class StorageObjectTooLargeError extends Error {
+  public readonly key: string;
+  public readonly sizeBytes: number;
+  public readonly maxBytes: number;
+
+  public constructor(input: { key: string; sizeBytes: number; maxBytes: number }) {
+    super("Storage object exceeds the configured read limit.");
+    this.name = "StorageObjectTooLargeError";
+    this.key = input.key;
+    this.sizeBytes = input.sizeBytes;
+    this.maxBytes = input.maxBytes;
+  }
+}
+
 export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
   putObject: (object: StoredObject) => Promise<void>;
   getObjectBody?: (key: string) => Promise<BodyInit | null>;
-  getObjectText: (key: string) => Promise<string | null>;
+  getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
   writeCurrentPointer: (pointer: CurrentPointer) => Promise<void>;
   readCurrentPointer: () => Promise<CurrentPointer | null>;
 };
@@ -85,8 +100,29 @@ export class S3StorageAdapter implements StorageAdapter {
     );
   }
 
-  public async getObjectText(key: string): Promise<string | null> {
+  public async getObjectText(
+    key: string,
+    options: { maxBytes?: number } = {}
+  ): Promise<string | null> {
     try {
+      if (options.maxBytes) {
+        const head = await this.client.send(
+          new HeadObjectCommand({
+            Bucket: this.bucket,
+            Key: key
+          })
+        );
+        const sizeBytes = head.ContentLength ?? 0;
+
+        if (sizeBytes > options.maxBytes) {
+          throw new StorageObjectTooLargeError({
+            key,
+            sizeBytes,
+            maxBytes: options.maxBytes
+          });
+        }
+      }
+
       const response = await this.client.send(
         new GetObjectCommand({
           Bucket: this.bucket,

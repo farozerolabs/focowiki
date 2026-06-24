@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import type {
+  WorkerJobKind,
+  WorkerJobRepository
+} from "../src/db/worker-job-repository.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
@@ -53,7 +57,6 @@ function createConfig(): RuntimeConfig {
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     },
@@ -62,12 +65,20 @@ function createConfig(): RuntimeConfig {
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     },
     pagination: {
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     },
     model: {
       enabled: false
@@ -106,12 +117,30 @@ class MemoryStorage implements StorageAdapter {
 }
 
 function createRepositories() {
-  const treeCalls: Array<{ limit: number; cursor: string | null; parentPath: string }> = [];
-  const sourceCalls: Array<{ limit: number; cursor: string | null }> = [];
+  const treeCalls: Array<{
+    limit: number;
+    cursor: string | null;
+    parentPath: string;
+    entryType?: string | null;
+  }> = [];
+  const sourceCalls: Array<{
+    knowledgeBaseId?: string;
+    limit: number;
+    cursor: string | null;
+    processingStatus?: string | null;
+    processingStage?: string | null;
+    generatedOutputStatus?: string | null;
+    errorState?: string | null;
+  }> = [];
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
   const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
   const generatedOutputCalls: Array<{ knowledgeBaseId: string; releaseId: string; sourceFileIds: string[] }> = [];
+  const queueSummaryCalls: Array<{
+    knowledgeBaseId?: string | null;
+    kinds?: WorkerJobKind[];
+  }> = [];
+  const dirtySourceFileCountCalls: Array<{ knowledgeBaseId: string }> = [];
   const bundleFile = {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
@@ -141,7 +170,9 @@ function createRepositories() {
       releaseCalls,
       bundleCalls,
       graphSummaryCalls,
-      generatedOutputCalls
+      generatedOutputCalls,
+      queueSummaryCalls,
+      dirtySourceFileCountCalls
     },
     repositories: {
       knowledgeBases: {
@@ -156,7 +187,12 @@ function createRepositories() {
         }
       },
       files: {
-        async listBundleTreeEntries(request: { limit: number; cursor: string | null; parentPath: string }) {
+        async listBundleTreeEntries(request: {
+          limit: number;
+          cursor: string | null;
+          parentPath: string;
+          entryType?: string | null;
+        }) {
           treeCalls.push(request);
           const entries = [
             {
@@ -166,10 +202,12 @@ function createRepositories() {
               parentPath: "",
               name: "pages",
               logicalPath: "pages",
+              sortKey: "0:pages",
               entryType: "directory" as const,
               bundleFileId: null,
               sourceFileId: null,
-              fileKind: null
+              fileKind: null,
+              childCount: 1
             },
             {
               id: "tree-index",
@@ -178,10 +216,12 @@ function createRepositories() {
               parentPath: "",
               name: "index.md",
               logicalPath: "index.md",
+              sortKey: "1:index.md",
               entryType: "file" as const,
               bundleFileId: "bundle-file-index",
               sourceFileId: null,
-              fileKind: "index" as const
+              fileKind: "index" as const,
+              childCount: 0
             }
           ];
           const start = request.cursor ? Number(request.cursor) : 0;
@@ -198,7 +238,15 @@ function createRepositories() {
             ? bundleFile
             : null;
         },
-        async listSourceFiles(request: { limit: number; cursor: string | null }) {
+        async listSourceFiles(request: {
+          knowledgeBaseId?: string;
+          limit: number;
+          cursor: string | null;
+          processingStatus?: string | null;
+          processingStage?: string | null;
+          generatedOutputStatus?: string | null;
+          errorState?: string | null;
+        }) {
           sourceCalls.push(request);
           return {
             items: [
@@ -231,6 +279,13 @@ function createRepositories() {
               logicalPath: "pages/intro.md"
             }
           ];
+        },
+        async countDirtySourceFiles(input: { knowledgeBaseId: string }) {
+          dirtySourceFileCountCalls.push(input);
+          return {
+            count: 2,
+            oldestDirtyAt: "2026-06-14T00:00:00.000Z"
+          };
         },
         async listReleases(request: { limit: number; cursor: string | null }) {
           releaseCalls.push(request);
@@ -299,6 +354,80 @@ function createRepositories() {
         async deleteGraphForSourceFile() {
           return undefined;
         }
+      },
+      workerJobs: {
+        async enqueueWorkerJob() {
+          throw new Error("Not used by knowledge base file tests");
+        },
+        async enqueueSourceFileJob() {
+          throw new Error("Not used by knowledge base file tests");
+        },
+        async enqueuePublicationJob() {
+          throw new Error("Not used by knowledge base file tests");
+        },
+        async claimWorkerJobs() {
+          return [];
+        },
+        async releaseWorkerJob() {
+          return null;
+        },
+        async completeWorkerJob() {
+          return null;
+        },
+        async failWorkerJob() {
+          return null;
+        },
+        async deadLetterWorkerJob() {
+          return null;
+        },
+        async heartbeatWorkerJob() {
+          return null;
+        },
+        async recordWorkerHeartbeat(
+          input: Parameters<WorkerJobRepository["recordWorkerHeartbeat"]>[0]
+        ) {
+          return {
+            workerId: input.workerId,
+            lastSeenAt: input.lastSeenAt,
+            activeJobCount: input.activeJobCount,
+            metadata: input.metadata ?? {},
+            createdAt: input.lastSeenAt,
+            updatedAt: input.lastSeenAt
+          };
+        },
+        async listWorkerHeartbeats() {
+          return [];
+        },
+        async getWorkerQueueSummary(
+          input: Parameters<WorkerJobRepository["getWorkerQueueSummary"]>[0]
+        ) {
+          queueSummaryCalls.push(input);
+          return input.kinds?.includes("publication")
+            ? {
+                queuedCount: 1,
+                runningCount: 0,
+                completedCount: 0,
+                failedCount: 0,
+                deadLetterCount: 0,
+                oldestQueuedAt: "2026-06-14T00:00:00.000Z",
+                oldestQueuedAgeSeconds: 30
+              }
+            : {
+                queuedCount: 3,
+                runningCount: 2,
+                completedCount: 0,
+                failedCount: 1,
+                deadLetterCount: 0,
+                oldestQueuedAt: "2026-06-14T00:00:00.000Z",
+                oldestQueuedAgeSeconds: 45
+              };
+        },
+        async cleanupWorkerJobs() {
+          return 0;
+        },
+        async countActiveWorkerJobs() {
+          return 0;
+        }
       }
     }
   };
@@ -332,10 +461,12 @@ describe("Knowledge base file Admin API", () => {
           parentPath: "",
           name: "pages",
           logicalPath: "pages",
+          sortKey: "0:pages",
           entryType: "directory",
           bundleFileId: null,
           sourceFileId: null,
           fileKind: null,
+          childCount: 1,
           deletable: false
         },
         {
@@ -343,10 +474,12 @@ describe("Knowledge base file Admin API", () => {
           parentPath: "",
           name: "index.md",
           logicalPath: "index.md",
+          sortKey: "1:index.md",
           entryType: "file",
           bundleFileId: "bundle-file-index",
           sourceFileId: null,
           fileKind: "index",
+          childCount: 0,
           deletable: false
         }
       ],
@@ -452,6 +585,28 @@ describe("Knowledge base file Admin API", () => {
     ]);
   });
 
+  it("passes file tree entry type filters to the repository", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/files/tree?entryType=directory&limit=1",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(records.treeCalls).toEqual([
+      expect.objectContaining({
+        limit: 1,
+        cursor: null,
+        parentPath: "",
+        entryType: "directory"
+      })
+    ]);
+  });
+
   it("returns source file, release, and bundle file lists without storage keys", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const sourceFiles = await app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
@@ -503,6 +658,84 @@ describe("Knowledge base file Admin API", () => {
     ]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
+  });
+
+  it("passes source file lifecycle filters to the repository", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&processingStatus=failed&processingStage=llm_suggestion&generatedOutputStatus=unavailable&errorState=with_error",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(records.sourceCalls).toEqual([
+      expect.objectContaining({
+        knowledgeBaseId: "kb-001",
+        limit: 1,
+        cursor: null,
+        processingStatus: "failed",
+        processingStage: "llm_suggestion",
+        generatedOutputStatus: "unavailable",
+        errorState: "with_error"
+      })
+    ]);
+  });
+
+  it("rejects invalid source file lifecycle filters before reading the repository", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?processingStatus=archived",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "INVALID_SOURCE_FILE_FILTER"
+      }
+    });
+    expect(response.status).toBe(400);
+    expect(records.sourceCalls).toEqual([]);
+  });
+
+  it("returns bounded processing summary from durable queue and dirty publication state", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request("/admin/api/knowledge-bases/kb-001/processing-summary", {
+      headers: {
+        cookie
+      }
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      sourceFileJobs: {
+        queuedCount: 3,
+        runningCount: 2,
+        failedCount: 1,
+        oldestQueuedAgeSeconds: 45
+      },
+      publicationJobs: {
+        queuedCount: 1,
+        runningCount: 0,
+        oldestQueuedAgeSeconds: 30
+      },
+      dirtySourceFiles: {
+        count: 2,
+        oldestDirtyAt: "2026-06-14T00:00:00.000Z"
+      }
+    });
+    expect(response.status).toBe(200);
+    expect(records.queueSummaryCalls).toEqual([
+      expect.objectContaining({ knowledgeBaseId: "kb-001", kinds: ["source_file_processing"] }),
+      expect.objectContaining({ knowledgeBaseId: "kb-001", kinds: ["publication"] })
+    ]);
+    expect(records.dirtySourceFileCountCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
   });
 
   it("returns knowledge base public URLs without storage details", async () => {

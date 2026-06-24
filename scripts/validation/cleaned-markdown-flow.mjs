@@ -32,6 +32,7 @@ export {
 const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
 const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
+const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
 const REQUIRE_MODEL_ENV = "FOCOWIKI_VALIDATION_REQUIRE_MODEL";
 const WHITE_BOX = "white-box";
 const BLACK_BOX = "black-box";
@@ -202,6 +203,7 @@ export async function runApiValidation() {
     });
     const processingTimeoutMs = readValidationTaskTimeoutMs(env, allSamples.length);
 
+    logValidationStep("prerequisites");
     await validateDatabaseConnectivity(env.DATABASE_URL, report);
     await validateRedisConnectivity(env.REDIS_URL, report);
     await validateS3Connectivity(env, report);
@@ -211,9 +213,11 @@ export async function runApiValidation() {
     await validatePublicApiReachable(publicApi, env, report);
     await validateSecurityHeaders({ admin, publicApi, env, report });
 
+    logValidationStep("admin-auth");
     await loginAdmin(admin, env, report);
     await validateAdminOriginProtection(admin, report);
     env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
+    logValidationStep("developer-openapi-continuity");
     await validateDeveloperOpenApiUploadContinuity({
       publicApi,
       env,
@@ -221,9 +225,11 @@ export async function runApiValidation() {
       processingTimeoutMs,
       report
     });
+    logValidationStep("knowledge-base-create");
     const knowledgeBase = await createValidationKnowledgeBase(admin, report);
     await validateUploadRejection(admin, knowledgeBase.id, report);
 
+    logValidationStep("single-upload");
     const singleSourceFiles = await uploadSamples(admin, knowledgeBase.id, singleSamples, report, {
       checkName: "single-upload-submit",
       message: "Uploaded one selected sample in a single-file upload action."
@@ -302,6 +308,7 @@ export async function runApiValidation() {
         "S3 contains internal source objects and generated public page objects without exposing source logical paths after single upload."
     });
 
+    logValidationStep("batch-upload");
     const batchSourceFiles = await uploadSamples(admin, knowledgeBase.id, batchSamples, report, {
       checkName: "batch-upload-submit",
       message: "Uploaded selected batch samples in one upload action."
@@ -398,15 +405,19 @@ export async function runApiValidation() {
       message:
         "S3 contains internal source objects and generated public page objects without exposing source logical paths after batch upload."
     });
+    logValidationStep("redis-boundaries");
     await validateRedisBoundaries(env.REDIS_URL, allSamples, report);
+    logValidationStep("source-deletion");
     const deletionEvidence = await validateSourceDeletionFullFlow({
       admin,
       publicApi,
       env,
       knowledgeBaseId: knowledgeBase.id,
       pageFile: batchAdminFiles.pageFile,
+      processingTimeoutMs,
       report
     });
+    logValidationStep("knowledge-base-deletion");
     await validateKnowledgeBaseDeletion({
       admin,
       publicApi,
@@ -414,7 +425,9 @@ export async function runApiValidation() {
       knowledgeBaseId: knowledgeBase.id,
       report
     });
+    logValidationStep("security-audit");
     await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
+    logValidationStep("performance-summary");
     report.performance = finalizePerformanceEvidence(performanceEvidence, {
       profile: sampleSelection.profile,
       batchSampleCount: sampleSelection.batchSampleCount,
@@ -526,6 +539,10 @@ function failCheck(name, message, details = {}, layer = BLACK_BOX) {
     message,
     details
   };
+}
+
+function logValidationStep(name) {
+  console.error(`[validation] ${name}`);
 }
 
 function writeReport(report) {
@@ -893,6 +910,8 @@ function readPositiveInteger(value, fallback) {
 
 function createHttpClient(baseUrl, clientOptions = {}) {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const timeoutMs =
+    clientOptions.timeoutMs ?? readPositiveInteger(process.env[HTTP_TIMEOUT_ENV], 180_000);
   let cookie = "";
 
   return {
@@ -916,12 +935,15 @@ function createHttpClient(baseUrl, clientOptions = {}) {
         headers.set("origin", clientOptions.writeOrigin);
       }
 
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), timeoutMs);
       let response;
 
       try {
         response = await fetch(`${normalizedBaseUrl}${pathname}`, {
           ...requestOptions,
-          headers
+          headers,
+          signal: requestOptions.signal ?? abortController.signal
         });
       } catch (error) {
         clientOptions.onTiming?.({
@@ -932,6 +954,8 @@ function createHttpClient(baseUrl, clientOptions = {}) {
         });
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Request failed for ${redactUrl(normalizedBaseUrl)}${pathname}: ${message}`);
+      } finally {
+        clearTimeout(timeout);
       }
 
       clientOptions.onTiming?.({
@@ -985,21 +1009,25 @@ async function validateS3Connectivity(env, report) {
   const key = `${normalizeS3Prefix(env.S3_PREFIX)}/validation/${randomUUID()}.txt`;
 
   try {
-    await client.send(
+    await sendS3Command(
+      client,
       new PutObjectCommand({
         Bucket: env.S3_BUCKET,
         Key: key,
         Body: "focowiki-validation",
         ContentType: "text/plain; charset=utf-8"
-      })
+      }),
+      "S3 put validation object"
     );
-    const response = await client.send(
+    const response = await sendS3Command(
+      client,
       new GetObjectCommand({
         Bucket: env.S3_BUCKET,
         Key: key
-      })
+      }),
+      "S3 get validation object"
     );
-    const body = await responseBodyToString(response.Body);
+    const body = await withTimeout(responseBodyToString(response.Body), "S3 validation body read");
 
     if (body !== "focowiki-validation") {
       throw new Error("S3 validation object body mismatch.");
@@ -1015,12 +1043,13 @@ async function validateS3Connectivity(env, report) {
       )}`
     );
   } finally {
-    await client
-      .send(
+    await sendS3Command(
+      client,
         new DeleteObjectCommand({
           Bucket: env.S3_BUCKET,
           Key: key
-        })
+        }),
+        "S3 delete validation object"
       )
       .catch(() => undefined);
   }
@@ -2196,6 +2225,7 @@ async function validateSourceDeletionFullFlow({
   env,
   knowledgeBaseId,
   pageFile,
+  processingTimeoutMs,
   report
 }) {
   if (!pageFile?.logicalPath || !pageFile.sourceFileId || pageFile.deletable !== true) {
@@ -2215,29 +2245,29 @@ async function validateSourceDeletionFullFlow({
 
   const body = await response.json();
 
-  if (body.deleted !== true || !body.releaseId) {
-    throw new Error("Deletion response did not include a replacement release.");
+  if (body.deleted !== true || body.publicationQueued !== true) {
+    throw new Error("Deletion response did not confirm queued publication.");
   }
 
   report.checks.push(
     okCheck("source-page-delete-submit", "Submitted source-backed page deletion through the Admin API.", {
-      releaseId: body.releaseId
+      publicationQueued: body.publicationQueued
     })
   );
 
-  await validateDeletionDatabaseBoundaries({
+  const { remainingPage, sawDeletedPage } = await pollSourceDeletionPublished({
+    admin,
+    knowledgeBaseId,
+    deletedPagePath: pageFile.logicalPath,
+    timeoutMs: processingTimeoutMs
+  });
+
+  const releaseId = await validateDeletionDatabaseBoundaries({
     databaseUrl: env.DATABASE_URL,
     knowledgeBaseId,
     sourceFileId: pageFile.sourceFileId,
     deletedPagePath: pageFile.logicalPath,
-    releaseId: body.releaseId,
     report
-  });
-
-  const { remainingPage, sawDeletedPage } = await findRemainingSourceBackedPageAfterDeletion({
-    admin,
-    knowledgeBaseId,
-    deletedPagePath: pageFile.logicalPath
   });
 
   if (sawDeletedPage) {
@@ -2265,10 +2295,30 @@ async function validateSourceDeletionFullFlow({
   );
 
   return {
-    releaseId: body.releaseId,
+    releaseId,
     deletedPagePath: pageFile.logicalPath,
     remainingPagePath: remainingPage.logicalPath
   };
+}
+
+async function pollSourceDeletionPublished({ admin, knowledgeBaseId, deletedPagePath, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const state = await findRemainingSourceBackedPageAfterDeletion({
+      admin,
+      knowledgeBaseId,
+      deletedPagePath
+    });
+
+    if (!state.sawDeletedPage && state.remainingPage?.logicalPath) {
+      return state;
+    }
+
+    await sleep(1_000);
+  }
+
+  throw new Error(`Timed out waiting for source-page deletion publication after ${timeoutMs}ms.`);
 }
 
 async function findRemainingSourceBackedPageAfterDeletion({ admin, knowledgeBaseId, deletedPagePath }) {
@@ -2305,7 +2355,6 @@ async function validateDeletionDatabaseBoundaries({
   knowledgeBaseId,
   sourceFileId,
   deletedPagePath,
-  releaseId,
   report
 }) {
   const postgresModule = requireFromApiPackage("postgres");
@@ -2315,6 +2364,9 @@ async function validateDeletionDatabaseBoundaries({
   try {
     const [shape] = await sql`
       SELECT
+        (SELECT active_release_id
+         FROM focowiki.knowledge_bases
+         WHERE id = ${knowledgeBaseId}) AS active_release_id,
         (SELECT count(*)::int
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -2323,7 +2375,11 @@ async function validateDeletionDatabaseBoundaries({
         (SELECT count(*)::int
          FROM focowiki.releases
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = ${releaseId}
+           AND id = (
+             SELECT active_release_id
+             FROM focowiki.knowledge_bases
+             WHERE id = ${knowledgeBaseId}
+           )
            AND published_at IS NOT NULL) AS published_releases,
         (SELECT count(*)::int
          FROM focowiki.source_file_events
@@ -2342,6 +2398,7 @@ async function validateDeletionDatabaseBoundaries({
     `;
 
     if (
+      !shape.active_release_id ||
       shape.deleted_sources !== 1 ||
       shape.published_releases !== 1 ||
       shape.source_deletion_events < 1 ||
@@ -2353,6 +2410,8 @@ async function validateDeletionDatabaseBoundaries({
     report.checks.push(
       okCheck("deletion-database-boundaries", "PostgreSQL records source deletion, file events, and a replacement active release.", shape, WHITE_BOX)
     );
+
+    return shape.active_release_id;
   } finally {
     await sql.end({ timeout: 5 });
   }
@@ -3056,14 +3115,47 @@ function parseJsonLines(raw, logicalPath) {
 
 async function getS3ObjectText(client, bucket, key) {
   const { GetObjectCommand } = requireFromApiPackage("@aws-sdk/client-s3");
-  const response = await client.send(
+  const response = await sendS3Command(
+    client,
     new GetObjectCommand({
       Bucket: bucket,
       Key: key
-    })
+    }),
+    "S3 get validation evidence"
   );
 
-  return responseBodyToString(response.Body);
+  return withTimeout(responseBodyToString(response.Body), "S3 evidence body read");
+}
+
+async function sendS3Command(client, command, label) {
+  const abortController = new AbortController();
+  const timeoutMs = readPositiveInteger(process.env[HTTP_TIMEOUT_ENV], 180_000);
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+
+  try {
+    return await client.send(command, { abortSignal: abortController.signal });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} timed out or failed: ${message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function withTimeout(promise, label) {
+  const timeoutMs = readPositiveInteger(process.env[HTTP_TIMEOUT_ENV], 180_000);
+  let timeout;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function createS3ClientConfigFromEnv(env) {

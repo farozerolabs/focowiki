@@ -14,6 +14,10 @@ import type {
 } from "../public-openapi/keys.js";
 import type { DatabaseClient } from "./client.js";
 import { createPostgresFileGraphRepository } from "./file-graph-repository.js";
+import {
+  createPostgresWorkerJobRepository,
+  type WorkerJobRepository
+} from "./worker-job-repository.js";
 
 export type CursorPage<T> = {
   items: T[];
@@ -54,13 +58,21 @@ export type BundleTreeEntryRecord = {
   parentPath: string;
   name: string;
   logicalPath: string;
+  sortKey: string;
   entryType: "directory" | "file";
   bundleFileId: string | null;
   sourceFileId: string | null;
   fileKind: BundleFileKind | null;
+  childCount: number;
 };
 
-export type BundleTreeEntryDraft = Omit<BundleTreeEntryRecord, "sourceFileId" | "fileKind">;
+export type BundleTreeEntryDraft = Omit<
+  BundleTreeEntryRecord,
+  "sourceFileId" | "fileKind" | "sortKey" | "childCount"
+> & {
+  sortKey?: string;
+  childCount?: number;
+};
 
 export type BundleFileKind =
   | "page"
@@ -105,6 +117,7 @@ export type GeneratedSourceFileOutputRecord = {
 
 export type SourceFileProcessingStatus = "queued" | "running" | "completed" | "failed";
 export type GeneratedOutputStatus = "pending" | "visible" | "unavailable";
+export type SourceFileErrorState = "with_error" | "without_error";
 export type PublicationJobStatus = "queued" | "running" | "completed" | "failed";
 export type PublicationJobMode = "batch" | "manual" | "per_file";
 export type PublicationJobReason =
@@ -306,6 +319,7 @@ export type BundleFileRepository = {
     knowledgeBaseId: string;
     releaseId: string;
     parentPath: string;
+    entryType?: BundleTreeEntryRecord["entryType"] | null;
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<BundleTreeEntryRecord>>;
@@ -327,6 +341,10 @@ export type BundleFileRepository = {
     knowledgeBaseId: string;
     limit: number;
     cursor: string | null;
+    processingStatus?: SourceFileProcessingStatus | null;
+    processingStage?: SourceFileProcessingStage | null;
+    generatedOutputStatus?: GeneratedOutputStatus | null;
+    errorState?: SourceFileErrorState | null;
   }) => Promise<CursorPage<SourceFileRecord>>;
   listGeneratedOutputsForSourceFiles?: (request: {
     knowledgeBaseId: string;
@@ -554,6 +572,12 @@ export type FileGraphRepository = {
     limit: number;
     cursor?: string | null;
   }) => Promise<CursorPage<FileGraphRelatedRecord>>;
+  listGraphCandidates?: (request: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+    terms: string[];
+    limit: number;
+  }) => Promise<OkfGraphNode[]>;
   getGraphSummary?: (request: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -569,6 +593,7 @@ export type AdminRepositories = {
   knowledgeBases: KnowledgeBaseRepository;
   files?: BundleFileRepository;
   graph?: FileGraphRepository;
+  workerJobs?: WorkerJobRepository;
   modelInvocations?: {
     createModelInvocation: (input: ModelInvocationDraft) => Promise<ModelInvocationRecord>;
     completeModelInvocation: (input: {
@@ -603,10 +628,12 @@ type BundleTreeEntryRow = {
   parent_path: string;
   name: string;
   logical_path: string;
+  sort_key: string;
   entry_type: "directory" | "file";
   bundle_file_id: string | null;
   source_file_id: string | null;
   file_kind: BundleFileKind | null;
+  child_count: number;
 };
 
 type BundleFileRow = {
@@ -971,8 +998,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               parent_path,
               name,
               logical_path,
+              sort_key,
               entry_type,
-              bundle_file_id
+              bundle_file_id,
+              child_count
             )
             VALUES (
               ${entry.id},
@@ -981,9 +1010,28 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${entry.parentPath},
               ${entry.name},
               ${entry.logicalPath},
+              ${entry.sortKey ?? createTreeSortKey(entry.entryType, entry.name)},
               ${entry.entryType},
-              ${entry.bundleFileId}
+              ${entry.bundleFileId},
+              ${entry.childCount ?? 0}
             )
+          `;
+        }
+
+        const releaseIds = [...new Set(entries.map((entry) => entry.releaseId))];
+        for (const releaseId of releaseIds) {
+          await sql`
+            UPDATE focowiki.bundle_tree_entries parent
+            SET child_count = COALESCE(child_counts.child_count, 0)
+            FROM (
+              SELECT parent_path, count(*)::integer AS child_count
+              FROM focowiki.bundle_tree_entries
+              WHERE release_id = ${releaseId}
+              GROUP BY parent_path
+            ) child_counts
+            WHERE parent.release_id = ${releaseId}
+              AND parent.logical_path = child_counts.parent_path
+              AND parent.entry_type = 'directory'
           `;
         }
       },
@@ -1155,28 +1203,38 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
 
         return mapSourceFileRetryAttemptRow(row);
       },
-      async listBundleTreeEntries({ knowledgeBaseId, releaseId, parentPath, limit, cursor }) {
+      async listBundleTreeEntries({
+        knowledgeBaseId,
+        releaseId,
+        parentPath,
+        entryType = null,
+        limit,
+        cursor
+      }) {
         const cursorValue = cursor ? parseTreeCursor(cursor) : null;
+        const entryTypeFilter = entryType ? sql`AND entry.entry_type = ${entryType}` : sql``;
         const rows = cursorValue
           ? await sql<BundleTreeEntryRow[]>`
-              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.entry_type, entry.bundle_file_id, file.source_file_id, file.file_kind
+              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
               FROM focowiki.bundle_tree_entries entry
               LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
               WHERE entry.knowledge_base_id = ${knowledgeBaseId}
                 AND entry.release_id = ${releaseId}
                 AND entry.parent_path = ${parentPath}
-                AND (entry.name > ${cursorValue.name} OR (entry.name = ${cursorValue.name} AND entry.id > ${cursorValue.id}))
-              ORDER BY entry.name ASC, entry.id ASC
+                ${entryTypeFilter}
+                AND (entry.sort_key > ${cursorValue.sortKey} OR (entry.sort_key = ${cursorValue.sortKey} AND entry.id > ${cursorValue.id}))
+              ORDER BY entry.sort_key ASC, entry.id ASC
               LIMIT ${limit + 1}
             `
           : await sql<BundleTreeEntryRow[]>`
-              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.entry_type, entry.bundle_file_id, file.source_file_id, file.file_kind
+              SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
               FROM focowiki.bundle_tree_entries entry
               LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
               WHERE entry.knowledge_base_id = ${knowledgeBaseId}
                 AND entry.release_id = ${releaseId}
                 AND entry.parent_path = ${parentPath}
-              ORDER BY entry.name ASC, entry.id ASC
+                ${entryTypeFilter}
+              ORDER BY entry.sort_key ASC, entry.id ASC
               LIMIT ${limit + 1}
             `;
         const pageRows = rows.slice(0, limit);
@@ -1186,7 +1244,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           items: pageRows.map(mapBundleTreeEntryRow),
           nextCursor:
             rows.length > limit && lastRow
-              ? serializeTreeCursor({ name: lastRow.name, id: lastRow.id })
+              ? serializeTreeCursor({ sortKey: lastRow.sort_key, id: lastRow.id })
               : null
         };
       },
@@ -1263,8 +1321,31 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const row = rows[0];
         return row ? mapSourceFileRow(row) : null;
       },
-      async listSourceFiles({ knowledgeBaseId, limit, cursor }) {
+      async listSourceFiles({
+        knowledgeBaseId,
+        limit,
+        cursor,
+        processingStatus = null,
+        processingStage = null,
+        generatedOutputStatus = null,
+        errorState = null
+      }) {
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
+        const processingStatusFilter = processingStatus
+          ? sql`AND source.processing_status = ${processingStatus}`
+          : sql``;
+        const processingStageFilter = processingStage
+          ? sql`AND source.processing_stage = ${processingStage}`
+          : sql``;
+        const generatedOutputStatusFilter = generatedOutputStatus
+          ? sql`AND source.generated_output_status = ${generatedOutputStatus}`
+          : sql``;
+        const errorStateFilter =
+          errorState === "with_error"
+            ? sql`AND (source.processing_error_code IS NOT NULL OR source.publication_error_code IS NOT NULL)`
+            : errorState === "without_error"
+              ? sql`AND source.processing_error_code IS NULL AND source.publication_error_code IS NULL`
+              : sql``;
         const rows = cursorValue
           ? await sql<SourceFileRow[]>`
               SELECT source.id, source.knowledge_base_id, source.original_name, source.object_key, source.content_type, source.size_bytes, source.checksum_sha256, source.metadata_json, source.model_suggestions_json, source.processing_status, source.processing_stage, source.processing_started_at, source.processing_ended_at, source.processing_error_code, source.processing_error_message, source.generated_output_status, source.publication_dirty_at, source.publication_visible_at, source.publication_error_code, source.publication_error_message, source.retry_count, source.created_at, source.deleted_at, model.status AS model_invocation_status, model.model_name AS model_invocation_model_name, model.started_at AS model_invocation_started_at, model.ended_at AS model_invocation_ended_at, model.warning_count AS model_invocation_warning_count, model.error_code AS model_invocation_error_code
@@ -1278,6 +1359,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ) model ON true
               WHERE source.knowledge_base_id = ${knowledgeBaseId}
                 AND source.deleted_at IS NULL
+                ${processingStatusFilter}
+                ${processingStageFilter}
+                ${generatedOutputStatusFilter}
+                ${errorStateFilter}
                 AND (
                   source.created_at < ${cursorValue.createdAt}
                   OR (source.created_at = ${cursorValue.createdAt} AND source.id > ${cursorValue.id})
@@ -1297,6 +1382,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ) model ON true
               WHERE source.knowledge_base_id = ${knowledgeBaseId}
                 AND source.deleted_at IS NULL
+                ${processingStatusFilter}
+                ${processingStageFilter}
+                ${generatedOutputStatusFilter}
+                ${errorStateFilter}
               ORDER BY source.created_at DESC, source.id ASC
               LIMIT ${limit + 1}
             `;
@@ -1649,6 +1738,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       }
     },
     graph: createPostgresFileGraphRepository(sql),
+    workerJobs: createPostgresWorkerJobRepository(sql),
     modelInvocations: {
       async createModelInvocation(input) {
         const rows = await sql<ModelInvocationRow[]>`
@@ -2099,10 +2189,12 @@ function mapBundleTreeEntryRow(row: BundleTreeEntryRow): BundleTreeEntryRecord {
     parentPath: row.parent_path,
     name: row.name,
     logicalPath: row.logical_path,
+    sortKey: row.sort_key,
     entryType: row.entry_type,
     bundleFileId: row.bundle_file_id,
     sourceFileId: row.source_file_id,
-    fileKind: row.file_kind
+    fileKind: row.file_kind,
+    childCount: Number(row.child_count)
   };
 }
 
@@ -2342,21 +2434,28 @@ function parseLogicalPathCursor(cursor: string): { logicalPath: string; id: stri
   };
 }
 
-function serializeTreeCursor(cursor: { name: string; id: string }): string {
+function serializeTreeCursor(cursor: { sortKey: string; id: string }): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-function parseTreeCursor(cursor: string): { name: string; id: string } {
+function parseTreeCursor(cursor: string): { sortKey: string; id: string } {
   const candidate = parseCursorRecord(cursor);
 
-  if (typeof candidate.name !== "string" || typeof candidate.id !== "string") {
+  if (typeof candidate.sortKey !== "string" || typeof candidate.id !== "string") {
     throw new Error("Invalid tree cursor");
   }
 
   return {
-    name: candidate.name,
+    sortKey: candidate.sortKey,
     id: candidate.id
   };
+}
+
+function createTreeSortKey(
+  entryType: BundleTreeEntryRecord["entryType"],
+  name: string
+): string {
+  return `${entryType === "directory" ? "0" : "1"}:${name.toLocaleLowerCase("en-US")}`;
 }
 
 function parseCursorRecord(cursor: string): Record<string, unknown> {

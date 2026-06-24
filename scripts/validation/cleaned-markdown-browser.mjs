@@ -137,7 +137,7 @@ try {
   });
   await waitForSourceFilesCompleted(page, singleSourceFileIds, taskTimeoutMs);
   report.checks.push(okCheck("single-source-file-completed", "Browser observed completed single-file processing."));
-  await validateSourceFileRows(page, singleSourceFileIds, [singleSample], {
+  await validateSourceFileRows(page, singleSourceFileIds, [singleSample], taskTimeoutMs, {
     checkName: "single-source-file-row",
     message: "Single-file upload appears as one top-level source-file row with stable metadata."
   });
@@ -163,7 +163,7 @@ try {
   });
   await waitForSourceFilesCompleted(page, batchSourceFileIds, taskTimeoutMs);
   report.checks.push(okCheck("batch-source-files-completed", "Browser observed completed batch source-file processing."));
-  await validateSourceFileRows(page, batchSourceFileIds, batchSamples, {
+  await validateSourceFileRows(page, batchSourceFileIds, batchSamples, taskTimeoutMs, {
     checkName: "batch-source-file-rows",
     message: "Batch upload appears as top-level source-file rows with original filenames, file IDs, status, stage, and pagination."
   });
@@ -333,7 +333,7 @@ async function waitForSourceFilesCompleted(page, sourceFileIds, timeout) {
   }
 }
 
-async function validateSourceFileRows(page, sourceFileIds, samples, { checkName, message }) {
+async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { checkName, message }) {
   const panel = page.getByTestId("source-file-progress-panel");
   const table = panel.getByRole("table", { name: "File processing" });
   await table.waitFor({ timeout: 30_000 });
@@ -343,7 +343,8 @@ async function validateSourceFileRows(page, sourceFileIds, samples, { checkName,
     await row.waitFor({ timeout: 30_000 });
     await row.getByText(samples[index].basename, { exact: true }).waitFor({ timeout: 30_000 });
     await row.getByText("Completed", { exact: true }).waitFor({ timeout: 30_000 });
-    await row.getByText("Release activation", { exact: true }).waitFor({ timeout: 30_000 });
+    await row.getByText("Release activation", { exact: true }).waitFor({ timeout });
+    await row.getByText("Available", { exact: true }).waitFor({ timeout });
   }
 
   if (process.env.MODEL_API_KEY?.trim() && process.env.MODEL_NAME?.trim()) {

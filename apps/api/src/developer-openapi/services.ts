@@ -3,23 +3,32 @@ import type { RuntimeConfig } from "../config.js";
 import type {
   AdminRepositories,
   BundleFileRecord,
+  BundleTreeEntryRecord,
   CursorPage,
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import { createSourceFileQueueProcessor } from "../admin/source-file-processor.js";
+import {
+  StorageObjectTooLargeError,
+  type StorageAdapter
+} from "../storage/s3.js";
 import { acceptUploadSourceFiles } from "../admin/source-file-upload.js";
 import type { LoadedUploadFile } from "../admin/upload-processor-utils.js";
 import { createDeletionService } from "../admin/deletion-service.js";
 import { readGeneratedOutputsForSourceFiles } from "../admin/source-file-generated-output.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
+import { createBundleTreeCursorScope } from "../tree-entry-filters.js";
 import type { OpenAIResponsesClient } from "@focowiki/okf";
-import type { BoundedTaskRunner } from "../runtime/task-runner.js";
+import {
+  assertSourceFileQueueCapacity,
+  enqueueSourceFileProcessingJobs,
+  WorkerQueueBackpressureError
+} from "../worker/source-file-jobs.js";
 import {
   conflict,
   notFound,
   payloadTooLarge,
+  queueBackpressure,
   repositoryUnavailable,
   validationError
 } from "./errors.js";
@@ -41,11 +50,10 @@ export type DeveloperOpenApiServices = {
   redis: RedisCoordinator | null;
   storage: StorageAdapter;
   modelClient: OpenAIResponsesClient | null;
-  modelSuggestionRunner: BoundedTaskRunner;
 };
 
 export function createDeveloperOpenApiService(services: DeveloperOpenApiServices) {
-  const { config, repositories, redis, storage, modelClient, modelSuggestionRunner } = services;
+  const { config, repositories, redis, storage } = services;
 
   function requireRepositories(): AdminRepositories {
     if (!repositories) {
@@ -136,12 +144,10 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     async uploadMarkdown(input: {
       knowledgeBaseId: string;
       files: File[];
-      runTask: (work: () => Promise<unknown>) => void;
     }) {
       const repo = requireRepositories();
-      const coordinator = requireRedis();
 
-      if (!repo.files?.createSourceFiles || !repo.files.getSourceFile) {
+      if (!repo.files?.createSourceFiles || !repo.files.getSourceFile || !repo.workerJobs) {
         throw repositoryUnavailable();
       }
 
@@ -170,28 +176,26 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw payloadTooLarge("Uploaded files exceed the byte limit.");
       }
 
-      const processor = createSourceFileQueueProcessor(
-        repo,
-        storage,
-        coordinator,
-        modelClient && config.model.enabled
-          ? {
-              client: modelClient,
-              modelName: config.model.modelName,
-              contextWindowTokens: config.model.contextWindowTokens,
-              receiveTimeouts: {
-                maxMs: config.model.requestMaxTimeoutMs,
-                idleMs: config.model.requestIdleTimeoutMs
-              },
-              suggestionConcurrency: config.model.suggestionConcurrency,
-              transientRetryDelayMs: config.model.transientRetryDelayMs,
-              requestRunner: modelSuggestionRunner
-            }
-          : null
-      );
+      try {
+        await assertSourceFileQueueCapacity({
+          repositories: repo,
+          knowledgeBaseId: knowledgeBase.id,
+          config
+        });
+      } catch (error) {
+        if (error instanceof WorkerQueueBackpressureError) {
+          throw queueBackpressure({
+            activeJobCount: error.activeJobCount,
+            limit: error.limit,
+            knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
+            knowledgeBaseLimit: error.knowledgeBaseLimit,
+            oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
+            maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
+            retryAfterSeconds: error.retryAfterSeconds
+          });
+        }
 
-      if (!processor) {
-        throw repositoryUnavailable();
+        throw error;
       }
 
       const sourceFileIds = await acceptUploadSourceFiles({
@@ -222,56 +226,15 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           },
           createdAt: generatedAt
         }).catch(() => undefined);
-
-        input.runTask(async () => {
-          try {
-            await dispatchWebhookEvent({
-              eventType: "source_file.progress",
-              payload: {
-                knowledgeBaseId: knowledgeBase.id,
-                sourceFileId
-              }
-            }).catch(() => undefined);
-            const completedSource = await processor.processFile({
-              knowledgeBaseId: knowledgeBase.id,
-              knowledgeBaseName: knowledgeBase.name,
-              sourceFileId,
-              generatedAt,
-              batchSize: config.upload.generationBatchSize,
-              cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-              fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-              okfLog: config.okf?.log,
-              publication: config.publication
-            });
-            await dispatchWebhookEvent({
-              eventType: "source_file.completed",
-              payload: {
-                knowledgeBaseId: knowledgeBase.id,
-                sourceFileId: completedSource.id
-              }
-            }).catch(() => undefined);
-            if (completedSource.processingStatus === "completed") {
-              await dispatchWebhookEvent({
-                eventType: "release.published",
-                payload: {
-                  knowledgeBaseId: knowledgeBase.id,
-                  sourceFileId: completedSource.id
-                }
-              }).catch(() => undefined);
-            }
-          } catch (error) {
-            await dispatchWebhookEvent({
-              eventType: "source_file.failed",
-              payload: {
-                knowledgeBaseId: knowledgeBase.id,
-                sourceFileId,
-                errorCode: error instanceof Error ? "SOURCE_FILE_FAILED" : "UNKNOWN_FILE_ERROR"
-              }
-            }).catch(() => undefined);
-            throw error;
-          }
-        });
       }
+
+      await enqueueSourceFileProcessingJobs({
+        repositories: repo,
+        sourceFileIds,
+        knowledgeBaseId: knowledgeBase.id,
+        reason: "upload",
+        config
+      });
 
       return {
         knowledgeBaseId: knowledgeBase.id,
@@ -376,14 +339,13 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     async retrySourceFile(input: {
       knowledgeBaseId: string;
       sourceFileId: string;
-      runTask: (work: () => Promise<unknown>) => void;
     }) {
       const repo = requireRepositories();
-      const coordinator = requireRedis();
 
       if (
         !repo.files?.getSourceFile ||
-        !repo.files.createSourceFileRetryAttempt
+        !repo.files.createSourceFileRetryAttempt ||
+        !repo.workerJobs
       ) {
         throw repositoryUnavailable();
       }
@@ -402,28 +364,26 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw conflict("Only failed source files can be retried.");
       }
 
-      const processor = createSourceFileQueueProcessor(
-        repo,
-        storage,
-        coordinator,
-        modelClient && config.model.enabled
-          ? {
-              client: modelClient,
-              modelName: config.model.modelName,
-              contextWindowTokens: config.model.contextWindowTokens,
-              receiveTimeouts: {
-                maxMs: config.model.requestMaxTimeoutMs,
-                idleMs: config.model.requestIdleTimeoutMs
-              },
-              suggestionConcurrency: config.model.suggestionConcurrency,
-              transientRetryDelayMs: config.model.transientRetryDelayMs,
-              requestRunner: modelSuggestionRunner
-            }
-          : null
-      );
+      try {
+        await assertSourceFileQueueCapacity({
+          repositories: repo,
+          knowledgeBaseId: knowledgeBase.id,
+          config
+        });
+      } catch (error) {
+        if (error instanceof WorkerQueueBackpressureError) {
+          throw queueBackpressure({
+            activeJobCount: error.activeJobCount,
+            limit: error.limit,
+            knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
+            knowledgeBaseLimit: error.knowledgeBaseLimit,
+            oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
+            maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
+            retryAfterSeconds: error.retryAfterSeconds
+          });
+        }
 
-      if (!processor) {
-        throw repositoryUnavailable();
+        throw error;
       }
 
       const startedAt = new Date().toISOString();
@@ -441,48 +401,12 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           sourceFileId: sourceFile.id
         })) ?? sourceFile;
 
-      input.runTask(async () => {
-        try {
-          await dispatchWebhookEvent({
-            eventType: "source_file.progress",
-            payload: {
-              knowledgeBaseId: knowledgeBase.id,
-              sourceFileId: sourceFile.id
-            }
-          }).catch(() => undefined);
-          const completedSource = await processor.processFile({
-            knowledgeBaseId: knowledgeBase.id,
-            knowledgeBaseName: knowledgeBase.name,
-            sourceFileId: sourceFile.id,
-            generatedAt: startedAt,
-            batchSize: config.upload.generationBatchSize,
-            cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-            fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
-            okfLog: config.okf?.log,
-            publication: config.publication
-          });
-          await dispatchWebhookEvent({
-            eventType:
-              completedSource.processingStatus === "completed"
-                ? "source_file.completed"
-                : "source_file.failed",
-            payload: {
-              knowledgeBaseId: knowledgeBase.id,
-              sourceFileId: completedSource.id,
-              errorCode: completedSource.processingErrorCode ?? null
-            }
-          }).catch(() => undefined);
-        } catch (error) {
-          await dispatchWebhookEvent({
-            eventType: "source_file.failed",
-            payload: {
-              knowledgeBaseId: knowledgeBase.id,
-              sourceFileId: sourceFile.id,
-              errorCode: error instanceof Error ? "SOURCE_FILE_FAILED" : "UNKNOWN_FILE_ERROR"
-            }
-          }).catch(() => undefined);
-          throw error;
-        }
+      await enqueueSourceFileProcessingJobs({
+        repositories: repo,
+        sourceFileIds: [sourceFile.id],
+        knowledgeBaseId: knowledgeBase.id,
+        reason: "retry",
+        config
       });
 
       return {
@@ -492,6 +416,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     async listTree(input: {
       knowledgeBaseId: string;
       parentPath: string;
+      entryType: BundleTreeEntryRecord["entryType"] | null;
       limit: number;
       cursor: string | null;
     }) {
@@ -508,11 +433,18 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         return { items: [], nextCursor: null };
       }
 
-      const scope = `developer-openapi:tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}:${input.parentPath || "root"}`;
+      const scope = createBundleTreeCursorScope({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: knowledgeBase.activeReleaseId,
+        parentPath: input.parentPath,
+        entryType: input.entryType,
+        scopePrefix: "developer-openapi:tree"
+      });
       const page = await repo.files.listBundleTreeEntries({
         knowledgeBaseId: knowledgeBase.id,
         releaseId: knowledgeBase.activeReleaseId,
         parentPath: input.parentPath,
+        entryType: input.entryType,
         limit: input.limit,
         cursor: await readCursor(requireRedis(), scope, input.cursor)
       });
@@ -581,7 +513,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw conflict("File content is not available until publication completes.");
       }
 
-      const content = await storage.getObjectText(resolved.file.objectKey);
+      const content = await readGeneratedObjectText(storage, resolved.file.objectKey, config);
 
       if (content === null) {
         throw notFound();
@@ -612,7 +544,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw notFound();
       }
 
-      const content = await storage.getObjectText(file.objectKey);
+      const content = await readGeneratedObjectText(storage, file.objectKey, config);
 
       if (content === null) {
         throw notFound();
@@ -796,22 +728,14 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         fileId: file.id,
         sourceFileId: file.sourceFileId,
         path: file.logicalPath,
-        releaseId: result.releaseId
-      }
-    }).catch(() => undefined);
-    await dispatchWebhookEvent({
-      eventType: "release.published",
-      payload: {
-        knowledgeBaseId: file.knowledgeBaseId,
-        sourceFileId: file.sourceFileId,
-        releaseId: result.releaseId
+        publicationQueued: result.publicationQueued
       }
     }).catch(() => undefined);
 
     return {
       knowledgeBaseId: file.knowledgeBaseId,
       deleted: true,
-      releaseId: result.releaseId,
+      publicationQueued: result.publicationQueued,
       file: toDeveloperBundleFile(file, await readSourceForBundle(repo, file))
     };
   }
@@ -831,17 +755,11 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
 
     if (knowledgeBase.activeReleaseId) {
-      const bundleFile =
-        (await repo.files?.getBundleFileById?.({
-          knowledgeBaseId: knowledgeBase.id,
-          releaseId: knowledgeBase.activeReleaseId,
-          fileId: input.fileId
-        })) ??
-        (await findBundleFileById(repo, {
-          knowledgeBaseId: knowledgeBase.id,
-          releaseId: knowledgeBase.activeReleaseId,
-          fileId: input.fileId
-        }));
+      const bundleFile = await repo.files?.getBundleFileById?.({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: knowledgeBase.activeReleaseId,
+        fileId: input.fileId
+      });
 
       if (bundleFile) {
         return {
@@ -970,6 +888,7 @@ function isAllowedGraphPath(path: string): boolean {
     path === "_graph/index.md" ||
     path === "_graph/manifest.json" ||
     path === "_graph/nodes.jsonl" ||
+    /^_graph\/nodes\/[0-9]{4}\.jsonl$/u.test(path) ||
     /^_graph\/edges\/[0-9]{4}\.jsonl$/u.test(path) ||
     /^_graph\/by-file\/[^/]+\.json$/u.test(path)
   );
@@ -985,35 +904,6 @@ function isSafeGeneratedDirectoryPath(path: string): boolean {
     !path.startsWith("sources/") &&
     parts.every((part) => part !== "" && part !== "." && part !== ".." && !part.includes(".."))
   );
-}
-
-async function findBundleFileById(
-  repo: AdminRepositories,
-  input: { knowledgeBaseId: string; releaseId: string; fileId: string }
-): Promise<BundleFileRecord | null> {
-  if (!repo.files?.listBundleFiles) {
-    return null;
-  }
-
-  let cursor: string | null = null;
-
-  do {
-    const page = await repo.files.listBundleFiles({
-      knowledgeBaseId: input.knowledgeBaseId,
-      releaseId: input.releaseId,
-      limit: 200,
-      cursor
-    });
-    const found = page.items.find((file) => file.id === input.fileId);
-
-    if (found) {
-      return found;
-    }
-
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  return null;
 }
 
 async function findSourceFileById(
@@ -1062,6 +952,24 @@ async function readSourceForBundle(
       fileId: file.sourceFileId
     }))
   );
+}
+
+async function readGeneratedObjectText(
+  storage: StorageAdapter,
+  objectKey: string,
+  config: RuntimeConfig
+): Promise<string | null> {
+  try {
+    return await storage.getObjectText(objectKey, {
+      maxBytes: config.pagination.generatedContentMaxBytes
+    });
+  } catch (error) {
+    if (error instanceof StorageObjectTooLargeError) {
+      throw payloadTooLarge("Generated file content exceeds the configured read limit.");
+    }
+
+    throw error;
+  }
 }
 
 function normalizeWebhookUrl(value: string): string {

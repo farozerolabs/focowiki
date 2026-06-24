@@ -37,6 +37,8 @@ describe("database schema migration", () => {
     ]) {
       expect(sql).toContain(`create table if not exists focowiki.${table}`);
     }
+    expect(sql).toContain("sort_key");
+    expect(sql).toContain("child_count");
   });
 
   it("keeps raw file bodies out of database records", () => {
@@ -56,6 +58,8 @@ describe("database schema migration", () => {
     expect(sql).toContain("references focowiki.bundle_files");
     expect(sql).toContain("unique (release_id, logical_path)");
     expect(sql).toContain("unique (release_id, parent_path, name)");
+    expect(sql).not.toContain("create unique index if not exists bundle_files_object_key_unique");
+    expect(sql).toContain("drop index if exists focowiki.bundle_files_object_key_unique");
     expect(sql).toContain("check (stage_key in");
     expect(sql).toContain("'source_deletion'");
     expect(sql).toContain("check (severity in");
@@ -70,6 +74,9 @@ describe("database schema migration", () => {
       "source_files(knowledge_base_id, created_at desc, id)",
       "source_files(knowledge_base_id, deleted_at, created_at desc, id)",
       "source_files(knowledge_base_id, processing_status, processing_stage, created_at desc, id)",
+      "source_files(knowledge_base_id, generated_output_status, created_at desc, id)",
+      "source_files_kb_error_state_created_idx",
+      "source_files_kb_no_error_created_idx",
       "model_invocations(source_file_id, created_at desc, id)",
       "source_file_events(knowledge_base_id, source_file_id, created_at, id)",
       "source_file_retry_attempts(knowledge_base_id, source_file_id, created_at desc, id)",
@@ -77,6 +84,8 @@ describe("database schema migration", () => {
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
       "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)",
+      "bundle_tree_entries(knowledge_base_id, release_id, parent_path, entry_type, sort_key, id)",
+      "bundle_tree_entries(release_id, bundle_file_id, id)",
       "public_api_keys(created_at desc, id)",
       "public_api_keys(status, created_at desc, id)"
     ]) {

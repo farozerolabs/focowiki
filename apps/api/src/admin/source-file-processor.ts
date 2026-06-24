@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   MetadataValidationError,
-  parseUploadedMarkdownSource,
-  resolveSourceMetadata,
   type OkfLogLimits,
   type SourceModelSuggestions
 } from "@focowiki/okf";
@@ -13,13 +11,16 @@ import type {
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
-import { createModelInvocationTracker } from "./model-invocation-tracker.js";
-import { readModelSuggestions, type ModelAssistanceOptions } from "./model-suggestions.js";
+import type { ModelAssistanceOptions } from "./model-suggestions.js";
 import {
   createKnowledgeBasePublicationService,
   type PublicationRuntimeOptions
 } from "./publication-scheduler.js";
+import { processSourceFileBundleStage } from "./source-file-bundle-stage.js";
 import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
+import { processSourceFileMetadataStage } from "./source-file-metadata-stage.js";
+import { processSourceFileModelStage } from "./source-file-model-stage.js";
+import { processSourceFilePublicationStage } from "./source-file-publication-stage.js";
 import { sourceFileStageMessageKey } from "./source-file-processor-support.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
 
@@ -52,7 +53,8 @@ export function createSourceFileQueueProcessor(
     !files.updateSourceFileProcessingState ||
     !files.updateSourceFileMetadata ||
     !files.updateSourceFileModelSuggestions ||
-    !files.createSourceFileEvent
+    !files.createSourceFileEvent ||
+    !repositories.workerJobs
   ) {
     return null;
   }
@@ -144,7 +146,7 @@ export function createSourceFileQueueProcessor(
           return source;
         }
 
-        if (source.processingStatus === "completed" || source.processingStatus === "running") {
+        if (source.processingStatus === "completed") {
           return source;
         }
 
@@ -169,25 +171,11 @@ export function createSourceFileQueueProcessor(
           endedAt: null,
           severity: "info"
         });
-        const content = await storage.getObjectText(source.objectKey);
-
-        if (content === null) {
-          throw new Error("Source object was not found");
-        }
-
-        const parsed = parseUploadedMarkdownSource({
-          fileName: source.originalName,
-          content
-        });
-        await updateSourceFileMetadata({
+        const metadataResult = await processSourceFileMetadataStage({
+          storage,
           knowledgeBaseId: input.knowledgeBaseId,
-          sourceFileId: source.id,
-          metadata: parsed.metadata
-        });
-        const resolved = resolveSourceMetadata({
-          fileName: source.originalName,
-          content,
-          metadata: parsed.metadata
+          source,
+          updateSourceFileMetadata
         });
         await recordStage(currentStage, {
           startedAt: null,
@@ -202,62 +190,32 @@ export function createSourceFileQueueProcessor(
           endedAt: null,
           severity: "info"
         });
-        const tracker = createModelInvocationTracker({
-          repositories,
-          knowledgeBaseId: input.knowledgeBaseId,
-          modelName: modelAssistance?.modelName ?? null
-        });
         const modelSource = {
           id: source.id,
           fileName: source.originalName,
-          title: resolved.metadata.title,
-          type: resolved.metadata.type,
-          tags: Array.isArray(resolved.metadata.tags) ? resolved.metadata.tags : [],
-          body: resolved.body
+          title: metadataResult.resolved.metadata.title,
+          type: metadataResult.resolved.metadata.type,
+          tags: Array.isArray(metadataResult.resolved.metadata.tags)
+            ? metadataResult.resolved.metadata.tags
+            : [],
+          body: metadataResult.resolved.body
         };
         let suggestions: SourceModelSuggestions | null = null;
-
-        if (modelAssistance) {
-          const result = await readModelSuggestions({
-            sources: [modelSource],
-            modelAssistance,
-            onSourceStart: async () => tracker.start(source.id, progressClock()),
-            onSourceComplete: async (_source, modelResult) =>
-              tracker.complete(source.id, progressClock(), modelResult)
-          }).catch(async (error: unknown) => {
-            await tracker.complete(source.id, progressClock(), {
-              suggestions: null,
-              warnings: [error instanceof Error ? error.message : "Model suggestion failed"]
-            });
-            throw error;
-          });
-          suggestions = result.suggestionsBySourceId.get(source.id) ?? null;
-
-          await updateSourceFileModelSuggestions({
-            knowledgeBaseId: input.knowledgeBaseId,
-            sourceFileId: source.id,
-            suggestions
-          });
-          await recordStage(currentStage, {
-            startedAt: null,
-            endedAt: progressClock(),
-            severity: result.warnings.length > 0 ? "warning" : "info"
-          });
-        } else {
-          const startedAt = progressClock();
-          const endedAt = progressClock();
-          await tracker.skip(source.id, startedAt, endedAt);
-          await updateSourceFileModelSuggestions({
-            knowledgeBaseId: input.knowledgeBaseId,
-            sourceFileId: source.id,
-            suggestions: null
-          });
-          await recordStage(currentStage, {
-            startedAt: null,
-            endedAt,
-            severity: "info"
-          });
-        }
+        const modelResult = await processSourceFileModelStage({
+          repositories,
+          knowledgeBaseId: input.knowledgeBaseId,
+          source,
+          modelSource,
+          modelAssistance,
+          progressClock,
+          updateSourceFileModelSuggestions
+        });
+        suggestions = modelResult.suggestions;
+        await recordStage(currentStage, {
+          startedAt: null,
+          endedAt: modelResult.endedAt,
+          severity: modelResult.severity
+        });
 
         currentStage = "graph_generation";
         await processSourceFileGraphStage({
@@ -265,10 +223,11 @@ export function createSourceFileQueueProcessor(
           redis,
           knowledgeBaseId: input.knowledgeBaseId,
           source,
-          metadata: parsed.metadata,
-          body: resolved.body,
+          metadata: metadataResult.parsed.metadata,
+          body: metadataResult.resolved.body,
           suggestions,
           pageSize: input.batchSize,
+          maxCandidateNodes: input.publication?.graphCandidateLimit,
           ttlSeconds: input.cursorTtlSeconds,
           ownerId,
           modelAssistance,
@@ -278,20 +237,15 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "bundle_generation";
-        await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
-        const sourceReadyAt = progressClock();
-        await recordStage(currentStage, {
-          startedAt: sourceReadyAt,
-          endedAt: sourceReadyAt,
-          severity: "info"
+        await processSourceFileBundleStage({
+          progressClock,
+          mark,
+          recordStage
         });
-        await mark({
-          status: "completed",
-          stage: currentStage,
-          endedAt: sourceReadyAt,
-          errorCode: null
-        });
-        const publication = await publicationService.markSourceFileReady({
+
+        currentStage = "index_publication";
+        await processSourceFilePublicationStage({
+          publicationService,
           knowledgeBaseId: input.knowledgeBaseId,
           knowledgeBaseName: input.knowledgeBaseName,
           sourceFileId: source.id,
@@ -300,50 +254,11 @@ export function createSourceFileQueueProcessor(
           cursorTtlSeconds: input.cursorTtlSeconds,
           fileProcessingConcurrency: input.fileProcessingConcurrency,
           okfLog: input.okfLog,
-          options: resolvePublicationOptions(input)
+          options: resolvePublicationOptions(input),
+          progressClock,
+          mark,
+          recordStage
         });
-
-        const publicationEndedAt = progressClock();
-
-        if (publication.published) {
-          await recordStage("okf_validation", {
-            startedAt: null,
-            endedAt: publicationEndedAt,
-            severity: "info"
-          });
-          await recordStage("index_publication", {
-            startedAt: null,
-            endedAt: publicationEndedAt,
-            severity: "info"
-          });
-
-          currentStage = "release_activation";
-          const releaseActivationEndedAt = progressClock();
-          await recordStage(currentStage, {
-            startedAt: publicationEndedAt,
-            endedAt: releaseActivationEndedAt,
-            severity: "info"
-          });
-          await mark({
-            status: "completed",
-            stage: currentStage,
-            endedAt: releaseActivationEndedAt,
-            errorCode: null
-          });
-        } else {
-          currentStage = "index_publication";
-          await recordStage(currentStage, {
-            startedAt: publicationEndedAt,
-            endedAt: publicationEndedAt,
-            severity: "info"
-          });
-          await mark({
-            status: "completed",
-            stage: currentStage,
-            endedAt: publicationEndedAt,
-            errorCode: null
-          });
-        }
 
         const completedSource = await getSourceFile({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -394,6 +309,11 @@ function resolvePublicationOptions(input: SourceFileProcessInput): PublicationRu
     batchSize: input.publication?.batchSize ?? input.batchSize,
     intervalSeconds: input.publication?.intervalSeconds ?? 300,
     indexShardSize: input.publication?.indexShardSize ?? 1_000,
-    graphEdgeShardSize: input.publication?.graphEdgeShardSize ?? 5_000
+    linkIndexShardSize: input.publication?.linkIndexShardSize ?? 1_000,
+    manifestShardSize: input.publication?.manifestShardSize ?? 1_000,
+    graphEdgeShardSize: input.publication?.graphEdgeShardSize ?? 5_000,
+    graphCandidateLimit: input.publication?.graphCandidateLimit ?? 200,
+    graphMaintenanceBatchSize: input.publication?.graphMaintenanceBatchSize ?? 500,
+    rootSummaryLimit: input.publication?.rootSummaryLimit ?? 500
   };
 }

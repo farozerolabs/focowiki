@@ -35,6 +35,7 @@ class PublicationStorage {
   public readonly keyspace: StorageKeyspace = createStorageKeyspace("tenant/demo");
   public readonly objects = new Map<string, string>();
   public readonly written: StoredObject[] = [];
+  public readonly readKeys: string[] = [];
   public activeReads = 0;
   public maxActiveReads = 0;
 
@@ -48,6 +49,7 @@ class PublicationStorage {
   }
 
   public async getObjectText(key: string): Promise<string | null> {
+    this.readKeys.push(key);
     this.activeReads += 1;
     this.maxActiveReads = Math.max(this.maxActiveReads, this.activeReads);
     await new Promise((resolve) => setTimeout(resolve, 1));
@@ -200,6 +202,98 @@ describe("publishOkfRelease", () => {
       "[guide](/pages/guide--source-002.md)"
     );
     expect(treeBatches.flat().map((entry) => entry.logicalPath)).toContain("pages/guide--source-002.md");
+  });
+
+  it("copies unchanged page object references from the previous release", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-001", "intro.md", "tenant/demo/source/intro.md"),
+      sourceRecord("source-002", "setup.md", "tenant/demo/source/setup.md")
+    ];
+    const storage = new PublicationStorage(sources);
+    const persistedFiles: BundleFileDraft[] = [];
+
+    await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-002",
+      generatedAt: "2026-06-14T00:10:00.000Z",
+      pageSize: 10,
+      concurrency: 1,
+      storage,
+      dirtySourceFileIds: ["source-002"],
+      fetchPreviousBundleFilePage: async () => ({
+        items: [
+          {
+            sourceFileId: "source-001",
+            fileKind: "page",
+            logicalPath: "pages/intro.md",
+            objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
+            contentType: "text/markdown; charset=utf-8",
+            sizeBytes: 128,
+            checksumSha256: "previous-checksum",
+            okfType: "page",
+            title: "Intro",
+            description: "Copied intro page",
+            tags: ["intro"],
+            frontmatter: {
+              type: "page",
+              title: "Intro",
+              description: "Copied intro page",
+              tags: ["intro"]
+            }
+          }
+        ],
+        nextCursor: null
+      }),
+      fetchGraphEdgePage: async () => ({
+        items: [
+          {
+            fromFileId: "source-001",
+            toFileId: "source-002",
+            relationType: "shared_subject",
+            weight: 0.72,
+            reason: "Intro and setup share a subject.",
+            source: "deterministic",
+            evidence: { signal: "shared_subject" }
+          }
+        ],
+        nextCursor: null
+      }),
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      persistBundleFiles: async (files) => {
+        persistedFiles.push(...files);
+      },
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    expect(storage.readKeys).toEqual(["tenant/demo/source/setup.md"]);
+    expect(persistedFiles).toContainEqual(
+      expect.objectContaining({
+        sourceFileId: "source-001",
+        logicalPath: "pages/intro.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
+        checksumSha256: "previous-checksum"
+      })
+    );
+    expect(persistedFiles).toContainEqual(
+      expect.objectContaining({
+        sourceFileId: "source-002",
+        logicalPath: "pages/setup.md",
+        objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-002/bundle/pages/setup.md"
+      })
+    );
+    const links = JSON.parse(
+      storage.objects.get(
+        "tenant/demo/knowledge-bases/kb-001/releases/release-002/bundle/_index/links.json"
+      ) ?? "{}"
+    ) as { links?: Array<{ from: string; to: string; label: string }> };
+    expect(links.links).toContainEqual(
+      expect.objectContaining({
+        from: "pages/intro.md",
+        to: "pages/setup.md",
+        label: "setup"
+      })
+    );
   });
 
   it("keeps original Markdown file names in public bundle paths", async () => {
@@ -373,6 +467,8 @@ describe("publishOkfRelease", () => {
       pageSize: 3,
       concurrency: 1,
       indexShardSize: 2,
+      linkIndexShardSize: 2,
+      manifestShardSize: 2,
       storage,
       fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
       persistBundleFiles: async (files) => {
@@ -603,13 +699,15 @@ describe("publishOkfRelease", () => {
       }),
       fetchGraphNeighborhood: async ({ sourceFileId }) => ({
         sourceFileId,
-        edges:
+        relationships:
           sourceFileId === "source-intro"
             ? [
                 {
-                  fromFileId: "source-intro",
-                  toFileId: "source-setup",
+                  fileId: "source-setup",
+                  path: "pages/setup.md",
+                  title: "setup",
                   relationType: "title_mention",
+                  direction: "outgoing",
                   weight: 0.7,
                   reason: "Intro mentions setup.",
                   source: "deterministic",
@@ -648,6 +746,127 @@ describe("publishOkfRelease", () => {
         fileKind: "graph_file"
       })
     );
+  });
+
+  it("publishes graph node index through bounded shards when configured", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-intro", "intro.md", "tenant/demo/source/intro.md"),
+      sourceRecord("source-setup", "setup.md", "tenant/demo/source/setup.md")
+    ];
+    const storage = new PublicationStorage(sources);
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 2,
+      concurrency: 1,
+      graph: {
+        edgeShardSize: 1
+      },
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      fetchGraphNodePage: async () => ({
+        items: [
+          {
+            fileId: "source-intro",
+            path: "pages/intro.md",
+            title: "intro",
+            type: "page",
+            tags: [],
+            headings: ["intro"],
+            keywords: ["intro"],
+            metadata: { type: "page", title: "intro" }
+          },
+          {
+            fileId: "source-setup",
+            path: "pages/setup.md",
+            title: "setup",
+            type: "page",
+            tags: [],
+            headings: ["setup"],
+            keywords: ["setup"],
+            metadata: { type: "page", title: "setup" }
+          }
+        ],
+        nextCursor: null
+      }),
+      fetchGraphEdgePage: async () => ({ items: [], nextCursor: null }),
+      fetchGraphNeighborhood: async ({ sourceFileId }) => ({
+        sourceFileId,
+        relationships: []
+      }),
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const nodeRoot = storage.objects.get(`${result.bundleRootKey}_graph/nodes.jsonl`) ?? "";
+    const firstShard = storage.objects.get(`${result.bundleRootKey}_graph/nodes/0000.jsonl`) ?? "";
+    const secondShard = storage.objects.get(`${result.bundleRootKey}_graph/nodes/0001.jsonl`) ?? "";
+    const manifest = storage.objects.get(`${result.bundleRootKey}_graph/manifest.json`) ?? "";
+
+    expect(nodeRoot).toContain("\"type\":\"graph_node_shard\"");
+    expect(nodeRoot).toContain("\"path\":\"_graph/nodes/0000.jsonl\"");
+    expect(firstShard).toContain("\"fileId\":\"source-intro\"");
+    expect(secondShard).toContain("\"fileId\":\"source-setup\"");
+    expect(manifest).toContain("\"node_shard_count\": 2");
+    expect(manifest).toContain("\"node_shard_pattern\": \"_graph/nodes/{shard}.jsonl\"");
+  });
+
+  it("publishes page related links from bounded graph neighborhoods without full graph loading", async () => {
+    const sources: SourceRecord[] = [
+      sourceRecord("source-intro", "intro.md", "tenant/demo/source/intro.md"),
+      sourceRecord("source-setup", "setup.md", "tenant/demo/source/setup.md")
+    ];
+    const storage = new PublicationStorage(sources);
+    const neighborhoodCalls: Array<{ sourceFileId: string; limit: number }> = [];
+
+    const result = await publishOkfRelease({
+      knowledgeBaseId: "kb-001",
+      knowledgeBaseName: "Developer docs",
+      releaseId: "release-001",
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      pageSize: 2,
+      concurrency: 1,
+      storage,
+      fetchSourcePage: async () => ({ items: sources, nextCursor: null }),
+      fetchGraphNeighborhood: async ({ sourceFileId, limit }) => {
+        neighborhoodCalls.push({ sourceFileId, limit });
+        return {
+          sourceFileId,
+          relationships:
+            sourceFileId === "source-intro"
+              ? [
+                  {
+                    fileId: "source-setup",
+                    path: "pages/setup.md",
+                    title: "setup",
+                    relationType: "title_mention",
+                    direction: "outgoing",
+                    weight: 0.7,
+                    reason: "Intro mentions setup.",
+                    source: "deterministic",
+                    evidence: { signal: "title_mention" }
+                  }
+                ]
+              : []
+        };
+      },
+      persistBundleFiles: async () => undefined,
+      persistBundleTreeEntries: async () => undefined
+    });
+
+    const intro = storage.objects.get(`${result.bundleRootKey}pages/intro.md`) ?? "";
+    const manifest = storage.objects.get(`${result.bundleRootKey}_index/manifest.json`) ?? "";
+
+    expect(neighborhoodCalls).toEqual([
+      { sourceFileId: "source-intro", limit: 10 },
+      { sourceFileId: "source-setup", limit: 10 }
+    ]);
+    expect(intro).toContain("- [setup](/pages/setup.md) - title_mention");
+    expect(intro).not.toContain("graph:");
+    expect(manifest).not.toContain("_graph/index.md");
   });
 
   it("publishes a bounded update log from current and historical publication summaries", async () => {

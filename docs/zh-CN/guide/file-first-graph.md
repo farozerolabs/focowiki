@@ -33,6 +33,8 @@ _graph/
   index.md
   manifest.json
   nodes.jsonl
+  nodes/
+    0000.jsonl
   edges/
     0000.jsonl
   by-file/
@@ -43,7 +45,8 @@ _graph/
 | --- | --- |
 | `_graph/index.md` | 给人和 Agent 使用的图关系入口。 |
 | `_graph/manifest.json` | 记录数量、路径模式、生成时间和图元数据。 |
-| `_graph/nodes.jsonl` | source-backed generated pages 的紧凑节点记录。 |
+| `_graph/nodes.jsonl` | 节点索引入口。小知识库在这里保存节点记录，大知识库在这里保存分片描述。 |
+| `_graph/nodes/*.jsonl` | 大规模生成知识库的分片节点记录。 |
 | `_graph/edges/*.jsonl` | 分片关系记录，适合导出和审计。 |
 | `_graph/by-file/{fileId}.json` | 单个生成页面的有界本地关系，这是 Agent 探索关系的主要文件。 |
 

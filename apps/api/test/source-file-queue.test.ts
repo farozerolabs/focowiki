@@ -10,6 +10,10 @@ import type {
   SourceFileEventDraft,
   SourceFileRecord
 } from "../src/db/admin-repositories.js";
+import type {
+  WorkerJobRecord,
+  WorkerJobRepository
+} from "../src/db/worker-job-repository.js";
 import { createSourceFileQueueProcessor } from "../src/admin/source-file-processor.js";
 import { acceptUploadSourceFiles } from "../src/admin/source-file-upload.js";
 import { createKnowledgeBasePublicationService } from "../src/admin/publication-scheduler.js";
@@ -17,6 +21,8 @@ import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import { MemoryRedisCommandClient } from "./support/session.js";
+import type { RuntimeConfig } from "../src/config.js";
+import { createWorkerRuntime } from "../src/worker/runtime.js";
 
 const now = "2026-06-18T00:00:00.000Z";
 
@@ -77,6 +83,241 @@ function createRepositories() {
   const events: SourceFileEventDraft[] = [];
   const graphNodes = new Map<string, OkfGraphNode>();
   const graphEdges: OkfGraphEdge[] = [];
+  const workerJobs: WorkerJobRecord[] = [];
+  const workerJobRepository: WorkerJobRepository = {
+    async enqueueWorkerJob(input) {
+      const record = createWorkerJob(input);
+      workerJobs.push(record);
+      return record;
+    },
+    async enqueueSourceFileJob(input) {
+      const record = createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+      workerJobs.push(record);
+      return record;
+    },
+    async enqueuePublicationJob(input) {
+      const existing = workerJobs.find(
+        (job) =>
+          job.kind === "publication" &&
+          job.knowledgeBaseId === input.knowledgeBaseId &&
+          (job.status === "queued" || job.status === "running")
+      );
+
+      if (existing) {
+        return existing;
+      }
+
+      const record = createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: null,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+      workerJobs.push(record);
+      return record;
+    },
+    async claimWorkerJobs(input) {
+      const candidates = workerJobs
+        .filter((job) => {
+          if (!input.kinds.includes(job.kind)) {
+            return false;
+          }
+          if (job.runAfter > input.now) {
+            return false;
+          }
+          if (job.status === "queued") {
+            return true;
+          }
+          return (
+            job.status === "running" &&
+            job.lockedAt !== null &&
+            (job.heartbeatAt ?? job.lockedAt) < input.staleBefore
+          );
+        })
+        .sort((left, right) =>
+          `${left.runAfter}\u0000${left.createdAt}\u0000${left.id}`.localeCompare(
+            `${right.runAfter}\u0000${right.createdAt}\u0000${right.id}`
+          )
+        )
+        .slice(0, input.limit);
+
+      for (const job of candidates) {
+        job.status = "running";
+        job.lockedBy = input.workerId;
+        job.lockedAt = input.now;
+        job.heartbeatAt = input.now;
+        job.startedAt = job.startedAt ?? input.now;
+        job.attemptCount += 1;
+        job.updatedAt = input.now;
+      }
+
+      return candidates;
+    },
+    async completeWorkerJob(input) {
+      const job = workerJobs.find(
+        (candidate) =>
+          candidate.id === input.id &&
+          candidate.lockedBy === input.workerId &&
+          candidate.status === "running"
+      );
+
+      if (!job) {
+        return null;
+      }
+
+      job.status = "completed";
+      job.lockedBy = null;
+      job.lockedAt = null;
+      job.heartbeatAt = null;
+      job.completedAt = input.completedAt;
+      job.failedAt = null;
+      job.lastErrorCode = null;
+      job.lastErrorMessage = null;
+      job.updatedAt = input.completedAt;
+      return job;
+    },
+    async failWorkerJob(input) {
+      const job = workerJobs.find(
+        (candidate) =>
+          candidate.id === input.id &&
+          candidate.lockedBy === input.workerId &&
+          candidate.status === "running"
+      );
+
+      if (!job) {
+        return null;
+      }
+
+      job.status = input.retryAfter ? "queued" : "failed";
+      job.lockedBy = null;
+      job.lockedAt = null;
+      job.heartbeatAt = null;
+      job.runAfter = input.retryAfter ?? job.runAfter;
+      job.failedAt = input.failedAt;
+      job.lastErrorCode = input.errorCode;
+      job.lastErrorMessage = input.errorMessage;
+      job.updatedAt = input.failedAt;
+      return job;
+    },
+    async deadLetterWorkerJob(input) {
+      const job = workerJobs.find(
+        (candidate) =>
+          candidate.id === input.id &&
+          candidate.lockedBy === input.workerId &&
+          candidate.status === "running"
+      );
+
+      if (!job) {
+        return null;
+      }
+
+      job.status = "dead_letter";
+      job.lockedBy = null;
+      job.lockedAt = null;
+      job.heartbeatAt = null;
+      job.failedAt = input.failedAt;
+      job.lastErrorCode = input.errorCode;
+      job.lastErrorMessage = input.errorMessage;
+      job.updatedAt = input.failedAt;
+      return job;
+    },
+    async releaseWorkerJob(input) {
+      const job = workerJobs.find(
+        (candidate) =>
+          candidate.id === input.id &&
+          candidate.lockedBy === input.workerId &&
+          candidate.status === "running"
+      );
+
+      if (!job) {
+        return null;
+      }
+
+      job.status = "queued";
+      job.lockedBy = null;
+      job.lockedAt = null;
+      job.heartbeatAt = null;
+      job.runAfter = input.runAfter ?? job.runAfter;
+      job.updatedAt = input.releasedAt;
+      return job;
+    },
+    async heartbeatWorkerJob(input) {
+      const job = workerJobs.find(
+        (candidate) =>
+          candidate.id === input.id &&
+          candidate.lockedBy === input.workerId &&
+          candidate.status === "running"
+      );
+
+      if (!job) {
+        return null;
+      }
+
+      job.heartbeatAt = input.heartbeatAt;
+      job.updatedAt = input.heartbeatAt;
+      return job;
+    },
+    async recordWorkerHeartbeat(input) {
+      return {
+        workerId: input.workerId,
+        lastSeenAt: input.lastSeenAt,
+        activeJobCount: input.activeJobCount,
+        metadata: input.metadata ?? {},
+        createdAt: input.lastSeenAt,
+        updatedAt: input.lastSeenAt
+      };
+    },
+    async listWorkerHeartbeats() {
+      return [];
+    },
+    async getWorkerQueueSummary(input) {
+      const jobs = workerJobs.filter((job) => {
+        if (input?.kinds && !input.kinds.includes(job.kind)) {
+          return false;
+        }
+        if (input?.knowledgeBaseId && job.knowledgeBaseId !== input.knowledgeBaseId) {
+          return false;
+        }
+        return true;
+      });
+
+      return {
+        queuedCount: jobs.filter((job) => job.status === "queued").length,
+        runningCount: jobs.filter((job) => job.status === "running").length,
+        completedCount: jobs.filter((job) => job.status === "completed").length,
+        failedCount: jobs.filter((job) => job.status === "failed").length,
+        deadLetterCount: jobs.filter((job) => job.status === "dead_letter").length,
+        oldestQueuedAt: null,
+        oldestQueuedAgeSeconds: null
+      };
+    },
+    async cleanupWorkerJobs() {
+      return 0;
+    },
+    async countActiveWorkerJobs(input) {
+      return workerJobs.filter((job) => {
+        if (job.status !== "queued" && job.status !== "running") {
+          return false;
+        }
+        if (input?.kinds && !input.kinds.includes(job.kind)) {
+          return false;
+        }
+        if (input?.knowledgeBaseId && job.knowledgeBaseId !== input.knowledgeBaseId) {
+          return false;
+        }
+        return true;
+      }).length;
+    }
+  };
 
   const repositories: AdminRepositories = {
     knowledgeBases: {
@@ -356,7 +597,8 @@ function createRepositories() {
       async deleteGraphForSourceFile(input) {
         graphNodes.delete(input.sourceFileId);
       }
-    }
+    },
+    workerJobs: workerJobRepository
   };
 
   return {
@@ -368,8 +610,48 @@ function createRepositories() {
     bundleFiles,
     events,
     graphNodes,
-    graphEdges
+    graphEdges,
+    workerJobs
   };
+}
+
+function createWorkerJob(input: {
+  kind: WorkerJobRecord["kind"];
+  knowledgeBaseId: string;
+  sourceFileId?: string | null;
+  payload: Record<string, unknown>;
+  runAfter: string;
+  maxAttempts: number;
+}): WorkerJobRecord {
+  return {
+    id: `worker-job-${randomUUIDForTest()}`,
+    kind: input.kind,
+    status: "queued",
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFileId: input.sourceFileId ?? null,
+    payload: input.payload,
+    runAfter: input.runAfter,
+    attemptCount: 0,
+    maxAttempts: input.maxAttempts,
+    lockedBy: null,
+    lockedAt: null,
+    heartbeatAt: null,
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+let nextTestId = 1;
+
+function randomUUIDForTest(): string {
+  const value = String(nextTestId).padStart(4, "0");
+  nextTestId += 1;
+  return value;
 }
 
 describe("source file queue", () => {
@@ -432,18 +714,98 @@ describe("source file queue", () => {
     });
 
     expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(sourceFileId)?.processingStage).toBe("index_publication");
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.knowledgeBase.activeReleaseId).toBeNull();
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(1);
+    expect(records.events.some((event) => event.stageKey === "llm_suggestion")).toBe(true);
+    expect(records.events.some((event) => event.stageKey === "graph_generation")).toBe(true);
+    expect(records.graphNodes.has(sourceFileId)).toBe(true);
+
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+    await publicationService?.publishNow({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 20,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      },
+      reason: "bootstrap"
+    });
+
     expect(records.sources.get(sourceFileId)?.processingStage).toBe("release_activation");
     expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("visible");
     expect(records.knowledgeBase.activeReleaseId).toMatch(/^release-/u);
     expect(records.bundleFiles.some((file) => file.logicalPath === "pages/guide.md")).toBe(true);
     expect(records.bundleFiles.some((file) => file.logicalPath === "_graph/manifest.json")).toBe(true);
-    expect(records.events.some((event) => event.stageKey === "llm_suggestion")).toBe(true);
-    expect(records.events.some((event) => event.stageKey === "graph_generation")).toBe(true);
     expect(records.events.some((event) => event.stageKey === "release_activation")).toBe(true);
-    expect(records.graphNodes.has(sourceFileId)).toBe(true);
   });
 
-  it("keeps processing when optional model suggestions are invalid", async () => {
+  it("continues a reclaimed running source file after worker restart", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "reclaimed.md",
+          bytes: new TextEncoder().encode("---\ntitle: Reclaimed\ntype: page\n---\n# Reclaimed"),
+          content: "---\ntitle: Reclaimed\ntype: page\n---\n# Reclaimed"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+
+    if (!source) {
+      throw new Error("Source file record was not created");
+    }
+
+    source.processingStatus = "running";
+    source.processingStage = "metadata_resolution";
+    source.processingStartedAt = now;
+    source.processingEndedAt = null;
+    const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, null);
+
+    await processor?.processFile({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      sourceFileId,
+      generatedAt: now,
+      batchSize: 20,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1
+    });
+
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(sourceFileId)?.processingStage).toBe("index_publication");
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.graphNodes.has(sourceFileId)).toBe(true);
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(1);
+  });
+
+  it("fails the source file when enabled model suggestions are invalid", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
@@ -485,24 +847,131 @@ describe("source file queue", () => {
       transientRetryDelayMs: 1
     });
 
-    await processor?.processFile({
-      knowledgeBaseId: records.knowledgeBase.id,
-      knowledgeBaseName: records.knowledgeBase.name,
-      sourceFileId,
-      generatedAt: now,
-      batchSize: 20,
-      cursorTtlSeconds: 900,
-      fileProcessingConcurrency: 1
-    });
+    await expect(
+      processor?.processFile({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        sourceFileId,
+        generatedAt: now,
+        batchSize: 20,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1
+      })
+    ).rejects.toThrow();
 
-    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("failed");
+    expect(records.sources.get(sourceFileId)?.processingErrorCode).toBe(
+      "MODEL_SUGGESTION_FAILED"
+    );
     expect(records.sources.get(sourceFileId)?.modelSuggestions).toBeNull();
     expect(
       records.events.some(
-        (event) => event.stageKey === "llm_suggestion" && event.severity === "warning"
+        (event) => event.stageKey === "llm_suggestion" && event.severity === "error"
       )
     ).toBe(true);
-    expect(records.graphNodes.has(sourceFileId)).toBe(true);
+    expect(records.graphNodes.has(sourceFileId)).toBe(false);
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(0);
+  });
+
+  it("fails only the relevant source file when model assistance throws", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "model-failure.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Failing model\ntype: page\n---\n# Failing model"
+          ),
+          content: "---\ntitle: Failing model\ntype: page\n---\n# Failing model"
+        },
+        {
+          fileName: "model-success.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Successful model\ntype: page\n---\n# Successful model"
+          ),
+          content: "---\ntitle: Successful model\ntype: page\n---\n# Successful model"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const [failedSourceFileId, successfulSourceFileId] = sourceFileIds;
+
+    if (!failedSourceFileId || !successfulSourceFileId) {
+      throw new Error("Source files were not created");
+    }
+
+    let modelCallCount = 0;
+    const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, {
+      client: {
+        responses: {
+          create: async () => {
+            modelCallCount += 1;
+            if (modelCallCount <= 3) {
+              throw new Error("Model service unavailable");
+            }
+
+            return {
+              status: "completed",
+              output_text: JSON.stringify({
+                description: "Suggested",
+                title: "",
+                type: "",
+                tags: [],
+                related_links: [],
+                keywords: []
+              })
+            };
+          }
+        }
+      },
+      modelName: "gpt-test",
+      contextWindowTokens: 200_000,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      },
+      suggestionConcurrency: 1,
+      transientRetryDelayMs: 1
+    });
+
+    await expect(
+      processor?.processFile({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        sourceFileId: failedSourceFileId,
+        generatedAt: now,
+        batchSize: 20,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1
+      })
+    ).rejects.toThrow("Model service unavailable");
+    await expect(
+      processor?.processFile({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        sourceFileId: successfulSourceFileId,
+        generatedAt: now,
+        batchSize: 20,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1
+      })
+    ).resolves.toMatchObject({
+      id: successfulSourceFileId,
+      processingStatus: "completed"
+    });
+
+    expect(records.sources.get(failedSourceFileId)?.processingStatus).toBe("failed");
+    expect(records.sources.get(failedSourceFileId)?.processingErrorCode).toBe(
+      "MODEL_SUGGESTION_FAILED"
+    );
+    expect(records.sources.get(failedSourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.sources.get(successfulSourceFileId)?.processingStatus).toBe("completed");
+    expect(records.graphNodes.has(successfulSourceFileId)).toBe(true);
   });
 
   it("drains dirty source files during a batch publication", async () => {
@@ -545,8 +1014,10 @@ describe("source file queue", () => {
     });
 
     expect(records.sources.get(firstSourceFileId)?.processingStatus).toBe("completed");
-    expect(records.releases.size).toBe(1);
-    expect(records.knowledgeBase.activeReleaseId).toMatch(/^release-/u);
+    expect(records.sources.get(firstSourceFileId)?.processingStage).toBe("index_publication");
+    expect(records.sources.get(firstSourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.releases.size).toBe(0);
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(1);
 
     await processor?.processFile({
       knowledgeBaseId: records.knowledgeBase.id,
@@ -559,11 +1030,102 @@ describe("source file queue", () => {
     });
 
     expect(records.sources.get(secondSourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(secondSourceFileId)?.processingStage).toBe("index_publication");
+    expect(records.sources.get(secondSourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.releases.size).toBe(0);
+
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+    await publicationService?.publishNow({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 2,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      },
+      reason: "bootstrap"
+    });
+
     expect(records.sources.get(secondSourceFileId)?.processingStage).toBe("release_activation");
     expect(records.sources.get(secondSourceFileId)?.generatedOutputStatus).toBe("visible");
-    expect(records.releases.size).toBe(2);
+    expect(records.releases.size).toBe(1);
     expect(records.knowledgeBase.activeReleaseId).toMatch(/^release-/u);
-    expect(records.bundleFiles.filter((file) => file.fileKind === "page")).toHaveLength(3);
+    expect(records.bundleFiles.filter((file) => file.fileKind === "page")).toHaveLength(2);
+  });
+
+  it("limits each publication job to the configured dirty source batch size", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: ["alpha", "beta", "gamma"].map((name) => ({
+        fileName: `${name}.md`,
+        bytes: new TextEncoder().encode(`---\ntitle: ${name}\ntype: page\n---\n# ${name}`),
+        content: `---\ntitle: ${name}\ntype: page\n---\n# ${name}`
+      })),
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+
+    for (const sourceFileId of sourceFileIds) {
+      const source = records.sources.get(sourceFileId);
+
+      if (source) {
+        source.processingStatus = "completed";
+        source.processingStage = "index_publication";
+        source.generatedOutputStatus = "pending";
+        source.publicationDirtyAt = now;
+      }
+    }
+
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+    await publicationService?.publishNow({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 2,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      },
+      reason: "batch_threshold"
+    });
+
+    const visibleSources = sourceFileIds.filter(
+      (sourceFileId) => records.sources.get(sourceFileId)?.generatedOutputStatus === "visible"
+    );
+    const pendingSources = sourceFileIds.filter(
+      (sourceFileId) => records.sources.get(sourceFileId)?.generatedOutputStatus === "pending"
+    );
+
+    expect(visibleSources).toHaveLength(2);
+    expect(pendingSources).toHaveLength(1);
+    expect(records.bundleFiles.filter((file) => file.fileKind === "page")).toHaveLength(2);
+    expect(records.workerJobs.some((job) => job.kind === "publication")).toBe(true);
+    expect(records.workerJobs.at(-1)?.payload.reason).toBe("batch_interval");
   });
 
   it("schedules remaining dirty files after a successful release leaves a tail batch", async () => {
@@ -601,6 +1163,7 @@ describe("source file queue", () => {
         source.processingStatus = "completed";
         source.processingStage = "index_publication";
         source.generatedOutputStatus = "pending";
+        source.publicationDirtyAt = null;
       }
     }
 
@@ -640,24 +1203,398 @@ describe("source file queue", () => {
         batchSize: 20,
         intervalSeconds: 0.01,
         indexShardSize: 1_000,
-        graphEdgeShardSize: 5_000
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
       },
       reason: "batch_threshold"
     });
 
     expect(records.sources.get(secondSourceFileId)?.generatedOutputStatus).toBe("pending");
-    await waitFor(
-      () => records.sources.get(secondSourceFileId)?.generatedOutputStatus === "visible",
-      500
+    expect(records.workerJobs.some((job) => job.kind === "publication")).toBe(true);
+    expect(records.workerJobs.at(-1)?.payload.reason).toBe("batch_interval");
+    expect(records.releases.size).toBe(1);
+  });
+
+  it("keeps manual publication mode pending without enqueueing publication work", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "manual.md",
+          bytes: new TextEncoder().encode("---\ntitle: Manual\ntype: page\n---\n# Manual"),
+          content: "---\ntitle: Manual\ntype: page\n---\n# Manual"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, null);
+
+    await processor?.processFile({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      sourceFileId,
+      generatedAt: now,
+      batchSize: 20,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      publication: {
+        mode: "manual",
+        batchSize: 20,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      }
+    });
+
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(sourceFileId)?.processingStage).toBe("index_publication");
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(0);
+    expect(records.releases.size).toBe(0);
+  });
+
+  it("keeps dirty markers retryable when publication fails before activation", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "publication-failure.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Publication Failure\ntype: page\n---\n# Publication"
+          ),
+          content: "---\ntitle: Publication Failure\ntype: page\n---\n# Publication"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+
+    if (!source) {
+      throw new Error("Source file record was not created");
+    }
+
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+    records.repositories.files!.createBundleFiles = async () => {
+      throw new Error("Bundle persistence failed");
+    };
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+
+    await expect(
+      publicationService?.publishNow({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        generatedAt: now,
+        pageSize: 100,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1,
+        options: {
+          mode: "batch",
+          batchSize: 20,
+          intervalSeconds: 300,
+          indexShardSize: 1_000,
+          linkIndexShardSize: 1_000,
+          manifestShardSize: 1_000,
+          graphEdgeShardSize: 5_000,
+          graphCandidateLimit: 200,
+          graphMaintenanceBatchSize: 500,
+          rootSummaryLimit: 500
+        },
+        reason: "bootstrap"
+      })
+    ).rejects.toThrow("Bundle persistence failed");
+
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("unavailable");
+    expect(records.sources.get(sourceFileId)?.publicationErrorCode).toBe("PUBLICATION_FAILED");
+    expect(records.knowledgeBase.activeReleaseId).toBeNull();
+    expect(Array.from(records.publicationJobs.values()).at(-1)?.status).toBe("failed");
+  });
+
+  it("retries failed publication worker jobs without clearing dirty files", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "publication-worker-retry.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Publication Worker Retry\ntype: page\n---\n# Retry"
+          ),
+          content: "---\ntitle: Publication Worker Retry\ntype: page\n---\n# Retry"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+
+    if (!source) {
+      throw new Error("Source file record was not created");
+    }
+
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "bootstrap" },
+        runAfter: now,
+        maxAttempts: 2
+      })
     );
-    expect(records.sources.get(secondSourceFileId)?.processingStage).toBe("release_activation");
-    expect(
-      records.events.some(
-        (event) =>
-          event.sourceFileId === secondSourceFileId && event.stageKey === "release_activation"
-      )
-    ).toBe(true);
-    expect(records.releases.size).toBe(2);
+    records.repositories.files!.createBundleFiles = async () => {
+      throw new Error("Publication worker failed");
+    };
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("queued");
+    expect(records.workerJobs[0]?.attemptCount).toBe(1);
+    expect(records.workerJobs[0]?.lastErrorCode).toBe("PUBLICATION_JOB_FAILED");
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("unavailable");
+  });
+
+  it("queues another publication job when a running publication leaves new dirty files", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "worker-publication-head.md",
+          bytes: new TextEncoder().encode("---\ntitle: Head\ntype: page\n---\n# Head"),
+          content: "---\ntitle: Head\ntype: page\n---\n# Head"
+        },
+        {
+          fileName: "worker-publication-tail.md",
+          bytes: new TextEncoder().encode("---\ntitle: Tail\ntype: page\n---\n# Tail"),
+          content: "---\ntitle: Tail\ntype: page\n---\n# Tail"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const [headSourceFileId, tailSourceFileId] = sourceFileIds;
+
+    if (!headSourceFileId || !tailSourceFileId) {
+      throw new Error("Source files were not created");
+    }
+
+    for (const sourceFileId of sourceFileIds) {
+      const source = records.sources.get(sourceFileId);
+
+      if (source) {
+        source.processingStatus = "completed";
+        source.processingStage = "index_publication";
+        source.generatedOutputStatus = "pending";
+        source.publicationDirtyAt = null;
+      }
+    }
+
+    const headSource = records.sources.get(headSourceFileId);
+
+    if (!headSource) {
+      throw new Error("Head source file was not created");
+    }
+
+    headSource.publicationDirtyAt = now;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "batch_threshold" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const visibleSourceFileCalls: string[][] = [];
+    const originalMarkSourceFilesPublicationVisible =
+      records.repositories.files!.markSourceFilesPublicationVisible!;
+    records.repositories.files!.markSourceFilesPublicationVisible = async (input) => {
+      visibleSourceFileCalls.push(input.sourceFileIds);
+      await originalMarkSourceFilesPublicationVisible(input);
+    };
+    const originalCreateBundleFiles = records.repositories.files!.createBundleFiles!;
+    let injectedTailDirtyFile = false;
+    records.repositories.files!.createBundleFiles = async (files) => {
+      if (!injectedTailDirtyFile) {
+        injectedTailDirtyFile = true;
+        const tailSource = records.sources.get(tailSourceFileId);
+
+        if (tailSource) {
+          tailSource.publicationDirtyAt = "2099-01-01T00:00:00.000Z";
+          tailSource.generatedOutputStatus = "pending";
+        }
+      }
+
+      await originalCreateBundleFiles(files);
+    };
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(visibleSourceFileCalls).toEqual([[headSourceFileId]]);
+    expect(records.workerJobs[0]?.status).toBe("completed");
+    expect(records.sources.get(headSourceFileId)?.generatedOutputStatus).toBe("visible");
+    expect(records.sources.get(tailSourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(2);
+    expect(records.workerJobs.at(-1)).toMatchObject({
+      kind: "publication",
+      status: "queued",
+      payload: { reason: "batch_interval" }
+    });
+  });
+
+  it("claims due publication work before older source-file backlog", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "publication-priority.md",
+          bytes: new TextEncoder().encode("---\ntitle: Priority\ntype: page\n---\n# Priority"),
+          content: "---\ntitle: Priority\ntype: page\n---\n# Priority"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+
+    if (!source) {
+      throw new Error("Source file record was not created");
+    }
+
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: "source-file-backlog-001",
+        payload: { reason: "upload" },
+        runAfter: "2026-06-17T00:00:00.000Z",
+        maxAttempts: 2
+      }),
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: "source-file-backlog-002",
+        payload: { reason: "upload" },
+        runAfter: "2026-06-17T00:00:01.000Z",
+        maxAttempts: 2
+      }),
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "batch_interval" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBeGreaterThan(0);
+    expect(records.workerJobs.find((job) => job.kind === "publication")?.status).toBe(
+      "completed"
+    );
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("visible");
   });
 
   it("does not create a processor when publication scheduling dependencies are unavailable", () => {
@@ -717,18 +1654,441 @@ describe("source file queue", () => {
     );
     expect(records.knowledgeBase.activeReleaseId).toBeNull();
   });
-});
 
-async function waitFor(predicate: () => boolean, timeoutMs = 100) {
-  const deadline = Date.now() + timeoutMs;
+  it("completes a claimed source-file worker job after processing", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "worker-success.md",
+          bytes: new TextEncoder().encode("---\ntitle: Worker Success\ntype: page\n---\n# Worker"),
+          content: "---\ntitle: Worker Success\ntype: page\n---\n# Worker"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
 
-  while (Date.now() < deadline) {
-    if (predicate()) {
-      return;
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId,
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
 
-  throw new Error("Timed out waiting for condition");
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("completed");
+    expect(records.workerJobs[0]?.attemptCount).toBe(1);
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+  });
+
+  it("retries transient source-file worker failures without stopping other jobs", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "worker-retry.md",
+          bytes: new TextEncoder().encode("---\ntitle: Worker Retry\ntype: page\n---\n# Retry"),
+          content: "---\ntitle: Worker Retry\ntype: page\n---\n# Retry"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    storage.objects.clear();
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId,
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("queued");
+    expect(records.workerJobs[0]?.attemptCount).toBe(1);
+    expect(records.workerJobs[0]?.lastErrorCode).toBe("WORKER_JOB_FAILED");
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("failed");
+  });
+
+  it("moves exhausted source-file worker failures to dead letter", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "worker-dead-letter.md",
+          bytes: new TextEncoder().encode("---\ntitle: Worker Dead Letter\ntype: page\n---\n# Dead"),
+          content: "---\ntitle: Worker Dead Letter\ntype: page\n---\n# Dead"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    storage.objects.clear();
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId,
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 1
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("dead_letter");
+    expect(records.workerJobs[0]?.lastErrorCode).toBe("WORKER_JOB_FAILED");
+  });
+
+  it("does not duplicate-claim a fresh running source-file worker job", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const job = createWorkerJob({
+      kind: "source_file_processing",
+      knowledgeBaseId: records.knowledgeBase.id,
+      sourceFileId: "source-file-running",
+      payload: { reason: "upload" },
+      runAfter: now,
+      maxAttempts: 2
+    });
+    const lockedAt = new Date().toISOString();
+    job.status = "running";
+    job.lockedBy = "other-worker";
+    job.lockedAt = lockedAt;
+    job.heartbeatAt = lockedAt;
+    records.workerJobs.push(job);
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(0);
+    expect(records.workerJobs[0]?.status).toBe("running");
+    expect(records.workerJobs[0]?.lockedBy).toBe("other-worker");
+  });
+
+  it("does not claim queued jobs when shutdown is already requested", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: "source-file-queued",
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(runtime.tick(abortController.signal)).resolves.toBe(0);
+    expect(records.workerJobs[0]?.status).toBe("queued");
+    expect(records.workerJobs[0]?.lockedBy).toBeNull();
+    expect(records.workerJobs[0]?.attemptCount).toBe(0);
+  });
+
+  it("releases claimed source-file and publication jobs that have not started during shutdown", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: "source-file-released",
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 2
+      }),
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "batch_threshold" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const workerJobs = records.repositories.workerJobs;
+
+    if (!workerJobs) {
+      throw new Error("Worker job repository was not created");
+    }
+
+    const originalClaim = workerJobs.claimWorkerJobs;
+    const abortController = new AbortController();
+    workerJobs.claimWorkerJobs = async (input) => {
+      const claimed = await originalClaim(input);
+      abortController.abort();
+      return claimed;
+    };
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick(abortController.signal)).resolves.toBe(0);
+    expect(records.workerJobs.map((job) => job.status)).toEqual(["queued", "queued"]);
+    expect(records.workerJobs.map((job) => job.lockedBy)).toEqual([null, null]);
+    expect(records.workerJobs.map((job) => job.heartbeatAt)).toEqual([null, null]);
+    expect(records.workerJobs.map((job) => job.attemptCount)).toEqual([1, 1]);
+  });
+
+  it("recovers a stale running source-file worker job", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "worker-restart.md",
+          bytes: new TextEncoder().encode("---\ntitle: Worker Restart\ntype: page\n---\n# Restart"),
+          content: "---\ntitle: Worker Restart\ntype: page\n---\n# Restart"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const job = createWorkerJob({
+      kind: "source_file_processing",
+      knowledgeBaseId: records.knowledgeBase.id,
+      sourceFileId,
+      payload: { reason: "upload" },
+      runAfter: now,
+      maxAttempts: 2
+    });
+    job.status = "running";
+    job.lockedBy = "stopped-worker";
+    job.lockedAt = "2026-06-18T00:00:00.000Z";
+    job.heartbeatAt = "2026-06-18T00:00:00.000Z";
+    records.workerJobs.push(job);
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("completed");
+    expect(records.workerJobs[0]?.attemptCount).toBe(1);
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+  });
+
+  it("runs bounded worker job retention cleanup during worker ticks", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const cleanupCalls: Array<{
+      completedBefore: string;
+      failedBefore: string;
+      deadLetterBefore: string;
+      limit: number;
+    }> = [];
+
+    records.repositories.workerJobs!.cleanupWorkerJobs = async (input) => {
+      cleanupCalls.push(input);
+      return input.limit;
+    };
+
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    const processedCount = await runtime.tick();
+
+    expect(processedCount).toBe(0);
+    expect(cleanupCalls).toHaveLength(1);
+    expect(cleanupCalls[0]?.limit).toBe(17);
+    expect(Date.parse(cleanupCalls[0]?.completedBefore ?? "")).toBeLessThan(Date.now());
+    expect(Date.parse(cleanupCalls[0]?.failedBefore ?? "")).toBeLessThan(Date.now());
+    expect(Date.parse(cleanupCalls[0]?.deadLetterBefore ?? "")).toBeLessThan(Date.now());
+  });
+});
+
+function createMinimalWorkerConfig(): RuntimeConfig {
+  return {
+    model: {
+      enabled: false,
+      baseUrl: "https://example.invalid/v1",
+      apiKey: "",
+      modelName: "test-model",
+      contextWindowTokens: 200_000,
+      requestMaxTimeoutMs: 1_000,
+      requestIdleTimeoutMs: 1_000,
+      suggestionConcurrency: 1,
+      transientRetryDelayMs: 1,
+      requestMinIntervalMs: 0
+    },
+    worker: {
+      sourceFileConcurrency: 1,
+      claimBatchSize: 2,
+      pollIntervalMs: 1_000,
+      lockTtlSeconds: 900,
+      heartbeatIntervalMs: 1_000,
+      jobMaxAttempts: 2,
+      jobRetryDelayMs: 1_000,
+      queueBackpressureLimit: 100,
+      shutdownGraceMs: 1_000,
+      completedJobRetentionDays: 1,
+      failedJobRetentionDays: 2,
+      deadLetterJobRetentionDays: 3,
+      retentionCleanupBatchSize: 17
+    },
+    upload: {
+      maxBytes: 1_048_576,
+      maxFiles: 8,
+      generationBatchSize: 50,
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 1
+    },
+    publication: {
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
+    },
+    pagination: {
+      defaultPageSize: 50,
+      maxPageSize: 200,
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
+    }
+  } as unknown as RuntimeConfig;
 }

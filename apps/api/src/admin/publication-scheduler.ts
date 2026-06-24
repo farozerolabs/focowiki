@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { OkfGraphLimits, OkfLogLimits } from "@focowiki/okf";
 import type {
   AdminRepositories,
+  BundleFileRecord,
   PublicationJobReason,
   PublicationJobMode,
   SourceFileRecord
 } from "../db/admin-repositories.js";
-import { publishOkfRelease } from "../okf/publication.js";
+import { publishOkfRelease, type PreviousBundleFileForPublication } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
@@ -17,7 +18,13 @@ export type PublicationRuntimeOptions = {
   batchSize: number;
   intervalSeconds: number;
   indexShardSize: number;
+  linkIndexShardSize: number;
+  manifestShardSize: number;
   graphEdgeShardSize: number;
+  graphCandidateLimit: number;
+  graphMaintenanceBatchSize: number;
+  rootSummaryLimit: number;
+  workerJobMaxAttempts?: number;
 };
 
 export type KnowledgeBasePublicationService = {
@@ -45,13 +52,6 @@ export type KnowledgeBasePublicationService = {
     allowEmptyPublication?: boolean | undefined;
   }) => Promise<{ published: boolean; releaseId: string | null }>;
 };
-
-type BatchIntervalPublicationInput = Omit<
-  Parameters<KnowledgeBasePublicationService["publishNow"]>[0],
-  "reason"
->;
-
-const pendingBatchPublicationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function createKnowledgeBasePublicationService(
   repositories: AdminRepositories,
@@ -85,6 +85,7 @@ export function createKnowledgeBasePublicationService(
   const createBundleTreeEntries = files.createBundleTreeEntries;
   const activateRelease = files.activateRelease;
   const listSourceFiles = files.listSourceFiles;
+  const listBundleFiles = files.listBundleFiles;
   const listPublicationLogHistory = files.listPublicationLogHistory;
   const markSourceFilesPublicationDirty = files.markSourceFilesPublicationDirty;
   const countDirtySourceFiles = files.countDirtySourceFiles;
@@ -96,6 +97,7 @@ export function createKnowledgeBasePublicationService(
   const startPublicationJob = files.startPublicationJob;
   const completePublicationJob = files.completePublicationJob;
   const failPublicationJob = files.failPublicationJob;
+  const workerJobs = repositories.workerJobs ?? null;
 
   const service: KnowledgeBasePublicationService = {
     async markSourceFileReady(input) {
@@ -122,36 +124,29 @@ export function createKnowledgeBasePublicationService(
       });
 
       if (!reason) {
-        scheduleBatchIntervalPublication({
-          service,
-          publishInput: input,
-          countDirtySourceFiles,
+        await enqueuePendingPublicationWorkerJob({
+          workerJobs,
+          knowledgeBaseId: input.knowledgeBaseId,
+          options: input.options,
           dirtyCount: dirty.count,
-          oldestDirtyAt: dirty.oldestDirtyAt
+          oldestDirtyAt: dirty.oldestDirtyAt,
+          generatedAt: input.generatedAt
         });
         return { published: false, releaseId: null };
       }
 
-      const result = await service.publishNow({
-        ...input,
-        reason
-      });
+      if (workerJobs) {
+        await workerJobs.enqueuePublicationJob({
+          knowledgeBaseId: input.knowledgeBaseId,
+          reason,
+          runAfter: input.generatedAt,
+          maxAttempts: input.options.workerJobMaxAttempts ?? 3
+        });
+      }
 
-      const nextDirty = await countDirtySourceFiles({
-        knowledgeBaseId: input.knowledgeBaseId
-      });
-      scheduleBatchIntervalPublication({
-        service,
-        publishInput: input,
-        countDirtySourceFiles,
-        dirtyCount: nextDirty.count,
-        oldestDirtyAt: nextDirty.oldestDirtyAt
-      });
-
-      return result;
+      return { published: false, releaseId: null };
     },
     async publishNow(input) {
-      clearBatchPublicationTimer(input.knowledgeBaseId);
       const ownerId = `publication-worker-${randomUUID()}`;
       const lockAcquired = await redis.acquireKnowledgeBasePublicationLock(
         input.knowledgeBaseId,
@@ -174,7 +169,8 @@ export function createKnowledgeBasePublicationService(
           const dirtySourceIds = await collectDirtySourceFileIds({
             listDirtySourceFiles,
             knowledgeBaseId: input.knowledgeBaseId,
-            pageSize: input.pageSize
+            pageSize: input.pageSize,
+            maxSourceFiles: publicationSourceLimit(input.options, nextReason)
           });
 
           if (dirtySourceIds.length === 0 && !input.allowEmptyPublication) {
@@ -199,6 +195,10 @@ export function createKnowledgeBasePublicationService(
           }
 
           try {
+            const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+              input.knowledgeBaseId
+            );
+            const previousReleaseId = knowledgeBase?.activeReleaseId ?? null;
             const releaseId = createReleaseId();
             const bundleRootKey = storage.keyspace.releaseRootKey(input.knowledgeBaseId, releaseId);
             await createRelease({
@@ -221,12 +221,28 @@ export function createKnowledgeBasePublicationService(
               log: input.okfLog,
               storage,
               indexShardSize: input.options.indexShardSize,
+              linkIndexShardSize: input.options.linkIndexShardSize,
+              manifestShardSize: input.options.manifestShardSize,
+              rootSummaryLimit: input.options.rootSummaryLimit,
               graph: publicationGraphLimits(input.options),
+              dirtySourceFileIds: dirtySourceIds.length > 0 ? dirtySourceIds : undefined,
               fetchPublicationLogHistory: ({ knowledgeBaseId, maxEntries }) =>
                 listPublicationLogHistory({
                   knowledgeBaseId,
                   maxEntries
                 }),
+              fetchPreviousBundleFilePage: previousReleaseId
+                ? ({ cursor, limit }) =>
+                    listBundleFiles({
+                      knowledgeBaseId: input.knowledgeBaseId,
+                      releaseId: previousReleaseId,
+                      cursor,
+                      limit
+                    }).then((page) => ({
+                      ...page,
+                      items: page.items.map(toPreviousBundleFileForPublication)
+                    }))
+                : undefined,
               fetchGraphNodePage: repositories.graph
                 ? ({ cursor, limit }) =>
                     repositories.graph!.listGraphNodes({
@@ -242,6 +258,30 @@ export function createKnowledgeBasePublicationService(
                       cursor,
                       limit
                     })
+                : undefined,
+              fetchGraphNeighborhood: repositories.graph
+                ? ({ sourceFileId, limit }) =>
+                    repositories.graph!
+                      .listGraphNeighborhood({
+                        knowledgeBaseId: input.knowledgeBaseId,
+                        sourceFileId,
+                        limit,
+                        cursor: null
+                      })
+                      .then((page) => ({
+                        sourceFileId,
+                        relationships: page.items.map((relationship) => ({
+                          fileId: relationship.fileId,
+                          path: relationship.path,
+                          title: relationship.title,
+                          relationType: relationship.relationType,
+                          direction: relationship.direction,
+                          weight: relationship.weight,
+                          reason: relationship.reason,
+                          source: relationship.source,
+                          ...(relationship.evidence ? { evidence: relationship.evidence } : {})
+                        }))
+                      }))
                 : undefined,
               fetchSourcePage: ({ cursor, limit }) =>
                 listSourceFiles({
@@ -308,12 +348,13 @@ export function createKnowledgeBasePublicationService(
             });
 
             if (!nextReason) {
-              scheduleBatchIntervalPublication({
-                service,
-                publishInput: input,
-                countDirtySourceFiles,
+              await enqueuePendingPublicationWorkerJob({
+                workerJobs,
+                knowledgeBaseId: input.knowledgeBaseId,
+                options: input.options,
                 dirtyCount: dirty.count,
-                oldestDirtyAt: dirty.oldestDirtyAt
+                oldestDirtyAt: dirty.oldestDirtyAt,
+                generatedAt: input.generatedAt
               });
             }
           } catch (error) {
@@ -345,79 +386,55 @@ export function createKnowledgeBasePublicationService(
   return service;
 }
 
-function scheduleBatchIntervalPublication(input: {
-  service: KnowledgeBasePublicationService;
-  publishInput: BatchIntervalPublicationInput;
-  countDirtySourceFiles: NonNullable<
-    NonNullable<AdminRepositories["files"]>["countDirtySourceFiles"]
-  >;
+export async function enqueuePendingPublicationWorkerJob(input: {
+  workerJobs: AdminRepositories["workerJobs"] | null;
+  knowledgeBaseId: string;
+  options: PublicationRuntimeOptions;
   dirtyCount: number;
   oldestDirtyAt: string | null;
-}) {
-  if (
-    input.publishInput.options.mode !== "batch" ||
-    input.dirtyCount === 0 ||
-    !input.oldestDirtyAt ||
-    input.publishInput.options.intervalSeconds <= 0
-  ) {
+  generatedAt: string;
+}): Promise<void> {
+  if (!input.workerJobs || input.dirtyCount === 0 || input.options.mode === "manual") {
     return;
   }
 
-  clearBatchPublicationTimer(input.publishInput.knowledgeBaseId);
-  const intervalMs = input.publishInput.options.intervalSeconds * 1_000;
-  const dueAtMs = Date.parse(input.oldestDirtyAt) + intervalMs;
-  const delayMs = Math.max(0, dueAtMs - Date.now());
-  const timer = setTimeout(() => {
-    pendingBatchPublicationTimers.delete(input.publishInput.knowledgeBaseId);
-    void publishScheduledBatchInterval(input);
-  }, delayMs);
+  const next = resolvePendingPublicationJob(input);
 
-  pendingBatchPublicationTimers.set(input.publishInput.knowledgeBaseId, timer);
-}
-
-async function publishScheduledBatchInterval(input: {
-  service: KnowledgeBasePublicationService;
-  publishInput: BatchIntervalPublicationInput;
-  countDirtySourceFiles: NonNullable<
-    NonNullable<AdminRepositories["files"]>["countDirtySourceFiles"]
-  >;
-}) {
-  const result = await input.service
-    .publishNow({
-      ...input.publishInput,
-      generatedAt: new Date().toISOString(),
-      reason: "batch_interval"
-    })
-    .catch(() => ({ published: false, releaseId: null }));
-
-  if (result.published) {
+  if (!next) {
     return;
   }
 
-  const dirty = await input
-    .countDirtySourceFiles({ knowledgeBaseId: input.publishInput.knowledgeBaseId })
-    .catch(() => ({ count: 0, oldestDirtyAt: null }));
-
-  if (dirty.count === 0) {
-    return;
-  }
-
-  scheduleBatchIntervalPublication({
-    ...input,
-    dirtyCount: dirty.count,
-    oldestDirtyAt: dirty.oldestDirtyAt
+  await input.workerJobs.enqueuePublicationJob({
+    knowledgeBaseId: input.knowledgeBaseId,
+    reason: next.reason,
+    runAfter: next.runAfter,
+    maxAttempts: input.options.workerJobMaxAttempts ?? 3
   });
 }
 
-function clearBatchPublicationTimer(knowledgeBaseId: string) {
-  const timer = pendingBatchPublicationTimers.get(knowledgeBaseId);
-
-  if (!timer) {
-    return;
+function resolvePendingPublicationJob(input: {
+  options: PublicationRuntimeOptions;
+  dirtyCount: number;
+  oldestDirtyAt: string | null;
+  generatedAt: string;
+}): { reason: PublicationJobReason; runAfter: string } | null {
+  if (input.options.mode === "per_file") {
+    return { reason: "per_file", runAfter: input.generatedAt };
   }
 
-  clearTimeout(timer);
-  pendingBatchPublicationTimers.delete(knowledgeBaseId);
+  if (input.dirtyCount >= input.options.batchSize) {
+    return { reason: "batch_threshold", runAfter: input.generatedAt };
+  }
+
+  if (!input.oldestDirtyAt || input.options.intervalSeconds <= 0) {
+    return null;
+  }
+
+  const intervalMs = input.options.intervalSeconds * 1_000;
+  return {
+    reason: "batch_interval",
+    runAfter: new Date(Date.parse(input.oldestDirtyAt) + intervalMs).toISOString()
+  };
 }
 
 function resolvePublicationReason(input: {
@@ -443,10 +460,6 @@ function resolvePublicationReason(input: {
 
   if (input.dirtyCount >= input.batchSize) {
     return "batch_threshold";
-  }
-
-  if (input.mode === "batch") {
-    return "batch_interval";
   }
 
   if (input.oldestDirtyAt && isIntervalDue(input.oldestDirtyAt, input.generatedAt, input.intervalSeconds)) {
@@ -489,29 +502,68 @@ async function collectDirtySourceFileIds(input: {
   >;
   knowledgeBaseId: string;
   pageSize: number;
+  maxSourceFiles: number;
 }): Promise<string[]> {
   const ids: string[] = [];
   let cursor: string | null = null;
 
   do {
+    const remaining = input.maxSourceFiles - ids.length;
+
+    if (remaining <= 0) {
+      break;
+    }
+
     const page = await input.listDirtySourceFiles({
       knowledgeBaseId: input.knowledgeBaseId,
-      limit: input.pageSize,
+      limit: Math.min(input.pageSize, remaining),
       cursor
     });
     ids.push(...page.items.map((source) => source.id));
     cursor = page.nextCursor;
-  } while (cursor);
+  } while (cursor && ids.length < input.maxSourceFiles);
 
   return ids;
+}
+
+function publicationSourceLimit(
+  options: PublicationRuntimeOptions,
+  reason: PublicationJobReason
+): number {
+  if (options.mode === "per_file" || reason === "per_file") {
+    return 1;
+  }
+
+  return Math.max(1, options.batchSize);
 }
 
 function isIntervalDue(oldestDirtyAt: string, generatedAt: string, intervalSeconds: number): boolean {
   return Date.parse(generatedAt) - Date.parse(oldestDirtyAt) >= intervalSeconds * 1_000;
 }
 
+function toPreviousBundleFileForPublication(
+  file: BundleFileRecord
+): PreviousBundleFileForPublication {
+  return {
+    sourceFileId: file.sourceFileId,
+    fileKind: file.fileKind,
+    logicalPath: file.logicalPath,
+    objectKey: file.objectKey,
+    contentType: file.contentType,
+    sizeBytes: file.sizeBytes,
+    checksumSha256: file.checksumSha256,
+    okfType: file.okfType,
+    title: file.title,
+    description: file.description,
+    tags: file.tags,
+    frontmatter: file.frontmatter
+  };
+}
+
 function publicationGraphLimits(options: PublicationRuntimeOptions): OkfGraphLimits {
   return {
+    pageRelatedLimit: Math.min(options.graphCandidateLimit, 50),
+    perFileLimit: options.graphCandidateLimit,
     edgeShardSize: options.graphEdgeShardSize
   };
 }

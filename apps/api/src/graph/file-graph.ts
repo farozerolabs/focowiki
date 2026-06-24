@@ -53,6 +53,7 @@ export async function buildSourceFileGraph(
     graph: input.graph,
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFileId: input.source.id,
+    candidateTerms: buildCandidateTerms(node),
     pageSize: input.pageSize,
     maxCandidateNodes: resolveMaxCandidateNodes(input)
   });
@@ -148,28 +149,48 @@ async function listCandidateNodes(input: {
   graph: FileGraphRepository;
   knowledgeBaseId: string;
   sourceFileId: string;
+  candidateTerms: string[];
   pageSize: number;
   maxCandidateNodes: number;
 }): Promise<OkfGraphNode[]> {
-  const candidates: OkfGraphNode[] = [];
+  const candidatesById = new Map<string, OkfGraphNode>();
+  const indexedCandidates = input.graph.listGraphCandidates
+    ? await input.graph.listGraphCandidates({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        terms: input.candidateTerms,
+        limit: input.maxCandidateNodes
+      })
+    : [];
+
+  for (const candidate of indexedCandidates) {
+    if (candidate.fileId !== input.sourceFileId) {
+      candidatesById.set(candidate.fileId, candidate);
+    }
+  }
+
   let cursor: string | null = null;
 
-  do {
+  while (candidatesById.size < input.maxCandidateNodes) {
     const page = await input.graph.listGraphNodes({
       knowledgeBaseId: input.knowledgeBaseId,
       limit: input.pageSize,
       cursor
     });
-    const remaining = input.maxCandidateNodes - candidates.length;
-    candidates.push(
-      ...page.items
-        .filter((node) => node.fileId !== input.sourceFileId)
-        .slice(0, Math.max(0, remaining))
-    );
+    for (const node of page.items.filter((node) => node.fileId !== input.sourceFileId)) {
+      if (candidatesById.size >= input.maxCandidateNodes) {
+        break;
+      }
+      candidatesById.set(node.fileId, node);
+    }
     cursor = page.nextCursor;
-  } while (cursor && candidates.length < input.maxCandidateNodes);
 
-  return candidates;
+    if (!cursor) {
+      break;
+    }
+  }
+
+  return Array.from(candidatesById.values()).slice(0, input.maxCandidateNodes);
 }
 
 function buildGraphEdges(input: {
@@ -271,6 +292,20 @@ async function confirmGraphEdges(input: {
 function resolveMaxCandidateNodes(input: BuildSourceFileGraphInput): number {
   const requested = input.maxCandidateNodes ?? input.pageSize * 4;
   return Math.max(1, Math.min(requested, 200));
+}
+
+function buildCandidateTerms(node: OkfGraphNode): string[] {
+  return unique([
+    ...extractSearchTerms(node.title),
+    ...(node.subjects ?? []),
+    ...(node.tags ?? []),
+    ...(node.entities ?? []),
+    ...(node.keywords ?? []),
+    ...(node.explicitReferences ?? []),
+    ...(node.relationshipHints ?? [])
+  ])
+    .filter(isUsefulTerm)
+    .slice(0, 100);
 }
 
 function listEdgeCandidateFiles(candidates: OkfGraphNode[], edges: OkfGraphEdge[]): OkfGraphNode[] {

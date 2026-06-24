@@ -350,6 +350,46 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             : null
       };
     },
+    async listGraphCandidates({ knowledgeBaseId, sourceFileId, terms, limit }) {
+      const cleanTerms = uniqueStrings(terms).slice(0, 100);
+
+      if (cleanTerms.length === 0 || limit <= 0) {
+        return [];
+      }
+
+      const lowerTerms = cleanTerms.map((term) => term.toLowerCase());
+      const likeTerms = lowerTerms.map((term) => `%${escapeLikePattern(term)}%`);
+      const rows = await sql<FileGraphNodeRow[]>`
+        SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
+        FROM focowiki.source_file_graph_nodes
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND source_file_id <> ${sourceFileId}
+          AND (
+            lower(title) LIKE ANY(${likeTerms})
+            OR lower(coalesce(description, '')) LIKE ANY(${likeTerms})
+            OR lower(coalesce(summary, '')) LIKE ANY(${likeTerms})
+            OR subjects_json ?| ${cleanTerms}
+            OR tags_json ?| ${cleanTerms}
+            OR entities_json ?| ${cleanTerms}
+            OR keywords_json ?| ${cleanTerms}
+          )
+        ORDER BY (
+          CASE WHEN lower(title) = ANY(${lowerTerms}) THEN 100 ELSE 0 END
+          + CASE WHEN lower(title) LIKE ANY(${likeTerms}) THEN 40 ELSE 0 END
+          + CASE WHEN lower(coalesce(description, '')) LIKE ANY(${likeTerms}) THEN 20 ELSE 0 END
+          + CASE WHEN lower(coalesce(summary, '')) LIKE ANY(${likeTerms}) THEN 20 ELSE 0 END
+          + CASE WHEN subjects_json ?| ${cleanTerms} THEN 25 ELSE 0 END
+          + CASE WHEN tags_json ?| ${cleanTerms} THEN 15 ELSE 0 END
+          + CASE WHEN entities_json ?| ${cleanTerms} THEN 25 ELSE 0 END
+          + CASE WHEN keywords_json ?| ${cleanTerms} THEN 20 ELSE 0 END
+        ) DESC,
+        updated_at DESC,
+        source_file_id ASC
+        LIMIT ${limit}
+      `;
+
+      return rows.map(mapFileGraphNodeRow);
+    },
     async getGraphSummary({ knowledgeBaseId, sourceFileId, limit }) {
       const countRows = await sql<Array<{ relationship_count: number | string }>>`
         SELECT count(*)::int AS relationship_count
@@ -580,4 +620,14 @@ function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(
+    new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))
+  );
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }

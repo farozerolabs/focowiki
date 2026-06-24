@@ -64,6 +64,67 @@ describe("file graph", () => {
     expect(nodePageCalls).toBe(2);
   });
 
+  it("prefers indexed graph candidates before falling back to node pages", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const target = {
+      ...createGraphNode("source-target", "target-policy.md"),
+      title: "Target policy",
+      subjects: ["pilot zone"],
+      tags: ["policy"],
+      entities: ["Target policy"],
+      keywords: ["target", "policy"]
+    };
+    const storedEdges: OkfGraphEdge[] = [];
+    let candidateCalls = 0;
+    let nodePageCalls = 0;
+    const graph: FileGraphRepository = {
+      async upsertGraphNode() {
+        return undefined;
+      },
+      async upsertGraphEdges(input) {
+        storedEdges.push(...input.edges);
+      },
+      async listGraphCandidates(input) {
+        candidateCalls += 1;
+        expect(input.terms).toContain("pilot zone");
+        return [target];
+      },
+      async listGraphNodes() {
+        nodePageCalls += 1;
+        return { items: [createGraphNode("source-unrelated", "unrelated.md")], nextCursor: null };
+      },
+      async listGraphEdges() {
+        return { items: storedEdges, nextCursor: null };
+      },
+      async listGraphNeighborhood() {
+        return { items: [], nextCursor: null };
+      },
+      async deleteGraphForSourceFile() {
+        return undefined;
+      }
+    };
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current pilot zone policy",
+        type: "page",
+        tags: ["pilot zone"]
+      },
+      body: "# Current\n\nThis file explicitly discusses Target policy.",
+      suggestions: null,
+      pageSize: 10,
+      maxCandidateNodes: 1
+    });
+
+    expect(candidateCalls).toBe(1);
+    expect(nodePageCalls).toBe(0);
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges[0]?.toFileId).toBe("source-target");
+  });
+
   it("does not publish relationships from weak shared metadata alone", async () => {
     const source = createSourceFile("source-zunyi-gas", "zunyi-gas.md");
     const candidates = [

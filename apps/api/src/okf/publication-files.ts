@@ -63,6 +63,19 @@ export type ManifestFileEntry = {
   metadata?: IndexMetadata;
 };
 
+export type SearchIndexItem = ReturnType<typeof buildSearchIndex>["items"][number];
+
+export type LinkIndexEntry = {
+  from: string;
+  to: string;
+  label: string;
+};
+
+export type JsonCollectionShardDescriptor = {
+  path: string;
+  count: number;
+};
+
 export type PublicationLogHistory = {
   entries: OkfLogEntry[];
   summaries: OkfLogMonthlySummary[];
@@ -199,7 +212,8 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
         "- Source-backed pages may include `fileId` and `graph` frontmatter fields.",
         "- `_graph/index.md` introduces the file graph.",
         "- `_graph/manifest.json` describes graph file counts and path patterns.",
-        "- `_graph/nodes.jsonl` stores one graph node per line.",
+        "- `_graph/nodes.jsonl` stores graph nodes directly or lists graph node shards.",
+        "- `_graph/nodes/*.jsonl` stores sharded graph nodes when present.",
         "- `_graph/edges/*.jsonl` stores sharded graph edges.",
         "- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
       ].join("\n")
@@ -212,9 +226,17 @@ export function renderIndexFiles(
   files: ManifestFileEntry[],
   generatedAt: string,
   graph: NormalizedOkfGraph | null = null,
-  options: { shardSize?: number | undefined } = {}
+  options: {
+    shardSize?: number | undefined;
+    searchShardSize?: number | undefined;
+    linkShardSize?: number | undefined;
+    manifestShardSize?: number | undefined;
+  } = {}
 ): GeneratedOkfFile[] {
-  const shardSize = normalizeShardSize(options.shardSize);
+  const fallbackShardSize = normalizeShardSize(options.shardSize);
+  const searchShardSize = normalizeShardSize(options.searchShardSize ?? fallbackShardSize);
+  const linkShardSize = normalizeShardSize(options.linkShardSize ?? fallbackShardSize);
+  const manifestShardSize = normalizeShardSize(options.manifestShardSize ?? fallbackShardSize);
   const searchIndex = buildSearchIndex(
     pages.map((page) => ({
       path: page.pagePath,
@@ -249,7 +271,7 @@ export function renderIndexFiles(
     shardKind: "search_index_shard",
     collectionKey: "items",
     items: searchIndex.items,
-    shardSize
+    shardSize: searchShardSize
   });
   const linkFiles = renderJsonCollectionIndex({
     generatedAt,
@@ -259,11 +281,11 @@ export function renderIndexFiles(
     shardKind: "link_index_shard",
     collectionKey: "links",
     items: linkIndex.links,
-    shardSize
+    shardSize: linkShardSize
   });
   const manifestFiles = renderManifestIndexFiles({
     generatedAt,
-    shardSize,
+    shardSize: manifestShardSize,
     files: [
       ...files.map((file) => ({
         path: file.path,
@@ -281,6 +303,102 @@ export function renderIndexFiles(
   });
 
   return [...manifestFiles, ...searchFiles, ...linkFiles];
+}
+
+export function pageToSearchIndexItem(page: GeneratedPageSummary): SearchIndexItem {
+  const item = buildSearchIndex(
+    [{
+      path: page.pagePath,
+      fileId: page.fileId,
+      ...(page.graphRef ? { graphRef: page.graphRef } : {}),
+      title: page.metadata.title,
+      ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
+        ? { description: page.metadata.description }
+        : {}),
+      tags: Array.isArray(page.metadata.tags) ? page.metadata.tags : [],
+      keywords: readSuggestedStrings(page.suggestions?.keywords),
+      metadata: page.metadata
+    }],
+    ""
+  ).items[0];
+
+  if (!item) {
+    throw new Error("Search index item was not generated");
+  }
+
+  return item;
+}
+
+export function pageToLinkIndexEntries(
+  page: GeneratedPageSummary,
+  publicPaths: Set<string>
+): LinkIndexEntry[] {
+  return [
+    {
+      from: "index.md",
+      to: page.pagePath,
+      label: page.metadata.title
+    },
+    {
+      from: "log.md",
+      to: page.pagePath,
+      label: page.metadata.title
+    },
+    ...buildRelatedLinkEntries(page, publicPaths)
+  ];
+}
+
+export function renderJsonCollectionRootFile<T>(input: {
+  generatedAt: string;
+  rootPath: string;
+  rootKind: BundleFileKind;
+  collectionKey: string;
+  itemCount: number;
+  shardSize: number;
+  shards: JsonCollectionShardDescriptor[];
+  inlineItems?: T[] | undefined;
+}): GeneratedOkfFile {
+  if (input.shards.length === 0) {
+    return {
+      logicalPath: input.rootPath,
+      sourceFileId: null,
+      fileKind: input.rootKind,
+      metadata: null,
+      content: stringifyJson({
+        generated_at: input.generatedAt,
+        [input.collectionKey]: input.inlineItems ?? []
+      })
+    };
+  }
+
+  return {
+    logicalPath: input.rootPath,
+    sourceFileId: null,
+    fileKind: input.rootKind,
+    metadata: null,
+    content: stringifyJson({
+      generated_at: input.generatedAt,
+      mode: "sharded",
+      collection: input.collectionKey,
+      item_count: input.itemCount,
+      shard_size: input.shardSize,
+      shards: input.shards
+    })
+  };
+}
+
+export function renderJsonCollectionShardFile<T>(input: {
+  logicalPath: string;
+  shardKind: BundleFileKind;
+  items: T[];
+}): GeneratedOkfFile {
+  return {
+    logicalPath: input.logicalPath,
+    sourceFileId: null,
+    fileKind: input.shardKind,
+    metadata: null,
+    content: `${input.items.map((item) => JSON.stringify(item)).join("\n")}\n`
+  };
 }
 
 function renderManifestIndexFiles(input: {
@@ -531,7 +649,7 @@ function renderRelatedLinks(
     .filter((link) => publicPaths.has(link.path))
     .map((link) => `- [${link.title}](${toMarkdownHref(link.path)}) - ${link.relationType}`);
 
-  if (graph && graphRelated.length > 0) {
+  if (graphRelated.length > 0) {
     return ["", "## Related", "", ...graphRelated];
   }
 

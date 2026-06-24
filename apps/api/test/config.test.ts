@@ -32,7 +32,10 @@ describe("parseRuntimeConfig", () => {
       password: "admin-password",
       sessionSecret: "session-secret-with-enough-entropy"
     });
-    expect(config.database.url).toBe("postgres://focowiki:focowiki@127.0.0.1:5432/focowiki");
+    expect(config.database).toEqual({
+      url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
+      poolMax: 10
+    });
     expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
     expect(config.ports).toEqual({
       adminApi: 43_000,
@@ -52,7 +55,6 @@ describe("parseRuntimeConfig", () => {
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     });
@@ -61,7 +63,31 @@ describe("parseRuntimeConfig", () => {
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
+    });
+    expect(config.worker).toEqual({
+      databasePoolMax: 6,
+      sourceFileConcurrency: 2,
+      claimBatchSize: 10,
+      pollIntervalMs: 1_000,
+      lockTtlSeconds: 900,
+      jobMaxAttempts: 3,
+      jobRetryDelayMs: 30_000,
+      queueBackpressureLimit: 5_000,
+      queueBackpressureKnowledgeBaseLimit: 2_000,
+      queueBackpressureMaxAgeSeconds: 3_600,
+      queueBackpressureRetryAfterSeconds: 60,
+      heartbeatIntervalMs: 15_000,
+      shutdownGraceMs: 30_000,
+      completedJobRetentionDays: 7,
+      failedJobRetentionDays: 30,
+      deadLetterJobRetentionDays: 90,
+      retentionCleanupBatchSize: 1_000
     });
     expect(config.logging).toEqual({
       level: "debug",
@@ -357,23 +383,50 @@ describe("parseRuntimeConfig", () => {
     expect(config.pagination).toEqual({
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     });
   });
 
-  it("keeps admin pagination configuration internal", () => {
+  it("parses bounded pagination and generated content read limits", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
-      ADMIN_LIST_PAGE_SIZE: "201",
-      ADMIN_LIST_MAX_PAGE_SIZE: "1",
-      ADMIN_PAGINATION_CURSOR_TTL_SECONDS: "0"
+      ADMIN_LIST_DEFAULT_PAGE_SIZE: "75",
+      ADMIN_LIST_MAX_PAGE_SIZE: "250",
+      TREE_CHILD_DEFAULT_PAGE_SIZE: "120",
+      TREE_CHILD_MAX_PAGE_SIZE: "600",
+      PAGINATION_CURSOR_TTL_SECONDS: "1200",
+      GENERATED_CONTENT_MAX_BYTES: "2097152"
     });
 
     expect(config.pagination).toEqual({
-      defaultPageSize: 50,
-      maxPageSize: 200,
-      cursorTtlSeconds: 900
+      defaultPageSize: 75,
+      maxPageSize: 250,
+      treeDefaultPageSize: 120,
+      treeMaxPageSize: 600,
+      cursorTtlSeconds: 1200,
+      generatedContentMaxBytes: 2_097_152
     });
+  });
+
+  it("rejects pagination defaults larger than maximums", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        ADMIN_LIST_DEFAULT_PAGE_SIZE: "201",
+        ADMIN_LIST_MAX_PAGE_SIZE: "200"
+      })
+    ).toThrow(/ADMIN_LIST_DEFAULT_PAGE_SIZE/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        TREE_CHILD_DEFAULT_PAGE_SIZE: "501",
+        TREE_CHILD_MAX_PAGE_SIZE: "500"
+      })
+    ).toThrow(/TREE_CHILD_DEFAULT_PAGE_SIZE/);
   });
 
   it("validates upload limits", () => {
@@ -426,31 +479,88 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/OKF_LOG_MAX_BYTES/);
   });
 
-  it("defaults and validates upload and model concurrency limits", () => {
+  it("defaults and validates upload, worker, and model concurrency limits", () => {
     expect(parseRuntimeConfig(validEnv).upload).toMatchObject({
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
     });
     expect(
       parseRuntimeConfig({
         ...validEnv,
-        UPLOAD_TASK_CONCURRENCY: "2",
         UPLOAD_FILE_PROCESSING_CONCURRENCY: "4",
-        UPLOAD_STORAGE_CONCURRENCY: "6"
-      }).upload
+        UPLOAD_STORAGE_CONCURRENCY: "6",
+        DATABASE_POOL_MAX: "16",
+        WORKER_DATABASE_POOL_MAX: "8",
+        WORKER_SOURCE_FILE_CONCURRENCY: "3",
+        WORKER_CLAIM_BATCH_SIZE: "12",
+        WORKER_HEARTBEAT_INTERVAL_MS: "10000",
+        WORKER_QUEUE_BACKPRESSURE_KB_LIMIT: "300",
+        WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS: "1800",
+        WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS: "30",
+        WORKER_COMPLETED_JOB_RETENTION_DAYS: "3",
+        WORKER_FAILED_JOB_RETENTION_DAYS: "14",
+        WORKER_DEAD_LETTER_JOB_RETENTION_DAYS: "45",
+        WORKER_RETENTION_CLEANUP_BATCH_SIZE: "500"
+      })
     ).toMatchObject({
-      taskConcurrency: 2,
-      fileProcessingConcurrency: 4,
-      storageConcurrency: 6
+      database: {
+        poolMax: 16
+      },
+      upload: {
+        fileProcessingConcurrency: 4,
+        storageConcurrency: 6
+      },
+      worker: {
+        databasePoolMax: 8,
+        sourceFileConcurrency: 3,
+        claimBatchSize: 12,
+        heartbeatIntervalMs: 10_000,
+        queueBackpressureKnowledgeBaseLimit: 300,
+        queueBackpressureMaxAgeSeconds: 1_800,
+        queueBackpressureRetryAfterSeconds: 30,
+        completedJobRetentionDays: 3,
+        failedJobRetentionDays: 14,
+        deadLetterJobRetentionDays: 45,
+        retentionCleanupBatchSize: 500
+      }
     });
 
     expect(() =>
       parseRuntimeConfig({
         ...validEnv,
-        UPLOAD_TASK_CONCURRENCY: "0"
+        DATABASE_POOL_MAX: "0"
       })
-    ).toThrow(/UPLOAD_TASK_CONCURRENCY/);
+    ).toThrow(/DATABASE_POOL_MAX/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_DATABASE_POOL_MAX: "-1"
+      })
+    ).toThrow(/WORKER_DATABASE_POOL_MAX/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_SOURCE_FILE_CONCURRENCY: "0"
+      })
+    ).toThrow(/WORKER_SOURCE_FILE_CONCURRENCY/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_HEARTBEAT_INTERVAL_MS: "0"
+      })
+    ).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS: "-1"
+      })
+    ).toThrow(/WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        WORKER_RETENTION_CLEANUP_BATCH_SIZE: "0"
+      })
+    ).toThrow(/WORKER_RETENTION_CLEANUP_BATCH_SIZE/);
     expect(() =>
       parseRuntimeConfig({
         ...validEnv,
@@ -498,7 +608,12 @@ describe("parseRuntimeConfig", () => {
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     });
     expect(
       parseRuntimeConfig({
@@ -507,14 +622,24 @@ describe("parseRuntimeConfig", () => {
         PUBLICATION_BATCH_SIZE: "400",
         PUBLICATION_INTERVAL_SECONDS: "120",
         INDEX_SHARD_SIZE: "2000",
-        GRAPH_EDGE_SHARD_SIZE: "6000"
+        LINK_INDEX_SHARD_SIZE: "3000",
+        MANIFEST_SHARD_SIZE: "4000",
+        GRAPH_EDGE_SHARD_SIZE: "6000",
+        GRAPH_CANDIDATE_LIMIT: "150",
+        GRAPH_MAINTENANCE_BATCH_SIZE: "350",
+        ROOT_SUMMARY_LIMIT: "450"
       }).publication
     ).toEqual({
       mode: "manual",
       batchSize: 400,
       intervalSeconds: 120,
       indexShardSize: 2_000,
-      graphEdgeShardSize: 6_000
+      linkIndexShardSize: 3_000,
+      manifestShardSize: 4_000,
+      graphEdgeShardSize: 6_000,
+      graphCandidateLimit: 150,
+      graphMaintenanceBatchSize: 350,
+      rootSummaryLimit: 450
     });
 
     expect(() =>
@@ -535,6 +660,12 @@ describe("parseRuntimeConfig", () => {
         INDEX_SHARD_SIZE: "-1"
       })
     ).toThrow(/INDEX_SHARD_SIZE/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        GRAPH_CANDIDATE_LIMIT: "0"
+      })
+    ).toThrow(/GRAPH_CANDIDATE_LIMIT/);
   });
 
   it("enables model assistance when key and model are configured", () => {

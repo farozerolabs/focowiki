@@ -19,7 +19,7 @@ vi.mock("../src/lib/admin-api", () => ({
   deleteKnowledgeBase: vi.fn(),
   deleteKnowledgeBaseFile: vi.fn(async () => ({
     deleted: true,
-    releaseId: "release-delete"
+    publicationQueued: true
   })),
   fetchKnowledgeBaseFileDetail: vi.fn(async () => ({
     file: {
@@ -48,6 +48,30 @@ vi.mock("../src/lib/admin-api", () => ({
       }
     ],
     nextCursor: null
+  })),
+  fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
+    sourceFileJobs: {
+      queuedCount: 0,
+      runningCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      deadLetterCount: 0,
+      oldestQueuedAt: null,
+      oldestQueuedAgeSeconds: null
+    },
+    publicationJobs: {
+      queuedCount: 0,
+      runningCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      deadLetterCount: 0,
+      oldestQueuedAt: null,
+      oldestQueuedAgeSeconds: null
+    },
+    dirtySourceFiles: {
+      count: 0,
+      oldestDirtyAt: null
+    }
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => ({
     index: "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=index.md",

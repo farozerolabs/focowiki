@@ -135,6 +135,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             "Uploaded files exceed configured limits.",
             "PAYLOAD_TOO_LARGE",
             413
+          ),
+          "503": errorResponse(
+            "Worker queue is above the configured backpressure limit.",
+            "QUEUE_BACKPRESSURE",
+            503
           )
         }
       })
@@ -184,7 +189,14 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.retryKnowledgeBaseSourceFile,
         successStatus: 202,
         successSchema: ref("SourceFileRetryResponse"),
-        successExample: responseExamples.retryKnowledgeBaseSourceFile
+        successExample: responseExamples.retryKnowledgeBaseSourceFile,
+        extraResponses: {
+          "503": errorResponse(
+            "Worker queue is above the configured backpressure limit.",
+            "QUEUE_BACKPRESSURE",
+            503
+          )
+        }
       })
     },
     "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree": {
@@ -200,6 +212,13 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             required: false,
             description: "Logical parent path. Traversal and storage paths are rejected.",
             schema: { type: "string", default: "" }
+          },
+          {
+            name: "entryType",
+            in: "query",
+            required: false,
+            description: "Optional tree node type filter.",
+            schema: { type: "string", enum: ["file", "directory"] }
           },
           ...paginationParameters()
         ],

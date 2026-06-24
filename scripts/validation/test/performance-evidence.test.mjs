@@ -55,7 +55,13 @@ test("performance evidence enforces large-scale batch size and records bounded m
   assert.equal(summary.endpointTimings.count, 2);
   assert.equal(summary.endpointTimings.maxReadMs, 25);
   assert.equal(summary.endpointTimings.maxMutationMs, 250);
+  assert.equal(summary.endpointTimings.p50Ms, 25);
+  assert.equal(summary.endpointTimings.p95Ms, 250);
   assert.equal(summary.sourceFileDurations.count, 1);
+  assert.equal(summary.sourceFileDurations.p50Ms, 5000);
+  assert.equal(summary.sourceFileDurations.p95Ms, 5000);
+  assert.equal(typeof summary.memory.startRssMb, "number");
+  assert.equal(typeof summary.memory.deltaRssMb, "number");
   assert.equal(summary.pagination.length, 1);
   assert.equal(JSON.stringify(summary).includes("kb-secret-id"), false);
   assert.equal(JSON.stringify(summary).includes("source-secret-id"), false);

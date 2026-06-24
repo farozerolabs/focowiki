@@ -7,17 +7,42 @@ const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
 const DEFAULT_MODEL_TRANSIENT_RETRY_DELAY_MS = 60_000;
 const DEFAULT_MODEL_REQUEST_MIN_INTERVAL_MS = 2_000;
-const INTERNAL_PAGINATION_DEFAULT_PAGE_SIZE = 50;
-const INTERNAL_PAGINATION_MAX_PAGE_SIZE = 200;
-const INTERNAL_PAGINATION_CURSOR_TTL_SECONDS = 900;
-const DEFAULT_UPLOAD_TASK_CONCURRENCY = 1;
+const DEFAULT_DATABASE_POOL_MAX = 10;
+const DEFAULT_WORKER_DATABASE_POOL_MAX = 6;
+const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
+const DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE = 200;
+const DEFAULT_TREE_CHILD_PAGE_SIZE = 100;
+const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
+const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
+const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_STORAGE_CONCURRENCY = 4;
+const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
+const DEFAULT_WORKER_CLAIM_BATCH_SIZE = 10;
+const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_WORKER_LOCK_TTL_SECONDS = 900;
+const DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS = 15_000;
+const DEFAULT_WORKER_JOB_MAX_ATTEMPTS = 3;
+const DEFAULT_WORKER_JOB_RETRY_DELAY_MS = 30_000;
+const DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT = 5_000;
+const DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT = 2_000;
+const DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS = 3_600;
+const DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS = 60;
+const DEFAULT_WORKER_SHUTDOWN_GRACE_MS = 30_000;
+const DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS = 7;
+const DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS = 30;
+const DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS = 90;
+const DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE = 1_000;
 const DEFAULT_PUBLICATION_MODE = "batch";
 const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
 const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
 const DEFAULT_INDEX_SHARD_SIZE = 1_000;
+const DEFAULT_LINK_INDEX_SHARD_SIZE = 1_000;
+const DEFAULT_MANIFEST_SHARD_SIZE = 1_000;
 const DEFAULT_GRAPH_EDGE_SHARD_SIZE = 5_000;
+const DEFAULT_GRAPH_CANDIDATE_LIMIT = 200;
+const DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE = 500;
+const DEFAULT_ROOT_SUMMARY_LIMIT = 500;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
@@ -28,6 +53,26 @@ const DEFAULT_LOG_FILE_MAX_FILES = 5;
 
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
 export type PublicationMode = "batch" | "manual" | "per_file";
+
+export type WorkerRuntimeConfig = {
+  databasePoolMax?: number;
+  sourceFileConcurrency: number;
+  claimBatchSize: number;
+  pollIntervalMs: number;
+  lockTtlSeconds: number;
+  heartbeatIntervalMs?: number;
+  jobMaxAttempts: number;
+  jobRetryDelayMs: number;
+  queueBackpressureLimit: number;
+  queueBackpressureKnowledgeBaseLimit?: number;
+  queueBackpressureMaxAgeSeconds?: number;
+  queueBackpressureRetryAfterSeconds?: number;
+  shutdownGraceMs: number;
+  completedJobRetentionDays?: number;
+  failedJobRetentionDays?: number;
+  deadLetterJobRetentionDays?: number;
+  retentionCleanupBatchSize?: number;
+};
 
 export type RateLimitConfig = {
   max: number;
@@ -69,6 +114,7 @@ export type RuntimeConfig = {
   };
   database: {
     url: string;
+    poolMax?: number;
   };
   redis: {
     url: string;
@@ -94,21 +140,29 @@ export type RuntimeConfig = {
     maxBytes: number;
     maxFiles: number;
     generationBatchSize: number;
-    taskConcurrency: number;
     fileProcessingConcurrency: number;
     storageConcurrency: number;
   };
+  worker?: WorkerRuntimeConfig;
   publication: {
     mode: PublicationMode;
     batchSize: number;
     intervalSeconds: number;
     indexShardSize: number;
+    linkIndexShardSize: number;
+    manifestShardSize: number;
     graphEdgeShardSize: number;
+    graphCandidateLimit: number;
+    graphMaintenanceBatchSize: number;
+    rootSummaryLimit: number;
   };
   pagination: {
     defaultPageSize: number;
     maxPageSize: number;
+    treeDefaultPageSize: number;
+    treeMaxPageSize: number;
     cursorTtlSeconds: number;
+    generatedContentMaxBytes: number;
   };
   okf?: {
     log: {
@@ -164,6 +218,12 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const adminPassword = requireString(env, "ADMIN_PASSWORD", issues);
   const adminSessionSecret = requireString(env, "ADMIN_SESSION_SECRET", issues);
   const databaseUrl = requireDatabaseUrl(env, "DATABASE_URL", issues);
+  const databasePoolMax = optionalPositiveInteger(
+    env,
+    "DATABASE_POOL_MAX",
+    DEFAULT_DATABASE_POOL_MAX,
+    issues
+  );
   const redisUrl = requireRedisUrl(env, "REDIS_URL", issues);
   const ports = parseServicePorts(env, issues);
   const publicBaseUrl = requireUrl(env, "PUBLIC_BASE_URL", issues);
@@ -178,12 +238,6 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const maxBytes = requirePositiveInteger(env, "MAX_UPLOAD_BYTES", issues);
   const maxFiles = requirePositiveInteger(env, "MAX_UPLOAD_FILES", issues);
   const generationBatchSize = optionalPositiveInteger(env, "GENERATION_BATCH_SIZE", 50, issues);
-  const taskConcurrency = optionalPositiveInteger(
-    env,
-    "UPLOAD_TASK_CONCURRENCY",
-    DEFAULT_UPLOAD_TASK_CONCURRENCY,
-    issues
-  );
   const fileProcessingConcurrency = optionalPositiveInteger(
     env,
     "UPLOAD_FILE_PROCESSING_CONCURRENCY",
@@ -197,7 +251,8 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     issues
   );
   const publication = parsePublicationConfig(env, issues);
-  const pagination = createDefaultPaginationConfig();
+  const worker = parseWorkerConfig(env, issues);
+  const pagination = parsePaginationConfig(env, issues);
   const okf = parseOkfConfig(env, issues);
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
   const model = parseModelConfig(env, issues);
@@ -226,7 +281,8 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       sessionSecret: adminSessionSecret
     },
     database: {
-      url: databaseUrl
+      url: databaseUrl,
+      poolMax: databasePoolMax
     },
     redis: {
       url: redisUrl
@@ -250,10 +306,10 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       maxBytes,
       maxFiles,
       generationBatchSize,
-      taskConcurrency,
       fileProcessingConcurrency,
       storageConcurrency
     },
+    worker,
     publication,
     model,
     logging,
@@ -427,11 +483,57 @@ function optionalHighPort(
   return parsed;
 }
 
-function createDefaultPaginationConfig(): RuntimeConfig["pagination"] {
+function parsePaginationConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig["pagination"] {
+  const defaultPageSize = optionalPositiveInteger(
+    env,
+    "ADMIN_LIST_DEFAULT_PAGE_SIZE",
+    DEFAULT_ADMIN_LIST_PAGE_SIZE,
+    issues
+  );
+  const maxPageSize = optionalPositiveInteger(
+    env,
+    "ADMIN_LIST_MAX_PAGE_SIZE",
+    DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE,
+    issues
+  );
+  const treeDefaultPageSize = optionalPositiveInteger(
+    env,
+    "TREE_CHILD_DEFAULT_PAGE_SIZE",
+    DEFAULT_TREE_CHILD_PAGE_SIZE,
+    issues
+  );
+  const treeMaxPageSize = optionalPositiveInteger(
+    env,
+    "TREE_CHILD_MAX_PAGE_SIZE",
+    DEFAULT_TREE_CHILD_MAX_PAGE_SIZE,
+    issues
+  );
+
+  if (defaultPageSize > maxPageSize) {
+    issues.push("ADMIN_LIST_DEFAULT_PAGE_SIZE must be less than or equal to ADMIN_LIST_MAX_PAGE_SIZE");
+  }
+
+  if (treeDefaultPageSize > treeMaxPageSize) {
+    issues.push("TREE_CHILD_DEFAULT_PAGE_SIZE must be less than or equal to TREE_CHILD_MAX_PAGE_SIZE");
+  }
+
   return {
-    defaultPageSize: INTERNAL_PAGINATION_DEFAULT_PAGE_SIZE,
-    maxPageSize: INTERNAL_PAGINATION_MAX_PAGE_SIZE,
-    cursorTtlSeconds: INTERNAL_PAGINATION_CURSOR_TTL_SECONDS
+    defaultPageSize,
+    maxPageSize,
+    treeDefaultPageSize,
+    treeMaxPageSize,
+    cursorTtlSeconds: optionalPositiveInteger(
+      env,
+      "PAGINATION_CURSOR_TTL_SECONDS",
+      DEFAULT_PAGINATION_CURSOR_TTL_SECONDS,
+      issues
+    ),
+    generatedContentMaxBytes: optionalPositiveInteger(
+      env,
+      "GENERATED_CONTENT_MAX_BYTES",
+      DEFAULT_GENERATED_CONTENT_MAX_BYTES,
+      issues
+    )
   };
 }
 
@@ -459,12 +561,186 @@ function parsePublicationConfig(
       DEFAULT_INDEX_SHARD_SIZE,
       issues
     ),
+    linkIndexShardSize: optionalPositiveInteger(
+      env,
+      "LINK_INDEX_SHARD_SIZE",
+      DEFAULT_LINK_INDEX_SHARD_SIZE,
+      issues
+    ),
+    manifestShardSize: optionalPositiveInteger(
+      env,
+      "MANIFEST_SHARD_SIZE",
+      DEFAULT_MANIFEST_SHARD_SIZE,
+      issues
+    ),
     graphEdgeShardSize: optionalPositiveInteger(
       env,
       "GRAPH_EDGE_SHARD_SIZE",
       DEFAULT_GRAPH_EDGE_SHARD_SIZE,
       issues
+    ),
+    graphCandidateLimit: optionalPositiveInteger(
+      env,
+      "GRAPH_CANDIDATE_LIMIT",
+      DEFAULT_GRAPH_CANDIDATE_LIMIT,
+      issues
+    ),
+    graphMaintenanceBatchSize: optionalPositiveInteger(
+      env,
+      "GRAPH_MAINTENANCE_BATCH_SIZE",
+      DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE,
+      issues
+    ),
+    rootSummaryLimit: optionalPositiveInteger(
+      env,
+      "ROOT_SUMMARY_LIMIT",
+      DEFAULT_ROOT_SUMMARY_LIMIT,
+      issues
     )
+  };
+}
+
+function parseWorkerConfig(env: RuntimeEnv, issues: string[]): WorkerRuntimeConfig {
+  return {
+    databasePoolMax: optionalPositiveInteger(
+      env,
+      "WORKER_DATABASE_POOL_MAX",
+      DEFAULT_WORKER_DATABASE_POOL_MAX,
+      issues
+    ),
+    sourceFileConcurrency: optionalPositiveInteger(
+      env,
+      "WORKER_SOURCE_FILE_CONCURRENCY",
+      DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
+      issues
+    ),
+    claimBatchSize: optionalPositiveInteger(
+      env,
+      "WORKER_CLAIM_BATCH_SIZE",
+      DEFAULT_WORKER_CLAIM_BATCH_SIZE,
+      issues
+    ),
+    pollIntervalMs: optionalPositiveInteger(
+      env,
+      "WORKER_POLL_INTERVAL_MS",
+      DEFAULT_WORKER_POLL_INTERVAL_MS,
+      issues
+    ),
+    lockTtlSeconds: optionalPositiveInteger(
+      env,
+      "WORKER_LOCK_TTL_SECONDS",
+      DEFAULT_WORKER_LOCK_TTL_SECONDS,
+      issues
+    ),
+    heartbeatIntervalMs: optionalPositiveInteger(
+      env,
+      "WORKER_HEARTBEAT_INTERVAL_MS",
+      DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
+      issues
+    ),
+    jobMaxAttempts: optionalPositiveInteger(
+      env,
+      "WORKER_JOB_MAX_ATTEMPTS",
+      DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
+      issues
+    ),
+    jobRetryDelayMs: optionalPositiveInteger(
+      env,
+      "WORKER_JOB_RETRY_DELAY_MS",
+      DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
+      issues
+    ),
+    queueBackpressureLimit: optionalPositiveInteger(
+      env,
+      "WORKER_QUEUE_BACKPRESSURE_LIMIT",
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
+      issues
+    ),
+    queueBackpressureKnowledgeBaseLimit: optionalPositiveInteger(
+      env,
+      "WORKER_QUEUE_BACKPRESSURE_KB_LIMIT",
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
+      issues
+    ),
+    queueBackpressureMaxAgeSeconds: optionalPositiveInteger(
+      env,
+      "WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS",
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
+      issues
+    ),
+    queueBackpressureRetryAfterSeconds: optionalPositiveInteger(
+      env,
+      "WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS",
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
+      issues
+    ),
+    shutdownGraceMs: optionalPositiveInteger(
+      env,
+      "WORKER_SHUTDOWN_GRACE_MS",
+      DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
+      issues
+    ),
+    completedJobRetentionDays: optionalPositiveInteger(
+      env,
+      "WORKER_COMPLETED_JOB_RETENTION_DAYS",
+      DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
+      issues
+    ),
+    failedJobRetentionDays: optionalPositiveInteger(
+      env,
+      "WORKER_FAILED_JOB_RETENTION_DAYS",
+      DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
+      issues
+    ),
+    deadLetterJobRetentionDays: optionalPositiveInteger(
+      env,
+      "WORKER_DEAD_LETTER_JOB_RETENTION_DAYS",
+      DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
+      issues
+    ),
+    retentionCleanupBatchSize: optionalPositiveInteger(
+      env,
+      "WORKER_RETENTION_CLEANUP_BATCH_SIZE",
+      DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE,
+      issues
+    )
+  };
+}
+
+export function resolveWorkerConfig(
+  config: Pick<RuntimeConfig, "worker">
+): WorkerRuntimeConfig {
+  return {
+    databasePoolMax: config.worker?.databasePoolMax ?? DEFAULT_WORKER_DATABASE_POOL_MAX,
+    sourceFileConcurrency:
+      config.worker?.sourceFileConcurrency ?? DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
+    claimBatchSize: config.worker?.claimBatchSize ?? DEFAULT_WORKER_CLAIM_BATCH_SIZE,
+    pollIntervalMs: config.worker?.pollIntervalMs ?? DEFAULT_WORKER_POLL_INTERVAL_MS,
+    lockTtlSeconds: config.worker?.lockTtlSeconds ?? DEFAULT_WORKER_LOCK_TTL_SECONDS,
+    heartbeatIntervalMs:
+      config.worker?.heartbeatIntervalMs ?? DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
+    jobMaxAttempts: config.worker?.jobMaxAttempts ?? DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
+    jobRetryDelayMs: config.worker?.jobRetryDelayMs ?? DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
+    queueBackpressureLimit:
+      config.worker?.queueBackpressureLimit ?? DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
+    queueBackpressureKnowledgeBaseLimit:
+      config.worker?.queueBackpressureKnowledgeBaseLimit ??
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
+    queueBackpressureMaxAgeSeconds:
+      config.worker?.queueBackpressureMaxAgeSeconds ??
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
+    queueBackpressureRetryAfterSeconds:
+      config.worker?.queueBackpressureRetryAfterSeconds ??
+      DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
+    shutdownGraceMs: config.worker?.shutdownGraceMs ?? DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
+    completedJobRetentionDays:
+      config.worker?.completedJobRetentionDays ?? DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
+    failedJobRetentionDays:
+      config.worker?.failedJobRetentionDays ?? DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
+    deadLetterJobRetentionDays:
+      config.worker?.deadLetterJobRetentionDays ?? DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
+    retentionCleanupBatchSize:
+      config.worker?.retentionCleanupBatchSize ?? DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE
   };
 }
 

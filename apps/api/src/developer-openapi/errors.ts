@@ -9,6 +9,7 @@ export type DeveloperOpenApiErrorCode =
   | "PAYLOAD_TOO_LARGE"
   | "VALIDATION_ERROR"
   | "RATE_LIMITED"
+  | "QUEUE_BACKPRESSURE"
   | "UNSUPPORTED_ROUTE"
   | "INTERNAL_ERROR"
   | "DATABASE_REPOSITORY_UNAVAILABLE";
@@ -80,6 +81,23 @@ export function payloadTooLarge(message = "Request payload is too large."): Deve
 
 export function rateLimited(resetAt: string): DeveloperOpenApiError {
   return createDeveloperOpenApiError("RATE_LIMITED", 429, "Rate limit exceeded.", { resetAt });
+}
+
+export function queueBackpressure(details: {
+  activeJobCount: number;
+  limit: number;
+  knowledgeBaseActiveJobCount?: number | null;
+  knowledgeBaseLimit?: number | null;
+  oldestQueuedAgeSeconds?: number | null;
+  maxQueuedAgeSeconds?: number | null;
+  retryAfterSeconds?: number;
+}): DeveloperOpenApiError {
+  return createDeveloperOpenApiError(
+    "QUEUE_BACKPRESSURE",
+    503,
+    "Worker queue is above the configured backpressure limit.",
+    details
+  );
 }
 
 export function writeDeveloperOpenApiError(

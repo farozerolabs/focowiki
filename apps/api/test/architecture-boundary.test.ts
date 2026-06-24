@@ -66,4 +66,50 @@ describe("lightweight architecture boundaries", () => {
     expect(publication).not.toContain("buildBundleTreeEntries");
     expect(publication).toContain("flushTreeEntries");
   });
+
+  it("keeps upload acceptance out of process-local source-file workers", () => {
+    const adminRoutes = readWorkspaceFile("apps/api/src/admin/routes.ts");
+    const developerRoutes = readWorkspaceFile("apps/api/src/developer-openapi/routes.ts");
+    const developerServices = readWorkspaceFile("apps/api/src/developer-openapi/services.ts");
+
+    expect(adminRoutes).not.toContain("createBoundedTaskRunner(config.upload.taskConcurrency)");
+    expect(adminRoutes).not.toContain("adminTaskRunner.run");
+    expect(adminRoutes).not.toContain("createSourceFileQueueProcessor");
+    expect(developerRoutes).not.toContain("createBoundedTaskRunner");
+    expect(developerRoutes).not.toContain("taskRunner.run");
+    expect(developerServices).not.toContain("createSourceFileQueueProcessor");
+    expect(developerServices).not.toContain("runTask:");
+  });
+
+  it("keeps durable worker queue state restartable and bounded", () => {
+    const migration = readWorkspaceFile("apps/api/migrations/001_production_admin_web.sql");
+    const repository = readWorkspaceFile("apps/api/src/db/worker-job-repository.ts");
+    const runtime = readWorkspaceFile("apps/api/src/worker/runtime.ts");
+    const workerMain = readWorkspaceFile("apps/api/src/worker-main.ts");
+    const migrationSql = migration.toLowerCase();
+    const repositorySource = repository.toLowerCase();
+
+    expect(migrationSql).toContain("create table if not exists focowiki.worker_jobs");
+    expect(migrationSql).toContain("create table if not exists focowiki.worker_heartbeats");
+    expect(migration).toContain("'dead_letter'");
+    expect(migration).toContain("worker_jobs_running_heartbeat_idx");
+    expect(repositorySource).toContain("for update skip locked");
+    expect(repository).toContain("heartbeatWorkerJob");
+    expect(repository).toContain("deadLetterWorkerJob");
+    expect(repository).toContain("cleanupWorkerJobs");
+    expect(repository).toContain("getWorkerQueueSummary");
+    expect(runtime).toContain("cleanupWorkerJobHistory");
+    expect(runtime).toContain("recordWorkerHeartbeat");
+    expect(workerMain).toContain("from focowiki.worker_jobs");
+    expect(workerMain).toContain("from focowiki.worker_heartbeats");
+  });
+
+  it("keeps source-file completion from running publication inline", () => {
+    const processor = readWorkspaceFile("apps/api/src/admin/source-file-processor.ts");
+    const scheduler = readWorkspaceFile("apps/api/src/admin/publication-scheduler.ts");
+
+    expect(processor).toContain("!repositories.workerJobs");
+    expect(scheduler).toContain("workerJobs.enqueuePublicationJob");
+    expect(scheduler).not.toContain("const result = await service.publishNow");
+  });
 });

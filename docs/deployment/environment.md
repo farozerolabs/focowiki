@@ -75,6 +75,7 @@ The API image creates the mounted `/app/logs` directory and assigns it to the ru
 | `POSTGRES_PASSWORD` | Yes | Strong database password. |
 | `POSTGRES_PORT` | Yes | Host port exposed by the Compose PostgreSQL service. This can differ from the container port `5432`. |
 | `DATABASE_URL` | Yes | API database connection string. In Docker Compose, use the container host and port: `postgres://USER:PASSWORD@postgres:5432/DB`. |
+| `DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by the API and migration processes. |
 
 `POSTGRES_PORT` exposes PostgreSQL to the host. `DATABASE_URL` is used inside containers and should point to `postgres:5432` in the production Compose network.
 
@@ -119,24 +120,51 @@ Use a dedicated bucket or prefix for each environment.
 | `MAX_UPLOAD_BYTES` | Yes | Maximum size for each uploaded Markdown file in bytes. |
 | `MAX_UPLOAD_FILES` | Yes | Maximum number of files accepted by one upload request. |
 | `GENERATION_BATCH_SIZE` | Yes | Batch size used by generation and indexing work. Keep bounded to avoid large in-memory work. |
-| `UPLOAD_TASK_CONCURRENCY` | Yes | Number of upload task workers. Use `1` for small servers and increase carefully. |
 | `UPLOAD_FILE_PROCESSING_CONCURRENCY` | Yes | Number of files processed concurrently. Use `1` for predictable memory and model usage. |
 | `UPLOAD_STORAGE_CONCURRENCY` | No | Number of uploaded source files written to S3-compatible storage concurrently. Keep this separate from model processing concurrency. |
 | `OKF_LOG_MAX_ENTRIES` | Yes | Maximum update-log entries kept in generated OKF files. |
 | `OKF_LOG_MAX_BYTES` | Yes | Maximum generated update-log size in bytes. |
+| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | Yes | Default page size for Admin source-file, task, release, and generated-file lists. |
+| `ADMIN_LIST_MAX_PAGE_SIZE` | Yes | Maximum page size accepted by Admin list APIs. |
+| `TREE_CHILD_DEFAULT_PAGE_SIZE` | Yes | Default direct-child page size for generated file tree APIs. |
+| `TREE_CHILD_MAX_PAGE_SIZE` | Yes | Maximum direct-child page size accepted by generated file tree APIs. |
+| `PAGINATION_CURSOR_TTL_SECONDS` | Yes | Redis cursor token lifetime for paginated Admin and Developer OpenAPI reads. |
+| `GENERATED_CONTENT_MAX_BYTES` | Yes | Maximum generated file content bytes read into an API response. Larger files return a 413 response. |
+| `WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by the worker process. Keep this separate from API pool size. |
+| `WORKER_SOURCE_FILE_CONCURRENCY` | Yes | Number of source-file jobs processed concurrently by the worker service. |
+| `WORKER_CLAIM_BATCH_SIZE` | Yes | Maximum number of queued jobs claimed by one worker polling pass. |
+| `WORKER_POLL_INTERVAL_MS` | Yes | Worker polling interval when no queued jobs are available. |
+| `WORKER_LOCK_TTL_SECONDS` | Yes | Time before a running worker job can be reclaimed after a worker crash. |
+| `WORKER_HEARTBEAT_INTERVAL_MS` | Yes | Interval for updating running job and worker heartbeat records. |
+| `WORKER_JOB_MAX_ATTEMPTS` | Yes | Maximum attempts for infrastructure-level worker failures. File-level processing failures stay visible on the file record. |
+| `WORKER_JOB_RETRY_DELAY_MS` | Yes | Delay before retrying an infrastructure-level worker failure. |
+| `WORKER_QUEUE_BACKPRESSURE_LIMIT` | Yes | Maximum active source-file worker jobs accepted before upload APIs return `QUEUE_BACKPRESSURE`. |
+| `WORKER_QUEUE_BACKPRESSURE_KB_LIMIT` | Yes | Maximum active source-file worker jobs for one knowledge base before upload APIs return `QUEUE_BACKPRESSURE`. |
+| `WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS` | Yes | Maximum oldest queued job age before upload APIs ask clients to slow down. |
+| `WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS` | Yes | Retry guidance returned with `QUEUE_BACKPRESSURE`. |
+| `WORKER_SHUTDOWN_GRACE_MS` | Yes | Grace period used by deployments when stopping worker processes. |
+| `WORKER_COMPLETED_JOB_RETENTION_DAYS` | Yes | Days to keep completed worker job history before cleanup. |
+| `WORKER_FAILED_JOB_RETENTION_DAYS` | Yes | Days to keep failed worker job history before cleanup. |
+| `WORKER_DEAD_LETTER_JOB_RETENTION_DAYS` | Yes | Days to keep dead-letter worker job history before cleanup. |
+| `WORKER_RETENTION_CLEANUP_BATCH_SIZE` | Yes | Maximum worker job rows removed in one cleanup pass. |
 | `PUBLICATION_MODE` | Yes | Publication mode. Use `batch` for normal deployments, `per_file` for immediate publication, or `manual` for explicit publication workflows. |
 | `PUBLICATION_BATCH_SIZE` | Yes | Number of dirty completed files that triggers a batch publication. |
 | `PUBLICATION_INTERVAL_SECONDS` | Yes | Maximum age of pending dirty files before the next processing pass can trigger publication. |
 | `INDEX_SHARD_SIZE` | Yes | Maximum number of entries per generated `_index` shard. |
+| `LINK_INDEX_SHARD_SIZE` | Yes | Maximum number of entries per generated link-index shard. |
+| `MANIFEST_SHARD_SIZE` | Yes | Maximum number of entries per generated manifest shard. |
 | `GRAPH_EDGE_SHARD_SIZE` | Yes | Maximum number of graph edges per generated graph shard. |
+| `GRAPH_CANDIDATE_LIMIT` | Yes | Maximum number of candidate graph nodes inspected for one source file. |
+| `GRAPH_MAINTENANCE_BATCH_SIZE` | Yes | Maximum graph maintenance batch size for bounded graph refresh work. |
+| `ROOT_SUMMARY_LIMIT` | Yes | Maximum source-backed page summaries included directly in root Markdown files such as `index.md` and `log.md`. Full indexes remain available through `_index` shards. |
 
-For an 8-core, 32 GB server, start with `UPLOAD_TASK_CONCURRENCY=1`, `UPLOAD_FILE_PROCESSING_CONCURRENCY=1`, and `UPLOAD_STORAGE_CONCURRENCY=4`. Raise values only after observing CPU, memory, S3 throughput, database latency, and model latency.
+For an 8-core, 32 GB server, start with `DATABASE_POOL_MAX=12`, `WORKER_DATABASE_POOL_MAX=8`, `WORKER_SOURCE_FILE_CONCURRENCY=2`, `WORKER_CLAIM_BATCH_SIZE=10`, `UPLOAD_FILE_PROCESSING_CONCURRENCY=1`, and `UPLOAD_STORAGE_CONCURRENCY=4`. Raise values only after observing CPU, memory, S3 throughput, database latency, and model latency. Keep PostgreSQL connections within `api replicas * DATABASE_POOL_MAX + worker replicas * WORKER_DATABASE_POOL_MAX + migration headroom + operational headroom`.
 
 ### Large imports and publication visibility
 
 File processing and generated output publication are separate runtime steps. A file can finish parsing, model assistance, graph generation, and page preparation before it appears in the active file tree. In `batch` mode, Focowiki marks completed files as pending publication and publishes a new active OKF-style knowledge base when the dirty file count reaches `PUBLICATION_BATCH_SIZE` or the configured interval is reached during processing.
 
-The file-processing list shows the per-file lifecycle and the generated-output visibility state. The file tree and Developer OpenAPI content reads always use the active published release. Large indexes are written as shard descriptors and JSONL shard files when they exceed `INDEX_SHARD_SIZE`, so Agents can discover shard paths from `_index/search.json`, `_index/links.json`, and `_index/manifest.json`.
+The file-processing list shows the per-file lifecycle and the generated-output visibility state. The file tree and Developer OpenAPI content reads always use the active published release. Large indexes are written as shard descriptors and JSONL shard files when they exceed the configured shard sizes, so Agents can discover shard paths from `_index/search.json`, `_index/links.json`, and `_index/manifest.json`. Root Markdown files use `ROOT_SUMMARY_LIMIT` to stay readable during large imports while complete machine-readable data remains in shards.
 
 ## Security Limits
 

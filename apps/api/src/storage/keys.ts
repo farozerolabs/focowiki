@@ -199,11 +199,11 @@ function normalizeGraphBundlePath(segments: string[]): string {
     return segments.join("/");
   }
 
-  if (segments.length === 3 && segments[1] === "edges") {
+  if (segments.length === 3 && (segments[1] === "edges" || segments[1] === "nodes")) {
     const fileName = segments[2] ?? "";
 
     if (!/^[0-9]{4}\.jsonl$/.test(fileName)) {
-      throw new StorageKeyError("path must reference an allowed graph edge shard");
+      throw new StorageKeyError("path must reference an allowed graph shard");
     }
 
     return segments.join("/");

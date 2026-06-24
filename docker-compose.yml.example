@@ -48,6 +48,30 @@ services:
     logging: *docker-logging
     restart: unless-stopped
 
+  worker:
+    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
+    command: ["node", "apps/api/runtime/worker.mjs"]
+    env_file:
+      - .env
+    volumes:
+      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "apps/api/runtime/worker.mjs", "--healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 20s
+    stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms
+    logging: *docker-logging
+    restart: unless-stopped
+
   migrate:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     command: ["node", "apps/api/runtime/migrate.mjs"]

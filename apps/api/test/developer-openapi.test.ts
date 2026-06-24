@@ -13,10 +13,28 @@ import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import type { RuntimeConfig } from "../src/config.js";
+import type { WorkerJobDraft, WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
 const developerKey = "fwok_developer-openapi-test-key";
 const now = "2026-06-16T00:00:00.000Z";
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Timed out waiting for OpenAPI reads")), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
 
 const expectedDeveloperOpenApiOperations = [
   { method: "get", path: "/openapi/v1/health", status: "200" },
@@ -99,21 +117,40 @@ function createConfig(): RuntimeConfig {
       maxBytes: 1_048_576,
       maxFiles: 8,
       generationBatchSize: 50,
-      taskConcurrency: 1,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
+    },
+    worker: {
+      sourceFileConcurrency: 1,
+      claimBatchSize: 2,
+      pollIntervalMs: 1_000,
+      lockTtlSeconds: 900,
+      jobMaxAttempts: 2,
+      jobRetryDelayMs: 1_000,
+      queueBackpressureLimit: 1,
+      queueBackpressureKnowledgeBaseLimit: 1,
+      queueBackpressureRetryAfterSeconds: 30,
+      shutdownGraceMs: 1_000
     },
     publication: {
       mode: "batch",
       batchSize: 300,
       intervalSeconds: 300,
       indexShardSize: 1_000,
-      graphEdgeShardSize: 5_000
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     },
     pagination: {
       defaultPageSize: 50,
       maxPageSize: 200,
-      cursorTtlSeconds: 900
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
     },
     model: {
       enabled: false
@@ -187,6 +224,7 @@ function createRepositories(): AdminRepositories & {
     createdAt: now,
     deletedAt: null
   };
+  const sourceFiles = new Map<string, SourceFileRecord>([[sourceFile.id, sourceFile]]);
   const bundleFile: BundleFileRecord = {
     id: "bundle-guide",
     knowledgeBaseId: "kb-seeded",
@@ -211,10 +249,12 @@ function createRepositories(): AdminRepositories & {
     parentPath: "pages",
     name: "guide.md",
     logicalPath: "pages/guide.md",
+    sortKey: "1:guide.md",
     entryType: "file",
     bundleFileId: "bundle-guide",
     sourceFileId: "source-guide",
-    fileKind: "page"
+    fileKind: "page",
+    childCount: 0
   };
   const webhooks = new Map<string, WebhookSubscriptionRecord>();
   const webhookDeliveries = new Map<string, WebhookDeliveryRecord>();
@@ -275,8 +315,21 @@ function createRepositories(): AdminRepositories & {
       }
     },
     files: {
-      async createSourceFiles() {
-        return undefined;
+      async createSourceFiles(files) {
+        for (const file of files) {
+          sourceFiles.set(file.id, {
+            ...file,
+            processingStatus: file.processingStatus ?? "queued",
+            processingStage: file.processingStage ?? "upload_storage",
+            processingStartedAt: file.processingStartedAt ?? null,
+            processingEndedAt: file.processingEndedAt ?? null,
+            processingErrorCode: file.processingErrorCode ?? null,
+            processingErrorMessage: file.processingErrorMessage ?? null,
+            retryCount: file.retryCount ?? 0,
+            createdAt: now,
+            deletedAt: null
+          });
+        }
       },
       async createRelease() {
         return undefined;
@@ -286,6 +339,18 @@ function createRepositories(): AdminRepositories & {
       },
       async createBundleTreeEntries() {
         return undefined;
+      },
+      async createSourceFileRetryAttempt(input) {
+        return {
+          id: "retry-attempt-001",
+          knowledgeBaseId: input.knowledgeBaseId,
+          sourceFileId: input.sourceFileId,
+          status: input.status,
+          startedAt: input.startedAt,
+          endedAt: input.endedAt ?? null,
+          errorCode: input.errorCode ?? null,
+          createdAt: input.startedAt
+        };
       },
       async activateRelease() {
         return undefined;
@@ -303,10 +368,10 @@ function createRepositories(): AdminRepositories & {
         return fileId === bundleFile.id ? bundleFile : null;
       },
       async getSourceFile({ sourceFileId }) {
-        return sourceFileId === sourceFile.id ? sourceFile : null;
+        return sourceFiles.get(sourceFileId) ?? null;
       },
       async listSourceFiles() {
-        return { items: [sourceFile], nextCursor: null };
+        return { items: Array.from(sourceFiles.values()), nextCursor: null };
       },
       async listGeneratedOutputsForSourceFiles() {
         return [
@@ -367,6 +432,7 @@ function createRepositories(): AdminRepositories & {
         throw new Error("Not used by Developer OpenAPI tests");
       }
     },
+    workerJobs: createWorkerJobRepository(),
     webhooks: {
       async createWebhookSubscription(input) {
         const webhook = {
@@ -440,14 +506,134 @@ function createRepositories(): AdminRepositories & {
 function createApp() {
   const config = createConfig();
   const repositories = createRepositories();
+  const storage = new MemoryStorage();
   const app = createPublicOpenApiApp({
     config,
-    storage: new MemoryStorage(),
+    storage,
     redis: createTestRedisCoordinator(),
     repositories
   });
 
-  return { app, repositories };
+  return { app, repositories, storage };
+}
+
+function createWorkerJobRepository(): WorkerJobRepository {
+  const workerJobs: WorkerJobRecord[] = [];
+
+  return {
+    async enqueueWorkerJob(input) {
+      const record = createWorkerJob(input);
+      workerJobs.push(record);
+      return record;
+    },
+    async enqueueSourceFileJob(input) {
+      const record = createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+      workerJobs.push(record);
+      return record;
+    },
+    async enqueuePublicationJob(input) {
+      const record = createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: null,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+      workerJobs.push(record);
+      return record;
+    },
+    async claimWorkerJobs() {
+      return [];
+    },
+    async releaseWorkerJob() {
+      return null;
+    },
+    async completeWorkerJob() {
+      return null;
+    },
+    async failWorkerJob() {
+      return null;
+    },
+    async deadLetterWorkerJob() {
+      return null;
+    },
+    async heartbeatWorkerJob() {
+      return null;
+    },
+    async recordWorkerHeartbeat(input) {
+      return {
+        workerId: input.workerId,
+        lastSeenAt: input.lastSeenAt,
+        activeJobCount: input.activeJobCount,
+        metadata: input.metadata ?? {},
+        createdAt: input.lastSeenAt,
+        updatedAt: input.lastSeenAt
+      };
+    },
+    async listWorkerHeartbeats() {
+      return [];
+    },
+    async getWorkerQueueSummary() {
+      return {
+        queuedCount: workerJobs.filter((job) => job.status === "queued").length,
+        runningCount: workerJobs.filter((job) => job.status === "running").length,
+        completedCount: workerJobs.filter((job) => job.status === "completed").length,
+        failedCount: workerJobs.filter((job) => job.status === "failed").length,
+        deadLetterCount: workerJobs.filter((job) => job.status === "dead_letter").length,
+        oldestQueuedAt: null,
+        oldestQueuedAgeSeconds: null
+      };
+    },
+    async cleanupWorkerJobs() {
+      return 0;
+    },
+    async countActiveWorkerJobs(input) {
+      return workerJobs.filter((job) => {
+        if (job.status !== "queued" && job.status !== "running") {
+          return false;
+        }
+        if (input.kinds && !input.kinds.includes(job.kind)) {
+          return false;
+        }
+        if (input.knowledgeBaseId && job.knowledgeBaseId !== input.knowledgeBaseId) {
+          return false;
+        }
+        return true;
+      }).length;
+    }
+  };
+}
+
+function createWorkerJob(input: WorkerJobDraft): WorkerJobRecord {
+  return {
+    id: `worker-job-${input.sourceFileId ?? input.kind}`,
+    kind: input.kind,
+    status: "queued",
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFileId: input.sourceFileId ?? null,
+    payload: input.payload,
+    runAfter: input.runAfter,
+    attemptCount: 0,
+    maxAttempts: input.maxAttempts,
+    lockedBy: null,
+    lockedAt: null,
+    heartbeatAt: null,
+    startedAt: null,
+    completedAt: null,
+    failedAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    createdAt: now,
+    updatedAt: now
+  };
 }
 
 function authHeaders() {
@@ -555,6 +741,369 @@ describe("Developer OpenAPI", () => {
     const response = await app.request("/openapi/v1/knowledge-bases");
 
     expect(response.status).toBe(401);
+  });
+
+  it("returns queue backpressure guidance when upload work is above capacity", async () => {
+    const { app, repositories } = createApp();
+    const workerJobs = repositories.workerJobs;
+
+    if (!workerJobs) {
+      throw new Error("Worker job repository is missing from the test fixture.");
+    }
+
+    workerJobs.countActiveWorkerJobs = async () => 1;
+    const form = new FormData();
+    form.append(
+      "files",
+      new File(["---\ntitle: New guide\ntype: page\n---\n# New guide"], "new-guide.md", {
+        type: "text/markdown"
+      })
+    );
+
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const body = (await response.json()) as {
+      error: {
+        code: string;
+        httpStatus: number;
+        details?: Record<string, unknown>;
+      };
+    };
+
+    expect(response.status).toBe(503);
+    expect(body.error).toMatchObject({
+      code: "QUEUE_BACKPRESSURE",
+      httpStatus: 503,
+      details: {
+        activeJobCount: 1,
+        limit: 1,
+        knowledgeBaseActiveJobCount: 1,
+        knowledgeBaseLimit: 1,
+        retryAfterSeconds: 30
+      }
+    });
+  });
+
+  it("rejects non-Markdown uploads before creating source files or queue jobs", async () => {
+    const { app, repositories, storage } = createApp();
+    let sourceFileCreateCount = 0;
+    let enqueueCount = 0;
+    const initialStoredObjectCount = storage.objects.size;
+
+    if (!repositories.files?.createSourceFiles || !repositories.workerJobs) {
+      throw new Error("Upload dependencies are missing from the test fixture.");
+    }
+
+    repositories.files.createSourceFiles = async () => {
+      sourceFileCreateCount += 1;
+    };
+    repositories.workerJobs.enqueueSourceFileJob = async (input) => {
+      enqueueCount += 1;
+      return createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+    };
+    const form = new FormData();
+    form.append("files", new File(["plain text"], "notes.txt", { type: "text/plain" }));
+
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const body = (await response.json()) as {
+      error: {
+        code: string;
+        httpStatus: number;
+        details?: Record<string, unknown>;
+      };
+    };
+
+    expect(response.status).toBe(422);
+    expect(body.error).toMatchObject({
+      code: "VALIDATION_ERROR",
+      httpStatus: 422,
+      details: {
+        field: "files"
+      }
+    });
+    expect(sourceFileCreateCount).toBe(0);
+    expect(enqueueCount).toBe(0);
+    expect(storage.objects.size).toBe(initialStoredObjectCount);
+  });
+
+  it("accepts single and multi-file Markdown uploads as durable source files", async () => {
+    const single = createApp();
+    const singleForm = new FormData();
+    singleForm.append(
+      "files",
+      new File(["---\ntitle: Single\ntype: page\n---\n# Single"], "single.md", {
+        type: "text/markdown"
+      })
+    );
+    const singleResponse = await single.app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/uploads",
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: singleForm
+      }
+    );
+    const singleBody = (await singleResponse.json()) as {
+      knowledgeBaseId: string;
+      files: Array<{ fileId: string; originalFilename: string; processingState: string }>;
+    };
+
+    expect(singleResponse.status).toBe(202);
+    expect(singleBody).toMatchObject({
+      knowledgeBaseId: "kb-seeded",
+      files: [
+        {
+          originalFilename: "single.md",
+          processingState: "queued"
+        }
+      ]
+    });
+
+    const singleFileId = singleBody.files[0]?.fileId;
+
+    if (!singleFileId) {
+      throw new Error("Single upload did not return a fileId.");
+    }
+
+    const singleDetailResponse = await single.app.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${singleFileId}`,
+      {
+        headers: authHeaders()
+      }
+    );
+
+    expect(singleDetailResponse.status).toBe(200);
+
+    const multi = createApp();
+    const multiForm = new FormData();
+    multiForm.append("files", new File(["# Alpha"], "alpha.md", { type: "text/markdown" }));
+    multiForm.append("files", new File(["# Beta"], "beta.md", { type: "text/markdown" }));
+    const multiResponse = await multi.app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: multiForm
+    });
+    const multiBody = (await multiResponse.json()) as {
+      files: Array<{ fileId: string; originalFilename: string; processingState: string }>;
+    };
+
+    expect(multiResponse.status).toBe(202);
+    expect(multiBody.files.map((file) => file.originalFilename)).toEqual(["alpha.md", "beta.md"]);
+    expect(multiBody.files.every((file) => file.fileId && file.processingState === "queued")).toBe(
+      true
+    );
+  });
+
+  it("accepts many source files and leaves processing work in the durable queue", async () => {
+    const { app, repositories } = createApp();
+    const form = new FormData();
+
+    for (let index = 1; index <= 6; index += 1) {
+      form.append(
+        "files",
+        new File([`---\ntitle: File ${index}\ntype: page\n---\n# File ${index}`], `file-${index}.md`, {
+          type: "text/markdown"
+        })
+      );
+    }
+
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const body = (await response.json()) as {
+      files: Array<{
+        fileId: string;
+        processingState: string;
+        generatedFileAvailable: boolean;
+      }>;
+    };
+    const activeQueuedWork = await repositories.workerJobs?.countActiveWorkerJobs({
+      kinds: ["source_file_processing"],
+      knowledgeBaseId: "kb-seeded"
+    });
+
+    expect(response.status).toBe(202);
+    expect(body.files).toHaveLength(6);
+    expect(body.files.every((file) => file.fileId && file.processingState === "queued")).toBe(true);
+    expect(body.files.every((file) => file.generatedFileAvailable === false)).toBe(true);
+    expect(activeQueuedWork).toBe(6);
+  });
+
+  it("keeps read endpoints responsive while durable source-file work is active", async () => {
+    const { app } = createApp();
+    const form = new FormData();
+    form.append(
+      "files",
+      new File(["---\ntitle: Active work\ntype: page\n---\n# Active work"], "active-work.md", {
+        type: "text/markdown"
+      })
+    );
+    const uploadResponse = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const uploadBody = (await uploadResponse.json()) as {
+      files: Array<{ fileId: string }>;
+    };
+    const uploadedFileId = uploadBody.files[0]?.fileId;
+
+    if (!uploadedFileId) {
+      throw new Error("Upload response did not return a fileId.");
+    }
+
+    const responses = await withTimeout(
+      Promise.all([
+        app.request("/openapi/v1/health", { headers: authHeaders() }),
+        app.request("/openapi/v1/version", { headers: authHeaders() }),
+        app.request("/openapi/v1/openapi.json", { headers: authHeaders() }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files", {
+          headers: authHeaders()
+        }),
+        app.request(`/openapi/v1/knowledge-bases/kb-seeded/source-files/${uploadedFileId}`, {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages", {
+          headers: authHeaders()
+        }),
+        app.request(
+          "/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md",
+          {
+            headers: authHeaders()
+          }
+        )
+      ]),
+      1_000
+    );
+
+    expect(uploadResponse.status).toBe(202);
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200, 200, 200]);
+  });
+
+  it("keeps queued source-file work visible after recreating the API app", async () => {
+    const config = createConfig();
+    const repositories = createRepositories();
+    const storage = new MemoryStorage();
+    const firstApp = createPublicOpenApiApp({
+      config,
+      storage,
+      redis: createTestRedisCoordinator(),
+      repositories
+    });
+    const form = new FormData();
+    form.append("files", new File(["# Restart"], "restart.md", { type: "text/markdown" }));
+    const uploadResponse = await firstApp.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const uploadBody = (await uploadResponse.json()) as {
+      files: Array<{ fileId: string }>;
+    };
+    const uploadedFileId = uploadBody.files[0]?.fileId;
+
+    if (!uploadedFileId) {
+      throw new Error("Upload response did not return a fileId.");
+    }
+
+    const restartedApp = createPublicOpenApiApp({
+      config,
+      storage,
+      redis: createTestRedisCoordinator(),
+      repositories
+    });
+    const statusResponse = await restartedApp.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${uploadedFileId}`,
+      {
+        headers: authHeaders()
+      }
+    );
+    const activeQueuedWork = await repositories.workerJobs?.countActiveWorkerJobs({
+      kinds: ["source_file_processing"],
+      knowledgeBaseId: "kb-seeded"
+    });
+
+    expect(uploadResponse.status).toBe(202);
+    expect(statusResponse.status).toBe(200);
+    expect(activeQueuedWork).toBe(1);
+  });
+
+  it("accepts retry for a failed source file and enqueues durable work", async () => {
+    const { app, repositories } = createApp();
+    const baseGetSourceFile = repositories.files?.getSourceFile;
+    let enqueueCount = 0;
+
+    if (!baseGetSourceFile || !repositories.files || !repositories.workerJobs) {
+      throw new Error("Retry dependencies are missing from the test fixture.");
+    }
+
+    repositories.files.getSourceFile = async (input) => {
+      const sourceFile = await baseGetSourceFile(input);
+
+      if (!sourceFile) {
+        return null;
+      }
+
+      return {
+        ...sourceFile,
+        processingStatus: "failed",
+        processingStage: "llm_suggestion",
+        processingEndedAt: now,
+        processingErrorCode: "MODEL_SUGGESTION_FAILED"
+      };
+    };
+    repositories.workerJobs.enqueueSourceFileJob = async (input) => {
+      enqueueCount += 1;
+      return createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        payload: { reason: input.reason },
+        runAfter: input.runAfter,
+        maxAttempts: input.maxAttempts
+      });
+    };
+
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files/source-guide/retry",
+      {
+        method: "POST",
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      file: {
+        fileId: string;
+        processingState: string;
+        currentStage: string;
+        processingErrorCode: string | null;
+      };
+    };
+
+    expect(response.status).toBe(202);
+    expect(body.file).toMatchObject({
+      fileId: "source-guide",
+      processingState: "failed",
+      currentStage: "llm_suggestion",
+      processingErrorCode: "MODEL_SUGGESTION_FAILED"
+    });
+    expect(enqueueCount).toBe(1);
   });
 
   it("exposes source file endpoints in the OpenAPI contract", async () => {

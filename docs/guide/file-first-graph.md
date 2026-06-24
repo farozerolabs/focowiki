@@ -33,6 +33,8 @@ _graph/
   index.md
   manifest.json
   nodes.jsonl
+  nodes/
+    0000.jsonl
   edges/
     0000.jsonl
   by-file/
@@ -43,7 +45,8 @@ _graph/
 | --- | --- |
 | `_graph/index.md` | Human and Agent entry point for graph navigation. |
 | `_graph/manifest.json` | Counts, path patterns, generation time, and graph metadata. |
-| `_graph/nodes.jsonl` | Compact node records for source-backed generated pages. |
+| `_graph/nodes.jsonl` | Node index entry. Small knowledge bases store node records here; large knowledge bases store shard descriptors here. |
+| `_graph/nodes/*.jsonl` | Sharded node records for large generated knowledge bases. |
 | `_graph/edges/*.jsonl` | Sharded relationship records. These are useful for exports and audits. |
 | `_graph/by-file/{fileId}.json` | Bounded local neighborhood for one generated source-backed page. This is the primary Agent exploration file. |
 
