@@ -66,6 +66,7 @@ export type RedisCoordinator = {
   ) => Promise<void>;
   getPageCache: <T = unknown>(scope: string, pageId: string) => Promise<T | null>;
   markPaginationInvalid: (scope: string, reason: string, ttlSeconds: number) => Promise<void>;
+  getPaginationInvalid: (scope: string) => Promise<string | null>;
   setPublicOpenApiKeyCache: (
     keyHash: string,
     value: { id: string },
@@ -239,6 +240,9 @@ export function createRedisCoordinator(
       await client.set(buildKey("pagination-invalid", scope), reason, {
         EX: ttlSeconds
       });
+    },
+    async getPaginationInvalid(scope) {
+      return client.get(buildKey("pagination-invalid", scope));
     },
     async setPublicOpenApiKeyCache(keyHash, value, ttlSeconds) {
       await client.set(buildKey("public-openapi-key-cache", keyHash), JSON.stringify(value), {

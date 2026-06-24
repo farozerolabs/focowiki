@@ -14,13 +14,15 @@ export async function invalidateKnowledgeBaseCaches(
   const scopes = [
     "knowledge-bases",
     `source-files:${input.knowledgeBaseId}`,
+    `developer-openapi:source-files:${input.knowledgeBaseId}`,
     `releases:${input.knowledgeBaseId}`,
     ...(input.sourceFileId
       ? [`source-file-events:${input.knowledgeBaseId}:${input.sourceFileId}`]
       : []),
     ...(input.releaseId
       ? [
-          `file-tree:${input.knowledgeBaseId}:${input.releaseId}:root`,
+          `file-tree:${input.knowledgeBaseId}:${input.releaseId}`,
+          `developer-openapi:tree:${input.knowledgeBaseId}:${input.releaseId}`,
           `bundle-files:${input.knowledgeBaseId}:${input.releaseId}`,
           `public-files:${input.knowledgeBaseId}:${input.releaseId}`
         ]

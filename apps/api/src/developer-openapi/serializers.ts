@@ -25,6 +25,11 @@ export function toDeveloperSourceFile(
   record: SourceFileRecord,
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
+  const generatedFilePath = record.generatedBundleFilePath ?? generatedOutput?.logicalPath ?? null;
+  const generatedFileId = record.generatedBundleFileId ?? generatedOutput?.bundleFileId ?? null;
+  const generatedOutputStatus =
+    record.generatedOutputStatus ?? (generatedFilePath ? "visible" : "pending");
+
   return {
     fileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
@@ -47,11 +52,10 @@ export function toDeveloperSourceFile(
     modelInvocationEndedAt: record.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: record.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: record.modelInvocationErrorCode ?? null,
-    generatedOutputStatus:
-      record.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
-    generatedFileAvailable: Boolean(generatedOutput),
-    generatedFileId: generatedOutput?.bundleFileId ?? null,
-    generatedFilePath: generatedOutput?.logicalPath ?? null,
+    generatedOutputStatus,
+    generatedFileAvailable: generatedOutputStatus === "visible" && Boolean(generatedFilePath),
+    generatedFileId,
+    generatedFilePath,
     createdAt: record.createdAt
   };
 }

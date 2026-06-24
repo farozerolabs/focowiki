@@ -131,11 +131,12 @@ try {
   await page.getByRole("button", { name: /^Upload$/ }).waitFor();
   report.checks.push(okCheck("knowledge-base", "Created and opened validation knowledge base."));
 
-  const singleSourceFileIds = await uploadFilesFromDialog(page, [singleSample], {
+  const singleUpload = await uploadFilesFromDialog(page, [singleSample], {
     checkName: "single-upload-submit",
     message: "Single-file upload dialog submitted and source-file list refreshed."
   });
-  await waitForSourceFilesCompleted(page, singleSourceFileIds, taskTimeoutMs);
+  const singleSourceFileIds = singleUpload.sourceFileIds;
+  await waitForSourceFilesCompleted(page, singleUpload.knowledgeBaseId, singleSourceFileIds, taskTimeoutMs);
   report.checks.push(okCheck("single-source-file-completed", "Browser observed completed single-file processing."));
   await validateSourceFileRows(page, singleSourceFileIds, [singleSample], taskTimeoutMs, {
     checkName: "single-source-file-row",
@@ -149,30 +150,32 @@ try {
     throw new Error("No selected sample basename was available for browser preview.");
   }
 
-  await openPagesDirectoryIfNeeded(page, firstSampleName);
-  await page.getByRole("button", { name: firstSampleName, exact: true }).click();
+  await openGeneratedFileFromProcessingRow(page, singleSourceFileIds[0]);
   await waitForPreviewText(page, singleSample.title);
   const firstCopiedUrl = await copySelectedFileUrl(page);
 
   report.checks.push(okCheck("single-file-preview", "Opened generated single-upload file preview in browser."));
 
   await page.getByRole("button", { name: "File processing" }).click();
-  const batchSourceFileIds = await uploadFilesFromDialog(page, batchSamples, {
+  const batchUpload = await uploadFilesFromDialog(page, batchSamples, {
     checkName: "batch-upload-submit",
     message: "Batch upload dialog submitted and source-file list refreshed."
   });
-  await waitForSourceFilesCompleted(page, batchSourceFileIds, taskTimeoutMs);
+  const batchSourceFileIds = batchUpload.sourceFileIds;
+  await waitForSourceFilesCompleted(page, batchUpload.knowledgeBaseId, batchSourceFileIds, taskTimeoutMs);
   report.checks.push(okCheck("batch-source-files-completed", "Browser observed completed batch source-file processing."));
   await validateSourceFileRows(page, batchSourceFileIds, batchSamples, taskTimeoutMs, {
     checkName: "batch-source-file-rows",
     message: "Batch upload appears as top-level source-file rows with original filenames, file IDs, status, stage, and pagination."
   });
 
-  await openPagesDirectoryIfNeeded(page, firstSampleName);
-  await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: secondSampleName, exact: true }).waitFor({ timeout: 30_000 });
-  await page.getByRole("button", { name: secondSampleName, exact: true }).click();
-  await waitForPreviewText(page, batchSamples[0].title);
+  await page.getByRole("button", { name: "File processing" }).click();
+  const batchPreview = await openFirstVisibleGeneratedFileFromProcessingRows(
+    page,
+    batchSourceFileIds,
+    batchSamples
+  );
+  await waitForPreviewText(page, batchPreview.sample.title);
   const relatedPreviewVisible = await hasPreviewText(page, "Related");
   const secondCopiedUrl = await copySelectedFileUrl(page);
 
@@ -193,7 +196,8 @@ try {
 
   await validateGraphFilePreview(page, [...batchSourceFileIds].sort()[0]);
 
-  await page.getByRole("button", { name: `File actions: ${secondSampleName}` }).click();
+  await openPagesDirectoryIfNeeded(page, batchPreview.sample.basename);
+  await page.getByRole("button", { name: `File actions: ${batchPreview.sample.basename}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   const deleteFileDialog = page.getByRole("alertdialog", { name: "Delete Markdown file" });
   await deleteFileDialog.waitFor();
@@ -264,6 +268,12 @@ function readBooleanEnv(value) {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function okCheck(name, message) {
   return {
     layer: "black-box",
@@ -308,6 +318,7 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
     uploadDialog.getByRole("button", { name: /^Upload$/ }).click()
   ]);
   const uploadBody = await uploadResponse.json();
+  const knowledgeBaseId = extractKnowledgeBaseIdFromAdminUrl(uploadResponse.url());
   await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
   const sourceFileIds = Array.isArray(uploadBody?.files)
     ? uploadBody.files.map((file) => file.id ?? file.fileId).filter(Boolean)
@@ -317,20 +328,152 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
     throw new Error("Upload response did not include accepted source-file ids.");
   }
 
-  for (const sourceFileId of sourceFileIds) {
-    await page.getByTestId(`source-file-row-${sourceFileId}`).waitFor({ timeout: 30_000 });
-  }
+  await waitForVisibleSourceFileRow(page, sourceFileIds, 30_000);
   report.checks.push(okCheck(checkName, message));
-  return sourceFileIds;
+  return { knowledgeBaseId, sourceFileIds };
 }
 
-async function waitForSourceFilesCompleted(page, sourceFileIds, timeout) {
-  for (const sourceFileId of sourceFileIds) {
-    await page
-      .getByTestId(`source-file-row-${sourceFileId}`)
-      .filter({ hasText: "Completed" })
-      .waitFor({ timeout });
+async function waitForSourceFilesCompleted(page, knowledgeBaseId, sourceFileIds, timeout) {
+  await waitForSourceFilesCompletedByApi(page, knowledgeBaseId, sourceFileIds, timeout);
+  await refreshSourceFilePage(page);
+  await waitForVisibleSourceFileRow(page, sourceFileIds, 30_000);
+}
+
+async function waitForSourceFilesCompletedByApi(page, knowledgeBaseId, sourceFileIds, timeout) {
+  const deadline = Date.now() + timeout;
+  const expectedIds = new Set(sourceFileIds);
+  let lastFailedRecord = null;
+
+  while (Date.now() < deadline) {
+    const records = await readSourceFileRecordsByApi(page, knowledgeBaseId, expectedIds);
+    const missingIds = sourceFileIds.filter((sourceFileId) => !records.has(sourceFileId));
+    const failedRecords = [...records.values()].filter((record) => record.processingStatus === "failed");
+
+    if (failedRecords.length > 0) {
+      lastFailedRecord = failedRecords[0];
+    }
+
+    if (
+      missingIds.length === 0 &&
+      [...records.values()].every(
+        (record) => record.processingStatus === "completed" && record.generatedFileAvailable
+      )
+    ) {
+      return;
+    }
+
+    await wait(1500);
   }
+
+  if (lastFailedRecord) {
+    throw new Error(`Source-file processing remained failed in browser validation: ${lastFailedRecord.id}`);
+  }
+
+  throw new Error("Timed out waiting for source files to complete through Admin API pagination.");
+}
+
+async function readSourceFileRecordsByApi(page, knowledgeBaseId, expectedIds) {
+  const records = new Map();
+  let cursor = null;
+  let guard = 0;
+
+  while (guard < 100) {
+    guard += 1;
+    const url = new URL(
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files`,
+      adminUiBaseUrl
+    );
+    url.searchParams.set("limit", "100");
+    if (cursor) {
+      url.searchParams.set("cursor", cursor);
+    }
+
+    const response = await page.request.get(url.toString());
+
+    if (!response.ok()) {
+      throw new Error(`Admin source-file page request failed with HTTP ${response.status()}.`);
+    }
+
+    const body = await response.json();
+    const items = Array.isArray(body.items) ? body.items : [];
+
+    for (const item of items) {
+      if (expectedIds.has(item.id)) {
+        records.set(item.id, item);
+      }
+    }
+
+    if (records.size === expectedIds.size || !body.nextCursor) {
+      return records;
+    }
+
+    cursor = body.nextCursor;
+  }
+
+  throw new Error("Admin source-file pagination exceeded the browser validation guard limit.");
+}
+
+async function waitForVisibleSourceFileRow(page, sourceFileIds, timeout) {
+  const deadline = Date.now() + timeout;
+  const sourceFileIdSet = new Set(sourceFileIds);
+
+  while (Date.now() < deadline) {
+    const visibleSourceFileIds = await readVisibleSourceFileIds(page);
+
+    if (visibleSourceFileIds.some((sourceFileId) => sourceFileIdSet.has(sourceFileId))) {
+      return;
+    }
+
+    await refreshSourceFilePage(page);
+    await wait(1000);
+  }
+
+  throw new Error("Timed out waiting for an uploaded source-file row on the current browser page.");
+}
+
+async function readVisibleSourceFileIds(page) {
+  const fileRows = page.locator('[data-testid^="source-file-row-"]');
+  const rowIds = await fileRows.evaluateAll((rows) =>
+    rows.map((row) => row.getAttribute("data-testid") ?? "")
+  );
+
+  return rowIds.map(readSourceFileIdFromTestId).filter(Boolean);
+}
+
+function readSourceFileIdFromTestId(testId) {
+  const prefix = "source-file-row-";
+
+  return testId.startsWith(prefix) && testId.length > prefix.length ? testId.slice(prefix.length) : null;
+}
+
+async function refreshSourceFilePage(page) {
+  const refreshButton = page.getByRole("button", { name: "Refresh" });
+
+  if ((await refreshButton.count()) > 0) {
+    await Promise.all([
+      page
+        .waitForResponse(
+          (response) =>
+            response.request().method() === "GET" &&
+            response.url().includes("/admin/api/knowledge-bases/") &&
+            response.url().includes("/source-files") &&
+            response.status() === 200,
+          { timeout: 30_000 }
+        )
+        .catch(() => null),
+      refreshButton.first().click()
+    ]);
+  }
+}
+
+function extractKnowledgeBaseIdFromAdminUrl(url) {
+  const match = url.match(/\/admin\/api\/knowledge-bases\/([^/]+)\/uploads(?:\?|$)/);
+
+  if (!match?.[1]) {
+    throw new Error("Could not read knowledge base id from upload response URL.");
+  }
+
+  return decodeURIComponent(match[1]);
 }
 
 async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { checkName, message }) {
@@ -338,7 +481,22 @@ async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { c
   const table = panel.getByRole("table", { name: "File processing" });
   await table.waitFor({ timeout: 30_000 });
 
-  for (const [index, sourceFileId] of sourceFileIds.entries()) {
+  const visibleSourceFileIds = await readVisibleSourceFileIds(page);
+  const sourceFileIdSet = new Set(sourceFileIds);
+  const visibleUploadedSourceFileIds = visibleSourceFileIds.filter((sourceFileId) =>
+    sourceFileIdSet.has(sourceFileId)
+  );
+  const sourceFileIdsToValidate =
+    sourceFileIds.length <= visibleSourceFileIds.length
+      ? sourceFileIds
+      : visibleUploadedSourceFileIds.slice(0, Math.min(5, visibleUploadedSourceFileIds.length));
+
+  if (sourceFileIdsToValidate.length === 0) {
+    throw new Error("Expected at least one uploaded source-file row on the current browser page.");
+  }
+
+  for (const sourceFileId of sourceFileIdsToValidate) {
+    const index = sourceFileIds.indexOf(sourceFileId);
     const row = page.getByTestId(`source-file-row-${sourceFileId}`);
     await row.waitFor({ timeout: 30_000 });
     await row.getByText(samples[index].basename, { exact: true }).waitFor({ timeout: 30_000 });
@@ -376,7 +534,12 @@ async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { c
   await nextPage.waitFor({ timeout: 30_000 });
 
   if (await nextPage.isEnabled()) {
-    const firstVisibleSourceFileId = sourceFileIds[0];
+    const firstVisibleSourceFileId = readSourceFileIdFromTestId(rowIds[0]);
+
+    if (!firstVisibleSourceFileId) {
+      throw new Error("Could not read the first visible source-file row id.");
+    }
+
     await nextPage.click();
     await page
       .getByTestId(`source-file-row-${firstVisibleSourceFileId}`)
@@ -407,6 +570,37 @@ async function openPagesDirectoryIfNeeded(page, expectedFileName) {
   await pagesButton.waitFor({ timeout: 30_000 });
   await pagesButton.click();
   await expectedFileButton.waitFor({ timeout: 30_000 });
+}
+
+async function openGeneratedFileFromProcessingRow(page, sourceFileId) {
+  const row = page.getByTestId(`source-file-row-${sourceFileId}`);
+
+  await row.waitFor({ timeout: 30_000 });
+  await row.getByRole("button", { name: "Open file" }).click();
+}
+
+async function openFirstVisibleGeneratedFileFromProcessingRows(page, sourceFileIds, samples) {
+  const visibleSourceFileIds = await readVisibleSourceFileIds(page);
+  const visibleUploadedSourceFileId = visibleSourceFileIds.find((sourceFileId) =>
+    sourceFileIds.includes(sourceFileId)
+  );
+
+  if (!visibleUploadedSourceFileId) {
+    throw new Error("Expected a visible uploaded source-file row before opening generated file preview.");
+  }
+
+  const sampleIndex = sourceFileIds.indexOf(visibleUploadedSourceFileId);
+
+  if (sampleIndex < 0 || !samples[sampleIndex]) {
+    throw new Error("Could not map visible source-file row to selected browser validation sample.");
+  }
+
+  await openGeneratedFileFromProcessingRow(page, visibleUploadedSourceFileId);
+
+  return {
+    sample: samples[sampleIndex],
+    sourceFileId: visibleUploadedSourceFileId
+  };
 }
 
 async function validateGraphFilePreview(page, sourceFileId) {

@@ -47,6 +47,11 @@ export function toAdminSourceFile(
   graphSummary?: FileGraphSummaryRecord | null,
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
+  const generatedFilePath = file.generatedBundleFilePath ?? generatedOutput?.logicalPath ?? null;
+  const generatedFileId = file.generatedBundleFileId ?? generatedOutput?.bundleFileId ?? null;
+  const generatedOutputStatus =
+    file.generatedOutputStatus ?? (generatedFilePath ? "visible" : "pending");
+
   return {
     id: file.id,
     originalName: file.originalName,
@@ -68,11 +73,10 @@ export function toAdminSourceFile(
     modelInvocationEndedAt: file.modelInvocationEndedAt ?? null,
     modelInvocationWarningCount: file.modelInvocationWarningCount ?? null,
     modelInvocationErrorCode: file.modelInvocationErrorCode ?? null,
-    generatedOutputStatus:
-      file.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
-    generatedFileAvailable: Boolean(generatedOutput),
-    generatedFilePath: generatedOutput?.logicalPath ?? null,
-    generatedFileId: generatedOutput?.bundleFileId ?? null,
+    generatedOutputStatus,
+    generatedFileAvailable: generatedOutputStatus === "visible" && Boolean(generatedFilePath),
+    generatedFilePath,
+    generatedFileId,
     graphSummary: graphSummary ? toAdminGraphSummary(graphSummary) : null,
     createdAt: file.createdAt
   };

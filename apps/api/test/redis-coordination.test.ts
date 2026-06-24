@@ -4,6 +4,7 @@ import {
   createRedisCoordinator,
   createRedisKeyBuilder
 } from "../src/redis/coordination.js";
+import { readPageResponseCache, writePageResponseCache } from "../src/page-response-cache.js";
 
 class FakeRedisClient {
   public readonly values = new Map<string, string>();
@@ -123,7 +124,39 @@ describe("Redis coordination helpers", () => {
 
     await coordinator.markPaginationInvalid("kb-list", "changed", 900);
 
+    await expect(coordinator.getPaginationInvalid("kb-list")).resolves.toBe("changed");
     expect(await client.get("focowiki:test:pagination-invalid:kb-list")).toBe("changed");
+  });
+
+  it("skips page cache reads when exact or base scopes are invalidated", async () => {
+    const client = new FakeRedisClient();
+    const coordinator = createRedisCoordinator(client, { keyPrefix: "focowiki:test" });
+
+    await writePageResponseCache({
+      redis: coordinator,
+      scope: "source-files:kb-001:processingStatus=running",
+      cacheId: "page-1",
+      value: [{ id: "source-001" }]
+    });
+
+    await expect(
+      readPageResponseCache({
+        redis: coordinator,
+        scope: "source-files:kb-001:processingStatus=running",
+        cacheId: "page-1"
+      })
+    ).resolves.toEqual([{ id: "source-001" }]);
+
+    await coordinator.markPaginationInvalid("source-files:kb-001", "changed", 900);
+
+    await expect(
+      readPageResponseCache({
+        redis: coordinator,
+        scope: "source-files:kb-001:processingStatus=running",
+        cacheId: "page-1",
+        invalidationScopes: ["source-files:kb-001"]
+      })
+    ).resolves.toBeNull();
   });
 
   it("stores rate-limit counters in Redis-backed state", async () => {

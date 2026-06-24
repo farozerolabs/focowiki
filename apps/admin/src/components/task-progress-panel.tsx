@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { UploadIcon } from "lucide-react";
+import { RefreshCwIcon, UploadIcon } from "lucide-react";
 import { CursorPaginationControls } from "@/components/cursor-pagination-controls";
 import { SourceFileDataTable } from "@/components/task-phase-data-table";
 import { Alert, AlertTitle } from "@/components/ui/alert";
@@ -25,6 +25,7 @@ type SourceFileProgressPanelProps = {
   };
   onNextPage: () => void;
   onPreviousPage: () => void;
+  onRefresh: () => void;
   onUpload: () => void;
   errorMessageKey?: string;
   retryingSourceFileId?: string | null | undefined;
@@ -38,6 +39,7 @@ export function SourceFileProgressPanel({
   pagination,
   onNextPage,
   onPreviousPage,
+  onRefresh,
   onUpload,
   errorMessageKey,
   retryingSourceFileId,
@@ -51,7 +53,11 @@ export function SourceFileProgressPanel({
       <CardHeader>
         <CardTitle>{t("tasks.title")}</CardTitle>
         <CardDescription>{t("tasks.description")}</CardDescription>
-        <CardAction>
+        <CardAction className="flex gap-2">
+          <Button type="button" variant="outline" onClick={onRefresh} disabled={pagination.isLoading}>
+            <RefreshCwIcon data-icon="inline-start" />
+            {t("tasks.refresh")}
+          </Button>
           <Button type="button" variant="outline" onClick={onUpload}>
             <UploadIcon data-icon="inline-start" />
             {t("upload.upload")}

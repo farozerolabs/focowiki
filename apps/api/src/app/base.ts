@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { createRuntimeLogger } from "../logger.js";
+import { logReadLatency } from "../read-latency-logger.js";
 import { applySecurityHeaders } from "../security/headers.js";
 
 export function createBaseApp(config: RuntimeConfig): Hono {
@@ -46,6 +47,17 @@ export function createBaseApp(config: RuntimeConfig): Hono {
     }
 
     await next();
+  });
+  app.use("*", async (context, next) => {
+    const startedAt = performance.now();
+    await next();
+    logReadLatency({
+      logger,
+      method: context.req.method,
+      path: context.req.path,
+      status: context.res.status,
+      durationMs: performance.now() - startedAt
+    });
   });
   app.get("/healthz", (context) => context.json({ status: "ok" }));
   app.notFound((context) =>

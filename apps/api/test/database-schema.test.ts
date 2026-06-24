@@ -64,6 +64,15 @@ describe("database schema migration", () => {
     expect(sql).toContain("'source_deletion'");
     expect(sql).toContain("check (severity in");
     expect(sql).toContain("check (entry_type in");
+    expect(sql).toContain("generated_bundle_file_id text");
+    expect(sql).toContain("generated_bundle_file_path text");
+    expect(sql).toContain("graph_relationship_count integer");
+    expect(sql).toContain("graph_top_relationships_json jsonb");
+    expect(sql).toContain("source_files_graph_relationship_count_check");
+    expect(sql).toContain("source_files_graph_top_relationships_json_check");
+    expect(sql).toContain("model_invocation_status text");
+    expect(sql).toContain("source_files_model_invocation_status_check");
+    expect(sql).toContain("from focowiki.model_invocations");
   });
 
   it("defines indexes for cursor pagination and scoped lookups", () => {

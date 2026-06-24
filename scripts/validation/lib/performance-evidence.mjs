@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+
 const DEFAULT_MAX_ENDPOINT_MS = 5_000;
 const DEFAULT_MAX_MUTATION_ENDPOINT_MS = 30_000;
 const DEFAULT_MAX_SOURCE_FILE_DURATION_MS = 900_000;
@@ -24,6 +26,8 @@ export function createPerformanceEvidence(env = process.env) {
     endpointTimings: [],
     sourceFileDurations: [],
     pagination: [],
+    operationalSnapshots: [],
+    runtimeResources: [],
     memory: {
       startHeapMb: currentHeapMb(),
       startRssMb: currentRssMb(),
@@ -78,6 +82,29 @@ export function recordPaginationEvidence(evidence, name, details = {}) {
     observedPages: safeNumber(details.observedPages),
     itemCount: safeNumber(details.itemCount)
   });
+}
+
+export function recordOperationalSnapshot(evidence, name, details = {}) {
+  if (!evidence) {
+    return;
+  }
+
+  evidence.operationalSnapshots.push({
+    name,
+    queueDepth: safeNumber(details.queueDepth),
+    runningSourceFiles: safeNumber(details.runningSourceFiles),
+    completedSourceFiles: safeNumber(details.completedSourceFiles),
+    failedSourceFiles: safeNumber(details.failedSourceFiles),
+    visibleSourceFiles: safeNumber(details.visibleSourceFiles),
+    publicationJobs: safeNumber(details.publicationJobs),
+    activePublicationJobs: safeNumber(details.activePublicationJobs),
+    releaseCount: safeNumber(details.releaseCount)
+  });
+}
+
+export function recordConfiguredRuntimeResources(evidence, env = process.env) {
+  recordProcessResource(evidence, "api", env.FOCOWIKI_VALIDATION_API_PID);
+  recordProcessResource(evidence, "worker", env.FOCOWIKI_VALIDATION_WORKER_PID);
 }
 
 export function finalizePerformanceEvidence(evidence, run = {}) {
@@ -155,9 +182,35 @@ export function finalizePerformanceEvidence(evidence, run = {}) {
       items: evidence.sourceFileDurations
     },
     pagination: evidence.pagination,
+    operationalSnapshots: evidence.operationalSnapshots,
+    runtimeResources: evidence.runtimeResources,
     memory: evidence.memory,
     budgetFailures
   };
+}
+
+function recordProcessResource(evidence, name, rawPid) {
+  if (!evidence || !rawPid) {
+    return;
+  }
+
+  const pid = Number(rawPid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    evidence.runtimeResources.push({ name, pid: null, rssMb: null, status: "invalid_pid" });
+    return;
+  }
+
+  const result = spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
+    encoding: "utf8"
+  });
+  const rssKb = Number(result.stdout.trim());
+
+  evidence.runtimeResources.push({
+    name,
+    pid,
+    rssMb: Number.isFinite(rssKb) && rssKb > 0 ? roundMb(rssKb / 1024) : null,
+    status: result.status === 0 ? "ok" : "unavailable"
+  });
 }
 
 function readPositiveInteger(value, fallback) {

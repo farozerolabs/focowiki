@@ -121,6 +121,7 @@ export const resources = {
         runningShort: "Running",
         ended: "File processing ended",
         endedShort: "Ended",
+        refresh: "Refresh",
         noError: "No error",
         notRecorded: "Not recorded",
         filesTable: {
@@ -376,6 +377,7 @@ export const resources = {
         runningShort: "运行中",
         ended: "文件处理已结束",
         endedShort: "已结束",
+        refresh: "刷新",
         noError: "无错误",
         notRecorded: "未记录",
         filesTable: {

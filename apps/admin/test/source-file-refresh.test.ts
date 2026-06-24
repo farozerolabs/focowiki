@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeSourceFileRefreshAfterMs,
   rememberSourceFileRefreshSnapshots,
+  shouldScheduleSourceFileRefresh,
   shouldRefreshGeneratedFiles
 } from "../src/lib/source-file-refresh";
 import type { SourceFileRecord } from "../src/lib/admin-api";
@@ -69,5 +71,70 @@ describe("source file refresh decisions", () => {
     ]);
 
     expect(shouldRefreshGeneratedFiles(previous, [])).toBe(true);
+  });
+
+  it("schedules source file refresh only for active rows on a visible processing page", () => {
+    expect(
+      shouldScheduleSourceFileRefresh({
+        activeView: "processing",
+        isVisible: true,
+        sourceFiles: [
+          sourceFile({
+            id: "source-001",
+            processingStatus: "running",
+            generatedOutputStatus: "pending"
+          })
+        ]
+      })
+    ).toBe(true);
+
+    expect(
+      shouldScheduleSourceFileRefresh({
+        activeView: "processing",
+        isVisible: true,
+        sourceFiles: [
+          sourceFile({
+            id: "source-001",
+            processingStatus: "completed",
+            generatedOutputStatus: "visible"
+          })
+        ]
+      })
+    ).toBe(false);
+
+    expect(
+      shouldScheduleSourceFileRefresh({
+        activeView: "file",
+        isVisible: true,
+        sourceFiles: [
+          sourceFile({
+            id: "source-001",
+            processingStatus: "running",
+            generatedOutputStatus: "pending"
+          })
+        ]
+      })
+    ).toBe(false);
+
+    expect(
+      shouldScheduleSourceFileRefresh({
+        activeView: "processing",
+        isVisible: false,
+        sourceFiles: [
+          sourceFile({
+            id: "source-001",
+            processingStatus: "running",
+            generatedOutputStatus: "pending"
+          })
+        ]
+      })
+    ).toBe(false);
+  });
+
+  it("normalizes server refresh hints into a bounded interval", () => {
+    expect(normalizeSourceFileRefreshAfterMs(undefined, 2_000)).toBe(2_000);
+    expect(normalizeSourceFileRefreshAfterMs(500, 2_000)).toBe(2_000);
+    expect(normalizeSourceFileRefreshAfterMs(90_000, 2_000)).toBe(60_000);
+    expect(normalizeSourceFileRefreshAfterMs(15_000, 2_000)).toBe(15_000);
   });
 });

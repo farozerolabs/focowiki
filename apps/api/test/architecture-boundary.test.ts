@@ -112,4 +112,82 @@ describe("lightweight architecture boundaries", () => {
     expect(scheduler).toContain("workerJobs.enqueuePublicationJob");
     expect(scheduler).not.toContain("const result = await service.publishNow");
   });
+
+  it("keeps source-file list reads out of graph, model, and worker expansion paths", () => {
+    const adminRoutes = readWorkspaceFile("apps/api/src/admin/routes.ts");
+    const repository = readWorkspaceFile("apps/api/src/db/admin-repositories.ts");
+    const generatedOutput = readWorkspaceFile("apps/api/src/admin/source-file-generated-output.ts");
+    const sourceListRoute = adminRoutes.slice(
+      adminRoutes.indexOf('"/admin/api/knowledge-bases/:knowledgeBaseId/source-files"'),
+      adminRoutes.indexOf('"/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId"')
+    );
+    const sourceListRepository = repository.slice(
+      repository.indexOf("async listSourceFiles"),
+      repository.indexOf("async listReleases")
+    );
+
+    expect(sourceListRoute).not.toContain("readAdminSourceFileWithGraphSummary");
+    expect(sourceListRoute).not.toContain("repositories.graph");
+    expect(sourceListRoute).not.toContain("enqueueSourceFileProcessingJobs");
+    expect(sourceListRepository).not.toContain("LEFT JOIN LATERAL");
+    expect(sourceListRepository).not.toContain("FROM focowiki.model_invocations");
+    expect(generatedOutput).not.toContain("listGeneratedOutputsForSourceFiles");
+  });
+
+  it("keeps Developer OpenAPI file content reads out of source-file list scans", () => {
+    const developerServices = readWorkspaceFile("apps/api/src/developer-openapi/services.ts");
+    const contentReadBlock = developerServices.slice(
+      developerServices.indexOf("async function readSourceForBundle"),
+      developerServices.indexOf("async function readGeneratedObjectText")
+    );
+
+    expect(developerServices).not.toContain("async function findSourceFileById");
+    expect(contentReadBlock).not.toContain("listSourceFiles");
+  });
+
+  it("keeps Admin file tree and preview reads out of worker and publication paths", () => {
+    const fileTreeRoutes = readWorkspaceFile("apps/api/src/admin/file-tree-routes.ts");
+    const adminRoutes = readWorkspaceFile("apps/api/src/admin/routes.ts");
+    const previewRoute = adminRoutes.slice(
+      adminRoutes.indexOf('"/admin/api/knowledge-bases/:knowledgeBaseId/files/detail"'),
+      adminRoutes.indexOf('app.delete(\n    "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail"')
+    );
+
+    expect(fileTreeRoutes).not.toContain("workerJobs");
+    expect(fileTreeRoutes).not.toContain("enqueue");
+    expect(fileTreeRoutes).not.toContain("publish");
+    expect(fileTreeRoutes).not.toContain("listSourceFiles");
+    expect(previewRoute).not.toContain("workerJobs");
+    expect(previewRoute).not.toContain("listSourceFiles");
+    expect(previewRoute).not.toContain("publish");
+  });
+
+  it("keeps Developer OpenAPI tree and content reads out of worker and publication paths", () => {
+    const developerServices = readWorkspaceFile("apps/api/src/developer-openapi/services.ts");
+    const treeBlock = developerServices.slice(
+      developerServices.indexOf("async listTree"),
+      developerServices.indexOf("async getFileById")
+    );
+    const contentByPathBlock = developerServices.slice(
+      developerServices.indexOf("async getFileContentByPath"),
+      developerServices.indexOf("async deleteFileById")
+    );
+
+    expect(treeBlock).not.toContain("workerJobs");
+    expect(treeBlock).not.toContain("enqueue");
+    expect(treeBlock).not.toContain("publish");
+    expect(treeBlock).not.toContain("listSourceFiles");
+    expect(contentByPathBlock).not.toContain("workerJobs");
+    expect(contentByPathBlock).not.toContain("enqueue");
+    expect(contentByPathBlock).not.toContain("publish");
+    expect(contentByPathBlock).not.toContain("listSourceFiles");
+  });
+
+  it("keeps Admin polling page-scoped and visibility-aware", () => {
+    const detailPage = readWorkspaceFile("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx");
+
+    expect(detailPage).toContain("document.visibilityState");
+    expect(detailPage).toContain("shouldScheduleSourceFileRefresh");
+    expect(detailPage).not.toContain("window.setInterval");
+  });
 });

@@ -70,7 +70,49 @@ type FileGraphJobRow = {
   created_at: Date;
 };
 
+type SourceGraphSummaryRow = {
+  graph_relationship_count: string | number;
+  graph_top_relationships_json: unknown;
+};
+
 export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGraphRepository {
+  const refreshGraphSummariesForSourceFiles = async (input: {
+    knowledgeBaseId: string;
+    sourceFileIds: string[];
+    limit: number;
+  }) => {
+    const sourceFileIds = await expandGraphSummarySourceFileIds(input.knowledgeBaseId, input.sourceFileIds);
+
+    for (const sourceFileId of sourceFileIds) {
+      const countRows = await sql<Array<{ relationship_count: number | string }>>`
+        SELECT count(*)::int AS relationship_count
+        FROM focowiki.source_file_graph_edges
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND status = 'accepted'
+          AND (
+            from_source_file_id = ${sourceFileId}
+            OR to_source_file_id = ${sourceFileId}
+          )
+      `;
+      const rows = await sql<FileGraphRelatedRow[]>`
+        ${graphNeighborhoodSql(input.knowledgeBaseId, sourceFileId)}
+        ORDER BY relationships.weight DESC, node.source_file_id ASC
+        LIMIT ${input.limit}
+      `;
+      const relationships = rows.map(mapFileGraphRelatedRow);
+
+      await sql`
+        UPDATE focowiki.source_files
+        SET
+          graph_relationship_count = ${Number(countRows[0]?.relationship_count ?? 0)},
+          graph_top_relationships_json = ${sql.json(relationships as never)}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND id = ${sourceFileId}
+          AND deleted_at IS NULL
+      `;
+    }
+  };
+
   return {
     async createGraphJob(input) {
       const rows = await sql<FileGraphJobRow[]>`
@@ -184,7 +226,11 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       `;
     },
     async upsertGraphEdges({ knowledgeBaseId, edges }) {
+      const sourceFileIds = new Set<string>();
+
       for (const edge of edges) {
+        sourceFileIds.add(edge.fromFileId);
+        sourceFileIds.add(edge.toFileId);
         await sql`
           INSERT INTO focowiki.source_file_graph_edges (
             id,
@@ -222,9 +268,19 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             updated_at = now()
         `;
       }
+
+      await refreshGraphSummariesForSourceFiles({
+        knowledgeBaseId,
+        sourceFileIds: Array.from(sourceFileIds),
+        limit: 3
+      });
     },
     async upsertRejectedGraphEdges({ knowledgeBaseId, edges }) {
+      const sourceFileIds = new Set<string>();
+
       for (const edge of edges) {
+        sourceFileIds.add(edge.fromFileId);
+        sourceFileIds.add(edge.toFileId);
         await sql`
           INSERT INTO focowiki.source_file_graph_edges (
             id,
@@ -262,6 +318,12 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             updated_at = now()
         `;
       }
+
+      await refreshGraphSummariesForSourceFiles({
+        knowledgeBaseId,
+        sourceFileIds: Array.from(sourceFileIds),
+        limit: 3
+      });
     },
     async listGraphNodes({ knowledgeBaseId, limit, cursor }) {
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
@@ -391,29 +453,38 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       return rows.map(mapFileGraphNodeRow);
     },
     async getGraphSummary({ knowledgeBaseId, sourceFileId, limit }) {
-      const countRows = await sql<Array<{ relationship_count: number | string }>>`
-        SELECT count(*)::int AS relationship_count
-        FROM focowiki.source_file_graph_edges
+      const rows = await sql<SourceGraphSummaryRow[]>`
+        SELECT graph_relationship_count, graph_top_relationships_json
+        FROM focowiki.source_files
         WHERE knowledge_base_id = ${knowledgeBaseId}
-          AND status = 'accepted'
-          AND (
-            from_source_file_id = ${sourceFileId}
-            OR to_source_file_id = ${sourceFileId}
-          )
+          AND id = ${sourceFileId}
+          AND deleted_at IS NULL
+        LIMIT 1
       `;
-      const rows = await sql<FileGraphRelatedRow[]>`
-        ${graphNeighborhoodSql(knowledgeBaseId, sourceFileId)}
-        ORDER BY relationships.weight DESC, node.source_file_id ASC
-        LIMIT ${limit}
-      `;
+      const row = rows[0];
 
       return {
         sourceFileId,
-        relationshipCount: Number(countRows[0]?.relationship_count ?? 0),
-        relationships: rows.map(mapFileGraphRelatedRow)
+        relationshipCount: Number(row?.graph_relationship_count ?? 0),
+        relationships: readFileGraphRelatedRecords(row?.graph_top_relationships_json).slice(0, limit)
       };
     },
+    refreshGraphSummariesForSourceFiles,
     async deleteGraphForSourceFile({ knowledgeBaseId, sourceFileId }) {
+      const affectedRows = await sql<Array<{ source_file_id: string }>>`
+        SELECT DISTINCT source_file_id
+        FROM (
+          SELECT from_source_file_id AS source_file_id
+          FROM focowiki.source_file_graph_edges
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND to_source_file_id = ${sourceFileId}
+          UNION ALL
+          SELECT to_source_file_id AS source_file_id
+          FROM focowiki.source_file_graph_edges
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND from_source_file_id = ${sourceFileId}
+        ) affected
+      `;
       await sql.begin(async (transaction) => {
         await transaction`
           DELETE FROM focowiki.source_file_graph_edges
@@ -434,8 +505,41 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             AND source_file_id = ${sourceFileId}
         `;
       });
+      await refreshGraphSummariesForSourceFiles({
+        knowledgeBaseId,
+        sourceFileIds: [sourceFileId, ...affectedRows.map((row) => row.source_file_id)],
+        limit: 3
+      });
     }
   };
+
+  async function expandGraphSummarySourceFileIds(
+    knowledgeBaseId: string,
+    sourceFileIds: string[]
+  ): Promise<string[]> {
+    const directSourceFileIds = uniqueStrings(sourceFileIds);
+
+    if (directSourceFileIds.length === 0) {
+      return [];
+    }
+
+    const rows = await sql<Array<{ source_file_id: string }>>`
+      SELECT DISTINCT source_file_id
+      FROM (
+        SELECT from_source_file_id AS source_file_id
+        FROM focowiki.source_file_graph_edges
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND to_source_file_id = ANY(${directSourceFileIds})
+        UNION ALL
+        SELECT to_source_file_id AS source_file_id
+        FROM focowiki.source_file_graph_edges
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND from_source_file_id = ANY(${directSourceFileIds})
+      ) affected
+    `;
+
+    return uniqueStrings([...directSourceFileIds, ...rows.map((row) => row.source_file_id)]);
+  }
 
   function graphNeighborhoodSql(knowledgeBaseId: string, sourceFileId: string) {
     return sql`
@@ -557,6 +661,50 @@ function mapFileGraphRelatedRow(row: FileGraphRelatedRow): FileGraphRelatedRecor
     evidence: readRecord(row.evidence_json),
     contentAvailable: row.content_available
   };
+}
+
+function readFileGraphRelatedRecords(value: unknown): FileGraphRelatedRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+
+    if (
+      typeof record.fileId !== "string" ||
+      typeof record.sourceFileId !== "string" ||
+      typeof record.path !== "string" ||
+      typeof record.title !== "string" ||
+      typeof record.relationType !== "string" ||
+      (record.direction !== "outgoing" && record.direction !== "incoming") ||
+      typeof record.weight !== "number" ||
+      typeof record.reason !== "string" ||
+      typeof record.source !== "string" ||
+      typeof record.contentAvailable !== "boolean"
+    ) {
+      return [];
+    }
+
+    return [{
+      fileId: record.fileId,
+      sourceFileId: record.sourceFileId,
+      bundleFileId: typeof record.bundleFileId === "string" ? record.bundleFileId : null,
+      path: record.path,
+      title: record.title,
+      relationType: record.relationType,
+      direction: record.direction,
+      weight: record.weight,
+      reason: record.reason,
+      source: record.source,
+      evidence: readRecord(record.evidence),
+      contentAvailable: record.contentAvailable
+    }];
+  });
 }
 
 function mapFileGraphJobRow(row: FileGraphJobRow): FileGraphJobRecord {

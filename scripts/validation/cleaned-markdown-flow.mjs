@@ -13,6 +13,8 @@ import {
   createPerformanceEvidence,
   finalizePerformanceEvidence,
   recordEndpointTiming,
+  recordConfiguredRuntimeResources,
+  recordOperationalSnapshot,
   recordPaginationEvidence,
   recordSourceFileDuration
 } from "./lib/performance-evidence.mjs";
@@ -427,6 +429,8 @@ export async function runApiValidation() {
     });
     logValidationStep("security-audit");
     await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
+    await recordOperationalPerformanceSnapshot(env.DATABASE_URL, knowledgeBase.id, performanceEvidence, report);
+    recordConfiguredRuntimeResources(performanceEvidence, env);
     logValidationStep("performance-summary");
     report.performance = finalizePerformanceEvidence(performanceEvidence, {
       profile: sampleSelection.profile,
@@ -2601,6 +2605,79 @@ async function validateSecurityAuditEvidence(databaseUrl, startedAt, report) {
         {
           eventCount: rows.length,
           eventTypes
+        },
+        WHITE_BOX
+      )
+    );
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
+async function recordOperationalPerformanceSnapshot(databaseUrl, knowledgeBaseId, performanceEvidence, report) {
+  const postgresModule = requireFromApiPackage("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+
+  try {
+    const [snapshot] = await sql`
+      SELECT
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND deleted_at IS NULL
+           AND processing_status IN ('queued', 'running')) AS queue_depth,
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND deleted_at IS NULL
+           AND processing_status = 'running') AS running_source_files,
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND deleted_at IS NULL
+           AND processing_status = 'completed') AS completed_source_files,
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND deleted_at IS NULL
+           AND processing_status = 'failed') AS failed_source_files,
+        (SELECT count(*)::int
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND deleted_at IS NULL
+           AND generated_output_status = 'visible') AS visible_source_files,
+        (SELECT count(*)::int
+         FROM focowiki.publication_jobs
+         WHERE knowledge_base_id = ${knowledgeBaseId}) AS publication_jobs,
+        (SELECT count(*)::int
+         FROM focowiki.publication_jobs
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND status IN ('queued', 'running', 'retrying')) AS active_publication_jobs,
+        (SELECT count(*)::int
+         FROM focowiki.releases
+         WHERE knowledge_base_id = ${knowledgeBaseId}) AS release_count
+    `;
+
+    recordOperationalSnapshot(performanceEvidence, "post-validation", {
+      queueDepth: snapshot.queue_depth,
+      runningSourceFiles: snapshot.running_source_files,
+      completedSourceFiles: snapshot.completed_source_files,
+      failedSourceFiles: snapshot.failed_source_files,
+      visibleSourceFiles: snapshot.visible_source_files,
+      publicationJobs: snapshot.publication_jobs,
+      activePublicationJobs: snapshot.active_publication_jobs,
+      releaseCount: snapshot.release_count
+    });
+    report.checks.push(
+      okCheck(
+        "operational-performance-snapshot",
+        "PostgreSQL operational counters were recorded for queue depth, publication count, visible files, and failed files.",
+        {
+          queueDepth: snapshot.queue_depth,
+          publicationJobs: snapshot.publication_jobs,
+          visibleSourceFiles: snapshot.visible_source_files,
+          failedSourceFiles: snapshot.failed_source_files
         },
         WHITE_BOX
       )

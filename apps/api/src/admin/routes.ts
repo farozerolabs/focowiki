@@ -22,7 +22,7 @@ import {
   type StorageAdapter
 } from "../storage/s3.js";
 import { createDeletionService } from "./deletion-service.js";
-import { readGeneratedOutputsForSourceFiles } from "./source-file-generated-output.js";
+import { readGeneratedOutputsForSourceFilesSafely } from "./source-file-generated-output.js";
 import {
   assertSourceFileQueueCapacity,
   enqueueSourceFileProcessingJobs,
@@ -47,6 +47,11 @@ import {
 import { registerAdminFileTreeRoutes } from "./file-tree-routes.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
 import { readPageLimit } from "./pagination.js";
+import {
+  createPageResponseCacheId,
+  readPageResponseCache,
+  writePageResponseCache
+} from "../page-response-cache.js";
 import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
 import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
@@ -571,26 +576,38 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
+      const cacheId = createPageResponseCacheId({
+        cursorToken,
+        limit
+      });
+      const cachedResponse = await readPageResponseCache<{
+        items: ReturnType<typeof toAdminSourceFile>[];
+        nextCursor: string | null;
+        refreshAfterMs: number;
+      }>({
+        redis,
+        scope: cursorScope,
+        cacheId,
+        invalidationScopes: [`source-files:${knowledgeBase.id}`]
+      });
+
+      if (cachedResponse) {
+        return context.json(cachedResponse);
+      }
+
       const page = await repositories.files.listSourceFiles({
         knowledgeBaseId: knowledgeBase.id,
         limit,
         cursor: repositoryCursor,
         ...filters
       });
-      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+      const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
         repositories,
         knowledgeBase,
         sourceFiles: page.items
       });
-      const items = await Promise.all(
-        page.items.map((file) =>
-          readAdminSourceFileWithGraphSummary({
-            repositories,
-            knowledgeBaseId: knowledgeBase.id,
-            sourceFile: file,
-            generatedOutput: generatedOutputs.get(file.id) ?? null
-          })
-        )
+      const items = page.items.map((file) =>
+        toAdminSourceFile(file, null, generatedOutputs.get(file.id) ?? null)
       );
       const nextCursor = await writeOpaqueCursor({
         redis,
@@ -599,20 +616,21 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
 
-      await redis.setPageCache(
-        cursorScope,
-        `page-${randomUUID()}`,
-        {
-          cursor: cursorToken,
-          itemIds: page.items.map((item) => item.id)
-        },
-        config.pagination.cursorTtlSeconds
-      );
-
-      return context.json({
+      const responseBody = {
         items,
-        nextCursor
+        nextCursor,
+        refreshAfterMs: readSourceFileRefreshAfterMs(page.items)
+      };
+
+      await writePageResponseCache({
+        redis,
+        scope: cursorScope,
+        cacheId,
+        value: responseBody,
+        refreshAfterMs: responseBody.refreshAfterMs
       });
+
+      return context.json(responseBody);
     }
   );
 
@@ -677,7 +695,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
           sourceFile,
           generatedOutput:
             (
-              await readGeneratedOutputsForSourceFiles({
+              await readGeneratedOutputsForSourceFilesSafely({
                 repositories,
                 knowledgeBase,
                 sourceFiles: [sourceFile]
@@ -962,6 +980,17 @@ function invalidSourceFileFilter(context: Parameters<MiddlewareHandler>[0]): Res
     },
     400
   );
+}
+
+function readSourceFileRefreshAfterMs(sourceFiles: SourceFileRecord[]): number {
+  return sourceFiles.some(
+    (file) =>
+      file.processingStatus === "queued" ||
+      file.processingStatus === "running" ||
+      file.generatedOutputStatus === "pending"
+  )
+    ? 2_000
+    : 30_000;
 }
 
 function containsCredentialQuery(rawUrl: string): boolean {

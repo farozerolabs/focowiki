@@ -442,6 +442,8 @@ function createRepositories() {
 
           if (source) {
             source.generatedOutputStatus = "pending";
+            source.generatedBundleFileId = null;
+            source.generatedBundleFilePath = null;
             source.publicationDirtyAt = input.dirtyAt;
             source.publicationErrorCode = null;
             source.publicationErrorMessage = null;
@@ -488,13 +490,18 @@ function createRepositories() {
         };
       },
       async markSourceFilesPublicationVisible(input) {
+        const outputs = new Map(input.generatedOutputs.map((output) => [output.sourceFileId, output]));
+
         for (const id of input.sourceFileIds) {
           const source = sources.get(id);
+          const output = outputs.get(id);
 
           if (source) {
             source.processingStage = "release_activation";
             source.processingEndedAt = input.visibleAt;
             source.generatedOutputStatus = "visible";
+            source.generatedBundleFileId = output?.bundleFileId ?? null;
+            source.generatedBundleFilePath = output?.logicalPath ?? null;
             source.publicationDirtyAt = null;
             source.publicationVisibleAt = input.visibleAt;
             source.publicationErrorCode = null;
@@ -508,6 +515,8 @@ function createRepositories() {
 
           if (source) {
             source.generatedOutputStatus = "unavailable";
+            source.generatedBundleFileId = null;
+            source.generatedBundleFilePath = null;
             source.publicationErrorCode = input.errorCode;
             source.publicationErrorMessage = input.errorMessage;
           }
@@ -1992,6 +2001,48 @@ describe("source file queue", () => {
     expect(records.workerJobs[0]?.status).toBe("completed");
     expect(records.workerJobs[0]?.attemptCount).toBe(1);
     expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+  });
+
+  it("completes orphaned worker jobs when the knowledge base was deleted", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    records.repositories.knowledgeBases.getKnowledgeBase = async () => null;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "deletion" },
+        runAfter: now,
+        maxAttempts: 2
+      }),
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: "source-file-deleted-kb",
+        payload: { reason: "upload" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(2);
+    expect(records.workerJobs.map((job) => job.status)).toEqual(["completed", "completed"]);
+    expect(records.workerJobs.map((job) => job.lastErrorCode)).toEqual([null, null]);
+    expect(records.workerJobs.map((job) => job.attemptCount)).toEqual([1, 1]);
   });
 
   it("runs bounded worker job retention cleanup during worker ticks", async () => {

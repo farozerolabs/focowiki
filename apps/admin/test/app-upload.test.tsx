@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
@@ -85,6 +85,10 @@ describe("Admin upload file picker", () => {
     vi.clearAllMocks();
     await initI18n("en-US");
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("closes the upload dialog and refreshes source-file rows after submitting Markdown files", async () => {
@@ -342,7 +346,7 @@ describe("Admin upload file picker", () => {
     );
   });
 
-  it("refreshes source files on an interval while the detail page is open", async () => {
+  it("refreshes active source file pages with bounded polling", async () => {
     vi.mocked(fetchKnowledgeBaseFileTree).mockImplementation(async (input) => {
       if (input.parentPath === "pages") {
         return {
@@ -434,11 +438,12 @@ describe("Admin upload file picker", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "pages" }));
     await waitFor(() => {
+      expect(vi.mocked(listSourceFiles).mock.calls.length).toBeGreaterThanOrEqual(2);
       const rootRefreshCalls = vi
         .mocked(fetchKnowledgeBaseFileTree)
         .mock.calls.filter(([input]) => input.parentPath === undefined);
 
-      expect(rootRefreshCalls.length).toBeGreaterThanOrEqual(2);
+      expect(rootRefreshCalls).toHaveLength(1);
     });
   }, 5_000);
 

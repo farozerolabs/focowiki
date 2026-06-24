@@ -137,6 +137,13 @@ export type PublishOkfReleaseResult = {
   fileCount: number;
   treeEntryCount: number;
   manifestChecksumSha256: string;
+  generatedSourceFileOutputs: PublishedSourceFileOutput[];
+};
+
+export type PublishedSourceFileOutput = {
+  sourceFileId: string;
+  bundleFileId: string;
+  logicalPath: string;
 };
 
 type GeneratedSourceFiles = {
@@ -178,6 +185,7 @@ export async function publishOkfRelease(
   let fileCount = 0;
   let manifestChecksumSha256 = "";
   let cursor: string | null = null;
+  const generatedSourceFileOutputs: PublishedSourceFileOutput[] = [];
   const publicFilePlans = await collectPublicFilePlans(input);
   const graphState = resolvePublicationGraphState(input);
   const dirtySourceFileIds = input.dirtySourceFileIds
@@ -280,6 +288,13 @@ export async function publishOkfRelease(
       if (!generated) {
         throw new Error("Generated page summary was not found for persisted page");
       }
+      if (pageFile.sourceFileId) {
+        generatedSourceFileOutputs.push({
+          sourceFileId: pageFile.sourceFileId,
+          bundleFileId: pageFile.id,
+          logicalPath: pageFile.logicalPath
+        });
+      }
       await registerPageSummary(indexState, publicFilePlans.publicPaths, generated.summary);
       await registerPublishedFile(input, treeState, indexState, pageFile);
     }
@@ -342,7 +357,8 @@ export async function publishOkfRelease(
     bundleRootKey,
     fileCount,
     treeEntryCount: treeState.entryCount,
-    manifestChecksumSha256
+    manifestChecksumSha256,
+    generatedSourceFileOutputs
   };
 }
 

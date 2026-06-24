@@ -4,25 +4,36 @@ import type {
   KnowledgeBaseRecord,
   SourceFileRecord
 } from "../db/admin-repositories.js";
+import { readNonCritical } from "../read-safeguards.js";
 
 export async function readGeneratedOutputsForSourceFiles(input: {
   repositories: AdminRepositories;
   knowledgeBase: KnowledgeBaseRecord;
   sourceFiles: SourceFileRecord[];
 }): Promise<Map<string, GeneratedSourceFileOutputRecord>> {
-  if (
-    !input.knowledgeBase.activeReleaseId ||
-    !input.repositories.files?.listGeneratedOutputsForSourceFiles ||
-    input.sourceFiles.length === 0
-  ) {
-    return new Map();
-  }
+  const outputs = input.sourceFiles.flatMap((file) => {
+    if (!file.generatedBundleFileId || !file.generatedBundleFilePath) {
+      return [];
+    }
 
-  const outputs = await input.repositories.files.listGeneratedOutputsForSourceFiles({
-    knowledgeBaseId: input.knowledgeBase.id,
-    releaseId: input.knowledgeBase.activeReleaseId,
-    sourceFileIds: input.sourceFiles.map((file) => file.id)
+    return [{
+      sourceFileId: file.id,
+      bundleFileId: file.generatedBundleFileId,
+      logicalPath: file.generatedBundleFilePath
+    }];
   });
 
   return new Map(outputs.map((output) => [output.sourceFileId, output]));
+}
+
+export async function readGeneratedOutputsForSourceFilesSafely(input: {
+  repositories: AdminRepositories;
+  knowledgeBase: KnowledgeBaseRecord;
+  sourceFiles: SourceFileRecord[];
+}): Promise<Map<string, GeneratedSourceFileOutputRecord>> {
+  return readNonCritical({
+    timeoutMs: 250,
+    fallback: new Map<string, GeneratedSourceFileOutputRecord>(),
+    operation: () => readGeneratedOutputsForSourceFiles(input)
+  });
 }

@@ -161,6 +161,7 @@ export type CursorPage<T> = {
 export type SourceFilePage = {
   items: SourceFileRecord[];
   nextCursor: string | null;
+  refreshAfterMs?: number;
 };
 
 export type WorkerQueueSummary = {

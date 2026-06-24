@@ -9,6 +9,12 @@ export type SourceFileRefreshSnapshot = {
   generatedFilePath: string | null;
 };
 
+export type SourceFileRefreshScheduleInput = {
+  activeView: "file" | "processing";
+  isVisible: boolean;
+  sourceFiles: SourceFileRecord[];
+};
+
 export function createSourceFileRefreshSnapshot(file: SourceFileRecord): SourceFileRefreshSnapshot {
   return {
     processingStatus: file.processingStatus ?? null,
@@ -18,6 +24,24 @@ export function createSourceFileRefreshSnapshot(file: SourceFileRecord): SourceF
     generatedFileId: file.generatedFileId ?? null,
     generatedFilePath: file.generatedFilePath ?? null
   };
+}
+
+export function shouldScheduleSourceFileRefresh({
+  activeView,
+  isVisible,
+  sourceFiles
+}: SourceFileRefreshScheduleInput): boolean {
+  return activeView === "processing" && isVisible && sourceFiles.some(isActiveSourceFile);
+}
+
+export function normalizeSourceFileRefreshAfterMs(
+  value: number | undefined,
+  fallbackMs: number
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallbackMs;
+  }
+  return Math.min(Math.max(value, 2_000), 60_000);
 }
 
 export function shouldRefreshGeneratedFiles(
@@ -58,4 +82,12 @@ export function rememberSourceFileRefreshSnapshots(
   });
 
   return next;
+}
+
+function isActiveSourceFile(file: SourceFileRecord): boolean {
+  return (
+    file.processingStatus === "queued" ||
+    file.processingStatus === "running" ||
+    file.generatedOutputStatus === "pending"
+  );
 }

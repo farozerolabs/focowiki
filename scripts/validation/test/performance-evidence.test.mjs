@@ -5,6 +5,7 @@ import {
   createPerformanceEvidence,
   finalizePerformanceEvidence,
   recordEndpointTiming,
+  recordOperationalSnapshot,
   recordPaginationEvidence,
   recordSourceFileDuration
 } from "../lib/performance-evidence.mjs";
@@ -44,6 +45,16 @@ test("performance evidence enforces large-scale batch size and records bounded m
     expectedSourceCount: 50,
     observedPages: 2
   });
+  recordOperationalSnapshot(evidence, "post-validation", {
+    queueDepth: 0,
+    runningSourceFiles: 0,
+    completedSourceFiles: 50,
+    failedSourceFiles: 0,
+    visibleSourceFiles: 50,
+    publicationJobs: 2,
+    activePublicationJobs: 0,
+    releaseCount: 2
+  });
 
   const summary = finalizePerformanceEvidence(evidence, {
     profile: "large-scale",
@@ -63,6 +74,9 @@ test("performance evidence enforces large-scale batch size and records bounded m
   assert.equal(typeof summary.memory.startRssMb, "number");
   assert.equal(typeof summary.memory.deltaRssMb, "number");
   assert.equal(summary.pagination.length, 1);
+  assert.equal(summary.operationalSnapshots.length, 1);
+  assert.equal(summary.operationalSnapshots[0].visibleSourceFiles, 50);
+  assert.equal(Array.isArray(summary.runtimeResources), true);
   assert.equal(JSON.stringify(summary).includes("kb-secret-id"), false);
   assert.equal(JSON.stringify(summary).includes("source-secret-id"), false);
 });

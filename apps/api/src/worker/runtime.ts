@@ -335,7 +335,7 @@ async function processSourceFileJob(input: {
   );
 
   if (!knowledgeBase) {
-    await failJob(input, "KNOWLEDGE_BASE_NOT_FOUND", "Knowledge base was not found.");
+    await completeOrphanedJob(input, "Source-file job completed without knowledge base.");
     return;
   }
 
@@ -399,7 +399,7 @@ async function processPublicationJob(input: {
   );
 
   if (!knowledgeBase) {
-    await failJob(input, "KNOWLEDGE_BASE_NOT_FOUND", "Knowledge base was not found.");
+    await completeOrphanedJob(input, "Publication job completed without knowledge base.");
     return;
   }
 
@@ -510,6 +510,25 @@ async function enqueueRemainingPublicationJob(input: {
     dirtyCount: dirty.count,
     oldestDirtyAt: dirty.oldestDirtyAt,
     generatedAt: input.generatedAt
+  });
+}
+
+async function completeOrphanedJob(input: {
+  job: WorkerJobRecord;
+  workerId: string;
+  workerJobs: WorkerJobRepository;
+  logger: WorkerRuntimeLogger;
+}, message: string): Promise<void> {
+  await input.workerJobs.completeWorkerJob({
+    id: input.job.id,
+    workerId: input.workerId,
+    completedAt: new Date().toISOString()
+  });
+  input.logger.info(message, {
+    jobId: input.job.id,
+    kind: input.job.kind,
+    knowledgeBaseId: input.job.knowledgeBaseId,
+    sourceFileId: input.job.sourceFileId
   });
 }
 

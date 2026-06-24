@@ -8,6 +8,11 @@ import {
   readTreeEntryTypeFilter
 } from "../tree-entry-filters.js";
 import { readTreePageLimit } from "./pagination.js";
+import {
+  createPageResponseCacheId,
+  readPageResponseCache,
+  writePageResponseCache
+} from "../page-response-cache.js";
 import { toAdminBundleTreeEntry } from "./serializers.js";
 
 export function registerAdminFileTreeRoutes(
@@ -72,6 +77,25 @@ export function registerAdminFileTreeRoutes(
         return invalidPagination(context);
       }
 
+      const cacheId = createPageResponseCacheId({
+        cursorToken,
+        limit,
+        extra: parentPath
+      });
+      const cachedResponse = await readPageResponseCache<{
+        items: ReturnType<typeof toAdminBundleTreeEntry>[];
+        nextCursor: string | null;
+      }>({
+        redis,
+        scope: cursorScope,
+        cacheId,
+        invalidationScopes: [`file-tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`]
+      });
+
+      if (cachedResponse) {
+        return context.json(cachedResponse);
+      }
+
       const page = await repositories.files.listBundleTreeEntries({
         knowledgeBaseId: knowledgeBase.id,
         releaseId: knowledgeBase.activeReleaseId,
@@ -87,20 +111,19 @@ export function registerAdminFileTreeRoutes(
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
 
-      await redis.setPageCache(
-        cursorScope,
-        `page-${randomUUID()}`,
-        {
-          cursor: cursorToken,
-          itemIds: page.items.map((item) => item.id)
-        },
-        config.pagination.cursorTtlSeconds
-      );
-
-      return context.json({
+      const responseBody = {
         items: page.items.map(toAdminBundleTreeEntry),
         nextCursor
+      };
+
+      await writePageResponseCache({
+        redis,
+        scope: cursorScope,
+        cacheId,
+        value: responseBody
       });
+
+      return context.json(responseBody);
     }
   );
 }

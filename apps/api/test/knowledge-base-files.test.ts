@@ -135,7 +135,6 @@ function createRepositories() {
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
   const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
-  const generatedOutputCalls: Array<{ knowledgeBaseId: string; releaseId: string; sourceFileIds: string[] }> = [];
   const queueSummaryCalls: Array<{
     knowledgeBaseId?: string | null;
     kinds?: WorkerJobKind[];
@@ -170,7 +169,6 @@ function createRepositories() {
       releaseCalls,
       bundleCalls,
       graphSummaryCalls,
-      generatedOutputCalls,
       queueSummaryCalls,
       dirtySourceFileCountCalls
     },
@@ -259,26 +257,15 @@ function createRepositories() {
                 sizeBytes: 42,
                 checksumSha256: "checksum",
                 metadata: { type: "page", title: "Intro" },
+                generatedOutputStatus: "visible" as const,
+                generatedBundleFileId: "bundle-file-001",
+                generatedBundleFilePath: "pages/intro.md",
                 createdAt: "2026-06-14T00:00:00.000Z",
                 deletedAt: null
               }
             ].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
             nextCursor: null
           };
-        },
-        async listGeneratedOutputsForSourceFiles(input: {
-          knowledgeBaseId: string;
-          releaseId: string;
-          sourceFileIds: string[];
-        }) {
-          generatedOutputCalls.push(input);
-          return [
-            {
-              sourceFileId: "source-001",
-              bundleFileId: "bundle-file-001",
-              logicalPath: "pages/intro.md"
-            }
-          ];
         },
         async countDirtySourceFiles(input: { knowledgeBaseId: string }) {
           dirtySourceFileCountCalls.push(input);
@@ -626,12 +613,16 @@ describe("Knowledge base file Admin API", () => {
     });
     const releaseBody = (await releases.json()) as { items: Array<Record<string, unknown>> };
     const bundleBody = (await bundleFiles.json()) as { items: Array<Record<string, unknown>> };
-    const sourceBody = (await sourceFiles.json()) as { items: Array<Record<string, unknown>> };
+    const sourceBody = (await sourceFiles.json()) as {
+      items: Array<Record<string, unknown>>;
+      refreshAfterMs: number;
+    };
 
     expect(sourceFiles.status).toBe(200);
     expect(releases.status).toBe(200);
     expect(bundleFiles.status).toBe(200);
     expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
+    expect(sourceBody.refreshAfterMs).toBe(30_000);
     expect(sourceBody.items[0]).toMatchObject({
       generatedFileAvailable: true,
       generatedFileId: "bundle-file-001",
@@ -639,23 +630,11 @@ describe("Knowledge base file Admin API", () => {
     });
     expect(sourceBody.items[0]).not.toHaveProperty("releaseId");
     expect(sourceBody.items[0]).not.toHaveProperty("bundleRootKey");
-    expect(sourceBody.items[0]?.graphSummary).toMatchObject({
-      relationshipCount: 1,
-      relationships: [expect.objectContaining({ path: "pages/related.md" })]
-    });
+    expect(sourceBody.items[0]?.graphSummary).toBeNull();
     expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
     expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
-    expect(records.graphSummaryCalls).toEqual([
-      expect.objectContaining({ sourceFileId: "source-001", limit: 3 })
-    ]);
-    expect(records.generatedOutputCalls).toEqual([
-      expect.objectContaining({
-        knowledgeBaseId: "kb-001",
-        releaseId: "release-001",
-        sourceFileIds: ["source-001"]
-      })
-    ]);
+    expect(records.graphSummaryCalls).toEqual([]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
   });
@@ -736,6 +715,28 @@ describe("Knowledge base file Admin API", () => {
       expect.objectContaining({ knowledgeBaseId: "kb-001", kinds: ["publication"] })
     ]);
     expect(records.dirtySourceFileCountCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
+  });
+
+  it("keeps high Admin read traffic from enqueueing worker jobs", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const requests = Array.from({ length: 3 }, () => [
+      app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
+        headers: { cookie }
+      }),
+      app.request("/admin/api/knowledge-bases/kb-001/files/tree?limit=1", {
+        headers: { cookie }
+      }),
+      app.request("/admin/api/knowledge-bases/kb-001/files/detail?path=pages/intro.md", {
+        headers: { cookie }
+      })
+    ]).flat();
+
+    const responses = await Promise.all(requests);
+
+    expect(responses.map((response) => response.status)).toEqual(Array(requests.length).fill(200));
+    expect(records.sourceCalls.length).toBeGreaterThanOrEqual(1);
+    expect(records.treeCalls.length).toBeGreaterThanOrEqual(1);
+    expect(records.graphSummaryCalls).toEqual([]);
   });
 
   it("returns knowledge base public URLs without storage details", async () => {

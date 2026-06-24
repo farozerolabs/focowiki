@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPublicOpenApiApp } from "../src/server.js";
+import { createApiApp, createPublicOpenApiApp } from "../src/server.js";
 import type {
   AdminRepositories,
   BundleFileRecord,
@@ -14,7 +14,7 @@ import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import type { RuntimeConfig } from "../src/config.js";
 import type { WorkerJobDraft, WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
-import { createTestRedisCoordinator } from "./support/session.js";
+import { createTestRedisCoordinator, loginAndReadSessionCookie } from "./support/session.js";
 
 const developerKey = "fwok_developer-openapi-test-key";
 const now = "2026-06-16T00:00:00.000Z";
@@ -220,6 +220,9 @@ function createRepositories(): AdminRepositories & {
     processingEndedAt: now,
     processingErrorCode: null,
     processingErrorMessage: null,
+    generatedOutputStatus: "visible",
+    generatedBundleFileId: "bundle-guide",
+    generatedBundleFilePath: "pages/guide.md",
     retryCount: 0,
     createdAt: now,
     deletedAt: null
@@ -373,15 +376,6 @@ function createRepositories(): AdminRepositories & {
       async listSourceFiles() {
         return { items: Array.from(sourceFiles.values()), nextCursor: null };
       },
-      async listGeneratedOutputsForSourceFiles() {
-        return [
-          {
-            sourceFileId: "source-guide",
-            bundleFileId: "bundle-guide",
-            logicalPath: "pages/guide.md"
-          }
-        ];
-      },
       async listReleases() {
         return { items: [], nextCursor: null };
       },
@@ -508,6 +502,20 @@ function createApp() {
   const repositories = createRepositories();
   const storage = new MemoryStorage();
   const app = createPublicOpenApiApp({
+    config,
+    storage,
+    redis: createTestRedisCoordinator(),
+    repositories
+  });
+
+  return { app, repositories, storage };
+}
+
+function createFullApp() {
+  const config = createConfig();
+  const repositories = createRepositories();
+  const storage = new MemoryStorage();
+  const app = createApiApp({
     config,
     storage,
     redis: createTestRedisCoordinator(),
@@ -994,6 +1002,51 @@ describe("Developer OpenAPI", () => {
 
     expect(uploadResponse.status).toBe(202);
     expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200, 200, 200]);
+  });
+
+  it("keeps Developer OpenAPI responses contract-stable while Admin polling is active", async () => {
+    const { app } = createFullApp();
+    const adminCookie = await loginAndReadSessionCookie(app);
+    const responses = await withTimeout(
+      Promise.all([
+        app.request("/admin/api/knowledge-bases/kb-seeded/source-files?limit=1", {
+          headers: { cookie: adminCookie }
+        }),
+        app.request("/admin/api/knowledge-bases/kb-seeded/files/tree?parentPath=pages&limit=1", {
+          headers: { cookie: adminCookie }
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+          headers: authHeaders()
+        })
+      ]),
+      1_000
+    );
+    const developerSourceFiles = (await responses[2].json()) as {
+      items: Array<Record<string, unknown>>;
+    };
+    const developerTree = (await responses[3].json()) as {
+      items: Array<Record<string, unknown>>;
+    };
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200]);
+    expect(developerSourceFiles.items[0]).toMatchObject({
+      fileId: "source-guide",
+      generatedFileId: "bundle-guide",
+      generatedFilePath: "pages/guide.md"
+    });
+    expect(developerSourceFiles.items[0]).not.toHaveProperty("objectKey");
+    expect(developerSourceFiles.items[0]).not.toHaveProperty("releaseId");
+    expect(developerTree.items[0]).toMatchObject({
+      id: "tree-guide",
+      path: "pages/guide.md"
+    });
+    expect(developerTree.items[0]).not.toHaveProperty("objectKey");
   });
 
   it("keeps queued source-file work visible after recreating the API app", async () => {

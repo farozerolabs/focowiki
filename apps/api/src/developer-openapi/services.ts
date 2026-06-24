@@ -15,7 +15,12 @@ import {
 import { acceptUploadSourceFiles } from "../admin/source-file-upload.js";
 import type { LoadedUploadFile } from "../admin/upload-processor-utils.js";
 import { createDeletionService } from "../admin/deletion-service.js";
-import { readGeneratedOutputsForSourceFiles } from "../admin/source-file-generated-output.js";
+import { readGeneratedOutputsForSourceFilesSafely } from "../admin/source-file-generated-output.js";
+import {
+  createPageResponseCacheId,
+  readPageResponseCache,
+  writePageResponseCache
+} from "../page-response-cache.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
 import { createBundleTreeCursorScope } from "../tree-entry-filters.js";
 import type { OpenAIResponsesClient } from "@focowiki/okf";
@@ -250,24 +255,52 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
       const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
       const scope = `developer-openapi:source-files:${input.knowledgeBaseId}`;
+      const redisCoordinator = requireRedis();
+      const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
+      const cacheId = createPageResponseCacheId({
+        cursorToken: input.cursor,
+        limit: input.limit
+      });
+      const cachedResponse = await readPageResponseCache<{
+        items: ReturnType<typeof toDeveloperSourceFile>[];
+        nextCursor: string | null;
+      }>({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        invalidationScopes: [`developer-openapi:source-files:${input.knowledgeBaseId}`]
+      });
+
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
       const page = await repo.files.listSourceFiles({
         knowledgeBaseId: input.knowledgeBaseId,
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: repositoryCursor
       });
-      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+      const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
         repositories: repo,
         knowledgeBase,
         sourceFiles: page.items
       });
 
-      return pageResponse(
+      const response = await pageResponse(
         page,
         scope,
         config.pagination.cursorTtlSeconds,
-        requireRedis(),
+        redisCoordinator,
         (file) => toDeveloperSourceFile(file, generatedOutputs.get(file.id) ?? null)
       );
+      await writePageResponseCache({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        value: response
+      });
+
+      return response;
     },
     async getSourceFile(input: {
       knowledgeBaseId: string;
@@ -289,7 +322,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw notFound();
       }
 
-      const generatedOutputs = await readGeneratedOutputsForSourceFiles({
+      const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
         repositories: repo,
         knowledgeBase,
         sourceFiles: [sourceFile]
@@ -440,22 +473,51 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         entryType: input.entryType,
         scopePrefix: "developer-openapi:tree"
       });
+      const redisCoordinator = requireRedis();
+      const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
+      const cacheId = createPageResponseCacheId({
+        cursorToken: input.cursor,
+        limit: input.limit,
+        extra: input.parentPath
+      });
+      const cachedResponse = await readPageResponseCache<{
+        items: ReturnType<typeof toDeveloperBundleTreeEntry>[];
+        nextCursor: string | null;
+      }>({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        invalidationScopes: [`developer-openapi:tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`]
+      });
+
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
       const page = await repo.files.listBundleTreeEntries({
         knowledgeBaseId: knowledgeBase.id,
         releaseId: knowledgeBase.activeReleaseId,
         parentPath: input.parentPath,
         entryType: input.entryType,
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: repositoryCursor
       });
 
-      return pageResponse(
+      const response = await pageResponse(
         page,
         scope,
         config.pagination.cursorTtlSeconds,
-        requireRedis(),
+        redisCoordinator,
         toDeveloperBundleTreeEntry
       );
+      await writePageResponseCache({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        value: response
+      });
+
+      return response;
     },
     async getFileById(input: { knowledgeBaseId: string; fileId: string }) {
       const resolved = await resolveFileById(requireRepositories(), input);
@@ -770,11 +832,10 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
     }
 
-    const source =
-      (await repo.files?.getSourceFile?.({
-        knowledgeBaseId: input.knowledgeBaseId,
-        sourceFileId: input.fileId
-      })) ?? (await findSourceFileById(repo, input));
+    const source = await repo.files?.getSourceFile?.({
+      knowledgeBaseId: input.knowledgeBaseId,
+      sourceFileId: input.fileId
+    });
 
     if (!source) {
       throw notFound();
@@ -906,34 +967,6 @@ function isSafeGeneratedDirectoryPath(path: string): boolean {
   );
 }
 
-async function findSourceFileById(
-  repo: AdminRepositories,
-  input: { knowledgeBaseId: string; fileId: string }
-): Promise<SourceFileRecord | null> {
-  if (!repo.files?.listSourceFiles) {
-    return null;
-  }
-
-  let cursor: string | null = null;
-
-  do {
-    const page = await repo.files.listSourceFiles({
-      knowledgeBaseId: input.knowledgeBaseId,
-      limit: 200,
-      cursor
-    });
-    const found = page.items.find((file) => file.id === input.fileId);
-
-    if (found) {
-      return found;
-    }
-
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  return null;
-}
-
 async function readSourceForBundle(
   repo: AdminRepositories,
   file: BundleFileRecord
@@ -946,11 +979,7 @@ async function readSourceForBundle(
     (await repo.files?.getSourceFile?.({
       knowledgeBaseId: file.knowledgeBaseId,
       sourceFileId: file.sourceFileId
-    })) ??
-    (await findSourceFileById(repo, {
-      knowledgeBaseId: file.knowledgeBaseId,
-      fileId: file.sourceFileId
-    }))
+    })) ?? null
   );
 }
 

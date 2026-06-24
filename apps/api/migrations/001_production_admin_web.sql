@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
   processing_error_code text,
   processing_error_message text,
   generated_output_status text NOT NULL DEFAULT 'pending',
+  generated_bundle_file_id text,
+  generated_bundle_file_path text,
+  graph_relationship_count integer NOT NULL DEFAULT 0,
+  graph_top_relationships_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  model_invocation_status text,
+  model_invocation_model_name text,
+  model_invocation_started_at timestamptz,
+  model_invocation_ended_at timestamptz,
+  model_invocation_warning_count integer,
+  model_invocation_error_code text,
   publication_dirty_at timestamptz,
   publication_visible_at timestamptz,
   publication_error_code text,
@@ -72,6 +82,16 @@ ALTER TABLE focowiki.source_files
   ADD COLUMN IF NOT EXISTS processing_error_code text,
   ADD COLUMN IF NOT EXISTS processing_error_message text,
   ADD COLUMN IF NOT EXISTS generated_output_status text NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS generated_bundle_file_id text,
+  ADD COLUMN IF NOT EXISTS generated_bundle_file_path text,
+  ADD COLUMN IF NOT EXISTS graph_relationship_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS graph_top_relationships_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ADD COLUMN IF NOT EXISTS model_invocation_status text,
+  ADD COLUMN IF NOT EXISTS model_invocation_model_name text,
+  ADD COLUMN IF NOT EXISTS model_invocation_started_at timestamptz,
+  ADD COLUMN IF NOT EXISTS model_invocation_ended_at timestamptz,
+  ADD COLUMN IF NOT EXISTS model_invocation_warning_count integer,
+  ADD COLUMN IF NOT EXISTS model_invocation_error_code text,
   ADD COLUMN IF NOT EXISTS publication_dirty_at timestamptz,
   ADD COLUMN IF NOT EXISTS publication_visible_at timestamptz,
   ADD COLUMN IF NOT EXISTS publication_error_code text,
@@ -105,6 +125,24 @@ ALTER TABLE focowiki.source_files
   DROP CONSTRAINT IF EXISTS source_files_generated_output_status_check,
   ADD CONSTRAINT source_files_generated_output_status_check
   CHECK (generated_output_status IN ('pending', 'visible', 'unavailable'));
+
+ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_model_invocation_status_check,
+  ADD CONSTRAINT source_files_model_invocation_status_check
+  CHECK (
+    model_invocation_status IS NULL OR
+    model_invocation_status IN ('running', 'completed', 'failed', 'skipped')
+  );
+
+ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_graph_relationship_count_check,
+  ADD CONSTRAINT source_files_graph_relationship_count_check
+  CHECK (graph_relationship_count >= 0);
+
+ALTER TABLE focowiki.source_files
+  DROP CONSTRAINT IF EXISTS source_files_graph_top_relationships_json_check,
+  ADD CONSTRAINT source_files_graph_top_relationships_json_check
+  CHECK (jsonb_typeof(graph_top_relationships_json) = 'array');
 
 ALTER TABLE focowiki.source_files
   DROP CONSTRAINT IF EXISTS source_files_processing_stage_check,
@@ -143,6 +181,28 @@ CREATE TABLE IF NOT EXISTS focowiki.model_invocations (
   CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
   CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
+
+UPDATE focowiki.source_files source
+SET
+  model_invocation_status = model.status,
+  model_invocation_model_name = model.model_name,
+  model_invocation_started_at = model.started_at,
+  model_invocation_ended_at = model.ended_at,
+  model_invocation_warning_count = model.warning_count,
+  model_invocation_error_code = model.error_code
+FROM (
+  SELECT DISTINCT ON (source_file_id)
+    source_file_id,
+    status,
+    model_name,
+    started_at,
+    ended_at,
+    warning_count,
+    error_code
+  FROM focowiki.model_invocations
+  ORDER BY source_file_id, created_at DESC, id DESC
+) model
+WHERE source.id = model.source_file_id;
 
 DO $$
 BEGIN
@@ -268,6 +328,25 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
   )
 );
 
+UPDATE focowiki.source_files source
+SET
+  generated_bundle_file_id = output.bundle_file_id,
+  generated_bundle_file_path = output.logical_path
+FROM (
+  SELECT DISTINCT ON (file.source_file_id)
+    file.source_file_id,
+    file.id AS bundle_file_id,
+    file.logical_path
+  FROM focowiki.bundle_files file
+  JOIN focowiki.knowledge_bases knowledge_base
+    ON knowledge_base.id = file.knowledge_base_id
+   AND knowledge_base.active_release_id = file.release_id
+  WHERE file.file_kind = 'page'
+    AND file.source_file_id IS NOT NULL
+  ORDER BY file.source_file_id, file.logical_path ASC, file.id ASC
+) output
+WHERE source.id = output.source_file_id;
+
 CREATE TABLE IF NOT EXISTS focowiki.source_file_graph_nodes (
   knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
   source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
@@ -386,6 +465,24 @@ ALTER TABLE focowiki.source_file_graph_edges
   DROP CONSTRAINT IF EXISTS source_file_graph_edges_status_check,
   ADD CONSTRAINT source_file_graph_edges_status_check
   CHECK (status IN ('accepted', 'rejected'));
+
+UPDATE focowiki.source_files source
+SET graph_relationship_count = counts.relationship_count
+FROM (
+  SELECT knowledge_base_id, source_file_id, count(*)::integer AS relationship_count
+  FROM (
+    SELECT knowledge_base_id, from_source_file_id AS source_file_id
+    FROM focowiki.source_file_graph_edges
+    WHERE status = 'accepted'
+    UNION ALL
+    SELECT knowledge_base_id, to_source_file_id AS source_file_id
+    FROM focowiki.source_file_graph_edges
+    WHERE status = 'accepted'
+  ) relationships
+  GROUP BY knowledge_base_id, source_file_id
+) counts
+WHERE source.knowledge_base_id = counts.knowledge_base_id
+  AND source.id = counts.source_file_id;
 
 ALTER TABLE focowiki.worker_jobs
   ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz;

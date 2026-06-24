@@ -307,7 +307,13 @@ export function createKnowledgeBasePublicationService(
             await markSourceFilesPublicationVisible({
               knowledgeBaseId: input.knowledgeBaseId,
               sourceFileIds: dirtySourceIds,
+              generatedOutputs: publication.generatedSourceFileOutputs,
               visibleAt: endedAt
+            });
+            await repositories.graph?.refreshGraphSummariesForSourceFiles?.({
+              knowledgeBaseId: input.knowledgeBaseId,
+              sourceFileIds: dirtySourceIds,
+              limit: 3
             });
             if (createSourceFileEvent) {
               for (const sourceFileId of dirtySourceIds) {
