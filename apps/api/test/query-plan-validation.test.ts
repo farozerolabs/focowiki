@@ -16,6 +16,11 @@ describe("query plan validation helpers", () => {
         "bundle-tree-search-path",
         "bundle-tree-search-next-page",
         "bundle-tree-search-ancestors",
+        "generated-file-search-first-page",
+        "generated-file-search-next-page",
+        "generated-file-search-no-result",
+        "generated-file-search-kind-filter",
+        "generated-file-search-cache-hit",
         "worker-job-source-cancellation"
       ])
     );

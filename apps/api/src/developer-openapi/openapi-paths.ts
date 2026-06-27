@@ -1,6 +1,7 @@
 import {
   deliveryIdParameter,
   errorResponse,
+  fileSearchParameters,
   fileIdParameter,
   filePathQueryParameter,
   knowledgeBaseIdParameter,
@@ -256,6 +257,18 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successStatus: 200,
         successSchema: ref("FileContentResponse"),
         successExample: responseExamples.getFileContentByPath
+      })
+    },
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/search": {
+      get: operation({
+        tag: "Files",
+        operationId: "searchGeneratedFiles",
+        summary: "Search generated files",
+        parameters: [knowledgeBaseIdParameter(), ...fileSearchParameters()],
+        requestExample: requestExamples.searchGeneratedFiles,
+        successStatus: 200,
+        successSchema: ref("FileSearchResponse"),
+        successExample: responseExamples.searchGeneratedFiles
       })
     },
     "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}": {

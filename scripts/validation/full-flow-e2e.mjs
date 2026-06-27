@@ -3,9 +3,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { loadEnvFile } from "node:process";
 import { pathToFileURL } from "node:url";
-import { redactReportText } from "./lib/redaction.mjs";
+import { createValidationRunId } from "./lib/compatible-full-flow/run-state.mjs";
+import {
+  DEFAULT_FULL_CODEBASE_REPORT_DIR,
+  createFullCodebaseReport,
+  writeFullCodebaseReport
+} from "./lib/full-codebase-validation.mjs";
 
-const DEFAULT_CHANGE_ID = "validate-full-flow-e2e-whitebox-blackbox";
+const DEFAULT_CHANGE_ID = "validate-unified-openapi-e2e";
 const DEMO_REPO_ENV = "FOCOWIKI_DEMO_E2E_DEMO_REPO";
 const DEFAULT_DEMO_REPO = "../focowiki-demo";
 
@@ -13,20 +18,29 @@ loadLocalEnv();
 
 export function readFullFlowConfig(command = "all", env = process.env) {
   const normalizedCommand = normalizeCommand(command);
+  const changeId = env.FOCOWIKI_FULL_FLOW_CHANGE_ID?.trim() || DEFAULT_CHANGE_ID;
   const demoRepo = path.resolve(env[DEMO_REPO_ENV]?.trim() || DEFAULT_DEMO_REPO);
   const demoRepoExists = fs.existsSync(path.join(demoRepo, "package.json"));
+  const reportDir = path.resolve(
+    env.FOCOWIKI_FULL_FLOW_REPORT_DIR?.trim() ||
+      env.FOCOWIKI_VALIDATION_REPORT_DIR?.trim() ||
+      DEFAULT_FULL_CODEBASE_REPORT_DIR
+  );
 
   return {
     command: normalizedCommand,
-    changeId: env.FOCOWIKI_FULL_FLOW_CHANGE_ID?.trim() || DEFAULT_CHANGE_ID,
-    changeDir: path.resolve(
-      "openspec/changes",
-      env.FOCOWIKI_FULL_FLOW_CHANGE_ID?.trim() || DEFAULT_CHANGE_ID
-    ),
+    changeId,
+    runId:
+      env.FOCOWIKI_FULL_FLOW_RUN_ID?.trim() ||
+      env.FOCOWIKI_VALIDATION_RUN_ID?.trim() ||
+      createValidationRunId(),
+    changeDir: path.resolve("openspec/changes", changeId),
+    reportDir,
     largeProfile: normalizedCommand === "large",
     includeBrowser: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER, true),
     includeDemo: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DEMO, demoRepoExists),
     includeRepositoryChecks: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY, true),
+    includeDocker: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER, false),
     demoRepo,
     demoRepoExists,
     requireModel: readBoolean(env.FOCOWIKI_VALIDATION_REQUIRE_MODEL, false),
@@ -35,6 +49,10 @@ export function readFullFlowConfig(command = "all", env = process.env) {
 }
 
 export function buildFullFlowPlan(config) {
+  if (config.command === "plan") {
+    return [];
+  }
+
   const sampleCommand = config.largeProfile ? "large-samples" : "samples";
   const apiCommand = config.largeProfile ? "large-api" : "api";
   const browserCommand = config.largeProfile ? "large-browser" : "browser";
@@ -46,7 +64,7 @@ export function buildFullFlowPlan(config) {
     validationEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS = "10000";
   }
   const demoEnv = {
-    FOCOWIKI_DEMO_E2E_REPORT_DIR: config.changeDir,
+    FOCOWIKI_DEMO_E2E_REPORT_DIR: config.reportDir,
     FOCOWIKI_DEMO_E2E_ENABLE_DEVELOPER_ROUTE_CHECKS:
       process.env.FOCOWIKI_DEMO_E2E_ENABLE_DEVELOPER_ROUTE_CHECKS ?? "true"
   };
@@ -86,13 +104,22 @@ export function buildFullFlowPlan(config) {
 
   if (config.includeRepositoryChecks) {
     steps.push(
-      pnpmStep("typecheck", ["typecheck"]),
-      pnpmStep("test", ["test"]),
-      pnpmStep("build", ["build"]),
+      pnpmStep("workspace-typecheck", ["typecheck"]),
+      pnpmStep("workspace-test", ["test"]),
+      pnpmStep("workspace-build", ["build"]),
       pnpmStep("validation-unit-tests", ["test:validation"]),
       pnpmStep("openapi-contract", ["openapi:validate"]),
       pnpmStep("docs-contract", ["docs:validate"]),
+      pnpmStep("api-runtime-build", ["--filter", "@focowiki/api", "build:runtime"]),
       pnpmStep("no-local-paths", ["validate:no-local-paths"])
+    );
+  }
+
+  if (config.includeDocker) {
+    steps.push(
+      pnpmStep("compose-example-config", ["compose:example:config"]),
+      pnpmStep("compose-dev-example-config", ["compose:dev:example:config"]),
+      pnpmStep("compose-local-example-config", ["compose:local:example:config"])
     );
   }
 
@@ -100,42 +127,7 @@ export function buildFullFlowPlan(config) {
 }
 
 export function createFullFlowReport(config, steps) {
-  return {
-    kind: "full-flow-e2e",
-    change: config.changeId,
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
-    ok: false,
-    command: config.command,
-    profile: config.largeProfile ? "large-scale" : "default",
-    source: {
-      env: config.sampleSourceEnv,
-      redactedRoot: `<${config.sampleSourceEnv}>`
-    },
-    config: {
-      includeBrowser: config.includeBrowser,
-      includeDemo: config.includeDemo,
-      includeRepositoryChecks: config.includeRepositoryChecks,
-      requireModel: config.requireModel,
-      demoRepo: config.includeDemo ? `<${DEMO_REPO_ENV}>` : "not-enabled"
-    },
-    steps: steps.map((step) => ({
-      id: step.id,
-      command: step.safeCommand,
-      status: "pending",
-      startedAt: null,
-      finishedAt: null,
-      durationMs: null,
-      reportPath: step.safeReportPath ?? null
-    })),
-    checks: [],
-    bugFixes: [],
-    failures: [],
-    remainingRisks: [
-      "External S3-compatible storage and model provider availability can affect full-flow runtime.",
-      "Admin UI bundle size warning is tracked separately from validation pass/fail status."
-    ]
-  };
+  return createFullCodebaseReport(config, steps);
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -147,7 +139,20 @@ async function main(argv = process.argv.slice(2)) {
 
   const steps = buildFullFlowPlan(config);
   const report = createFullFlowReport(config, steps);
-  writeFullFlowReport(config.changeDir, report);
+  writeFullFlowReport(config.reportDir, report);
+
+  if (config.command === "plan") {
+    report.finishedAt = new Date().toISOString();
+    report.ok = true;
+    report.checks.push({
+      layer: "plan",
+      name: "full-codebase-matrix",
+      ok: true,
+      message: "Full-codebase validation matrix was generated without touching runtime services."
+    });
+    writeFullFlowReport(config.reportDir, report);
+    return report;
+  }
 
   for (const [index, step] of steps.entries()) {
     const reportStep = report.steps[index];
@@ -173,18 +178,18 @@ async function main(argv = process.argv.slice(2)) {
       report.ok = false;
       reportStep.finishedAt = report.finishedAt;
       reportStep.durationMs = Date.now() - started;
-      writeFullFlowReport(config.changeDir, report);
+      writeFullFlowReport(config.reportDir, report);
       throw error;
     }
 
     reportStep.finishedAt = new Date().toISOString();
     reportStep.durationMs = Date.now() - started;
-    writeFullFlowReport(config.changeDir, report);
+    writeFullFlowReport(config.reportDir, report);
   }
 
   report.finishedAt = new Date().toISOString();
   report.ok = true;
-  writeFullFlowReport(config.changeDir, report);
+  writeFullFlowReport(config.reportDir, report);
   return report;
 }
 
@@ -255,63 +260,7 @@ function spawnCommand(command, args, env) {
 }
 
 function writeFullFlowReport(changeDir, report) {
-  fs.mkdirSync(changeDir, { recursive: true });
-  const safeReport = JSON.parse(redactReportText(JSON.stringify(report, null, 2)));
-  fs.writeFileSync(
-    path.join(changeDir, "full-flow-validation-report.json"),
-    `${JSON.stringify(safeReport, null, 2)}\n`
-  );
-  fs.writeFileSync(path.join(changeDir, "full-flow-validation-report.md"), renderMarkdown(safeReport));
-}
-
-function renderMarkdown(report) {
-  return [
-    "# Full-Flow E2E Validation Report",
-    "",
-    `- Change: ${report.change}`,
-    `- Kind: ${report.kind}`,
-    `- Started at: ${report.startedAt}`,
-    `- Finished at: ${report.finishedAt || "not-finished"}`,
-    `- Result: ${report.ok ? "pass" : "fail"}`,
-    `- Profile: ${report.profile}`,
-    "",
-    "## Runtime",
-    "",
-    ...Object.entries(report.config).map(([key, value]) => `- ${key}: ${String(value)}`),
-    "",
-    "## Source",
-    "",
-    `- env: ${report.source.env}`,
-    `- root: ${report.source.redactedRoot}`,
-    "",
-    "## Steps",
-    "",
-    ...report.steps.map(
-      (step) =>
-        `- ${step.status.toUpperCase()} ${step.id}: ${step.command}${
-          step.durationMs === null ? "" : ` (${step.durationMs}ms)`
-        }`
-    ),
-    "",
-    "## Checks",
-    "",
-    ...(report.checks.length
-      ? report.checks.map((check) => `- ${check.ok ? "PASS" : "FAIL"} [${check.layer}] ${check.name}: ${check.message}`)
-      : ["- None recorded."]),
-    "",
-    "## Bug Fixes",
-    "",
-    ...(report.bugFixes.length ? report.bugFixes.map((item) => `- ${item}`) : ["- None recorded."]),
-    "",
-    "## Failures",
-    "",
-    ...(report.failures.length ? report.failures.map((item) => `- ${item}`) : ["- None recorded."]),
-    "",
-    "## Remaining Risks",
-    "",
-    ...(report.remainingRisks.length ? report.remainingRisks.map((item) => `- ${item}`) : ["- None recorded."]),
-    ""
-  ].join("\n");
+  writeFullCodebaseReport(changeDir, report);
 }
 
 function loadLocalEnv() {
@@ -323,7 +272,7 @@ function loadLocalEnv() {
 }
 
 function normalizeCommand(command) {
-  if (["all", "large"].includes(command)) {
+  if (["all", "large", "plan"].includes(command)) {
     return command;
   }
 

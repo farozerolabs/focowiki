@@ -14,6 +14,11 @@ export type QueryPlanTargetName =
   | "bundle-tree-search-next-page"
   | "bundle-tree-search-ancestors"
   | "bundle-file-content"
+  | "generated-file-search-first-page"
+  | "generated-file-search-next-page"
+  | "generated-file-search-no-result"
+  | "generated-file-search-kind-filter"
+  | "generated-file-search-cache-hit"
   | "source-file-graph-summary";
 
 export type QueryPlanTarget = {
@@ -323,6 +328,77 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND release_id = 'release-plan'
           AND logical_path = 'pages/example.md'
         LIMIT 1
+      `
+    },
+    {
+      name: "generated-file-search-first-page",
+      description: "Developer file search first page must use compact active-release search documents.",
+      sql: `
+        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_file_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND removed_at IS NULL
+          AND file_kind = 'page'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "generated-file-search-next-page",
+      description: "Developer file search next page must use cursor seek over bounded search documents.",
+      sql: `
+        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_file_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND removed_at IS NULL
+          AND file_kind = 'page'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+          AND (logical_path > 'pages/example.md' OR (logical_path = 'pages/example.md' AND bundle_file_id > 'bundle-file-plan'))
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "generated-file-search-no-result",
+      description: "Developer file search no-result checks must stay bounded on compact search documents.",
+      sql: `
+        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_file_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND removed_at IS NULL
+          AND file_kind = 'page'
+          AND search_text ILIKE '%no-such-file%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "generated-file-search-kind-filter",
+      description: "Developer file search kind filter must use release and file-kind scoped search indexes.",
+      sql: `
+        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_file_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND removed_at IS NULL
+          AND file_kind = 'schema'
+          AND search_text ILIKE '%schema%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "generated-file-search-cache-hit",
+      description: "Developer file search cache hits must not require database search SQL.",
+      sql: `
+        SELECT 1
+        FROM focowiki.bundle_file_search_documents
+        WHERE false
+        LIMIT 0
       `
     },
     {

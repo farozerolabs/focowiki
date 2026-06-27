@@ -58,7 +58,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | `list_tree` | 返回一个知识库的分页生成文件条目。 |
 | `read_file` | 按 `fileId` 或逻辑 `path` 返回 Markdown 内容。 |
 | `get_file` | 返回文件的安全元数据。 |
-| `search_files` | 可选候选查找操作，由你的搜索层或生成索引文件支持，查询短语由 Agent 生成。 |
+| `search_files` | 可选候选查找操作，可由 `searchGeneratedFiles` 或你自己的读取层支持，查询短语由 Agent 生成。 |
 | `read_related` | 可选的有界相关文件快捷接口。Agent 也可以读取 `_graph/by-file/{fileId}.json`。 |
 
 接口保持小而稳定。Agent 可以发现文件树、读取单个文件、沿着链接继续探索，并重复这个过程。

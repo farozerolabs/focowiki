@@ -18,6 +18,7 @@ await build({
   entryPoints: {
     main: "src/main.ts",
     migrate: "src/db/migrate.ts",
+    "search-backfill": "src/search-backfill.ts",
     worker: "src/worker-main.ts"
   },
   format: "esm",

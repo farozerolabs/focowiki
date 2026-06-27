@@ -82,11 +82,19 @@ async function checkDeveloperOpenApiRateLimit(
     return null;
   }
 
-  context.header("retry-after", String(limit.windowSeconds));
-  return writeDeveloperOpenApiError(context, rateLimited(result.resetAt));
+  const retryAfterSeconds = coarseRetryAfterSeconds(result.resetAt);
+  context.header("retry-after", String(retryAfterSeconds));
+  return writeDeveloperOpenApiError(context, rateLimited({ retryAfterSeconds }));
 }
 
 function readBearerToken(authorization: string | undefined): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(authorization ?? "");
   return match?.[1] ?? null;
+}
+
+function coarseRetryAfterSeconds(resetAt: string): number {
+  const remainingSeconds = Math.max(1, Math.ceil((Date.parse(resetAt) - Date.now()) / 1_000));
+  const buckets = [15, 30, 60, 120, 300];
+
+  return buckets.find((bucket) => remainingSeconds <= bucket) ?? 300;
 }

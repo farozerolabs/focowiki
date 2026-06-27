@@ -317,6 +317,55 @@ CREATE TABLE IF NOT EXISTS focowiki.bundle_files (
   )
 );
 
+CREATE TABLE IF NOT EXISTS focowiki.bundle_file_search_documents (
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  release_id text NOT NULL REFERENCES focowiki.releases(id),
+  bundle_file_id text NOT NULL REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE,
+  source_file_id text REFERENCES focowiki.source_files(id),
+  file_kind text NOT NULL,
+  logical_path text NOT NULL,
+  title text,
+  description text,
+  tags_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  frontmatter_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  metadata_text text NOT NULL DEFAULT '',
+  search_text text NOT NULL,
+  removed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (release_id, bundle_file_id),
+  CHECK (file_kind IN (
+    'page',
+    'index',
+    'log',
+    'schema',
+    'manifest_index',
+    'manifest_index_shard',
+    'search_index',
+    'search_index_shard',
+    'link_index',
+    'link_index_shard',
+    'graph_index',
+    'graph_manifest',
+    'graph_node_index',
+    'graph_edge_shard',
+    'graph_file'
+  )),
+  CHECK (jsonb_typeof(tags_json) = 'array'),
+  CHECK (jsonb_typeof(frontmatter_json) = 'object')
+);
+
+ALTER TABLE focowiki.bundle_file_search_documents
+  ADD COLUMN IF NOT EXISTS removed_at timestamptz;
+
+UPDATE focowiki.bundle_file_search_documents document
+SET removed_at = source.deleted_at
+FROM focowiki.source_files source
+WHERE document.source_file_id = source.id
+  AND document.knowledge_base_id = source.knowledge_base_id
+  AND document.removed_at IS NULL
+  AND source.deleted_at IS NOT NULL;
+
 UPDATE focowiki.source_files source
 SET
   generated_bundle_file_id = output.bundle_file_id,
@@ -899,6 +948,30 @@ CREATE INDEX IF NOT EXISTS bundle_files_kb_release_logical_cursor_idx
 CREATE INDEX IF NOT EXISTS bundle_files_kb_release_source_idx
   ON focowiki.bundle_files(knowledge_base_id, release_id, source_file_id, id);
 
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_kb_release_kind_cursor_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, file_kind, logical_path, bundle_file_id)
+  WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_kb_release_cursor_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, logical_path, bundle_file_id)
+  WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_kb_release_source_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, source_file_id, bundle_file_id)
+  WHERE source_file_id IS NOT NULL AND removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_kind_cursor_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, file_kind, logical_path, bundle_file_id)
+  WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_cursor_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, logical_path, bundle_file_id)
+  WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_source_idx
+  ON focowiki.bundle_file_search_documents(knowledge_base_id, release_id, source_file_id, bundle_file_id)
+  WHERE source_file_id IS NOT NULL AND removed_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_cursor_idx
   ON focowiki.bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id);
 
@@ -928,6 +1001,18 @@ BEGIN
     EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_name_trgm_idx ON focowiki.bundle_tree_entries USING gin (name gin_trgm_ops)';
     EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_logical_path_trgm_idx ON focowiki.bundle_tree_entries USING gin (logical_path gin_trgm_ops)';
     EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_search_text_trgm_idx ON focowiki.bundle_tree_entries USING gin ((name || '' '' || logical_path) gin_trgm_ops)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_search_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (search_text gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_logical_path_trgm_idx ON focowiki.bundle_file_search_documents USING gin (logical_path gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_title_trgm_idx ON focowiki.bundle_file_search_documents USING gin (title gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_description_trgm_idx ON focowiki.bundle_file_search_documents USING gin (description gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_metadata_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (metadata_text gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_tags_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin ((tags_json::text) gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_search_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (search_text gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_logical_path_trgm_idx ON focowiki.bundle_file_search_documents USING gin (logical_path gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_title_trgm_idx ON focowiki.bundle_file_search_documents USING gin (title gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_description_trgm_idx ON focowiki.bundle_file_search_documents USING gin (description gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_metadata_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (metadata_text gin_trgm_ops) WHERE removed_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_file_search_documents_active_tags_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin ((tags_json::text) gin_trgm_ops) WHERE removed_at IS NULL';
   END IF;
 END $$;
 

@@ -19,6 +19,7 @@ const knowledgeBase = {
 
 const sourceFile = {
   fileId: sourceFileId,
+  sourceFileId,
   knowledgeBaseId,
   originalFilename: "guide.md",
   contentType: "text/markdown; charset=utf-8",
@@ -64,6 +65,7 @@ const sourceFileEvent = {
   eventId: "event_123",
   knowledgeBaseId,
   fileId: sourceFileId,
+  sourceFileId,
   stageKey: "metadata_resolution",
   messageKey: "sourceFiles.phase.metadataResolution",
   startedAt: exampleTimestamp,
@@ -92,6 +94,55 @@ const bundleFile = {
   },
   deletable: true,
   contentAvailable: true
+};
+
+const fileSearchResult = {
+  fileId: bundleFileId,
+  generatedFileId: bundleFileId,
+  knowledgeBaseId,
+  releaseId: "release_123",
+  sourceFileId,
+  path: "pages/guide.md",
+  generatedFilePath: "pages/guide.md",
+  fileKind: "page",
+  title: "Guide",
+  description: "Short summary.",
+  tags: ["guide"],
+  frontmatter: {
+    type: "page",
+    title: "Guide"
+  },
+  matchedFields: ["path", "title"],
+  score: 9,
+  contentAvailable: true
+};
+
+const fileSearchQueryContext = {
+  query: "guide",
+  normalizedQuery: "guide",
+  scope: "all",
+  fileKind: "page",
+  limit: 10,
+  cursorProvided: false
+};
+
+const fileSearchResultSummary = {
+  resultCount: 1,
+  hasMore: false,
+  sort: ["score desc", "path asc", "fileId asc"],
+  meaning: "Candidates matched the query. Read candidate content and related files before answering."
+};
+
+const fileSearchNextRequestTemplates = {
+  searchAgain: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/search?query={query}`,
+  listTree: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/tree?parentPath={parentPath}`,
+  readIndex: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/content?path=index.md`,
+  fileDetailById: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}`,
+  fileContentById: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}/content`,
+  fileContentByPath: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/content?path={generatedFilePath}`,
+  relatedFilesById: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/files/{generatedFileId}/related`,
+  sourceFileStatusById: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/source-files/{sourceFileId}`,
+  sourceFileEventsById: `/openapi/v1/knowledge-bases/${knowledgeBaseId}/source-files/{sourceFileId}/events`
 };
 
 const relatedFile = {
@@ -207,6 +258,15 @@ export const requestExamples = {
     path: { knowledgeBaseId },
     query: { path: "pages/guide.md" }
   },
+  searchGeneratedFiles: {
+    path: { knowledgeBaseId },
+    query: {
+      query: "guide",
+      scope: "all",
+      fileKind: "page",
+      limit: 10
+    }
+  },
   getFileById: {
     path: { knowledgeBaseId, fileId: bundleFileId }
   },
@@ -295,6 +355,7 @@ export function createDeveloperOpenApiResponseExamples() {
       files: [
         {
           fileId: sourceFileId,
+          sourceFileId,
           originalFilename: "guide.md",
           sizeBytes: 1024,
           processingState: "queued",
@@ -302,6 +363,7 @@ export function createDeveloperOpenApiResponseExamples() {
         },
         {
           fileId: "file_source_456",
+          sourceFileId: "file_source_456",
           originalFilename: "faq.md",
           sizeBytes: 2048,
           processingState: "queued",
@@ -357,6 +419,14 @@ export function createDeveloperOpenApiResponseExamples() {
     getFileContentByPath: {
       file: bundleFile,
       content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
+    },
+    searchGeneratedFiles: {
+      query: fileSearchQueryContext,
+      items: [fileSearchResult],
+      nextCursor: null,
+      searchStatus: "ok",
+      resultSummary: fileSearchResultSummary,
+      nextRequestTemplates: fileSearchNextRequestTemplates
     },
     getFileById: {
       file: bundleFile

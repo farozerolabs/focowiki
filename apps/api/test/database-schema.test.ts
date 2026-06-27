@@ -32,6 +32,7 @@ describe("database schema migration", () => {
       "model_invocations",
       "releases",
       "bundle_files",
+      "bundle_file_search_documents",
       "bundle_tree_entries",
       "public_api_keys"
     ]) {
@@ -116,6 +117,23 @@ describe("database schema migration", () => {
       "releases(knowledge_base_id, published_at desc, id)",
       "bundle_files(knowledge_base_id, release_id, logical_path, id)",
       "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
+      "bundle_file_search_documents(knowledge_base_id, release_id, file_kind, logical_path, bundle_file_id)",
+      "bundle_file_search_documents(knowledge_base_id, release_id, logical_path, bundle_file_id)",
+      "bundle_file_search_documents_search_text_trgm_idx",
+      "bundle_file_search_documents_logical_path_trgm_idx",
+      "bundle_file_search_documents_title_trgm_idx",
+      "bundle_file_search_documents_description_trgm_idx",
+      "bundle_file_search_documents_metadata_text_trgm_idx",
+      "bundle_file_search_documents_tags_text_trgm_idx",
+      "bundle_file_search_documents_active_kind_cursor_idx",
+      "bundle_file_search_documents_active_cursor_idx",
+      "bundle_file_search_documents_active_source_idx",
+      "bundle_file_search_documents_active_search_text_trgm_idx",
+      "bundle_file_search_documents_active_logical_path_trgm_idx",
+      "bundle_file_search_documents_active_title_trgm_idx",
+      "bundle_file_search_documents_active_description_trgm_idx",
+      "bundle_file_search_documents_active_metadata_text_trgm_idx",
+      "bundle_file_search_documents_active_tags_text_trgm_idx",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, entry_type, sort_key, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, sort_key, id)",
@@ -146,6 +164,7 @@ describe("database schema migration", () => {
     expect(sql).toContain("deleted_at timestamptz");
     expect(sql).toContain("task_deleted_at timestamptz");
     expect(sql).toContain("source_file_id text references focowiki.source_files(id)");
+    expect(sql).toContain("removed_at timestamptz");
     expect(sql).toContain("processing_status text not null default 'queued'");
     expect(sql).toContain("processing_stage text not null default 'upload_storage'");
     expect(sql).toContain("retry_count integer not null default 0");

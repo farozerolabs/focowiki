@@ -79,8 +79,17 @@ export function payloadTooLarge(message = "Request payload is too large."): Deve
   return createDeveloperOpenApiError("PAYLOAD_TOO_LARGE", 413, message);
 }
 
-export function rateLimited(resetAt: string): DeveloperOpenApiError {
-  return createDeveloperOpenApiError("RATE_LIMITED", 429, "Rate limit exceeded.", { resetAt });
+export function rateLimited(input: { retryAfterSeconds: number }): DeveloperOpenApiError {
+  return createDeveloperOpenApiError(
+    "RATE_LIMITED",
+    429,
+    "Too many requests. Wait briefly and retry.",
+    {
+      retryHint: "retry_after_short_delay",
+      retryAfterSeconds: input.retryAfterSeconds,
+      retryGuidance: "Wait briefly before sending the next Developer OpenAPI request."
+    }
+  );
 }
 
 export function queueBackpressure(details: {

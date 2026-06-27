@@ -171,7 +171,7 @@ Command: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agen
 
 Response: `items`, `nextCursor`, `searchStatus`，可选 `message`，可选 `nextActions`
 
-Candidate entries can include `score`, `matchedTerms`, `matchedFields`, `fileId`, and `path`. The Agent creates the search phrase from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, list the tree, try another phrase, or inspect graph context.
+Candidate entries can include `score`, `matchedFields`, `fileId`, and `path`. The Agent creates the search phrase from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, list the tree, try another phrase, or inspect graph context.
 ```
 
 ## `references/exploration-workflow.md`

@@ -147,7 +147,7 @@ This tool is optional. The Agent can also read `_graph/by-file/{fileId}.json` th
 
 ## `search_files`
 
-This tool is optional. Implement `search_files` when the Agent needs candidate lookup, commonly by reading the generated `_index/search.json` file or by using your own search layer.
+This tool is optional. Implement `search_files` when the Agent needs candidate lookup. A backend can call Focowiki Developer OpenAPI `searchGeneratedFiles`, read generated index files, or use its own read layer.
 
 The Agent owns query planning. It should derive short phrases from the user question, the knowledge-base overview, schema hints, already-read files, and remaining evidence gaps. The tool should return candidates for one phrase at a time.
 
@@ -172,7 +172,6 @@ Output:
       "title": "Example",
       "description": "Short summary.",
       "score": 12,
-      "matchedTerms": ["renewal", "notice"],
       "matchedFields": ["title", "description"]
     }
   ],

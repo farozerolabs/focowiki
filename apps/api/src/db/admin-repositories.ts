@@ -19,6 +19,11 @@ import {
   createPostgresWorkerJobRepository,
   type WorkerJobRepository
 } from "./worker-job-repository.js";
+import {
+  createGeneratedFileSearchDocument,
+  type GeneratedFileSearchDocumentDraft,
+  type GeneratedFileSearchScope
+} from "../search/generated-file-search-documents.js";
 
 export type CursorPage<T> = {
   items: T[];
@@ -114,6 +119,22 @@ export type BundleFileRecord = {
   description: string | null;
   tags: string[];
   frontmatter: Record<string, unknown>;
+};
+
+export type BundleFileSearchResultRecord = {
+  fileId: string;
+  knowledgeBaseId: string;
+  releaseId: string;
+  sourceFileId: string | null;
+  fileKind: BundleFileKind;
+  path: string;
+  title: string | null;
+  description: string | null;
+  tags: string[];
+  frontmatter: Record<string, unknown>;
+  matchedFields: Array<"path" | "title" | "description" | "metadata">;
+  score: number;
+  contentAvailable: boolean;
 };
 
 export type GeneratedSourceFileOutputRecord = {
@@ -419,6 +440,22 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<BundleFileRecord>>;
+  upsertBundleFileSearchDocuments?: (
+    documents: GeneratedFileSearchDocumentDraft[]
+  ) => Promise<void>;
+  countBundleFileSearchDocuments?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+  }) => Promise<number>;
+  searchBundleFiles?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    query: string;
+    scope: GeneratedFileSearchScope;
+    fileKind: BundleFileKind | null;
+    limit: number;
+    cursor: string | null;
+  }) => Promise<CursorPage<BundleFileSearchResultRecord>>;
   listPublicationLogHistory?: (request: {
     knowledgeBaseId: string;
     maxEntries: number;
@@ -720,6 +757,24 @@ type BundleFileRow = {
   description: string | null;
   tags_json: unknown;
   frontmatter_json: unknown;
+};
+
+type BundleFileSearchDocumentRow = {
+  bundle_file_id: string;
+  knowledge_base_id: string;
+  release_id: string;
+  source_file_id: string | null;
+  file_kind: BundleFileKind;
+  logical_path: string;
+  title: string | null;
+  description: string | null;
+  tags_json: unknown;
+  frontmatter_json: unknown;
+  path_match: boolean;
+  title_match: boolean;
+  description_match: boolean;
+  metadata_match: boolean;
+  score: string | number;
 };
 
 type SourceFileRow = {
@@ -1063,6 +1118,23 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             )
           `;
         }
+
+        await upsertGeneratedFileSearchDocuments(
+          sql,
+          files.map(createGeneratedFileSearchDocument)
+        );
+      },
+      async upsertBundleFileSearchDocuments(documents) {
+        await upsertGeneratedFileSearchDocuments(sql, documents);
+      },
+      async countBundleFileSearchDocuments({ knowledgeBaseId, releaseId }) {
+        const rows = await sql<Array<{ count: string }>>`
+          SELECT count(*)::text AS count
+          FROM focowiki.bundle_file_search_documents
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND release_id = ${releaseId}
+        `;
+        return Number(rows[0]?.count ?? 0);
       },
       async createBundleTreeEntries(entries) {
         for (const entry of entries) {
@@ -1570,6 +1642,127 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               : null
         };
       },
+      async searchBundleFiles({
+        knowledgeBaseId,
+        releaseId,
+        query,
+        scope,
+        fileKind,
+        limit,
+        cursor
+      }) {
+        const cursorValue = cursor ? parseBundleFileSearchCursor(cursor) : null;
+        const searchPattern = containsPattern(query.toLocaleLowerCase("en-US"));
+        const fileKindFilter = fileKind ? sql`AND doc.file_kind = ${fileKind}` : sql``;
+        const searchPredicate =
+          scope === "path"
+            ? sql`AND doc.logical_path ILIKE ${searchPattern} ESCAPE ${"\\"}`
+            : scope === "metadata"
+              ? sql`AND (
+                  coalesce(doc.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
+                  OR coalesce(doc.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
+                  OR doc.metadata_text ILIKE ${searchPattern} ESCAPE ${"\\"}
+                  OR doc.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
+                )`
+              : sql`AND doc.search_text ILIKE ${searchPattern} ESCAPE ${"\\"}`;
+        const cursorFilter = cursorValue
+          ? sql`AND (
+              score < ${cursorValue.score}
+              OR (
+                score = ${cursorValue.score}
+                AND (
+                  logical_path > ${cursorValue.logicalPath}
+                  OR (logical_path = ${cursorValue.logicalPath} AND bundle_file_id > ${cursorValue.fileId})
+                )
+              )
+            )`
+          : sql``;
+        const rows = await sql<BundleFileSearchDocumentRow[]>`
+          WITH field_matches AS MATERIALIZED (
+            SELECT
+              doc.bundle_file_id,
+              doc.logical_path,
+              doc.logical_path ILIKE ${searchPattern} ESCAPE ${"\\"} AS path_match,
+              coalesce(doc.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS title_match,
+              coalesce(doc.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS description_match,
+              doc.metadata_text ILIKE ${searchPattern} ESCAPE ${"\\"} AS metadata_text_match,
+              doc.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} AS tags_match
+            FROM focowiki.bundle_file_search_documents doc
+            WHERE doc.knowledge_base_id = ${knowledgeBaseId}
+              AND doc.release_id = ${releaseId}
+              AND doc.removed_at IS NULL
+              ${fileKindFilter}
+              ${searchPredicate}
+          ),
+          ranked AS (
+            SELECT
+              bundle_file_id,
+              logical_path,
+              path_match,
+              title_match,
+              description_match,
+              (metadata_text_match OR tags_match) AS metadata_match,
+              (
+                CASE WHEN path_match THEN 5 ELSE 0 END
+                + CASE WHEN title_match THEN 4 ELSE 0 END
+                + CASE WHEN description_match THEN 2 ELSE 0 END
+                + CASE WHEN metadata_text_match THEN 1 ELSE 0 END
+                + CASE WHEN tags_match THEN 1 ELSE 0 END
+              )::integer AS score
+            FROM field_matches
+          ),
+          limited AS (
+            SELECT
+              bundle_file_id,
+              logical_path,
+              path_match,
+              title_match,
+              description_match,
+              metadata_match,
+              score
+            FROM ranked
+            WHERE score > 0
+              ${cursorFilter}
+            ORDER BY score DESC, logical_path ASC, bundle_file_id ASC
+            LIMIT ${limit + 1}
+          )
+          SELECT
+            doc.bundle_file_id,
+            doc.knowledge_base_id,
+            doc.release_id,
+            doc.source_file_id,
+            doc.file_kind,
+            doc.logical_path,
+            doc.title,
+            doc.description,
+            doc.tags_json,
+            doc.frontmatter_json,
+            limited.path_match,
+            limited.title_match,
+            limited.description_match,
+            limited.metadata_match,
+            limited.score
+          FROM limited
+          JOIN focowiki.bundle_file_search_documents doc
+            ON doc.release_id = ${releaseId}
+           AND doc.bundle_file_id = limited.bundle_file_id
+          ORDER BY limited.score DESC, limited.logical_path ASC, limited.bundle_file_id ASC
+        `;
+        const pageRows = rows.slice(0, limit);
+        const lastRow = pageRows.at(-1);
+
+        return {
+          items: pageRows.map(mapBundleFileSearchDocumentRow),
+          nextCursor:
+            rows.length > limit && lastRow
+              ? serializeBundleFileSearchCursor({
+                  score: Number(lastRow.score),
+                  logicalPath: lastRow.logical_path,
+                  fileId: lastRow.bundle_file_id
+                })
+              : null
+        };
+      },
       async listPublicationLogHistory({ knowledgeBaseId, maxEntries }) {
         const boundedMaxEntries = Math.max(1, Math.min(maxEntries, 1_000));
         const entryRows = await sql<PublicationLogEntryRow[]>`
@@ -1839,17 +2032,33 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         return row ? mapPublicationJobRow(row) : null;
       },
       async softDeleteSourceFile({ knowledgeBaseId, sourceFileId, deletedAt }) {
-        const rows = await sql<Array<{ id: string }>>`
-          UPDATE focowiki.source_files
-          SET
-            deleted_at = ${deletedAt},
-            generated_bundle_file_id = NULL,
-            generated_bundle_file_path = NULL
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND id = ${sourceFileId}
-            AND deleted_at IS NULL
-          RETURNING id
-        `;
+        const rows = await sql.begin(async (transaction) => {
+          const updatedRows = await transaction<Array<{ id: string }>>`
+            UPDATE focowiki.source_files
+            SET
+              deleted_at = ${deletedAt},
+              generated_bundle_file_id = NULL,
+              generated_bundle_file_path = NULL
+            WHERE knowledge_base_id = ${knowledgeBaseId}
+              AND id = ${sourceFileId}
+              AND deleted_at IS NULL
+            RETURNING id
+          `;
+
+          if (updatedRows.length > 0) {
+            await transaction`
+              UPDATE focowiki.bundle_file_search_documents
+              SET
+                removed_at = ${deletedAt},
+                updated_at = now()
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND source_file_id = ${sourceFileId}
+                AND removed_at IS NULL
+            `;
+          }
+
+          return updatedRows;
+        });
         return rows.length > 0;
       },
       async deleteSourceFileTasks({ knowledgeBaseId, sourceFileIds, deletedAt }) {
@@ -1980,6 +2189,15 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               WHERE knowledge_base_id = ${knowledgeBaseId}
                 AND id = ANY(${deletedIds})
                 AND deleted_at IS NULL
+            `;
+            await transaction`
+              UPDATE focowiki.bundle_file_search_documents
+              SET
+                removed_at = ${deletedAt},
+                updated_at = now()
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+                AND source_file_id = ANY(${deletedIds})
+                AND removed_at IS NULL
             `;
           }
 
@@ -2552,6 +2770,44 @@ function mapBundleFileRow(row: BundleFileRow): BundleFileRecord {
   };
 }
 
+function mapBundleFileSearchDocumentRow(
+  row: BundleFileSearchDocumentRow
+): BundleFileSearchResultRecord {
+  const matchedFields: BundleFileSearchResultRecord["matchedFields"] = [];
+
+  if (row.path_match) {
+    matchedFields.push("path");
+  }
+
+  if (row.title_match) {
+    matchedFields.push("title");
+  }
+
+  if (row.description_match) {
+    matchedFields.push("description");
+  }
+
+  if (row.metadata_match) {
+    matchedFields.push("metadata");
+  }
+
+  return {
+    fileId: row.bundle_file_id,
+    knowledgeBaseId: row.knowledge_base_id,
+    releaseId: row.release_id,
+    sourceFileId: row.source_file_id,
+    fileKind: row.file_kind,
+    path: row.logical_path,
+    title: row.title,
+    description: row.description,
+    tags: readStringArray(row.tags_json),
+    frontmatter: readRecord(row.frontmatter_json),
+    matchedFields,
+    score: Number(row.score),
+    contentAvailable: true
+  };
+}
+
 function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
   return {
     id: row.id,
@@ -2760,6 +3016,65 @@ function readOptionalRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+async function upsertGeneratedFileSearchDocuments(
+  sql: DatabaseClient,
+  documents: GeneratedFileSearchDocumentDraft[]
+): Promise<void> {
+  for (const document of documents) {
+    await sql`
+      INSERT INTO focowiki.bundle_file_search_documents (
+        knowledge_base_id,
+        release_id,
+        bundle_file_id,
+        source_file_id,
+        file_kind,
+        logical_path,
+        title,
+        description,
+        tags_json,
+        frontmatter_json,
+        metadata_text,
+        search_text,
+        removed_at,
+        updated_at
+      )
+      VALUES (
+        ${document.knowledgeBaseId},
+        ${document.releaseId},
+        ${document.bundleFileId},
+        ${document.sourceFileId},
+        ${document.fileKind},
+        ${document.logicalPath},
+        ${document.title},
+        ${document.description},
+        ${sql.json(document.tags as never)},
+        ${sql.json(document.frontmatter as never)},
+        ${document.metadataText},
+        ${document.searchText},
+        (
+          SELECT source.deleted_at
+          FROM focowiki.source_files source
+          WHERE source.id = ${document.sourceFileId}
+            AND source.knowledge_base_id = ${document.knowledgeBaseId}
+        ),
+        now()
+      )
+      ON CONFLICT (release_id, bundle_file_id) DO UPDATE SET
+        source_file_id = EXCLUDED.source_file_id,
+        file_kind = EXCLUDED.file_kind,
+        logical_path = EXCLUDED.logical_path,
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        tags_json = EXCLUDED.tags_json,
+        frontmatter_json = EXCLUDED.frontmatter_json,
+        metadata_text = EXCLUDED.metadata_text,
+        search_text = EXCLUDED.search_text,
+        removed_at = EXCLUDED.removed_at,
+        updated_at = now()
+    `;
+  }
+}
+
 function serializeTimedCursor(cursor: { createdAt: string; id: string }): string {
   return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
@@ -2791,6 +3106,36 @@ function parseLogicalPathCursor(cursor: string): { logicalPath: string; id: stri
   return {
     logicalPath: candidate.logicalPath,
     id: candidate.id
+  };
+}
+
+function serializeBundleFileSearchCursor(cursor: {
+  score: number;
+  logicalPath: string;
+  fileId: string;
+}): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+function parseBundleFileSearchCursor(cursor: string): {
+  score: number;
+  logicalPath: string;
+  fileId: string;
+} {
+  const candidate = parseCursorRecord(cursor);
+
+  if (
+    typeof candidate.score !== "number" ||
+    typeof candidate.logicalPath !== "string" ||
+    typeof candidate.fileId !== "string"
+  ) {
+    throw new Error("Invalid bundle file search cursor");
+  }
+
+  return {
+    score: candidate.score,
+    logicalPath: candidate.logicalPath,
+    fileId: candidate.fileId
   };
 }
 

@@ -52,9 +52,9 @@ The exact routes belong to your product. This example shows a small shape that w
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown content. |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | Markdown content by logical path. |
 | `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | Bounded related file records. |
-| `GET /agent/knowledge/search?query=<agent-generated phrase>` | Your search layer or generated index files | Candidate files for the Agent to read. |
+| `GET /agent/knowledge/search?query=<agent-generated phrase>` | `searchGeneratedFiles` or your read layer | Candidate files for the Agent to read. |
 
-The `search` route is optional. The Agent should create the query phrase, and the route should return ranked file-level candidates for that phrase. Empty search responses should include safe continuation guidance so the Agent can continue with `index.md`, tree listing, shorter phrases, links, graph files, or related-file reads. A simple first version can start with tree listing and file reads.
+The `search` route is optional. The Agent should create the query phrase, and the route should return ranked file-level candidates for that phrase. Focowiki Developer OpenAPI returns `searchStatus`, candidate `fileId`, candidate `path`, `matchedFields`, and optional `nextActions`. Empty or unavailable search responses should include safe continuation guidance so the Agent can continue with `index.md`, tree listing, shorter phrases, links, graph files, or related-file reads.
 
 For third-party Agent clients, you can publish the read-only base URL as `https://knowledge.example.com` and route it internally to the same `/agent/knowledge` adapter. The Skill then sees shorter paths such as `/tree`, `/files/{fileId}`, and `/files/content?path=index.md`, while your backend still controls authentication, authorization, and Focowiki OpenAPI access.
 

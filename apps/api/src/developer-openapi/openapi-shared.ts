@@ -215,6 +215,44 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
   };
 }
 
+export function fileSearchParameters(): ParameterObject[] {
+  return [
+    queryParameter("query", "Search phrase used to find candidate generated files.", {
+      type: "string",
+      minLength: 2,
+      maxLength: 160
+    }),
+    queryParameter("scope", "Search field scope. The default searches path and metadata.", {
+      type: "string",
+      enum: ["all", "path", "metadata"],
+      default: "all"
+    }),
+    queryParameter("fileKind", "Generated file kind filter. The default searches page files.", {
+      type: "string",
+      enum: [
+        "all",
+        "page",
+        "index",
+        "log",
+        "schema",
+        "manifest_index",
+        "manifest_index_shard",
+        "search_index",
+        "search_index_shard",
+        "link_index",
+        "link_index_shard",
+        "graph_index",
+        "graph_manifest",
+        "graph_node_index",
+        "graph_edge_shard",
+        "graph_file"
+      ],
+      default: "page"
+    }),
+    ...paginationParameters()
+  ];
+}
+
 function standardErrorResponses(): Record<string, ResponseObject> {
   return {
     "401": errorResponse(
@@ -247,6 +285,22 @@ export function jsonResponse(description: string, schema: SchemaObject, example?
 }
 
 export function errorResponse(description: string, code: string, httpStatus: number): ResponseObject {
+  if (code === "RATE_LIMITED") {
+    return jsonResponse(description, ref("Error"), {
+      error: {
+        code,
+        message: "Too many requests. Wait briefly and retry.",
+        httpStatus,
+        details: {
+          retryHint: "retry_after_short_delay",
+          retryAfterSeconds: 60,
+          retryGuidance: "Wait briefly before sending the next Developer OpenAPI request."
+        }
+      },
+      requestId: "req_123"
+    });
+  }
+
   return jsonResponse(description, ref("Error"), {
     error: {
       code,

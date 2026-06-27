@@ -69,6 +69,10 @@ Error responses use:
 | `error.details` | Optional safe details. |
 | `requestId` | Request identifier for troubleshooting. |
 
+## Rate Limits
+
+All Developer OpenAPI endpoints share one deployment-level rate limit. When a client receives `RATE_LIMITED`, it should wait briefly and retry the next request. The response includes a safe `Retry-After` header and optional `error.details.retryAfterSeconds`, `error.details.retryHint`, and `error.details.retryGuidance` fields. These values are coarse retry guidance for Agent planning and do not expose the deployment's exact rate-limit configuration.
+
 ## Source-File Status Fields
 
 Upload APIs return source-file records. Source-file records use two status fields:
@@ -153,7 +157,7 @@ upload_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases
   -F "files=@guide.md;type=text/markdown" \
   -F "files=@faq.md;type=text/markdown")
 
-FIRST_SOURCE_FILE_ID=$(printf "%s" "$upload_response" | jq -r ".files[0].fileId")
+FIRST_SOURCE_FILE_ID=$(printf "%s" "$upload_response" | jq -r ".files[0].sourceFileId")
 ```
 
 Poll source-file processing until the file is fully complete or failed:
@@ -218,6 +222,31 @@ tree_response=$(curl -sS -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$K
 FIRST_PATH=$(printf "%s" "$tree_response" | jq -r ".items[0].path")
 FIRST_TREE_FILE_ID=$(printf "%s" "$tree_response" | jq -r ".items[0].fileId")
 ```
+
+Search generated files when the integration has a short phrase and needs candidate files before reading evidence. Search returns file-level candidates only. Use the returned `fileId` or `generatedFileId` with file detail, content, and related-file endpoints. Use `path` or `generatedFilePath` with path-based content reads. Use `sourceFileId` with source-file status, events, retry, or task-deletion endpoints when source processing context is needed:
+
+```bash
+search_response=$(curl -sS -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "query=guide" \
+  --data-urlencode "scope=all" \
+  --data-urlencode "fileKind=page" \
+  --data-urlencode "limit=10")
+
+SEARCH_STATUS=$(printf "%s" "$search_response" | jq -r ".searchStatus")
+FIRST_SEARCH_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].fileId")
+FIRST_SEARCH_GENERATED_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].generatedFileId")
+FIRST_SEARCH_PATH=$(printf "%s" "$search_response" | jq -r ".items[0].path")
+FIRST_SEARCH_GENERATED_FILE_PATH=$(printf "%s" "$search_response" | jq -r ".items[0].generatedFilePath")
+FIRST_SEARCH_SOURCE_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].sourceFileId")
+SEARCH_RESULT_COUNT=$(printf "%s" "$search_response" | jq -r ".resultSummary.resultCount")
+SEARCH_SORT=$(printf "%s" "$search_response" | jq -r ".resultSummary.sort | join(\", \")")
+SEARCH_NEXT_CONTENT_TEMPLATE=$(printf "%s" "$search_response" | jq -r ".nextRequestTemplates.fileContentByPath")
+```
+
+`searchStatus` can be `ok`, `no_candidates`, or `index_unavailable`. `ok` means candidate files are returned. `no_candidates` means search documents exist and this phrase matched no generated files. Relevant data may still exist under different titles, paths, or metadata terms. `index_unavailable` means the active release has no generated-file search documents yet, usually because the release was created before this search read model existed.
+
+Search responses include `query`, `resultSummary`, and `nextRequestTemplates`. `query` echoes the normalized phrase and applied filters. `resultSummary.sort` describes result ordering, currently `score desc`, `path asc`, and `fileId asc`. `nextRequestTemplates` gives the next read routes for generated file detail, generated file content, path-based content, related files, source-file status, and source-file events. When `no_candidates` or `index_unavailable` is returned, follow `nextActions`, read `index.md`, list the tree, try shorter or adjacent phrases, or inspect related files and graph files.
 
 Read generated file content by logical path:
 

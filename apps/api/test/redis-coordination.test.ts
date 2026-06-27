@@ -8,6 +8,7 @@ import { readPageResponseCache, writePageResponseCache } from "../src/page-respo
 
 class FakeRedisClient {
   public readonly values = new Map<string, string>();
+  public readonly expirations = new Map<string, number>();
   public readonly calls: Array<{ method: string; args: unknown[] }> = [];
 
   public async set(key: string, value: string, options?: unknown): Promise<string | null> {
@@ -35,7 +36,47 @@ class FakeRedisClient {
   public async del(key: string): Promise<number> {
     this.calls.push({ method: "del", args: [key] });
     const existed = this.values.delete(key);
+    this.expirations.delete(key);
     return existed ? 1 : 0;
+  }
+
+  public async incr(key: string): Promise<number> {
+    this.calls.push({ method: "incr", args: [key] });
+    const parsed = Number(this.values.get(key) ?? "0");
+
+    if (!Number.isInteger(parsed)) {
+      throw new Error("ERR value is not an integer or out of range");
+    }
+
+    const next = parsed + 1;
+    this.values.set(key, String(next));
+    return next;
+  }
+
+  public async expire(key: string, seconds: number): Promise<number> {
+    this.calls.push({ method: "expire", args: [key, seconds] });
+
+    if (!this.values.has(key)) {
+      return 0;
+    }
+
+    this.expirations.set(key, Date.now() + seconds * 1_000);
+    return 1;
+  }
+
+  public async ttl(key: string): Promise<number> {
+    this.calls.push({ method: "ttl", args: [key] });
+    const expiresAt = this.expirations.get(key);
+
+    if (!this.values.has(key)) {
+      return -2;
+    }
+
+    if (!expiresAt) {
+      return -1;
+    }
+
+    return Math.max(1, Math.ceil((expiresAt - Date.now()) / 1_000));
   }
 }
 

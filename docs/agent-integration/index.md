@@ -58,7 +58,7 @@ A minimal Agent-facing backend can expose these operations. In an own Agent clie
 | `list_tree` | Return paginated generated file entries for one selected knowledge base. |
 | `read_file` | Return Markdown content by `fileId` or logical `path`. |
 | `get_file` | Return safe metadata for a file. |
-| `search_files` | Optional candidate lookup for Agent-generated search phrases, backed by your own search layer or by generated index files. |
+| `search_files` | Optional candidate lookup for Agent-generated search phrases, backed by `searchGeneratedFiles` or your own read layer. |
 | `read_related` | Optional shortcut for bounded related files. Agents can also read `_graph/by-file/{fileId}.json`. |
 
 Keep this interface small. Agents work better when they can discover a file tree, read one file, follow links, and repeat the loop.

@@ -19,6 +19,8 @@ import {
 } from "./security.js";
 import { createDeveloperOpenApiService } from "./services.js";
 import { createDeveloperOpenApiDocument } from "./openapi-document.js";
+import { registerDeveloperOpenApiFileSearchRoutes } from "./file-search-routes.js";
+import { readLimit, safe } from "./route-helpers.js";
 
 export type DeveloperOpenApiRouteServices = {
   config: RuntimeConfig;
@@ -188,6 +190,12 @@ export function registerDeveloperOpenApiRoutes(
     })
   );
 
+  registerDeveloperOpenApiFileSearchRoutes(app, {
+    api,
+    config: services.config,
+    redis: services.redis
+  });
+
   app.get("/openapi/v1/knowledge-bases/:knowledgeBaseId/files/content", async (context) =>
     safe(context, () =>
       api.getFileContentByPath({
@@ -293,18 +301,6 @@ export function registerDeveloperOpenApiRoutes(
   app.all("/kb/*", (context) => writeDeveloperOpenApiError(context, unsupportedRoute()));
 }
 
-async function safe(
-  context: Context,
-  action: () => Promise<unknown> | unknown,
-  status = 200
-): Promise<Response> {
-  try {
-    return context.json(await action(), status as never);
-  } catch (error) {
-    return writeDeveloperOpenApiError(context, error);
-  }
-}
-
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
   try {
     const body = (await request.json()) as unknown;
@@ -314,20 +310,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   } catch {
     return {};
   }
-}
-
-function readLimit(
-  value: string | undefined,
-  config: RuntimeConfig,
-  limits: { defaultPageSize: number; maxPageSize: number } = config.pagination
-): number {
-  const parsed = value ? Number(value) : limits.defaultPageSize;
-
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > limits.maxPageSize) {
-    throw validationError("Pagination limit is invalid.", { field: "limit" });
-  }
-
-  return parsed;
 }
 
 function readSourceFileFilters(context: Context) {

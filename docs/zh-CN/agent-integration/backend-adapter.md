@@ -52,9 +52,9 @@ title: 后端适配
 | `GET /agent/knowledge/files/{fileId}/content` | `getFileContentById` | Markdown 内容。 |
 | `GET /agent/knowledge/files/content?path=...` | `getFileContentByPath` | 按逻辑路径读取的 Markdown 内容。 |
 | `GET /agent/knowledge/files/{fileId}/related` | `listRelatedFiles` | 有界相关文件记录。 |
-| `GET /agent/knowledge/search?query=<agent-generated phrase>` | 你的搜索层或生成索引文件 | 供 Agent 继续读取的候选文件。 |
+| `GET /agent/knowledge/search?query=<agent-generated phrase>` | `searchGeneratedFiles` 或你的读取层 | 供 Agent 继续读取的候选文件。 |
 
-`search` 路由是可选项。查询短语应由 Agent 生成，路由返回该短语对应的文件级排序候选。空搜索响应应包含安全的继续探索建议，方便 Agent 继续读取 `index.md`、文件树、较短短语、链接、图文件或相关文件。第一版可以只提供文件树和文件读取。
+`search` 路由是可选项。查询短语应由 Agent 生成，路由返回该短语对应的文件级排序候选。Focowiki Developer OpenAPI 会返回 `searchStatus`、候选 `fileId`、候选 `path`、`matchedFields` 和可选 `nextActions`。空搜索或索引不可用响应应包含安全的继续探索建议，方便 Agent 继续读取 `index.md`、文件树、较短短语、链接、图文件或相关文件。
 
 第三方 Agent 客户端可以使用 `https://knowledge.example.com` 作为只读 base URL，并在后端内部路由到同一套 `/agent/knowledge` adapter。这样 Skill 看到的是 `/tree`、`/files/{fileId}`、`/files/content?path=index.md` 这类短路径，同时鉴权、授权和 Focowiki OpenAPI 调用仍然由开发者后端控制。
 

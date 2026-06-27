@@ -1,5 +1,6 @@
 import type {
   BundleFileRecord,
+  BundleFileSearchResultRecord,
   BundleTreeEntryRecord,
   FileGraphRelatedRecord,
   GeneratedSourceFileOutputRecord,
@@ -32,6 +33,7 @@ export function toDeveloperSourceFile(
 
   return {
     fileId: record.id,
+    sourceFileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
     originalFilename: record.originalName,
     contentType: record.contentType,
@@ -65,6 +67,7 @@ export function toDeveloperSourceFileEvent(record: SourceFileEventRecord) {
     eventId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
     fileId: record.sourceFileId,
+    sourceFileId: record.sourceFileId,
     stageKey: record.stageKey,
     messageKey: record.messageKey,
     startedAt: record.startedAt,
@@ -111,6 +114,26 @@ export function toDeveloperBundleFile(record: BundleFileRecord, source?: SourceF
   };
 }
 
+export function toDeveloperFileSearchResult(record: BundleFileSearchResultRecord) {
+  return {
+    fileId: record.fileId,
+    generatedFileId: record.fileId,
+    knowledgeBaseId: record.knowledgeBaseId,
+    releaseId: record.releaseId,
+    sourceFileId: record.sourceFileId,
+    path: record.path,
+    generatedFilePath: record.path,
+    fileKind: record.fileKind,
+    title: record.title,
+    description: record.description,
+    tags: record.tags,
+    frontmatter: record.frontmatter,
+    matchedFields: record.matchedFields,
+    score: record.score,
+    contentAvailable: record.contentAvailable
+  };
+}
+
 export function toDeveloperRelatedFile(record: FileGraphRelatedRecord) {
   return {
     fileId: record.fileId,
@@ -134,6 +157,7 @@ export function toDeveloperSourceFileDetail(
 ) {
   return {
     fileId: record.id,
+    sourceFileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
     path: generatedOutput?.logicalPath ?? null,
     originalFilename: record.originalName,

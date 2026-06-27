@@ -11,6 +11,9 @@ export type RedisCommandClient = {
   set: (key: string, value: string, options?: Record<string, unknown>) => Promise<string | null>;
   get: (key: string) => Promise<string | null>;
   del: (key: string) => Promise<number>;
+  incr: (key: string) => Promise<number>;
+  expire: (key: string, seconds: number) => Promise<number | boolean>;
+  ttl: (key: string) => Promise<number>;
 };
 
 export type RedisCoordinator = {
@@ -86,11 +89,6 @@ export type RateLimitResult = {
   allowed: boolean;
   remaining: number;
   resetAt: string;
-};
-
-type RateLimitRecord = {
-  count: number;
-  resetAtMs: number;
 };
 
 export function createRedisConnectionOptions(
@@ -265,66 +263,39 @@ export function createRedisCoordinator(
     },
     async hitRateLimit(scope, id, limit) {
       const key = buildKey("rate-limits", scope, id);
-      const nowMs = Date.now();
-      const current = await readRateLimitRecord(client, key);
-      const resetAtMs =
-        current && current.resetAtMs > nowMs
-          ? current.resetAtMs
-          : nowMs + limit.windowSeconds * 1_000;
-      const currentCount = current && current.resetAtMs > nowMs ? current.count : 0;
-      const nextCount = currentCount + 1;
-      const allowed = nextCount <= limit.max;
-      const storedCount = allowed ? nextCount : currentCount;
+      const nextCount = await incrementRateLimitCounter(client, key);
 
-      await client.set(
-        key,
-        JSON.stringify({
-          count: storedCount,
-          resetAtMs
-        } satisfies RateLimitRecord),
-        {
-          EX: Math.max(1, Math.ceil((resetAtMs - nowMs) / 1_000))
-        }
-      );
+      if (nextCount === 1) {
+        await client.expire(key, limit.windowSeconds);
+      }
+
+      const ttlSeconds = await client.ttl(key);
+      const resetTtlSeconds = ttlSeconds > 0 ? ttlSeconds : limit.windowSeconds;
+      const allowed = nextCount <= limit.max;
 
       return {
         allowed,
-        remaining: Math.max(0, limit.max - storedCount),
-        resetAt: new Date(resetAtMs).toISOString()
+        remaining: Math.max(0, limit.max - nextCount),
+        resetAt: new Date(Date.now() + resetTtlSeconds * 1_000).toISOString()
       };
     }
   };
 }
 
-async function readRateLimitRecord(
+async function incrementRateLimitCounter(
   client: RedisCommandClient,
   key: string
-): Promise<RateLimitRecord | null> {
-  const raw = await client.get(key);
-
-  if (!raw) {
-    return null;
-  }
-
+): Promise<number> {
   try {
-    const parsed = JSON.parse(raw) as Partial<RateLimitRecord>;
-
-    if (
-      typeof parsed.count !== "number" ||
-      typeof parsed.resetAtMs !== "number" ||
-      parsed.count < 0 ||
-      parsed.resetAtMs <= 0
-    ) {
-      return null;
+    return await client.incr(key);
+  } catch (error) {
+    if (!String(error instanceof Error ? error.message : error).includes("integer")) {
+      throw error;
     }
-
-    return {
-      count: parsed.count,
-      resetAtMs: parsed.resetAtMs
-    };
-  } catch {
-    return null;
   }
+
+  await client.del(key);
+  return client.incr(key);
 }
 
 function normalizeKeyPart(value: string): string {

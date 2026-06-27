@@ -16,6 +16,7 @@ export function withTrustedAdminOrigin(headers: Record<string, string> = {}): Re
 
 export class MemoryRedisCommandClient implements RedisCommandClient {
   public readonly values = new Map<string, string>();
+  public readonly expirations = new Map<string, number>();
 
   public async set(
     key: string,
@@ -36,7 +37,44 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
 
   public async del(key: string): Promise<number> {
     const existed = this.values.delete(key);
+    this.expirations.delete(key);
     return existed ? 1 : 0;
+  }
+
+  public async incr(key: string): Promise<number> {
+    const current = this.values.get(key) ?? "0";
+    const parsed = Number(current);
+
+    if (!Number.isInteger(parsed)) {
+      throw new Error("ERR value is not an integer or out of range");
+    }
+
+    const next = parsed + 1;
+    this.values.set(key, String(next));
+    return next;
+  }
+
+  public async expire(key: string, seconds: number): Promise<number> {
+    if (!this.values.has(key)) {
+      return 0;
+    }
+
+    this.expirations.set(key, Date.now() + seconds * 1_000);
+    return 1;
+  }
+
+  public async ttl(key: string): Promise<number> {
+    const expiresAt = this.expirations.get(key);
+
+    if (!this.values.has(key)) {
+      return -2;
+    }
+
+    if (!expiresAt) {
+      return -1;
+    }
+
+    return Math.max(1, Math.ceil((expiresAt - Date.now()) / 1_000));
   }
 }
 

@@ -42,7 +42,17 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
             },
             message: { type: "string" },
             httpStatus: { type: "integer" },
-            details: { type: "object", additionalProperties: true }
+            details: {
+              type: "object",
+              additionalProperties: true,
+              description:
+                "Optional safe details. `RATE_LIMITED` responses can include coarse `retryHint`, `retryAfterSeconds`, and `retryGuidance` values for Agent retry planning.",
+              properties: {
+                retryHint: { type: "string" },
+                retryAfterSeconds: { type: "integer", minimum: 1 },
+                retryGuidance: { type: "string" }
+              }
+            }
           },
           ["code", "message", "httpStatus"]
         ),
@@ -95,7 +105,8 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     ),
     UploadAcceptedFile: objectSchema(
       {
-        fileId: idSchema("Source file identifier accepted by source-file status and file detail reads."),
+        fileId: idSchema("Backward-compatible source file identifier."),
+        sourceFileId: idSchema("Source file identifier accepted by source-file status, events, retry, and task-deletion APIs."),
         originalFilename: { type: "string" },
         sizeBytes: { type: "integer", minimum: 0 },
         processingState: {
@@ -105,7 +116,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
         },
         currentStage: { type: "string", description: SOURCE_FILE_CURRENT_STAGE_DESCRIPTION }
       },
-      ["fileId", "originalFilename", "sizeBytes", "processingState", "currentStage"]
+      ["fileId", "sourceFileId", "originalFilename", "sizeBytes", "processingState", "currentStage"]
     ),
     UploadResponse: objectSchema(
       {
@@ -148,6 +159,11 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     BundleTreeEntry: bundleTreeEntrySchema(),
     TreeResponse: pageSchema(ref("BundleTreeEntry")),
     BundleFile: bundleFileSchema(),
+    FileSearchResult: fileSearchResultSchema(),
+    FileSearchQueryContext: fileSearchQueryContextSchema(),
+    FileSearchResultSummary: fileSearchResultSummarySchema(),
+    FileSearchNextRequestTemplates: fileSearchNextRequestTemplatesSchema(),
+    FileSearchResponse: fileSearchResponseSchema(),
     SourceFileDetail: sourceFileDetailSchema(),
     FileDetailResponse: objectSchema(
       {
@@ -292,7 +308,8 @@ function relatedFileSchema(): SchemaObject {
 function sourceFileSchema(): SchemaObject {
   return objectSchema(
     {
-      fileId: idSchema("Source file identifier."),
+      fileId: idSchema("Backward-compatible source file identifier."),
+      sourceFileId: idSchema("Source file identifier accepted by source-file status, events, retry, and task-deletion APIs."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
       originalFilename: { type: "string" },
       contentType: { type: "string" },
@@ -332,6 +349,7 @@ function sourceFileSchema(): SchemaObject {
     },
     [
       "fileId",
+      "sourceFileId",
       "knowledgeBaseId",
       "originalFilename",
       "contentType",
@@ -366,7 +384,8 @@ function sourceFileEventSchema(): SchemaObject {
     {
       eventId: idSchema("Source-file event identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      fileId: idSchema("Source file identifier."),
+      fileId: idSchema("Backward-compatible source file identifier."),
+      sourceFileId: idSchema("Source file identifier accepted by source-file status, events, retry, and task-deletion APIs."),
       stageKey: { type: "string" },
       messageKey: { type: "string" },
       startedAt: nullableTimestampSchema(),
@@ -378,6 +397,7 @@ function sourceFileEventSchema(): SchemaObject {
       "eventId",
       "knowledgeBaseId",
       "fileId",
+      "sourceFileId",
       "stageKey",
       "messageKey",
       "startedAt",
@@ -493,10 +513,166 @@ function bundleFileSchema(): SchemaObject {
   );
 }
 
+function fileSearchResultSchema(): SchemaObject {
+  return objectSchema(
+    {
+      fileId: idSchema("Bundle file identifier accepted by file detail, content, and related-file APIs."),
+      generatedFileId: idSchema(
+        "Generated file identifier. Same value as `fileId`; included to align with source-file list responses."
+      ),
+      knowledgeBaseId: idSchema("Knowledge-base identifier."),
+      releaseId: idSchema("Active release identifier searched by this response."),
+      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      path: {
+        type: "string",
+        description: "Logical generated file path accepted by path-based content reads."
+      },
+      generatedFilePath: {
+        type: "string",
+        description: "Logical generated file path. Same value as `path`; included to align with source-file list responses."
+      },
+      fileKind: { type: "string" },
+      title: nullableString("Resolved title when available."),
+      description: nullableString("Resolved description when available."),
+      tags: { type: "array", items: { type: "string" } },
+      frontmatter: { type: "object", additionalProperties: true },
+      matchedFields: {
+        type: "array",
+        items: { type: "string", enum: ["path", "title", "description", "metadata"] }
+      },
+      score: {
+        type: "integer",
+        minimum: 0,
+        description: "Small relative score for ordering candidates within the same query."
+      },
+      contentAvailable: { type: "boolean" }
+    },
+    [
+      "fileId",
+      "generatedFileId",
+      "knowledgeBaseId",
+      "releaseId",
+      "sourceFileId",
+      "path",
+      "generatedFilePath",
+      "fileKind",
+      "title",
+      "description",
+      "tags",
+      "frontmatter",
+      "matchedFields",
+      "score",
+      "contentAvailable"
+    ]
+  );
+}
+
+function fileSearchResponseSchema(): SchemaObject {
+  return objectSchema(
+    {
+      query: ref("FileSearchQueryContext"),
+      items: { type: "array", items: ref("FileSearchResult") },
+      nextCursor: nullableString("Opaque cursor accepted by this search endpoint with the same query and filters."),
+      searchStatus: {
+        type: "string",
+        enum: ["ok", "no_candidates", "index_unavailable"],
+        description:
+          "`ok` means candidates are returned. `no_candidates` means search documents exist and this query matched no generated files. `index_unavailable` means the active release has no generated-file search documents yet."
+      },
+      resultSummary: ref("FileSearchResultSummary"),
+      nextRequestTemplates: ref("FileSearchNextRequestTemplates"),
+      message: nullableString("Safe status message when no candidates or no index is available."),
+      nextActions: {
+        type: "array",
+        items: { type: "string" },
+        description: "Suggested existing OpenAPI reads that keep Agent exploration moving."
+      }
+    },
+    ["query", "items", "nextCursor", "searchStatus", "resultSummary", "nextRequestTemplates"]
+  );
+}
+
+function fileSearchQueryContextSchema(): SchemaObject {
+  return objectSchema(
+    {
+      query: { type: "string", description: "Original search phrase received by the endpoint." },
+      normalizedQuery: {
+        type: "string",
+        description: "Normalized phrase used by the generated-file search index."
+      },
+      scope: {
+        type: "string",
+        enum: ["all", "path", "metadata"],
+        description: "Search field scope applied to this response."
+      },
+      fileKind: {
+        type: "string",
+        description: "Generated file kind filter applied to this response. `all` means no kind filter."
+      },
+      limit: { type: "integer", minimum: 1, description: "Requested page size after validation." },
+      cursorProvided: {
+        type: "boolean",
+        description: "Whether the request used a cursor returned by the same search family."
+      }
+    },
+    ["query", "normalizedQuery", "scope", "fileKind", "limit", "cursorProvided"]
+  );
+}
+
+function fileSearchResultSummarySchema(): SchemaObject {
+  return objectSchema(
+    {
+      resultCount: { type: "integer", minimum: 0 },
+      hasMore: {
+        type: "boolean",
+        description: "Whether the same query and filters can continue with `nextCursor`."
+      },
+      sort: {
+        type: "array",
+        items: { type: "string" },
+        description: "Ordering applied to this result page."
+      },
+      meaning: {
+        type: "string",
+        description: "Human-readable interpretation for Agent planning."
+      }
+    },
+    ["resultCount", "hasMore", "sort", "meaning"]
+  );
+}
+
+function fileSearchNextRequestTemplatesSchema(): SchemaObject {
+  return objectSchema(
+    {
+      searchAgain: { type: "string" },
+      listTree: { type: "string" },
+      readIndex: { type: "string" },
+      fileDetailById: { type: "string" },
+      fileContentById: { type: "string" },
+      fileContentByPath: { type: "string" },
+      relatedFilesById: { type: "string" },
+      sourceFileStatusById: { type: "string" },
+      sourceFileEventsById: { type: "string" }
+    },
+    [
+      "searchAgain",
+      "listTree",
+      "readIndex",
+      "fileDetailById",
+      "fileContentById",
+      "fileContentByPath",
+      "relatedFilesById",
+      "sourceFileStatusById",
+      "sourceFileEventsById"
+    ]
+  );
+}
+
 function sourceFileDetailSchema(): SchemaObject {
   return objectSchema(
     {
-      fileId: idSchema("Source file identifier."),
+      fileId: idSchema("Backward-compatible source file identifier."),
+      sourceFileId: idSchema("Source file identifier accepted by source-file status, events, retry, and task-deletion APIs."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
       path: nullableString("Logical generated file path when this source file has published output."),
       originalFilename: { type: "string" },
@@ -522,6 +698,7 @@ function sourceFileDetailSchema(): SchemaObject {
     },
     [
       "fileId",
+      "sourceFileId",
       "knowledgeBaseId",
       "path",
       "originalFilename",

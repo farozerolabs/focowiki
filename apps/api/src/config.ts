@@ -50,7 +50,6 @@ const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
 const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
-
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
 export type PublicationMode = "batch" | "manual" | "per_file";
 

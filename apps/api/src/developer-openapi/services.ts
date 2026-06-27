@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { RuntimeConfig } from "../config.js";
 import type {
   AdminRepositories,
+  BundleFileKind,
   BundleFileRecord,
+  BundleFileSearchResultRecord,
   BundleTreeEntryRecord,
   CursorPage,
   SourceFileListFilters,
@@ -22,6 +24,11 @@ import {
   createSourceFileTaskDeletionService,
   type SourceFileTaskDeletionResponse
 } from "../admin/source-file-task-deletion-service.js";
+import { createDeveloperFileSearchCursorScope } from "./file-search-signature.js";
+import {
+  normalizeGeneratedFileSearchQuery,
+  type GeneratedFileSearchScope
+} from "../search/generated-file-search-documents.js";
 import {
   createPageResponseCacheId,
   readPageResponseCache,
@@ -46,6 +53,7 @@ import {
 import {
   toDeveloperBundleFile,
   toDeveloperBundleTreeEntry,
+  toDeveloperFileSearchResult,
   toDeveloperKnowledgeBase,
   toDeveloperRelatedFile,
   toDeveloperSourceFile,
@@ -61,6 +69,45 @@ export type DeveloperOpenApiServices = {
   redis: RedisCoordinator | null;
   storage: StorageAdapter;
   modelClient: OpenAIResponsesClient | null;
+};
+
+type DeveloperFileSearchResponse = {
+  query: DeveloperFileSearchQueryContext;
+  items: ReturnType<typeof toDeveloperFileSearchResult>[];
+  nextCursor: string | null;
+  searchStatus: "ok" | "no_candidates" | "index_unavailable";
+  resultSummary: DeveloperFileSearchResultSummary;
+  nextRequestTemplates: DeveloperFileSearchNextRequestTemplates;
+  message?: string;
+  nextActions?: string[];
+};
+
+type DeveloperFileSearchQueryContext = {
+  query: string;
+  normalizedQuery: string;
+  scope: GeneratedFileSearchScope;
+  fileKind: BundleFileKind | "all";
+  limit: number;
+  cursorProvided: boolean;
+};
+
+type DeveloperFileSearchResultSummary = {
+  resultCount: number;
+  hasMore: boolean;
+  sort: string[];
+  meaning: string;
+};
+
+type DeveloperFileSearchNextRequestTemplates = {
+  searchAgain: string;
+  listTree: string;
+  readIndex: string;
+  fileDetailById: string;
+  fileContentById: string;
+  fileContentByPath: string;
+  relatedFilesById: string;
+  sourceFileStatusById: string;
+  sourceFileEventsById: string;
 };
 
 export function createDeveloperOpenApiService(services: DeveloperOpenApiServices) {
@@ -554,6 +601,103 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
       return response;
     },
+    async searchFiles(input: {
+      knowledgeBaseId: string;
+      query: string;
+      scope: GeneratedFileSearchScope;
+      fileKind: BundleFileKind | null;
+      limit: number;
+      cursor: string | null;
+    }) {
+      const repo = requireRepositories();
+
+      if (!repo.files?.searchBundleFiles || !repo.files.countBundleFileSearchDocuments) {
+        throw repositoryUnavailable();
+      }
+
+      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const normalizedQuery = normalizeGeneratedFileSearchQuery(input.query);
+      const queryContext = createFileSearchQueryContext(input, normalizedQuery);
+      const nextRequestTemplates = createFileSearchNextRequestTemplates(knowledgeBase.id);
+
+      if (!knowledgeBase.activeReleaseId) {
+        return createUnavailableSearchResponse(queryContext, nextRequestTemplates);
+      }
+
+      const indexedCount = await repo.files.countBundleFileSearchDocuments({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: knowledgeBase.activeReleaseId
+      });
+
+      if (indexedCount === 0) {
+        return createUnavailableSearchResponse(queryContext, nextRequestTemplates);
+      }
+
+      const scope = createDeveloperFileSearchCursorScope({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: knowledgeBase.activeReleaseId,
+        query: normalizedQuery,
+        scope: input.scope,
+        fileKind: input.fileKind
+      });
+      const redisCoordinator = requireRedis();
+      const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
+      const cacheId = createPageResponseCacheId({
+        cursorToken: input.cursor,
+        limit: input.limit,
+        extra: `file-search-response-v3:${normalizedQuery}:${input.scope}:${input.fileKind ?? "all"}`
+      });
+      const cachedResponse = await readPageResponseCache<DeveloperFileSearchResponse>({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        invalidationScopes: [
+          `developer-openapi:file-search:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`
+        ]
+      });
+
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      const page = await repo.files.searchBundleFiles({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: knowledgeBase.activeReleaseId,
+        query: normalizedQuery,
+        scope: input.scope,
+        fileKind: input.fileKind,
+        limit: input.limit,
+        cursor: repositoryCursor
+      });
+      const response = await pageResponse<BundleFileSearchResultRecord, ReturnType<typeof toDeveloperFileSearchResult>>(
+        page,
+        scope,
+        config.pagination.cursorTtlSeconds,
+        redisCoordinator,
+        toDeveloperFileSearchResult
+      );
+      const searchResponse: DeveloperFileSearchResponse = {
+        query: queryContext,
+        ...response,
+        searchStatus: response.items.length > 0 ? "ok" : "no_candidates",
+        resultSummary: createFileSearchResultSummary(
+          response.items.length,
+          Boolean(response.nextCursor),
+          response.items.length > 0 ? "ok" : "no_candidates"
+        ),
+        nextRequestTemplates,
+        ...(response.items.length > 0 ? {} : noCandidateSearchHints())
+      };
+
+      await writePageResponseCache({
+        redis: redisCoordinator,
+        scope,
+        cacheId,
+        value: searchResponse
+      });
+
+      return searchResponse;
+    },
     async getFileById(input: { knowledgeBaseId: string; fileId: string }) {
       const resolved = await resolveFileById(requireRepositories(), input);
       return {
@@ -888,6 +1032,96 @@ async function requireKnowledgeBase(repo: AdminRepositories, knowledgeBaseId: st
   }
 
   return knowledgeBase;
+}
+
+function createUnavailableSearchResponse(
+  query: DeveloperFileSearchQueryContext,
+  nextRequestTemplates: DeveloperFileSearchNextRequestTemplates
+): DeveloperFileSearchResponse {
+  return {
+    query,
+    items: [],
+    nextCursor: null,
+    searchStatus: "index_unavailable",
+    resultSummary: createFileSearchResultSummary(0, false, "index_unavailable"),
+    nextRequestTemplates,
+    message:
+      "Generated file search is not available for the active release. Continue with index.md and file-tree reads.",
+    nextActions: [
+      "Read index.md through the file content endpoint.",
+      "List the file tree to discover generated files.",
+      "Read related files after opening a candidate file."
+    ]
+  };
+}
+
+function noCandidateSearchHints(): Pick<DeveloperFileSearchResponse, "message" | "nextActions"> {
+  return {
+    message:
+      "No generated files matched this query. The knowledge base may still contain relevant data through different titles, paths, or metadata terms.",
+    nextActions: [
+      "Split the user question into shorter terms and search again.",
+      "Read index.md through the file content endpoint.",
+      "List the file tree and continue exploration from visible directories.",
+      "Try title, path, jurisdiction, product, or domain-specific terms from the question."
+    ]
+  };
+}
+
+function createFileSearchQueryContext(
+  input: {
+    query: string;
+    scope: GeneratedFileSearchScope;
+    fileKind: BundleFileKind | null;
+    limit: number;
+    cursor: string | null;
+  },
+  normalizedQuery: string
+): DeveloperFileSearchQueryContext {
+  return {
+    query: input.query,
+    normalizedQuery,
+    scope: input.scope,
+    fileKind: input.fileKind ?? "all",
+    limit: input.limit,
+    cursorProvided: Boolean(input.cursor)
+  };
+}
+
+function createFileSearchNextRequestTemplates(
+  knowledgeBaseId: string
+): DeveloperFileSearchNextRequestTemplates {
+  const base = `/openapi/v1/knowledge-bases/${knowledgeBaseId}`;
+
+  return {
+    searchAgain: `${base}/files/search?query={query}`,
+    listTree: `${base}/tree?parentPath={parentPath}`,
+    readIndex: `${base}/files/content?path=index.md`,
+    fileDetailById: `${base}/files/{generatedFileId}`,
+    fileContentById: `${base}/files/{generatedFileId}/content`,
+    fileContentByPath: `${base}/files/content?path={generatedFilePath}`,
+    relatedFilesById: `${base}/files/{generatedFileId}/related`,
+    sourceFileStatusById: `${base}/source-files/{sourceFileId}`,
+    sourceFileEventsById: `${base}/source-files/{sourceFileId}/events`
+  };
+}
+
+function createFileSearchResultSummary(
+  resultCount: number,
+  hasMore: boolean,
+  status: DeveloperFileSearchResponse["searchStatus"]
+): DeveloperFileSearchResultSummary {
+  return {
+    resultCount,
+    hasMore,
+    sort: ["score desc", "path asc", "fileId asc"],
+    meaning:
+      status === "ok"
+        ? "Candidates matched the query. Read candidate content and related files before answering."
+        : status === "no_candidates"
+          ? "No generated files matched this query. Relevant data may still exist under different terms."
+          : "Generated file search is not available for the active release. Use tree and index reads to continue exploration."
+  };
 }
 
 async function readLoadedFiles(files: File[]): Promise<LoadedUploadFile[]> {

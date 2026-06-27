@@ -180,7 +180,7 @@ Input:
 
 Output: candidate file entries, `searchStatus`, optional `message`, optional `nextActions`, and `nextCursor`.
 
-Candidate entries can include `fileId`, `path`, `title`, `description`, `score`, `matchedTerms`, and `matchedFields`.
+Candidate entries can include `fileId`, `path`, `title`, `description`, `score`, and `matchedFields`.
 
 `search_files` is optional. The Agent chooses search phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, use `list_tree`, try another phrase, or inspect graph context.
 ````

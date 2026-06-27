@@ -14,7 +14,7 @@ import type {
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
-import type { RuntimeConfig } from "../src/config.js";
+import { resolveSecurityConfig, type RuntimeConfig } from "../src/config.js";
 import type { WorkerJobDraft, WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
 import { createTestRedisCoordinator, loginAndReadSessionCookie } from "./support/session.js";
 
@@ -70,6 +70,7 @@ const expectedDeveloperOpenApiOperations = [
   },
   { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree", status: "200" },
   { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content", status: "200" },
+  { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/search", status: "200" },
   { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}", status: "200" },
   {
     method: "get",
@@ -265,6 +266,19 @@ function createRepositories(): AdminRepositories & {
     tags: [],
     frontmatter: { type: "page", title: "Guide" }
   };
+  const hiddenBundleFile: BundleFileRecord = {
+    ...bundleFile,
+    id: "bundle-hidden",
+    sourceFileId: "source-hidden",
+    logicalPath: "pages/hidden.md",
+    objectKey: "tenant/demo/knowledge-bases/kb-seeded/releases/release-seeded/bundle/pages/hidden.md",
+    title: "Hidden",
+    frontmatter: { type: "page", title: "Hidden" }
+  };
+  const bundleFiles = new Map<string, BundleFileRecord>([
+    [bundleFile.id, bundleFile],
+    [hiddenBundleFile.id, hiddenBundleFile]
+  ]);
   const treeEntry: BundleTreeEntryRecord = {
     id: "tree-guide",
     knowledgeBaseId: "kb-seeded",
@@ -358,8 +372,16 @@ function createRepositories(): AdminRepositories & {
       async createRelease() {
         return undefined;
       },
-      async createBundleFiles() {
+      async createBundleFiles(files) {
+        for (const file of files) {
+          bundleFiles.set(file.id, file);
+        }
+      },
+      async upsertBundleFileSearchDocuments() {
         return undefined;
+      },
+      async countBundleFileSearchDocuments({ releaseId }) {
+        return Array.from(bundleFiles.values()).filter((file) => file.releaseId === releaseId).length;
       },
       async createBundleTreeEntries() {
         return undefined;
@@ -386,10 +408,12 @@ function createRepositories(): AdminRepositories & {
         };
       },
       async getBundleFile({ logicalPath }) {
-        return logicalPath === bundleFile.logicalPath ? bundleFile : null;
+        return (
+          Array.from(bundleFiles.values()).find((file) => file.logicalPath === logicalPath) ?? null
+        );
       },
       async getBundleFileById({ fileId }) {
-        return fileId === bundleFile.id ? bundleFile : null;
+        return bundleFiles.get(fileId) ?? null;
       },
       async getSourceFile({ sourceFileId }) {
         const file = sourceFiles.get(sourceFileId) ?? null;
@@ -452,9 +476,66 @@ function createRepositories(): AdminRepositories & {
         return { items: [], nextCursor: null };
       },
       async listBundleFiles() {
-        return { items: [bundleFile], nextCursor: null };
+        return { items: Array.from(bundleFiles.values()), nextCursor: null };
       },
-      async softDeleteSourceFile() {
+      async searchBundleFiles({ query, fileKind, limit }) {
+        const normalizedQuery = query.toLowerCase();
+        const items = Array.from(bundleFiles.values())
+          .filter((file) => !fileKind || file.fileKind === fileKind)
+          .filter((file) => {
+            if (!file.sourceFileId) {
+              return true;
+            }
+            const source = sourceFiles.get(file.sourceFileId);
+            return Boolean(source && !source.deletedAt);
+          })
+          .map((file) => {
+            const title = file.title ?? "";
+            const description = file.description ?? "";
+            const metadata = JSON.stringify(file.frontmatter);
+            const matchedFields = [
+              file.logicalPath.toLowerCase().includes(normalizedQuery) ? "path" : null,
+              title.toLowerCase().includes(normalizedQuery) ? "title" : null,
+              description.toLowerCase().includes(normalizedQuery) ? "description" : null,
+              metadata.toLowerCase().includes(normalizedQuery) ? "metadata" : null
+            ].filter(
+              (field): field is "path" | "title" | "description" | "metadata" => Boolean(field)
+            );
+
+            return {
+              fileId: file.id,
+              knowledgeBaseId: file.knowledgeBaseId,
+              releaseId: file.releaseId,
+              sourceFileId: file.sourceFileId,
+              fileKind: file.fileKind,
+              path: file.logicalPath,
+              title: file.title,
+              description: file.description,
+              tags: file.tags,
+              frontmatter: file.frontmatter,
+              matchedFields,
+              score: matchedFields.length,
+              contentAvailable: true
+            };
+          })
+          .filter((file) => file.score > 0)
+          .slice(0, limit);
+
+        return { items, nextCursor: null };
+      },
+      async softDeleteSourceFile({ sourceFileId, deletedAt }) {
+        const source = sourceFiles.get(sourceFileId);
+
+        if (!source || source.deletedAt) {
+          return false;
+        }
+
+        sourceFiles.set(sourceFileId, {
+          ...source,
+          deletedAt,
+          generatedBundleFileId: null,
+          generatedBundleFilePath: null
+        });
         return true;
       }
     },
@@ -969,7 +1050,12 @@ describe("Developer OpenAPI", () => {
     );
     const singleBody = (await singleResponse.json()) as {
       knowledgeBaseId: string;
-      files: Array<{ fileId: string; originalFilename: string; processingState: string }>;
+      files: Array<{
+        fileId: string;
+        sourceFileId: string;
+        originalFilename: string;
+        processingState: string;
+      }>;
     };
 
     expect(singleResponse.status).toBe(202);
@@ -984,13 +1070,16 @@ describe("Developer OpenAPI", () => {
     });
 
     const singleFileId = singleBody.files[0]?.fileId;
+    const singleSourceFileId = singleBody.files[0]?.sourceFileId;
 
-    if (!singleFileId) {
-      throw new Error("Single upload did not return a fileId.");
+    if (!singleFileId || !singleSourceFileId) {
+      throw new Error("Single upload did not return source identifiers.");
     }
 
+    expect(singleSourceFileId).toBe(singleFileId);
+
     const singleDetailResponse = await single.app.request(
-      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${singleFileId}`,
+      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${singleSourceFileId}`,
       {
         headers: authHeaders()
       }
@@ -1008,14 +1097,16 @@ describe("Developer OpenAPI", () => {
       body: multiForm
     });
     const multiBody = (await multiResponse.json()) as {
-      files: Array<{ fileId: string; originalFilename: string; processingState: string }>;
+      files: Array<{ fileId: string; sourceFileId: string; originalFilename: string; processingState: string }>;
     };
 
     expect(multiResponse.status).toBe(202);
     expect(multiBody.files.map((file) => file.originalFilename)).toEqual(["alpha.md", "beta.md"]);
-    expect(multiBody.files.every((file) => file.fileId && file.processingState === "queued")).toBe(
-      true
-    );
+    expect(
+      multiBody.files.every(
+        (file) => file.fileId && file.sourceFileId === file.fileId && file.processingState === "queued"
+      )
+    ).toBe(true);
   });
 
   it("accepts many source files and leaves processing work in the durable queue", async () => {
@@ -1039,6 +1130,7 @@ describe("Developer OpenAPI", () => {
     const body = (await response.json()) as {
       files: Array<{
         fileId: string;
+        sourceFileId: string;
         processingState: string;
         generatedFileAvailable: boolean;
       }>;
@@ -1050,7 +1142,11 @@ describe("Developer OpenAPI", () => {
 
     expect(response.status).toBe(202);
     expect(body.files).toHaveLength(6);
-    expect(body.files.every((file) => file.fileId && file.processingState === "queued")).toBe(true);
+    expect(
+      body.files.every(
+        (file) => file.fileId && file.sourceFileId === file.fileId && file.processingState === "queued"
+      )
+    ).toBe(true);
     expect(body.files.every((file) => file.generatedFileAvailable === false)).toBe(true);
     expect(activeQueuedWork).toBe(6);
   });
@@ -1149,6 +1245,359 @@ describe("Developer OpenAPI", () => {
       path: "pages/guide.md"
     });
     expect(developerTree.items[0]).not.toHaveProperty("objectKey");
+  });
+
+  it("requires OpenAPI auth for generated file search", async () => {
+    const { app } = createApp();
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide"
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects invalid generated file search queries before repository search", async () => {
+    const { app, repositories } = createApp();
+    let searchCount = 0;
+
+    if (!repositories.files?.searchBundleFiles) {
+      throw new Error("Search repository is missing from the test fixture.");
+    }
+
+    repositories.files.searchBundleFiles = async () => {
+      searchCount += 1;
+      return { items: [], nextCursor: null };
+    };
+
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=x",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      error: { code: string; details?: Record<string, unknown> };
+    };
+
+    expect(response.status).toBe(422);
+    expect(body.error).toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: {
+        code: "FILE_SEARCH_QUERY_TOO_SHORT"
+      }
+    });
+    expect(searchCount).toBe(0);
+  });
+
+  it("rate-limits generated file search before repository search", async () => {
+    const baseConfig = createConfig();
+    const security = resolveSecurityConfig(baseConfig);
+    const repositories = createRepositories();
+    const app = createPublicOpenApiApp({
+      config: {
+        ...baseConfig,
+        security: {
+          ...security,
+          rateLimits: {
+            ...security.rateLimits,
+            publicOpenApi: {
+              max: 1,
+              windowSeconds: 60
+            }
+          }
+        }
+      },
+      storage: new MemoryStorage(),
+      redis: createTestRedisCoordinator(),
+      repositories
+    });
+    let searchCount = 0;
+
+    if (!repositories.files?.searchBundleFiles) {
+      throw new Error("Search repository is missing from the test fixture.");
+    }
+
+    const originalSearch = repositories.files.searchBundleFiles;
+    repositories.files.searchBundleFiles = async (request) => {
+      searchCount += 1;
+      return originalSearch(request);
+    };
+
+    const first = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide",
+      {
+        headers: authHeaders()
+      }
+    );
+    const second = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await second.json()) as {
+      error: {
+        code: string;
+        message: string;
+        details?: {
+          retryHint?: string;
+          retryAfterSeconds?: number;
+          retryGuidance?: string;
+        };
+      };
+    };
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(429);
+    expect(second.headers.get("retry-after")).toBe("60");
+    expect(body.error.code).toBe("RATE_LIMITED");
+    expect(body.error.message).toBe("Too many requests. Wait briefly and retry.");
+    expect(body.error.details).toMatchObject({
+      retryHint: "retry_after_short_delay",
+      retryAfterSeconds: 60,
+      retryGuidance: "Wait briefly before sending the next Developer OpenAPI request."
+    });
+    expect(searchCount).toBe(1);
+  });
+
+  it("returns index-unavailable search status without scanning old active releases", async () => {
+    const { app, repositories } = createApp();
+    let searchCount = 0;
+
+    if (!repositories.files?.countBundleFileSearchDocuments || !repositories.files.searchBundleFiles) {
+      throw new Error("Search repository is missing from the test fixture.");
+    }
+
+    repositories.files.countBundleFileSearchDocuments = async () => 0;
+    repositories.files.searchBundleFiles = async () => {
+      searchCount += 1;
+      return { items: [], nextCursor: null };
+    };
+
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      query: { normalizedQuery: string };
+      items: unknown[];
+      nextCursor: string | null;
+      searchStatus: string;
+      resultSummary: { resultCount: number; hasMore: boolean; meaning: string };
+      nextRequestTemplates: { readIndex: string; listTree: string };
+      nextActions?: string[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.query.normalizedQuery).toBe("guide");
+    expect(body.items).toEqual([]);
+    expect(body.nextCursor).toBeNull();
+    expect(body.searchStatus).toBe("index_unavailable");
+    expect(body.resultSummary).toMatchObject({
+      resultCount: 0,
+      hasMore: false
+    });
+    expect(body.nextRequestTemplates.readIndex).toContain("index.md");
+    expect(body.nextRequestTemplates.listTree).toContain("parentPath={parentPath}");
+    expect(body.nextActions?.length).toBeGreaterThan(0);
+    expect(searchCount).toBe(0);
+  });
+
+  it("keeps existing Developer OpenAPI reads compatible when search documents are unavailable", async () => {
+    const { app, repositories } = createApp();
+
+    if (!repositories.files?.countBundleFileSearchDocuments) {
+      throw new Error("Search repository is missing from the test fixture.");
+    }
+
+    repositories.files.countBundleFileSearchDocuments = async () => 0;
+    const [treeResponse, contentResponse, detailResponse] = await Promise.all([
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages", {
+        headers: authHeaders()
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+        headers: authHeaders()
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide", {
+        headers: authHeaders()
+      })
+    ]);
+
+    expect([treeResponse.status, contentResponse.status, detailResponse.status]).toEqual([
+      200,
+      200,
+      200
+    ]);
+  });
+
+  it("returns no-candidate search status from an available generated file index", async () => {
+    const { app } = createApp();
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=missing",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      query: { normalizedQuery: string };
+      items: unknown[];
+      searchStatus: string;
+      resultSummary: { resultCount: number; meaning: string };
+      message?: string;
+      nextRequestTemplates: { searchAgain: string };
+      nextActions?: string[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.query.normalizedQuery).toBe("missing");
+    expect(body.items).toEqual([]);
+    expect(body.searchStatus).toBe("no_candidates");
+    expect(body.resultSummary.resultCount).toBe(0);
+    expect(body.resultSummary.meaning).toContain("Relevant data may still exist");
+    expect(body.message).toContain("may still contain relevant data");
+    expect(body.nextRequestTemplates.searchAgain).toContain("query={query}");
+    expect(body.nextActions?.length).toBeGreaterThan(0);
+  });
+
+  it("keeps task-hidden generated files searchable while excluding deleted sources", async () => {
+    const { app, repositories } = createApp();
+    const guideSource = repositories.sourceFiles.get("source-guide");
+
+    if (!guideSource) {
+      throw new Error("Guide source fixture is missing.");
+    }
+
+    const hiddenResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=hidden&scope=all&fileKind=page&limit=10",
+      {
+        headers: authHeaders()
+      }
+    );
+
+    repositories.sourceFiles.set("source-guide", {
+      ...guideSource,
+      deletedAt: now
+    });
+
+    const guideResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&scope=all&fileKind=page&limit=10",
+      {
+        headers: authHeaders()
+      }
+    );
+    const hiddenBody = (await hiddenResponse.json()) as {
+      items: Array<{ fileId: string; sourceFileId: string | null }>;
+      searchStatus: string;
+    };
+    const guideBody = (await guideResponse.json()) as {
+      items: Array<{ fileId: string }>;
+      searchStatus: string;
+    };
+
+    expect(hiddenResponse.status).toBe(200);
+    expect(hiddenBody.searchStatus).toBe("ok");
+    expect(hiddenBody.items).toContainEqual(
+      expect.objectContaining({
+        fileId: "bundle-hidden",
+        sourceFileId: "source-hidden"
+      })
+    );
+    expect(guideResponse.status).toBe(200);
+    expect(guideBody.items).not.toContainEqual(expect.objectContaining({ fileId: "bundle-guide" }));
+  });
+
+  it("returns generated file search candidates that continue into existing read APIs", async () => {
+    const { app } = createApp();
+    const searchResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&scope=all&fileKind=page&limit=10",
+      {
+        headers: authHeaders()
+      }
+    );
+    const searchBody = (await searchResponse.json()) as {
+      items: Array<{
+        fileId: string;
+        generatedFileId: string;
+        sourceFileId: string | null;
+        path: string;
+        generatedFilePath: string;
+        matchedFields: string[];
+        contentAvailable: boolean;
+      }>;
+      searchStatus: string;
+      query: { query: string; normalizedQuery: string; fileKind: string; limit: number };
+      resultSummary: { resultCount: number; hasMore: boolean; sort: string[]; meaning: string };
+      nextRequestTemplates: {
+        fileDetailById: string;
+        fileContentById: string;
+        fileContentByPath: string;
+        relatedFilesById: string;
+        sourceFileStatusById: string;
+      };
+    };
+    const candidate = searchBody.items[0];
+
+    if (!candidate) {
+      throw new Error("Generated file search did not return a candidate.");
+    }
+
+    const [detailResponse, contentByIdResponse, relatedResponse, contentByPathResponse] =
+      await Promise.all([
+        app.request(`/openapi/v1/knowledge-bases/kb-seeded/files/${candidate.generatedFileId}`, {
+          headers: authHeaders()
+        }),
+        app.request(`/openapi/v1/knowledge-bases/kb-seeded/files/${candidate.generatedFileId}/content`, {
+          headers: authHeaders()
+        }),
+        app.request(`/openapi/v1/knowledge-bases/kb-seeded/files/${candidate.generatedFileId}/related`, {
+          headers: authHeaders()
+        }),
+        app.request(
+          `/openapi/v1/knowledge-bases/kb-seeded/files/content?path=${encodeURIComponent(candidate.generatedFilePath)}`,
+          {
+            headers: authHeaders()
+          }
+        )
+      ]);
+
+    expect(searchResponse.status).toBe(200);
+    expect(searchBody.searchStatus).toBe("ok");
+    expect(searchBody.query).toMatchObject({
+      query: "guide",
+      normalizedQuery: "guide",
+      fileKind: "page",
+      limit: 10
+    });
+    expect(searchBody.resultSummary).toMatchObject({
+      resultCount: searchBody.items.length,
+      hasMore: false
+    });
+    expect(searchBody.resultSummary.sort).toEqual(["score desc", "path asc", "fileId asc"]);
+    expect(searchBody.resultSummary.meaning).toContain("Read candidate content");
+    expect(searchBody.nextRequestTemplates).toMatchObject({
+      fileDetailById: "/openapi/v1/knowledge-bases/kb-seeded/files/{generatedFileId}",
+      fileContentById: "/openapi/v1/knowledge-bases/kb-seeded/files/{generatedFileId}/content",
+      fileContentByPath: "/openapi/v1/knowledge-bases/kb-seeded/files/content?path={generatedFilePath}",
+      relatedFilesById: "/openapi/v1/knowledge-bases/kb-seeded/files/{generatedFileId}/related",
+      sourceFileStatusById: "/openapi/v1/knowledge-bases/kb-seeded/source-files/{sourceFileId}"
+    });
+    expect(candidate).toMatchObject({
+      fileId: "bundle-guide",
+      generatedFileId: "bundle-guide",
+      sourceFileId: "source-guide",
+      path: "pages/guide.md",
+      generatedFilePath: "pages/guide.md",
+      contentAvailable: true
+    });
+    expect(candidate.matchedFields).toEqual(expect.arrayContaining(["path", "title"]));
+    expect([detailResponse.status, contentByIdResponse.status, relatedResponse.status, contentByPathResponse.status]).toEqual([
+      200,
+      200,
+      200,
+      200
+    ]);
   });
 
   it("keeps queued source-file work visible after recreating the API app", async () => {
@@ -1314,6 +1763,7 @@ describe("Developer OpenAPI", () => {
     expect(body.items).toHaveLength(1);
     expect(body.items[0]).toMatchObject({
       fileId: "source-guide",
+      sourceFileId: "source-guide",
       originalFilename: "guide.md",
       processingState: "completed",
       generatedFileAvailable: true,
