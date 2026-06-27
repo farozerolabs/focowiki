@@ -1,6 +1,7 @@
 import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
+  BundleTreeSearchResultRecord,
   FileGraphSummaryRecord,
   GeneratedSourceFileOutputRecord,
   ReleaseRecord,
@@ -21,6 +22,13 @@ export function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
     fileKind: entry.fileKind,
     childCount: entry.childCount,
     deletable: entry.fileKind === "page" && Boolean(entry.sourceFileId)
+  };
+}
+
+export function toAdminBundleTreeSearchResult(result: BundleTreeSearchResultRecord) {
+  return {
+    entry: toAdminBundleTreeEntry(result.entry),
+    ancestors: result.ancestors.map(toAdminBundleTreeEntry)
   };
 }
 

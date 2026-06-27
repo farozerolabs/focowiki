@@ -1,6 +1,15 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckIcon, CopyIcon, MoreHorizontalIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  Trash2Icon,
+  XIcon
+} from "lucide-react";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { OpenApiKeysPanel } from "@/components/openapi-keys-panel";
 import {
@@ -40,6 +49,11 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem
+} from "@/components/ui/pagination";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   ApiFailure,
@@ -50,7 +64,10 @@ import type {
 
 type AdminHomePageProps = {
   knowledgeBases: KnowledgeBase[];
-  nextCursor: string | null;
+  knowledgeBaseQuery: string;
+  knowledgeBasePageNumber: number;
+  hasPreviousKnowledgeBasePage: boolean;
+  hasNextKnowledgeBasePage: boolean;
   isLoading: boolean;
   publicOpenApiKeys: PublicOpenApiKey[];
   publicOpenApiKeysNextCursor: string | null;
@@ -68,14 +85,19 @@ type AdminHomePageProps = {
   onDismissPublicOpenApiOneTimeKey: () => void;
   onLoadPublicOpenApiKeys: (input: { replace: boolean }) => void;
   onOpenApiKeysTabSelected: () => void;
-  onLoadMore: () => void;
+  onPreviousKnowledgeBasePage: () => void;
+  onNextKnowledgeBasePage: () => void;
+  onSearchKnowledgeBases: (query: string) => void;
   onLogout: () => void;
   onOpenKnowledgeBase: (knowledgeBase: KnowledgeBase) => void;
 };
 
 export function AdminHomePage({
   knowledgeBases,
-  nextCursor,
+  knowledgeBaseQuery,
+  knowledgeBasePageNumber,
+  hasPreviousKnowledgeBasePage,
+  hasNextKnowledgeBasePage,
   isLoading,
   publicOpenApiKeys,
   publicOpenApiKeysNextCursor,
@@ -88,7 +110,9 @@ export function AdminHomePage({
   onDismissPublicOpenApiOneTimeKey,
   onLoadPublicOpenApiKeys,
   onOpenApiKeysTabSelected,
-  onLoadMore,
+  onPreviousKnowledgeBasePage,
+  onNextKnowledgeBasePage,
+  onSearchKnowledgeBases,
   onLogout,
   onOpenKnowledgeBase
 }: AdminHomePageProps) {
@@ -103,6 +127,26 @@ export function AdminHomePage({
   const [deleteError, setDeleteError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [copiedKnowledgeBaseId, setCopiedKnowledgeBaseId] = useState("");
+  const [knowledgeBaseSearchInput, setKnowledgeBaseSearchInput] = useState(knowledgeBaseQuery);
+  const hasActiveKnowledgeBaseSearch = Boolean(knowledgeBaseQuery);
+
+  useEffect(() => {
+    setKnowledgeBaseSearchInput(knowledgeBaseQuery);
+  }, [knowledgeBaseQuery]);
+
+  useEffect(() => {
+    const normalizedInput = knowledgeBaseSearchInput.trim();
+
+    if (normalizedInput === knowledgeBaseQuery) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      onSearchKnowledgeBases(normalizedInput);
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [knowledgeBaseQuery, knowledgeBaseSearchInput, onSearchKnowledgeBases]);
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -180,15 +224,47 @@ export function AdminHomePage({
             <TabsTrigger value="openapi-keys">{t("home.openapiKeysTab")}</TabsTrigger>
           </TabsList>
           <TabsContent value="knowledge-bases" className="flex flex-col gap-6">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <h2 className="text-base font-medium">{t("home.cardsTitle")}</h2>
                 <p className="text-sm text-muted-foreground">{t("home.cardsDescription")}</p>
               </div>
-              <Button type="button" onClick={() => setIsDialogOpen(true)}>
-                <PlusIcon data-icon="inline-start" />
-                {t("home.createAction")}
-              </Button>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex min-w-0 flex-1 flex-col gap-2 sm:w-80">
+                  <label htmlFor="knowledge-base-search" className="sr-only">
+                    {t("home.searchLabel")}
+                  </label>
+                  <div className="relative">
+                    <Input
+                      id="knowledge-base-search"
+                      value={knowledgeBaseSearchInput}
+                      maxLength={128}
+                      className={knowledgeBaseSearchInput.trim() ? "pr-9" : undefined}
+                      placeholder={t("home.searchPlaceholder")}
+                      onChange={(event) => setKnowledgeBaseSearchInput(event.target.value)}
+                    />
+                    {knowledgeBaseSearchInput.trim() ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="absolute right-0.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label={t("home.clearSearch")}
+                        onClick={() => {
+                          setKnowledgeBaseSearchInput("");
+                          onSearchKnowledgeBases("");
+                        }}
+                      >
+                        <XIcon />
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                <Button type="button" onClick={() => setIsDialogOpen(true)}>
+                  <PlusIcon data-icon="inline-start" />
+                  {t("home.createAction")}
+                </Button>
+              </div>
             </div>
 
             {isLoading && knowledgeBases.length === 0 ? (
@@ -197,7 +273,7 @@ export function AdminHomePage({
               </Alert>
             ) : null}
 
-            {!isLoading && knowledgeBases.length === 0 ? (
+            {!isLoading && knowledgeBases.length === 0 && !hasActiveKnowledgeBaseSearch ? (
               <Card className="border-dashed">
                 <CardHeader>
                   <CardTitle>{t("home.emptyTitle")}</CardTitle>
@@ -207,6 +283,27 @@ export function AdminHomePage({
                   <Button type="button" variant="outline" onClick={() => setIsDialogOpen(true)}>
                     <PlusIcon data-icon="inline-start" />
                     {t("home.createAction")}
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {!isLoading && knowledgeBases.length === 0 && hasActiveKnowledgeBaseSearch ? (
+              <Card className="border-dashed">
+                <CardHeader>
+                  <CardTitle>{t("home.searchEmptyTitle")}</CardTitle>
+                  <CardDescription>{t("home.searchEmptyDescription")}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setKnowledgeBaseSearchInput("");
+                      onSearchKnowledgeBases("");
+                    }}
+                  >
+                    {t("home.clearSearch")}
                   </Button>
                 </CardContent>
               </Card>
@@ -302,10 +399,47 @@ export function AdminHomePage({
               </div>
             ) : null}
 
-            {nextCursor ? (
-              <Button type="button" variant="outline" onClick={onLoadMore} disabled={isLoading}>
-                {isLoading ? t("home.loading") : t("home.loadMore")}
-              </Button>
+            {knowledgeBases.length > 0 ? (
+              <Pagination aria-label={t("pagination.label")}>
+                <PaginationContent>
+                  <PaginationItem>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={onPreviousKnowledgeBasePage}
+                      disabled={isLoading || !hasPreviousKnowledgeBasePage}
+                    >
+                      <ChevronLeftIcon data-icon="inline-start" />
+                      {t("pagination.previous")}
+                    </Button>
+                  </PaginationItem>
+                  <PaginationItem>
+                    <span
+                      aria-current="page"
+                      className="flex h-8 items-center px-2 text-sm text-muted-foreground"
+                    >
+                      {isLoading
+                        ? t("pagination.loading")
+                        : t("pagination.currentPage", {
+                            page: knowledgeBasePageNumber
+                          })}
+                    </span>
+                  </PaginationItem>
+                  <PaginationItem>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={onNextKnowledgeBasePage}
+                      disabled={isLoading || !hasNextKnowledgeBasePage}
+                    >
+                      {t("pagination.next")}
+                      <ChevronRightIcon data-icon="inline-end" />
+                    </Button>
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
             ) : null}
           </TabsContent>
           <TabsContent value="openapi-keys">

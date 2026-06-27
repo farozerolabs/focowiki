@@ -4,6 +4,8 @@ import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import { readSourceFileListFiltersFromQuery } from "../admin/source-file-list-filters.js";
+import { readSourceFileTaskDeletionRequest } from "../admin/source-file-task-deletion-request.js";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 import { readTreeEntryTypeFilter } from "../tree-entry-filters.js";
 import {
@@ -98,9 +100,31 @@ export function registerDeveloperOpenApiRoutes(
       api.listSourceFiles({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
+        cursor: context.req.query("cursor") ?? null,
+        filters: readSourceFileFilters(context)
       })
     )
+  );
+
+  app.post(
+    "/openapi/v1/knowledge-bases/:knowledgeBaseId/source-files/task-deletions",
+    async (context) =>
+      safe(context, async () => {
+        const request = readSourceFileTaskDeletionRequest(await readJsonBody(context.req.raw), {
+          maxSourceFileIds: services.config.pagination.maxPageSize
+        });
+
+        if (!request.ok) {
+          throw validationError("Source file task deletion request is invalid.", {
+            code: request.code
+          });
+        }
+
+        return api.deleteSourceFileTasks({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          sourceFileIds: request.sourceFileIds
+        });
+      })
   );
 
   app.get(
@@ -304,4 +328,16 @@ function readLimit(
   }
 
   return parsed;
+}
+
+function readSourceFileFilters(context: Context) {
+  const result = readSourceFileListFiltersFromQuery((name) => context.req.query(name));
+
+  if (!result.ok) {
+    throw validationError("Source file list filter is invalid.", {
+      code: result.code
+    });
+  }
+
+  return result.filters;
 }

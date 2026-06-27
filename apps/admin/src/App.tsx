@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AdminHomePage } from "@/pages/AdminHomePage";
+import { AdminToaster } from "@/components/admin-toaster";
 import { KnowledgeBaseDetailPage } from "@/pages/KnowledgeBaseDetailPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,14 +19,24 @@ import {
   type OneTimePublicOpenApiKey,
   type PublicOpenApiKey
 } from "@/lib/admin-api";
+import {
+  completeCursorPageRequest,
+  createInitialCursorPageState,
+  moveToNextCursor,
+  moveToPreviousCursor,
+  type CursorPageState
+} from "@/lib/cursor-page-state";
 
 type AuthState = "checking" | "anonymous" | "authenticated";
 
 export function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [knowledgeBasePageState, setKnowledgeBasePageState] = useState<CursorPageState>(
+    createInitialCursorPageState
+  );
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
+  const [knowledgeBaseQuery, setKnowledgeBaseQuery] = useState("");
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
   const [publicOpenApiKeys, setPublicOpenApiKeys] = useState<PublicOpenApiKey[]>([]);
   const [publicOpenApiKeysNextCursor, setPublicOpenApiKeysNextCursor] = useState<string | null>(
@@ -35,6 +46,7 @@ export function App() {
     useState<OneTimePublicOpenApiKey | null>(null);
   const [isLoadingPublicOpenApiKeys, setIsLoadingPublicOpenApiKeys] = useState(false);
   const [hasLoadedPublicOpenApiKeys, setHasLoadedPublicOpenApiKeys] = useState(false);
+  const knowledgeBaseLoadIdRef = useRef(0);
 
   useEffect(() => {
     setAdminAuthFailureHandler(() => {
@@ -63,6 +75,7 @@ export function App() {
       setAuthState("authenticated");
       setIsLoadingKnowledgeBases(true);
 
+      const initialPageState = createInitialCursorPageState();
       const page = await listKnowledgeBases({});
 
       if (!isActive) {
@@ -70,7 +83,7 @@ export function App() {
       }
 
       setKnowledgeBases(page.items);
-      setNextCursor(page.nextCursor);
+      setKnowledgeBasePageState(completeCursorPageRequest(initialPageState, page.nextCursor));
       setIsLoadingKnowledgeBases(false);
     }
 
@@ -83,7 +96,9 @@ export function App() {
 
   async function handleAuthenticated() {
     setAuthState("authenticated");
-    await loadKnowledgeBases({ replace: true });
+    const initialPageState = createInitialCursorPageState();
+    setKnowledgeBasePageState(initialPageState);
+    await loadKnowledgeBases({ pageState: initialPageState });
   }
 
   async function handleLogout() {
@@ -94,7 +109,8 @@ export function App() {
 
   function clearProtectedState() {
     setKnowledgeBases([]);
-    setNextCursor(null);
+    setKnowledgeBasePageState(createInitialCursorPageState());
+    setKnowledgeBaseQuery("");
     setSelectedKnowledgeBase(null);
     setIsLoadingKnowledgeBases(false);
     setPublicOpenApiKeys([]);
@@ -104,12 +120,55 @@ export function App() {
     setHasLoadedPublicOpenApiKeys(false);
   }
 
-  async function loadKnowledgeBases(input: { replace: boolean }) {
+  async function loadKnowledgeBases(input: { pageState?: CursorPageState; query?: string }) {
+    const query = input.query ?? knowledgeBaseQuery;
+    const normalizedQuery = query.trim();
+    const pageState = input.pageState ?? knowledgeBasePageState;
+    const loadId = knowledgeBaseLoadIdRef.current + 1;
+    knowledgeBaseLoadIdRef.current = loadId;
     setIsLoadingKnowledgeBases(true);
-    const page = await listKnowledgeBases(input.replace ? {} : { cursor: nextCursor });
-    setKnowledgeBases((current) => (input.replace ? page.items : [...current, ...page.items]));
-    setNextCursor(page.nextCursor);
+    const page = await listKnowledgeBases({
+      ...(pageState.currentCursor ? { cursor: pageState.currentCursor } : {}),
+      ...(normalizedQuery ? { query: normalizedQuery } : {})
+    });
+
+    if (loadId !== knowledgeBaseLoadIdRef.current) {
+      return;
+    }
+
+    setKnowledgeBases(page.items);
+    setKnowledgeBasePageState(completeCursorPageRequest(pageState, page.nextCursor));
     setIsLoadingKnowledgeBases(false);
+  }
+
+  async function handleKnowledgeBaseQueryChange(query: string) {
+    const normalizedQuery = query.trim();
+    const initialPageState = createInitialCursorPageState();
+    setKnowledgeBaseQuery(normalizedQuery);
+    setKnowledgeBasePageState(initialPageState);
+    await loadKnowledgeBases({ pageState: initialPageState, query: normalizedQuery });
+  }
+
+  async function handleKnowledgeBaseNextPage() {
+    const nextPageState = moveToNextCursor(knowledgeBasePageState);
+
+    if (nextPageState === knowledgeBasePageState) {
+      return;
+    }
+
+    setKnowledgeBasePageState(nextPageState);
+    await loadKnowledgeBases({ pageState: nextPageState });
+  }
+
+  async function handleKnowledgeBasePreviousPage() {
+    const previousPageState = moveToPreviousCursor(knowledgeBasePageState);
+
+    if (previousPageState === knowledgeBasePageState) {
+      return;
+    }
+
+    setKnowledgeBasePageState(previousPageState);
+    await loadKnowledgeBases({ pageState: previousPageState });
   }
 
   async function handleCreateKnowledgeBase(input: {
@@ -122,7 +181,13 @@ export function App() {
       return result;
     }
 
-    setKnowledgeBases((current) => [result.knowledgeBase, ...current]);
+    if (knowledgeBaseQuery || knowledgeBasePageState.pageNumber > 1) {
+      const initialPageState = createInitialCursorPageState();
+      setKnowledgeBasePageState(initialPageState);
+      await loadKnowledgeBases({ pageState: initialPageState });
+    } else {
+      setKnowledgeBases((current) => [result.knowledgeBase, ...current]);
+    }
     return result;
   }
 
@@ -195,6 +260,7 @@ export function App() {
     return (
       <TooltipProvider>
         <main className="min-h-svh bg-background" aria-busy="true" />
+        <AdminToaster />
       </TooltipProvider>
     );
   }
@@ -203,6 +269,7 @@ export function App() {
     return (
       <TooltipProvider>
         <LoginPage onAuthenticated={() => void handleAuthenticated()} />
+        <AdminToaster />
       </TooltipProvider>
     );
   }
@@ -215,6 +282,7 @@ export function App() {
           onBack={() => setSelectedKnowledgeBase(null)}
           onLogout={() => void handleLogout()}
         />
+        <AdminToaster />
       </TooltipProvider>
     );
   }
@@ -223,7 +291,10 @@ export function App() {
     <TooltipProvider>
       <AdminHomePage
         knowledgeBases={knowledgeBases}
-        nextCursor={nextCursor}
+        knowledgeBaseQuery={knowledgeBaseQuery}
+        knowledgeBasePageNumber={knowledgeBasePageState.pageNumber}
+        hasPreviousKnowledgeBasePage={knowledgeBasePageState.previousCursors.length > 0}
+        hasNextKnowledgeBasePage={Boolean(knowledgeBasePageState.nextCursor)}
         isLoading={isLoadingKnowledgeBases}
         publicOpenApiKeys={publicOpenApiKeys}
         publicOpenApiKeysNextCursor={publicOpenApiKeysNextCursor}
@@ -236,10 +307,13 @@ export function App() {
         onDismissPublicOpenApiOneTimeKey={() => setPublicOpenApiKeysOneTimeKey(null)}
         onLoadPublicOpenApiKeys={(input) => void loadPublicOpenApiKeys(input)}
         onOpenApiKeysTabSelected={handleOpenApiKeysTabSelected}
-        onLoadMore={() => void loadKnowledgeBases({ replace: false })}
+        onPreviousKnowledgeBasePage={() => void handleKnowledgeBasePreviousPage()}
+        onNextKnowledgeBasePage={() => void handleKnowledgeBaseNextPage()}
+        onSearchKnowledgeBases={(query) => void handleKnowledgeBaseQueryChange(query)}
         onLogout={() => void handleLogout()}
         onOpenKnowledgeBase={setSelectedKnowledgeBase}
       />
+      <AdminToaster />
     </TooltipProvider>
   );
 }

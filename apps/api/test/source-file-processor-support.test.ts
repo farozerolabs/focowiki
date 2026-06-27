@@ -1,6 +1,14 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { waitForPublicationLock } from "../src/admin/source-file-processor-support.js";
 import type { RedisCoordinator } from "../src/redis/coordination.js";
+
+const processorPath = resolve(import.meta.dirname, "../src/admin/source-file-processor.ts");
+
+function readProcessor(): string {
+  return readFileSync(processorPath, "utf8").replace(/\s+/g, " ").toLowerCase();
+}
 
 describe("source file processor support", () => {
   it("retries the publication lock before failing", async () => {
@@ -23,5 +31,28 @@ describe("source file processor support", () => {
 
     expect(acquired).toBe(true);
     expect(attempts).toBe(3);
+  });
+
+  it("checks task deletion eligibility at every source-file processing boundary", () => {
+    const processor = readProcessor();
+
+    for (const stage of [
+      "upload_storage",
+      "metadata_resolution",
+      "llm_suggestion",
+      "graph_generation",
+      "bundle_generation",
+      "index_publication"
+    ]) {
+      const stageOffset = processor.indexOf(`currentstage = \"${stage}\"`);
+      const boundary = processor.slice(stageOffset, stageOffset + 220);
+
+      expect(stageOffset).toBeGreaterThanOrEqual(0);
+      expect(boundary).toContain("await assertsourcefileprocessingeligible()");
+    }
+    expect(processor).toContain("sourcefileprocessingcancellederror");
+    expect(processor).toContain(
+      "if (!currentsource || currentsource.deletedat || currentsource.taskdeletedat)"
+    );
   });
 });

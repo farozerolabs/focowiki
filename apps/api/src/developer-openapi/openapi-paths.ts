@@ -8,6 +8,7 @@ import {
   operation,
   paginationParameters,
   ref,
+  sourceFileListFilterParameters,
   sourceFileIdParameter,
   webhookIdParameter,
   type PathItemObject
@@ -149,11 +150,28 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         tag: "Source Files",
         operationId: "listKnowledgeBaseSourceFiles",
         summary: "List source files",
-        parameters: [knowledgeBaseIdParameter(), ...paginationParameters()],
+        parameters: [
+          knowledgeBaseIdParameter(),
+          ...paginationParameters(),
+          ...sourceFileListFilterParameters()
+        ],
         requestExample: requestExamples.listKnowledgeBaseSourceFiles,
         successStatus: 200,
         successSchema: ref("SourceFileListResponse"),
         successExample: responseExamples.listKnowledgeBaseSourceFiles
+      })
+    },
+    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/task-deletions": {
+      post: operation({
+        tag: "Source Files",
+        operationId: "deleteKnowledgeBaseSourceFileTasks",
+        summary: "Delete source-file tasks",
+        parameters: [knowledgeBaseIdParameter()],
+        requestSchema: ref("SourceFileTaskDeletionRequest"),
+        requestExample: requestExamples.deleteKnowledgeBaseSourceFileTasks,
+        successStatus: 200,
+        successSchema: ref("SourceFileTaskDeletionResponse"),
+        successExample: responseExamples.deleteKnowledgeBaseSourceFileTasks
       })
     },
     "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}": {

@@ -130,6 +130,7 @@ try {
   await page.getByText("File processing").first().waitFor();
   await page.getByRole("button", { name: /^Upload$/ }).waitFor();
   report.checks.push(okCheck("knowledge-base", "Created and opened validation knowledge base."));
+  await validateResizableSidebar(page);
 
   const singleUpload = await uploadFilesFromDialog(page, [singleSample], {
     checkName: "single-upload-submit",
@@ -168,6 +169,7 @@ try {
     checkName: "batch-source-file-rows",
     message: "Batch upload appears as top-level source-file rows with original filenames, file IDs, status, stage, and pagination."
   });
+  await validateSourceFileFilterControls(page, batchSamples[0]);
 
   await page.getByRole("button", { name: "File processing" }).click();
   const batchPreview = await openFirstVisibleGeneratedFileFromProcessingRows(
@@ -195,6 +197,8 @@ try {
   report.checks.push(okCheck("copy-url", "Selected generated files copied distinct Developer OpenAPI URLs."));
 
   await validateGraphFilePreview(page, [...batchSourceFileIds].sort()[0]);
+  await validateFileTreeSearch(page, batchPreview.sample.basename);
+  await validateTaskDeletionControls(page, batchSourceFileIds, batchSamples);
 
   await openPagesDirectoryIfNeeded(page, batchPreview.sample.basename);
   await page.getByRole("button", { name: `File actions: ${batchPreview.sample.basename}` }).click();
@@ -446,6 +450,18 @@ function readSourceFileIdFromTestId(testId) {
   return testId.startsWith(prefix) && testId.length > prefix.length ? testId.slice(prefix.length) : null;
 }
 
+function createSearchTokenFromFilename(filename) {
+  const basename = path.basename(filename, path.extname(filename));
+  const titleToken = basename.split("__")[0]?.trim() || basename.trim();
+  const token = titleToken.replace(/\s+/g, " ").trim();
+
+  if (token.length >= 2) {
+    return token.slice(0, 32);
+  }
+
+  return basename.slice(0, 32);
+}
+
 async function refreshSourceFilePage(page) {
   const refreshButton = page.getByRole("button", { name: "Refresh" });
 
@@ -557,6 +573,88 @@ async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { c
   }
 
   report.checks.push(okCheck(checkName, message));
+}
+
+async function validateSourceFileFilterControls(page, sample) {
+  if (!sample?.basename) {
+    throw new Error("Source-file filter validation requires a browser sample.");
+  }
+
+  await page.getByRole("button", { name: "Filter File name" }).click();
+  await page.getByRole("textbox", { name: "File name" }).fill(createSearchTokenFromFilename(sample.basename));
+  await page.getByText("1 active filter").waitFor({ timeout: 30_000 });
+  await page.getByText(sample.basename, { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole("menuitem", { name: "Clear" }).click();
+  await page.getByText("1 active filter").waitFor({ state: "detached", timeout: 30_000 });
+  report.checks.push(okCheck("source-file-filter-controls", "Filtered source files from the file-name column and cleared the active filter."));
+}
+
+async function validateTaskDeletionControls(page, sourceFileIds, samples) {
+  await page.getByRole("button", { name: "File processing" }).click();
+  await page.getByTestId("source-file-progress-panel").waitFor({ timeout: 30_000 });
+  const visibleSourceFileIds = await readVisibleSourceFileIds(page);
+  const candidateSourceFileId = visibleSourceFileIds.find((sourceFileId) => sourceFileIds.includes(sourceFileId));
+
+  if (!candidateSourceFileId) {
+    throw new Error("Expected a visible uploaded source-file row before validating task deletion controls.");
+  }
+
+  const sampleIndex = sourceFileIds.indexOf(candidateSourceFileId);
+  const sample = samples[sampleIndex];
+
+  if (!sample?.basename) {
+    throw new Error("Could not map visible source-file row to a browser validation sample for task deletion.");
+  }
+
+  await page.getByLabel(`Select ${sample.basename}`).click();
+  await page.getByText("1 selected").waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Delete selected" }).click();
+
+  const deleteTasksDialog = page.getByRole("alertdialog", { name: "Delete processing tasks" });
+  await deleteTasksDialog.waitFor({ timeout: 30_000 });
+  await deleteTasksDialog.getByRole("button", { name: "Delete tasks" }).click();
+  await page.getByText("Tasks deleted", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByTestId(`source-file-row-${candidateSourceFileId}`).waitFor({
+    state: "detached",
+    timeout: 30_000
+  });
+  report.checks.push(okCheck("source-file-task-deletion-controls", "Deleted a selected completed task row from the current source-file page."));
+}
+
+async function validateFileTreeSearch(page, expectedFileName) {
+  await page.getByPlaceholder("Search files and folders").fill(createSearchTokenFromFilename(expectedFileName));
+  await page.getByRole("button", { name: expectedFileName, exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Clear file tree search" }).click();
+  await page.getByPlaceholder("Search files and folders").waitFor({ timeout: 30_000 });
+  report.checks.push(okCheck("file-tree-search", "Searched the file tree and kept the matching file visible with its parent context."));
+}
+
+async function validateResizableSidebar(page) {
+  const rail = page.getByRole("separator", { name: "Resize sidebar" });
+  await rail.waitFor({ timeout: 30_000 });
+  const before = Number(await rail.getAttribute("aria-valuenow"));
+  const box = await rail.boundingBox();
+
+  if (!Number.isFinite(before) || !box) {
+    throw new Error("Resizable sidebar rail did not expose a measurable width.");
+  }
+
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 80, centerY, { steps: 4 });
+  await page.mouse.up();
+  await page.waitForFunction(
+    (previousWidth) => {
+      const rail = document.querySelector('[data-sidebar="rail"][role="separator"]');
+      const currentWidth = Number(rail?.getAttribute("aria-valuenow"));
+      return Number.isFinite(currentWidth) && currentWidth > previousWidth;
+    },
+    before,
+    { timeout: 30_000 }
+  );
+  report.checks.push(okCheck("resizable-file-tree-sidebar", "Resized the file-tree sidebar by dragging the sidebar rail."));
 }
 
 async function openPagesDirectoryIfNeeded(page, expectedFileName) {

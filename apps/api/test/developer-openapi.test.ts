@@ -5,6 +5,8 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   KnowledgeBaseRecord,
+  SourceFileListFilters,
+  SourceFileTaskDeletionRepositoryResult,
   SourceFileRecord,
   WebhookDeliveryRecord,
   WebhookSubscriptionRecord
@@ -60,6 +62,11 @@ const expectedDeveloperOpenApiOperations = [
     method: "post",
     path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry",
     status: "202"
+  },
+  {
+    method: "post",
+    path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/task-deletions",
+    status: "200"
   },
   { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree", status: "200" },
   { method: "get", path: "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content", status: "200" },
@@ -193,6 +200,7 @@ class MemoryStorage implements StorageAdapter {
 }
 
 function createRepositories(): AdminRepositories & {
+  sourceFiles: Map<string, SourceFileRecord>;
   webhookDeliveries: Map<string, WebhookDeliveryRecord>;
 } {
   const keyHash = hashPublicOpenApiKey(developerKey);
@@ -227,7 +235,19 @@ function createRepositories(): AdminRepositories & {
     createdAt: now,
     deletedAt: null
   };
-  const sourceFiles = new Map<string, SourceFileRecord>([[sourceFile.id, sourceFile]]);
+  const hiddenSourceFile: SourceFileRecord = {
+    ...sourceFile,
+    id: "source-hidden",
+    originalName: "hidden.md",
+    objectKey: "tenant/demo/knowledge-bases/kb-seeded/sources/source-hidden/hidden.md",
+    generatedBundleFileId: "bundle-hidden",
+    generatedBundleFilePath: "pages/hidden.md",
+    taskDeletedAt: now
+  };
+  const sourceFiles = new Map<string, SourceFileRecord>([
+    [sourceFile.id, sourceFile],
+    [hiddenSourceFile.id, hiddenSourceFile]
+  ]);
   const bundleFile: BundleFileRecord = {
     id: "bundle-guide",
     knowledgeBaseId: "kb-seeded",
@@ -263,6 +283,7 @@ function createRepositories(): AdminRepositories & {
   const webhookDeliveries = new Map<string, WebhookDeliveryRecord>();
 
   return {
+    sourceFiles,
     webhookDeliveries,
     publicApiKeys: {
       async countActivePublicOpenApiKeys() {
@@ -371,10 +392,61 @@ function createRepositories(): AdminRepositories & {
         return fileId === bundleFile.id ? bundleFile : null;
       },
       async getSourceFile({ sourceFileId }) {
-        return sourceFiles.get(sourceFileId) ?? null;
+        const file = sourceFiles.get(sourceFileId) ?? null;
+        return file && !file.deletedAt && !file.taskDeletedAt ? file : null;
       },
-      async listSourceFiles() {
-        return { items: Array.from(sourceFiles.values()), nextCursor: null };
+      async listSourceFiles(request) {
+        const filters = request as SourceFileListFilters;
+        return {
+          items: Array.from(sourceFiles.values())
+            .filter((file) => !file.deletedAt && !file.taskDeletedAt)
+            .filter((file) => applySourceFileListFilters(file, filters))
+            .slice(0, request.limit),
+          nextCursor: null
+        };
+      },
+      async deleteSourceFileTasks({ knowledgeBaseId, sourceFileIds, deletedAt }) {
+        const results: SourceFileTaskDeletionRepositoryResult[] = [];
+
+        for (const sourceFileId of sourceFileIds) {
+          const file = sourceFiles.get(sourceFileId);
+
+          if (!file || file.knowledgeBaseId !== knowledgeBaseId) {
+            results.push({ sourceFileId, outcome: "skipped", reason: "missing" });
+            continue;
+          }
+
+          if (file.processingStatus === "running") {
+            results.push({ sourceFileId, outcome: "skipped", reason: "running" });
+            continue;
+          }
+
+          if (file.generatedOutputStatus === "visible") {
+            sourceFiles.set(sourceFileId, {
+              ...file,
+              taskDeletedAt: deletedAt
+            });
+            results.push({
+              sourceFileId,
+              outcome: "hidden",
+              generatedFileId: file.generatedBundleFileId ?? null,
+              generatedFilePath: file.generatedBundleFilePath ?? null
+            });
+            continue;
+          }
+
+          sourceFiles.set(sourceFileId, {
+            ...file,
+            deletedAt
+          });
+          results.push({
+            sourceFileId,
+            outcome: "deleted",
+            objectKey: file.objectKey
+          });
+        }
+
+        return results;
       },
       async listReleases() {
         return { items: [], nextCursor: null };
@@ -423,7 +495,7 @@ function createRepositories(): AdminRepositories & {
         };
       },
       async deleteGraphForSourceFile() {
-        throw new Error("Not used by Developer OpenAPI tests");
+        return undefined;
       }
     },
     workerJobs: createWorkerJobRepository(),
@@ -495,6 +567,36 @@ function createRepositories(): AdminRepositories & {
       }
     }
   };
+}
+
+function applySourceFileListFilters(
+  file: SourceFileRecord,
+  filters: SourceFileListFilters
+): boolean {
+  if (
+    filters.fileNameQuery &&
+    !file.originalName.toLowerCase().includes(filters.fileNameQuery.toLowerCase())
+  ) {
+    return false;
+  }
+
+  if (filters.fileIdQuery && !file.id.startsWith(filters.fileIdQuery)) {
+    return false;
+  }
+
+  if (filters.processingStatus && file.processingStatus !== filters.processingStatus) {
+    return false;
+  }
+
+  if (filters.processingStage && file.processingStage !== filters.processingStage) {
+    return false;
+  }
+
+  if (filters.generatedOutputStatus && file.generatedOutputStatus !== filters.generatedOutputStatus) {
+    return false;
+  }
+
+  return true;
 }
 
 function createApp() {
@@ -1165,12 +1267,36 @@ describe("Developer OpenAPI", () => {
       headers: authHeaders()
     });
     const contract = (await response.json()) as {
-      paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+      paths: Record<
+        string,
+        Record<string, { parameters?: Array<{ name: string }>; responses: Record<string, unknown> }>
+      >;
     };
 
     for (const operation of expectedDeveloperOpenApiOperations) {
       expect(contract.paths[operation.path]?.[operation.method]?.responses[operation.status]).toBeDefined();
     }
+    expect(
+      contract.paths["/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files"]?.get?.parameters?.map(
+        (parameter) => parameter.name
+      )
+    ).toEqual(
+      expect.arrayContaining([
+        "fileNameQuery",
+        "fileIdQuery",
+        "processingStatus",
+        "processingStage",
+        "modelInvocationStatus",
+        "generatedOutputStatus",
+        "startedFrom",
+        "startedTo",
+        "endedFrom",
+        "endedTo",
+        "errorState",
+        "errorCodeQuery",
+        "actionState"
+      ])
+    );
     expect(contract.paths["/openapi/v1/knowledge-bases/{knowledgeBaseId}/tasks"]).toBeUndefined();
   });
 
@@ -1197,6 +1323,254 @@ describe("Developer OpenAPI", () => {
     expect(body.items[0]).not.toHaveProperty("taskId");
     expect(body.items[0]).not.toHaveProperty("releaseId");
     expect(body.items[0]).not.toHaveProperty("objectKey");
+  });
+
+  it("filters source files through Developer OpenAPI using the shared bounded filters", async () => {
+    const { app } = createApp();
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files?fileNameQuery=guide&processingStatus=completed&generatedOutputStatus=visible&limit=10",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      items: Array<{ fileId: string; originalFilename: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.items).toEqual([
+      expect.objectContaining({
+        fileId: "source-guide",
+        originalFilename: "guide.md"
+      })
+    ]);
+  });
+
+  it("passes every Developer OpenAPI source-file filter to the repository before pagination", async () => {
+    const { app, repositories } = createApp();
+    const listSourceFiles = repositories.files?.listSourceFiles;
+    let capturedInput: (SourceFileListFilters & { cursor: string | null; limit: number }) | null = null;
+
+    if (!listSourceFiles || !repositories.files) {
+      throw new Error("Source file list dependency is missing from the test fixture.");
+    }
+
+    repositories.files.listSourceFiles = async (input) => {
+      capturedInput = input;
+      return listSourceFiles(input);
+    };
+
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files?limit=10&fileNameQuery=guide&fileIdQuery=source-g&processingStatus=completed&processingStage=release_activation&modelInvocationStatus=not_recorded&generatedOutputStatus=visible&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
+      {
+        headers: authHeaders()
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(capturedInput).toMatchObject({
+      limit: 10,
+      cursor: null,
+      fileNameQuery: "guide",
+      fileIdQuery: "source-g",
+      processingStatus: "completed",
+      processingStage: "release_activation",
+      modelInvocationStatus: "not_recorded",
+      generatedOutputStatus: "visible",
+      startedFrom: "2026-06-14T00:00:00.000Z",
+      startedTo: "2026-06-15T00:00:00.000Z",
+      endedFrom: "2026-06-14T00:00:00.000Z",
+      endedTo: "2026-06-15T00:00:00.000Z",
+      errorState: "without_error",
+      errorCodeQuery: "TIMEOUT",
+      actionState: "openable"
+    });
+  });
+
+  it("rejects invalid Developer OpenAPI source-file filters before repository reads", async () => {
+    const { app, repositories } = createApp();
+    const listSourceFiles = repositories.files?.listSourceFiles;
+    let listCount = 0;
+
+    if (!listSourceFiles || !repositories.files) {
+      throw new Error("Source file list dependency is missing from the test fixture.");
+    }
+
+    repositories.files.listSourceFiles = async (input) => {
+      listCount += 1;
+      return listSourceFiles(input);
+    };
+
+    const response = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files?processingStatus=archived",
+      {
+        headers: authHeaders()
+      }
+    );
+    const body = (await response.json()) as {
+      error: { code: string; details?: Record<string, unknown> };
+    };
+
+    expect(response.status).toBe(422);
+    expect(body.error).toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: {
+        code: "INVALID_SOURCE_FILE_FILTER"
+      }
+    });
+    expect(JSON.stringify(body)).not.toContain("focowiki.");
+    expect(listCount).toBe(0);
+  });
+
+  it("deletes unpublished source-file tasks through Developer OpenAPI and preserves safe results", async () => {
+    const { app } = createApp();
+    const form = new FormData();
+    form.append("files", new File(["# Obsolete"], "obsolete.md", { type: "text/markdown" }));
+    const uploadResponse = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const uploadBody = (await uploadResponse.json()) as {
+      files: Array<{ fileId: string }>;
+    };
+    const uploadedFileId = uploadBody.files[0]?.fileId;
+
+    if (!uploadedFileId) {
+      throw new Error("Upload did not return a source file ID.");
+    }
+
+    const missingSourceFileId = "source-file-99999999-9999-4999-8999-999999999999";
+    const deletionResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files/task-deletions",
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          sourceFileIds: [uploadedFileId, missingSourceFileId]
+        })
+      }
+    );
+    const deletionBody = (await deletionResponse.json()) as {
+      results: Array<{ sourceFileId: string; result: string; reason?: string }>;
+      summary: { deleted: number; hidden: number; skipped: number };
+    };
+    const detailAfterDeletion = await app.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${uploadedFileId}`,
+      {
+        headers: authHeaders()
+      }
+    );
+
+    expect(uploadResponse.status).toBe(202);
+    expect(deletionResponse.status).toBe(200);
+    expect(deletionBody).toEqual({
+      results: [
+        {
+          sourceFileId: uploadedFileId,
+          result: "deleted"
+        },
+        {
+          sourceFileId: missingSourceFileId,
+          result: "skipped",
+          reason: "missing"
+        }
+      ],
+      summary: {
+        deleted: 1,
+        hidden: 0,
+        skipped: 1
+      }
+    });
+    expect(JSON.stringify(deletionBody)).not.toContain("tenant/demo");
+    expect(detailAfterDeletion.status).toBe(404);
+  });
+
+  it("hides completed visible source-file tasks while generated file reads remain available", async () => {
+    const { app, repositories } = createApp();
+    const visibleSourceFileId = "source-file-44444444-4444-4444-8444-444444444444";
+    const baseSourceFile = repositories.sourceFiles.get("source-guide");
+
+    if (!baseSourceFile) {
+      throw new Error("Visible source file fixture is missing.");
+    }
+
+    repositories.sourceFiles.set(visibleSourceFileId, {
+      ...baseSourceFile,
+      id: visibleSourceFileId,
+      originalName: "visible-task.md",
+      objectKey: "tenant/demo/knowledge-bases/kb-seeded/sources/visible-task.md",
+      taskDeletedAt: null,
+      deletedAt: null
+    });
+
+    const deletionResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/source-files/task-deletions",
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          sourceFileIds: [visibleSourceFileId]
+        })
+      }
+    );
+    const deletionBody = (await deletionResponse.json()) as {
+      results: Array<{
+        sourceFileId: string;
+        result: string;
+        generatedFileId?: string;
+        generatedFilePath?: string;
+      }>;
+    };
+    const detailAfterDeletion = await app.request(
+      `/openapi/v1/knowledge-bases/kb-seeded/source-files/${visibleSourceFileId}`,
+      {
+        headers: authHeaders()
+      }
+    );
+    const generatedContent = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md",
+      {
+        headers: authHeaders()
+      }
+    );
+
+    expect(deletionResponse.status).toBe(200);
+    expect(deletionBody.results).toEqual([
+      {
+        sourceFileId: visibleSourceFileId,
+        result: "hidden",
+        generatedFileId: "bundle-guide",
+        generatedFilePath: "pages/guide.md"
+      }
+    ]);
+    expect(detailAfterDeletion.status).toBe(404);
+    expect(generatedContent.status).toBe(200);
+  });
+
+  it("does not expose task-hidden source-file rows through Developer OpenAPI source-file reads", async () => {
+    const { app } = createApp();
+    const [listResponse, detailResponse] = await Promise.all([
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files", {
+        headers: authHeaders()
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files/source-hidden", {
+        headers: authHeaders()
+      })
+    ]);
+    const listBody = (await listResponse.json()) as {
+      items: Array<{ fileId: string }>;
+    };
+
+    expect(listResponse.status).toBe(200);
+    expect(listBody.items.map((item) => item.fileId)).toEqual(["source-guide"]);
+    expect(detailResponse.status).toBe(404);
   });
 
   it("documents every returned source file field in the OpenAPI contract", async () => {

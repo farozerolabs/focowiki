@@ -1,5 +1,18 @@
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  SourceFileActionFilterHeader,
+  SourceFileEndedFilterHeader,
+  SourceFileErrorFilterHeader,
+  SourceFileGeneratedFilterHeader,
+  SourceFileIdFilterHeader,
+  SourceFileModelFilterHeader,
+  SourceFileNameFilterHeader,
+  SourceFileStageFilterHeader,
+  SourceFileStartedFilterHeader,
+  SourceFileStatusFilterHeader
+} from "@/components/source-file-filter-controls";
 import {
   Table,
   TableBody,
@@ -10,47 +23,137 @@ import {
 } from "@/components/ui/table";
 import { formatDisplayFileName } from "@/lib/display-file-name";
 import type { SourceFileRecord } from "@/lib/admin-api";
+import type { SourceFileListFilters } from "@/lib/source-file-list-filters";
+import { isSourceFileTaskDeletionSelectable } from "@/lib/source-file-task-deletion";
 import { formatSourceFileTime } from "./task-table-formatters";
 
 type SourceFileDataTableProps = {
   sourceFiles: SourceFileRecord[];
+  filters: SourceFileListFilters;
+  hasActiveFilters: boolean;
   retryingSourceFileId?: string | null | undefined;
+  selectedSourceFileIds: Set<string>;
+  onFiltersChange: (filters: SourceFileListFilters) => void;
+  onClearFilters: () => void;
+  onToggleCurrentPageSelection: (checked: boolean) => void;
+  onToggleSourceFileSelection: (sourceFileId: string, checked: boolean) => void;
   onRetrySourceFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
   onOpenGeneratedFile?: ((sourceFile: SourceFileRecord) => void) | undefined;
 };
 
+const SOURCE_FILE_TABLE_COLUMNS = [
+  "3rem",
+  "7rem",
+  "20rem",
+  "17rem",
+  "11rem",
+  "20rem",
+  "8rem",
+  "12rem",
+  "12rem",
+  "12rem",
+  "10rem"
+];
+
 export function SourceFileDataTable({
   sourceFiles,
+  filters,
+  hasActiveFilters,
   retryingSourceFileId,
+  selectedSourceFileIds,
+  onFiltersChange,
+  onClearFilters,
+  onToggleCurrentPageSelection,
+  onToggleSourceFileSelection,
   onRetrySourceFile,
   onOpenGeneratedFile
 }: SourceFileDataTableProps) {
   const { i18n, t } = useTranslation();
-
-  if (sourceFiles.length === 0) {
-    return <p className="p-4 text-sm text-muted-foreground">{t("tasks.empty")}</p>;
-  }
+  const selectableSourceFileIds = sourceFiles
+    .filter(isSourceFileTaskDeletionSelectable)
+    .map((file) => file.id);
+  const selectedSelectableCount = selectableSourceFileIds.filter((sourceFileId) =>
+    selectedSourceFileIds.has(sourceFileId)
+  ).length;
+  const allCurrentPageSelected =
+    selectableSourceFileIds.length > 0 && selectedSelectableCount === selectableSourceFileIds.length;
+  const currentPageSelectionState =
+    selectedSelectableCount > 0 && !allCurrentPageSelected ? "indeterminate" : allCurrentPageSelected;
 
   return (
     <div className="overflow-hidden rounded-md border">
-      <Table className="min-w-[72rem]" aria-label={t("tasks.title")}>
+      <Table className="min-w-[132rem] table-fixed" aria-label={t("tasks.title")}>
+        <colgroup>
+          {SOURCE_FILE_TABLE_COLUMNS.map((width, index) => (
+            <col key={index} style={{ width }} />
+          ))}
+        </colgroup>
         <TableHeader>
           <TableRow>
-            <TableHead>{t("tasks.filesTable.status")}</TableHead>
-            <TableHead>{t("tasks.filesTable.fileName")}</TableHead>
-            <TableHead>{t("tasks.filesTable.fileId")}</TableHead>
-            <TableHead>{t("tasks.filesTable.stage")}</TableHead>
-            <TableHead>{t("tasks.filesTable.model")}</TableHead>
-            <TableHead>{t("tasks.filesTable.generatedFile")}</TableHead>
-            <TableHead>{t("tasks.filesTable.startedAt")}</TableHead>
-            <TableHead>{t("tasks.filesTable.endedAt")}</TableHead>
-            <TableHead>{t("tasks.filesTable.error")}</TableHead>
-            <TableHead>{t("tasks.filesTable.actions")}</TableHead>
+            <TableHead>
+              <Checkbox
+                aria-label={t("tasks.selection.selectCurrentPage")}
+                checked={currentPageSelectionState}
+                disabled={selectableSourceFileIds.length === 0}
+                onCheckedChange={(checked) => onToggleCurrentPageSelection(checked === true)}
+              />
+            </TableHead>
+            <TableHead>
+              <SourceFileStatusFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileNameFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileIdFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileStageFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileModelFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileGeneratedFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileStartedFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileEndedFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileErrorFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
+            <TableHead>
+              <SourceFileActionFilterHeader filters={filters} onFiltersChange={onFiltersChange} />
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {sourceFiles.map((file) => (
+          {sourceFiles.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={11}>
+                <div className="flex flex-col gap-2 p-4 text-sm text-muted-foreground">
+                  <span>{hasActiveFilters ? t("tasks.filters.noMatches") : t("tasks.empty")}</span>
+                  {hasActiveFilters ? (
+                    <Button type="button" variant="outline" size="sm" onClick={onClearFilters}>
+                      {t("tasks.filters.clearAll")}
+                    </Button>
+                  ) : null}
+                </div>
+              </TableCell>
+            </TableRow>
+          ) : sourceFiles.map((file) => (
             <TableRow key={file.id} data-testid={`source-file-row-${file.id}`}>
+              <TableCell>
+                <Checkbox
+                  aria-label={t("tasks.selection.selectRow", { name: formatDisplayFileName(file.originalName) })}
+                  checked={selectedSourceFileIds.has(file.id)}
+                  disabled={!isSourceFileTaskDeletionSelectable(file)}
+                  onCheckedChange={(checked) => onToggleSourceFileSelection(file.id, checked === true)}
+                />
+              </TableCell>
               <TableCell>{formatFileStatus(file, t)}</TableCell>
               <TableCell>
                 <span className="block max-w-72 truncate">

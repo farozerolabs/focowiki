@@ -2,8 +2,8 @@ import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 
 const exampleTimestamp = "2026-06-17T00:00:00.000Z";
 const knowledgeBaseId = "kb_123";
-const sourceFileId = "file_source_123";
-const bundleFileId = "file_page_123";
+const sourceFileId = "source-file-11111111-1111-4111-8111-111111111111";
+const bundleFileId = "bundle-file-11111111-1111-4111-8111-111111111111";
 const webhookId = "webhook_123";
 const deliveryId = "delivery_123";
 const cursor = "cursor_123";
@@ -176,7 +176,12 @@ export const requestExamples = {
   },
   listKnowledgeBaseSourceFiles: {
     path: { knowledgeBaseId },
-    query: { limit: 50 }
+    query: {
+      limit: 50,
+      processingStatus: "completed",
+      generatedOutputStatus: "visible",
+      fileNameQuery: "guide"
+    }
   },
   getKnowledgeBaseSourceFile: {
     path: { knowledgeBaseId, sourceFileId }
@@ -187,6 +192,12 @@ export const requestExamples = {
   },
   retryKnowledgeBaseSourceFile: {
     path: { knowledgeBaseId, sourceFileId }
+  },
+  deleteKnowledgeBaseSourceFileTasks: {
+    path: { knowledgeBaseId },
+    body: {
+      sourceFileIds: [sourceFileId, "source-file-22222222-2222-4222-8222-222222222222"]
+    }
   },
   listKnowledgeBaseTree: {
     path: { knowledgeBaseId },
@@ -317,6 +328,26 @@ export function createDeveloperOpenApiResponseExamples() {
         processingStartedAt: exampleTimestamp,
         processingEndedAt: null,
         retryCount: 1
+      }
+    },
+    deleteKnowledgeBaseSourceFileTasks: {
+      results: [
+        {
+          sourceFileId,
+          result: "hidden",
+          generatedFileId: bundleFileId,
+          generatedFilePath: "pages/guide.md"
+        },
+        {
+          sourceFileId: "source-file-22222222-2222-4222-8222-222222222222",
+          result: "skipped",
+          reason: "missing"
+        }
+      ],
+      summary: {
+        deleted: 0,
+        hidden: 1,
+        skipped: 1
       }
     },
     listKnowledgeBaseTree: {

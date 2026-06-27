@@ -1,3 +1,8 @@
+import {
+  appendSourceFileFilterParams,
+  type SourceFileListFilters
+} from "@/lib/source-file-list-filters";
+
 export type KnowledgeBase = {
   id: string;
   name: string;
@@ -32,10 +37,13 @@ export type PublicOpenApiKeyPage = {
 
 export type BundleTreeEntry = {
   id: string;
+  parentPath?: string;
   name: string;
   logicalPath: string;
+  sortKey?: string;
   entryType: "directory" | "file";
   bundleFileId: string | null;
+  childCount?: number;
   sourceFileId?: string | null;
   fileKind?:
     | "page"
@@ -59,6 +67,16 @@ export type BundleTreeEntry = {
 
 export type BundleTreePage = {
   items: BundleTreeEntry[];
+  nextCursor: string | null;
+};
+
+export type BundleTreeSearchResult = {
+  entry: BundleTreeEntry;
+  ancestors: BundleTreeEntry[];
+};
+
+export type BundleTreeSearchPage = {
+  items: BundleTreeSearchResult[];
   nextCursor: string | null;
 };
 
@@ -164,6 +182,30 @@ export type SourceFilePage = {
   refreshAfterMs?: number;
 };
 
+export type SourceFileTaskDeletionSkippedReason =
+  | "missing"
+  | "wrong_knowledge_base"
+  | "already_removed"
+  | "running"
+  | "job_already_claimed"
+  | "completed_pending"
+  | "publication_owned";
+
+export type SourceFileTaskDeletionResult = {
+  sourceFileId: string;
+  status: "deleted" | "hidden" | "skipped";
+  reason?: SourceFileTaskDeletionSkippedReason;
+};
+
+export type SourceFileTaskDeletionResponse = {
+  results: SourceFileTaskDeletionResult[];
+  summary: {
+    deleted: number;
+    hidden: number;
+    skipped: number;
+  };
+};
+
 export type WorkerQueueSummary = {
   queuedCount: number;
   runningCount: number;
@@ -233,6 +275,7 @@ export async function logoutAdmin(): Promise<void> {
 export async function listKnowledgeBases(input: {
   cursor?: string | null;
   limit?: number;
+  query?: string | null;
 }): Promise<KnowledgeBasePage> {
   const params = new URLSearchParams();
 
@@ -241,6 +284,9 @@ export async function listKnowledgeBases(input: {
   }
   if (input.cursor) {
     params.set("cursor", input.cursor);
+  }
+  if (input.query?.trim()) {
+    params.set("query", input.query.trim());
   }
 
   const response = await adminFetch(`/admin/api/knowledge-bases${params.size ? `?${params}` : ""}`);
@@ -415,6 +461,35 @@ export async function retryKnowledgeBaseSourceFile(input: {
   return body as { file: SourceFileRecord };
 }
 
+export async function deleteKnowledgeBaseSourceFileTasks(input: {
+  knowledgeBaseId: string;
+  sourceFileIds: string[];
+}): Promise<SourceFileTaskDeletionResponse | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(
+      input.knowledgeBaseId
+    )}/source-files/task-deletions`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sourceFileIds: input.sourceFileIds
+      })
+    }
+  );
+  const body = (await response.json()) as
+    | SourceFileTaskDeletionResponse
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.sourceFileTaskDeletionFailed");
+  }
+
+  return body as SourceFileTaskDeletionResponse;
+}
+
 export async function fetchKnowledgeBaseFileTree(input: {
   knowledgeBaseId: string;
   parentPath?: string;
@@ -443,6 +518,33 @@ export async function fetchKnowledgeBaseFileTree(input: {
   }
 
   return (await response.json()) as BundleTreePage;
+}
+
+export async function searchKnowledgeBaseFileTree(input: {
+  knowledgeBaseId: string;
+  query: string;
+  cursor?: string | null;
+}): Promise<BundleTreeSearchPage> {
+  const params = new URLSearchParams({
+    query: input.query
+  });
+
+  if (input.cursor) {
+    params.set("cursor", input.cursor);
+  }
+
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/files/tree/search?${params}`
+  );
+
+  if (!response.ok) {
+    return {
+      items: [],
+      nextCursor: null
+    };
+  }
+
+  return (await response.json()) as BundleTreeSearchPage;
 }
 
 export async function fetchKnowledgeBaseFileDetail(input: {
@@ -488,11 +590,15 @@ export async function deleteKnowledgeBaseFile(input: {
 export async function listSourceFiles(input: {
   knowledgeBaseId: string;
   cursor?: string | null;
+  filters?: SourceFileListFilters;
 }): Promise<SourceFilePage> {
   const params = new URLSearchParams();
 
   if (input.cursor) {
     params.set("cursor", input.cursor);
+  }
+  if (input.filters) {
+    appendSourceFileFilterParams(params, input.filters);
   }
 
   const response = await adminFetch(
@@ -591,6 +697,7 @@ function readFailure(
     | { knowledgeBase: KnowledgeBase }
     | { files: SourceFileRecord[] }
     | { file: SourceFileRecord }
+    | SourceFileTaskDeletionResponse
     | { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey }
     | { deleted: true; releaseId?: string }
     | { error?: { messageKey?: string } },

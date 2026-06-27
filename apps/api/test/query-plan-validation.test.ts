@@ -7,11 +7,35 @@ import {
 
 describe("query plan validation helpers", () => {
   it("builds one EXPLAIN ANALYZE statement for critical read targets", () => {
-    for (const target of createLargeScaleReadPlanTargets()) {
+    const targets = createLargeScaleReadPlanTargets();
+
+    expect(targets.map((target) => target.name)).toEqual(
+      expect.arrayContaining([
+        "knowledge-base-card-search",
+        "bundle-tree-search-name",
+        "bundle-tree-search-path",
+        "bundle-tree-search-next-page",
+        "bundle-tree-search-ancestors",
+        "worker-job-source-cancellation"
+      ])
+    );
+
+    for (const target of targets) {
       const explainSql = buildExplainAnalyzeSql(target.sql);
 
       expect(explainSql).toContain("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)");
       expect(explainSql).toContain("focowiki.");
+    }
+  });
+
+  it("keeps source-file task list plans task-hidden aware", () => {
+    const targets = createLargeScaleReadPlanTargets().filter((target) =>
+      target.name.startsWith("source-file-list")
+    );
+
+    expect(targets.length).toBeGreaterThan(0);
+    for (const target of targets) {
+      expect(target.sql).toContain("task_deleted_at IS NULL");
     }
   });
 

@@ -183,6 +183,32 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/sou
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
+当知识库包含大量上传记录时，可以筛选来源文件任务记录。筛选会先于分页执行，返回的 `nextCursor` 只适用于同一组筛选条件：
+
+任务筛选参数属于 [列出来源文件](./operations/list-knowledge-base-source-files.md) 接口的 query 参数。
+
+```bash
+curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "processingStatus=completed" \
+  --data-urlencode "generatedOutputStatus=visible" \
+  --data-urlencode "fileNameQuery=guide" \
+  --data-urlencode "limit=50"
+```
+
+当集成方需要清理过期上传记录时，可以删除来源文件任务行。`deleted` 表示未发布的来源文件任务已移除。`hidden` 表示来源文件任务行已隐藏，生成文件仍可通过 `generatedFileId` 或 `generatedFilePath` 读取。`skipped` 表示该行保持原状态；读取 `reason`，如果原因是 `running` 这类临时状态，后续再轮询详情或事件。
+
+```bash
+curl -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/task-deletions" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  -H "Content-Type: application/json" \
+  --data "{
+  \"sourceFileIds\": [\"$FIRST_SOURCE_FILE_ID\"]
+}"
+```
+
+任务删除只影响来源文件任务可见性。生成文件删除使用生成文件删除接口，并传入 `generatedFileId` 或逻辑 `generatedFilePath`。
+
 列出生成文件树，并保存第一个逻辑 `path` 和生成文件标识符：
 
 ```bash

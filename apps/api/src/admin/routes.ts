@@ -45,6 +45,8 @@ import {
   toAdminSourceFileEvent
 } from "./serializers.js";
 import { registerAdminFileTreeRoutes } from "./file-tree-routes.js";
+import { registerAdminFileTreeSearchRoutes } from "./file-tree-search-routes.js";
+import { registerAdminKnowledgeBaseListRoutes } from "./knowledge-base-list-routes.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
 import { readPageLimit } from "./pagination.js";
 import {
@@ -55,9 +57,11 @@ import {
 import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
 import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
+import { registerAdminSourceFileTaskDeletionRoutes } from "./source-file-task-deletion-routes.js";
+import { createSourceFileCursorScope } from "./source-file-list-filter-signature.js";
 import {
-  createSourceFileCursorScope,
-  readSourceFileListFilters
+  readSourceFileListFiltersFromQuery,
+  type SourceFileListFilterErrorCode
 } from "./source-file-list-filters.js";
 
 export type AdminApiServices = {
@@ -108,6 +112,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       requireWriteProtection
     }
   );
+  registerAdminSourceFileTaskDeletionRoutes(
+    app,
+    { config, storage, redis, repositories },
+    {
+      requireAuth,
+      requireWriteProtection
+    }
+  );
   registerAdminFileTreeRoutes(
     app,
     { config, redis, repositories },
@@ -115,6 +127,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       requireAuth
     }
   );
+  registerAdminFileTreeSearchRoutes(app, { config, redis, repositories }, { requireAuth });
   registerAdminProcessingSummaryRoutes(
     app,
     { repositories },
@@ -125,6 +138,13 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   registerAdminPublicUrlRoutes(
     app,
     { config, repositories },
+    {
+      requireAuth
+    }
+  );
+  registerAdminKnowledgeBaseListRoutes(
+    app,
+    { config, redis, repositories },
     {
       requireAuth
     }
@@ -205,59 +225,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       result: "success"
     });
     return context.json({ authenticated: false });
-  });
-
-  app.get("/admin/api/knowledge-bases", requireAuth, async (context) => {
-    if (!repositories || !redis) {
-      return missingRepositoryBackend(context);
-    }
-
-    const limit = readPageLimit(context.req.query("limit"), config);
-
-    if (!limit) {
-      return invalidPagination(context);
-    }
-
-    const requestedCursor = context.req.query("cursor") ?? null;
-    const repositoryCursor = requestedCursor
-      ? await redis.getPaginationCursor<string>("knowledge-bases", requestedCursor)
-      : null;
-
-    if (requestedCursor && !repositoryCursor) {
-      return invalidPagination(context);
-    }
-
-    const page = await repositories.knowledgeBases.listKnowledgeBases({
-      limit,
-      cursor: repositoryCursor
-    });
-    const nextCursor = page.nextCursor
-      ? `cursor-${randomUUID()}`
-      : null;
-
-    if (nextCursor && page.nextCursor) {
-      await redis.setPaginationCursor(
-        "knowledge-bases",
-        nextCursor,
-        page.nextCursor,
-        config.pagination.cursorTtlSeconds
-      );
-    }
-
-    await redis.setPageCache(
-      "knowledge-bases",
-      `page-${randomUUID()}`,
-      {
-        cursor: requestedCursor,
-        itemIds: page.items.map((item) => item.id)
-      },
-      config.pagination.cursorTtlSeconds
-    );
-
-    return context.json({
-      items: page.items,
-      nextCursor
-    });
   });
 
   app.post("/admin/api/knowledge-bases", requireAuth, requireWriteProtection, async (context) => {
@@ -555,19 +522,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
-      const filters = readSourceFileListFilters({
-        processingStatus: context.req.query("processingStatus"),
-        processingStage: context.req.query("processingStage"),
-        generatedOutputStatus: context.req.query("generatedOutputStatus"),
-        errorState: context.req.query("errorState")
-      });
+      const filters = readSourceFileListFiltersFromQuery((name) => context.req.query(name));
 
-      if (!filters) {
-        return invalidSourceFileFilter(context);
+      if (!filters.ok) {
+        return invalidSourceFileFilter(context, filters.code);
       }
 
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = createSourceFileCursorScope(knowledgeBase.id, filters);
+      const cursorScope = createSourceFileCursorScope(knowledgeBase.id, filters.filters);
       const repositoryCursor = cursorToken
         ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
         : null;
@@ -599,7 +561,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         knowledgeBaseId: knowledgeBase.id,
         limit,
         cursor: repositoryCursor,
-        ...filters
+        ...filters.filters
       });
       const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
         repositories,
@@ -971,11 +933,14 @@ function invalidPagination(context: Parameters<MiddlewareHandler>[0]): Response 
   );
 }
 
-function invalidSourceFileFilter(context: Parameters<MiddlewareHandler>[0]): Response {
+function invalidSourceFileFilter(
+  context: Parameters<MiddlewareHandler>[0],
+  code: SourceFileListFilterErrorCode = "INVALID_SOURCE_FILE_FILTER"
+): Response {
   return context.json(
     {
       error: {
-        code: "INVALID_SOURCE_FILE_FILTER"
+        code
       }
     },
     400

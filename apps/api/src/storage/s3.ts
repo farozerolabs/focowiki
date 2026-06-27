@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   NoSuchKey,
@@ -39,6 +40,7 @@ export class StorageObjectTooLargeError extends Error {
 export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
   putObject: (object: StoredObject) => Promise<void>;
+  deleteObject?: (key: string) => Promise<void>;
   getObjectBody?: (key: string) => Promise<BodyInit | null>;
   getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
   writeCurrentPointer: (pointer: CurrentPointer) => Promise<void>;
@@ -96,6 +98,15 @@ export class S3StorageAdapter implements StorageAdapter {
         Body: object.body,
         ...(object.contentType ? { ContentType: object.contentType } : {}),
         ...(object.cacheControl ? { CacheControl: object.cacheControl } : {})
+      })
+    );
+  }
+
+  public async deleteObject(key: string): Promise<void> {
+    await this.client.send(
+      new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: key
       })
     );
   }

@@ -7,9 +7,12 @@ import {
   ListChecksIcon,
   LogOutIcon,
   MoreHorizontalIcon,
+  SearchIcon,
+  XIcon,
   Trash2Icon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Collapsible,
   CollapsibleContent,
@@ -73,6 +76,10 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     fileActions: string;
     emptyFiles: string;
     loadingFiles: string;
+    fileTreeSearchPlaceholder: string;
+    clearFileTreeSearch: string;
+    fileTreeSearchNoResults: string;
+    fileTreeSearchLoadMore: string;
   };
   activeView: "file" | "processing";
   tree: AdminSidebarTreeNode[];
@@ -86,6 +93,23 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
+  fileTreeSearch: {
+    query: string;
+    isActive: boolean;
+    isLoading: boolean;
+    nextCursor: string | null;
+    statusMessage: string | null;
+    onQueryChange: (query: string) => void;
+    onClear: () => void;
+    onLoadMore: () => void;
+  };
+  resizeRail?: {
+    label: string;
+    width: number;
+    minWidth: number;
+    maxWidth: number;
+    onWidthChange: (width: number) => void;
+  };
 };
 
 export function AppSidebar({
@@ -104,6 +128,8 @@ export function AppSidebar({
   onDeleteFile,
   onToggleDirectory,
   onLoadMoreTree,
+  fileTreeSearch,
+  resizeRail,
   ...props
 }: AppSidebarProps) {
   const runningSourceFiles = sourceFiles.filter(
@@ -145,11 +171,37 @@ export function AppSidebar({
         <SidebarGroup>
           <SidebarGroupLabel>{labels.files}</SidebarGroupLabel>
           <SidebarGroupContent>
+            <div className="relative px-2 pb-2">
+              <SearchIcon className="pointer-events-none absolute top-1.5 left-4 size-4 text-sidebar-foreground/50" />
+              <Input
+                value={fileTreeSearch.query}
+                onChange={(event) => fileTreeSearch.onQueryChange(event.target.value)}
+                placeholder={labels.fileTreeSearchPlaceholder}
+                className="h-8 pr-8 pl-8 text-xs"
+              />
+              {fileTreeSearch.query ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={labels.clearFileTreeSearch}
+                  className="absolute top-1 right-3"
+                  onClick={fileTreeSearch.onClear}
+                >
+                  <XIcon />
+                </Button>
+              ) : null}
+            </div>
             <SidebarMenu>
               {tree.length === 0 ? (
                 <SidebarMenuItem>
                   <p className="px-2 py-2 text-xs text-sidebar-foreground/60">
-                    {rootLoading ? labels.loadingFiles : labels.emptyFiles}
+                    {fileTreeSearch.statusMessage ??
+                      (fileTreeSearch.isLoading || (!fileTreeSearch.isActive && rootLoading)
+                        ? labels.loadingFiles
+                        : fileTreeSearch.isActive
+                          ? labels.fileTreeSearchNoResults
+                          : labels.emptyFiles)}
                   </p>
                 </SidebarMenuItem>
               ) : null}
@@ -162,9 +214,17 @@ export function AppSidebar({
                   onDeleteFile={onDeleteFile}
                   onToggleDirectory={onToggleDirectory}
                   onLoadMoreTree={onLoadMoreTree}
+                  isSearchMode={fileTreeSearch.isActive}
                 />
               ))}
-              {rootNextCursor ? (
+              {fileTreeSearch.isActive && fileTreeSearch.nextCursor ? (
+                <SidebarMenuItem>
+                  <SidebarMenuButton onClick={fileTreeSearch.onLoadMore}>
+                    <span>{labels.fileTreeSearchLoadMore}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ) : null}
+              {!fileTreeSearch.isActive && rootNextCursor ? (
                 <SidebarMenuItem>
                   <SidebarMenuButton onClick={() => onLoadMoreTree("")}>
                     <span>{labels.loadMore}</span>
@@ -181,7 +241,7 @@ export function AppSidebar({
           {labels.logout}
         </Button>
       </SidebarFooter>
-      <SidebarRail />
+      {resizeRail ? <SidebarRail resize={resizeRail} /> : <SidebarRail />}
     </Sidebar>
   );
 }
@@ -192,7 +252,8 @@ function TreeNode({
   onOpenFile,
   onDeleteFile,
   onToggleDirectory,
-  onLoadMoreTree
+  onLoadMoreTree,
+  isSearchMode
 }: {
   labels: AppSidebarProps["labels"];
   node: AdminSidebarTreeNode;
@@ -200,14 +261,21 @@ function TreeNode({
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
+  isSearchMode: boolean;
 }) {
   if (node.entryType === "file") {
     return (
       <SidebarMenuItem>
-        <div className="flex items-center gap-1">
-          <SidebarMenuButton isActive={node.isActive} onClick={() => onOpenFile(node)}>
+        <div className="flex min-w-0 items-center gap-1">
+          <SidebarMenuButton
+            isActive={node.isActive}
+            className="min-w-0 flex-1"
+            onClick={() => onOpenFile(node)}
+          >
             <FileTextIcon />
-            <span>{node.name}</span>
+            <span className="min-w-0 flex-1 truncate" title={node.name}>
+              {node.name}
+            </span>
           </SidebarMenuButton>
           {node.deletable ? (
             <DropdownMenu>
@@ -244,15 +312,21 @@ function TreeNode({
   return (
     <SidebarMenuItem>
       <Collapsible
-        open={node.isExpanded}
-        onOpenChange={(open) => onToggleDirectory(node, open)}
+        open={isSearchMode ? true : node.isExpanded}
+        onOpenChange={(open) => {
+          if (!isSearchMode) {
+            onToggleDirectory(node, open);
+          }
+        }}
         className="group/collapsible [&[data-state=open]>button>svg:first-child]:rotate-90"
       >
         <CollapsibleTrigger asChild>
-          <SidebarMenuButton>
+          <SidebarMenuButton className="min-w-0">
             <ChevronRightIcon className="transition-transform" />
             <FolderIcon />
-            <span>{node.name}</span>
+            <span className="min-w-0 flex-1 truncate" title={node.name}>
+              {node.name}
+            </span>
           </SidebarMenuButton>
         </CollapsibleTrigger>
         <CollapsibleContent>
@@ -266,9 +340,10 @@ function TreeNode({
                 onDeleteFile={onDeleteFile}
                 onToggleDirectory={onToggleDirectory}
                 onLoadMoreTree={onLoadMoreTree}
+                isSearchMode={isSearchMode}
               />
             ))}
-            {node.nextCursor ? (
+            {!isSearchMode && node.nextCursor ? (
               <SidebarMenuSubItem>
                 <SidebarMenuSubButton asChild>
                   <button type="button" onClick={() => onLoadMoreTree(node.logicalPath)}>

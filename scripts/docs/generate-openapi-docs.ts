@@ -31,6 +31,7 @@ type LocaleCopy = {
   locationColumn: string;
   requiredColumn: string;
   typeColumn: string;
+  exampleColumn: string;
   descriptionColumn: string;
   requestBodyHeading: string;
   noRequestBody: string;
@@ -209,7 +210,7 @@ function renderOperationPage(document: OpenApiDocument, copy: LocaleCopy, entry:
     "",
     `## ${copy.parametersHeading}`,
     "",
-    renderParameters(copy, parameters),
+    renderParameters(copy, parameters, entry),
     "",
     `## ${copy.requestBodyHeading}`,
     "",
@@ -287,20 +288,84 @@ function renderErrorExample(responses: [string, unknown][]): string {
   return "No error response example is documented.";
 }
 
-function renderParameters(copy: LocaleCopy, parameters: SchemaObject[]): string {
+function renderParameters(copy: LocaleCopy, parameters: SchemaObject[], entry: OperationEntry): string {
   if (parameters.length === 0) {
     return copy.noParameters;
   }
   return [
-    `| ${copy.nameColumn} | ${copy.locationColumn} | ${copy.requiredColumn} | ${copy.typeColumn} | ${copy.descriptionColumn} |`,
-    "| --- | --- | --- | --- | --- |",
+    `| ${copy.nameColumn} | ${copy.locationColumn} | ${copy.requiredColumn} | ${copy.typeColumn} | ${copy.exampleColumn} | ${copy.descriptionColumn} |`,
+    "| --- | --- | --- | --- | --- | --- |",
     ...parameters.map((parameter) => {
       const schema = readRecord(parameter.schema);
+      const example = parameterExample(entry, parameter, schema);
       return `| \`${String(parameter.name)}\` | ${String(parameter.in)} | ${yesNo(copy, Boolean(parameter.required))} | ${escapeTable(
         schemaType(schema)
-      )} | ${escapeTable(translateDescription(copy, String(parameter.description ?? "")))} |`;
+      )} | ${escapeTable(example)} | ${escapeTable(translateDescription(copy, String(parameter.description ?? "")))} |`;
     })
   ].join("\n");
+}
+
+function parameterExample(entry: OperationEntry, parameter: SchemaObject, schema: SchemaObject): string {
+  const name = String(parameter.name ?? "");
+  const location = String(parameter.in ?? "");
+  const requestExample = readRecord(entry.operation["x-request-example"]);
+  const explicitExample = readRecord(requestExample[location])[name];
+  if (explicitExample !== undefined && explicitExample !== null) {
+    return formatInlineExample(explicitExample);
+  }
+  const namedExample = parameterExampleByName(name);
+  if (namedExample) {
+    return namedExample;
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return formatInlineExample(schema.enum[0]);
+  }
+  if (schema.format === "date-time") {
+    return "2026-06-17T00:00:00.000Z";
+  }
+  if (schema.type === "integer" || schema.type === "number") {
+    return "50";
+  }
+  if (schema.type === "boolean") {
+    return "true";
+  }
+  return "example";
+}
+
+function parameterExampleByName(name: string): string | undefined {
+  const examples: Record<string, string> = {
+    knowledgeBaseId: "kb_123",
+    sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
+    fileId: "bundle-file-11111111-1111-4111-8111-111111111111",
+    webhookId: "webhook_123",
+    deliveryId: "delivery_123",
+    cursor: "cursor_123",
+    limit: "50",
+    path: "pages/guide.md",
+    parentPath: "pages",
+    fileNameQuery: "guide",
+    fileIdQuery: "source-file-11111111",
+    processingStatus: "completed",
+    processingStage: "release_activation",
+    modelInvocationStatus: "completed",
+    generatedOutputStatus: "visible",
+    startedFrom: "2026-06-17T00:00:00.000Z",
+    startedTo: "2026-06-18T00:00:00.000Z",
+    endedFrom: "2026-06-17T00:00:00.000Z",
+    endedTo: "2026-06-18T00:00:00.000Z",
+    errorState: "with_error",
+    errorCodeQuery: "MODEL_SUGGESTION_FAILED",
+    actionState: "openable",
+    entryType: "file"
+  };
+  return examples[name];
+}
+
+function formatInlineExample(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value);
 }
 
 function renderRequestBody(document: OpenApiDocument, copy: LocaleCopy, requestBody: SchemaObject): string {
@@ -310,8 +375,10 @@ function renderRequestBody(document: OpenApiDocument, copy: LocaleCopy, requestB
   const content = readRecord(requestBody.content);
   return Object.entries(content)
     .map(([contentType, contentValue]) => {
-      const schema = resolveSchema(document, readRecord(readRecord(contentValue).schema));
-      return [`### ${contentType}`, "", renderSchemaFields(document, copy, schema)].join("\n");
+      const mediaTypeObject = readRecord(contentValue);
+      const schema = resolveSchema(document, readRecord(mediaTypeObject.schema));
+      const example = readRecord(mediaTypeObject.example);
+      return [`### ${contentType}`, "", renderSchemaFields(document, copy, schema, { example })].join("\n");
     })
     .join("\n\n");
 }
@@ -389,10 +456,27 @@ function renderContinuity(
   return lines.join("\n");
 }
 
-function renderSchemaFields(document: OpenApiDocument, copy: LocaleCopy, schema: SchemaObject): string {
+function renderSchemaFields(
+  document: OpenApiDocument,
+  copy: LocaleCopy,
+  schema: SchemaObject,
+  options: { example?: SchemaObject } = {}
+): string {
   const properties = schemaProperties(document, schema);
   if (properties.length === 0) {
     return `Schema type: \`${schemaType(schema)}\`.`;
+  }
+  if (options.example) {
+    return [
+      `| ${copy.fieldColumn} | ${copy.requiredColumn} | ${copy.typeColumn} | ${copy.exampleColumn} | ${copy.descriptionColumn} |`,
+      "| --- | --- | --- | --- | --- |",
+      ...properties.map(({ name, required, schema: propertySchema }) => {
+        const example = schemaFieldExample(name, propertySchema, options.example?.[name]);
+        return `| \`${name}\` | ${yesNo(copy, required)} | ${escapeTable(schemaType(propertySchema))} | ${escapeTable(
+          example
+        )} | ${escapeTable(translateDescription(copy, String(propertySchema.description ?? "")))} |`;
+      })
+    ].join("\n");
   }
   return [
     `| ${copy.fieldColumn} | ${copy.requiredColumn} | ${copy.typeColumn} | ${copy.descriptionColumn} |`,
@@ -404,6 +488,44 @@ function renderSchemaFields(document: OpenApiDocument, copy: LocaleCopy, schema:
         )} |`
     )
   ].join("\n");
+}
+
+function schemaFieldExample(name: string, schema: SchemaObject, explicitExample: unknown): string {
+  if (explicitExample !== undefined && explicitExample !== null) {
+    return formatInlineExample(explicitExample);
+  }
+  const namedExample = requestBodyFieldExampleByName(name);
+  if (namedExample) {
+    return namedExample;
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return formatInlineExample(schema.enum[0]);
+  }
+  if (schema.format === "date-time") {
+    return "2026-06-17T00:00:00.000Z";
+  }
+  if (schema.type === "array") {
+    return "[\"example\"]";
+  }
+  if (schema.type === "integer" || schema.type === "number") {
+    return "1";
+  }
+  if (schema.type === "boolean") {
+    return "true";
+  }
+  return "example";
+}
+
+function requestBodyFieldExampleByName(name: string): string | undefined {
+  const examples: Record<string, string> = {
+    name: "Product Docs",
+    description: "Product documentation",
+    files: "[\"guide.md\", \"faq.md\"]",
+    sourceFileIds: "[\"source-file-11111111-1111-4111-8111-111111111111\"]",
+    url: "https://hooks.example.com/focowiki",
+    events: "[\"source_file.completed\", \"source_file.failed\"]"
+  };
+  return examples[name];
 }
 
 function schemaProperties(document: OpenApiDocument, schema: SchemaObject) {

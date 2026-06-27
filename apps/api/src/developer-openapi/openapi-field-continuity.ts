@@ -5,6 +5,7 @@ export function createDeveloperOpenApiFieldContinuity(): Record<string, string[]
       "DELETE /openapi/v1/knowledge-bases/{knowledgeBaseId}",
       "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files",
+      "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/task-deletions",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/tree",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related"
@@ -13,6 +14,7 @@ export function createDeveloperOpenApiFieldContinuity(): Record<string, string[]
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events",
       "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry",
+      "POST /openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/task-deletions",
       "GET /openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related"
     ],
     fileId: [

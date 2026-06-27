@@ -16,7 +16,10 @@ import {
   createKnowledgeBasePublicationService,
   enqueuePendingPublicationWorkerJob
 } from "../admin/publication-scheduler.js";
-import { createSourceFileQueueProcessor } from "../admin/source-file-processor.js";
+import {
+  createSourceFileQueueProcessor,
+  SourceFileProcessingCancelledError
+} from "../admin/source-file-processor.js";
 import type { StorageAdapter } from "../storage/s3.js";
 
 export type WorkerRuntimeLogger = {
@@ -339,6 +342,16 @@ async function processSourceFileJob(input: {
     return;
   }
 
+  const sourceFile = await input.repositories.files?.getSourceFile?.({
+    knowledgeBaseId: knowledgeBase.id,
+    sourceFileId: input.job.sourceFileId
+  });
+
+  if (!sourceFile) {
+    await completeOrphanedJob(input, "Source-file job completed without eligible source file.");
+    return;
+  }
+
   try {
     input.logger.info("Worker job started", {
       jobId: input.job.id,
@@ -372,6 +385,11 @@ async function processSourceFileJob(input: {
       sourceFileId: input.job.sourceFileId
     });
   } catch (error) {
+    if (error instanceof SourceFileProcessingCancelledError) {
+      await completeOrphanedJob(input, "Source-file job completed after cancellation.");
+      return;
+    }
+
     const message = error instanceof Error ? error.message : "Worker job failed";
     await failJob(input, "WORKER_JOB_FAILED", message);
   }
@@ -680,6 +698,7 @@ async function cleanupWorkerJobHistory(input: {
     completedBefore: daysBefore(input.now, workerConfig.completedJobRetentionDays ?? 7),
     failedBefore: daysBefore(input.now, workerConfig.failedJobRetentionDays ?? 30),
     deadLetterBefore: daysBefore(input.now, workerConfig.deadLetterJobRetentionDays ?? 90),
+    cancelledBefore: daysBefore(input.now, workerConfig.completedJobRetentionDays ?? 7),
     limit: workerConfig.retentionCleanupBatchSize ?? 1_000
   });
 

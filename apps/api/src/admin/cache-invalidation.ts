@@ -5,20 +5,26 @@ export type KnowledgeBaseCacheInvalidationInput = {
   knowledgeBaseId: string;
   releaseId: string | null;
   sourceFileId?: string | null;
+  sourceFileIds?: string[];
   ttlSeconds: number;
 };
 
 export async function invalidateKnowledgeBaseCaches(
   input: KnowledgeBaseCacheInvalidationInput
 ): Promise<void> {
+  const sourceFileIds = [
+    ...(input.sourceFileId ? [input.sourceFileId] : []),
+    ...(input.sourceFileIds ?? [])
+  ];
   const scopes = [
     "knowledge-bases",
     `source-files:${input.knowledgeBaseId}`,
     `developer-openapi:source-files:${input.knowledgeBaseId}`,
     `releases:${input.knowledgeBaseId}`,
-    ...(input.sourceFileId
-      ? [`source-file-events:${input.knowledgeBaseId}:${input.sourceFileId}`]
-      : []),
+    ...sourceFileIds.flatMap((sourceFileId) => [
+      `source-file-events:${input.knowledgeBaseId}:${sourceFileId}`,
+      `developer-openapi:source-file-events:${input.knowledgeBaseId}:${sourceFileId}`
+    ]),
     ...(input.releaseId
       ? [
           `file-tree:${input.knowledgeBaseId}:${input.releaseId}`,

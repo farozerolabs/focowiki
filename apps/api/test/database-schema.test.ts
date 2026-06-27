@@ -22,8 +22,8 @@ describe("database schema migration", () => {
     const sql = readMigration();
 
     expect(sql).toContain("create schema if not exists focowiki");
-    expect(sql).toContain("drop table if exists focowiki.upload_task_events cascade");
-    expect(sql).toContain("drop table if exists focowiki.upload_tasks cascade");
+    expect(sql).not.toContain("drop table if exists focowiki.upload_task_events cascade");
+    expect(sql).not.toContain("drop table if exists focowiki.upload_tasks cascade");
     for (const table of [
       "knowledge_bases",
       "source_files",
@@ -47,6 +47,25 @@ describe("database schema migration", () => {
     expect(sql).not.toMatch(/\b(raw_body|raw_content|markdown_body|json_body|file_body)\b/);
     expect(sql).toContain("object_key");
     expect(sql).toContain("checksum_sha256");
+  });
+
+  it("keeps compatibility migrations additive for durable data", () => {
+    const sql = readMigration();
+
+    expect(sql).not.toMatch(/\bdrop\s+table\b/);
+    expect(sql).not.toMatch(/\bdrop\s+column\b/);
+    expect(sql).not.toContain("update focowiki.knowledge_bases set active_release_id = null");
+    for (const table of [
+      "focowiki.bundle_tree_entries",
+      "focowiki.bundle_files",
+      "focowiki.publication_jobs",
+      "focowiki.releases",
+      "focowiki.source_file_graph_edges",
+      "focowiki.source_file_graph_nodes",
+      "focowiki.source_file_graph_jobs"
+    ]) {
+      expect(sql).not.toContain(`delete from ${table}`);
+    }
   });
 
   it("defines constraints for lifecycle, storage, and tree integrity", () => {
@@ -80,12 +99,17 @@ describe("database schema migration", () => {
 
     for (const index of [
       "knowledge_bases(deleted_at, created_at desc, id)",
+      "knowledge_bases_metadata_search_trgm_idx",
       "source_files(knowledge_base_id, created_at desc, id)",
       "source_files(knowledge_base_id, deleted_at, created_at desc, id)",
       "source_files(knowledge_base_id, processing_status, processing_stage, created_at desc, id)",
       "source_files(knowledge_base_id, generated_output_status, created_at desc, id)",
+      "source_files_kb_task_visible_created_cursor_idx",
+      "source_files_kb_task_visible_processing_idx",
       "source_files_kb_error_state_created_idx",
       "source_files_kb_no_error_created_idx",
+      "source_files_original_name_task_visible_trgm_idx",
+      "worker_jobs_source_cancel_idx",
       "model_invocations(source_file_id, created_at desc, id)",
       "source_file_events(knowledge_base_id, source_file_id, created_at, id)",
       "source_file_retry_attempts(knowledge_base_id, source_file_id, created_at desc, id)",
@@ -94,7 +118,12 @@ describe("database schema migration", () => {
       "bundle_files(knowledge_base_id, release_id, source_file_id, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, name, id)",
       "bundle_tree_entries(knowledge_base_id, release_id, parent_path, entry_type, sort_key, id)",
+      "bundle_tree_entries(knowledge_base_id, release_id, sort_key, id)",
+      "bundle_tree_entries(knowledge_base_id, release_id, logical_path)",
       "bundle_tree_entries(release_id, bundle_file_id, id)",
+      "bundle_tree_entries_name_trgm_idx",
+      "bundle_tree_entries_logical_path_trgm_idx",
+      "bundle_tree_entries_search_text_trgm_idx",
       "public_api_keys(created_at desc, id)",
       "public_api_keys(status, created_at desc, id)"
     ]) {
@@ -115,6 +144,7 @@ describe("database schema migration", () => {
     const sql = readMigration();
 
     expect(sql).toContain("deleted_at timestamptz");
+    expect(sql).toContain("task_deleted_at timestamptz");
     expect(sql).toContain("source_file_id text references focowiki.source_files(id)");
     expect(sql).toContain("processing_status text not null default 'queued'");
     expect(sql).toContain("processing_stage text not null default 'upload_storage'");
@@ -122,6 +152,7 @@ describe("database schema migration", () => {
     expect(sql).toContain("model_suggestions_json jsonb");
     expect(sql).toContain("'llm_suggestion'");
     expect(sql).toContain("check (status in ('running', 'completed', 'failed', 'skipped'))");
+    expect(sql).toContain("'cancelled'");
     expect(sql).toContain("check (processing_status in ('queued', 'running', 'completed', 'failed'))");
     expect(sql).toContain("file_kind text not null");
     for (const fileKind of [
@@ -184,9 +215,9 @@ describe("database schema migration", () => {
     const repository = readRepository();
 
     expect(sql).toContain("on focowiki.knowledge_bases(lower(name)) where deleted_at is null");
-    expect(repository).toContain("where deleted_at is null");
+    expect(repository).toMatch(/where (knowledge_base\.)?deleted_at is null/);
     expect(repository).toContain("where id = ${id} and deleted_at is null");
-    expect(repository).toContain("and deleted_at is null");
+    expect(repository).toMatch(/and (knowledge_base\.)?deleted_at is null/);
     expect(repository).not.toContain("legacy");
     expect(repository).not.toContain("backfill");
   });

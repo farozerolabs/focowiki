@@ -219,6 +219,7 @@ export async function runApiValidation() {
     await loginAdmin(admin, env, report);
     await validateAdminOriginProtection(admin, report);
     env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
+    await validateDeveloperOpenApiWebhooks(publicApi, env, report);
     logValidationStep("developer-openapi-continuity");
     await validateDeveloperOpenApiUploadContinuity({
       publicApi,
@@ -357,6 +358,8 @@ export async function runApiValidation() {
       report,
       performanceEvidence
     );
+    await validateAdminSourceFileFilters(admin, knowledgeBase.id, completedBatchFiles[0], report);
+    await validateAdminProcessingSummary(admin, knowledgeBase.id, report);
     const batchAdminFiles = await validateAdminFileSurfaces(admin, knowledgeBase.id, report, {
       expectedSamples: allSamples,
       checkName: "batch-admin-file-surfaces",
@@ -370,6 +373,7 @@ export async function runApiValidation() {
       report,
       performanceEvidence
     );
+    await validateAdminTreeSearch(admin, knowledgeBase.id, batchAdminFiles.pageFile, report);
     await validatePublicOpenApi(publicApi, knowledgeBase.id, batchAdminFiles, env, report, {
       sourceFileId: completedBatchFiles[0].id,
       expectedSamples: allSamples,
@@ -417,6 +421,12 @@ export async function runApiValidation() {
       knowledgeBaseId: knowledgeBase.id,
       pageFile: batchAdminFiles.pageFile,
       processingTimeoutMs,
+      report
+    });
+    await validateAdminSourceFileTaskDeletion({
+      admin,
+      knowledgeBaseId: knowledgeBase.id,
+      sourceFileId: selectTaskDeletionCandidate(completedBatchFiles, deletionEvidence.sourceFileId),
       report
     });
     logValidationStep("knowledge-base-deletion");
@@ -1536,6 +1546,134 @@ async function validateSourceFilePagination(
   );
 }
 
+async function validateAdminSourceFileFilters(admin, knowledgeBaseId, expectedFile, report) {
+  if (!expectedFile?.id || !expectedFile.originalName) {
+    throw new Error("Admin source-file filter validation requires a completed source-file row.");
+  }
+
+  const nameToken = createSearchTokenFromFilename(expectedFile.originalName);
+  const filteredByName = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&fileNameQuery=${encodeURIComponent(nameToken)}`
+  );
+
+  if (!filteredByName.items?.some((file) => file.id === expectedFile.id)) {
+    throw new Error("Admin source-file fileNameQuery filter did not return the expected source-file row.");
+  }
+
+  const filteredByStatus = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&processingStatus=completed`
+  );
+
+  if (
+    !filteredByStatus.items?.length ||
+    filteredByStatus.items.some((file) => file.processingStatus !== "completed")
+  ) {
+    throw new Error("Admin source-file processingStatus filter returned unexpected rows.");
+  }
+
+  const filteredByStage = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&processingStage=release_activation`
+  );
+
+  if (
+    !filteredByStage.items?.length ||
+    filteredByStage.items.some((file) => file.processingStage !== "release_activation")
+  ) {
+    throw new Error("Admin source-file processingStage filter returned unexpected rows.");
+  }
+
+  const invalidFilter = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingStatus=invalid`
+  );
+
+  if (invalidFilter.status !== 400) {
+    throw new Error(`Admin source-file invalid filter expected HTTP 400, got ${invalidFilter.status}.`);
+  }
+
+  report.checks.push(
+    okCheck("admin-source-file-filters", "Admin source-file list filters use bounded database-backed queries.", {
+      filterKinds: ["fileNameQuery", "processingStatus", "processingStage"]
+    })
+  );
+}
+
+async function validateAdminTreeSearch(admin, knowledgeBaseId, pageFile, report) {
+  if (!pageFile?.logicalPath) {
+    throw new Error("Admin tree search validation requires a generated page file.");
+  }
+
+  const query = createSearchTokenFromFilename(path.basename(pageFile.logicalPath));
+  const search = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=${encodeURIComponent(query)}`
+  );
+  const match = search.items?.find((item) => item.entry?.logicalPath === pageFile.logicalPath);
+
+  if (!match) {
+    throw new Error("Admin file-tree search did not return the expected page file.");
+  }
+
+  if (!match.ancestors?.some((ancestor) => ancestor.logicalPath === "pages")) {
+    throw new Error("Admin file-tree search did not include the expected parent directory ancestor.");
+  }
+
+  const folderSearch = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=pages`
+  );
+
+  if (!folderSearch.items?.some((item) => item.entry?.entryType === "directory" && item.entry.logicalPath === "pages")) {
+    throw new Error("Admin file-tree search did not return a matching folder entry.");
+  }
+
+  report.checks.push(
+    okCheck("admin-file-tree-search", "Admin file-tree search returns matching files with ancestors and matching folders.")
+  );
+}
+
+async function validateAdminProcessingSummary(admin, knowledgeBaseId, report) {
+  const summary = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/processing-summary`
+  );
+
+  for (const key of ["sourceFileJobs", "publicationJobs"]) {
+    const item = summary[key];
+
+    if (
+      !item ||
+      !Number.isFinite(item.queuedCount) ||
+      !Number.isFinite(item.runningCount) ||
+      !Number.isFinite(item.completedCount) ||
+      !Number.isFinite(item.failedCount) ||
+      !Number.isFinite(item.deadLetterCount)
+    ) {
+      throw new Error(`Admin processing summary returned an invalid ${key} shape.`);
+    }
+  }
+
+  if (
+    !summary.dirtySourceFiles ||
+    !Number.isFinite(summary.dirtySourceFiles.count) ||
+    !(
+      summary.dirtySourceFiles.oldestDirtyAt === null ||
+      typeof summary.dirtySourceFiles.oldestDirtyAt === "string"
+    )
+  ) {
+    throw new Error("Admin processing summary returned an invalid dirtySourceFiles shape.");
+  }
+
+  report.checks.push(
+    okCheck(
+      "admin-processing-summary",
+      "Admin processing summary exposes bounded queue and dirty-file counters without reading task lists."
+    )
+  );
+}
+
 async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options = {}) {
   const expectedSamples = options.expectedSamples ?? [];
   const [releases, bundleFiles, tree, urls] = await Promise.all([
@@ -1795,10 +1933,20 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
       throw new Error("Developer OpenAPI file content reads by ID and path did not return the same generated Markdown.");
     }
 
+    await validateDeveloperSourceFileFiltersAndTaskDeletion({
+      publicApi,
+      knowledgeBaseId,
+      sourceFileId: fileId,
+      sample,
+      pagePath: pageEntry.path,
+      authHeaders: headers,
+      report
+    });
+
     report.checks.push(
       okCheck(
         "developer-openapi-upload-continuity",
-        "Developer OpenAPI create, upload, source-file detail, tree, file detail, and content calls preserve reusable identifiers.",
+        "Developer OpenAPI create, upload, source-file detail, tree, filters, task deletion, file detail, and content calls preserve reusable identifiers.",
         {
           uploadedFiles: 1,
           processingState: sourceFile.processingState,
@@ -1817,6 +1965,171 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
         .catch(() => undefined);
     }
   }
+}
+
+async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
+  const headers = publicAuthHeaders(env);
+  const listBefore = await readJson(publicApi, "/openapi/v1/webhooks?limit=10", { headers });
+
+  if (!Array.isArray(listBefore.items)) {
+    throw new Error("Developer OpenAPI webhook list did not return a paginated item array.");
+  }
+
+  const created = await readJson(publicApi, "/openapi/v1/webhooks", {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      name: "Validation webhook",
+      url: "https://hooks.example.com/focowiki-validation",
+      events: ["source_file.completed", "source_file.failed", "release.published"]
+    })
+  });
+  const webhookId = created.webhook?.webhookId;
+
+  if (!webhookId || !created.signingSecret || created.webhook.endpointHost !== "hooks.example.com") {
+    throw new Error("Developer OpenAPI webhook creation did not return webhookId, endpoint host, and one-time signing secret.");
+  }
+
+  const listAfterCreate = await readJson(publicApi, "/openapi/v1/webhooks?limit=50", { headers });
+
+  if (!listAfterCreate.items?.some((webhook) => webhook.webhookId === webhookId)) {
+    throw new Error("Developer OpenAPI webhook list did not include the created webhookId.");
+  }
+
+  const deliveries = await readJson(publicApi, "/openapi/v1/webhook-deliveries?limit=5", { headers });
+
+  if (!Array.isArray(deliveries.items)) {
+    throw new Error("Developer OpenAPI webhook delivery list did not return a paginated item array.");
+  }
+
+  const delivery = deliveries.items.find((item) => item.deliveryId);
+
+  if (delivery) {
+    const redelivery = await readJson(
+      publicApi,
+      `/openapi/v1/webhook-deliveries/${encodeURIComponent(delivery.deliveryId)}/redeliver`,
+      {
+        method: "POST",
+        headers
+      }
+    );
+
+    if (redelivery.delivery?.deliveryId !== delivery.deliveryId) {
+      throw new Error("Developer OpenAPI webhook redelivery did not preserve deliveryId continuity.");
+    }
+  } else {
+    await expectJsonError(
+      publicApi,
+      "/openapi/v1/webhook-deliveries/delivery-validation-missing/redeliver",
+      headers,
+      [404],
+      { method: "POST" }
+    );
+  }
+
+  const deleted = await readJson(publicApi, `/openapi/v1/webhooks/${encodeURIComponent(webhookId)}`, {
+    method: "DELETE",
+    headers
+  });
+
+  if (deleted.deleted !== true || deleted.webhookId !== webhookId) {
+    throw new Error("Developer OpenAPI webhook deletion did not preserve webhookId continuity.");
+  }
+
+  const listAfterDelete = await readJson(publicApi, "/openapi/v1/webhooks?limit=50", { headers });
+
+  if (listAfterDelete.items?.some((webhook) => webhook.webhookId === webhookId)) {
+    throw new Error("Developer OpenAPI webhook deletion left the webhook in active list results.");
+  }
+
+  report.checks.push(
+    okCheck(
+      "developer-openapi-webhooks",
+      "Developer OpenAPI webhook create, list, delivery list, redelivery route, and delete calls preserve identifier continuity.",
+      {
+        deliveryRoute: delivery ? "redelivered" : "not-found-error-shape"
+      },
+      BLACK_BOX
+    )
+  );
+}
+
+async function validateDeveloperSourceFileFiltersAndTaskDeletion({
+  publicApi,
+  knowledgeBaseId,
+  sourceFileId,
+  sample,
+  pagePath,
+  authHeaders,
+  report
+}) {
+  const nameToken = createSearchTokenFromFilename(sample.basename);
+  const filtered = await readJson(
+    publicApi,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileNameQuery=${encodeURIComponent(nameToken)}&processingStatus=completed`,
+    { headers: authHeaders }
+  );
+
+  if (!filtered.items?.some((file) => file.fileId === sourceFileId)) {
+    throw new Error("Developer OpenAPI source-file filters did not return the uploaded fileId.");
+  }
+
+  await expectJsonError(
+    publicApi,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingStatus=invalid`,
+    authHeaders,
+    [422]
+  );
+
+  const deletion = await readJson(
+    publicApi,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/task-deletions`,
+    {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sourceFileIds: [sourceFileId]
+      })
+    }
+  );
+  const deletionResult = deletion.results?.find((item) => item.sourceFileId === sourceFileId);
+
+  if (deletionResult?.result !== "hidden" || deletion.summary?.hidden !== 1) {
+    throw new Error("Developer OpenAPI source-file task deletion did not hide the completed source-file task.");
+  }
+
+  const afterDeletion = await readJson(
+    publicApi,
+    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileIdQuery=${encodeURIComponent(sourceFileId)}`,
+    { headers: authHeaders }
+  );
+
+  if (afterDeletion.items?.some((file) => file.fileId === sourceFileId)) {
+    throw new Error("Developer OpenAPI source-file task deletion left the hidden task in the source-file list.");
+  }
+
+  const contentAfterDeletion = await readPublicText(
+    publicApi,
+    developerFileContentPath(knowledgeBaseId, pagePath),
+    authHeaders
+  );
+
+  if (!contentAfterDeletion.includes(sample.title)) {
+    throw new Error("Developer OpenAPI source-file task deletion removed generated content for a completed source file.");
+  }
+
+  report.checks.push(
+    okCheck(
+      "developer-openapi-source-file-filters-task-deletion",
+      "Developer OpenAPI source-file filters and task deletion preserve fileId continuity and keep completed generated content readable."
+    )
+  );
 }
 
 async function pollDeveloperSourceFileCompleted(publicApi, knowledgeBaseId, sourceFileId, headers, timeoutMs) {
@@ -2211,6 +2524,18 @@ function readNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function createSearchTokenFromFilename(filename) {
+  const basename = path.basename(filename, path.extname(filename));
+  const titleToken = basename.split("__")[0]?.trim() || basename.trim();
+  const token = titleToken.replace(/\s+/g, " ").trim();
+
+  if (token.length >= 2) {
+    return token.slice(0, 32);
+  }
+
+  return basename.slice(0, 32);
+}
+
 function sameStringArray(left, right) {
   return (
     Array.isArray(left) &&
@@ -2221,6 +2546,52 @@ function sameStringArray(left, right) {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function selectTaskDeletionCandidate(files, excludedSourceFileId) {
+  const candidate = files.find((file) => file.id && file.id !== excludedSourceFileId) ?? files.find((file) => file.id);
+
+  if (!candidate?.id) {
+    throw new Error("Source-file task deletion validation requires a completed source-file id.");
+  }
+
+  return candidate.id;
+}
+
+async function validateAdminSourceFileTaskDeletion({ admin, knowledgeBaseId, sourceFileId, report }) {
+  const deletion = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/task-deletions`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sourceFileIds: [sourceFileId]
+      })
+    }
+  );
+  const result = deletion.results?.find((item) => item.sourceFileId === sourceFileId);
+
+  if (result?.status !== "hidden" || deletion.summary?.hidden !== 1) {
+    throw new Error("Admin source-file task deletion did not hide the completed source-file task.");
+  }
+
+  const afterDeletion = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileIdQuery=${encodeURIComponent(sourceFileId)}`
+  );
+
+  if (afterDeletion.items?.some((file) => file.id === sourceFileId)) {
+    throw new Error("Admin source-file task deletion left the hidden task in the source-file list.");
+  }
+
+  report.checks.push(
+    okCheck("admin-source-file-task-deletion", "Admin source-file task deletion hides completed task rows without deleting generated files.", {
+      sourceFileId
+    })
+  );
 }
 
 async function validateSourceDeletionFullFlow({

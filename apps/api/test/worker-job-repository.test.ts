@@ -24,7 +24,23 @@ describe("worker job repository contract", () => {
     expect(repository).toContain("order by run_after asc, created_at asc, id asc");
     expect(repository).toContain("limit ${input.limit}");
     expect(repository).toContain("for update skip locked");
+    expect(repository).not.toContain("status = 'cancelled' or");
     expect(repository).not.toContain(" offset ");
+  });
+
+  it("cancels queued source-file jobs through explicit source-file IDs", () => {
+    const repository = readRepository();
+    const cancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedsourcefilejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+
+    expect(cancelSection).toContain("kind = 'source_file_processing'");
+    expect(cancelSection).toContain("knowledge_base_id = ${input.knowledgebaseid}");
+    expect(cancelSection).toContain("source_file_id = any(${input.sourcefileids})");
+    expect(cancelSection).toContain("status = 'queued'");
+    expect(cancelSection).toContain("status = 'cancelled'");
+    expect(cancelSection).not.toContain("status = 'running'");
   });
 
   it("summarizes queue state through materialized status reads and indexed oldest queued lookup", () => {
@@ -118,7 +134,7 @@ describe("worker job repository contract", () => {
     expect(completeSection).toContain("and status = 'running'");
   });
 
-  it("retains only bounded completed, failed, and dead-letter history", () => {
+  it("retains only bounded completed, failed, dead-letter, and cancelled history", () => {
     const repository = readRepository();
     const cleanupSection = repository.slice(
       repository.indexOf("async cleanupworkerjobs"),
@@ -129,6 +145,7 @@ describe("worker job repository contract", () => {
     expect(cleanupSection).toContain("status = 'completed'");
     expect(cleanupSection).toContain("status = 'failed'");
     expect(cleanupSection).toContain("status = 'dead_letter'");
+    expect(cleanupSection).toContain("status = 'cancelled'");
     expect(cleanupSection).toContain("limit ${input.limit}");
     expect(cleanupSection).not.toContain("status = 'queued'");
     expect(cleanupSection).not.toContain("status = 'running'");
@@ -143,6 +160,7 @@ describe("worker job repository contract", () => {
       "worker_jobs_queued_oldest_idx",
       "worker_jobs_running_heartbeat_idx",
       "worker_jobs_source_active_idx",
+      "worker_jobs_source_cancel_idx",
       "worker_jobs_publication_active_idx",
       "worker_jobs_kb_created_idx",
       "worker_jobs_retention_idx",

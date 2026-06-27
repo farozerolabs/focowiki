@@ -85,13 +85,23 @@ function createConfig(): RuntimeConfig {
 function createRepository() {
   const items = new Map<string, KnowledgeBaseRecord>();
   let nextId = 0;
-  const listCalls: Array<{ limit: number; cursor: string | null }> = [];
+  const listCalls: Array<{ limit: number; cursor: string | null; query?: string | null }> = [];
 
   return {
     listCalls,
-    async listKnowledgeBases(request: { limit: number; cursor: string | null }) {
+    async listKnowledgeBases(request: { limit: number; cursor: string | null; query?: string | null }) {
       listCalls.push(request);
-      const values = Array.from(items.values());
+      const normalizedQuery = request.query?.toLocaleLowerCase("en-US") ?? "";
+      const values = Array.from(items.values()).filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+
+        return [item.id, item.name, item.description ?? ""]
+          .join(" ")
+          .toLocaleLowerCase("en-US")
+          .includes(normalizedQuery);
+      });
       const start = request.cursor ? Number(request.cursor) : 0;
       const pageItems = values.slice(start, start + request.limit);
       const nextCursor =
@@ -266,8 +276,127 @@ describe("Knowledge base Admin API", () => {
     expect(secondBody.items).toHaveLength(1);
     expect(secondBody.nextCursor).toBeNull();
     expect(repository.listCalls).toEqual([
-      { limit: 1, cursor: null },
-      { limit: 1, cursor: "1" }
+      { limit: 1, cursor: null, query: null },
+      { limit: 1, cursor: "1", query: null }
     ]);
+  });
+
+  it("searches knowledge base cards by name, description, and ID", async () => {
+    const repository = createRepository();
+    await repository.createKnowledgeBase({
+      name: "Developer docs",
+      description: "Markdown product knowledge"
+    });
+    await repository.createKnowledgeBase({
+      name: "Legal library",
+      description: "Contract metadata"
+    });
+    const app = createApiApp({
+      config: createConfig(),
+      redis: createTestRedisCoordinator(),
+      repositories: {
+        knowledgeBases: repository
+      }
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+
+    const byName = await app.request("/admin/api/knowledge-bases?query=developer", {
+      headers: { cookie }
+    });
+    const byDescription = await app.request("/admin/api/knowledge-bases?query=product", {
+      headers: { cookie }
+    });
+    const byId = await app.request("/admin/api/knowledge-bases?query=kb-000002", {
+      headers: { cookie }
+    });
+
+    await expect(byName.json()).resolves.toMatchObject({
+      items: [{ id: "kb-000001", name: "Developer docs" }],
+      nextCursor: null
+    });
+    await expect(byDescription.json()).resolves.toMatchObject({
+      items: [{ id: "kb-000001", name: "Developer docs" }],
+      nextCursor: null
+    });
+    await expect(byId.json()).resolves.toMatchObject({
+      items: [{ id: "kb-000002", name: "Legal library" }],
+      nextCursor: null
+    });
+    expect(byName.status).toBe(200);
+    expect(byDescription.status).toBe(200);
+    expect(byId.status).toBe(200);
+    expect(repository.listCalls.map((call) => call.query)).toEqual([
+      "developer",
+      "product",
+      "kb-000002"
+    ]);
+  });
+
+  it("rejects invalid knowledge base card search query without repository reads", async () => {
+    const repository = createRepository();
+    const app = createApiApp({
+      config: createConfig(),
+      redis: createTestRedisCoordinator(),
+      repositories: {
+        knowledgeBases: repository
+      }
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const query = "x".repeat(129);
+    const response = await app.request(`/admin/api/knowledge-bases?query=${query}`, {
+      headers: { cookie }
+    });
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "KNOWLEDGE_BASE_SEARCH_QUERY_TOO_LONG"
+      }
+    });
+    expect(response.status).toBe(400);
+    expect(repository.listCalls).toEqual([]);
+  });
+
+  it("rejects knowledge base search cursors from a different query scope", async () => {
+    const repository = createRepository();
+    await repository.createKnowledgeBase({ name: "One docs", description: null });
+    await repository.createKnowledgeBase({ name: "Two docs", description: null });
+    const redisClient = new MemoryRedisCommandClient();
+    const app = createApiApp({
+      config: createConfig(),
+      redis: createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" }),
+      repositories: {
+        knowledgeBases: repository
+      }
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const first = await app.request("/admin/api/knowledge-bases?query=docs&limit=1", {
+      headers: { cookie }
+    });
+    const firstBody = (await first.json()) as {
+      items: KnowledgeBaseRecord[];
+      nextCursor: string | null;
+    };
+
+    expect(first.status).toBe(200);
+    expect(firstBody.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
+    expect(
+      Array.from(redisClient.values.keys()).some((key) =>
+        key.startsWith("focowiki-test:pagination-cursors:knowledge-bases:query-")
+      )
+    ).toBe(true);
+
+    const mismatch = await app.request(
+      `/admin/api/knowledge-bases?query=legal&limit=1&cursor=${firstBody.nextCursor}`,
+      {
+        headers: { cookie }
+      }
+    );
+
+    await expect(mismatch.json()).resolves.toEqual({
+      error: {
+        code: "INVALID_PAGINATION"
+      }
+    });
+    expect(mismatch.status).toBe(400);
   });
 });

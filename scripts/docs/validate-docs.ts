@@ -64,7 +64,7 @@ const forbiddenPatterns = [
   { name: "local user path", pattern: /\/Users\// },
   { name: "raw OpenAPI key", pattern: /fwok_[A-Za-z0-9]/ },
   { name: "raw webhook secret", pattern: /fwwh_[A-Za-z0-9]/ },
-  { name: "provider key", pattern: /sk-[A-Za-z0-9]/ },
+  { name: "provider key", pattern: /sk-[A-Za-z0-9]{16,}/ },
   { name: "S3 secret assignment", pattern: /S3_SECRET_ACCESS_KEY\s*=/ },
   { name: "model key assignment", pattern: /MODEL_API_KEY\s*=/ }
 ];

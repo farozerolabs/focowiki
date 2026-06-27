@@ -183,6 +183,32 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/sou
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
+Filter source-file task records when a knowledge base contains many uploads. Filters are applied before pagination, and the returned `nextCursor` belongs to the same filter set:
+
+Task filters are query parameters on the [List source files](./operations/list-knowledge-base-source-files.md) operation.
+
+```bash
+curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "processingStatus=completed" \
+  --data-urlencode "generatedOutputStatus=visible" \
+  --data-urlencode "fileNameQuery=guide" \
+  --data-urlencode "limit=50"
+```
+
+Delete source-file task rows when an integration needs to clear obsolete upload records. `deleted` means an unpublished source-file task was removed. `hidden` means the source-file task row was hidden and the generated file remains readable through `generatedFileId` or `generatedFilePath`. `skipped` means the row stayed unchanged; read `reason`, then poll detail or events again when the reason is a temporary state such as `running`.
+
+```bash
+curl -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/task-deletions" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  -H "Content-Type: application/json" \
+  --data "{
+  \"sourceFileIds\": [\"$FIRST_SOURCE_FILE_ID\"]
+}"
+```
+
+Task deletion only affects source-file task visibility. Generated file deletion uses the generated file delete endpoints and the `generatedFileId` or logical `generatedFilePath` values.
+
 List the generated file tree and store the first logical `path` plus generated file identifier:
 
 ```bash

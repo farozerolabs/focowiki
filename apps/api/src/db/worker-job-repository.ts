@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "./client.js";
 
 export type WorkerJobKind = "source_file_processing" | "publication";
-export type WorkerJobStatus = "queued" | "running" | "completed" | "failed" | "dead_letter";
+export type WorkerJobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "dead_letter"
+  | "cancelled";
 
 export type WorkerJobRecord = {
   id: string;
@@ -50,6 +56,7 @@ export type WorkerQueueSummary = {
   completedCount: number;
   failedCount: number;
   deadLetterCount: number;
+  cancelledCount?: number;
   oldestQueuedAt: string | null;
   oldestQueuedAgeSeconds: number | null;
 };
@@ -96,6 +103,13 @@ export type WorkerJobRepository = {
     errorCode: string;
     errorMessage: string;
   }) => Promise<WorkerJobRecord | null>;
+  cancelQueuedSourceFileJobs?: (input: {
+    knowledgeBaseId: string;
+    sourceFileIds: string[];
+    cancelledAt: string;
+    errorCode: string;
+    errorMessage: string;
+  }) => Promise<string[]>;
   releaseWorkerJob: (input: {
     id: string;
     workerId: string;
@@ -126,6 +140,7 @@ export type WorkerJobRepository = {
     completedBefore: string;
     failedBefore: string;
     deadLetterBefore: string;
+    cancelledBefore?: string;
     limit: number;
   }) => Promise<number>;
   countActiveWorkerJobs: (input: {
@@ -378,6 +393,33 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       `;
       return rows[0] ? mapWorkerJobRow(rows[0]) : null;
     },
+    async cancelQueuedSourceFileJobs(input) {
+      if (input.sourceFileIds.length === 0) {
+        return [];
+      }
+
+      const rows = await sql<Array<{ source_file_id: string }>>`
+        UPDATE focowiki.worker_jobs
+        SET
+          status = 'cancelled',
+          locked_by = NULL,
+          locked_at = NULL,
+          heartbeat_at = NULL,
+          completed_at = ${input.cancelledAt},
+          failed_at = NULL,
+          last_error_code = ${input.errorCode},
+          last_error_message = ${input.errorMessage},
+          updated_at = now()
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND kind = 'source_file_processing'
+          AND source_file_id = ANY(${input.sourceFileIds})
+          AND status = 'queued'
+        RETURNING source_file_id
+      `;
+      return rows
+        .map((row) => row.source_file_id)
+        .filter((sourceFileId): sourceFileId is string => Boolean(sourceFileId));
+    },
     async releaseWorkerJob(input) {
       const rows = await sql<WorkerJobRow[]>`
         UPDATE focowiki.worker_jobs
@@ -537,6 +579,11 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
               AND failed_at IS NOT NULL
               AND failed_at < ${input.deadLetterBefore}
             )
+            OR (
+              status = 'cancelled'
+              AND completed_at IS NOT NULL
+              AND completed_at < ${input.cancelledBefore ?? input.completedBefore}
+            )
           ORDER BY COALESCE(completed_at, failed_at, created_at) ASC, id ASC
           LIMIT ${input.limit}
         )
@@ -658,6 +705,7 @@ function createQueueSummary(input: {
     completedCount: countByStatus.get("completed") ?? 0,
     failedCount: countByStatus.get("failed") ?? 0,
     deadLetterCount: countByStatus.get("dead_letter") ?? 0,
+    cancelledCount: countByStatus.get("cancelled") ?? 0,
     oldestQueuedAt,
     oldestQueuedAgeSeconds:
       oldestQueuedAt && Number.isFinite(nowMs) && Number.isFinite(oldestMs)

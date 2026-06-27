@@ -1,18 +1,5 @@
 CREATE SCHEMA IF NOT EXISTS focowiki;
 
-DROP TABLE IF EXISTS focowiki.upload_task_events CASCADE;
-DROP TABLE IF EXISTS focowiki.upload_tasks CASCADE;
-
-ALTER TABLE IF EXISTS focowiki.source_files
-  DROP COLUMN IF EXISTS task_id,
-  DROP COLUMN IF EXISTS model_suggestions_json;
-
-ALTER TABLE IF EXISTS focowiki.model_invocations
-  DROP COLUMN IF EXISTS task_id;
-
-ALTER TABLE IF EXISTS focowiki.releases
-  DROP COLUMN IF EXISTS task_id;
-
 CREATE TABLE IF NOT EXISTS focowiki.knowledge_bases (
   id text PRIMARY KEY,
   name text NOT NULL,
@@ -57,6 +44,7 @@ CREATE TABLE IF NOT EXISTS focowiki.source_files (
   publication_error_message text,
   retry_count integer NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
+  task_deleted_at timestamptz,
   deleted_at timestamptz,
   CHECK (processing_status IN ('queued', 'running', 'completed', 'failed')),
   CHECK (generated_output_status IN ('pending', 'visible', 'unavailable')),
@@ -96,7 +84,8 @@ ALTER TABLE focowiki.source_files
   ADD COLUMN IF NOT EXISTS publication_visible_at timestamptz,
   ADD COLUMN IF NOT EXISTS publication_error_code text,
   ADD COLUMN IF NOT EXISTS publication_error_message text,
-  ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
+  ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS task_deleted_at timestamptz;
 
 UPDATE focowiki.source_files
 SET processing_status = 'queued'
@@ -422,7 +411,7 @@ CREATE TABLE IF NOT EXISTS focowiki.worker_jobs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (kind IN ('source_file_processing', 'publication')),
-  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter')),
+  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled')),
   CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at),
   CHECK (failed_at IS NULL OR started_at IS NULL OR failed_at >= started_at)
 );
@@ -444,7 +433,7 @@ CREATE TABLE IF NOT EXISTS focowiki.worker_queue_summaries (
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (knowledge_base_id, kind, status),
   CHECK (kind IN ('source_file_processing', 'publication')),
-  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter'))
+  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'))
 );
 
 ALTER TABLE focowiki.source_file_graph_nodes
@@ -490,7 +479,12 @@ ALTER TABLE focowiki.worker_jobs
 ALTER TABLE focowiki.worker_jobs
   DROP CONSTRAINT IF EXISTS worker_jobs_status_check,
   ADD CONSTRAINT worker_jobs_status_check
-  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter'));
+  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'));
+
+ALTER TABLE focowiki.worker_queue_summaries
+  DROP CONSTRAINT IF EXISTS worker_queue_summaries_status_check,
+  ADD CONSTRAINT worker_queue_summaries_status_check
+  CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'));
 
 CREATE OR REPLACE FUNCTION focowiki.adjust_worker_queue_summary(
   input_knowledge_base_id text,
@@ -722,29 +716,6 @@ CREATE TABLE IF NOT EXISTS focowiki.internal_migration_markers (
 
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM focowiki.internal_migration_markers
-    WHERE marker_key = 'content-driven-file-graph-v1'
-  ) THEN
-    UPDATE focowiki.knowledge_bases
-    SET active_release_id = NULL;
-
-    DELETE FROM focowiki.bundle_tree_entries;
-    DELETE FROM focowiki.bundle_files;
-    DELETE FROM focowiki.publication_jobs;
-    DELETE FROM focowiki.releases;
-    DELETE FROM focowiki.source_file_graph_edges;
-    DELETE FROM focowiki.source_file_graph_nodes;
-    DELETE FROM focowiki.source_file_graph_jobs;
-
-    INSERT INTO focowiki.internal_migration_markers(marker_key)
-    VALUES ('content-driven-file-graph-v1');
-  END IF;
-END $$;
-
-DO $$
-BEGIN
   ALTER TABLE focowiki.webhook_subscriptions
     ADD COLUMN IF NOT EXISTS signing_secret text;
 
@@ -757,8 +728,6 @@ BEGIN
   ) THEN
     UPDATE focowiki.webhook_subscriptions
     SET signing_secret = COALESCE(signing_secret, secret_hash);
-    ALTER TABLE focowiki.webhook_subscriptions
-      DROP COLUMN secret_hash;
   END IF;
 
   ALTER TABLE focowiki.webhook_subscriptions
@@ -799,22 +768,65 @@ CREATE INDEX IF NOT EXISTS source_files_kb_created_cursor_idx
 CREATE INDEX IF NOT EXISTS source_files_kb_active_created_cursor_idx
   ON focowiki.source_files(knowledge_base_id, deleted_at, created_at DESC, id);
 
+CREATE INDEX IF NOT EXISTS source_files_kb_task_visible_created_cursor_idx
+  ON focowiki.source_files(knowledge_base_id, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS source_files_kb_processing_idx
   ON focowiki.source_files(knowledge_base_id, processing_status, processing_stage, created_at DESC, id);
+
+CREATE INDEX IF NOT EXISTS source_files_kb_task_visible_processing_idx
+  ON focowiki.source_files(knowledge_base_id, processing_status, processing_stage, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS source_files_kb_publication_dirty_idx
   ON focowiki.source_files(knowledge_base_id, publication_dirty_at, id)
   WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
     AND processing_status = 'completed'
     AND publication_dirty_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS source_files_kb_generated_output_status_idx
   ON focowiki.source_files(knowledge_base_id, generated_output_status, created_at DESC, id)
-  WHERE deleted_at IS NULL;
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_model_invocation_status_idx
+  ON focowiki.source_files(knowledge_base_id, model_invocation_status, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_started_cursor_idx
+  ON focowiki.source_files(knowledge_base_id, processing_started_at DESC, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND processing_started_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_ended_cursor_idx
+  ON focowiki.source_files(knowledge_base_id, processing_ended_at DESC, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND processing_ended_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_openable_action_idx
+  ON focowiki.source_files(knowledge_base_id, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND generated_output_status = 'visible'
+    AND generated_bundle_file_path IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_retryable_action_idx
+  ON focowiki.source_files(knowledge_base_id, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND processing_status = 'failed';
 
 CREATE INDEX IF NOT EXISTS source_files_kb_error_state_created_idx
   ON focowiki.source_files(knowledge_base_id, created_at DESC, id)
   WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
     AND (
       processing_error_code IS NOT NULL
       OR publication_error_code IS NOT NULL
@@ -823,8 +835,42 @@ CREATE INDEX IF NOT EXISTS source_files_kb_error_state_created_idx
 CREATE INDEX IF NOT EXISTS source_files_kb_no_error_created_idx
   ON focowiki.source_files(knowledge_base_id, created_at DESC, id)
   WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
     AND processing_error_code IS NULL
     AND publication_error_code IS NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_processing_error_code_idx
+  ON focowiki.source_files(knowledge_base_id, processing_error_code, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND processing_error_code IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS source_files_kb_publication_error_code_idx
+  ON focowiki.source_files(knowledge_base_id, publication_error_code, created_at DESC, id)
+  WHERE deleted_at IS NULL
+    AND task_deleted_at IS NULL
+    AND publication_error_code IS NOT NULL;
+
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+EXCEPTION
+  WHEN insufficient_privilege OR undefined_file THEN
+    RAISE NOTICE 'pg_trgm extension is unavailable; filename filter validation will report missing indexed search support';
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_extension
+    WHERE extname = 'pg_trgm'
+  ) THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS source_files_original_name_trgm_idx ON focowiki.source_files USING gin (original_name gin_trgm_ops) WHERE deleted_at IS NULL AND task_deleted_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS source_files_original_name_task_visible_trgm_idx ON focowiki.source_files USING gin (original_name gin_trgm_ops) WHERE deleted_at IS NULL AND task_deleted_at IS NULL';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS knowledge_bases_metadata_search_trgm_idx ON focowiki.knowledge_bases USING gin ((lower(id || '' '' || name || '' '' || coalesce(description, ''''))) gin_trgm_ops) WHERE deleted_at IS NULL';
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS publication_jobs_kb_status_created_idx
   ON focowiki.publication_jobs(knowledge_base_id, status, created_at, id);
@@ -859,12 +905,31 @@ CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_cursor_idx
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_parent_type_sort_idx
   ON focowiki.bundle_tree_entries(knowledge_base_id, release_id, parent_path, entry_type, sort_key, id);
 
+CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_sort_cursor_idx
+  ON focowiki.bundle_tree_entries(knowledge_base_id, release_id, sort_key, id);
+
+CREATE INDEX IF NOT EXISTS bundle_tree_entries_kb_release_logical_path_idx
+  ON focowiki.bundle_tree_entries(knowledge_base_id, release_id, logical_path);
+
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_logical_cursor_idx
   ON focowiki.bundle_tree_entries(release_id, logical_path, id);
 
 CREATE INDEX IF NOT EXISTS bundle_tree_entries_release_file_idx
   ON focowiki.bundle_tree_entries(release_id, bundle_file_id, id)
   WHERE bundle_file_id IS NOT NULL;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_extension
+    WHERE extname = 'pg_trgm'
+  ) THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_name_trgm_idx ON focowiki.bundle_tree_entries USING gin (name gin_trgm_ops)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_logical_path_trgm_idx ON focowiki.bundle_tree_entries USING gin (logical_path gin_trgm_ops)';
+    EXECUTE 'CREATE INDEX IF NOT EXISTS bundle_tree_entries_search_text_trgm_idx ON focowiki.bundle_tree_entries USING gin ((name || '' '' || logical_path) gin_trgm_ops)';
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS source_file_graph_nodes_kb_path_cursor_idx
   ON focowiki.source_file_graph_nodes(knowledge_base_id, path, source_file_id);
@@ -918,6 +983,12 @@ CREATE INDEX IF NOT EXISTS worker_jobs_source_active_idx
   WHERE source_file_id IS NOT NULL
     AND status IN ('queued', 'running');
 
+CREATE INDEX IF NOT EXISTS worker_jobs_source_cancel_idx
+  ON focowiki.worker_jobs(knowledge_base_id, kind, status, source_file_id, run_after, created_at, id)
+  WHERE kind = 'source_file_processing'
+    AND source_file_id IS NOT NULL
+    AND status IN ('queued', 'running');
+
 CREATE INDEX IF NOT EXISTS worker_jobs_publication_active_idx
   ON focowiki.worker_jobs(kind, knowledge_base_id, status, run_after)
   WHERE kind = 'publication'
@@ -928,7 +999,7 @@ CREATE INDEX IF NOT EXISTS worker_jobs_kb_created_idx
 
 CREATE INDEX IF NOT EXISTS worker_jobs_retention_idx
   ON focowiki.worker_jobs(status, completed_at, failed_at, id)
-  WHERE status IN ('completed', 'failed', 'dead_letter');
+  WHERE status IN ('completed', 'failed', 'dead_letter', 'cancelled');
 
 CREATE INDEX IF NOT EXISTS worker_heartbeats_seen_idx
   ON focowiki.worker_heartbeats(last_seen_at DESC, worker_id);

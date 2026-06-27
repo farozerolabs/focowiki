@@ -34,6 +34,7 @@ export const resources = {
         copied: "Copied"
       },
       pagination: {
+        label: "Pagination",
         currentPage: "Page {{page}}",
         next: "Next page",
         previous: "Previous page",
@@ -65,6 +66,11 @@ export const resources = {
         emptyDescription: "Create the first knowledge base to start uploading Markdown sources.",
         loading: "Loading",
         loadMore: "Load more",
+        searchLabel: "Search knowledge bases",
+        searchPlaceholder: "Search by name, description, or ID",
+        clearSearch: "Clear search",
+        searchEmptyTitle: "No matching knowledge bases",
+        searchEmptyDescription: "Try another name, description, or knowledge base ID.",
         nameLabel: "Knowledge base name",
         descriptionLabel: "Description",
         noDescription: "No description",
@@ -103,8 +109,15 @@ export const resources = {
       detail: {
         back: "Back",
         toggleSidebar: "Toggle sidebar",
+        resizeSidebar: "Resize sidebar",
         emptyFiles: "Generated files will appear after upload parsing finishes.",
         loadingFiles: "Loading generated files...",
+        fileTreeSearchPlaceholder: "Search files and folders",
+        clearFileTreeSearch: "Clear file tree search",
+        fileTreeSearchNoResults: "No matching files or folders",
+        fileTreeSearchLoadMore: "Load more search results",
+        fileTreeSearchTooShort: "Enter at least 2 characters",
+        fileTreeSearchFailed: "File tree search failed",
         noFileSelected: "No file selected",
         sourceFiles: "Source files",
         releases: "Releases",
@@ -136,10 +149,58 @@ export const resources = {
           error: "Error",
           actions: "Actions"
         },
+        filters: {
+          activeCount: "{{count}} active filter",
+          activeCount_plural: "{{count}} active filters",
+          all: "All",
+          clear: "Clear",
+          clearAll: "Clear filters",
+          filterColumn: "Filter {{column}}",
+          from: "From",
+          to: "To",
+          noMatches: "No files match the current filters",
+          errorCode: "Error code",
+          errorState: {
+            with_error: "With error",
+            without_error: "Without error"
+          },
+          actionState: {
+            openable: "Openable",
+            retryable: "Retryable",
+            none: "No action"
+          }
+        },
         retryFile: "Retry parsing",
         retryingFile: "Retrying",
         openGeneratedFile: "Open file",
         noAction: "No action",
+        deleteSelected: "Delete selected",
+        selection: {
+          currentPageOnly: "Selection applies to the current page only.",
+          selectedCount: "{{count}} selected",
+          selectCurrentPage: "Select eligible rows on this page",
+          selectRow: "Select {{name}}"
+        },
+        deleteDialog: {
+          title: "Delete processing tasks",
+          description: "Delete {{count}} selected processing task. Published generated files stay available.",
+          description_plural: "Delete {{count}} selected processing tasks. Published generated files stay available.",
+          confirm: "Delete tasks",
+          deleting: "Deleting"
+        },
+        deleteToast: {
+          successTitle: "Tasks deleted",
+          successDescription: "{{count}} task row was removed from the list.",
+          successDescription_plural: "{{count}} task rows were removed from the list.",
+          partialTitle: "Some tasks were skipped",
+          partialDescription: "{{changed}} task row changed. {{skipped}} row was skipped because its state changed.",
+          partialDescription_plural: "{{changed}} task rows changed. {{skipped}} rows were skipped because their state changed.",
+          skippedTitle: "No tasks deleted",
+          skippedDescription: "{{count}} selected row was not eligible.",
+          skippedDescription_plural: "{{count}} selected rows were not eligible.",
+          failedTitle: "Task deletion failed",
+          networkFailure: "Network request failed"
+        },
         generatedFile: {
           available: "Available",
           pending: "Pending",
@@ -253,6 +314,8 @@ export const resources = {
         uploadFailed: "Upload request failed",
         deleteFailed: "Delete request failed",
         fileNotDeletable: "This file cannot be deleted",
+        sourceFileTaskDeletionInvalid: "Task deletion request is invalid",
+        sourceFileTaskDeletionFailed: "Task deletion request failed",
         sourceFileRetryNotAllowed: "Only failed files can be retried",
         securityRequestRejected: "Request rejected",
         rateLimited: "Too many requests",
@@ -290,6 +353,7 @@ export const resources = {
         copied: "已复制"
       },
       pagination: {
+        label: "分页",
         currentPage: "第 {{page}} 页",
         next: "下一页",
         previous: "上一页",
@@ -321,6 +385,11 @@ export const resources = {
         emptyDescription: "创建第一个知识库后开始上传 Markdown 来源文件。",
         loading: "加载中",
         loadMore: "加载更多",
+        searchLabel: "搜索知识库",
+        searchPlaceholder: "搜索名称、描述或 ID",
+        clearSearch: "清除搜索",
+        searchEmptyTitle: "没有匹配的知识库",
+        searchEmptyDescription: "可以尝试其他名称、描述或知识库 ID。",
         nameLabel: "知识库名称",
         descriptionLabel: "描述",
         noDescription: "暂无描述",
@@ -359,8 +428,15 @@ export const resources = {
       detail: {
         back: "返回",
         toggleSidebar: "切换侧边栏",
+        resizeSidebar: "调整侧边栏宽度",
         emptyFiles: "上传解析完成后会显示生成文件。",
         loadingFiles: "正在加载生成文件...",
+        fileTreeSearchPlaceholder: "搜索文件和文件夹",
+        clearFileTreeSearch: "清除文件树搜索",
+        fileTreeSearchNoResults: "没有匹配的文件或文件夹",
+        fileTreeSearchLoadMore: "加载更多搜索结果",
+        fileTreeSearchTooShort: "至少输入 2 个字符",
+        fileTreeSearchFailed: "文件树搜索失败",
         noFileSelected: "尚未选择文件",
         sourceFiles: "来源文件",
         releases: "发布版本",
@@ -392,10 +468,58 @@ export const resources = {
           error: "错误",
           actions: "操作"
         },
+        filters: {
+          activeCount: "{{count}} 个筛选条件",
+          activeCount_plural: "{{count}} 个筛选条件",
+          all: "全部",
+          clear: "清除",
+          clearAll: "清除筛选",
+          filterColumn: "筛选 {{column}}",
+          from: "从",
+          to: "到",
+          noMatches: "没有符合当前筛选条件的文件",
+          errorCode: "错误码",
+          errorState: {
+            with_error: "有错误",
+            without_error: "无错误"
+          },
+          actionState: {
+            openable: "可打开",
+            retryable: "可重试",
+            none: "无操作"
+          }
+        },
         retryFile: "重新解析",
         retryingFile: "解析中",
         openGeneratedFile: "打开文件",
         noAction: "无操作",
+        deleteSelected: "删除所选任务",
+        selection: {
+          currentPageOnly: "仅选择当前页数据。",
+          selectedCount: "已选择 {{count}} 项",
+          selectCurrentPage: "选择当前页可删除行",
+          selectRow: "选择 {{name}}"
+        },
+        deleteDialog: {
+          title: "删除处理任务",
+          description: "删除已选择的 {{count}} 个处理任务。已发布的生成文件仍可访问。",
+          description_plural: "删除已选择的 {{count}} 个处理任务。已发布的生成文件仍可访问。",
+          confirm: "删除任务",
+          deleting: "删除中"
+        },
+        deleteToast: {
+          successTitle: "任务已删除",
+          successDescription: "已从列表移除 {{count}} 个任务行。",
+          successDescription_plural: "已从列表移除 {{count}} 个任务行。",
+          partialTitle: "部分任务已跳过",
+          partialDescription: "{{changed}} 个任务行已变更，{{skipped}} 个任务行因状态变化被跳过。",
+          partialDescription_plural: "{{changed}} 个任务行已变更，{{skipped}} 个任务行因状态变化被跳过。",
+          skippedTitle: "没有删除任务",
+          skippedDescription: "{{count}} 个所选任务当前不可删除。",
+          skippedDescription_plural: "{{count}} 个所选任务当前不可删除。",
+          failedTitle: "任务删除失败",
+          networkFailure: "网络请求失败"
+        },
         generatedFile: {
           available: "可用",
           pending: "待生成",
@@ -509,6 +633,8 @@ export const resources = {
         uploadFailed: "上传请求失败",
         deleteFailed: "删除请求失败",
         fileNotDeletable: "该文件不能删除",
+        sourceFileTaskDeletionInvalid: "任务删除请求无效",
+        sourceFileTaskDeletionFailed: "任务删除请求失败",
         sourceFileRetryNotAllowed: "只有失败文件可以重新解析",
         securityRequestRejected: "请求已被拒绝",
         rateLimited: "请求过于频繁",

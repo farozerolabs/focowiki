@@ -5,6 +5,7 @@ import type {
   BundleFileRecord,
   BundleTreeEntryRecord,
   CursorPage,
+  SourceFileListFilters,
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
@@ -16,6 +17,11 @@ import { acceptUploadSourceFiles } from "../admin/source-file-upload.js";
 import type { LoadedUploadFile } from "../admin/upload-processor-utils.js";
 import { createDeletionService } from "../admin/deletion-service.js";
 import { readGeneratedOutputsForSourceFilesSafely } from "../admin/source-file-generated-output.js";
+import { createSourceFileCursorScope } from "../admin/source-file-list-filter-signature.js";
+import {
+  createSourceFileTaskDeletionService,
+  type SourceFileTaskDeletionResponse
+} from "../admin/source-file-task-deletion-service.js";
 import {
   createPageResponseCacheId,
   readPageResponseCache,
@@ -246,7 +252,12 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         files: sourceFiles.map((file) => toDeveloperSourceFile(file))
       };
     },
-    async listSourceFiles(input: { knowledgeBaseId: string; limit: number; cursor: string | null }) {
+    async listSourceFiles(input: {
+      knowledgeBaseId: string;
+      limit: number;
+      cursor: string | null;
+      filters: SourceFileListFilters;
+    }) {
       const repo = requireRepositories();
 
       if (!repo.files?.listSourceFiles) {
@@ -254,7 +265,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
 
       const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
-      const scope = `developer-openapi:source-files:${input.knowledgeBaseId}`;
+      const scope = `developer-openapi:${createSourceFileCursorScope(knowledgeBase.id, input.filters)}`;
       const redisCoordinator = requireRedis();
       const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
       const cacheId = createPageResponseCacheId({
@@ -276,9 +287,10 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
 
       const page = await repo.files.listSourceFiles({
-        knowledgeBaseId: input.knowledgeBaseId,
+        knowledgeBaseId: knowledgeBase.id,
         limit: input.limit,
-        cursor: repositoryCursor
+        cursor: repositoryCursor,
+        ...input.filters
       });
       const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
         repositories: repo,
@@ -301,6 +313,29 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       });
 
       return response;
+    },
+    async deleteSourceFileTasks(input: { knowledgeBaseId: string; sourceFileIds: string[] }) {
+      const repo = requireRepositories();
+      const coordinator = requireRedis();
+      const deletionService = createSourceFileTaskDeletionService(repo, storage, coordinator);
+
+      if (!deletionService) {
+        throw repositoryUnavailable();
+      }
+
+      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const result = await deletionService.deleteTasks({
+        knowledgeBaseId: knowledgeBase.id,
+        sourceFileIds: input.sourceFileIds,
+        deletedAt: new Date().toISOString(),
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+      });
+
+      if (!result) {
+        throw notFound();
+      }
+
+      return toDeveloperSourceFileTaskDeletionResponse(result);
     },
     async getSourceFile(input: {
       knowledgeBaseId: string;
@@ -1019,4 +1054,17 @@ function normalizeWebhookUrl(value: string): string {
 
 function isDefined<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function toDeveloperSourceFileTaskDeletionResponse(result: SourceFileTaskDeletionResponse) {
+  return {
+    results: result.results.map((item) => ({
+      sourceFileId: item.sourceFileId,
+      result: item.status,
+      ...(item.reason ? { reason: item.reason } : {}),
+      ...(item.generatedFileId ? { generatedFileId: item.generatedFileId } : {}),
+      ...(item.generatedFilePath ? { generatedFilePath: item.generatedFilePath } : {})
+    })),
+    summary: result.summary
+  };
 }

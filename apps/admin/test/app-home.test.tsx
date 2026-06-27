@@ -369,7 +369,7 @@ describe("Admin knowledge base home", () => {
     expect(screen.queryByText("Revoked")).toBeNull();
   });
 
-  it("appends paginated knowledge base card pages", async () => {
+  it("navigates paginated knowledge base card pages without appending cards", async () => {
     vi.mocked(listKnowledgeBases)
       .mockResolvedValueOnce({
         items: [
@@ -392,16 +392,185 @@ describe("Admin knowledge base home", () => {
           }
         ],
         nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-one",
+            name: "One docs",
+            description: null,
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: "cursor-one"
       });
     render(<App />);
 
     await login();
     expect(await screen.findByRole("button", { name: "One docs" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(screen.getByText("Page 1")).toBeTruthy();
+    const previousPageButton = screen.getByRole("button", {
+      name: "Previous page"
+    }) as HTMLButtonElement;
+    expect(previousPageButton.disabled).toBe(true);
 
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
     expect(await screen.findByRole("button", { name: "Two docs" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "One docs" })).toBeNull();
+    expect(screen.getByText("Page 2")).toBeTruthy();
+    const nextPageButton = screen.getByRole("button", {
+      name: "Next page"
+    }) as HTMLButtonElement;
+    expect(nextPageButton.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByRole("button", { name: "One docs" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Two docs" })).toBeNull();
+    expect(screen.getByText("Page 1")).toBeTruthy();
     expect(listKnowledgeBases).toHaveBeenNthCalledWith(1, {});
     expect(listKnowledgeBases).toHaveBeenNthCalledWith(2, { cursor: "cursor-one" });
+    expect(listKnowledgeBases).toHaveBeenNthCalledWith(3, {});
+  });
+
+  it("searches knowledge base cards and keeps pagination scoped to the query", async () => {
+    vi.mocked(listKnowledgeBases)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-docs",
+            name: "Developer docs",
+            description: "Markdown product knowledge",
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-legal-one",
+            name: "Legal library",
+            description: "Law metadata",
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: "cursor-legal"
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-legal-two",
+            name: "Legal references",
+            description: null,
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-docs",
+            name: "Developer docs",
+            description: "Markdown product knowledge",
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-docs",
+            name: "Developer docs",
+            description: "Markdown product knowledge",
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: null
+      });
+    render(<App />);
+
+    await login();
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Search by name, description, or ID"), {
+      target: {
+        value: "legal"
+      }
+    });
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({ query: "legal" });
+    });
+    expect(await screen.findByRole("button", { name: "Legal library" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Developer docs" })).toBeNull();
+    expect(screen.getByText("Page 1")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({
+        cursor: "cursor-legal",
+        query: "legal"
+      });
+    });
+    expect(await screen.findByRole("button", { name: "Legal references" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Legal library" })).toBeNull();
+    expect(screen.getByText("Page 2")).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("Search by name, description, or ID"), {
+      target: {
+        value: "docs"
+      }
+    });
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({ query: "docs" });
+    });
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Legal references" })).toBeNull();
+    expect(screen.getByText("Page 1")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({});
+    });
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
+  });
+
+  it("shows a dedicated empty state for knowledge base search misses", async () => {
+    vi.mocked(listKnowledgeBases)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "kb-docs",
+            name: "Developer docs",
+            description: "Markdown product knowledge",
+            activeReleaseId: null
+          }
+        ],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        nextCursor: null
+      });
+    render(<App />);
+
+    await login();
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Search by name, description, or ID"), {
+      target: {
+        value: "missing"
+      }
+    });
+
+    await waitFor(() => {
+      expect(listKnowledgeBases).toHaveBeenLastCalledWith({ query: "missing" });
+    });
+    expect(await screen.findByText("No matching knowledge bases")).toBeTruthy();
+    expect(screen.queryByText("No knowledge bases yet")).toBeNull();
   });
 
   it("deletes a knowledge base from the card menu without opening the card", async () => {
@@ -419,6 +588,7 @@ describe("Admin knowledge base home", () => {
     render(<App />);
 
     await login();
+    expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
     fireEvent.pointerDown(
       await screen.findByRole("button", {
         name: "Knowledge base actions for Developer docs"

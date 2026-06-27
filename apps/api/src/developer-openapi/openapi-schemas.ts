@@ -120,6 +120,31 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     SourceFileEvent: sourceFileEventSchema(),
     SourceFileEventListResponse: pageSchema(ref("SourceFileEvent")),
     SourceFileRetryResponse: objectSchema({ file: ref("SourceFile") }, ["file"]),
+    SourceFileTaskDeletionRequest: objectSchema(
+      {
+        sourceFileIds: {
+          type: "array",
+          minItems: 1,
+          items: idSchema("Source file identifier returned by upload or source-file list APIs.")
+        }
+      },
+      ["sourceFileIds"]
+    ),
+    SourceFileTaskDeletionResult: sourceFileTaskDeletionResultSchema(),
+    SourceFileTaskDeletionResponse: objectSchema(
+      {
+        results: { type: "array", items: ref("SourceFileTaskDeletionResult") },
+        summary: objectSchema(
+          {
+            deleted: { type: "integer", minimum: 0 },
+            hidden: { type: "integer", minimum: 0 },
+            skipped: { type: "integer", minimum: 0 }
+          },
+          ["deleted", "hidden", "skipped"]
+        )
+      },
+      ["results", "summary"]
+    ),
     BundleTreeEntry: bundleTreeEntrySchema(),
     TreeResponse: pageSchema(ref("BundleTreeEntry")),
     BundleFile: bundleFileSchema(),
@@ -360,6 +385,26 @@ function sourceFileEventSchema(): SchemaObject {
       "severity",
       "createdAt"
     ]
+  );
+}
+
+function sourceFileTaskDeletionResultSchema(): SchemaObject {
+  return objectSchema(
+    {
+      sourceFileId: idSchema("Submitted source file identifier."),
+      result: {
+        type: "string",
+        enum: ["deleted", "hidden", "skipped"],
+        description:
+          "`deleted` removes an unpublished source-file task. `hidden` hides a completed visible task while generated files remain readable. `skipped` leaves the source file unchanged."
+      },
+      reason: nullableString(
+        "Stable skip reason when result is `skipped`, such as `missing`, `running`, or `publication_owned`."
+      ),
+      generatedFileId: nullableString("Generated bundle file identifier when generated output remains visible."),
+      generatedFilePath: nullableString("Logical generated file path when generated output remains visible.")
+    },
+    ["sourceFileId", "result"]
   );
 }
 

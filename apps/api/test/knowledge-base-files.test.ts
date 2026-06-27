@@ -123,14 +123,28 @@ function createRepositories() {
     parentPath: string;
     entryType?: string | null;
   }> = [];
+  const treeSearchCalls: Array<{
+    limit: number;
+    cursor: string | null;
+    query: string;
+  }> = [];
   const sourceCalls: Array<{
     knowledgeBaseId?: string;
     limit: number;
     cursor: string | null;
     processingStatus?: string | null;
     processingStage?: string | null;
+    modelInvocationStatus?: string | null;
     generatedOutputStatus?: string | null;
+    fileNameQuery?: string | null;
+    fileIdQuery?: string | null;
+    startedFrom?: string | null;
+    startedTo?: string | null;
+    endedFrom?: string | null;
+    endedTo?: string | null;
     errorState?: string | null;
+    errorCodeQuery?: string | null;
+    actionState?: string | null;
   }> = [];
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
@@ -165,6 +179,7 @@ function createRepositories() {
     records: {
       bundleFile,
       treeCalls,
+      treeSearchCalls,
       sourceCalls,
       releaseCalls,
       bundleCalls,
@@ -229,6 +244,61 @@ function createRepositories() {
             nextCursor: start + request.limit < entries.length ? String(start + request.limit) : null
           };
         },
+        async searchBundleTreeEntries(request: {
+          limit: number;
+          cursor: string | null;
+          query: string;
+        }) {
+          treeSearchCalls.push(request);
+          const pagesEntry = {
+            id: "tree-pages",
+            knowledgeBaseId: "kb-001",
+            releaseId: "release-001",
+            parentPath: "",
+            name: "pages",
+            logicalPath: "pages",
+            sortKey: "0:pages",
+            entryType: "directory" as const,
+            bundleFileId: null,
+            sourceFileId: null,
+            fileKind: null,
+            childCount: 1
+          };
+          const introEntry = {
+            id: "tree-intro",
+            knowledgeBaseId: "kb-001",
+            releaseId: "release-001",
+            parentPath: "pages",
+            name: "intro.md",
+            logicalPath: "pages/intro.md",
+            sortKey: "1:intro.md",
+            entryType: "file" as const,
+            bundleFileId: "bundle-file-001",
+            sourceFileId: "source-001",
+            fileKind: "page" as const,
+            childCount: 0
+          };
+          const matches = request.query.toLocaleLowerCase("en-US").includes("intro")
+            ? [
+                {
+                  entry: introEntry,
+                  ancestors: [pagesEntry]
+                }
+              ]
+            : request.query.toLocaleLowerCase("en-US").includes("pages")
+              ? [
+                  {
+                    entry: pagesEntry,
+                    ancestors: []
+                  }
+                ]
+              : [];
+
+          return {
+            items: matches,
+            nextCursor: null
+          };
+        },
         async getBundleFile(input: { knowledgeBaseId: string; releaseId: string; logicalPath: string }) {
           return input.knowledgeBaseId === "kb-001" &&
             input.releaseId === "release-001" &&
@@ -242,8 +312,17 @@ function createRepositories() {
           cursor: string | null;
           processingStatus?: string | null;
           processingStage?: string | null;
+          modelInvocationStatus?: string | null;
           generatedOutputStatus?: string | null;
+          fileNameQuery?: string | null;
+          fileIdQuery?: string | null;
+          startedFrom?: string | null;
+          startedTo?: string | null;
+          endedFrom?: string | null;
+          endedTo?: string | null;
           errorState?: string | null;
+          errorCodeQuery?: string | null;
+          actionState?: string | null;
         }) {
           sourceCalls.push(request);
           return {
@@ -594,6 +673,112 @@ describe("Knowledge base file Admin API", () => {
     ]);
   });
 
+  it("returns file tree search matches with ancestors", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/files/tree/search?query=intro",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      items: [
+        {
+          entry: {
+            id: "tree-intro",
+            parentPath: "pages",
+            name: "intro.md",
+            logicalPath: "pages/intro.md",
+            sortKey: "1:intro.md",
+            entryType: "file",
+            bundleFileId: "bundle-file-001",
+            sourceFileId: "source-001",
+            fileKind: "page",
+            childCount: 0,
+            deletable: true
+          },
+          ancestors: [
+            {
+              id: "tree-pages",
+              parentPath: "",
+              name: "pages",
+              logicalPath: "pages",
+              sortKey: "0:pages",
+              entryType: "directory",
+              bundleFileId: null,
+              sourceFileId: null,
+              fileKind: null,
+              childCount: 1,
+              deletable: false
+            }
+          ]
+        }
+      ],
+      nextCursor: null
+    });
+    expect(response.status).toBe(200);
+    expect(records.treeSearchCalls).toEqual([
+      expect.objectContaining({ limit: 100, cursor: null, query: "intro" })
+    ]);
+  });
+
+  it("caches repeated file tree search pages in Redis", async () => {
+    const { repositories, records } = createRepositories();
+    const redisClient = new MemoryRedisCommandClient();
+    const app = createApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      redis: createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" }),
+      repositories
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const path = "/admin/api/knowledge-bases/kb-001/files/tree/search?query=missing";
+    const first = await app.request(path, {
+      headers: {
+        cookie
+      }
+    });
+    const second = await app.request(path, {
+      headers: {
+        cookie
+      }
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await expect(first.json()).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(second.json()).resolves.toEqual({ items: [], nextCursor: null });
+    expect(records.treeSearchCalls).toHaveLength(1);
+    expect(
+      Array.from(redisClient.values.keys()).some((key) =>
+        key.startsWith("focowiki-test:page-cache:file-tree-search:kb-001:release-001:")
+      )
+    ).toBe(true);
+  });
+
+  it("rejects invalid file tree search before reading the repository", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/files/tree/search?query=a",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "FILE_TREE_SEARCH_QUERY_TOO_SHORT"
+      }
+    });
+    expect(response.status).toBe(400);
+    expect(records.treeSearchCalls).toEqual([]);
+  });
+
   it("returns source file, release, and bundle file lists without storage keys", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const sourceFiles = await app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
@@ -664,6 +849,40 @@ describe("Knowledge base file Admin API", () => {
     ]);
   });
 
+  it("passes source file column filters to the repository with normalized timestamps", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&fileNameQuery=intro&fileIdQuery=source-file-001&processingStatus=completed&processingStage=release_activation&modelInvocationStatus=not_recorded&generatedOutputStatus=visible&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(records.sourceCalls).toEqual([
+      expect.objectContaining({
+        knowledgeBaseId: "kb-001",
+        limit: 1,
+        cursor: null,
+        fileNameQuery: "intro",
+        fileIdQuery: "source-file-001",
+        processingStatus: "completed",
+        processingStage: "release_activation",
+        modelInvocationStatus: "not_recorded",
+        generatedOutputStatus: "visible",
+        startedFrom: "2026-06-14T00:00:00.000Z",
+        startedTo: "2026-06-15T00:00:00.000Z",
+        endedFrom: "2026-06-14T00:00:00.000Z",
+        endedTo: "2026-06-15T00:00:00.000Z",
+        errorState: "without_error",
+        errorCodeQuery: "TIMEOUT",
+        actionState: "openable"
+      })
+    ]);
+  });
+
   it("rejects invalid source file lifecycle filters before reading the repository", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const response = await app.request(
@@ -681,6 +900,40 @@ describe("Knowledge base file Admin API", () => {
       }
     });
     expect(response.status).toBe(400);
+    expect(records.sourceCalls).toEqual([]);
+  });
+
+  it("rejects invalid source file text and time filters before reading the repository", async () => {
+    const { app, cookie, records } = await createAuthenticatedFileApp();
+    const shortText = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?errorCodeQuery=a",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+    const invertedTime = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?startedFrom=2026-06-15T00%3A00%3A00.000Z&startedTo=2026-06-14T00%3A00%3A00.000Z",
+      {
+        headers: {
+          cookie
+        }
+      }
+    );
+
+    await expect(shortText.json()).resolves.toEqual({
+      error: {
+        code: "SOURCE_FILE_FILTER_TEXT_TOO_SHORT"
+      }
+    });
+    await expect(invertedTime.json()).resolves.toEqual({
+      error: {
+        code: "SOURCE_FILE_FILTER_TIME_RANGE_INVALID"
+      }
+    });
+    expect(shortText.status).toBe(400);
+    expect(invertedTime.status).toBe(400);
     expect(records.sourceCalls).toEqual([]);
   });
 

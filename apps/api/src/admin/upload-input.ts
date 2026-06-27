@@ -28,6 +28,14 @@ export async function hasExistingSourceFileName(input: {
   limit: number;
 }): Promise<boolean> {
   const names = new Set(input.fileNames.map(normalizeSourceFileName));
+
+  if (input.filesRepository.hasActiveSourceFileNames) {
+    return input.filesRepository.hasActiveSourceFileNames({
+      knowledgeBaseId: input.knowledgeBaseId,
+      normalizedFileNames: [...names]
+    });
+  }
+
   let cursor: string | null = null;
 
   do {

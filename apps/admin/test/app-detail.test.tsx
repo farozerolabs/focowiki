@@ -4,6 +4,7 @@ import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
   deleteKnowledgeBaseFile,
+  deleteKnowledgeBaseSourceFileTasks,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
@@ -11,6 +12,7 @@ import {
   listReleases,
   listSourceFiles,
   loginAdmin,
+  searchKnowledgeBaseFileTree,
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
@@ -20,6 +22,19 @@ vi.mock("../src/lib/admin-api", () => ({
   deleteKnowledgeBaseFile: vi.fn(async () => ({
     deleted: true,
     publicationQueued: true
+  })),
+  deleteKnowledgeBaseSourceFileTasks: vi.fn(async () => ({
+    results: [
+      {
+        sourceFileId: "source-002",
+        status: "hidden"
+      }
+    ],
+    summary: {
+      deleted: 0,
+      hidden: 1,
+      skipped: 0
+    }
   })),
   fetchKnowledgeBaseFileDetail: vi.fn(async () => ({
     file: {
@@ -45,6 +60,35 @@ vi.mock("../src/lib/admin-api", () => ({
         sourceFileId: "source-001",
         fileKind: "page",
         deletable: true
+      }
+    ],
+    nextCursor: null
+  })),
+  searchKnowledgeBaseFileTree: vi.fn(async () => ({
+    items: [
+      {
+        entry: {
+          id: "tree-001",
+          name: "intro.md",
+          logicalPath: "pages/intro.md",
+          entryType: "file",
+          bundleFileId: "file-001",
+          sourceFileId: "source-001",
+          fileKind: "page",
+          deletable: true
+        },
+        ancestors: [
+          {
+            id: "tree-pages",
+            name: "pages",
+            logicalPath: "pages",
+            entryType: "directory",
+            bundleFileId: null,
+            sourceFileId: null,
+            fileKind: null,
+            deletable: false
+          }
+        ]
       }
     ],
     nextCursor: null
@@ -151,6 +195,10 @@ vi.mock("../src/lib/admin-api", () => ({
 describe("Admin knowledge base detail", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024
+    });
     Object.assign(navigator, {
       clipboard: {
         writeText: vi.fn(async () => undefined)
@@ -160,7 +208,9 @@ describe("Admin knowledge base detail", () => {
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
 
-  async function openDetail() {
+  async function openDetail(options: { expectSidebarBackButton?: boolean } = {}) {
+    const expectSidebarBackButton = options.expectSidebarBackButton ?? true;
+
     render(<App />);
 
     expect(await screen.findByLabelText("Username")).toBeTruthy();
@@ -178,7 +228,11 @@ describe("Admin knowledge base detail", () => {
 
     expect(loginAdmin).toHaveBeenCalledWith({ username: "admin", password: "admin-secret" });
     fireEvent.click(await screen.findByRole("button", { name: "Developer docs" }));
-    expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+    if (expectSidebarBackButton) {
+      expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+    } else {
+      expect((await screen.findAllByText("File processing")).length).toBeGreaterThan(0);
+    }
   }
 
   it("loads a paginated file tree and renders full read-only Markdown preview", async () => {
@@ -198,6 +252,160 @@ describe("Admin knowledge base detail", () => {
     });
     expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
     expect(screen.getByText(/type: guide/)).toBeTruthy();
+  });
+
+  it("searches the file tree and renders ancestor folders", async () => {
+    await openDetail();
+
+    fireEvent.change(screen.getByPlaceholderText("Search files and folders"), {
+      target: {
+        value: "intro"
+      }
+    });
+
+    await waitFor(() => {
+      expect(searchKnowledgeBaseFileTree).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        query: "intro",
+        cursor: null
+      });
+    });
+    expect(await screen.findByRole("button", { name: "pages" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "intro.md" })).toBeTruthy();
+    expect(fetchKnowledgeBaseFileTree).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      cursor: null
+    });
+  });
+
+  it("resizes the detail sidebar within desktop bounds", async () => {
+    await openDetail();
+
+    const resizeHandle = await screen.findByRole("separator", { name: "Resize sidebar" });
+
+    expect(resizeHandle.getAttribute("aria-valuemin")).toBe("256");
+    expect(resizeHandle.getAttribute("aria-valuemax")).toBe("512");
+    expect(resizeHandle.getAttribute("aria-valuenow")).toBe("256");
+    expect(resizeHandle.getAttribute("data-sidebar")).toBe("rail");
+    expect((resizeHandle as HTMLElement).style.left).toBe("");
+    expect(resizeHandle.className).toContain("group-data-[side=left]:right-0");
+    expect(resizeHandle.childElementCount).toBe(0);
+
+    const sidebar = resizeHandle.closest('[data-slot="sidebar"]');
+    const sidebarGap = sidebar?.querySelector('[data-slot="sidebar-gap"]');
+    const sidebarContainer = sidebar?.querySelector('[data-slot="sidebar-container"]');
+
+    expect(sidebar?.getAttribute("data-resizing")).toBe("false");
+    expect(sidebarGap?.className).not.toContain("transition-none");
+    expect(sidebarContainer?.className).not.toContain("transition-none");
+
+    fireEvent.pointerDown(resizeHandle, {
+      button: 0,
+      clientX: 0,
+      pointerId: 1
+    });
+    await waitFor(() => {
+      expect(sidebar?.getAttribute("data-resizing")).toBe("true");
+      expect(sidebarGap?.className).toContain("transition-none");
+      expect(sidebarContainer?.className).toContain("transition-none");
+      expect((sidebarGap as HTMLElement | null)?.style.transitionProperty).toBe("none");
+      expect((sidebarGap as HTMLElement | null)?.style.transitionDuration).toBe("0ms");
+      expect((sidebarContainer as HTMLElement | null)?.style.transitionProperty).toBe("none");
+      expect((sidebarContainer as HTMLElement | null)?.style.transitionDuration).toBe("0ms");
+    });
+    fireEvent.pointerMove(resizeHandle, {
+      clientX: 400,
+      pointerId: 1
+    });
+    expect(resizeHandle.getAttribute("aria-valuenow")).toBe("512");
+    fireEvent.pointerUp(resizeHandle, {
+      pointerId: 1
+    });
+    await waitFor(() => {
+      expect(sidebar?.getAttribute("data-resizing")).toBe("false");
+      expect(sidebarGap?.className).not.toContain("transition-none");
+      expect(sidebarContainer?.className).not.toContain("transition-none");
+      expect((sidebarGap as HTMLElement | null)?.style.transitionProperty).toBe("");
+      expect((sidebarGap as HTMLElement | null)?.style.transitionDuration).toBe("");
+      expect((sidebarContainer as HTMLElement | null)?.style.transitionProperty).toBe("");
+      expect((sidebarContainer as HTMLElement | null)?.style.transitionDuration).toBe("");
+    });
+
+    fireEvent.pointerDown(resizeHandle, {
+      button: 0,
+      clientX: 400,
+      pointerId: 2
+    });
+    fireEvent.pointerMove(resizeHandle, {
+      clientX: -400,
+      pointerId: 2
+    });
+    expect(resizeHandle.getAttribute("aria-valuenow")).toBe("256");
+    fireEvent.pointerUp(resizeHandle, {
+      pointerId: 2
+    });
+  });
+
+  it("keeps the detail sidebar resize handle off mobile viewports", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 500
+    });
+
+    await openDetail({ expectSidebarBackButton: false });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("separator", { name: "Resize sidebar" })).toBeNull();
+    });
+  });
+
+  it("lets long file tree labels use the available sidebar row width", async () => {
+    const longName =
+      "a-very-long-generated-markdown-file-name-with-date-status-and-source-id.md";
+
+    vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
+      items: [
+        {
+          id: "tree-long",
+          name: longName,
+          logicalPath: `pages/${longName}`,
+          entryType: "file",
+          bundleFileId: "file-long",
+          sourceFileId: "source-long",
+          fileKind: "page",
+          deletable: true
+        }
+      ],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    const fileButton = await screen.findByRole("button", { name: longName });
+    const label = within(fileButton).getByText(longName);
+
+    expect(fileButton.className).toContain("flex-1");
+    expect(fileButton.className).toContain("min-w-0");
+    expect(label.className).toContain("flex-1");
+    expect(label.className).toContain("truncate");
+    expect(label.getAttribute("title")).toBe(longName);
+
+    const resizeHandle = screen.getByRole("separator", { name: "Resize sidebar" });
+
+    fireEvent.pointerDown(resizeHandle, {
+      button: 0,
+      clientX: 0,
+      pointerId: 1
+    });
+    fireEvent.pointerMove(resizeHandle, {
+      clientX: 120,
+      pointerId: 1
+    });
+    fireEvent.pointerUp(resizeHandle, {
+      pointerId: 1
+    });
+
+    expect(label.textContent).toBe(longName);
   });
 
   it("renders source files directly in the processing table", async () => {
@@ -237,6 +445,54 @@ describe("Admin knowledge base detail", () => {
     expect(within(table).getByText("Metadata resolution")).toBeTruthy();
     expect(within(table).getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
+  });
+
+  it("deletes only selected eligible task rows from the current page", async () => {
+    await openDetail();
+
+    const runningCheckbox = (await screen.findByLabelText("Select intro.md")) as HTMLButtonElement;
+    const queuedCheckbox = screen.getByLabelText("Select setup.md") as HTMLButtonElement;
+
+    expect(runningCheckbox.disabled).toBe(true);
+    expect(queuedCheckbox.disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText("Select eligible rows on this page"));
+    expect(screen.getByText("1 selected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "Delete processing tasks" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete tasks" }));
+
+    await waitFor(() => {
+      expect(deleteKnowledgeBaseSourceFileTasks).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        sourceFileIds: ["source-002"]
+      });
+      expect(screen.getByText("Tasks deleted")).toBeTruthy();
+    });
+    expect(deleteKnowledgeBaseFile).not.toHaveBeenCalled();
+    expect(document.querySelectorAll('[data-slot="toast-viewport"]')).toHaveLength(1);
+  });
+
+  it("shows task deletion backend failures through the global toast", async () => {
+    vi.mocked(deleteKnowledgeBaseSourceFileTasks).mockResolvedValueOnce({
+      messageKey: "errors.sourceFileTaskDeletionInvalid"
+    });
+
+    await openDetail();
+
+    fireEvent.click(await screen.findByLabelText("Select setup.md"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete selected" }));
+    fireEvent.click(
+      within(screen.getByRole("alertdialog", { name: "Delete processing tasks" })).getByRole(
+        "button",
+        { name: "Delete tasks" }
+      )
+    );
+
+    expect(await screen.findByText("Task deletion failed")).toBeTruthy();
+    expect(await screen.findByText("Task deletion request is invalid")).toBeTruthy();
+    expect(screen.getByRole("alertdialog", { name: "Delete processing tasks" })).toBeTruthy();
   });
 
   it("opens a generated file directly from a completed source-file row", async () => {
@@ -366,6 +622,74 @@ describe("Admin knowledge base detail", () => {
     expect(listSourceFiles).toHaveBeenNthCalledWith(2, {
       knowledgeBaseId: "kb-docs",
       cursor: "source-cursor-001"
+    });
+  });
+
+  it("filters source files from table headers and resets cursor pagination", async () => {
+    vi.mocked(listSourceFiles)
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: "2026-06-14T00:00:10.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
+          }
+        ],
+        nextCursor: "source-cursor-001"
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        nextCursor: null
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "source-001",
+            originalName: "intro.md",
+            processingStatus: "completed",
+            processingStage: "release_activation",
+            processingStartedAt: "2026-06-14T00:00:00.000Z",
+            processingEndedAt: "2026-06-14T00:00:10.000Z",
+            processingErrorCode: null,
+            createdAt: "2026-06-14T00:00:00.000Z"
+          }
+        ],
+        nextCursor: "source-cursor-001"
+      });
+
+    await openDetail();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Filter File name" }));
+    fireEvent.change(await screen.findByLabelText("File name"), {
+      target: {
+        value: "missing"
+      }
+    });
+
+    await waitFor(() => {
+      expect(listSourceFiles).toHaveBeenLastCalledWith({
+        knowledgeBaseId: "kb-docs",
+        cursor: null,
+        filters: expect.objectContaining({
+          fileNameQuery: "missing"
+        })
+      });
+    });
+    expect(await screen.findByText("No files match the current filters")).toBeTruthy();
+    expect(screen.getByText("1 active filter")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear" }));
+
+    await waitFor(() => {
+      expect(listSourceFiles).toHaveBeenLastCalledWith({
+        knowledgeBaseId: "kb-docs",
+        cursor: null
+      });
     });
   });
 

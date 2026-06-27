@@ -1,6 +1,18 @@
 export type QueryPlanTargetName =
+  | "knowledge-base-card-search"
   | "source-file-list"
+  | "source-file-list-filename-filter"
+  | "source-file-list-status-stage-filter"
+  | "source-file-list-time-filter"
+  | "source-file-list-error-filter"
+  | "source-file-list-model-filter"
+  | "source-file-list-action-filter"
+  | "worker-job-source-cancellation"
   | "bundle-tree-page"
+  | "bundle-tree-search-name"
+  | "bundle-tree-search-path"
+  | "bundle-tree-search-next-page"
+  | "bundle-tree-search-ancestors"
   | "bundle-file-content"
   | "source-file-graph-summary";
 
@@ -85,6 +97,18 @@ export function summarizeQueryPlan(planJson: unknown): QueryPlanSummary {
 export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
   return [
     {
+      name: "knowledge-base-card-search",
+      description: "Knowledge-base card search must use indexed metadata search before cursor pagination.",
+      sql: `
+        SELECT id, name, description, active_release_id, created_at, updated_at
+        FROM focowiki.knowledge_bases
+        WHERE deleted_at IS NULL
+          AND lower(id || ' ' || name || ' ' || coalesce(description, '')) LIKE '%docs%' ESCAPE '\\'
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
       name: "source-file-list",
       description: "Source-file cursor page must use knowledge-base scoped created_at/id indexes.",
       sql: `
@@ -94,7 +118,118 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
           AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
         ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-filename-filter",
+      description: "Source-file filename filter must stay bounded and use indexed searchable filename state.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND original_name ILIKE '%example%'
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-status-stage-filter",
+      description: "Source-file status and stage filters must use knowledge-base scoped processing indexes.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND processing_status = 'completed'
+          AND processing_stage = 'release_activation'
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-time-filter",
+      description: "Source-file time range filters must apply in PostgreSQL before cursor pagination.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND processing_started_at >= '2026-01-01T00:00:00.000Z'
+          AND processing_started_at <= '2026-12-31T23:59:59.999Z'
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-error-filter",
+      description: "Source-file error filters must use persisted error summary columns.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND (
+            processing_error_code IS NOT NULL
+            OR publication_error_code IS NOT NULL
+          )
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-model-filter",
+      description: "Source-file model-state filters must use persisted latest model summary columns.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND model_invocation_status = 'completed'
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-file-list-action-filter",
+      description: "Source-file action filters must derive from persisted source-file summary columns.",
+      sql: `
+        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+               generated_output_status, model_invocation_status, created_at, deleted_at
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
+          AND generated_output_status = 'visible'
+          AND generated_bundle_file_path IS NOT NULL
+        ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "worker-job-source-cancellation",
+      description: "Task deletion must cancel selected queued source-file jobs through explicit indexed IDs.",
+      sql: `
+        SELECT id
+        FROM focowiki.worker_jobs
+        WHERE knowledge_base_id = 'kb-plan'
+          AND kind = 'source_file_processing'
+          AND status IN ('queued', 'running')
+          AND source_file_id = ANY(ARRAY['source-file-plan-a', 'source-file-plan-b'])
+        ORDER BY run_after ASC, created_at ASC, id ASC
         LIMIT 51
       `
     },
@@ -112,6 +247,70 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND entry.parent_path = ''
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
+      `
+    },
+    {
+      name: "bundle-tree-search-name",
+      description: "Active release tree search by name must use indexed release-scoped search.",
+      sql: `
+        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
+               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
+               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
+        FROM focowiki.bundle_tree_entries entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
+          AND (entry.name || ' ' || entry.logical_path) ILIKE '%example%' ESCAPE '\\'
+        ORDER BY entry.sort_key ASC, entry.id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "bundle-tree-search-path",
+      description: "Active release tree search by logical path must use indexed release-scoped search.",
+      sql: `
+        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
+               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
+               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
+        FROM focowiki.bundle_tree_entries entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
+          AND (entry.name || ' ' || entry.logical_path) ILIKE '%pages/example%' ESCAPE '\\'
+        ORDER BY entry.sort_key ASC, entry.id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "bundle-tree-search-next-page",
+      description: "Active release tree search next page must use cursor seek rather than offset.",
+      sql: `
+        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
+               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
+               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
+        FROM focowiki.bundle_tree_entries entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
+          AND (entry.name || ' ' || entry.logical_path) ILIKE '%example%' ESCAPE '\\'
+          AND (entry.sort_key > '1:example.md' OR (entry.sort_key = '1:example.md' AND entry.id > 'tree-entry-plan'))
+        ORDER BY entry.sort_key ASC, entry.id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "bundle-tree-search-ancestors",
+      description: "Search result ancestor lookup must fetch only returned match ancestors.",
+      sql: `
+        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
+               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
+               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
+        FROM focowiki.bundle_tree_entries entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
+          AND entry.logical_path = ANY(ARRAY['pages', 'pages/guides'])
+        ORDER BY entry.logical_path ASC
       `
     },
     {
@@ -135,6 +334,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         WHERE knowledge_base_id = 'kb-plan'
           AND id = 'source-file-plan'
           AND deleted_at IS NULL
+          AND task_deleted_at IS NULL
         LIMIT 1
       `
     }

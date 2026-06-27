@@ -116,6 +116,75 @@ export function paginationParameters(): ParameterObject[] {
   ];
 }
 
+export function sourceFileListFilterParameters(): ParameterObject[] {
+  return [
+    queryParameter("fileNameQuery", "Case-insensitive filename substring filter.", {
+      type: "string",
+      minLength: 1,
+      maxLength: 160
+    }),
+    queryParameter("fileIdQuery", "Source file ID prefix filter.", {
+      type: "string",
+      minLength: 8,
+      maxLength: 160
+    }),
+    queryParameter("processingStatus", "Source-file processing state filter.", {
+      type: "string",
+      enum: ["queued", "running", "completed", "failed"]
+    }),
+    queryParameter("processingStage", "Current source-file stage filter.", {
+      type: "string",
+      enum: [
+        "upload_storage",
+        "metadata_resolution",
+        "llm_suggestion",
+        "graph_generation",
+        "okf_validation",
+        "bundle_generation",
+        "index_publication",
+        "release_activation"
+      ]
+    }),
+    queryParameter("modelInvocationStatus", "Latest model-assistance state filter.", {
+      type: "string",
+      enum: ["running", "completed", "failed", "skipped", "not_recorded"]
+    }),
+    queryParameter("generatedOutputStatus", "Generated output state filter.", {
+      type: "string",
+      enum: ["pending", "visible", "unavailable"]
+    }),
+    queryParameter("startedFrom", "Processing start lower bound.", {
+      type: "string",
+      format: "date-time"
+    }),
+    queryParameter("startedTo", "Processing start upper bound.", {
+      type: "string",
+      format: "date-time"
+    }),
+    queryParameter("endedFrom", "Processing end lower bound.", {
+      type: "string",
+      format: "date-time"
+    }),
+    queryParameter("endedTo", "Processing end upper bound.", {
+      type: "string",
+      format: "date-time"
+    }),
+    queryParameter("errorState", "Processing or publication error state filter.", {
+      type: "string",
+      enum: ["with_error", "without_error"]
+    }),
+    queryParameter("errorCodeQuery", "Processing or publication error-code substring filter.", {
+      type: "string",
+      minLength: 2,
+      maxLength: 160
+    }),
+    queryParameter("actionState", "Available follow-up action filter.", {
+      type: "string",
+      enum: ["openable", "retryable", "none"]
+    })
+  ];
+}
+
 export function knowledgeBaseIdParameter(): ParameterObject {
   return pathParameter("knowledgeBaseId", "Knowledge-base identifier returned by knowledge-base APIs.");
 }
@@ -195,6 +264,20 @@ function pathParameter(name: string, description: string): ParameterObject {
     required: true,
     description,
     schema: { type: "string", minLength: 1 }
+  };
+}
+
+function queryParameter(
+  name: string,
+  description: string,
+  schema: Record<string, unknown>
+): ParameterObject {
+  return {
+    name,
+    in: "query",
+    required: false,
+    description,
+    schema
   };
 }
 

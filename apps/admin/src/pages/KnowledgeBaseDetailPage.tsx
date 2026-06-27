@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { CopyIcon } from "lucide-react";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
+import { FilePreviewPanel } from "@/components/file-preview-panel";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { SourceFileProgressPanel } from "@/components/task-progress-panel";
 import { UploadSourceDialog } from "@/components/upload-source-dialog";
@@ -16,15 +17,6 @@ import {
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
 import { Alert, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
@@ -50,27 +42,36 @@ import {
   fetchKnowledgeBasePublicUrls,
   listSourceFiles,
   retryKnowledgeBaseSourceFile,
-  type BundleTreeEntry,
-  type KnowledgeBasePublicUrls,
   type KnowledgeBase,
+  type KnowledgeBasePublicUrls,
   type ProcessingSummary,
   type SourceFilePage,
   type SourceFileRecord
 } from "@/lib/admin-api";
+import { useFileTreeSearch } from "@/hooks/use-file-tree-search";
+import {
+  buildSidebarSearchTree,
+  buildSidebarTree,
+  type TreePageState
+} from "@/lib/sidebar-tree";
+import {
+  createEmptySourceFileListFilters,
+  hasActiveSourceFileFilters,
+  type SourceFileListFilters
+} from "@/lib/source-file-list-filters";
+import { useSourceFileTaskDeletionHandler } from "@/hooks/use-source-file-task-deletion-handler";
 
 const ROOT_PARENT_PATH = "";
 const SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;
+const SOURCE_FILE_FILTER_DEBOUNCE_MS = 300;
+const DETAIL_SIDEBAR_MIN_WIDTH_PX = 256;
+const DETAIL_SIDEBAR_MAX_WIDTH_PX = 512;
+const DETAIL_SIDEBAR_DEFAULT_WIDTH_PX = DETAIL_SIDEBAR_MIN_WIDTH_PX;
 
 type KnowledgeBaseDetailPageProps = {
   knowledgeBase: KnowledgeBase;
   onBack: () => void;
   onLogout: () => void;
-};
-
-type TreePageState = {
-  items: BundleTreeEntry[];
-  nextCursor: string | null;
-  isLoading: boolean;
 };
 
 type ActiveView = "file" | "processing";
@@ -83,6 +84,9 @@ export function KnowledgeBaseDetailPage({
   const { t } = useTranslation();
   const sourceFileRefreshSnapshotsRef = useRef<Map<string, SourceFileRefreshSnapshot>>(new Map());
   const sourceFilePageStateRef = useRef<CursorPageState>(createInitialCursorPageState());
+  const sourceFileFiltersRef = useRef<SourceFileListFilters>(createEmptySourceFileListFilters());
+  const sourceFileRequestIdRef = useRef(0);
+  const sourceFileFilterTimeoutRef = useRef<number | null>(null);
   const loadedTreeParentsRef = useRef<Set<string>>(new Set());
   const activeViewRef = useRef<ActiveView>("processing");
   const sourceFilesRef = useRef<SourceFileRecord[]>([]);
@@ -99,6 +103,9 @@ export function KnowledgeBaseDetailPage({
   const [deleteFileError, setDeleteFileError] = useState("");
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<SourceFileRecord[]>([]);
+  const [sourceFileFilters, setSourceFileFilters] = useState<SourceFileListFilters>(
+    createEmptySourceFileListFilters
+  );
   const [sourceFilePageState, setSourceFilePageState] = useState<CursorPageState>(
     createInitialCursorPageState
   );
@@ -108,11 +115,36 @@ export function KnowledgeBaseDetailPage({
   const [processingSummary, setProcessingSummary] = useState<ProcessingSummary | null>(null);
   const [publicUrls, setPublicUrls] = useState<KnowledgeBasePublicUrls | null>(null);
   const [copiedUrl, setCopiedUrl] = useState("");
+  const [detailSidebarWidth, setDetailSidebarWidth] = useState(DETAIL_SIDEBAR_DEFAULT_WIDTH_PX);
+  const fileTreeSearch = useFileTreeSearch(knowledgeBase.id);
+  const handleDeleteSourceFileTasks = useSourceFileTaskDeletionHandler({
+    knowledgeBaseId: knowledgeBase.id,
+    sourceFilePageStateRef,
+    setRetryingSourceFileId,
+    loadSourceFiles,
+    loadProcessingSummary
+  });
 
   const rootTreePage = treePages[ROOT_PARENT_PATH];
   const sidebarTree = useMemo(
-    () => buildSidebarTree(treePages, expandedDirectories, selectedFilePath, ROOT_PARENT_PATH),
-    [expandedDirectories, selectedFilePath, treePages]
+    () =>
+      fileTreeSearch.isSearchActive
+        ? buildSidebarSearchTree(fileTreeSearch.results, selectedFilePath)
+        : buildSidebarTree(treePages, expandedDirectories, selectedFilePath, ROOT_PARENT_PATH),
+    [
+      expandedDirectories,
+      fileTreeSearch.isSearchActive,
+      fileTreeSearch.results,
+      selectedFilePath,
+      treePages
+    ]
+  );
+  const sidebarProviderStyle = useMemo(
+    () =>
+      ({
+        "--sidebar-width": `${detailSidebarWidth}px`
+      }) as CSSProperties,
+    [detailSidebarWidth]
   );
 
   useEffect(() => {
@@ -135,6 +167,9 @@ export function KnowledgeBaseDetailPage({
     setDeleteFileError("");
     setIsDeletingFile(false);
     setSourceFiles([]);
+    const emptySourceFileFilters = createEmptySourceFileListFilters();
+    sourceFileFiltersRef.current = emptySourceFileFilters;
+    setSourceFileFilters(emptySourceFileFilters);
     const initialSourceFilePageState = createInitialCursorPageState();
     sourceFilePageStateRef.current = initialSourceFilePageState;
     setSourceFilePageState(initialSourceFilePageState);
@@ -145,7 +180,13 @@ export function KnowledgeBaseDetailPage({
     setProcessingSummary(null);
     setPublicUrls(null);
     setCopiedUrl("");
+    setDetailSidebarWidth(DETAIL_SIDEBAR_DEFAULT_WIDTH_PX);
     sourceFileRefreshSnapshotsRef.current = new Map();
+    sourceFileRequestIdRef.current += 1;
+    if (sourceFileFilterTimeoutRef.current !== null) {
+      window.clearTimeout(sourceFileFilterTimeoutRef.current);
+      sourceFileFilterTimeoutRef.current = null;
+    }
     loadedTreeParentsRef.current = new Set();
 
     void loadFileTree({ parentPath: ROOT_PARENT_PATH, replace: true });
@@ -188,6 +229,10 @@ export function KnowledgeBaseDetailPage({
 
     return () => {
       disposed = true;
+      if (sourceFileFilterTimeoutRef.current !== null) {
+        window.clearTimeout(sourceFileFilterTimeoutRef.current);
+        sourceFileFilterTimeoutRef.current = null;
+      }
       if (timeoutId !== null) {
         window.clearTimeout(timeoutId);
       }
@@ -272,21 +317,28 @@ export function KnowledgeBaseDetailPage({
     setPreviewHtml(`<pre>${escapeHtml(detail.content)}</pre>`);
   }
 
-  async function loadSourceFiles(input: { pageState: CursorPageState }) {
-    if (isSourceFilePageLoadingRef.current) {
-      return;
-    }
+  async function loadSourceFiles(input: {
+    pageState: CursorPageState;
+    filters?: SourceFileListFilters;
+  }) {
+    const requestId = sourceFileRequestIdRef.current + 1;
+    sourceFileRequestIdRef.current = requestId;
     isSourceFilePageLoadingRef.current = true;
     setIsSourceFilePageLoading(true);
+    const filters = input.filters ?? sourceFileFiltersRef.current;
     try {
       let page: SourceFilePage;
 
       try {
         page = await listSourceFiles({
           knowledgeBaseId: knowledgeBase.id,
-          cursor: input.pageState.currentCursor
+          cursor: input.pageState.currentCursor,
+          ...(hasActiveSourceFileFilters(filters) ? { filters } : {})
         });
       } catch {
+        if (requestId !== sourceFileRequestIdRef.current) {
+          return;
+        }
         const nextPageState = createInitialCursorPageState();
 
         sourceFilePageStateRef.current = nextPageState;
@@ -298,9 +350,12 @@ export function KnowledgeBaseDetailPage({
           try {
             page = await listSourceFiles({
               knowledgeBaseId: knowledgeBase.id,
-              cursor: nextPageState.currentCursor
+              cursor: nextPageState.currentCursor,
+              ...(hasActiveSourceFileFilters(filters) ? { filters } : {})
             });
-            await applySourceFilePage(nextPageState, page);
+            if (requestId === sourceFileRequestIdRef.current) {
+              await applySourceFilePage(nextPageState, page);
+            }
           } catch {
             setSourceFiles([]);
           }
@@ -308,12 +363,17 @@ export function KnowledgeBaseDetailPage({
         return;
       }
 
+      if (requestId !== sourceFileRequestIdRef.current) {
+        return;
+      }
       await applySourceFilePage(input.pageState, page);
       await loadProcessingSummary();
       setSourceFileError("");
     } finally {
-      isSourceFilePageLoadingRef.current = false;
-      setIsSourceFilePageLoading(false);
+      if (requestId === sourceFileRequestIdRef.current) {
+        isSourceFilePageLoadingRef.current = false;
+        setIsSourceFilePageLoading(false);
+      }
     }
   }
 
@@ -335,12 +395,12 @@ export function KnowledgeBaseDetailPage({
     }
   }
 
-  async function loadFirstSourceFilePage() {
+  async function loadFirstSourceFilePage(filters: SourceFileListFilters = sourceFileFiltersRef.current) {
     const nextPageState = createInitialCursorPageState();
 
     sourceFilePageStateRef.current = nextPageState;
     setSourceFilePageState(nextPageState);
-    await loadSourceFiles({ pageState: nextPageState });
+    await loadSourceFiles({ pageState: nextPageState, filters });
   }
 
   async function handleNextSourceFilePage() {
@@ -365,6 +425,29 @@ export function KnowledgeBaseDetailPage({
     sourceFilePageStateRef.current = nextPageState;
     setSourceFilePageState(nextPageState);
     await loadSourceFiles({ pageState: nextPageState });
+  }
+
+  function handleSourceFileFiltersChange(filters: SourceFileListFilters) {
+    sourceFileFiltersRef.current = filters;
+    setSourceFileFilters(filters);
+    setSourceFileError("");
+    const nextPageState = createInitialCursorPageState();
+
+    sourceFilePageStateRef.current = nextPageState;
+    setSourceFilePageState(nextPageState);
+    if (sourceFileFilterTimeoutRef.current !== null) {
+      window.clearTimeout(sourceFileFilterTimeoutRef.current);
+    }
+    sourceFileFilterTimeoutRef.current = window.setTimeout(() => {
+      sourceFileFilterTimeoutRef.current = null;
+      void loadSourceFiles({ pageState: nextPageState, filters });
+    }, SOURCE_FILE_FILTER_DEBOUNCE_MS);
+  }
+
+  function handleClearSourceFileFilters() {
+    const filters = createEmptySourceFileListFilters();
+
+    handleSourceFileFiltersChange(filters);
   }
 
   async function refreshGeneratedFiles() {
@@ -449,7 +532,7 @@ export function KnowledgeBaseDetailPage({
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider style={sidebarProviderStyle}>
       <AppSidebar
         appName={t("app.name")}
         knowledgeBaseName={knowledgeBase.name}
@@ -464,7 +547,11 @@ export function KnowledgeBaseDetailPage({
           deleteFile: t("delete.action"),
           fileActions: t("delete.fileMenu"),
           emptyFiles: t("detail.emptyFiles"),
-          loadingFiles: t("detail.loadingFiles")
+          loadingFiles: t("detail.loadingFiles"),
+          fileTreeSearchPlaceholder: t("detail.fileTreeSearchPlaceholder"),
+          clearFileTreeSearch: t("detail.clearFileTreeSearch"),
+          fileTreeSearchNoResults: t("detail.fileTreeSearchNoResults"),
+          fileTreeSearchLoadMore: t("detail.fileTreeSearchLoadMore")
         }}
         activeView={activeView}
         tree={sidebarTree}
@@ -481,6 +568,23 @@ export function KnowledgeBaseDetailPage({
         }}
         onToggleDirectory={(node, open) => void handleToggleDirectory(node, open)}
         onLoadMoreTree={(parentPath) => void loadFileTree({ parentPath, replace: false })}
+        fileTreeSearch={{
+          query: fileTreeSearch.query,
+          isActive: fileTreeSearch.isSearchActive,
+          isLoading: fileTreeSearch.isLoading,
+          nextCursor: fileTreeSearch.nextCursor,
+          statusMessage: fileTreeSearch.errorMessageKey ? t(fileTreeSearch.errorMessageKey) : null,
+          onQueryChange: fileTreeSearch.setQuery,
+          onClear: fileTreeSearch.clear,
+          onLoadMore: () => void fileTreeSearch.loadMore()
+        }}
+        resizeRail={{
+          label: t("detail.resizeSidebar"),
+          maxWidth: DETAIL_SIDEBAR_MAX_WIDTH_PX,
+          minWidth: DETAIL_SIDEBAR_MIN_WIDTH_PX,
+          width: detailSidebarWidth,
+          onWidthChange: setDetailSidebarWidth
+        }}
       />
       <SidebarInset className="min-w-0 overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-4">
@@ -502,6 +606,8 @@ export function KnowledgeBaseDetailPage({
           {activeView === "processing" ? (
             <SourceFileProgressPanel
               sourceFiles={sourceFiles}
+              filters={sourceFileFilters}
+              hasActiveFilters={hasActiveSourceFileFilters(sourceFileFilters)}
               summary={processingSummary}
               pagination={{
                 hasNext: Boolean(sourceFilePageState.nextCursor),
@@ -513,9 +619,12 @@ export function KnowledgeBaseDetailPage({
               onPreviousPage={() => void handlePreviousSourceFilePage()}
               onRefresh={() => void loadSourceFiles({ pageState: sourceFilePageStateRef.current })}
               onUpload={() => setIsUploadDialogOpen(true)}
+              onFiltersChange={handleSourceFileFiltersChange}
+              onClearFilters={handleClearSourceFileFilters}
               errorMessageKey={sourceFileError}
               retryingSourceFileId={retryingSourceFileId}
               onRetrySourceFile={(sourceFile) => void handleRetrySourceFile(sourceFile)}
+              onDeleteSourceFileTasks={handleDeleteSourceFileTasks}
               onOpenGeneratedFile={(sourceFile) => {
                 const generatedFilePath = sourceFile.generatedFilePath;
                 if (generatedFilePath) {
@@ -583,116 +692,4 @@ export function KnowledgeBaseDetailPage({
       </AlertDialog>
     </SidebarProvider>
   );
-}
-
-function FilePreviewPanel({
-  copiedUrl,
-  previewHtml,
-  publicUrls,
-  selectedFileTitle,
-  selectedFilePath,
-  onCopy,
-  onOpenPreviewPath
-}: {
-  copiedUrl: string;
-  previewHtml: string;
-  publicUrls: KnowledgeBasePublicUrls | null;
-  selectedFileTitle: string;
-  selectedFilePath: string;
-  onCopy: (url: string) => void;
-  onOpenPreviewPath: (path: string, title: string) => void;
-}) {
-  const { t } = useTranslation();
-  const selectedPublicUrl =
-    publicUrls && selectedFilePath ? buildSelectedFilePublicUrl(publicUrls.index, selectedFilePath) : null;
-  const copyUrl = selectedPublicUrl ?? publicUrls?.index ?? null;
-
-  function handlePreviewClick(event: MouseEvent<HTMLElement>) {
-    const target = event.target;
-
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
-    const control = target.closest<HTMLButtonElement>("button[data-preview-path]");
-    const previewPath = control?.dataset.previewPath;
-    const previewTitle = control?.textContent?.trim();
-
-    if (!previewPath) {
-      return;
-    }
-
-    event.preventDefault();
-    onOpenPreviewPath(previewPath, previewTitle || previewPath);
-  }
-
-  return (
-    <Card className="min-h-[calc(100svh-5.5rem)] min-w-0">
-      <CardHeader>
-        <CardTitle>{selectedFileTitle || selectedFilePath || t("detail.noFileSelected")}</CardTitle>
-        <CardDescription>{t("result.preview")}</CardDescription>
-        {copyUrl ? (
-          <CardAction>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              aria-label={t(selectedFilePath ? "result.copyFile" : "result.copyIndex")}
-              onClick={() => onCopy(copyUrl)}
-            >
-              <CopyIcon />
-            </Button>
-          </CardAction>
-        ) : null}
-      </CardHeader>
-      <CardContent>
-        {copiedUrl ? <p className="mb-3 text-sm text-muted-foreground">{t("result.copied")}</p> : null}
-        {previewHtml ? (
-          <article
-            className="prose prose-sm max-w-none text-foreground"
-            onClick={handlePreviewClick}
-            dangerouslySetInnerHTML={{ __html: previewHtml }}
-          />
-        ) : (
-          <div className="flex min-h-80 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-            {t("detail.noFileSelected")}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function buildSelectedFilePublicUrl(indexUrl: string, logicalPath: string): string {
-  const url = new URL(indexUrl);
-  url.searchParams.set("path", logicalPath);
-  return url.toString();
-}
-
-function buildSidebarTree(
-  treePages: Record<string, TreePageState>,
-  expandedDirectories: Set<string>,
-  selectedFilePath: string,
-  parentPath: string
-): AdminSidebarTreeNode[] {
-  const page = treePages[parentPath];
-
-  if (!page) {
-    return [];
-  }
-
-  return page.items.map((entry) => ({
-    id: entry.id,
-    name: entry.name,
-    logicalPath: entry.logicalPath,
-    entryType: entry.entryType,
-    children:
-      entry.entryType === "directory"
-        ? buildSidebarTree(treePages, expandedDirectories, selectedFilePath, entry.logicalPath)
-        : [],
-    isExpanded: expandedDirectories.has(entry.logicalPath),
-    isActive: selectedFilePath === entry.logicalPath,
-    nextCursor: entry.entryType === "directory" ? treePages[entry.logicalPath]?.nextCursor ?? null : null,
-    deletable: Boolean(entry.deletable)
-  }));
 }

@@ -28,6 +28,13 @@ export type SourceFileQueueProcessor = {
   processFile: (input: SourceFileProcessInput) => Promise<SourceFileRecord>;
 };
 
+export class SourceFileProcessingCancelledError extends Error {
+  public constructor(message = "Source file processing was cancelled.") {
+    super(message);
+    this.name = "SourceFileProcessingCancelledError";
+  }
+}
+
 export type SourceFileProcessInput = {
   knowledgeBaseId: string;
   knowledgeBaseName: string;
@@ -151,6 +158,7 @@ export function createSourceFileQueueProcessor(
         }
 
         currentStage = "upload_storage";
+        await assertSourceFileProcessingEligible();
         await mark({
           status: "running",
           stage: currentStage,
@@ -165,6 +173,7 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "metadata_resolution";
+        await assertSourceFileProcessingEligible();
         await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
@@ -184,6 +193,7 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "llm_suggestion";
+        await assertSourceFileProcessingEligible();
         await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
@@ -218,6 +228,7 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "graph_generation";
+        await assertSourceFileProcessingEligible();
         await processSourceFileGraphStage({
           repositories,
           redis,
@@ -237,6 +248,7 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "bundle_generation";
+        await assertSourceFileProcessingEligible();
         await processSourceFileBundleStage({
           progressClock,
           mark,
@@ -244,6 +256,7 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "index_publication";
+        await assertSourceFileProcessingEligible();
         await processSourceFilePublicationStage({
           publicationService,
           knowledgeBaseId: input.knowledgeBaseId,
@@ -271,6 +284,10 @@ export function createSourceFileQueueProcessor(
 
         return completedSource;
       } catch (error) {
+        if (error instanceof SourceFileProcessingCancelledError) {
+          throw error;
+        }
+
         const failedAt = progressClock();
         const errorCode =
           error instanceof MetadataValidationError
@@ -297,6 +314,17 @@ export function createSourceFileQueueProcessor(
       } finally {
         if (sourceLockAcquired) {
           await redis.releaseSourceFileLock(input.sourceFileId, ownerId);
+        }
+      }
+
+      async function assertSourceFileProcessingEligible(): Promise<void> {
+        const currentSource = await getSourceFile({
+          knowledgeBaseId: input.knowledgeBaseId,
+          sourceFileId: input.sourceFileId
+        });
+
+        if (!currentSource || currentSource.deletedAt || currentSource.taskDeletedAt) {
+          throw new SourceFileProcessingCancelledError();
         }
       }
     }
