@@ -416,6 +416,11 @@ export type BundleFileRepository = {
     releaseId: string;
     fileId: string;
   }) => Promise<BundleFileRecord | null>;
+  listGeneratedOutputsForSourceFiles?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    sourceFileIds: string[];
+  }) => Promise<GeneratedSourceFileOutputRecord[]>;
   getSourceFile?: (request: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -1506,6 +1511,32 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         `;
         const row = rows[0];
         return row ? mapBundleFileRow(row) : null;
+      },
+      async listGeneratedOutputsForSourceFiles({ knowledgeBaseId, releaseId, sourceFileIds }) {
+        if (sourceFileIds.length === 0) {
+          return [];
+        }
+
+        const rows = await sql<
+          Array<{ source_file_id: string; bundle_file_id: string; logical_path: string }>
+        >`
+          SELECT DISTINCT ON (source_file_id)
+            source_file_id,
+            id AS bundle_file_id,
+            logical_path
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND release_id = ${releaseId}
+            AND source_file_id = ANY(${sourceFileIds})
+            AND file_kind = 'page'
+          ORDER BY source_file_id ASC, logical_path ASC
+        `;
+
+        return rows.map((row) => ({
+          sourceFileId: row.source_file_id,
+          bundleFileId: row.bundle_file_id,
+          logicalPath: row.logical_path
+        }));
       },
       async getSourceFile({ knowledgeBaseId, sourceFileId }) {
         const rows = await sql<SourceFileRow[]>`

@@ -131,7 +131,10 @@ describe("lightweight architecture boundaries", () => {
     expect(sourceListRoute).not.toContain("enqueueSourceFileProcessingJobs");
     expect(sourceListRepository).not.toContain("LEFT JOIN LATERAL");
     expect(sourceListRepository).not.toContain("FROM focowiki.model_invocations");
-    expect(generatedOutput).not.toContain("listGeneratedOutputsForSourceFiles");
+    expect(generatedOutput).toContain("listGeneratedOutputsForSourceFiles");
+    expect(generatedOutput).not.toContain("repositories.graph");
+    expect(generatedOutput).not.toContain("workerJobs");
+    expect(generatedOutput).not.toContain("model_invocations");
   });
 
   it("keeps Developer OpenAPI file content reads out of source-file list scans", () => {

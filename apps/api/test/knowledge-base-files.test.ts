@@ -148,6 +148,11 @@ function createRepositories() {
   }> = [];
   const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
   const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
+  const generatedOutputCalls: Array<{
+    knowledgeBaseId: string;
+    releaseId: string;
+    sourceFileIds: string[];
+  }> = [];
   const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
   const queueSummaryCalls: Array<{
     knowledgeBaseId?: string | null;
@@ -183,6 +188,7 @@ function createRepositories() {
       sourceCalls,
       releaseCalls,
       bundleCalls,
+      generatedOutputCalls,
       graphSummaryCalls,
       queueSummaryCalls,
       dirtySourceFileCountCalls
@@ -306,6 +312,24 @@ function createRepositories() {
             ? bundleFile
             : null;
         },
+        async listGeneratedOutputsForSourceFiles(input: {
+          knowledgeBaseId: string;
+          releaseId: string;
+          sourceFileIds: string[];
+        }) {
+          generatedOutputCalls.push(input);
+          return input.knowledgeBaseId === "kb-001" &&
+            input.releaseId === "release-001" &&
+            input.sourceFileIds.includes("source-001")
+            ? [
+                {
+                  sourceFileId: "source-001",
+                  bundleFileId: bundleFile.id,
+                  logicalPath: bundleFile.logicalPath
+                }
+              ]
+            : [];
+        },
         async listSourceFiles(request: {
           knowledgeBaseId?: string;
           limit: number;
@@ -337,7 +361,7 @@ function createRepositories() {
                 checksumSha256: "checksum",
                 metadata: { type: "page", title: "Intro" },
                 generatedOutputStatus: "visible" as const,
-                generatedBundleFileId: "bundle-file-001",
+                generatedBundleFileId: "stale-bundle-file-001",
                 generatedBundleFilePath: "pages/intro.md",
                 createdAt: "2026-06-14T00:00:00.000Z",
                 deletedAt: null
@@ -819,6 +843,13 @@ describe("Knowledge base file Admin API", () => {
     expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
     expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
+    expect(records.generatedOutputCalls).toEqual([
+      {
+        knowledgeBaseId: "kb-001",
+        releaseId: "release-001",
+        sourceFileIds: ["source-001"]
+      }
+    ]);
     expect(records.graphSummaryCalls).toEqual([]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);

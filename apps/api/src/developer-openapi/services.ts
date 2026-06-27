@@ -699,12 +699,27 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       return searchResponse;
     },
     async getFileById(input: { knowledgeBaseId: string; fileId: string }) {
-      const resolved = await resolveFileById(requireRepositories(), input);
+      const repo = requireRepositories();
+      const resolved = await resolveFileById(repo, input);
+
+      if (resolved.kind === "source") {
+        const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+        const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
+          repositories: repo,
+          knowledgeBase,
+          sourceFiles: [resolved.file]
+        });
+
+        return {
+          file: toDeveloperSourceFileDetail(
+            resolved.file,
+            generatedOutputs.get(resolved.file.id) ?? null
+          )
+        };
+      }
+
       return {
-        file:
-          resolved.kind === "bundle"
-            ? toDeveloperBundleFile(resolved.file, resolved.source)
-            : toDeveloperSourceFileDetail(resolved.file)
+        file: toDeveloperBundleFile(resolved.file, resolved.source)
       };
     },
     async listRelatedFiles(input: {

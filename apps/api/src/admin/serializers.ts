@@ -55,10 +55,19 @@ export function toAdminSourceFile(
   graphSummary?: FileGraphSummaryRecord | null,
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
-  const generatedFilePath = file.generatedBundleFilePath ?? generatedOutput?.logicalPath ?? null;
-  const generatedFileId = file.generatedBundleFileId ?? generatedOutput?.bundleFileId ?? null;
-  const generatedOutputStatus =
-    file.generatedOutputStatus ?? (generatedFilePath ? "visible" : "pending");
+  const hasGeneratedOutputLookup = generatedOutput !== undefined;
+  const generatedFilePath = hasGeneratedOutputLookup
+    ? generatedOutput?.logicalPath ?? null
+    : file.generatedBundleFilePath ?? null;
+  const generatedFileId = hasGeneratedOutputLookup
+    ? generatedOutput?.bundleFileId ?? null
+    : file.generatedBundleFileId ?? null;
+  const generatedOutputStatus = resolveGeneratedOutputStatus(
+    file.generatedOutputStatus,
+    generatedOutput,
+    hasGeneratedOutputLookup,
+    Boolean(generatedFilePath)
+  );
 
   return {
     id: file.id,
@@ -88,6 +97,23 @@ export function toAdminSourceFile(
     graphSummary: graphSummary ? toAdminGraphSummary(graphSummary) : null,
     createdAt: file.createdAt
   };
+}
+
+function resolveGeneratedOutputStatus(
+  storedStatus: SourceFileRecord["generatedOutputStatus"],
+  generatedOutput: GeneratedSourceFileOutputRecord | null | undefined,
+  hasGeneratedOutputLookup: boolean,
+  hasStoredPath: boolean
+) {
+  if (!hasGeneratedOutputLookup) {
+    return storedStatus ?? (hasStoredPath ? "visible" : "pending");
+  }
+
+  if (generatedOutput) {
+    return "visible";
+  }
+
+  return storedStatus === "visible" ? "unavailable" : storedStatus ?? "pending";
 }
 
 export function toAdminGraphSummary(summary: FileGraphSummaryRecord) {

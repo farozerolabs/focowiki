@@ -26,10 +26,19 @@ export function toDeveloperSourceFile(
   record: SourceFileRecord,
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
-  const generatedFilePath = record.generatedBundleFilePath ?? generatedOutput?.logicalPath ?? null;
-  const generatedFileId = record.generatedBundleFileId ?? generatedOutput?.bundleFileId ?? null;
-  const generatedOutputStatus =
-    record.generatedOutputStatus ?? (generatedFilePath ? "visible" : "pending");
+  const hasGeneratedOutputLookup = generatedOutput !== undefined;
+  const generatedFilePath = hasGeneratedOutputLookup
+    ? generatedOutput?.logicalPath ?? null
+    : record.generatedBundleFilePath ?? null;
+  const generatedFileId = hasGeneratedOutputLookup
+    ? generatedOutput?.bundleFileId ?? null
+    : record.generatedBundleFileId ?? null;
+  const generatedOutputStatus = resolveGeneratedOutputStatus(
+    record.generatedOutputStatus,
+    generatedOutput,
+    hasGeneratedOutputLookup,
+    Boolean(generatedFilePath)
+  );
 
   return {
     fileId: record.id,
@@ -155,11 +164,21 @@ export function toDeveloperSourceFileDetail(
   record: SourceFileRecord,
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
+  const hasGeneratedOutputLookup = generatedOutput !== undefined;
+  const generatedOutputStatus = resolveGeneratedOutputStatus(
+    record.generatedOutputStatus,
+    generatedOutput,
+    hasGeneratedOutputLookup,
+    Boolean(generatedOutput)
+  );
+
   return {
     fileId: record.id,
     sourceFileId: record.id,
     knowledgeBaseId: record.knowledgeBaseId,
-    path: generatedOutput?.logicalPath ?? null,
+    path: hasGeneratedOutputLookup
+      ? generatedOutput?.logicalPath ?? null
+      : record.generatedBundleFilePath ?? null,
     originalFilename: record.originalName,
     fileKind: "source",
     contentType: record.contentType,
@@ -167,13 +186,33 @@ export function toDeveloperSourceFileDetail(
     checksumSha256: record.checksumSha256,
     processingState: record.processingStatus ?? "completed",
     currentStage: record.processingStage ?? "release_activation",
-    generatedOutputStatus:
-      record.generatedOutputStatus ?? (generatedOutput ? "visible" : "pending"),
-    contentAvailable: Boolean(generatedOutput),
-    generatedFileAvailable: Boolean(generatedOutput),
-    generatedFileId: generatedOutput?.bundleFileId ?? null,
-    generatedFilePath: generatedOutput?.logicalPath ?? null
+    generatedOutputStatus,
+    contentAvailable: generatedOutputStatus === "visible" && Boolean(generatedOutput),
+    generatedFileAvailable: generatedOutputStatus === "visible" && Boolean(generatedOutput),
+    generatedFileId: hasGeneratedOutputLookup
+      ? generatedOutput?.bundleFileId ?? null
+      : record.generatedBundleFileId ?? null,
+    generatedFilePath: hasGeneratedOutputLookup
+      ? generatedOutput?.logicalPath ?? null
+      : record.generatedBundleFilePath ?? null
   };
+}
+
+function resolveGeneratedOutputStatus(
+  storedStatus: SourceFileRecord["generatedOutputStatus"],
+  generatedOutput: GeneratedSourceFileOutputRecord | null | undefined,
+  hasGeneratedOutputLookup: boolean,
+  hasStoredPath: boolean
+) {
+  if (!hasGeneratedOutputLookup) {
+    return storedStatus ?? (hasStoredPath ? "visible" : "pending");
+  }
+
+  if (generatedOutput) {
+    return "visible";
+  }
+
+  return storedStatus === "visible" ? "unavailable" : storedStatus ?? "pending";
 }
 
 export function toDeveloperWebhook(record: WebhookSubscriptionRecord) {

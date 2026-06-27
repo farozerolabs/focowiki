@@ -200,7 +200,11 @@ class MemoryStorage implements StorageAdapter {
   }
 }
 
-function createRepositories(): AdminRepositories & {
+type TestRepositoryOptions = {
+  staleSourceGeneratedBundleFileId?: boolean;
+};
+
+function createRepositories(options: TestRepositoryOptions = {}): AdminRepositories & {
   sourceFiles: Map<string, SourceFileRecord>;
   webhookDeliveries: Map<string, WebhookDeliveryRecord>;
 } {
@@ -230,7 +234,7 @@ function createRepositories(): AdminRepositories & {
     processingErrorCode: null,
     processingErrorMessage: null,
     generatedOutputStatus: "visible",
-    generatedBundleFileId: "bundle-guide",
+    generatedBundleFileId: options.staleSourceGeneratedBundleFileId ? "bundle-stale" : "bundle-guide",
     generatedBundleFilePath: "pages/guide.md",
     retryCount: 0,
     createdAt: now,
@@ -407,13 +411,37 @@ function createRepositories(): AdminRepositories & {
           nextCursor: null
         };
       },
-      async getBundleFile({ logicalPath }) {
+      async getBundleFile({ knowledgeBaseId, releaseId, logicalPath }) {
         return (
-          Array.from(bundleFiles.values()).find((file) => file.logicalPath === logicalPath) ?? null
+          Array.from(bundleFiles.values()).find(
+            (file) =>
+              file.knowledgeBaseId === knowledgeBaseId &&
+              file.releaseId === releaseId &&
+              file.logicalPath === logicalPath
+          ) ?? null
         );
       },
-      async getBundleFileById({ fileId }) {
-        return bundleFiles.get(fileId) ?? null;
+      async getBundleFileById({ knowledgeBaseId, releaseId, fileId }) {
+        const file = bundleFiles.get(fileId) ?? null;
+        return file && file.knowledgeBaseId === knowledgeBaseId && file.releaseId === releaseId
+          ? file
+          : null;
+      },
+      async listGeneratedOutputsForSourceFiles({ knowledgeBaseId, releaseId, sourceFileIds }) {
+        return Array.from(bundleFiles.values())
+          .filter(
+            (file) =>
+              file.knowledgeBaseId === knowledgeBaseId &&
+              file.releaseId === releaseId &&
+              file.sourceFileId &&
+              file.fileKind === "page" &&
+              sourceFileIds.includes(file.sourceFileId)
+          )
+          .map((file) => ({
+            sourceFileId: file.sourceFileId as string,
+            bundleFileId: file.id,
+            logicalPath: file.logicalPath
+          }));
       },
       async getSourceFile({ sourceFileId }) {
         const file = sourceFiles.get(sourceFileId) ?? null;
@@ -680,9 +708,9 @@ function applySourceFileListFilters(
   return true;
 }
 
-function createApp() {
+function createApp(options: TestRepositoryOptions = {}) {
   const config = createConfig();
-  const repositories = createRepositories();
+  const repositories = createRepositories(options);
   const storage = new MemoryStorage();
   const app = createPublicOpenApiApp({
     config,
@@ -694,9 +722,9 @@ function createApp() {
   return { app, repositories, storage };
 }
 
-function createFullApp() {
+function createFullApp(options: TestRepositoryOptions = {}) {
   const config = createConfig();
-  const repositories = createRepositories();
+  const repositories = createRepositories(options);
   const storage = new MemoryStorage();
   const app = createApiApp({
     config,
@@ -2021,6 +2049,64 @@ describe("Developer OpenAPI", () => {
     expect(listResponse.status).toBe(200);
     expect(listBody.items.map((item) => item.fileId)).toEqual(["source-guide"]);
     expect(detailResponse.status).toBe(404);
+  });
+
+  it("returns active generated file IDs from source-file reads when stored source metadata is stale", async () => {
+    const { app } = createApp({ staleSourceGeneratedBundleFileId: true });
+    const listResponse = await app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files", {
+      headers: authHeaders()
+    });
+    const listBody = (await listResponse.json()) as {
+      items: Array<{
+        sourceFileId: string;
+        generatedFileId: string | null;
+        generatedFilePath: string | null;
+        generatedFileAvailable: boolean;
+      }>;
+    };
+    const sourceFile = listBody.items.find((item) => item.sourceFileId === "source-guide");
+
+    if (!sourceFile?.generatedFileId || !sourceFile.generatedFilePath) {
+      throw new Error("Source file fixture did not return a generated output.");
+    }
+
+    const [sourceDetailResponse, fileResponse, contentResponse, relatedResponse] =
+      await Promise.all([
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files/source-guide", {
+          headers: authHeaders()
+        }),
+        app.request(`/openapi/v1/knowledge-bases/kb-seeded/files/${sourceFile.generatedFileId}`, {
+          headers: authHeaders()
+        }),
+        app.request(
+          `/openapi/v1/knowledge-bases/kb-seeded/files/${sourceFile.generatedFileId}/content`,
+          {
+            headers: authHeaders()
+          }
+        ),
+        app.request(
+          `/openapi/v1/knowledge-bases/kb-seeded/files/${sourceFile.generatedFileId}/related`,
+          {
+            headers: authHeaders()
+          }
+        )
+      ]);
+    const sourceDetailBody = (await sourceDetailResponse.json()) as {
+      file: { generatedFileId: string | null; generatedFilePath: string | null };
+    };
+
+    expect(sourceFile).toMatchObject({
+      generatedFileId: "bundle-guide",
+      generatedFilePath: "pages/guide.md",
+      generatedFileAvailable: true
+    });
+    expect(sourceDetailBody.file).toMatchObject({
+      generatedFileId: "bundle-guide",
+      generatedFilePath: "pages/guide.md"
+    });
+    expect(fileResponse.status).toBe(200);
+    expect(contentResponse.status).toBe(200);
+    expect(relatedResponse.status).toBe(200);
   });
 
   it("documents every returned source file field in the OpenAPI contract", async () => {
