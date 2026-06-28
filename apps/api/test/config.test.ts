@@ -5,7 +5,6 @@ import { parseRuntimeConfig } from "../src/config.js";
 const validEnv = {
   ADMIN_USERNAME: "admin",
   ADMIN_PASSWORD: "admin-password",
-  ADMIN_SESSION_SECRET: "session-secret-with-enough-entropy",
   DATABASE_URL: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
   REDIS_URL: "redis://127.0.0.1:6379/0",
   ADMIN_API_PORT: "43000",
@@ -18,8 +17,6 @@ const validEnv = {
   S3_ACCESS_KEY_ID: "s3-access-key",
   S3_SECRET_ACCESS_KEY: "s3-secret-key",
   S3_PREFIX: "tenant/demo",
-  MAX_UPLOAD_BYTES: "1048576",
-  MAX_UPLOAD_FILES: "8",
   CORS_ORIGINS: "https://admin.example.com,https://docs.example.com"
 };
 
@@ -29,8 +26,7 @@ describe("parseRuntimeConfig", () => {
 
     expect(config.admin).toEqual({
       username: "admin",
-      password: "admin-password",
-      sessionSecret: "session-secret-with-enough-entropy"
+      password: "admin-password"
     });
     expect(config.database).toEqual({
       url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
@@ -53,7 +49,7 @@ describe("parseRuntimeConfig", () => {
     });
     expect(config.upload).toEqual({
       maxBytes: 1_048_576,
-      maxFiles: 8,
+      maxFiles: 24,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
@@ -210,7 +206,6 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         APP_ENV: "production",
         ADMIN_PASSWORD: "change-me",
-        ADMIN_SESSION_SECRET: "short",
         ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
         ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
         PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
@@ -223,7 +218,6 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         APP_ENV: "production",
         ADMIN_PASSWORD: "change-me",
-        ADMIN_SESSION_SECRET: "short",
         ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
         ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
         PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
@@ -246,7 +240,6 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         APP_ENV: "production",
         ADMIN_PASSWORD: "production-admin-password",
-        ADMIN_SESSION_SECRET: "production-session-secret-with-enough-entropy",
         ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
         ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
         PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
@@ -318,23 +311,19 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/LOG_FILE_MAX_FILES/);
   });
 
-  it("validates trusted origins, CORS, and rate limit settings", () => {
+  it("validates trusted origins and CORS settings", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
-      ADMIN_TRUSTED_ORIGINS: "https://admin.example.com",
-      ADMIN_LOGIN_RATE_LIMIT_MAX: "4",
-      ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS: "300",
-      PUBLIC_OPENAPI_RATE_LIMIT_MAX: "100",
-      PUBLIC_OPENAPI_RATE_LIMIT_WINDOW_SECONDS: "60"
+      ADMIN_TRUSTED_ORIGINS: "https://admin.example.com"
     });
 
     expect(config.security?.adminTrustedOrigins).toEqual(["https://admin.example.com"]);
     expect(config.security?.rateLimits.adminLogin).toEqual({
-      max: 4,
-      windowSeconds: 300
+      max: 8,
+      windowSeconds: 900
     });
     expect(config.security?.rateLimits.publicOpenApi).toEqual({
-      max: 100,
+      max: 1200,
       windowSeconds: 60
     });
 
@@ -352,12 +341,15 @@ describe("parseRuntimeConfig", () => {
       })
     ).toThrow(/CORS_ORIGINS/);
 
-    expect(() =>
+    expect(
       parseRuntimeConfig({
         ...validEnv,
         ADMIN_LOGIN_RATE_LIMIT_MAX: "0"
-      })
-    ).toThrow(/ADMIN_LOGIN_RATE_LIMIT_MAX/);
+      }).security?.rateLimits.adminLogin
+    ).toEqual({
+      max: 8,
+      windowSeconds: 900
+    });
   });
 
   it("validates separated high ports", () => {
@@ -429,23 +421,33 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/TREE_CHILD_DEFAULT_PAGE_SIZE/);
   });
 
-  it("validates upload limits", () => {
-    expect(() =>
+  it("does not require upload-generation env fields and ignores invalid stale values", () => {
+    expect(parseRuntimeConfig(validEnv).upload).toEqual({
+      maxBytes: 1_048_576,
+      maxFiles: 24,
+      generationBatchSize: 50,
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    });
+    expect(
       parseRuntimeConfig({
         ...validEnv,
-        MAX_UPLOAD_BYTES: "0"
-      })
-    ).toThrow(/MAX_UPLOAD_BYTES/);
-
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MAX_UPLOAD_FILES: "-1"
-      })
-    ).toThrow(/MAX_UPLOAD_FILES/);
+        MAX_UPLOAD_BYTES: "0",
+        MAX_UPLOAD_FILES: "-1",
+        GENERATION_BATCH_SIZE: "invalid",
+        UPLOAD_FILE_PROCESSING_CONCURRENCY: "-1",
+        UPLOAD_STORAGE_CONCURRENCY: "0"
+      }).upload
+    ).toEqual({
+      maxBytes: 1_048_576,
+      maxFiles: 24,
+      generationBatchSize: 50,
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 4
+    });
   });
 
-  it("defaults and validates OKF log limits", () => {
+  it("uses default OKF log limits managed by runtime settings", () => {
     expect(parseRuntimeConfig(validEnv).okf).toEqual({
       log: {
         maxEntries: 100,
@@ -460,26 +462,13 @@ describe("parseRuntimeConfig", () => {
       }).okf
     ).toEqual({
       log: {
-        maxEntries: 50,
-        maxBytes: 32_768
+        maxEntries: 100,
+        maxBytes: 65_536
       }
     });
-
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        OKF_LOG_MAX_ENTRIES: "0"
-      })
-    ).toThrow(/OKF_LOG_MAX_ENTRIES/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        OKF_LOG_MAX_BYTES: "-1"
-      })
-    ).toThrow(/OKF_LOG_MAX_BYTES/);
   });
 
-  it("defaults and validates upload, worker, and model concurrency limits", () => {
+  it("parses stale upload-generation env values for bootstrap and the startup-only worker database pool", () => {
     expect(parseRuntimeConfig(validEnv).upload).toMatchObject({
       fileProcessingConcurrency: 1,
       storageConcurrency: 4
@@ -489,6 +478,9 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         UPLOAD_FILE_PROCESSING_CONCURRENCY: "4",
         UPLOAD_STORAGE_CONCURRENCY: "6",
+        MAX_UPLOAD_BYTES: "2097152",
+        MAX_UPLOAD_FILES: "12",
+        GENERATION_BATCH_SIZE: "80",
         DATABASE_POOL_MAX: "16",
         WORKER_DATABASE_POOL_MAX: "8",
         WORKER_SOURCE_FILE_CONCURRENCY: "3",
@@ -507,21 +499,24 @@ describe("parseRuntimeConfig", () => {
         poolMax: 16
       },
       upload: {
+        maxBytes: 2_097_152,
+        maxFiles: 12,
+        generationBatchSize: 80,
         fileProcessingConcurrency: 4,
         storageConcurrency: 6
       },
       worker: {
         databasePoolMax: 8,
-        sourceFileConcurrency: 3,
-        claimBatchSize: 12,
-        heartbeatIntervalMs: 10_000,
-        queueBackpressureKnowledgeBaseLimit: 300,
-        queueBackpressureMaxAgeSeconds: 1_800,
-        queueBackpressureRetryAfterSeconds: 30,
-        completedJobRetentionDays: 3,
-        failedJobRetentionDays: 14,
-        deadLetterJobRetentionDays: 45,
-        retentionCleanupBatchSize: 500
+        sourceFileConcurrency: 2,
+        claimBatchSize: 10,
+        heartbeatIntervalMs: 15_000,
+        queueBackpressureKnowledgeBaseLimit: 2_000,
+        queueBackpressureMaxAgeSeconds: 3_600,
+        queueBackpressureRetryAfterSeconds: 60,
+        completedJobRetentionDays: 7,
+        failedJobRetentionDays: 30,
+        deadLetterJobRetentionDays: 90,
+        retentionCleanupBatchSize: 1_000
       }
     });
 
@@ -537,72 +532,9 @@ describe("parseRuntimeConfig", () => {
         WORKER_DATABASE_POOL_MAX: "-1"
       })
     ).toThrow(/WORKER_DATABASE_POOL_MAX/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        WORKER_SOURCE_FILE_CONCURRENCY: "0"
-      })
-    ).toThrow(/WORKER_SOURCE_FILE_CONCURRENCY/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        WORKER_HEARTBEAT_INTERVAL_MS: "0"
-      })
-    ).toThrow(/WORKER_HEARTBEAT_INTERVAL_MS/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS: "-1"
-      })
-    ).toThrow(/WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        WORKER_RETENTION_CLEANUP_BATCH_SIZE: "0"
-      })
-    ).toThrow(/WORKER_RETENTION_CLEANUP_BATCH_SIZE/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        UPLOAD_FILE_PROCESSING_CONCURRENCY: "-1"
-      })
-    ).toThrow(/UPLOAD_FILE_PROCESSING_CONCURRENCY/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        UPLOAD_STORAGE_CONCURRENCY: "0"
-      })
-    ).toThrow(/UPLOAD_STORAGE_CONCURRENCY/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2",
-        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
-        MODEL_TRANSIENT_RETRY_DELAY_MS: "0"
-      })
-    ).toThrow(/MODEL_TRANSIENT_RETRY_DELAY_MS/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2",
-        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
-        MODEL_REQUEST_MIN_INTERVAL_MS: "-1"
-      })
-    ).toThrow(/MODEL_REQUEST_MIN_INTERVAL_MS/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2",
-        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
-        MODEL_SUGGESTION_CONCURRENCY: "0"
-      })
-    ).toThrow(/MODEL_SUGGESTION_CONCURRENCY/);
   });
 
-  it("defaults and validates publication settings", () => {
+  it("uses default publication settings managed by runtime settings", () => {
     expect(parseRuntimeConfig(validEnv).publication).toEqual({
       mode: "batch",
       batchSize: 300,
@@ -630,45 +562,20 @@ describe("parseRuntimeConfig", () => {
         ROOT_SUMMARY_LIMIT: "450"
       }).publication
     ).toEqual({
-      mode: "manual",
-      batchSize: 400,
-      intervalSeconds: 120,
-      indexShardSize: 2_000,
-      linkIndexShardSize: 3_000,
-      manifestShardSize: 4_000,
-      graphEdgeShardSize: 6_000,
-      graphCandidateLimit: 150,
-      graphMaintenanceBatchSize: 350,
-      rootSummaryLimit: 450
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
     });
-
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PUBLICATION_MODE: "stream"
-      })
-    ).toThrow(/PUBLICATION_MODE/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PUBLICATION_BATCH_SIZE: "0"
-      })
-    ).toThrow(/PUBLICATION_BATCH_SIZE/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        INDEX_SHARD_SIZE: "-1"
-      })
-    ).toThrow(/INDEX_SHARD_SIZE/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        GRAPH_CANDIDATE_LIMIT: "0"
-      })
-    ).toThrow(/GRAPH_CANDIDATE_LIMIT/);
   });
 
-  it("enables model assistance when key and model are configured", () => {
+  it("keeps model assistance managed by Admin UI even when stale model env fields exist", () => {
     const config = parseRuntimeConfig({
       ...validEnv,
       MODEL_API_KEY: "model-secret",
@@ -682,88 +589,6 @@ describe("parseRuntimeConfig", () => {
       MODEL_SUGGESTION_CONCURRENCY: "4"
     });
 
-    expect(config.model).toEqual({
-      enabled: true,
-      apiKey: "model-secret",
-      modelName: "gpt-5.2",
-      baseUrl: "https://models.example.com/v1",
-      contextWindowTokens: 200_000,
-      requestMaxTimeoutMs: 600_000,
-      requestIdleTimeoutMs: 120_000,
-      transientRetryDelayMs: 45_000,
-      requestMinIntervalMs: 3_000,
-      suggestionConcurrency: 4
-    });
-  });
-
-  it("defaults model base URL, receive timeouts, and suggestion concurrency when omitted", () => {
-    const config = parseRuntimeConfig({
-      ...validEnv,
-      MODEL_API_KEY: "model-secret",
-      MODEL_NAME: "gpt-5.2",
-      MODEL_BASE_URL: "",
-      MODEL_CONTEXT_WINDOW_TOKENS: "200000"
-    });
-
-    expect(config.model).toMatchObject({
-      enabled: true,
-      apiKey: "model-secret",
-      modelName: "gpt-5.2",
-      baseUrl: "https://api.openai.com/v1",
-      contextWindowTokens: 200_000,
-      suggestionConcurrency: 2,
-      transientRetryDelayMs: 60_000,
-      requestMinIntervalMs: 2_000
-    });
-    expect(config.model.enabled ? config.model.requestMaxTimeoutMs : 0).toBeGreaterThan(0);
-    expect(config.model.enabled ? config.model.requestIdleTimeoutMs : 0).toBeGreaterThan(0);
-  });
-
-  it("requires and validates model context window and receive timeouts", () => {
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2"
-      })
-    ).toThrow(/MODEL_CONTEXT_WINDOW_TOKENS/);
-
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2",
-        MODEL_CONTEXT_WINDOW_TOKENS: "0"
-      })
-    ).toThrow(/MODEL_CONTEXT_WINDOW_TOKENS/);
-
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: "gpt-5.2",
-        MODEL_CONTEXT_WINDOW_TOKENS: "200000",
-        MODEL_REQUEST_MAX_TIMEOUT_MS: "1000",
-        MODEL_REQUEST_IDLE_TIMEOUT_MS: "2000"
-      })
-    ).toThrow(/MODEL_REQUEST_IDLE_TIMEOUT_MS/);
-  });
-
-  it("disables model assistance when either key or model is missing", () => {
-    expect(
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "model-secret",
-        MODEL_NAME: ""
-      }).model
-    ).toEqual({ enabled: false });
-
-    expect(
-      parseRuntimeConfig({
-        ...validEnv,
-        MODEL_API_KEY: "",
-        MODEL_NAME: "gpt-5.2"
-      }).model
-    ).toEqual({ enabled: false });
+    expect(config.model).toEqual({ enabled: false });
   });
 });

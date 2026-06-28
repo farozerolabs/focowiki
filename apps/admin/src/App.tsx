@@ -3,6 +3,7 @@ import { AdminHomePage } from "@/pages/AdminHomePage";
 import { AdminToaster } from "@/components/admin-toaster";
 import { KnowledgeBaseDetailPage } from "@/pages/KnowledgeBaseDetailPage";
 import { LoginPage } from "@/pages/LoginPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   checkAdminSession,
@@ -38,6 +39,7 @@ export function App() {
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
   const [knowledgeBaseQuery, setKnowledgeBaseQuery] = useState("");
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [publicOpenApiKeys, setPublicOpenApiKeys] = useState<PublicOpenApiKey[]>([]);
   const [publicOpenApiKeysNextCursor, setPublicOpenApiKeysNextCursor] = useState<string | null>(
     null
@@ -112,6 +114,7 @@ export function App() {
     setKnowledgeBasePageState(createInitialCursorPageState());
     setKnowledgeBaseQuery("");
     setSelectedKnowledgeBase(null);
+    setIsSettingsOpen(false);
     setIsLoadingKnowledgeBases(false);
     setPublicOpenApiKeys([]);
     setPublicOpenApiKeysNextCursor(null);
@@ -287,6 +290,18 @@ export function App() {
     );
   }
 
+  if (isSettingsOpen) {
+    return (
+      <TooltipProvider>
+        <SettingsPage
+          onBack={() => setIsSettingsOpen(false)}
+          onLogout={() => void handleLogout()}
+        />
+        <AdminToaster />
+      </TooltipProvider>
+    );
+  }
+
   return (
     <TooltipProvider>
       <AdminHomePage
@@ -311,6 +326,7 @@ export function App() {
         onNextKnowledgeBasePage={() => void handleKnowledgeBaseNextPage()}
         onSearchKnowledgeBases={(query) => void handleKnowledgeBaseQueryChange(query)}
         onLogout={() => void handleLogout()}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenKnowledgeBase={setSelectedKnowledgeBase}
       />
       <AdminToaster />

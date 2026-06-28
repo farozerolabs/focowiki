@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import { recordSecurityAudit } from "../security/audit.js";
 import { getRateLimitClientKey } from "../security/request.js";
 import {
@@ -14,6 +15,7 @@ export type DeveloperOpenApiSecurityServices = {
   config: RuntimeConfig;
   repositories: AdminRepositories | null;
   redis: RedisCoordinator | null;
+  runtimeSettings?: RuntimeSettingsService | null;
 };
 
 export function createDeveloperOpenApiKeyService(
@@ -68,10 +70,12 @@ async function checkDeveloperOpenApiRateLimit(
     return null;
   }
 
-  const limit = services.config.security?.rateLimits.publicOpenApi ?? {
-    max: 1_200,
-    windowSeconds: 60
-  };
+  const limit =
+    (await services.runtimeSettings?.getSnapshot())?.rateLimits.publicOpenApi ??
+    services.config.security?.rateLimits.publicOpenApi ?? {
+      max: 1_200,
+      windowSeconds: 60
+    };
   const result = await services.redis.hitRateLimit(
     "developer-openapi",
     getRateLimitClientKey(services.config, context),

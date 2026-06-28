@@ -1,12 +1,6 @@
 import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
 
-export const DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS = 600_000;
-const DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS = 120_000;
-const DEFAULT_MODEL_SUGGESTION_CONCURRENCY = 2;
-const DEFAULT_MODEL_TRANSIENT_RETRY_DELAY_MS = 60_000;
-const DEFAULT_MODEL_REQUEST_MIN_INTERVAL_MS = 2_000;
 const DEFAULT_DATABASE_POOL_MAX = 10;
 const DEFAULT_WORKER_DATABASE_POOL_MAX = 6;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
@@ -15,6 +9,9 @@ const DEFAULT_TREE_CHILD_PAGE_SIZE = 100;
 const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
+const DEFAULT_UPLOAD_MAX_BYTES = 1_048_576;
+const DEFAULT_UPLOAD_MAX_FILES = 24;
+const DEFAULT_GENERATION_BATCH_SIZE = 50;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
 const DEFAULT_UPLOAD_STORAGE_CONCURRENCY = 4;
 const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
@@ -46,7 +43,6 @@ const DEFAULT_ROOT_SUMMARY_LIMIT = 500;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
-const DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH = 32;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
 const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
@@ -90,7 +86,6 @@ export type RuntimeSecurityConfig = {
   };
   session: {
     ttlSeconds: number;
-    secretMinLength: number;
     cookieSecure: boolean;
     cookieSameSite: "Lax" | "Strict" | "None";
   };
@@ -109,7 +104,6 @@ export type RuntimeConfig = {
   admin: {
     username: string;
     password: string;
-    sessionSecret: string;
   };
   database: {
     url: string;
@@ -215,7 +209,6 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
 
   const adminUsername = requireString(env, "ADMIN_USERNAME", issues);
   const adminPassword = requireString(env, "ADMIN_PASSWORD", issues);
-  const adminSessionSecret = requireString(env, "ADMIN_SESSION_SECRET", issues);
   const databaseUrl = requireDatabaseUrl(env, "DATABASE_URL", issues);
   const databasePoolMax = optionalPositiveInteger(
     env,
@@ -234,32 +227,41 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const secretAccessKey = requireString(env, "S3_SECRET_ACCESS_KEY", issues);
   const prefix = normalizePrefix(requireString(env, "S3_PREFIX", issues), issues);
   const forcePathStyle = optionalBoolean(env, "S3_FORCE_PATH_STYLE", false, issues);
-  const maxBytes = requirePositiveInteger(env, "MAX_UPLOAD_BYTES", issues);
-  const maxFiles = requirePositiveInteger(env, "MAX_UPLOAD_FILES", issues);
-  const generationBatchSize = optionalPositiveInteger(env, "GENERATION_BATCH_SIZE", 50, issues);
-  const fileProcessingConcurrency = optionalPositiveInteger(
+  const maxBytes = optionalLegacyPositiveInteger(
+    env,
+    "MAX_UPLOAD_BYTES",
+    DEFAULT_UPLOAD_MAX_BYTES
+  );
+  const maxFiles = optionalLegacyPositiveInteger(
+    env,
+    "MAX_UPLOAD_FILES",
+    DEFAULT_UPLOAD_MAX_FILES
+  );
+  const generationBatchSize = optionalLegacyPositiveInteger(
+    env,
+    "GENERATION_BATCH_SIZE",
+    DEFAULT_GENERATION_BATCH_SIZE
+  );
+  const fileProcessingConcurrency = optionalLegacyPositiveInteger(
     env,
     "UPLOAD_FILE_PROCESSING_CONCURRENCY",
-    DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY,
-    issues
+    DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY
   );
-  const storageConcurrency = optionalPositiveInteger(
+  const storageConcurrency = optionalLegacyPositiveInteger(
     env,
     "UPLOAD_STORAGE_CONCURRENCY",
-    DEFAULT_UPLOAD_STORAGE_CONCURRENCY,
-    issues
+    DEFAULT_UPLOAD_STORAGE_CONCURRENCY
   );
-  const publication = parsePublicationConfig(env, issues);
+  const publication = createDefaultPublicationConfig();
   const worker = parseWorkerConfig(env, issues);
   const pagination = parsePaginationConfig(env, issues);
-  const okf = parseOkfConfig(env, issues);
+  const okf = createDefaultOkfConfig();
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
-  const model = parseModelConfig(env, issues);
+  const model: RuntimeConfig["model"] = { enabled: false };
   const security = parseSecurityConfig(
     env,
     {
       adminPassword,
-      adminSessionSecret,
       ports,
       publicBaseUrl,
       storageCredentials: [accessKeyId, secretAccessKey],
@@ -276,8 +278,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   return {
     admin: {
       username: adminUsername,
-      password: adminPassword,
-      sessionSecret: adminSessionSecret
+      password: adminPassword
     },
     database: {
       url: databaseUrl,
@@ -428,11 +429,10 @@ function optionalPositiveInteger(
   return parsed;
 }
 
-function optionalNonNegativeInteger(
+function optionalLegacyPositiveInteger(
   env: RuntimeEnv,
   field: string,
-  fallback: number,
-  issues: string[]
+  fallback: number
 ): number {
   const value = optionalString(env, field);
 
@@ -442,12 +442,7 @@ function optionalNonNegativeInteger(
 
   const parsed = Number(value);
 
-  if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    issues.push(`${field} must be a non-negative integer`);
-    return fallback;
-  }
-
-  return parsed;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseServicePorts(env: RuntimeEnv, issues: string[]): RuntimeConfig["ports"] {
@@ -536,66 +531,18 @@ function parsePaginationConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig
   };
 }
 
-function parsePublicationConfig(
-  env: RuntimeEnv,
-  issues: string[]
-): RuntimeConfig["publication"] {
+function createDefaultPublicationConfig(): RuntimeConfig["publication"] {
   return {
-    mode: parsePublicationMode(env, issues),
-    batchSize: optionalPositiveInteger(
-      env,
-      "PUBLICATION_BATCH_SIZE",
-      DEFAULT_PUBLICATION_BATCH_SIZE,
-      issues
-    ),
-    intervalSeconds: optionalPositiveInteger(
-      env,
-      "PUBLICATION_INTERVAL_SECONDS",
-      DEFAULT_PUBLICATION_INTERVAL_SECONDS,
-      issues
-    ),
-    indexShardSize: optionalPositiveInteger(
-      env,
-      "INDEX_SHARD_SIZE",
-      DEFAULT_INDEX_SHARD_SIZE,
-      issues
-    ),
-    linkIndexShardSize: optionalPositiveInteger(
-      env,
-      "LINK_INDEX_SHARD_SIZE",
-      DEFAULT_LINK_INDEX_SHARD_SIZE,
-      issues
-    ),
-    manifestShardSize: optionalPositiveInteger(
-      env,
-      "MANIFEST_SHARD_SIZE",
-      DEFAULT_MANIFEST_SHARD_SIZE,
-      issues
-    ),
-    graphEdgeShardSize: optionalPositiveInteger(
-      env,
-      "GRAPH_EDGE_SHARD_SIZE",
-      DEFAULT_GRAPH_EDGE_SHARD_SIZE,
-      issues
-    ),
-    graphCandidateLimit: optionalPositiveInteger(
-      env,
-      "GRAPH_CANDIDATE_LIMIT",
-      DEFAULT_GRAPH_CANDIDATE_LIMIT,
-      issues
-    ),
-    graphMaintenanceBatchSize: optionalPositiveInteger(
-      env,
-      "GRAPH_MAINTENANCE_BATCH_SIZE",
-      DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE,
-      issues
-    ),
-    rootSummaryLimit: optionalPositiveInteger(
-      env,
-      "ROOT_SUMMARY_LIMIT",
-      DEFAULT_ROOT_SUMMARY_LIMIT,
-      issues
-    )
+    mode: DEFAULT_PUBLICATION_MODE,
+    batchSize: DEFAULT_PUBLICATION_BATCH_SIZE,
+    intervalSeconds: DEFAULT_PUBLICATION_INTERVAL_SECONDS,
+    indexShardSize: DEFAULT_INDEX_SHARD_SIZE,
+    linkIndexShardSize: DEFAULT_LINK_INDEX_SHARD_SIZE,
+    manifestShardSize: DEFAULT_MANIFEST_SHARD_SIZE,
+    graphEdgeShardSize: DEFAULT_GRAPH_EDGE_SHARD_SIZE,
+    graphCandidateLimit: DEFAULT_GRAPH_CANDIDATE_LIMIT,
+    graphMaintenanceBatchSize: DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE,
+    rootSummaryLimit: DEFAULT_ROOT_SUMMARY_LIMIT
   };
 }
 
@@ -607,102 +554,22 @@ function parseWorkerConfig(env: RuntimeEnv, issues: string[]): WorkerRuntimeConf
       DEFAULT_WORKER_DATABASE_POOL_MAX,
       issues
     ),
-    sourceFileConcurrency: optionalPositiveInteger(
-      env,
-      "WORKER_SOURCE_FILE_CONCURRENCY",
-      DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
-      issues
-    ),
-    claimBatchSize: optionalPositiveInteger(
-      env,
-      "WORKER_CLAIM_BATCH_SIZE",
-      DEFAULT_WORKER_CLAIM_BATCH_SIZE,
-      issues
-    ),
-    pollIntervalMs: optionalPositiveInteger(
-      env,
-      "WORKER_POLL_INTERVAL_MS",
-      DEFAULT_WORKER_POLL_INTERVAL_MS,
-      issues
-    ),
-    lockTtlSeconds: optionalPositiveInteger(
-      env,
-      "WORKER_LOCK_TTL_SECONDS",
-      DEFAULT_WORKER_LOCK_TTL_SECONDS,
-      issues
-    ),
-    heartbeatIntervalMs: optionalPositiveInteger(
-      env,
-      "WORKER_HEARTBEAT_INTERVAL_MS",
-      DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
-      issues
-    ),
-    jobMaxAttempts: optionalPositiveInteger(
-      env,
-      "WORKER_JOB_MAX_ATTEMPTS",
-      DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
-      issues
-    ),
-    jobRetryDelayMs: optionalPositiveInteger(
-      env,
-      "WORKER_JOB_RETRY_DELAY_MS",
-      DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
-      issues
-    ),
-    queueBackpressureLimit: optionalPositiveInteger(
-      env,
-      "WORKER_QUEUE_BACKPRESSURE_LIMIT",
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
-      issues
-    ),
-    queueBackpressureKnowledgeBaseLimit: optionalPositiveInteger(
-      env,
-      "WORKER_QUEUE_BACKPRESSURE_KB_LIMIT",
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
-      issues
-    ),
-    queueBackpressureMaxAgeSeconds: optionalPositiveInteger(
-      env,
-      "WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS",
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
-      issues
-    ),
-    queueBackpressureRetryAfterSeconds: optionalPositiveInteger(
-      env,
-      "WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS",
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
-      issues
-    ),
-    shutdownGraceMs: optionalPositiveInteger(
-      env,
-      "WORKER_SHUTDOWN_GRACE_MS",
-      DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
-      issues
-    ),
-    completedJobRetentionDays: optionalPositiveInteger(
-      env,
-      "WORKER_COMPLETED_JOB_RETENTION_DAYS",
-      DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
-      issues
-    ),
-    failedJobRetentionDays: optionalPositiveInteger(
-      env,
-      "WORKER_FAILED_JOB_RETENTION_DAYS",
-      DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
-      issues
-    ),
-    deadLetterJobRetentionDays: optionalPositiveInteger(
-      env,
-      "WORKER_DEAD_LETTER_JOB_RETENTION_DAYS",
-      DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
-      issues
-    ),
-    retentionCleanupBatchSize: optionalPositiveInteger(
-      env,
-      "WORKER_RETENTION_CLEANUP_BATCH_SIZE",
-      DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE,
-      issues
-    )
+    sourceFileConcurrency: DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
+    claimBatchSize: DEFAULT_WORKER_CLAIM_BATCH_SIZE,
+    pollIntervalMs: DEFAULT_WORKER_POLL_INTERVAL_MS,
+    lockTtlSeconds: DEFAULT_WORKER_LOCK_TTL_SECONDS,
+    heartbeatIntervalMs: DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
+    jobMaxAttempts: DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
+    jobRetryDelayMs: DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
+    queueBackpressureLimit: DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
+    queueBackpressureKnowledgeBaseLimit: DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
+    queueBackpressureMaxAgeSeconds: DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
+    queueBackpressureRetryAfterSeconds: DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
+    shutdownGraceMs: DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
+    completedJobRetentionDays: DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
+    failedJobRetentionDays: DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
+    deadLetterJobRetentionDays: DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
+    retentionCleanupBatchSize: DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE
   };
 }
 
@@ -743,32 +610,11 @@ export function resolveWorkerConfig(
   };
 }
 
-function parsePublicationMode(env: RuntimeEnv, issues: string[]): PublicationMode {
-  const value = optionalString(env, "PUBLICATION_MODE") ?? DEFAULT_PUBLICATION_MODE;
-
-  if (value === "batch" || value === "manual" || value === "per_file") {
-    return value;
-  }
-
-  issues.push("PUBLICATION_MODE must be batch, manual, or per_file");
-  return DEFAULT_PUBLICATION_MODE;
-}
-
-function parseOkfConfig(env: RuntimeEnv, issues: string[]): RuntimeConfig["okf"] {
+function createDefaultOkfConfig(): RuntimeConfig["okf"] {
   return {
     log: {
-      maxEntries: optionalPositiveInteger(
-        env,
-        "OKF_LOG_MAX_ENTRIES",
-        DEFAULT_OKF_LOG_MAX_ENTRIES,
-        issues
-      ),
-      maxBytes: optionalPositiveInteger(
-        env,
-        "OKF_LOG_MAX_BYTES",
-        DEFAULT_OKF_LOG_MAX_BYTES,
-        issues
-      )
+      maxEntries: DEFAULT_OKF_LOG_MAX_ENTRIES,
+      maxBytes: DEFAULT_OKF_LOG_MAX_BYTES
     }
   };
 }
@@ -847,78 +693,10 @@ function normalizePrefix(prefix: string, issues: string[]): string {
   return normalized;
 }
 
-function parseModelConfig(
-  env: RuntimeEnv,
-  issues: string[]
-): RuntimeConfig["model"] {
-  const apiKey = optionalString(env, "MODEL_API_KEY");
-  const modelName = optionalString(env, "MODEL_NAME");
-
-  if (!apiKey || !modelName) {
-    return { enabled: false };
-  }
-
-  const rawBaseUrl = optionalString(env, "MODEL_BASE_URL") ?? DEFAULT_MODEL_BASE_URL;
-  const baseUrl = validateUrl("MODEL_BASE_URL", rawBaseUrl, issues);
-  const contextWindowTokens = requirePositiveInteger(
-    env,
-    "MODEL_CONTEXT_WINDOW_TOKENS",
-    issues
-  );
-  const requestMaxTimeoutMs = optionalPositiveInteger(
-    env,
-    "MODEL_REQUEST_MAX_TIMEOUT_MS",
-    DEFAULT_MODEL_REQUEST_MAX_TIMEOUT_MS,
-    issues
-  );
-  const requestIdleTimeoutMs = optionalPositiveInteger(
-    env,
-    "MODEL_REQUEST_IDLE_TIMEOUT_MS",
-    DEFAULT_MODEL_REQUEST_IDLE_TIMEOUT_MS,
-    issues
-  );
-  const suggestionConcurrency = optionalPositiveInteger(
-    env,
-    "MODEL_SUGGESTION_CONCURRENCY",
-    DEFAULT_MODEL_SUGGESTION_CONCURRENCY,
-    issues
-  );
-  const transientRetryDelayMs = optionalPositiveInteger(
-    env,
-    "MODEL_TRANSIENT_RETRY_DELAY_MS",
-    DEFAULT_MODEL_TRANSIENT_RETRY_DELAY_MS,
-    issues
-  );
-  const requestMinIntervalMs = optionalNonNegativeInteger(
-    env,
-    "MODEL_REQUEST_MIN_INTERVAL_MS",
-    DEFAULT_MODEL_REQUEST_MIN_INTERVAL_MS,
-    issues
-  );
-
-  if (requestIdleTimeoutMs > requestMaxTimeoutMs) {
-    issues.push("MODEL_REQUEST_IDLE_TIMEOUT_MS must be less than or equal to MODEL_REQUEST_MAX_TIMEOUT_MS");
-  }
-
-  return {
-    enabled: true,
-    apiKey,
-    modelName,
-    baseUrl,
-    contextWindowTokens,
-    requestMaxTimeoutMs,
-    requestIdleTimeoutMs,
-    suggestionConcurrency,
-    transientRetryDelayMs,
-    requestMinIntervalMs
-  };
-}
-
 function parseSecurityConfig(
   env: RuntimeEnv,
   input: {
     adminPassword: string;
-    adminSessionSecret: string;
     ports: RuntimeConfig["ports"];
     publicBaseUrl: string;
     storageCredentials: string[];
@@ -927,12 +705,6 @@ function parseSecurityConfig(
   issues: string[]
 ): RuntimeSecurityConfig {
   const environment = parseEnvironment(env, issues);
-  const sessionSecretMinLength = optionalPositiveInteger(
-    env,
-    "ADMIN_SESSION_SECRET_MIN_LENGTH",
-    DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH,
-    issues
-  );
   const cookieSecure = optionalBoolean(
     env,
     "ADMIN_SESSION_COOKIE_SECURE",
@@ -970,10 +742,6 @@ function parseSecurityConfig(
   const allowedHosts = parseStringList(env, "ALLOWED_HOSTS").map((value) => value.toLowerCase());
   const trustedProxy = optionalBoolean(env, "TRUSTED_PROXY_MODE", false, issues);
 
-  if (input.adminSessionSecret.length < sessionSecretMinLength) {
-    issues.push("ADMIN_SESSION_SECRET is shorter than ADMIN_SESSION_SECRET_MIN_LENGTH");
-  }
-
   if (cookieSameSite === "None" && !cookieSecure) {
     issues.push("ADMIN_SESSION_COOKIE_SAME_SITE=None requires ADMIN_SESSION_COOKIE_SECURE=true");
   }
@@ -981,7 +749,6 @@ function parseSecurityConfig(
   if (environment === "production") {
     validateProductionSecurity({
       adminPassword: input.adminPassword,
-      adminSessionSecret: input.adminSessionSecret,
       storageCredentials: input.storageCredentials,
       model: input.model,
       cookieSecure,
@@ -1008,15 +775,26 @@ function parseSecurityConfig(
         DEFAULT_ADMIN_SESSION_TTL_SECONDS,
         issues
       ),
-      secretMinLength: sessionSecretMinLength,
       cookieSecure,
       cookieSameSite
     },
     rateLimits: {
-      adminLogin: parseRateLimit(env, "ADMIN_LOGIN", 8, 900, issues),
-      adminApi: parseRateLimit(env, "ADMIN_API", 600, 60, issues),
-      upload: parseRateLimit(env, "UPLOAD", 20, 3_600, issues),
-      publicOpenApi: parseRateLimit(env, "PUBLIC_OPENAPI", 1_200, 60, issues)
+      adminLogin: {
+        max: 8,
+        windowSeconds: 900
+      },
+      adminApi: {
+        max: 600,
+        windowSeconds: 60
+      },
+      upload: {
+        max: 20,
+        windowSeconds: 3_600
+      },
+      publicOpenApi: {
+        max: 1_200,
+        windowSeconds: 60
+      }
     },
     audit: {
       retentionDays: optionalPositiveInteger(
@@ -1047,7 +825,6 @@ function createDefaultSecurityConfig(
     },
     session: {
       ttlSeconds: DEFAULT_ADMIN_SESSION_TTL_SECONDS,
-      secretMinLength: DEFAULT_ADMIN_SESSION_SECRET_MIN_LENGTH,
       cookieSecure: false,
       cookieSameSite: "Lax"
     },
@@ -1109,24 +886,6 @@ function parseCookieSameSite(
 
   issues.push("ADMIN_SESSION_COOKIE_SAME_SITE must be Lax, Strict, or None");
   return "Lax";
-}
-
-function parseRateLimit(
-  env: RuntimeEnv,
-  prefix: string,
-  fallbackMax: number,
-  fallbackWindowSeconds: number,
-  issues: string[]
-): RateLimitConfig {
-  return {
-    max: optionalPositiveInteger(env, `${prefix}_RATE_LIMIT_MAX`, fallbackMax, issues),
-    windowSeconds: optionalPositiveInteger(
-      env,
-      `${prefix}_RATE_LIMIT_WINDOW_SECONDS`,
-      fallbackWindowSeconds,
-      issues
-    )
-  };
 }
 
 function parseLoggingConfig(
@@ -1202,7 +961,6 @@ function validateOrigin(field: string, value: string, issues: string[]): string 
 
 function validateProductionSecurity(input: {
   adminPassword: string;
-  adminSessionSecret: string;
   storageCredentials: string[];
   model: RuntimeConfig["model"];
   cookieSecure: boolean;
@@ -1212,7 +970,6 @@ function validateProductionSecurity(input: {
 }) {
   const placeholderChecks: Array<[string, string | null]> = [
     ["ADMIN_PASSWORD", input.adminPassword],
-    ["ADMIN_SESSION_SECRET", input.adminSessionSecret],
     ["S3_ACCESS_KEY_ID", input.storageCredentials[0] ?? null],
     ["S3_SECRET_ACCESS_KEY", input.storageCredentials[1] ?? null],
     ["MODEL_API_KEY", input.model.enabled ? input.model.apiKey : null]

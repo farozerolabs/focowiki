@@ -194,7 +194,6 @@ export async function runApiValidation() {
     assertEnvValue(env.S3_ACCESS_KEY_ID, "S3_ACCESS_KEY_ID");
     assertEnvValue(env.S3_SECRET_ACCESS_KEY, "S3_SECRET_ACCESS_KEY");
     assertEnvValue(env.S3_PREFIX, "S3_PREFIX");
-    assertUploadLimit(env.MAX_UPLOAD_FILES, Math.max(singleSamples.length, batchSamples.length));
 
     const admin = createHttpClient(adminBaseUrl, {
       writeOrigin: env.ADMIN_PUBLIC_ORIGIN || `http://localhost:${env.ADMIN_UI_PORT ?? "43100"}`,
@@ -209,7 +208,6 @@ export async function runApiValidation() {
     await validateDatabaseConnectivity(env.DATABASE_URL, report);
     await validateRedisConnectivity(env.REDIS_URL, report);
     await validateS3Connectivity(env, report);
-    validateModelAssistanceMode(env, report);
     await expectUnauthorizedAdmin(admin, report);
     await expectInvalidAdminLogin(admin, env, report);
     await validatePublicApiReachable(publicApi, env, report);
@@ -217,6 +215,12 @@ export async function runApiValidation() {
 
     logValidationStep("admin-auth");
     await loginAdmin(admin, env, report);
+    await validateRuntimeUploadGenerationSettings(
+      admin,
+      Math.max(singleSamples.length, batchSamples.length),
+      report
+    );
+    await validateModelAssistanceMode(admin, env, report);
     await validateAdminOriginProtection(admin, report);
     env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
     await validateDeveloperOpenApiWebhooks(publicApi, env, report);
@@ -813,37 +817,95 @@ function assertEnvValue(value, name) {
   }
 }
 
-function assertUploadLimit(value, sampleCount) {
-  const parsed = Number(value ?? Number.NaN);
-
-  if (!Number.isSafeInteger(parsed) || parsed < sampleCount) {
-    throw new Error(`MAX_UPLOAD_FILES must be at least ${sampleCount} for this validation run.`);
-  }
-}
-
 function readModelAssistanceMode(env) {
-  const enabled = Boolean(env.MODEL_API_KEY?.trim() && env.MODEL_NAME?.trim());
   const required = readBooleanEnv(env[REQUIRE_MODEL_ENV]);
 
   return {
     required,
-    enabled,
-    modelName: enabled ? env.MODEL_NAME : null,
-    baseUrl: enabled ? redactUrl(env.MODEL_BASE_URL || "https://api.openai.com/v1") : null,
-    contextWindowTokens: enabled ? Number(env.MODEL_CONTEXT_WINDOW_TOKENS || 0) : null,
-    requestMaxTimeoutMs: enabled ? Number(env.MODEL_REQUEST_MAX_TIMEOUT_MS || 600_000) : null,
-    requestIdleTimeoutMs: enabled ? Number(env.MODEL_REQUEST_IDLE_TIMEOUT_MS || 120_000) : null,
-    suggestionConcurrency: enabled ? readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2) : null
+    enabled: false,
+    modelName: null,
+    baseUrl: null,
+    contextWindowTokens: null,
+    requestMaxTimeoutMs: null,
+    requestIdleTimeoutMs: null,
+    suggestionConcurrency: null
   };
 }
 
-function validateModelAssistanceMode(env, report) {
+async function readRuntimeSettings(admin) {
+  const response = await admin.request("/admin/api/settings/runtime");
+
+  if (!response.ok) {
+    throw new Error(`Runtime settings request failed with HTTP ${response.status}.`);
+  }
+
+  return response.json();
+}
+
+async function validateRuntimeUploadGenerationSettings(admin, sampleCount, report) {
+  const body = await readRuntimeSettings(admin);
+  const uploadGeneration = body.settings?.uploadGeneration;
+
+  if (!uploadGeneration) {
+    throw new Error("Runtime settings response did not include upload-generation settings.");
+  }
+
+  for (const [field, value] of Object.entries(uploadGeneration)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Runtime upload-generation setting ${field} must be a positive integer.`);
+    }
+  }
+
+  if (uploadGeneration.maxFiles < sampleCount) {
+    throw new Error(`Admin UI upload-generation maxFiles must be at least ${sampleCount} for this validation run.`);
+  }
+
+  report.checks.push(
+    okCheck(
+      "runtime-upload-generation-settings",
+      "Admin UI runtime upload-generation settings are persisted and large enough for validation samples.",
+      {
+        maxFiles: uploadGeneration.maxFiles,
+        sampleCount,
+        generationBatchSize: uploadGeneration.generationBatchSize,
+        fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
+        storageConcurrency: uploadGeneration.storageConcurrency
+      },
+      WHITE_BOX
+    )
+  );
+
+  return uploadGeneration;
+}
+
+async function readRuntimeModelAssistanceMode(admin, env) {
   const mode = readModelAssistanceMode(env);
+  const body = await readRuntimeSettings(admin);
+  const activeModel = body.settings?.activeModel;
+
+  if (!activeModel) {
+    return mode;
+  }
+
+  return {
+    ...mode,
+    enabled: true,
+    modelName: activeModel.modelName ?? null,
+    baseUrl: activeModel.baseUrl ? redactUrl(activeModel.baseUrl) : null,
+    contextWindowTokens: Number(activeModel.contextWindowTokens ?? 0),
+    requestMaxTimeoutMs: Number(activeModel.requestMaxTimeoutMs ?? 0),
+    requestIdleTimeoutMs: Number(activeModel.requestIdleTimeoutMs ?? 0),
+    suggestionConcurrency: Number(activeModel.suggestionConcurrency ?? 0)
+  };
+}
+
+async function validateModelAssistanceMode(admin, env, report) {
+  const mode = await readRuntimeModelAssistanceMode(admin, env);
   report.modelAssistance = mode;
 
   if (!mode.enabled) {
     if (mode.required) {
-      throw new Error(`${REQUIRE_MODEL_ENV}=true requires MODEL_API_KEY, MODEL_NAME, and valid model runtime settings.`);
+      throw new Error(`${REQUIRE_MODEL_ENV}=true requires an active model in Admin UI runtime settings.`);
     }
 
     report.checks.push(
@@ -905,15 +967,7 @@ export function readValidationTaskTimeoutMs(env, sampleCount) {
     return parsed;
   }
 
-  if (!env.MODEL_API_KEY?.trim() || !env.MODEL_NAME?.trim()) {
-    return Math.max(180_000, sampleCount * 60_000 + 180_000);
-  }
-
-  const concurrency = readPositiveInteger(env.MODEL_SUGGESTION_CONCURRENCY, 2);
-  const idleMs = readPositiveInteger(env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 120_000);
-  const batches = Math.ceil(sampleCount / concurrency);
-
-  return Math.max(180_000, batches * 2 * idleMs + 120_000);
+  return Math.max(180_000, sampleCount * 120_000 + 180_000);
 }
 
 function readPositiveInteger(value, fallback) {
@@ -1414,7 +1468,7 @@ async function fetchSourceFileDetail(admin, knowledgeBaseId, sourceFileId, repor
 }
 
 function validateSourceFileModelEvidence(files, samples, env, report, options = {}) {
-  const mode = readModelAssistanceMode(env);
+  const mode = report.modelAssistance ?? readModelAssistanceMode(env);
 
   if (!mode.enabled) {
     report.checks.push(
@@ -3067,7 +3121,7 @@ async function validateModelInvocationBoundaries(
   report,
   options = {}
 ) {
-  const mode = readModelAssistanceMode(env);
+  const mode = report.modelAssistance ?? readModelAssistanceMode(env);
   const postgresModule = requireFromApiPackage("postgres");
   const postgres = postgresModule.default ?? postgresModule;
   const sql = postgres(databaseUrl, { max: 1 });

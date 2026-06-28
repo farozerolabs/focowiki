@@ -12,6 +12,11 @@ import type {
 } from "../db/worker-job-repository.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { createModelSuggestionTaskRunner } from "../runtime/model-task-runner.js";
+import { createModelAssistanceFromRuntimeSettings } from "../runtime-settings/model-assistance.js";
+import type {
+  RuntimeSettingsService
+} from "../runtime-settings/service.js";
+import type { RuntimeSettingsSnapshot } from "../runtime-settings/types.js";
 import {
   createKnowledgeBasePublicationService,
   enqueuePendingPublicationWorkerJob
@@ -39,6 +44,7 @@ export function createWorkerRuntime(input: {
   storage: StorageAdapter;
   redis: RedisCoordinator;
   modelClient: OpenAIResponsesClient | null;
+  runtimeSettings?: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): WorkerRuntime {
   const workerJobs: WorkerJobRepository | undefined = input.repositories.workerJobs;
@@ -74,7 +80,7 @@ export function createWorkerRuntime(input: {
     throw new Error("Source file processor is unavailable");
   }
   const processor = sourceFileProcessor;
-  const workerConfig = resolveWorkerConfig(input.config);
+  const fallbackWorkerConfig = resolveWorkerConfig(input.config);
   const activeJobIds = new Set<string>();
   let lastCleanupAtMs = 0;
 
@@ -84,6 +90,8 @@ export function createWorkerRuntime(input: {
     }
 
     const now = new Date();
+    const runtimeSettings = await readEffectiveRuntimeSettings();
+    const workerConfig = runtimeSettings?.worker ?? fallbackWorkerConfig;
     await recordActiveHeartbeat();
     lastCleanupAtMs = await cleanupWorkerJobHistory({
       workerJobs: jobRepository,
@@ -116,6 +124,7 @@ export function createWorkerRuntime(input: {
     return await processClaimedJobs({
       claimed,
       concurrency: workerConfig.sourceFileConcurrency,
+      workerConfig,
       signal
     });
   }
@@ -123,6 +132,7 @@ export function createWorkerRuntime(input: {
   async function claimJobs(claimInput: {
     kinds: WorkerJobKind[];
     limit: number;
+    workerConfig: ReturnType<typeof resolveWorkerConfig>;
     now: Date;
   }): Promise<WorkerJobRecord[]> {
     await recordActiveHeartbeat();
@@ -138,7 +148,7 @@ export function createWorkerRuntime(input: {
       limit: claimInput.limit,
       now: claimInput.now.toISOString(),
       staleBefore: new Date(
-        claimInput.now.getTime() - workerConfig.lockTtlSeconds * 1_000
+        claimInput.now.getTime() - claimInput.workerConfig.lockTtlSeconds * 1_000
       ).toISOString()
     });
   }
@@ -146,6 +156,7 @@ export function createWorkerRuntime(input: {
   async function processClaimedJobs(processInput: {
     claimed: WorkerJobRecord[];
     concurrency: number;
+    workerConfig: ReturnType<typeof resolveWorkerConfig>;
     signal: AbortSignal;
   }): Promise<number> {
     for (const job of processInput.claimed) {
@@ -163,7 +174,7 @@ export function createWorkerRuntime(input: {
               job,
               workerId,
               workerJobs: jobRepository,
-              intervalMs: workerConfig.heartbeatIntervalMs ?? 15_000
+              intervalMs: processInput.workerConfig.heartbeatIntervalMs ?? 15_000
             },
             () =>
               processWorkerJob({
@@ -175,6 +186,7 @@ export function createWorkerRuntime(input: {
                 redis: input.redis,
                 sourceFileProcessor: processor,
                 config: input.config,
+                runtimeSettings: input.runtimeSettings ?? null,
                 logger: input.logger
               })
           ),
@@ -199,20 +211,26 @@ export function createWorkerRuntime(input: {
 
   async function runLane(input: {
     kinds: WorkerJobKind[];
-    limit: number;
-    concurrency: number;
-    pollIntervalMs: number;
+    role: "publication" | "source_file_processing";
     signal: AbortSignal;
   }): Promise<void> {
     while (!input.signal.aborted) {
+      const runtimeSettings = await readEffectiveRuntimeSettings();
+      const workerConfig = runtimeSettings?.worker ?? fallbackWorkerConfig;
       const claimed = await claimJobs({
         kinds: input.kinds,
-        limit: input.limit,
+        limit: input.role === "publication" ? 1 : workerConfig.claimBatchSize,
+        workerConfig,
         now: new Date()
       });
 
       if (claimed.length === 0) {
-        await sleep(input.pollIntervalMs, input.signal);
+        await sleep(
+          input.role === "publication"
+            ? Math.min(workerConfig.pollIntervalMs, 1_000)
+            : workerConfig.pollIntervalMs,
+          input.signal
+        );
         continue;
       }
 
@@ -228,7 +246,8 @@ export function createWorkerRuntime(input: {
 
       await processClaimedJobs({
         claimed,
-        concurrency: input.concurrency,
+        concurrency: input.role === "publication" ? 1 : workerConfig.sourceFileConcurrency,
+        workerConfig,
         signal: input.signal
       });
     }
@@ -245,16 +264,12 @@ export function createWorkerRuntime(input: {
       await Promise.all([
         runLane({
           kinds: ["publication"],
-          limit: 1,
-          concurrency: 1,
-          pollIntervalMs: Math.min(workerConfig.pollIntervalMs, 1_000),
+          role: "publication",
           signal
         }),
         runLane({
           kinds: ["source_file_processing"],
-          limit: workerConfig.claimBatchSize,
-          concurrency: workerConfig.sourceFileConcurrency,
-          pollIntervalMs: workerConfig.pollIntervalMs,
+          role: "source_file_processing",
           signal
         })
       ]);
@@ -263,6 +278,10 @@ export function createWorkerRuntime(input: {
     },
     tick
   };
+
+  async function readEffectiveRuntimeSettings(): Promise<RuntimeSettingsSnapshot | null> {
+    return input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+  }
 }
 
 async function claimWorkerJobsForTick(input: {
@@ -309,6 +328,7 @@ async function processWorkerJob(input: {
   redis: RedisCoordinator;
   sourceFileProcessor: NonNullable<ReturnType<typeof createSourceFileQueueProcessor>>;
   config: RuntimeConfig;
+  runtimeSettings: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): Promise<void> {
   if (input.job.kind === "publication") {
@@ -326,6 +346,7 @@ async function processSourceFileJob(input: {
   repositories: AdminRepositories;
   sourceFileProcessor: NonNullable<ReturnType<typeof createSourceFileQueueProcessor>>;
   config: RuntimeConfig;
+  runtimeSettings: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): Promise<void> {
   if (!input.job.sourceFileId) {
@@ -353,6 +374,15 @@ async function processSourceFileJob(input: {
   }
 
   try {
+    const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+    const publication = runtimeSettings?.publication ?? {
+      ...input.config.publication,
+      okfLogMaxEntries: input.config.okf?.log.maxEntries ?? 100,
+      okfLogMaxBytes: input.config.okf?.log.maxBytes ?? 65_536
+    };
+    const uploadGeneration = runtimeSettings?.uploadGeneration ?? input.config.upload;
+    const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
+    const { okfLogMaxEntries, okfLogMaxBytes, ...publicationOptions } = publication;
     input.logger.info("Worker job started", {
       jobId: input.job.id,
       kind: input.job.kind,
@@ -364,14 +394,20 @@ async function processSourceFileJob(input: {
       knowledgeBaseName: knowledgeBase.name,
       sourceFileId: input.job.sourceFileId,
       generatedAt: new Date().toISOString(),
-      batchSize: input.config.upload.generationBatchSize,
+      batchSize: uploadGeneration.generationBatchSize,
       cursorTtlSeconds: input.config.pagination.cursorTtlSeconds,
-      fileProcessingConcurrency: input.config.upload.fileProcessingConcurrency,
-      okfLog: input.config.okf?.log,
+      fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
+      okfLog: {
+        maxEntries: okfLogMaxEntries,
+        maxBytes: okfLogMaxBytes
+      },
       publication: {
-        ...input.config.publication,
-        workerJobMaxAttempts: resolveWorkerConfig(input.config).jobMaxAttempts
-      }
+        ...publicationOptions,
+        workerJobMaxAttempts: workerConfig.jobMaxAttempts
+      },
+      modelAssistance: runtimeSettings
+        ? createModelAssistanceFromRuntimeSettings(runtimeSettings)
+        : undefined
     });
 
     await input.workerJobs.completeWorkerJob({
@@ -403,6 +439,7 @@ async function processPublicationJob(input: {
   storage: StorageAdapter;
   redis: RedisCoordinator;
   config: RuntimeConfig;
+  runtimeSettings: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): Promise<void> {
   const reason = readPublicationReason(input.job.payload);
@@ -433,6 +470,15 @@ async function processPublicationJob(input: {
   }
 
   try {
+    const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+    const publication = runtimeSettings?.publication ?? {
+      ...input.config.publication,
+      okfLogMaxEntries: input.config.okf?.log.maxEntries ?? 100,
+      okfLogMaxBytes: input.config.okf?.log.maxBytes ?? 65_536
+    };
+    const uploadGeneration = runtimeSettings?.uploadGeneration ?? input.config.upload;
+    const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
+    const { okfLogMaxEntries, okfLogMaxBytes, ...publicationOptions } = publication;
     input.logger.info("Publication job started", {
       jobId: input.job.id,
       kind: input.job.kind,
@@ -443,13 +489,16 @@ async function processPublicationJob(input: {
       knowledgeBaseId: knowledgeBase.id,
       knowledgeBaseName: knowledgeBase.name,
       generatedAt: new Date().toISOString(),
-      pageSize: input.config.upload.generationBatchSize,
+      pageSize: uploadGeneration.generationBatchSize,
       cursorTtlSeconds: input.config.pagination.cursorTtlSeconds,
-      fileProcessingConcurrency: input.config.upload.fileProcessingConcurrency,
-      okfLog: input.config.okf?.log,
+      fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
+      okfLog: {
+        maxEntries: okfLogMaxEntries,
+        maxBytes: okfLogMaxBytes
+      },
       options: {
-        ...input.config.publication,
-        workerJobMaxAttempts: resolveWorkerConfig(input.config).jobMaxAttempts
+        ...publicationOptions,
+        workerJobMaxAttempts: workerConfig.jobMaxAttempts
       },
       reason,
       allowEmptyPublication: reason === "deletion"
@@ -487,6 +536,7 @@ async function processPublicationJob(input: {
     await enqueueRemainingPublicationJob({
       repositories: input.repositories,
       config: input.config,
+      runtimeSettings: input.runtimeSettings,
       knowledgeBaseId: knowledgeBase.id,
       generatedAt: completedAt
     });
@@ -505,6 +555,7 @@ async function processPublicationJob(input: {
 async function enqueueRemainingPublicationJob(input: {
   repositories: AdminRepositories;
   config: RuntimeConfig;
+  runtimeSettings: RuntimeSettingsService | null;
   knowledgeBaseId: string;
   generatedAt: string;
 }): Promise<void> {
@@ -518,12 +569,15 @@ async function enqueueRemainingPublicationJob(input: {
   const dirty = await countDirtySourceFiles({
     knowledgeBaseId: input.knowledgeBaseId
   });
+  const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+  const publication = runtimeSettings?.publication ?? input.config.publication;
+  const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
   await enqueuePendingPublicationWorkerJob({
     workerJobs,
     knowledgeBaseId: input.knowledgeBaseId,
     options: {
-      ...input.config.publication,
-      workerJobMaxAttempts: resolveWorkerConfig(input.config).jobMaxAttempts
+      ...publication,
+      workerJobMaxAttempts: workerConfig.jobMaxAttempts
     },
     dirtyCount: dirty.count,
     oldestDirtyAt: dirty.oldestDirtyAt,

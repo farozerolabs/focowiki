@@ -69,6 +69,7 @@ function englishThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "Docker Compose", link: "/deployment/docker-compose" },
           { text: "Environment Configuration", link: "/deployment/environment" },
+          { text: "Admin Settings", link: "/deployment/admin-settings" },
           { text: "Agent-assisted Deployment", link: "/deployment/agent-deployment" }
         ]
       },
@@ -127,6 +128,7 @@ function chineseThemeConfig(): DefaultTheme.Config {
         items: [
           { text: "Docker Compose", link: "/zh-CN/deployment/docker-compose" },
           { text: "环境变量配置", link: "/zh-CN/deployment/environment" },
+          { text: "Admin 配置", link: "/zh-CN/deployment/admin-settings" },
           { text: "使用 Agent 部署", link: "/zh-CN/deployment/agent-deployment" }
         ]
       },

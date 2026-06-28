@@ -15,8 +15,10 @@ https://github.com/farozerolabs/focowiki
 Read README.md and help me deploy Focowiki with Docker Compose.
 ```
 
-Before running the deployment, prepare the server, domain names, `.env` file, external S3-compatible storage, model configuration, and Docker Compose runtime.
+Before running the deployment, prepare the server, domain names, `.env` file, external S3-compatible storage, and Docker Compose runtime. After startup, review API limits, Worker values, publication values, upload generation, and optional model configurations in [Admin Settings](./admin-settings.md).
 
 Related deployment guide:
 
 - [Docker Compose Deployment](./docker-compose.md)
+- [Environment Configuration](./environment.md)
+- [Admin Settings](./admin-settings.md)

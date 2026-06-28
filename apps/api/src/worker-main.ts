@@ -10,6 +10,7 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
 import { createRuntimeLogger } from "./logger.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
+import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createWorkerRuntime } from "./worker/runtime.js";
 
@@ -43,6 +44,15 @@ async function runWorker(config: ReturnType<typeof loadRuntimeConfig>): Promise<
     redisConnected = true;
     const redis = createRedisCoordinator(redisClient);
     const modelClient = createModelClient(config);
+    const runtimeSettings = repositories.runtimeSettings
+      ? createRuntimeSettingsService({
+          config,
+          repository: repositories.runtimeSettings,
+          redis
+        })
+      : null;
+
+    await runtimeSettings?.ensureBootstrapped();
 
     await createWorkerRuntime({
       config,
@@ -50,6 +60,7 @@ async function runWorker(config: ReturnType<typeof loadRuntimeConfig>): Promise<
       storage,
       redis,
       modelClient,
+      runtimeSettings,
       logger
     }).run(abortController.signal);
   } finally {

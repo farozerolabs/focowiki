@@ -5,6 +5,7 @@
 !.env.dev.example
 *.local
 .envrc
+runtime-secrets
 
 # Real local Compose files generated from templates
 docker-compose.yml

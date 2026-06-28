@@ -16,6 +16,12 @@ const ciWorkflowPath = resolve(rootDir, ".github/workflows/ci.yml");
 const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
 const docsPublishWorkflowPath = resolve(rootDir, ".github/workflows/docs-publish.yml");
 const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
+const apiRuntimePaths = [
+  resolve(rootDir, "apps/api/runtime/main.mjs"),
+  resolve(rootDir, "apps/api/runtime/migrate.mjs"),
+  resolve(rootDir, "apps/api/runtime/search-backfill.mjs"),
+  resolve(rootDir, "apps/api/runtime/worker.mjs")
+];
 
 describe("Docker Compose infrastructure", () => {
   it("defines PostgreSQL and Redis services for local development in the local template", () => {
@@ -59,11 +65,13 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
     expect(compose).toContain("apps/api/runtime/worker.mjs");
     expect(compose).toContain("--healthcheck");
-    expect(compose).toContain("stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms");
+    expect(compose).toContain("stop_grace_period: 30s");
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
+    expect(compose).toContain("runtime-secrets:/app/runtime-secrets");
+    expect(compose).toContain("runtime-secrets:");
     expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
@@ -83,7 +91,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
     expect(compose).toContain("apps/api/runtime/worker.mjs");
     expect(compose).toContain("--healthcheck");
-    expect(compose).toContain("stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms");
+    expect(compose).toContain("stop_grace_period: 30s");
     expect(compose).toContain("${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
     expect(compose).toContain("${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}");
     expect(compose).toContain(
@@ -91,6 +99,7 @@ describe("Docker Compose infrastructure", () => {
     );
     expect(compose).toContain("postgres-data:");
     expect(compose).toContain("redis-data:");
+    expect(compose).toContain("runtime-secrets:");
     expect(compose).toContain("depends_on:");
     expect(compose).toContain("condition: service_healthy");
     expect(compose).toContain("env_file:");
@@ -99,6 +108,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
+    expect(compose).toContain("runtime-secrets:/app/runtime-secrets");
     expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
@@ -151,6 +161,23 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/main.mjs");
   });
 
+  it("keeps Docker runtime bundles from requiring Admin UI managed upload-generation env fields", () => {
+    for (const runtimePath of apiRuntimePaths) {
+      const runtime = readFileSync(runtimePath, "utf8");
+
+      for (const field of [
+        "MAX_UPLOAD_BYTES",
+        "MAX_UPLOAD_FILES",
+        "GENERATION_BATCH_SIZE",
+        "UPLOAD_FILE_PROCESSING_CONCURRENCY",
+        "UPLOAD_STORAGE_CONCURRENCY"
+      ]) {
+        expect(runtime).not.toContain(`requirePositiveInteger(env, "${field}"`);
+        expect(runtime).not.toContain(`requirePositiveInteger(env2, "${field}"`);
+      }
+    }
+  });
+
   it("keeps the API runtime image free from copied workspace node_modules", () => {
     const dockerfile = readFileSync(dockerfilePath, "utf8");
     const apiRuntime = dockerfile.split("FROM node:24-alpine AS api")[1]?.split("FROM nginx:1.29-alpine AS admin")[0] ?? "";
@@ -166,8 +193,11 @@ describe("Docker Compose infrastructure", () => {
     const entrypoint = readFileSync(entrypointPath, "utf8");
 
     expect(entrypoint).toContain("LOG_FILE_DIR");
+    expect(entrypoint).toContain("/app/runtime-secrets");
+    expect(entrypoint).not.toContain("RUNTIME_SECRET_DIR");
     expect(entrypoint).toContain("mkdir -p");
     expect(entrypoint).toContain("chown -R node:node");
+    expect(entrypoint).toContain("chmod 700");
     expect(entrypoint).toContain("exec su-exec node:node");
   });
 
@@ -186,6 +216,7 @@ describe("Docker Compose infrastructure", () => {
       ".git",
       "openspec",
       "ReferenceDocs",
+      "runtime-secrets",
       "tmp",
       "dist"
     ]) {
@@ -230,8 +261,13 @@ describe("Docker Compose infrastructure", () => {
     expect(devEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(devEnv).toContain("LOG_FILE_MAX_FILES=5");
     expect(devEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(devEnv).not.toContain("RUNTIME_SECRET_DIR");
+    expect(devEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
     expect(devEnv).not.toContain("DOCKER_LOG_MAX_SIZE");
     expect(devEnv).not.toContain("DOCKER_LOG_MAX_FILE");
+    expect(devEnv).not.toContain("ADMIN_SESSION_SECRET=");
+    expect(devEnv).not.toContain("SETTINGS_ENCRYPTION_SECRET=");
+    expect(devEnv).not.toContain("ADMIN_SESSION_SECRET_MIN_LENGTH");
     expect(devEnv).toContain("DATABASE_URL=postgres://focowiki:focowiki@127.0.0.1:55432/focowiki");
     expect(deploymentEnv).toContain("APP_ENV=production");
     expect(deploymentEnv).toContain("LOG_LEVEL=info");
@@ -239,14 +275,18 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(deploymentEnv).toContain("LOG_FILE_MAX_FILES=5");
     expect(deploymentEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(deploymentEnv).not.toContain("RUNTIME_SECRET_DIR");
+    expect(deploymentEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
     expect(deploymentEnv).not.toContain("DOCKER_LOG_MAX_SIZE");
     expect(deploymentEnv).not.toContain("DOCKER_LOG_MAX_FILE");
+    expect(deploymentEnv).not.toContain("ADMIN_SESSION_SECRET=");
+    expect(deploymentEnv).not.toContain("SETTINGS_ENCRYPTION_SECRET=");
+    expect(deploymentEnv).not.toContain("ADMIN_SESSION_SECRET_MIN_LENGTH");
     expect(deploymentEnv).toContain("DATABASE_URL=postgres://");
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
     expect(deploymentEnv).toContain("FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:latest");
     expect(deploymentEnv).toContain("FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:latest");
-    expect(deploymentEnv).toContain("ADMIN_SESSION_SECRET=<generate-a-strong-session-secret>");
     expect(deploymentEnv).not.toContain("ADMIN_PASSWORD=change-me");
     expect(devEnv).not.toContain("PUBLIC_API_KEY");
     expect(devEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");

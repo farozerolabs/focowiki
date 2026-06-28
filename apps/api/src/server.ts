@@ -14,6 +14,10 @@ import type { RedisCoordinator } from "./redis/coordination.js";
 import { registerAdminApiRoutes } from "./admin/routes.js";
 import { registerDeveloperOpenApiRoutes } from "./developer-openapi/routes.js";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage/s3.js";
+import {
+  createRuntimeSettingsService,
+  type RuntimeSettingsService
+} from "./runtime-settings/service.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -21,6 +25,7 @@ export type ApiAppOptions = {
   modelClient?: OpenAIResponsesClient;
   redis?: RedisCoordinator;
   repositories?: AdminRepositories;
+  runtimeSettings?: RuntimeSettingsService;
 };
 
 type ApiAppServices = {
@@ -30,6 +35,7 @@ type ApiAppServices = {
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;
+  runtimeSettings: RuntimeSettingsService | null;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
@@ -61,6 +67,17 @@ export function createApiApp(options: ApiAppOptions): Hono {
 }
 
 function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
+  const repositories = options.repositories ?? null;
+  const runtimeSettings =
+    options.runtimeSettings ??
+    (repositories?.runtimeSettings
+      ? createRuntimeSettingsService({
+          config: options.config,
+          repository: repositories.runtimeSettings,
+          redis: options.redis ?? null
+        })
+      : null);
+
   return {
     config: options.config,
     storage: options.storage ?? createS3StorageAdapter(options.config.storage),
@@ -81,6 +98,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
         )
       : null,
     redis: options.redis ?? null,
-    repositories: options.repositories ?? null
+    repositories,
+    runtimeSettings
   };
 }

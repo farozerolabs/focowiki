@@ -1,4 +1,8 @@
-import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
+import {
+  resolveWorkerConfig,
+  type RuntimeConfig,
+  type WorkerRuntimeConfig
+} from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { WorkerJobRepository } from "../db/worker-job-repository.js";
 
@@ -45,6 +49,7 @@ export async function enqueueSourceFileProcessingJobs(input: {
   knowledgeBaseId: string;
   reason: "upload" | "retry";
   config: Pick<RuntimeConfig, "worker">;
+  worker?: WorkerRuntimeConfig | undefined;
 }): Promise<void> {
   const workerJobs = requireWorkerJobRepository(input.repositories);
 
@@ -52,11 +57,12 @@ export async function enqueueSourceFileProcessingJobs(input: {
     throw new Error("Worker job repository is unavailable");
   }
 
-  const workerConfig = resolveWorkerConfig(input.config);
+  const workerConfig = input.worker ?? resolveWorkerConfig(input.config);
   await assertSourceFileQueueCapacity({
     repositories: input.repositories,
     knowledgeBaseId: input.knowledgeBaseId,
-    config: input.config
+    config: input.config,
+    worker: workerConfig
   });
 
   const runAfter = new Date().toISOString();
@@ -76,6 +82,7 @@ export async function assertSourceFileQueueCapacity(input: {
   repositories: AdminRepositories;
   knowledgeBaseId?: string | null;
   config: Pick<RuntimeConfig, "worker">;
+  worker?: WorkerRuntimeConfig | undefined;
 }): Promise<void> {
   const workerJobs = requireWorkerJobRepository(input.repositories);
 
@@ -83,7 +90,7 @@ export async function assertSourceFileQueueCapacity(input: {
     throw new Error("Worker job repository is unavailable");
   }
 
-  const workerConfig = resolveWorkerConfig(input.config);
+  const workerConfig = input.worker ?? resolveWorkerConfig(input.config);
   const [activeJobCount, knowledgeBaseActiveJobCount, queueSummary] = await Promise.all([
     workerJobs.countActiveWorkerJobs({
       kinds: ["source_file_processing"]

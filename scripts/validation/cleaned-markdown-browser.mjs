@@ -21,6 +21,10 @@ const adminUsername = requiredEnv("ADMIN_USERNAME");
 const adminPassword = requiredEnv("ADMIN_PASSWORD");
 const knowledgeBaseName = `Focowiki browser validation ${new Date().toISOString()}`;
 const taskTimeoutMs = readValidationTaskTimeoutMs(sampleSelection.samples.length);
+const uploadResponseTimeoutMs = readPositiveInteger(
+  process.env.FOCOWIKI_VALIDATION_MAX_MUTATION_ENDPOINT_MS,
+  30_000
+);
 
 const report = {
   kind: "browser",
@@ -106,6 +110,7 @@ try {
   await page.getByRole("button", { name: "Log in" }).click();
   await page.getByRole("button", { name: "Create knowledge base" }).first().waitFor();
   report.checks.push(okCheck("login", "Admin login succeeded in browser."));
+  await validateRuntimeSettingsPage(page);
 
   await page.getByRole("button", { name: "Create knowledge base" }).first().click();
   const createDialog = page.getByRole("dialog");
@@ -317,7 +322,8 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
         response.request().method() === "POST" &&
         response.url().includes("/admin/api/knowledge-bases/") &&
         response.url().includes("/uploads") &&
-        response.status() === 202
+        response.status() === 202,
+      { timeout: uploadResponseTimeoutMs }
     ),
     uploadDialog.getByRole("button", { name: /^Upload$/ }).click()
   ]);
@@ -448,6 +454,46 @@ function readSourceFileIdFromTestId(testId) {
   const prefix = "source-file-row-";
 
   return testId.startsWith(prefix) && testId.length > prefix.length ? testId.slice(prefix.length) : null;
+}
+
+async function validateRuntimeSettingsPage(page) {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("heading", { name: "Settings" }).waitFor();
+  await page.getByRole("tab", { name: "Upload and generation" }).click();
+  await page.locator("#upload-generation-maxBytes").waitFor();
+  await page.getByText("Maximum total bytes accepted by one upload request.", { exact: false }).waitFor();
+
+  const requiredFields = [
+    "upload-generation-maxBytes",
+    "upload-generation-maxFiles",
+    "upload-generation-generationBatchSize",
+    "upload-generation-fileProcessingConcurrency",
+    "upload-generation-storageConcurrency"
+  ];
+
+  for (const fieldId of requiredFields) {
+    const field = page.locator(`#${fieldId}`);
+    await field.waitFor();
+    const value = await field.inputValue();
+
+    if (!value || Number(value) <= 0) {
+      throw new Error(`Runtime settings field ${fieldId} must be prefilled with a positive value.`);
+    }
+  }
+
+  const maxBytes = page.locator("#upload-generation-maxBytes");
+  const originalMaxBytes = await maxBytes.inputValue();
+  await maxBytes.fill("");
+  await page.getByRole("button", { name: "Save" }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Required numeric fields must be positive integers." })
+    .first()
+    .waitFor();
+  await maxBytes.fill(originalMaxBytes);
+  await page.locator("header button").first().click();
+  await page.getByRole("button", { name: "Create knowledge base" }).first().waitFor();
+  report.checks.push(okCheck("runtime-settings-page", "Admin UI runtime settings page validates upload-generation fields."));
 }
 
 function createSearchTokenFromFilename(filename) {
@@ -789,15 +835,7 @@ function readValidationTaskTimeoutMs(sampleCount) {
     return parsed;
   }
 
-  if (!process.env.MODEL_API_KEY?.trim() || !process.env.MODEL_NAME?.trim()) {
-    return 180_000;
-  }
-
-  const concurrency = readPositiveInteger(process.env.MODEL_SUGGESTION_CONCURRENCY, 2);
-  const idleMs = readPositiveInteger(process.env.MODEL_REQUEST_IDLE_TIMEOUT_MS, 120_000);
-  const batches = Math.ceil(sampleCount / concurrency);
-
-  return Math.max(180_000, batches * 2 * idleMs + 120_000);
+  return Math.max(180_000, sampleCount * 120_000 + 180_000);
 }
 
 function readPositiveInteger(value, fallback) {

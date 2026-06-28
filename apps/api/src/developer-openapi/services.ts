@@ -11,6 +11,8 @@ import type {
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
+import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
 import {
   StorageObjectTooLargeError,
   type StorageAdapter
@@ -69,6 +71,7 @@ export type DeveloperOpenApiServices = {
   redis: RedisCoordinator | null;
   storage: StorageAdapter;
   modelClient: OpenAIResponsesClient | null;
+  runtimeSettings: RuntimeSettingsService | null;
 };
 
 type DeveloperFileSearchResponse = {
@@ -218,8 +221,12 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       if (input.files.length === 0) {
         throw validationError("At least one Markdown file is required.", { field: "files" });
       }
+      const uploadGeneration = await resolveUploadGenerationSettings({
+        config,
+        runtimeSettings: services.runtimeSettings
+      });
 
-      if (input.files.length > config.upload.maxFiles) {
+      if (input.files.length > uploadGeneration.maxFiles) {
         throw payloadTooLarge("Too many files were uploaded.");
       }
 
@@ -230,7 +237,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const loadedFiles = await readLoadedFiles(input.files);
       const totalBytes = loadedFiles.reduce((sum, file) => sum + file.bytes.byteLength, 0);
 
-      if (totalBytes > config.upload.maxBytes) {
+      if (totalBytes > uploadGeneration.maxBytes) {
         throw payloadTooLarge("Uploaded files exceed the byte limit.");
       }
 
@@ -238,7 +245,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         await assertSourceFileQueueCapacity({
           repositories: repo,
           knowledgeBaseId: knowledgeBase.id,
-          config
+          config,
+          worker: (await services.runtimeSettings?.getSnapshot())?.worker
         });
       } catch (error) {
         if (error instanceof WorkerQueueBackpressureError) {
@@ -258,7 +266,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
       const sourceFileIds = await acceptUploadSourceFiles({
         files: loadedFiles,
-        storageConcurrency: config.upload.storageConcurrency,
+        storageConcurrency: uploadGeneration.storageConcurrency,
         knowledgeBaseId: knowledgeBase.id,
         storage,
         createSourceFiles: repo.files.createSourceFiles
@@ -291,7 +299,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         sourceFileIds,
         knowledgeBaseId: knowledgeBase.id,
         reason: "upload",
-        config
+        config,
+        worker: (await services.runtimeSettings?.getSnapshot())?.worker
       });
 
       return {
@@ -483,7 +492,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         await assertSourceFileQueueCapacity({
           repositories: repo,
           knowledgeBaseId: knowledgeBase.id,
-          config
+          config,
+          worker: (await services.runtimeSettings?.getSnapshot())?.worker
         });
       } catch (error) {
         if (error instanceof WorkerQueueBackpressureError) {
@@ -521,7 +531,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         sourceFileIds: [sourceFile.id],
         knowledgeBaseId: knowledgeBase.id,
         reason: "retry",
-        config
+        config,
+        worker: (await services.runtimeSettings?.getSnapshot())?.worker
       });
 
       return {
@@ -959,14 +970,18 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     }
 
     const deletedAt = new Date().toISOString();
+    const uploadGeneration = await resolveUploadGenerationSettings({
+      config,
+      runtimeSettings: services.runtimeSettings
+    });
     const result = await deletionService.deleteSourcePage({
       knowledgeBaseId: file.knowledgeBaseId,
       logicalPath: file.logicalPath,
       deletedAt,
       generatedAt: deletedAt,
-      batchSize: config.upload.generationBatchSize,
+      batchSize: uploadGeneration.generationBatchSize,
       cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-      fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+      fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
       okfLog: config.okf?.log,
       publication: config.publication
     });

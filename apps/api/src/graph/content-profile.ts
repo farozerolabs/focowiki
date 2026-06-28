@@ -47,6 +47,9 @@ const LOW_INFORMATION_TERMS = new Set([
   "official",
   "official source",
   "source",
+  "regulation",
+  "protection",
+  "protection regulation",
   "effective",
   "valid",
   "related",
@@ -64,6 +67,12 @@ const LOW_INFORMATION_TERMS = new Set([
   "有关法律法规",
   "法律法规",
   "法规的规定",
+  "本文件规定",
+  "为了加强",
+  "根据有关",
+  "有关规定",
+  "相关规定",
+  "监督管理",
   "相关",
   "引用",
   "有效"
@@ -238,9 +247,38 @@ function extractCjkTerms(value: string): string[] {
     if (chunk.length <= 20) {
       terms.push(chunk);
     }
+
+    terms.push(...extractCjkSubterms(chunk));
   }
 
   return terms.map(normalizeTerm);
+}
+
+function extractCjkSubterms(value: string): string[] {
+  const chunk = stripDocumentSuffix(value);
+  const terms: string[] = [];
+  const minLength = 4;
+  const maxLength = Math.min(8, chunk.length);
+
+  if (chunk.length < minLength) {
+    return terms;
+  }
+
+  for (let length = minLength; length <= maxLength; length += 1) {
+    for (let index = 0; index + length <= chunk.length; index += 1) {
+      const term = chunk.slice(index, index + length);
+
+      if (isUsefulTerm(term)) {
+        terms.push(term);
+      }
+
+      if (terms.length >= 24) {
+        return terms;
+      }
+    }
+  }
+
+  return terms;
 }
 
 function extractTitleTerms(value: string): string[] {

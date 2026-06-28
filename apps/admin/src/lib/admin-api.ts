@@ -235,6 +235,85 @@ export type ApiFailure = {
   messageKey: string;
 };
 
+export type RateLimitSettings = {
+  adminLogin: { max: number; windowSeconds: number };
+  adminApi: { max: number; windowSeconds: number };
+  upload: { max: number; windowSeconds: number };
+  publicOpenApi: { max: number; windowSeconds: number };
+};
+
+export type WorkerSettings = {
+  sourceFileConcurrency: number;
+  claimBatchSize: number;
+  pollIntervalMs: number;
+  lockTtlSeconds: number;
+  heartbeatIntervalMs: number;
+  jobMaxAttempts: number;
+  jobRetryDelayMs: number;
+  queueBackpressureLimit: number;
+  queueBackpressureKnowledgeBaseLimit: number;
+  queueBackpressureMaxAgeSeconds: number;
+  queueBackpressureRetryAfterSeconds: number;
+  shutdownGraceMs: number;
+  completedJobRetentionDays: number;
+  failedJobRetentionDays: number;
+  deadLetterJobRetentionDays: number;
+  retentionCleanupBatchSize: number;
+};
+
+export type PublicationSettings = {
+  mode: "batch" | "manual" | "per_file";
+  batchSize: number;
+  intervalSeconds: number;
+  indexShardSize: number;
+  linkIndexShardSize: number;
+  manifestShardSize: number;
+  graphEdgeShardSize: number;
+  graphCandidateLimit: number;
+  graphMaintenanceBatchSize: number;
+  rootSummaryLimit: number;
+  okfLogMaxEntries: number;
+  okfLogMaxBytes: number;
+};
+
+export type UploadGenerationSettings = {
+  maxBytes: number;
+  maxFiles: number;
+  generationBatchSize: number;
+  fileProcessingConcurrency: number;
+  storageConcurrency: number;
+};
+
+export type RuntimeModelConfig = {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  apiKeyFingerprint: string;
+  modelName: string;
+  contextWindowTokens: number;
+  requestMaxTimeoutMs: number;
+  requestIdleTimeoutMs: number;
+  suggestionConcurrency: number;
+  transientRetryDelayMs: number;
+  requestMinIntervalMs: number;
+  status: "active" | "paused" | "deleted";
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+export type RuntimeSettingsResponse = {
+  settings: {
+    rateLimits: RateLimitSettings;
+    worker: WorkerSettings;
+    publication: PublicationSettings;
+    uploadGeneration: UploadGenerationSettings;
+    activeModel: RuntimeModelConfig | null;
+  };
+  models: RuntimeModelConfig[];
+};
+
 type AuthFailureHandler = () => void;
 
 let authFailureHandler: AuthFailureHandler | null = null;
@@ -408,6 +487,144 @@ export async function deletePublicOpenApiKey(input: {
   }
 
   return body as { deleted: true };
+}
+
+export async function fetchRuntimeSettings(): Promise<RuntimeSettingsResponse | ApiFailure> {
+  const response = await adminFetch("/admin/api/settings/runtime");
+  const body = (await response.json()) as RuntimeSettingsResponse | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.runtimeSettingsUnavailable");
+  }
+
+  return body as RuntimeSettingsResponse;
+}
+
+export async function updateRateLimitSettings(
+  input: RateLimitSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/rate-limits", input);
+}
+
+export async function updateWorkerSettings(
+  input: WorkerSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/worker", input);
+}
+
+export async function updatePublicationSettings(
+  input: PublicationSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/publication", input);
+}
+
+export async function updateUploadGenerationSettings(
+  input: UploadGenerationSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/upload-generation", input);
+}
+
+export async function createRuntimeModel(input: {
+  displayName: string;
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+  contextWindowTokens: number;
+  requestMaxTimeoutMs: number;
+  requestIdleTimeoutMs: number;
+  suggestionConcurrency: number;
+  transientRetryDelayMs: number;
+  requestMinIntervalMs: number;
+  isActive: boolean;
+}): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  const response = await adminFetch("/admin/api/settings/models", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+  const body = (await response.json()) as { model: RuntimeModelConfig } | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.runtimeSettingsValidationFailed");
+  }
+
+  return body as { model: RuntimeModelConfig };
+}
+
+export async function activateRuntimeModel(
+  modelId: string
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  return postRuntimeModelAction(modelId, "activate");
+}
+
+export async function pauseRuntimeModel(
+  modelId: string
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  return postRuntimeModelAction(modelId, "pause");
+}
+
+export async function resumeRuntimeModel(
+  modelId: string
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  return postRuntimeModelAction(modelId, "resume");
+}
+
+export async function deleteRuntimeModel(
+  modelId: string
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  const response = await adminFetch(`/admin/api/settings/models/${encodeURIComponent(modelId)}`, {
+    method: "DELETE"
+  });
+  const body = (await response.json()) as { model: RuntimeModelConfig } | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.deleteFailed");
+  }
+
+  return body as { model: RuntimeModelConfig };
+}
+
+async function updateRuntimeSettings(
+  path: string,
+  input: unknown
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  const response = await adminFetch(path, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+  const body = (await response.json()) as
+    | { settings: RuntimeSettingsResponse["settings"] }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.runtimeSettingsValidationFailed");
+  }
+
+  return body as { settings: RuntimeSettingsResponse["settings"] };
+}
+
+async function postRuntimeModelAction(
+  modelId: string,
+  action: "activate" | "pause" | "resume"
+): Promise<{ model: RuntimeModelConfig } | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/settings/models/${encodeURIComponent(modelId)}/${action}`,
+    {
+      method: "POST"
+    }
+  );
+  const body = (await response.json()) as { model: RuntimeModelConfig } | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.runtimeSettingsValidationFailed");
+  }
+
+  return body as { model: RuntimeModelConfig };
 }
 
 export async function uploadKnowledgeBaseSources(input: {
@@ -697,6 +914,9 @@ function readFailure(
     | { knowledgeBase: KnowledgeBase }
     | { files: SourceFileRecord[] }
     | { file: SourceFileRecord }
+    | RuntimeSettingsResponse
+    | { settings: RuntimeSettingsResponse["settings"] }
+    | { model: RuntimeModelConfig }
     | SourceFileTaskDeletionResponse
     | { key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey }
     | { deleted: true; releaseId?: string }

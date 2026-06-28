@@ -325,6 +325,20 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
         limit: 3
       });
     },
+    async replaceGraphEdgesForSourceFile({ knowledgeBaseId, sourceFileId }) {
+      const deletedRows = await sql<Array<{ source_file_id: string }>>`
+        DELETE FROM focowiki.source_file_graph_edges
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND from_source_file_id = ${sourceFileId}
+        RETURNING to_source_file_id AS source_file_id
+      `;
+
+      await refreshGraphSummariesForSourceFiles({
+        knowledgeBaseId,
+        sourceFileIds: [sourceFileId, ...deletedRows.map((row) => row.source_file_id)],
+        limit: 3
+      });
+    },
     async listGraphNodes({ knowledgeBaseId, limit, cursor }) {
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
       const rows = cursorValue

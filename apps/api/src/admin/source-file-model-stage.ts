@@ -30,7 +30,8 @@ export async function processSourceFileModelStage(input: {
   const tracker = createModelInvocationTracker({
     repositories: input.repositories,
     knowledgeBaseId: input.knowledgeBaseId,
-    modelName: input.modelAssistance?.modelName ?? null
+    modelName: input.modelAssistance?.modelName ?? null,
+    modelConfigId: input.modelAssistance?.modelConfigId ?? null
   });
 
   if (!input.modelAssistance) {

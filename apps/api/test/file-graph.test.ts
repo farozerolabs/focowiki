@@ -235,6 +235,46 @@ describe("file graph", () => {
     expect(storedEdges[0]?.toFileId).toBe("source-sanya-river-ecology");
   });
 
+  it("connects related Chinese files through body-derived key phrase overlap", async () => {
+    const source = createSourceFile("source-rural-road-maintenance", "rural-road-maintenance.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-rural-road-management", "rural-road-management.md"),
+        title: "农村公路管理规定",
+        subjects: ["农村公路管理"],
+        entities: ["农村公路"],
+        keywords: ["农村公路", "公路养护", "交通运输"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "农村公路养护办法",
+        type: "local regulation",
+        tags: []
+      },
+      body: [
+        "# 农村公路养护办法",
+        "",
+        "本文件规定农村公路建设、养护资金、路产路权保护和交通运输主管部门监督管理。",
+        "农村公路养护质量评定、养护责任和安全保障应当与农村公路管理制度衔接。"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges[0]?.toFileId).toBe("source-rural-road-management");
+    expect(storedEdges[0]?.evidence).toMatchObject({
+      matchedTerms: expect.arrayContaining(["农村公路"])
+    });
+  });
+
   it("does not publish cross-scope relationships from boilerplate body phrases", async () => {
     const source = createSourceFile("source-qitaihe-park", "qitaihe-park.md");
     const candidates = [
@@ -440,6 +480,41 @@ describe("file graph", () => {
     expect(result.edgeCount).toBe(0);
     expect(storedEdges).toHaveLength(0);
   });
+
+  it("replaces stale outgoing graph edges when a source file is retried", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const storedEdges: OkfGraphEdge[] = [
+      {
+        fromFileId: source.id,
+        toFileId: "source-stale",
+        relationType: "shared_key_phrase",
+        weight: 0.7,
+        reason: "Stale edge from previous processing.",
+        source: "deterministic",
+        evidence: {
+          matchedTerms: ["stale"]
+        }
+      }
+    ];
+    const graph = createMemoryGraphRepository({ candidates: [], storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "page",
+        tags: []
+      },
+      body: "# Current\n\nThis file no longer references the previous target.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
 });
 
 function createMemoryGraphRepository(input: {
@@ -453,6 +528,20 @@ function createMemoryGraphRepository(input: {
     },
     async upsertGraphEdges(request) {
       input.storedEdges?.push(...request.edges);
+    },
+    async upsertRejectedGraphEdges() {
+      return undefined;
+    },
+    async replaceGraphEdgesForSourceFile(request) {
+      if (!input.storedEdges) {
+        return;
+      }
+
+      for (let index = input.storedEdges.length - 1; index >= 0; index -= 1) {
+        if (input.storedEdges[index]?.fromFileId === request.sourceFileId) {
+          input.storedEdges.splice(index, 1);
+        }
+      }
     },
     async listGraphNodes(request) {
       const offset = request.cursor ? Number(request.cursor) : 0;

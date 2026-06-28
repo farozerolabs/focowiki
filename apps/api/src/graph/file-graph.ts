@@ -14,6 +14,11 @@ import {
   normalizeTerm,
   stripGeneratedSections
 } from "./content-profile.js";
+import {
+  findSharedSpecificPhrases,
+  isSpecificSharedSignal,
+  isStrongContentSignal
+} from "./relationship-signals.js";
 
 export type BuildSourceFileGraphInput = {
   graph: FileGraphRepository;
@@ -69,6 +74,11 @@ export async function buildSourceFileGraph(
     candidates,
     edges,
     modelConfirmation: input.modelConfirmation ?? null
+  });
+
+  await input.graph.replaceGraphEdgesForSourceFile?.({
+    knowledgeBaseId: input.knowledgeBaseId,
+    sourceFileId: input.source.id
   });
 
   if (confirmation.edges.length > 0) {
@@ -336,6 +346,9 @@ function bestEdgeForCandidate(
   const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal);
   const strongSharedEntities = sharedEntities.filter(isStrongContentSignal);
   const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal);
+  const sharedKeyPhrases = findSharedSpecificPhrases(source, candidate).filter((term) =>
+    normalizedBody.includes(normalizeSearchText(term))
+  );
   const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
   const hasExplicitReference = matchesExplicitReference(source, candidate);
   const hasTitleMention =
@@ -344,6 +357,7 @@ function bestEdgeForCandidate(
   const hasContentOverlap =
     strongSharedSubjects.length > 0 ||
     strongSharedEntities.length > 0 ||
+    sharedKeyPhrases.length > 0 ||
     hasExplicitReference ||
     hasTitleMention;
 
@@ -378,6 +392,12 @@ function bestEdgeForCandidate(
     signals.push(createEdge(source, candidate, "shared_subject", 0.64, "Both files share body-derived subjects.", {
       subjects: strongSharedSubjects.slice(0, 8),
       keywords: strongSharedKeywords.slice(0, 8)
+    }));
+  }
+
+  if (sharedKeyPhrases.length > 0) {
+    signals.push(createEdge(source, candidate, "shared_key_phrase", 0.69, "Both files share specific body-derived key phrases.", {
+      matchedTerms: sharedKeyPhrases.slice(0, 8)
     }));
   }
 
@@ -453,54 +473,6 @@ function intersectUseful(left: string[], right: string[]): string[] {
     left.map(normalizeTerm).filter(isUsefulTerm),
     right.map(normalizeTerm).filter(isUsefulTerm)
   );
-}
-
-function isSpecificSharedSignal(value: string): boolean {
-  const normalized = normalizeTerm(value);
-
-  if (!isUsefulTerm(normalized) || /^https?:\/\//iu.test(normalized)) {
-    return false;
-  }
-
-  if (/official|source|citation|reference/iu.test(normalized)) {
-    return false;
-  }
-
-  if (/^\d+$/u.test(normalized) || /^[年月日号第届次条款章节]+$/u.test(normalized)) {
-    return false;
-  }
-
-  if (/\p{Script=Han}/u.test(normalized)) {
-    if (normalized.length < 3 || normalized.length > 30) {
-      return false;
-    }
-
-    if (/^(日|年|月|第|号)/u.test(normalized)) {
-      return false;
-    }
-
-    if (/人民代表大会常务委员会/u.test(normalized) && normalized.length > 12) {
-      return false;
-    }
-
-    return true;
-  }
-
-  return normalized.length >= 5;
-}
-
-function isStrongContentSignal(value: string): boolean {
-  const normalized = normalizeTerm(value);
-
-  if (!isSpecificSharedSignal(normalized) || isJurisdictionOnlySignal(normalized)) {
-    return false;
-  }
-
-  return true;
-}
-
-function isJurisdictionOnlySignal(value: string): boolean {
-  return /^[\p{Script=Han}]{1,12}(?:省|市|县|区|州|盟|旗)$/u.test(value);
 }
 
 function normalizeSearchText(value: string): string {

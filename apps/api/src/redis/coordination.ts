@@ -78,6 +78,8 @@ export type RedisCoordinator = {
   getPublicOpenApiKeyCache: (keyHash: string) => Promise<{ id: string } | null>;
   clearPublicOpenApiKeyCache: (keyHash: string) => Promise<void>;
   markPublicOpenApiKeyUsed: (keyId: string, ttlSeconds: number) => Promise<boolean>;
+  setRuntimeSettingsVersion: (version: string) => Promise<void>;
+  getRuntimeSettingsVersion: () => Promise<string | null>;
   hitRateLimit: (
     scope: string,
     id: string,
@@ -260,6 +262,12 @@ export function createRedisCoordinator(
         NX: true
       });
       return result === "OK";
+    },
+    async setRuntimeSettingsVersion(version) {
+      await client.set(buildKey("runtime-settings", "version"), version);
+    },
+    async getRuntimeSettingsVersion() {
+      return client.get(buildKey("runtime-settings", "version"));
     },
     async hitRateLimit(scope, id, limit) {
       const key = buildKey("rate-limits", scope, id);

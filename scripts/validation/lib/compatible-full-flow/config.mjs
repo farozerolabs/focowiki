@@ -84,14 +84,9 @@ export function requiredRuntimeFieldNames(config) {
     "S3_PREFIX",
     "ADMIN_USERNAME",
     "ADMIN_PASSWORD",
-    "ADMIN_SESSION_SECRET",
     "ADMIN_API_PORT",
     "PUBLIC_OPENAPI_PORT"
   ];
-
-  if (config.requireModel) {
-    fields.push("MODEL_BASE_URL", "MODEL_API_KEY", "MODEL_NAME");
-  }
 
   return fields;
 }

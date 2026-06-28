@@ -1049,6 +1049,78 @@ CREATE INDEX IF NOT EXISTS source_file_graph_edges_relation_weight_idx
 CREATE INDEX IF NOT EXISTS source_file_graph_jobs_source_created_idx
   ON focowiki.source_file_graph_jobs(knowledge_base_id, source_file_id, created_at DESC, id);
 
+CREATE TABLE IF NOT EXISTS focowiki.runtime_settings (
+  key text PRIMARY KEY,
+  value_json jsonb NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  source text NOT NULL DEFAULT 'bootstrap',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT runtime_settings_key_check CHECK (key IN ('rate_limits', 'worker', 'publication', 'upload_generation')),
+  CONSTRAINT runtime_settings_source_check CHECK (source IN ('bootstrap', 'admin'))
+);
+
+ALTER TABLE focowiki.runtime_settings
+  DROP CONSTRAINT IF EXISTS runtime_settings_key_check;
+
+ALTER TABLE focowiki.runtime_settings
+  ADD CONSTRAINT runtime_settings_key_check
+  CHECK (key IN ('rate_limits', 'worker', 'publication', 'upload_generation'));
+
+CREATE TABLE IF NOT EXISTS focowiki.runtime_setting_audit_logs (
+  id text PRIMARY KEY,
+  setting_key text NOT NULL,
+  action text NOT NULL,
+  actor text,
+  value_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS runtime_setting_audit_logs_setting_created_idx
+  ON focowiki.runtime_setting_audit_logs (setting_key, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS focowiki.model_configs (
+  id text PRIMARY KEY,
+  display_name text NOT NULL,
+  base_url text NOT NULL,
+  encrypted_api_key text NOT NULL,
+  api_key_fingerprint text NOT NULL,
+  model_name text NOT NULL,
+  context_window_tokens integer NOT NULL,
+  request_max_timeout_ms integer NOT NULL,
+  request_idle_timeout_ms integer NOT NULL,
+  suggestion_concurrency integer NOT NULL,
+  transient_retry_delay_ms integer NOT NULL,
+  request_min_interval_ms integer NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  is_active boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz,
+  CONSTRAINT model_configs_status_check CHECK (status IN ('active', 'paused', 'deleted')),
+  CONSTRAINT model_configs_positive_values_check CHECK (
+    context_window_tokens > 0
+    AND request_max_timeout_ms > 0
+    AND request_idle_timeout_ms > 0
+    AND suggestion_concurrency > 0
+    AND transient_retry_delay_ms > 0
+    AND request_min_interval_ms >= 0
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS model_configs_one_active_idx
+  ON focowiki.model_configs (is_active)
+  WHERE is_active = true AND status = 'active' AND deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS model_configs_status_created_idx
+  ON focowiki.model_configs (status, created_at DESC);
+
+ALTER TABLE focowiki.model_invocations
+  ADD COLUMN IF NOT EXISTS model_config_id text;
+
+CREATE INDEX IF NOT EXISTS model_invocations_model_config_created_idx
+  ON focowiki.model_invocations (model_config_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS worker_jobs_claim_idx
   ON focowiki.worker_jobs(status, run_after, created_at, id);
 

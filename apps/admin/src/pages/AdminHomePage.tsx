@@ -7,6 +7,7 @@ import {
   CopyIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  SettingsIcon,
   Trash2Icon,
   XIcon
 } from "lucide-react";
@@ -89,6 +90,7 @@ type AdminHomePageProps = {
   onNextKnowledgeBasePage: () => void;
   onSearchKnowledgeBases: (query: string) => void;
   onLogout: () => void;
+  onOpenSettings: () => void;
   onOpenKnowledgeBase: (knowledgeBase: KnowledgeBase) => void;
 };
 
@@ -114,6 +116,7 @@ export function AdminHomePage({
   onNextKnowledgeBasePage,
   onSearchKnowledgeBases,
   onLogout,
+  onOpenSettings,
   onOpenKnowledgeBase
 }: AdminHomePageProps) {
   const { t } = useTranslation();
@@ -202,6 +205,15 @@ export function AdminHomePage({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label={t("settings.open")}
+              onClick={onOpenSettings}
+            >
+              <SettingsIcon />
+            </Button>
             <LanguageSwitch />
             <Button type="button" variant="outline" onClick={onLogout}>
               {t("auth.logout")}

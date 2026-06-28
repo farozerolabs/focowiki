@@ -14,8 +14,17 @@ import type {
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
-import { resolveSecurityConfig, type RuntimeConfig } from "../src/config.js";
+import {
+  resolveSecurityConfig,
+  resolveWorkerConfig,
+  type RuntimeConfig
+} from "../src/config.js";
 import type { WorkerJobDraft, WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
+import type { RuntimeSettingsService } from "../src/runtime-settings/service.js";
+import type {
+  RuntimeSettingsSnapshot,
+  RuntimeUploadGenerationSettings
+} from "../src/runtime-settings/types.js";
 import { createTestRedisCoordinator, loginAndReadSessionCookie } from "./support/session.js";
 
 const developerKey = "fwok_developer-openapi-test-key";
@@ -96,7 +105,6 @@ function createConfig(): RuntimeConfig {
     admin: {
       username: "admin",
       password: "admin-secret",
-      sessionSecret: "session-secret"
     },
     database: {
       url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki"
@@ -722,6 +730,21 @@ function createApp(options: TestRepositoryOptions = {}) {
   return { app, repositories, storage };
 }
 
+function createAppWithRuntimeUpload(uploadGeneration: RuntimeUploadGenerationSettings) {
+  const config = createConfig();
+  const repositories = createRepositories();
+  const storage = new MemoryStorage();
+  const app = createPublicOpenApiApp({
+    config,
+    storage,
+    redis: createTestRedisCoordinator(),
+    repositories,
+    runtimeSettings: createRuntimeSettingsStub(config, uploadGeneration)
+  });
+
+  return { app, repositories, storage };
+}
+
 function createFullApp(options: TestRepositoryOptions = {}) {
   const config = createConfig();
   const repositories = createRepositories(options);
@@ -827,6 +850,65 @@ function createWorkerJobRepository(): WorkerJobRepository {
         }
         return true;
       }).length;
+    }
+  };
+}
+
+function createRuntimeSettingsStub(
+  config: RuntimeConfig,
+  uploadGeneration: RuntimeUploadGenerationSettings
+): RuntimeSettingsService {
+  const snapshot: RuntimeSettingsSnapshot = {
+    rateLimits: resolveSecurityConfig(config).rateLimits,
+    worker: resolveWorkerConfig(config) as RuntimeSettingsSnapshot["worker"],
+    publication: {
+      ...config.publication,
+      okfLogMaxEntries: 100,
+      okfLogMaxBytes: 65_536
+    },
+    uploadGeneration,
+    activeModel: null
+  };
+
+  return {
+    async ensureBootstrapped() {
+      return;
+    },
+    async getSnapshot() {
+      return snapshot;
+    },
+    async getPublicSnapshot() {
+      return snapshot;
+    },
+    async updateRateLimits() {
+      return snapshot;
+    },
+    async updateWorker() {
+      return snapshot;
+    },
+    async updatePublication() {
+      return snapshot;
+    },
+    async updateUploadGeneration() {
+      return snapshot;
+    },
+    async listModels() {
+      return [];
+    },
+    async createModel() {
+      throw new Error("Not used by Developer OpenAPI tests");
+    },
+    async activateModel() {
+      return null;
+    },
+    async pauseModel() {
+      return null;
+    },
+    async resumeModel() {
+      return null;
+    },
+    async deleteModel() {
+      return null;
     }
   };
 }
@@ -1057,6 +1139,92 @@ describe("Developer OpenAPI", () => {
     expect(sourceFileCreateCount).toBe(0);
     expect(enqueueCount).toBe(0);
     expect(storage.objects.size).toBe(initialStoredObjectCount);
+  });
+
+  it("rejects uploads that exceed runtime file count limits before queueing work", async () => {
+    const { app, repositories, storage } = createAppWithRuntimeUpload({
+      maxBytes: 1_048_576,
+      maxFiles: 1,
+      generationBatchSize: 50,
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 1
+    });
+    const initialSourceFileCount = repositories.sourceFiles.size;
+    const initialStoredObjectCount = storage.objects.size;
+    const form = new FormData();
+    form.append("files", new File(["# One"], "one.md", { type: "text/markdown" }));
+    form.append("files", new File(["# Two"], "two.md", { type: "text/markdown" }));
+
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const body = (await response.json()) as {
+      error: {
+        code: string;
+        httpStatus: number;
+      };
+    };
+
+    expect(response.status).toBe(413);
+    expect(body.error).toMatchObject({
+      code: "PAYLOAD_TOO_LARGE",
+      httpStatus: 413
+    });
+    expect(repositories.sourceFiles.size).toBe(initialSourceFileCount);
+    expect(storage.objects.size).toBe(initialStoredObjectCount);
+    expect(
+      await repositories.workerJobs?.countActiveWorkerJobs({
+        kinds: ["source_file_processing"],
+        knowledgeBaseId: "kb-seeded"
+      })
+    ).toBe(0);
+  });
+
+  it("rejects uploads that exceed runtime total byte limits before queueing work", async () => {
+    const { app, repositories, storage } = createAppWithRuntimeUpload({
+      maxBytes: 10,
+      maxFiles: 24,
+      generationBatchSize: 50,
+      fileProcessingConcurrency: 1,
+      storageConcurrency: 1
+    });
+    const initialSourceFileCount = repositories.sourceFiles.size;
+    const initialStoredObjectCount = storage.objects.size;
+    const form = new FormData();
+    form.append(
+      "files",
+      new File(["---\ntitle: Oversized\ntype: page\n---\n# Oversized"], "oversized.md", {
+        type: "text/markdown"
+      })
+    );
+
+    const response = await app.request("/openapi/v1/knowledge-bases/kb-seeded/uploads", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form
+    });
+    const body = (await response.json()) as {
+      error: {
+        code: string;
+        httpStatus: number;
+      };
+    };
+
+    expect(response.status).toBe(413);
+    expect(body.error).toMatchObject({
+      code: "PAYLOAD_TOO_LARGE",
+      httpStatus: 413
+    });
+    expect(repositories.sourceFiles.size).toBe(initialSourceFileCount);
+    expect(storage.objects.size).toBe(initialStoredObjectCount);
+    expect(
+      await repositories.workerJobs?.countActiveWorkerJobs({
+        kinds: ["source_file_processing"],
+        knowledgeBaseId: "kb-seeded"
+      })
+    ).toBe(0);
   });
 
   it("accepts single and multi-file Markdown uploads as durable source files", async () => {

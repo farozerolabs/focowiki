@@ -58,6 +58,8 @@
     "validate:compatible-full-flow:clean-room": "node scripts/validation/compatible-full-flow-e2e.mjs clean-room",
     "validate:full-flow:e2e": "node scripts/validation/full-flow-e2e.mjs all",
     "validate:full-flow:large": "node scripts/validation/full-flow-e2e.mjs large",
+    "validate:large-scale:full-system": "node scripts/validation/large-scale-full-system-e2e.mjs all",
+    "validate:large-scale:full-system:plan": "node scripts/validation/large-scale-full-system-e2e.mjs plan",
     "validate:unified-openapi:e2e": "FOCOWIKI_FULL_FLOW_CHANGE_ID=validate-unified-openapi-e2e node scripts/validation/full-flow-e2e.mjs all",
     "validate:unified-openapi:plan": "FOCOWIKI_FULL_FLOW_CHANGE_ID=validate-unified-openapi-e2e node scripts/validation/full-flow-e2e.mjs plan",
     "validate:whole-codebase:e2e": "FOCOWIKI_FULL_FLOW_CHANGE_ID=validate-unified-openapi-e2e node scripts/validation/full-flow-e2e.mjs all",

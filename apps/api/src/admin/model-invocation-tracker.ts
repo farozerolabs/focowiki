@@ -15,6 +15,7 @@ export function createModelInvocationTracker(input: {
   repositories: AdminRepositories;
   knowledgeBaseId: string;
   modelName: string | null;
+  modelConfigId?: string | null;
 }): ModelInvocationTracker {
   const invocations = input.repositories.modelInvocations;
   const invocationIdsBySourceId = new Map<string, string>();
@@ -24,6 +25,7 @@ export function createModelInvocationTracker(input: {
       const invocation = await invocations?.createModelInvocation({
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId,
+        modelConfigId: input.modelConfigId ?? null,
         modelName: input.modelName ?? "disabled",
         status: "running",
         startedAt,

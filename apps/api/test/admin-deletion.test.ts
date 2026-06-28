@@ -26,7 +26,6 @@ function createConfig(): RuntimeConfig {
     admin: {
       username: "admin",
       password: "admin-secret",
-      sessionSecret: "session-secret"
     },
     database: {
       url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki"

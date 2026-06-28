@@ -8,7 +8,6 @@ function createProductionConfig(): RuntimeConfig {
     admin: {
       username: "admin",
       password: "production-admin-password",
-      sessionSecret: "production-session-secret-with-enough-entropy"
     },
     database: {
       url: "postgres://focowiki:focowiki@postgres:5432/focowiki"
@@ -88,7 +87,6 @@ function createProductionConfig(): RuntimeConfig {
       },
       session: {
         ttlSeconds: 28_800,
-        secretMinLength: 32,
         cookieSecure: true,
         cookieSameSite: "Lax"
       },

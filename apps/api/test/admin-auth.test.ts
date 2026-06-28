@@ -13,7 +13,6 @@ const config: RuntimeConfig = {
   admin: {
     username: "admin",
     password: "admin-secret",
-    sessionSecret: "session-secret"
   },
   database: {
     url: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki"
@@ -92,11 +91,15 @@ describe("Admin API auth", () => {
     expect(cookie).toContain("focowiki_admin_session=");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Lax");
+    const sessionToken = cookie.match(/focowiki_admin_session=([^;]+)/)?.[1] ?? "";
+    expect(sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(sessionToken).not.toContain(".");
     expect(
       Array.from(redisClient.values.keys()).filter((key) =>
         key.includes(":sessions:")
       )
     ).toHaveLength(1);
+    expect(Array.from(redisClient.values.keys()).join("\n")).not.toContain(sessionToken);
   });
 
   it("rejects invalid username, invalid password, and missing credentials", async () => {

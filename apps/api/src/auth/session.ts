@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { RuntimeConfig, RuntimeSecurityConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 
@@ -30,9 +30,10 @@ export function createAdminSessionManager(
       );
     },
     async createSessionCookie(username) {
-      const sessionId = randomUUID();
+      const sessionToken = createSessionToken();
+      const sessionTokenHash = hashSessionToken(sessionToken);
       await redis.setSession(
-        sessionId,
+        sessionTokenHash,
         {
           username,
           createdAt: new Date().toISOString()
@@ -40,27 +41,27 @@ export function createAdminSessionManager(
         sessionConfig.ttlSeconds
       );
 
-      return serializeSessionCookie(signSessionId(sessionId, config.sessionSecret), {
+      return serializeSessionCookie(sessionToken, {
         maxAge: sessionConfig.ttlSeconds,
         secure: sessionConfig.cookieSecure,
         sameSite: sessionConfig.cookieSameSite
       });
     },
     async verifyCookieHeader(cookieHeader) {
-      const sessionId = readSignedSessionId(cookieHeader, config.sessionSecret);
+      const sessionToken = readSessionToken(cookieHeader);
 
-      if (!sessionId) {
+      if (!sessionToken) {
         return false;
       }
 
-      const session = await redis.getSession<AdminSessionRecord>(sessionId);
+      const session = await redis.getSession<AdminSessionRecord>(hashSessionToken(sessionToken));
       return session?.username === config.username;
     },
     async clearSessionFromCookieHeader(cookieHeader) {
-      const sessionId = readSignedSessionId(cookieHeader, config.sessionSecret);
+      const sessionToken = readSessionToken(cookieHeader);
 
-      if (sessionId) {
-        await redis.clearSession(sessionId);
+      if (sessionToken) {
+        await redis.clearSession(hashSessionToken(sessionToken));
       }
     },
     createClearedSessionCookie() {
@@ -73,29 +74,26 @@ export function createAdminSessionManager(
   };
 }
 
-function signSessionId(sessionId: string, secret: string): string {
-  const signature = createHmac("sha256", secret).update(sessionId).digest("base64url");
-  return `${sessionId}.${signature}`;
+function createSessionToken(): string {
+  return randomBytes(32).toString("base64url");
 }
 
-function readSignedSessionId(
-  cookieHeader: string | undefined,
-  secret: string
-): string | null {
+function hashSessionToken(sessionToken: string): string {
+  return createHash("sha256").update(sessionToken).digest("hex");
+}
+
+function readSessionToken(cookieHeader: string | undefined): string | null {
   const rawValue = readCookie(cookieHeader, ADMIN_SESSION_COOKIE_NAME);
 
   if (!rawValue) {
     return null;
   }
 
-  const [sessionId, signature] = rawValue.split(".");
-
-  if (!sessionId || !signature) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(rawValue)) {
     return null;
   }
 
-  const expected = signSessionId(sessionId, secret);
-  return secureEquals(rawValue, expected) ? sessionId : null;
+  return rawValue;
 }
 
 function readCookie(cookieHeader: string | undefined, name: string): string | null {

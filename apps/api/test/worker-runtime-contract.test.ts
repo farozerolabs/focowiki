@@ -29,7 +29,10 @@ describe("worker runtime contract", () => {
 
     expect(runtime).toContain("runlane({ kinds: [\"publication\"]");
     expect(runtime).toContain("runlane({ kinds: [\"source_file_processing\"]");
-    expect(runtime).toContain("pollintervalms: math.min(workerconfig.pollintervalms, 1_000)");
+    expect(runtime).toContain("input.role === \"publication\" ? math.min(workerconfig.pollintervalms, 1_000)");
+    expect(runtime).toContain("await readeffectiveruntimesettings()");
+    expect(runtime).toContain("uploadgeneration.generationbatchsize");
+    expect(runtime).toContain("uploadgeneration.fileprocessingconcurrency");
     expect(runtime).toContain("if (signal.aborted)");
     expect(runtime).toContain("releaseworkerjobs");
     expect(runtime).toContain("input.workerjobs.releaseworkerjob");

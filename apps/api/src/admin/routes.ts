@@ -9,6 +9,8 @@ import type {
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
+import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
 import { acceptUploadSourceFiles } from "./source-file-upload.js";
 import { readBoundedUploadFiles } from "./upload-processor-utils.js";
 import {
@@ -56,6 +58,7 @@ import {
 } from "../page-response-cache.js";
 import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
 import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
+import { registerAdminRuntimeSettingsRoutes } from "./runtime-settings-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
 import { registerAdminSourceFileTaskDeletionRoutes } from "./source-file-task-deletion-routes.js";
 import { createSourceFileCursorScope } from "./source-file-list-filter-signature.js";
@@ -71,10 +74,11 @@ export type AdminApiServices = {
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;
+  runtimeSettings: RuntimeSettingsService | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
-  const { config, storage, sessionManager, redis, repositories } = services;
+  const { config, storage, sessionManager, redis, repositories, runtimeSettings } = services;
   const requireAuth = createAdminAuthMiddleware({
     config,
     sessionManager,
@@ -89,7 +93,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   registerAdminSecurityMiddlewares(app, {
     config,
     redis,
-    repositories
+    repositories,
+    runtimeSettings
   });
 
   registerAdminOpenApiKeyRoutes(
@@ -104,9 +109,17 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       requireWriteProtection
     }
   );
+  registerAdminRuntimeSettingsRoutes(
+    app,
+    { runtimeSettings },
+    {
+      requireAuth,
+      requireWriteProtection
+    }
+  );
   registerAdminSourceFileRetryRoutes(
     app,
-    { config, redis, repositories },
+    { config, redis, repositories, runtimeSettings },
     {
       requireAuth,
       requireWriteProtection
@@ -173,6 +186,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       config,
       redis,
       repositories,
+      runtimeSettings,
       context,
       username
     });
@@ -371,14 +385,18 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       }
 
       const deletedAt = new Date().toISOString();
+      const uploadGeneration = await resolveUploadGenerationSettings({
+        config,
+        runtimeSettings
+      });
       const result = await deletionService.deleteSourcePage({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         logicalPath,
         deletedAt,
         generatedAt: deletedAt,
-        batchSize: config.upload.generationBatchSize,
+        batchSize: uploadGeneration.generationBatchSize,
         cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-        fileProcessingConcurrency: config.upload.fileProcessingConcurrency,
+        fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
         okfLog: config.okf?.log,
         publication: config.publication
       });
@@ -698,6 +716,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         config,
         redis,
         repositories,
+        runtimeSettings,
         context
       });
       if (uploadLimited) {
@@ -707,7 +726,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         await assertSourceFileQueueCapacity({
           repositories,
           knowledgeBaseId: knowledgeBase.id,
-          config
+          config,
+          worker: (await runtimeSettings?.getSnapshot())?.worker
         });
       } catch (error) {
         if (error instanceof WorkerQueueBackpressureError) {
@@ -718,6 +738,10 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       const formData = await context.req.formData();
       const files = formData.getAll("files").filter(isUploadFile);
+      const uploadGeneration = await resolveUploadGenerationSettings({
+        config,
+        runtimeSettings
+      });
 
       if (files.length === 0) {
         return context.json(
@@ -731,7 +755,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         );
       }
 
-      if (files.length > config.upload.maxFiles) {
+      if (files.length > uploadGeneration.maxFiles) {
         await recordAdminAudit({
           repositories,
           config,
@@ -797,7 +821,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       const loadedFiles = await readBoundedUploadFiles(files);
       const totalBytes = loadedFiles.reduce((sum, file) => sum + file.bytes.byteLength, 0);
 
-      if (totalBytes > config.upload.maxBytes) {
+      if (totalBytes > uploadGeneration.maxBytes) {
         await recordAdminAudit({
           repositories,
           config,
@@ -819,7 +843,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       const sourceFileIds = await acceptUploadSourceFiles({
         files: loadedFiles,
-        storageConcurrency: config.upload.storageConcurrency,
+        storageConcurrency: uploadGeneration.storageConcurrency,
         knowledgeBaseId: knowledgeBase.id,
         storage,
         createSourceFiles: repositories.files.createSourceFiles
@@ -840,7 +864,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
          sourceFileIds,
          knowledgeBaseId: knowledgeBase.id,
          reason: "upload",
-         config
+         config,
+         worker: (await runtimeSettings?.getSnapshot())?.worker
        });
 
       return context.json(

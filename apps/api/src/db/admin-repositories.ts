@@ -24,6 +24,10 @@ import {
   type GeneratedFileSearchDocumentDraft,
   type GeneratedFileSearchScope
 } from "../search/generated-file-search-documents.js";
+import {
+  createRuntimeSettingsRepository,
+  type RuntimeSettingsRepository
+} from "../runtime-settings/repository.js";
 
 export type CursorPage<T> = {
   items: T[];
@@ -319,6 +323,7 @@ export type ModelInvocationRecord = {
   id: string;
   knowledgeBaseId: string;
   sourceFileId: string;
+  modelConfigId?: string | null;
   modelName: string;
   status: ModelInvocationStatus;
   startedAt: string;
@@ -661,6 +666,10 @@ export type FileGraphRepository = {
     knowledgeBaseId: string;
     edges: OkfGraphEdge[];
   }) => Promise<void>;
+  replaceGraphEdgesForSourceFile?: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+  }) => Promise<void>;
   listGraphNodes: (request: {
     knowledgeBaseId: string;
     limit: number;
@@ -720,6 +729,7 @@ export type AdminRepositories = {
   };
   publicApiKeys?: PublicOpenApiKeyRepository;
   webhooks?: WebhookRepository;
+  runtimeSettings?: RuntimeSettingsRepository;
 };
 
 type KnowledgeBaseRow = {
@@ -866,6 +876,7 @@ type ModelInvocationRow = {
   id: string;
   knowledge_base_id: string;
   source_file_id: string;
+  model_config_id: string | null;
   model_name: string;
   status: ModelInvocationStatus;
   started_at: Date;
@@ -943,6 +954,7 @@ export function createSecurityAuditEventId(): string {
 
 export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepositories {
   return {
+    runtimeSettings: createRuntimeSettingsRepository(sql),
     knowledgeBases: {
       async listKnowledgeBases({ limit, cursor, query }) {
         const cursorValue = cursor ? parseKnowledgeBaseCursor(cursor) : null;
@@ -2282,6 +2294,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               id,
               knowledge_base_id,
               source_file_id,
+              model_config_id,
               model_name,
               status,
               started_at,
@@ -2294,6 +2307,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${input.id ?? createModelInvocationId()},
               ${input.knowledgeBaseId},
               ${input.sourceFileId},
+              ${input.modelConfigId ?? null},
               ${input.modelName},
               ${input.status},
               ${input.startedAt},
@@ -2306,6 +2320,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               id,
               knowledge_base_id,
               source_file_id,
+              model_config_id,
               model_name,
               status,
               started_at,
@@ -2357,6 +2372,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               id,
               knowledge_base_id,
               source_file_id,
+              model_config_id,
               model_name,
               status,
               started_at,
@@ -2949,6 +2965,7 @@ function mapModelInvocationRow(row: ModelInvocationRow): ModelInvocationRecord {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
     sourceFileId: row.source_file_id,
+    modelConfigId: row.model_config_id,
     modelName: row.model_name,
     status: row.status,
     startedAt: row.started_at.toISOString(),

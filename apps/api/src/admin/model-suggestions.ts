@@ -10,6 +10,7 @@ import type { BoundedTaskRunner } from "../runtime/task-runner.js";
 import { selectModelCandidatePaths } from "./model-candidates.js";
 
 export type ModelAssistanceOptions = {
+  modelConfigId?: string | null;
   client: OpenAIResponsesClient;
   modelName: string;
   contextWindowTokens: number;

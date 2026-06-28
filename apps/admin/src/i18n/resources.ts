@@ -77,6 +77,213 @@ export const resources = {
         knowledgeBaseIdLabel: "Knowledge base ID",
         copyKnowledgeBaseId: "Copy knowledge base ID {{id}}"
       },
+      settings: {
+        open: "Open settings",
+        title: "Settings",
+        loading: "Loading settings",
+        save: "Save",
+        saving: "Saving",
+        tabs: {
+          rateLimits: "API limits",
+          worker: "Worker",
+          publication: "Publication",
+          uploadGeneration: "Upload and generation",
+          models: "Models"
+        },
+        rateLimits: {
+          title: "API limits",
+          description: "Update admin and OpenAPI request limits without restarting the service."
+        },
+        worker: {
+          title: "Worker",
+          description: "Tune queue processing, backpressure, retry, and retention values."
+        },
+        publication: {
+          title: "Publication",
+          description: "Tune generated knowledge base publication and index shard values."
+        },
+        uploadGeneration: {
+          title: "Upload and generation",
+          description: "Tune upload request limits, S3 storage concurrency, and generation batch size."
+        },
+        publicationModes: {
+          batch: "Batch",
+          manual: "Manual",
+          per_file: "Per file"
+        },
+        toast: {
+          saveSuccess: "Settings saved",
+          saveFailed: "Settings save failed",
+          modelCreated: "Model created",
+          modelUpdated: "Model updated",
+          modelDeleted: "Model deleted",
+          modelActionFailed: "Model action failed"
+        },
+        validation: {
+          requiredPositiveInteger: "Required numeric fields must be positive integers."
+        },
+        tips: {
+          title: "Tips",
+          rateLimits: {
+            adminLogin: {
+              maxLabel: "Admin login / Max requests",
+              maxDescription: "Maximum admin login attempts allowed in one counting window. Recommended: 8, or 5 to 10 for public deployments.",
+              windowSecondsLabel: "Admin login / Window seconds",
+              windowSecondsDescription: "Counting window for admin login attempts. Recommended: 900 seconds."
+            },
+            adminApi: {
+              maxLabel: "Admin API / Max requests",
+              maxDescription: "Maximum Admin UI API requests allowed in one counting window. Recommended: 600.",
+              windowSecondsLabel: "Admin API / Window seconds",
+              windowSecondsDescription: "Counting window for Admin UI API requests. Recommended: 60 seconds."
+            },
+            upload: {
+              maxLabel: "Upload / Max requests",
+              maxDescription: "Maximum Markdown upload requests allowed in one counting window. Recommended: 20.",
+              windowSecondsLabel: "Upload / Window seconds",
+              windowSecondsDescription: "Counting window for Markdown upload requests. Recommended: 3600 seconds."
+            },
+            publicOpenApi: {
+              maxLabel: "Developer OpenAPI / Max requests",
+              maxDescription: "Maximum Developer OpenAPI requests allowed in one counting window. Recommended: 1200, then tune by server capacity and traffic.",
+              windowSecondsLabel: "Developer OpenAPI / Window seconds",
+              windowSecondsDescription: "Counting window for Developer OpenAPI requests. Recommended: 60 seconds."
+            }
+          },
+          worker: {
+            sourceFileConcurrency: "Number of source files processed at the same time. Recommended: 2 to 4 on an 8C/32G server.",
+            claimBatchSize: "Number of jobs claimed in one poll. Recommended: 10 to 50 and close to actual concurrency.",
+            pollIntervalMs: "How often the worker checks the queue. Recommended: 1000 to 3000 ms.",
+            lockTtlSeconds: "How long a job lock stays valid. Recommended: longer than normal file processing time, commonly 900 seconds.",
+            heartbeatIntervalMs: "How often a running job refreshes its heartbeat. Recommended: 10000 to 30000 ms.",
+            jobMaxAttempts: "Maximum attempts before a job moves to dead letter. Recommended: 3.",
+            jobRetryDelayMs: "Delay before retrying a failed job. Recommended: 30000 to 120000 ms.",
+            queueBackpressureLimit: "Global queued job limit. Recommended: 5000 to 20000 on larger servers.",
+            queueBackpressureKnowledgeBaseLimit: "Queued job limit for one knowledge base. Recommended: lower than the global limit.",
+            queueBackpressureMaxAgeSeconds: "Oldest accepted queue age before uploads slow down. Recommended: 3600 to 7200 seconds.",
+            queueBackpressureRetryAfterSeconds: "Suggested wait time after backpressure. Recommended: 30 to 300 seconds.",
+            shutdownGraceMs: "Time allowed for worker shutdown. Recommended: 30000 to 120000 ms.",
+            completedJobRetentionDays: "Days to keep completed job records. Recommended: 7 to 30.",
+            failedJobRetentionDays: "Days to keep failed job records. Recommended: 30 or longer.",
+            deadLetterJobRetentionDays: "Days to keep dead-letter records. Recommended: 90.",
+            retentionCleanupBatchSize: "Rows removed in each cleanup pass. Recommended: 500 to 2000."
+          },
+          publication: {
+            mode: "Publication strategy. Recommended: batch for large knowledge bases, per file for fast visibility, manual for controlled release.",
+            batchSize: "Files included in one publication job. Recommended: 100 to 500.",
+            intervalSeconds: "Minimum interval between batch publications. Recommended: 120 to 600 seconds.",
+            indexShardSize: "Entries per search index shard. Recommended: 1000 to 5000.",
+            linkIndexShardSize: "Entries per link index shard. Recommended: 1000 to 5000.",
+            manifestShardSize: "Entries per manifest shard. Recommended: 1000 to 5000.",
+            graphEdgeShardSize: "Graph edges per shard. Recommended: 5000 to 20000.",
+            graphCandidateLimit: "Candidate files considered for relationships. Recommended: 100 to 300.",
+            graphMaintenanceBatchSize: "Files refreshed in each graph maintenance pass. Recommended: 200 to 1000.",
+            rootSummaryLimit: "Items shown in the root summary and index. Recommended: 200 to 1000.",
+            okfLogMaxEntries: "Recent update entries kept in log.md. Recommended: 50 to 200.",
+            okfLogMaxBytes: "Maximum generated log.md size. Recommended: 65536 or higher for active knowledge bases."
+          },
+          models: {
+            displayName: "Admin-facing model name. Recommended: include provider and usage.",
+            baseUrl: "OpenAI-compatible API base URL. Recommended: include /v1 when the provider requires it.",
+            apiKey: "Provider API key. Recommended: use a scoped key and rotate it regularly.",
+            modelName: "Model identifier sent to the provider. Recommended: match provider documentation exactly.",
+            contextWindowTokens: "Model context window size. Recommended: set the real model context limit.",
+            requestMaxTimeoutMs: "Maximum request time. Recommended: 600000 ms or higher for long documents.",
+            requestIdleTimeoutMs: "Idle timeout while waiting for model output. Recommended: 120000 to 300000 ms.",
+            suggestionConcurrency: "Parallel model suggestion requests. Recommended: 1 to 2 first, then increase after observing stability.",
+            transientRetryDelayMs: "Delay before retrying transient model failures. Recommended: 60000 ms.",
+            requestMinIntervalMs: "Minimum delay between model requests. Recommended: 0 for stable providers, 1000 to 5000 ms for strict rate limits."
+          },
+          uploadGeneration: {
+            maxBytes: "Maximum total bytes accepted by one upload request. Recommended: 10485760 for 10 MB, or lower for small deployments.",
+            maxFiles: "Maximum Markdown files accepted by one upload request. Recommended: 50 on an 8C/32G server.",
+            generationBatchSize: "Batch size used by generation, graph, indexing, and publication work. Recommended: 100 on an 8C/32G server.",
+            fileProcessingConcurrency: "Number of file processing operations inside one worker job. Recommended: 1 for stable large imports.",
+            storageConcurrency: "Number of uploaded source files written to S3-compatible storage at the same time. Recommended: 4, or 6 when S3 is stable."
+          }
+        },
+        rateLimitGroups: {
+          adminLogin: "Admin login",
+          adminApi: "Admin API",
+          upload: "Upload",
+          publicOpenApi: "Developer OpenAPI"
+        },
+        fields: {
+          max: "Max requests",
+          windowSeconds: "Window seconds",
+          sourceFileConcurrency: "Source file concurrency",
+          claimBatchSize: "Claim batch size",
+          pollIntervalMs: "Poll interval ms",
+          lockTtlSeconds: "Lock TTL seconds",
+          heartbeatIntervalMs: "Heartbeat interval ms",
+          jobMaxAttempts: "Job max attempts",
+          jobRetryDelayMs: "Job retry delay ms",
+          queueBackpressureLimit: "Global queue limit",
+          queueBackpressureKnowledgeBaseLimit: "Knowledge base queue limit",
+          queueBackpressureMaxAgeSeconds: "Queue max age seconds",
+          queueBackpressureRetryAfterSeconds: "Retry after seconds",
+          shutdownGraceMs: "Shutdown grace ms",
+          completedJobRetentionDays: "Completed retention days",
+          failedJobRetentionDays: "Failed retention days",
+          deadLetterJobRetentionDays: "Dead-letter retention days",
+          retentionCleanupBatchSize: "Retention cleanup batch size",
+          mode: "Mode",
+          batchSize: "Batch size",
+          intervalSeconds: "Interval seconds",
+          indexShardSize: "Index shard size",
+          linkIndexShardSize: "Link index shard size",
+          manifestShardSize: "Manifest shard size",
+          graphEdgeShardSize: "Graph edge shard size",
+          graphCandidateLimit: "Graph candidate limit",
+          graphMaintenanceBatchSize: "Graph maintenance batch size",
+          rootSummaryLimit: "Root summary limit",
+          okfLogMaxEntries: "Log max entries",
+          okfLogMaxBytes: "Log max bytes",
+          maxBytes: "Max upload bytes",
+          maxFiles: "Max upload files",
+          generationBatchSize: "Generation batch size",
+          fileProcessingConcurrency: "File processing concurrency",
+          storageConcurrency: "Storage concurrency",
+          displayName: "Display name",
+          baseUrl: "Base URL",
+          apiKey: "API key",
+          modelName: "Model name",
+          contextWindowTokens: "Context window tokens",
+          requestMaxTimeoutMs: "Request max timeout ms",
+          requestIdleTimeoutMs: "Request idle timeout ms",
+          suggestionConcurrency: "Suggestion concurrency",
+          transientRetryDelayMs: "Transient retry delay ms",
+          requestMinIntervalMs: "Request min interval ms"
+        },
+        models: {
+          title: "Models",
+          description: "Model assistance is optional. When no model is active, uploads continue with deterministic generation.",
+          add: "Add model",
+          addDescription: "Create a model configuration and choose whether it becomes active.",
+          create: "Create model",
+          empty: "No models configured",
+          active: "Active",
+          activate: "Activate",
+          pause: "Pause",
+          resume: "Resume",
+          deleteTitle: "Delete model",
+          deleteDescription: "Delete {{name}}. Running model work blocks deletion until it finishes.",
+          deleteConfirm: "Delete model",
+          requiredHint: "Model fields are required when creating a model.",
+          status: {
+            active: "Available",
+            paused: "Paused",
+            deleted: "Deleted"
+          },
+          table: {
+            name: "Name",
+            model: "Model",
+            key: "Key",
+            status: "Status",
+            actions: "Actions"
+          }
+        }
+      },
       openapiKeys: {
         title: "OpenAPI keys",
         description: "Manage bearer keys for public OpenAPI reads.",
@@ -319,7 +526,9 @@ export const resources = {
         sourceFileRetryNotAllowed: "Only failed files can be retried",
         securityRequestRejected: "Request rejected",
         rateLimited: "Too many requests",
-        openapiKeyFailed: "OpenAPI key request failed"
+        openapiKeyFailed: "OpenAPI key request failed",
+        runtimeSettingsUnavailable: "Runtime settings are unavailable",
+        runtimeSettingsValidationFailed: "Runtime settings are invalid"
       }
     }
   },
@@ -395,6 +604,213 @@ export const resources = {
         noDescription: "暂无描述",
         knowledgeBaseIdLabel: "知识库 ID",
         copyKnowledgeBaseId: "复制知识库 ID {{id}}"
+      },
+      settings: {
+        open: "打开设置",
+        title: "设置",
+        loading: "正在加载设置",
+        save: "保存",
+        saving: "保存中",
+        tabs: {
+          rateLimits: "API 限流",
+          worker: "Worker",
+          publication: "发布",
+          uploadGeneration: "上传与生成",
+          models: "模型"
+        },
+        rateLimits: {
+          title: "API 限流",
+          description: "实时调整 Admin 和 OpenAPI 请求限制，无需重启服务。"
+        },
+        worker: {
+          title: "Worker",
+          description: "调整队列处理、反压、重试和保留策略。"
+        },
+        publication: {
+          title: "发布",
+          description: "调整生成知识库发布和索引分片参数。"
+        },
+        uploadGeneration: {
+          title: "上传与生成",
+          description: "调整上传请求限制、S3 存储并发和生成批次大小。"
+        },
+        publicationModes: {
+          batch: "批量",
+          manual: "手动",
+          per_file: "按文件"
+        },
+        toast: {
+          saveSuccess: "设置已保存",
+          saveFailed: "设置保存失败",
+          modelCreated: "模型已创建",
+          modelUpdated: "模型已更新",
+          modelDeleted: "模型已删除",
+          modelActionFailed: "模型操作失败"
+        },
+        validation: {
+          requiredPositiveInteger: "必填数字字段必须为正整数。"
+        },
+        tips: {
+          title: "Tips",
+          rateLimits: {
+            adminLogin: {
+              maxLabel: "管理员登录 / 最大请求数",
+              maxDescription: "一个计数窗口内允许的管理员登录尝试次数上限。推荐值 8，公网部署可使用 5 到 10。",
+              windowSecondsLabel: "管理员登录 / 窗口秒数",
+              windowSecondsDescription: "管理员登录尝试次数的计数窗口长度。推荐值 900 秒。",
+            },
+            adminApi: {
+              maxLabel: "Admin API / 最大请求数",
+              maxDescription: "一个计数窗口内允许的 Admin UI API 请求次数上限。推荐值 600。",
+              windowSecondsLabel: "Admin API / 窗口秒数",
+              windowSecondsDescription: "Admin UI API 请求次数的计数窗口长度。推荐值 60 秒。"
+            },
+            upload: {
+              maxLabel: "上传 / 最大请求数",
+              maxDescription: "一个计数窗口内允许的 Markdown 上传请求次数上限。推荐值 20。",
+              windowSecondsLabel: "上传 / 窗口秒数",
+              windowSecondsDescription: "Markdown 上传请求次数的计数窗口长度。推荐值 3600 秒。"
+            },
+            publicOpenApi: {
+              maxLabel: "Developer OpenAPI / 最大请求数",
+              maxDescription: "一个计数窗口内允许的 Developer OpenAPI 请求次数上限。推荐值 1200，再按服务器容量和真实流量调整。",
+              windowSecondsLabel: "Developer OpenAPI / 窗口秒数",
+              windowSecondsDescription: "Developer OpenAPI 请求次数的计数窗口长度。推荐值 60 秒。"
+            }
+          },
+          worker: {
+            sourceFileConcurrency: "同时处理的来源文件数量。8C/32G 服务器推荐 2 到 4。",
+            claimBatchSize: "每轮领取的任务数量。推荐 10 到 50，并接近实际并发。",
+            pollIntervalMs: "Worker 检查队列的间隔。推荐 1000 到 3000 毫秒。",
+            lockTtlSeconds: "任务锁的有效时间。推荐长于单文件正常处理时间，常用 900 秒。",
+            heartbeatIntervalMs: "运行中任务刷新心跳的间隔。推荐 10000 到 30000 毫秒。",
+            jobMaxAttempts: "任务进入死信前的最大尝试次数。推荐 3 次。",
+            jobRetryDelayMs: "失败任务再次重试前的等待时间。推荐 30000 到 120000 毫秒。",
+            queueBackpressureLimit: "全局排队任务上限。大服务器推荐 5000 到 20000。",
+            queueBackpressureKnowledgeBaseLimit: "单个知识库的排队任务上限。推荐低于全局上限。",
+            queueBackpressureMaxAgeSeconds: "最早排队任务超过该时长后放慢上传。推荐 3600 到 7200 秒。",
+            queueBackpressureRetryAfterSeconds: "反压触发后的建议等待时间。推荐 30 到 300 秒。",
+            shutdownGraceMs: "Worker 关闭时允许任务收尾的时间。推荐 30000 到 120000 毫秒。",
+            completedJobRetentionDays: "完成任务记录保留天数。推荐 7 到 30 天。",
+            failedJobRetentionDays: "失败任务记录保留天数。推荐 30 天或更长。",
+            deadLetterJobRetentionDays: "死信任务记录保留天数。推荐 90 天。",
+            retentionCleanupBatchSize: "每次清理任务记录的行数。推荐 500 到 2000。"
+          },
+          publication: {
+            mode: "发布策略。大知识库推荐批量，需要快速可见用按文件，需要人工控制用手动。",
+            batchSize: "单次发布任务包含的文件数量。推荐 100 到 500。",
+            intervalSeconds: "批量发布之间的最小间隔。推荐 120 到 600 秒。",
+            indexShardSize: "搜索索引每个分片的条目数。推荐 1000 到 5000。",
+            linkIndexShardSize: "链接索引每个分片的条目数。推荐 1000 到 5000。",
+            manifestShardSize: "Manifest 每个分片的条目数。推荐 1000 到 5000。",
+            graphEdgeShardSize: "图关系边每个分片的数量。推荐 5000 到 20000。",
+            graphCandidateLimit: "生成关系时参与候选的文件数量。推荐 100 到 300。",
+            graphMaintenanceBatchSize: "每轮图关系维护刷新的文件数量。推荐 200 到 1000。",
+            rootSummaryLimit: "根目录摘要和索引展示的条目上限。推荐 200 到 1000。",
+            okfLogMaxEntries: "log.md 保留的最近更新条数。推荐 50 到 200。",
+            okfLogMaxBytes: "生成的 log.md 最大字节数。活跃知识库推荐 65536 或更高。"
+          },
+          models: {
+            displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
+            baseUrl: "OpenAI 兼容 API 地址。服务商要求时推荐包含 /v1。",
+            apiKey: "模型服务 API key。推荐使用独立权限 key，并定期轮换。",
+            modelName: "发送给模型服务的模型标识。推荐与服务商文档完全一致。",
+            contextWindowTokens: "模型上下文窗口长度。推荐填写模型真实上下文上限。",
+            requestMaxTimeoutMs: "单次请求最大等待时间。长文档推荐 600000 毫秒或更高。",
+            requestIdleTimeoutMs: "等待模型输出时的空闲超时。推荐 120000 到 300000 毫秒。",
+            suggestionConcurrency: "模型建议生成的并行请求数。推荐先用 1 到 2，稳定后再调高。",
+            transientRetryDelayMs: "临时失败后的重试等待时间。推荐 60000 毫秒。",
+            requestMinIntervalMs: "模型请求之间的最小间隔。稳定服务商可用 0，限流严格时推荐 1000 到 5000 毫秒。"
+          },
+          uploadGeneration: {
+            maxBytes: "单次上传请求允许的总字节数上限。推荐值 10485760，即 10 MB；小型部署可降低。",
+            maxFiles: "单次上传请求允许的 Markdown 文件数量上限。8C/32G 服务器推荐值 50。",
+            generationBatchSize: "生成、图关系、索引和发布工作每批处理的数据量。8C/32G 服务器推荐值 100。",
+            fileProcessingConcurrency: "单个 worker job 内部的文件处理并发数。大规模导入推荐值 1，更稳定。",
+            storageConcurrency: "上传源文件同时写入 S3 兼容存储的数量。推荐值 4，S3 稳定时可使用 6。"
+          }
+        },
+        rateLimitGroups: {
+          adminLogin: "管理员登录",
+          adminApi: "Admin API",
+          upload: "上传",
+          publicOpenApi: "Developer OpenAPI"
+        },
+        fields: {
+          max: "最大请求数",
+          windowSeconds: "窗口秒数",
+          sourceFileConcurrency: "来源文件并发",
+          claimBatchSize: "领取批次大小",
+          pollIntervalMs: "轮询间隔毫秒",
+          lockTtlSeconds: "锁 TTL 秒数",
+          heartbeatIntervalMs: "心跳间隔毫秒",
+          jobMaxAttempts: "任务最大尝试次数",
+          jobRetryDelayMs: "任务重试延迟毫秒",
+          queueBackpressureLimit: "全局队列上限",
+          queueBackpressureKnowledgeBaseLimit: "知识库队列上限",
+          queueBackpressureMaxAgeSeconds: "队列最大等待秒数",
+          queueBackpressureRetryAfterSeconds: "重试等待秒数",
+          shutdownGraceMs: "关闭等待毫秒",
+          completedJobRetentionDays: "完成任务保留天数",
+          failedJobRetentionDays: "失败任务保留天数",
+          deadLetterJobRetentionDays: "死信任务保留天数",
+          retentionCleanupBatchSize: "保留清理批次大小",
+          mode: "模式",
+          batchSize: "批次大小",
+          intervalSeconds: "间隔秒数",
+          indexShardSize: "索引分片大小",
+          linkIndexShardSize: "链接索引分片大小",
+          manifestShardSize: "Manifest 分片大小",
+          graphEdgeShardSize: "图边分片大小",
+          graphCandidateLimit: "图候选上限",
+          graphMaintenanceBatchSize: "图维护批次大小",
+          rootSummaryLimit: "根摘要上限",
+          okfLogMaxEntries: "日志最大条数",
+          okfLogMaxBytes: "日志最大字节数",
+          maxBytes: "最大上传字节数",
+          maxFiles: "最大上传文件数",
+          generationBatchSize: "生成批次大小",
+          fileProcessingConcurrency: "文件处理并发",
+          storageConcurrency: "存储并发",
+          displayName: "显示名称",
+          baseUrl: "Base URL",
+          apiKey: "API key",
+          modelName: "模型名称",
+          contextWindowTokens: "上下文窗口 tokens",
+          requestMaxTimeoutMs: "请求最大超时毫秒",
+          requestIdleTimeoutMs: "请求空闲超时毫秒",
+          suggestionConcurrency: "建议生成并发",
+          transientRetryDelayMs: "临时错误重试延迟毫秒",
+          requestMinIntervalMs: "请求最小间隔毫秒"
+        },
+        models: {
+          title: "模型",
+          description: "模型辅助是可选能力。没有生效模型时，上传会继续执行确定性生成。",
+          add: "添加模型",
+          addDescription: "创建模型配置，并选择是否立即生效。",
+          create: "创建模型",
+          empty: "暂无模型配置",
+          active: "生效中",
+          activate: "设为生效",
+          pause: "暂停",
+          resume: "恢复",
+          deleteTitle: "删除模型",
+          deleteDescription: "删除 {{name}}。如果该模型仍有关联的运行中任务，系统会阻止删除。",
+          deleteConfirm: "删除模型",
+          requiredHint: "创建模型时，模型字段为必填。",
+          status: {
+            active: "可用",
+            paused: "已暂停",
+            deleted: "已删除"
+          },
+          table: {
+            name: "名称",
+            model: "模型",
+            key: "Key",
+            status: "状态",
+            actions: "操作"
+          }
+        }
       },
       openapiKeys: {
         title: "OpenAPI keys",
@@ -638,7 +1054,9 @@ export const resources = {
         sourceFileRetryNotAllowed: "只有失败文件可以重新解析",
         securityRequestRejected: "请求已被拒绝",
         rateLimited: "请求过于频繁",
-        openapiKeyFailed: "OpenAPI key 请求失败"
+        openapiKeyFailed: "OpenAPI key 请求失败",
+        runtimeSettingsUnavailable: "运行时设置不可用",
+        runtimeSettingsValidationFailed: "运行时设置无效"
       }
     }
   }

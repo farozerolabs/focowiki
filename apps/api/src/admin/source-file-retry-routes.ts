@@ -2,6 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import {
   assertSourceFileQueueCapacity,
   enqueueSourceFileProcessingJobs,
@@ -16,13 +17,14 @@ export function registerAdminSourceFileRetryRoutes(
     config: RuntimeConfig;
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
+    runtimeSettings?: RuntimeSettingsService | null | undefined;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, redis, repositories } = services;
+  const { config, redis, repositories, runtimeSettings } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
@@ -56,6 +58,7 @@ export function registerAdminSourceFileRetryRoutes(
         config,
         redis,
         repositories: repo,
+        runtimeSettings,
         context
       });
 
@@ -88,7 +91,8 @@ export function registerAdminSourceFileRetryRoutes(
         await assertSourceFileQueueCapacity({
           repositories: repo,
           knowledgeBaseId: knowledgeBase.id,
-          config
+          config,
+          worker: (await runtimeSettings?.getSnapshot())?.worker
         });
       } catch (error) {
         if (error instanceof WorkerQueueBackpressureError) {
@@ -113,7 +117,8 @@ export function registerAdminSourceFileRetryRoutes(
         sourceFileIds: [sourceFile.id],
         knowledgeBaseId: knowledgeBase.id,
         reason: "retry",
-        config
+        config,
+        worker: (await runtimeSettings?.getSnapshot())?.worker
       });
 
       return context.json(

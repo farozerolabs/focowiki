@@ -79,9 +79,9 @@ Markdown links are the primary relationship mechanism. Links in body content hel
 
 ## Product Flow
 
-1. Configure PostgreSQL, Redis, S3-compatible storage, Admin credentials, model settings, and service ports.
+1. Configure PostgreSQL, Redis, S3-compatible storage, Admin credentials, bootstrap settings, and service ports.
 2. Start Focowiki with Docker Compose or local development commands.
-3. Open Admin UI and create a knowledge base.
+3. Open Admin UI, review runtime settings, and create a knowledge base.
 4. Upload one or more cleaned Markdown files.
 5. Watch source-file processing until each file ends.
 6. Read generated bundle files through Admin UI or Developer OpenAPI.

@@ -45,6 +45,7 @@ export type SourceFileProcessInput = {
   fileProcessingConcurrency: number;
   okfLog?: Partial<OkfLogLimits> | undefined;
   publication?: Partial<PublicationRuntimeOptions> | undefined;
+  modelAssistance?: ModelAssistanceOptions | null | undefined;
 };
 
 export function createSourceFileQueueProcessor(
@@ -211,12 +212,13 @@ export function createSourceFileQueueProcessor(
           body: metadataResult.resolved.body
         };
         let suggestions: SourceModelSuggestions | null = null;
+        const effectiveModelAssistance = input.modelAssistance ?? modelAssistance;
         const modelResult = await processSourceFileModelStage({
           repositories,
           knowledgeBaseId: input.knowledgeBaseId,
           source,
           modelSource,
-          modelAssistance,
+          modelAssistance: effectiveModelAssistance,
           progressClock,
           updateSourceFileModelSuggestions
         });
@@ -241,7 +243,7 @@ export function createSourceFileQueueProcessor(
           maxCandidateNodes: input.publication?.graphCandidateLimit,
           ttlSeconds: input.cursorTtlSeconds,
           ownerId,
-          modelAssistance,
+          modelAssistance: effectiveModelAssistance,
           progressClock,
           mark,
           recordStage

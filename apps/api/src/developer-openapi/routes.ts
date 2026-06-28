@@ -3,6 +3,7 @@ import type { OpenAIResponsesClient } from "@focowiki/okf";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { readSourceFileListFiltersFromQuery } from "../admin/source-file-list-filters.js";
 import { readSourceFileTaskDeletionRequest } from "../admin/source-file-task-deletion-request.js";
@@ -28,6 +29,7 @@ export type DeveloperOpenApiRouteServices = {
   repositories: AdminRepositories | null;
   redis: RedisCoordinator | null;
   modelClient: OpenAIResponsesClient | null;
+  runtimeSettings: RuntimeSettingsService | null;
 };
 
 export function registerDeveloperOpenApiRoutes(

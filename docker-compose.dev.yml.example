@@ -40,6 +40,7 @@ services:
       - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
     volumes:
       - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
+      - runtime-secrets:/app/runtime-secrets
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -67,6 +68,7 @@ services:
       - .env
     volumes:
       - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
+      - runtime-secrets:/app/runtime-secrets
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -80,7 +82,7 @@ services:
       timeout: 10s
       retries: 8
       start_period: 20s
-    stop_grace_period: ${WORKER_SHUTDOWN_GRACE_MS:?Set WORKER_SHUTDOWN_GRACE_MS in .env}ms
+    stop_grace_period: 30s
     logging: *docker-logging
     restart: unless-stopped
 
@@ -95,6 +97,7 @@ services:
       - .env
     volumes:
       - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
+      - runtime-secrets:/app/runtime-secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,3 +138,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  runtime-secrets:
