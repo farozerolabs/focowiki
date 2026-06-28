@@ -16,12 +16,7 @@ const ciWorkflowPath = resolve(rootDir, ".github/workflows/ci.yml");
 const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
 const docsPublishWorkflowPath = resolve(rootDir, ".github/workflows/docs-publish.yml");
 const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
-const apiRuntimePaths = [
-  resolve(rootDir, "apps/api/runtime/main.mjs"),
-  resolve(rootDir, "apps/api/runtime/migrate.mjs"),
-  resolve(rootDir, "apps/api/runtime/search-backfill.mjs"),
-  resolve(rootDir, "apps/api/runtime/worker.mjs")
-];
+const apiConfigSourcePath = resolve(rootDir, "apps/api/src/config.ts");
 
 describe("Docker Compose infrastructure", () => {
   it("defines PostgreSQL and Redis services for local development in the local template", () => {
@@ -161,20 +156,17 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/main.mjs");
   });
 
-  it("keeps Docker runtime bundles from requiring Admin UI managed upload-generation env fields", () => {
-    for (const runtimePath of apiRuntimePaths) {
-      const runtime = readFileSync(runtimePath, "utf8");
+  it("keeps startup config from requiring Admin UI managed upload-generation env fields", () => {
+    const configSource = readFileSync(apiConfigSourcePath, "utf8");
 
-      for (const field of [
-        "MAX_UPLOAD_BYTES",
-        "MAX_UPLOAD_FILES",
-        "GENERATION_BATCH_SIZE",
-        "UPLOAD_FILE_PROCESSING_CONCURRENCY",
-        "UPLOAD_STORAGE_CONCURRENCY"
-      ]) {
-        expect(runtime).not.toContain(`requirePositiveInteger(env, "${field}"`);
-        expect(runtime).not.toContain(`requirePositiveInteger(env2, "${field}"`);
-      }
+    for (const field of [
+      "MAX_UPLOAD_BYTES",
+      "MAX_UPLOAD_FILES",
+      "GENERATION_BATCH_SIZE",
+      "UPLOAD_FILE_PROCESSING_CONCURRENCY",
+      "UPLOAD_STORAGE_CONCURRENCY"
+    ]) {
+      expect(configSource).not.toContain(`requirePositiveInteger(env, "${field}"`);
     }
   });
 
