@@ -64,9 +64,12 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
-    expect(compose).toContain("runtime-secrets:/app/runtime-secrets");
-    expect(compose).toContain("runtime-secrets:");
+    expect(compose).toContain("./logs:/app/logs");
+    expect(compose).toContain("./runtime-secrets:/app/runtime-secrets");
+    expect(compose).toContain("./data/postgres:/var/lib/postgresql");
+    expect(compose).toContain("./data/redis:/data");
+    expect(compose).not.toContain("LOG_FILE_HOST_DIR");
+    expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
     expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
@@ -92,9 +95,13 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain(
       "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
     );
-    expect(compose).toContain("postgres-data:");
-    expect(compose).toContain("redis-data:");
-    expect(compose).toContain("runtime-secrets:");
+    expect(compose).toContain("./data/postgres:/var/lib/postgresql");
+    expect(compose).toContain("./data/redis:/data");
+    expect(compose).toContain("./logs:/app/logs");
+    expect(compose).toContain("./runtime-secrets:/app/runtime-secrets");
+    expect(compose).not.toContain("postgres-data:");
+    expect(compose).not.toContain("redis-data:");
+    expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
     expect(compose).toContain("depends_on:");
     expect(compose).toContain("condition: service_healthy");
     expect(compose).toContain("env_file:");
@@ -102,8 +109,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose).toContain("${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs");
-    expect(compose).toContain("runtime-secrets:/app/runtime-secrets");
+    expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
@@ -209,6 +215,9 @@ describe("Docker Compose infrastructure", () => {
       "openspec",
       "ReferenceDocs",
       "runtime-secrets",
+      "data",
+      "backups",
+      "logs",
       "tmp",
       "dist"
     ]) {
@@ -252,7 +261,7 @@ describe("Docker Compose infrastructure", () => {
     expect(devEnv).toContain("LOG_FILE_DIR=logs");
     expect(devEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(devEnv).toContain("LOG_FILE_MAX_FILES=5");
-    expect(devEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(devEnv).not.toContain("LOG_FILE_HOST_DIR");
     expect(devEnv).not.toContain("RUNTIME_SECRET_DIR");
     expect(devEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
     expect(devEnv).not.toContain("DOCKER_LOG_MAX_SIZE");
@@ -266,7 +275,7 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("LOG_FILE_DIR=logs");
     expect(deploymentEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(deploymentEnv).toContain("LOG_FILE_MAX_FILES=5");
-    expect(deploymentEnv).toContain("LOG_FILE_HOST_DIR=./logs");
+    expect(deploymentEnv).not.toContain("LOG_FILE_HOST_DIR");
     expect(deploymentEnv).not.toContain("RUNTIME_SECRET_DIR");
     expect(deploymentEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
     expect(deploymentEnv).not.toContain("DOCKER_LOG_MAX_SIZE");

@@ -6,6 +6,9 @@
 *.local
 .envrc
 runtime-secrets
+data
+backups
+logs
 
 # Real local Compose files generated from templates
 docker-compose.yml
