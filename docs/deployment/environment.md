@@ -25,13 +25,12 @@ On first startup, Focowiki seeds Admin Settings from startup defaults when no sa
 | `LOG_FILE_DIR` | Yes | Directory inside the API container or process working directory. Docker Compose uses `logs`, which maps to `/app/logs`. |
 | `LOG_FILE_MAX_BYTES` | Yes | Maximum bytes per runtime log file before rotation. Default: `10485760`. |
 | `LOG_FILE_MAX_FILES` | Yes | Maximum files per log stream, including the active file. Default: `5`. |
-| `LOG_FILE_HOST_DIR` | Docker Compose only | Host directory mounted to `/app/logs`. Default `./logs` is relative to the deployment directory that contains `docker-compose.yml` and `.env`. |
 
 Focowiki writes product runtime logs to files and continues writing stdout/stderr logs. Docker Compose templates also limit Docker-managed logs to `50m` and `3` files per container.
 
-The API image creates the mounted `/app/logs` directory and assigns it to the runtime user before starting the server or migration process.
+Docker Compose stores runtime logs in `./logs` under the deployment directory that contains `docker-compose.yml` and `.env`. The API image creates `/app/logs` inside the container and assigns it to the runtime user before starting the server or migration process.
 
-Docker Compose keeps saved provider key protection material in an internal `runtime-secrets` volume. Keep this volume with the deployment data when moving a server. Removing the volume requires re-entering saved model API keys in Admin Settings.
+Docker Compose stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, and saved provider key protection material in `./runtime-secrets`. Keep these directories with the deployment data when moving a server. Removing `./runtime-secrets` requires re-entering saved model API keys in Admin Settings.
 
 ## Deployment Images
 
@@ -159,6 +158,6 @@ Before running `docker compose up -d`, confirm:
 3. Public origins match your reverse proxy domains.
 4. `ALLOWED_HOSTS` includes Admin UI, Admin API, Developer OpenAPI, `127.0.0.1`, and `localhost` when local health checks run inside containers.
 5. `DATABASE_URL` and `REDIS_URL` use Compose service names in Docker deployments.
-6. `LOG_FILE_HOST_DIR` points to a writable directory under the deployment directory.
+6. The deployment directory has writable `data`, `logs`, and `runtime-secrets` directories, or Docker can create them.
 7. S3 credentials can read and write the configured bucket and prefix.
 8. Open Admin UI after startup and review [Admin Settings](./admin-settings.md).

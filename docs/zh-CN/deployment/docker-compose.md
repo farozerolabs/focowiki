@@ -24,6 +24,7 @@ Compose 模板会启动 PostgreSQL 和 Redis。外部 S3 兼容服务需要在 `
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
+mkdir -p data/postgres data/redis runtime-secrets logs backups
 ```
 
 启动前填写 `.env`。启动变量、必填项、可选项和生产填写方式见 [环境变量配置](./environment.md)。在 Admin UI 中修改的运行时配置见 [Admin 配置](./admin-settings.md)。
@@ -58,29 +59,34 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 
 ## 升级前备份
 
-已有部署拉取新镜像或执行迁移前，先创建备份。备份目录应留在 git 之外。
+已有部署拉取新镜像或执行迁移前，先创建冷备份。在 `.env` 和 `docker-compose.yml` 所在的部署目录中执行命令。
 
 ```bash
-backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p "backups/$backup_id" && cp .env docker-compose.yml "backups/$backup_id/"
+docker compose -f docker-compose.yml down
+backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
 ```
 
-备份 PostgreSQL。这个备份包含知识库、来源文件记录、运行时配置、OpenAPI key、生成文件记录、图关系记录、审计记录和 Worker 状态。
-
-```bash
-docker compose -f docker-compose.yml exec -T postgres \
-  sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > "backups/$backup_id/postgres.dump"
-```
+这个压缩包包含当前部署的 Compose 文件、`.env`、PostgreSQL 数据、Redis 数据、runtime secrets 和产品日志文件。
 
 外部 S3 兼容 bucket 或 prefix 需要通过存储服务的 snapshot、replication、export 或 S3 兼容复制工具备份。PostgreSQL 备份和 S3 备份应来自同一个部署时间点。
-
-Runtime secrets 和 Redis 属于运行时状态。需要保留已保存密钥保护材料、登录态、游标、锁、限流状态或运行中队列状态时，通过基础设施 snapshot 一并备份。
 
 继续升级前，先检查备份文件。
 
 ```bash
-ls -lh "backups/$backup_id"
+ls -lh "backups/focowiki-$backup_id.tar.gz"
 ```
+
+目录备份适用于当前 Compose 模板。仍在使用 Docker named volumes 的旧部署可以继续使用原有 Compose 文件，也可以先创建数据库 dump，再迁移到目录挂载。
+
+只需要备份数据库时，可以使用 `pg_dump`。
+
+```bash
+docker compose -f docker-compose.yml exec -T postgres \
+  sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+  > "backups/postgres-$(date +%Y%m%d-%H%M%S).dump"
+```
+
+数据库单独备份需要在启动 PostgreSQL 后使用 `pg_restore` 还原。
 
 ## 升级顺序
 
@@ -138,7 +144,7 @@ pnpm compose:clean
 
 `docker compose logs -f` 用于查看 container stdout/stderr 日志。产品运行日志文件见 [环境变量配置](./environment.md#运行模式)。
 
-`pnpm compose:clean` 会删除生产 Compose stack 使用的 deployment containers、named volumes、orphans 和本地镜像副本。它也会删除该 stack 拥有的本地 PostgreSQL 和 Redis 数据。
+`pnpm compose:clean` 会删除生产 Compose stack 使用的 deployment containers、Docker 管理的 named volumes、orphans 和本地镜像副本。部署目录下的 `data`、`runtime-secrets` 和 `logs` 会保留。只有明确要删除本地部署数据时，才手动删除这些目录。
 
 ## 启动之后
 
@@ -160,31 +166,22 @@ pnpm compose:clean
    docker compose -f docker-compose.yml down
    ```
 
-2. 将外部 S3 兼容 bucket 或 prefix 还原或复制到 `.env` 当前配置的位置。
-
-3. 启动 PostgreSQL 和 Redis。
+2. 在部署目录中解压备份。
 
    ```bash
-   docker compose -f docker-compose.yml up -d postgres redis
+   tar -xzf backups/focowiki-<backup-id>.tar.gz
    ```
 
-4. 还原 PostgreSQL。
+3. 将外部 S3 兼容 bucket 或 prefix 还原或复制到 `.env` 当前配置的位置。
 
-   ```bash
-   cat "backups/<backup-id>/postgres.dump" | docker compose -f docker-compose.yml exec -T postgres \
-     sh -lc 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-   ```
-
-5. 明确保留了 runtime secrets 和 Redis snapshot 时，再按基础设施备份进行还原。
-
-6. 执行迁移并启动 stack。
+4. 执行迁移并启动 stack。
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-7. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
+5. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
 
 ## 图关系处理说明
 
@@ -194,4 +191,4 @@ Focowiki 将 file graph nodes、graph edges 和 graph job records 保存在 Post
 
 Worker、发布、上传生成、限流和模型配置见 [Admin 配置](./admin-settings.md)。
 
-未发布阶段的开发部署可以破坏式重建数据。需要清空本地 PostgreSQL 和 Redis volumes 时，先停止 stack，执行 `pnpm compose:clean`，再启动 stack、执行迁移，并重新上传 Markdown 文件生成 graph-backed bundles。
+未发布阶段的开发部署可以破坏式重建数据。需要清空本地 PostgreSQL 和 Redis 数据时，先停止 stack，执行 `pnpm compose:clean`，按需删除本地 `data`、`runtime-secrets` 和 `logs` 目录，再启动 stack、执行迁移，并重新上传 Markdown 文件生成 graph-backed bundles。

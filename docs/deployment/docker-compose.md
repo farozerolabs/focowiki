@@ -24,6 +24,7 @@ The Compose template starts PostgreSQL and Redis. Configure an external S3-compa
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
+mkdir -p data/postgres data/redis runtime-secrets logs backups
 ```
 
 Fill `.env` before starting the stack. See [Environment Configuration](./environment.md) for every startup variable, required values, optional values, and production examples. Runtime values changed from Admin UI are documented in [Admin Settings](./admin-settings.md).
@@ -58,29 +59,34 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 
 ## Backup Before Upgrade
 
-Create a backup before pulling new images or running migrations on an existing deployment. Keep the backup directory outside git.
+Create a cold backup before pulling new images or running migrations on an existing deployment. Run the command from the deployment directory that contains `.env` and `docker-compose.yml`.
 
 ```bash
-backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p "backups/$backup_id" && cp .env docker-compose.yml "backups/$backup_id/"
+docker compose -f docker-compose.yml down
+backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
 ```
 
-Back up PostgreSQL. This contains knowledge bases, source-file records, runtime settings, OpenAPI keys, generated-file records, graph records, audit records, and Worker state.
+This archive contains the Compose file, `.env`, PostgreSQL data, Redis data, runtime secrets, and product log files for the local deployment.
+
+Back up the external S3-compatible bucket or prefix with your storage provider snapshot, replication, export, or S3-compatible copy tool. PostgreSQL and S3 backups should come from the same deployment point.
+
+Check the backup file before continuing.
+
+```bash
+ls -lh "backups/focowiki-$backup_id.tar.gz"
+```
+
+The directory backup applies to deployments using the current Compose template. Older deployments that still use Docker named volumes can continue using their existing Compose file, or create a database dump before moving to directory mounts.
+
+For database-only backups, use `pg_dump`.
 
 ```bash
 docker compose -f docker-compose.yml exec -T postgres \
   sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > "backups/$backup_id/postgres.dump"
+  > "backups/postgres-$(date +%Y%m%d-%H%M%S).dump"
 ```
 
-Back up the external S3-compatible bucket or prefix with your storage provider snapshot, replication, export, or S3-compatible copy tool. PostgreSQL and S3 backups should come from the same deployment point.
-
-Runtime secrets and Redis are runtime state. Back them up with your infrastructure snapshot when you need to preserve saved secret material, sessions, cursors, locks, rate limits, or in-flight queue state.
-
-Check the backup files before continuing.
-
-```bash
-ls -lh "backups/$backup_id"
-```
+Restore database-only backups with `pg_restore` after starting PostgreSQL.
 
 ## Upgrade Sequence
 
@@ -138,7 +144,7 @@ pnpm compose:clean
 
 Use `docker compose logs -f` for container stdout/stderr logs. See [Environment Configuration](./environment.md#runtime) for product runtime log files.
 
-`pnpm compose:clean` removes deployment containers, named volumes, orphans, and local image copies used by the production Compose stack. It also removes local PostgreSQL and Redis data owned by that stack.
+`pnpm compose:clean` removes deployment containers, Docker-managed named volumes, orphans, and local image copies used by the production Compose stack. Directory-mounted data under `data`, `runtime-secrets`, and `logs` remains in the deployment directory. Remove those directories manually only when you intentionally want to delete local deployment data.
 
 ## After Startup
 
@@ -160,31 +166,22 @@ Restore only into the intended deployment directory. Create a fresh backup of th
    docker compose -f docker-compose.yml down
    ```
 
-2. Restore or copy the external S3-compatible bucket or prefix to the location configured in `.env`.
-
-3. Start PostgreSQL and Redis.
+2. Extract the backup archive in the deployment directory.
 
    ```bash
-   docker compose -f docker-compose.yml up -d postgres redis
+   tar -xzf backups/focowiki-<backup-id>.tar.gz
    ```
 
-4. Restore PostgreSQL.
+3. Restore or copy the external S3-compatible bucket or prefix to the location configured in `.env`.
 
-   ```bash
-   cat "backups/<backup-id>/postgres.dump" | docker compose -f docker-compose.yml exec -T postgres \
-     sh -lc 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-   ```
-
-5. Restore runtime secrets and Redis from your infrastructure snapshot when you intentionally backed them up.
-
-6. Run migration and start the stack.
+4. Run migration and start the stack.
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-7. Verify Admin UI login, knowledge-base list, file preview, Developer OpenAPI health, and Worker status.
+5. Verify Admin UI login, knowledge-base list, file preview, Developer OpenAPI health, and Worker status.
 
 ## Graph Processing Notes
 
@@ -194,4 +191,4 @@ Keep graph processing bounded by Admin UI runtime settings. Avoid custom scripts
 
 See [Admin Settings](./admin-settings.md) for Worker, publication, upload generation, rate-limit, and model configuration.
 
-For unreleased development deployments, data can be rebuilt destructively. Stop the stack, run `pnpm compose:clean` if you need to clear local PostgreSQL and Redis volumes, start the stack again, run migrations, and upload Markdown files to regenerate graph-backed bundles.
+For unreleased development deployments, data can be rebuilt destructively. Stop the stack, run `pnpm compose:clean`, remove the local `data`, `runtime-secrets`, and `logs` directories when needed, start the stack again, run migrations, and upload Markdown files to regenerate graph-backed bundles.

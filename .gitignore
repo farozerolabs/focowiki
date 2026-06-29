@@ -50,6 +50,10 @@ lerna-debug.log*
 # Runtime generated backend secrets
 runtime-secrets/
 
+# Local Docker Compose persisted data and backups
+data/
+backups/
+
 # Dependencies
 node_modules/
 .pnpm-store/

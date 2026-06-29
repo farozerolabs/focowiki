@@ -31,8 +31,8 @@ services:
       - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
       - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
     volumes:
-      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
-      - runtime-secrets:/app/runtime-secrets
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -55,8 +55,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
-      - runtime-secrets:/app/runtime-secrets
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -80,8 +80,8 @@ services:
     env_file:
       - .env
     volumes:
-      - ${LOG_FILE_HOST_DIR:?Set LOG_FILE_HOST_DIR in .env}:/app/logs
-      - runtime-secrets:/app/runtime-secrets
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,7 +97,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
-      - postgres-data:/var/lib/postgresql
+      - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?Set POSTGRES_USER in .env} -d ${POSTGRES_DB:?Set POSTGRES_DB in .env}"]
       interval: 5s
@@ -111,7 +111,7 @@ services:
     image: redis:8-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redis-data:/data
+      - ./data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -120,7 +120,3 @@ services:
       start_period: 5s
     logging: *docker-logging
     restart: unless-stopped
-volumes:
-  postgres-data:
-  redis-data:
-  runtime-secrets:

@@ -25,13 +25,12 @@ cp .env.example .env
 | `LOG_FILE_DIR` | 是 | API 容器或进程工作目录内的日志目录。Docker Compose 使用 `logs`，对应容器内 `/app/logs`。 |
 | `LOG_FILE_MAX_BYTES` | 是 | 单个运行日志文件触发轮转的最大字节数。默认值为 `10485760`。 |
 | `LOG_FILE_MAX_FILES` | 是 | 每个日志流保留的文件数，包含当前写入文件。默认值为 `5`。 |
-| `LOG_FILE_HOST_DIR` | 仅 Docker Compose 需要 | 挂载到 `/app/logs` 的宿主机目录。默认 `./logs` 相对于 `docker-compose.yml` 和 `.env` 所在的部署目录。 |
 
 Focowiki 会把产品运行日志写入文件，同时继续输出 stdout/stderr。Docker Compose 模板也会把 Docker 自身日志限制为每个容器 `50m`、`3` 个文件。
 
-API 镜像会在启动 server 或 migration 前创建挂载的 `/app/logs` 目录，并把目录权限交给运行时用户。
+Docker Compose 会把运行日志保存在部署目录下的 `./logs`。API 镜像会在启动 server 或 migration 前创建容器内 `/app/logs` 目录，并把目录权限交给运行时用户。
 
-Docker Compose 会把已保存 provider key 的保护材料保存在内部 `runtime-secrets` volume 中。迁移服务器时需要随部署数据一起保留该 volume。删除该 volume 后，需要在 Admin 配置中重新录入已保存的模型 API key。
+Docker Compose 会把 PostgreSQL 数据保存在 `./data/postgres`，把 Redis 数据保存在 `./data/redis`，把已保存 provider key 的保护材料保存在 `./runtime-secrets`。迁移服务器时需要随部署数据一起保留这些目录。删除 `./runtime-secrets` 后，需要在 Admin 配置中重新录入已保存的模型 API key。
 
 ## 部署镜像
 
@@ -159,6 +158,6 @@ API 限流在 [Admin 配置](./admin-settings.md) 中管理。运行时限流应
 3. 公网 origins 与反向代理域名一致。
 4. `ALLOWED_HOSTS` 包含 Admin UI、Admin API、Developer OpenAPI、`127.0.0.1` 和 `localhost`，以支持容器内本地健康检查。
 5. Docker 部署中的 `DATABASE_URL` 和 `REDIS_URL` 使用 Compose service names。
-6. `LOG_FILE_HOST_DIR` 指向部署目录下可写的目录。
+6. 部署目录下有可写的 `data`、`logs` 和 `runtime-secrets` 目录，或者 Docker 能够自动创建这些目录。
 7. S3 凭据可以读写配置的 bucket 和 prefix。
 8. 启动后打开 Admin UI，并检查 [Admin 配置](./admin-settings.md)。
