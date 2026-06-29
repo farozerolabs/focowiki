@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS focowiki.model_invocations (
   id text PRIMARY KEY,
   knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
   source_file_id text NOT NULL REFERENCES focowiki.source_files(id),
+  api_mode text,
   model_name text NOT NULL,
   status text NOT NULL,
   started_at timestamptz NOT NULL,
@@ -168,8 +169,17 @@ CREATE TABLE IF NOT EXISTS focowiki.model_invocations (
   error_message text,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
+  CHECK (api_mode IS NULL OR api_mode IN ('responses', 'chat_completions')),
   CHECK (ended_at IS NULL OR ended_at >= started_at)
 );
+
+ALTER TABLE focowiki.model_invocations
+  ADD COLUMN IF NOT EXISTS api_mode text;
+
+ALTER TABLE focowiki.model_invocations
+  DROP CONSTRAINT IF EXISTS model_invocations_api_mode_check,
+  ADD CONSTRAINT model_invocations_api_mode_check
+  CHECK (api_mode IS NULL OR api_mode IN ('responses', 'chat_completions'));
 
 UPDATE focowiki.source_files source
 SET
@@ -1082,6 +1092,7 @@ CREATE INDEX IF NOT EXISTS runtime_setting_audit_logs_setting_created_idx
 CREATE TABLE IF NOT EXISTS focowiki.model_configs (
   id text PRIMARY KEY,
   display_name text NOT NULL,
+  api_mode text NOT NULL DEFAULT 'responses',
   base_url text NOT NULL,
   encrypted_api_key text NOT NULL,
   api_key_fingerprint text NOT NULL,
@@ -1098,6 +1109,7 @@ CREATE TABLE IF NOT EXISTS focowiki.model_configs (
   updated_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
   CONSTRAINT model_configs_status_check CHECK (status IN ('active', 'paused', 'deleted')),
+  CONSTRAINT model_configs_api_mode_check CHECK (api_mode IN ('responses', 'chat_completions')),
   CONSTRAINT model_configs_positive_values_check CHECK (
     context_window_tokens > 0
     AND request_max_timeout_ms > 0
@@ -1107,6 +1119,14 @@ CREATE TABLE IF NOT EXISTS focowiki.model_configs (
     AND request_min_interval_ms >= 0
   )
 );
+
+ALTER TABLE focowiki.model_configs
+  ADD COLUMN IF NOT EXISTS api_mode text NOT NULL DEFAULT 'responses';
+
+ALTER TABLE focowiki.model_configs
+  DROP CONSTRAINT IF EXISTS model_configs_api_mode_check,
+  ADD CONSTRAINT model_configs_api_mode_check
+  CHECK (api_mode IN ('responses', 'chat_completions'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS model_configs_one_active_idx
   ON focowiki.model_configs (is_active)

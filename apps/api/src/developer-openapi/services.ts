@@ -38,7 +38,7 @@ import {
 } from "../page-response-cache.js";
 import { createWebhookDispatcher, type WebhookEvent } from "../webhooks/dispatcher.js";
 import { createBundleTreeCursorScope } from "../tree-entry-filters.js";
-import type { OpenAIResponsesClient } from "@focowiki/okf";
+import type { OpenAIModelClient } from "@focowiki/okf";
 import {
   assertSourceFileQueueCapacity,
   enqueueSourceFileProcessingJobs,
@@ -70,7 +70,7 @@ export type DeveloperOpenApiServices = {
   repositories: AdminRepositories | null;
   redis: RedisCoordinator | null;
   storage: StorageAdapter;
-  modelClient: OpenAIResponsesClient | null;
+  modelClient: OpenAIModelClient | null;
   runtimeSettings: RuntimeSettingsService | null;
 };
 
@@ -1093,7 +1093,7 @@ function noCandidateSearchHints(): Pick<DeveloperFileSearchResponse, "message" |
       "Split the user question into shorter terms and search again.",
       "Read index.md through the file content endpoint.",
       "List the file tree and continue exploration from visible directories.",
-      "Try title, path, jurisdiction, product, or domain-specific terms from the question."
+      "Try title, path, subject, product name, workflow, identifier, or shorter terms from the question."
     ]
   };
 }

@@ -1,6 +1,6 @@
 import {
-  createOpenAIResponsesClient,
-  type OpenAIResponsesClient
+  createOpenAIModelClient,
+  type OpenAIModelClient
 } from "@focowiki/okf";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -93,12 +93,13 @@ async function runHealthcheck(config: ReturnType<typeof loadRuntimeConfig>): Pro
 
 function createModelClient(
   config: ReturnType<typeof loadRuntimeConfig>
-): OpenAIResponsesClient | null {
+): OpenAIModelClient | null {
   if (!config.model.enabled) {
     return null;
   }
 
-  return createOpenAIResponsesClient({
+  return createOpenAIModelClient({
+    apiMode: "responses",
     apiKey: config.model.apiKey,
     baseUrl: config.model.baseUrl,
     requestTimeoutMs: config.model.requestMaxTimeoutMs

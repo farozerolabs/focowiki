@@ -7,7 +7,11 @@ import type {
   PublicationJobMode,
   SourceFileRecord
 } from "../db/admin-repositories.js";
-import { publishOkfRelease, type PreviousBundleFileForPublication } from "../okf/publication.js";
+import {
+  publishOkfRelease,
+  type PreviousBundleFileForPublication,
+  type SourceFileForPublication
+} from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
@@ -290,7 +294,9 @@ export function createKnowledgeBasePublicationService(
                   limit
                 }).then((page) => ({
                   ...page,
-                  items: page.items.filter((item) => item.processingStatus === "completed")
+                  items: page.items
+                    .filter((item) => item.processingStatus === "completed")
+                    .map(toSourceFileForPublication)
                 })),
               persistBundleFiles: (filesToPersist) => createBundleFiles(filesToPersist),
               persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries)
@@ -563,6 +569,16 @@ function toPreviousBundleFileForPublication(
     description: file.description,
     tags: file.tags,
     frontmatter: file.frontmatter
+  };
+}
+
+export function toSourceFileForPublication(file: SourceFileRecord): SourceFileForPublication {
+  return {
+    id: file.id,
+    originalName: file.originalName,
+    objectKey: file.objectKey,
+    metadata: file.metadata,
+    suggestions: file.modelSuggestions ?? null
   };
 }
 

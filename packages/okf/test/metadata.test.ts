@@ -27,7 +27,7 @@ describe("resolveSourceMetadata", () => {
     expect(result.body).toBe("# Body");
   });
 
-  it("parses Markdown frontmatter without requiring domain-specific metadata", () => {
+  it("parses Markdown frontmatter without requiring custom metadata", () => {
     const result = parseUploadedMarkdownSource({
       fileName: "custom.md",
       content: [

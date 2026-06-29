@@ -94,6 +94,7 @@ title: Admin 配置
 | 字段 | 含义 | 推荐值 |
 | --- | --- | --- |
 | 显示名称 | 管理后台展示的模型名称。 | 写清提供商和用途。 |
+| API 模式 | 模型请求使用的接口协议。`responses` 使用 Responses API structured outputs，`chat_completions` 使用 Chat Completions JSON object output。 | 提供 `/responses` 的服务商使用 `responses`；提供 `/chat/completions` JSON 输出的服务商使用 `chat_completions`。 |
 | Base URL | OpenAI 兼容 API 地址。 | 服务商要求时包含 `/v1`。 |
 | API key | 模型服务 API key。 | 使用独立权限 key，并定期轮换。 |
 | 模型名称 | 发送给模型服务的模型标识。 | 与服务商文档完全一致。 |

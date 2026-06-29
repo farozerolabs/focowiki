@@ -16,8 +16,15 @@ vi.mock("@/lib/admin-api", () => ({
     model: {
       id: "model-001",
       displayName: "Primary model",
+      apiMode: "responses",
       baseUrl: "https://api.openai.com/v1",
       modelName: "gpt-test",
+      contextWindowTokens: 200000,
+      requestMaxTimeoutMs: 600000,
+      requestIdleTimeoutMs: 120000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60000,
+      requestMinIntervalMs: 1000,
       apiKeyFingerprint: "key...test",
       status: "deleted",
       isActive: false,
@@ -81,8 +88,15 @@ vi.mock("@/lib/admin-api", () => ({
       {
         id: "model-001",
         displayName: "Primary model",
+        apiMode: "responses",
         baseUrl: "https://api.openai.com/v1",
         modelName: "gpt-test",
+        contextWindowTokens: 200000,
+        requestMaxTimeoutMs: 600000,
+        requestIdleTimeoutMs: 120000,
+        suggestionConcurrency: 2,
+        transientRetryDelayMs: 60000,
+        requestMinIntervalMs: 1000,
         apiKeyFingerprint: "key...test",
         status: "active",
         isActive: true,
@@ -167,6 +181,13 @@ describe("SettingsPage", () => {
     fireEvent.pointerUp(modelsTab);
     fireEvent.click(modelsTab);
     expect(await screen.findByText("Primary model")).toBeTruthy();
+    expect(screen.getByText("Responses API")).toBeTruthy();
+    expect(screen.getByText("https://api.openai.com/v1")).toBeTruthy();
+    expect(screen.getByText("key...test")).toBeTruthy();
+    expect(screen.getByText("gpt-test")).toBeTruthy();
+    for (const value of ["200000", "600000", "120000", "2", "60000", "1000"]) {
+      expect(screen.getByText(value)).toBeTruthy();
+    }
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(screen.getByRole("alertdialog", { name: "Delete model" })).toBeTruthy();

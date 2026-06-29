@@ -11,8 +11,8 @@ export const LARGE_SCALE_MIN_BATCH_FILES_ENV = "FOCOWIKI_VALIDATION_MIN_BATCH_FI
 export const SINGLE_SAMPLE_ENV = "FOCOWIKI_VALIDATION_SINGLE_SAMPLE_BASENAME";
 export const MAX_CANDIDATE_PROFILES_ENV = "FOCOWIKI_VALIDATION_MAX_CANDIDATE_PROFILES";
 export const REQUIRED_SAMPLE_COVERAGE = {
-  statuses: ["有效", "已修改", "尚未生效"],
-  types: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"]
+  minDistinctStatuses: 3,
+  minDistinctTypes: 5
 };
 
 const MAX_METADATA_BYTES = 256 * 1024;
@@ -23,12 +23,11 @@ const COMMON_METADATA_KEYS = new Set([
   "category",
   "description",
   "tags",
-  "publicationDate",
-  "effectiveDate",
   "sourceUrl",
-  "officialId",
-  "issuer",
-  "region",
+  "publishedAt",
+  "updatedAt",
+  "externalId",
+  "sourceName",
   "resource",
   "timestamp"
 ]);
@@ -200,13 +199,8 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT, opt
   const selected = [];
   const selectedNames = new Set();
 
-  for (const status of REQUIRED_SAMPLE_COVERAGE.statuses) {
-    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.status === status);
-  }
-
-  for (const type of REQUIRED_SAMPLE_COVERAGE.types) {
-    addFirstMatching(selected, selectedNames, candidates, (candidate) => candidate.type === type);
-  }
+  addDistinctFieldSamples(selected, selectedNames, candidates, "status", REQUIRED_SAMPLE_COVERAGE.minDistinctStatuses);
+  addDistinctFieldSamples(selected, selectedNames, candidates, "type", REQUIRED_SAMPLE_COVERAGE.minDistinctTypes);
 
   addFirstMatching(selected, selectedNames, candidates, (candidate) =>
     candidate.basename.includes("__unknown-date__")
@@ -244,18 +238,18 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT, opt
   }
 
   const coverage = sampleCoverage(selected);
-  const missingStatuses = REQUIRED_SAMPLE_COVERAGE.statuses.filter(
-    (status) => !coverage.statuses.includes(status)
-  );
-  const missingTypes = REQUIRED_SAMPLE_COVERAGE.types.filter((type) => !coverage.types.includes(type));
   const coverageWarnings = [];
 
-  if (missingStatuses.length > 0) {
-    coverageWarnings.push(`Missing optional status coverage: ${missingStatuses.join(", ")}`);
+  if (coverage.statuses.length < REQUIRED_SAMPLE_COVERAGE.minDistinctStatuses) {
+    coverageWarnings.push(
+      `Missing optional distinct status coverage: ${coverage.statuses.length}/${REQUIRED_SAMPLE_COVERAGE.minDistinctStatuses}`
+    );
   }
 
-  if (missingTypes.length > 0) {
-    coverageWarnings.push(`Missing optional type coverage: ${missingTypes.join(", ")}`);
+  if (coverage.types.length < REQUIRED_SAMPLE_COVERAGE.minDistinctTypes) {
+    coverageWarnings.push(
+      `Missing optional distinct type coverage: ${coverage.types.length}/${REQUIRED_SAMPLE_COVERAGE.minDistinctTypes}`
+    );
   }
 
   if (!coverage.includesUnknownDate) {
@@ -394,10 +388,8 @@ function readMaxCandidateProfiles(env, sampleCount) {
 
 function hasCoreCandidateCoverage(candidates) {
   const coverage = sampleCoverage(candidates);
-  const hasStatuses = REQUIRED_SAMPLE_COVERAGE.statuses.every((status) =>
-    coverage.statuses.includes(status)
-  );
-  const hasTypes = REQUIRED_SAMPLE_COVERAGE.types.every((type) => coverage.types.includes(type));
+  const hasStatuses = coverage.statuses.length >= REQUIRED_SAMPLE_COVERAGE.minDistinctStatuses;
+  const hasTypes = coverage.types.length >= REQUIRED_SAMPLE_COVERAGE.minDistinctTypes;
 
   return (
     hasStatuses &&
@@ -453,7 +445,7 @@ function readSampleCandidateProfile(filePath) {
     type: String(metadata.type ?? ""),
     status: String(metadata.status ?? ""),
     category: String(metadata.category ?? ""),
-    publicationDate: String(metadata.publicationDate ?? ""),
+    publicationDate: String(metadata.publishedAt ?? metadata.publicationDate ?? ""),
     hasNonAsciiBasename: /[^\x00-\x7F]/.test(basename),
     hasUnknownMetadata: metadataKeys.some((key) => !COMMON_METADATA_KEYS.has(key)),
     metadataKeys,
@@ -580,6 +572,25 @@ function addFirstMatching(selected, selectedNames, candidates, predicate) {
   }
 
   addCandidate(selected, selectedNames, candidate);
+}
+
+function addDistinctFieldSamples(selected, selectedNames, candidates, field, minCount) {
+  const seen = new Set(selected.map((sample) => sample[field]).filter(Boolean));
+
+  for (const candidate of candidates) {
+    const value = candidate[field];
+
+    if (!value || seen.has(value) || selectedNames.has(candidate.basename)) {
+      continue;
+    }
+
+    addCandidate(selected, selectedNames, candidate);
+    seen.add(value);
+
+    if (seen.size >= minCount) {
+      return;
+    }
+  }
 }
 
 function addCandidate(selected, selectedNames, candidate, sampleCount = DEFAULT_SAMPLE_COUNT) {

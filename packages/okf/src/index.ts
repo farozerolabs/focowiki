@@ -7,5 +7,6 @@ export * from "./indexes.js";
 export * from "./markdown-appendix.js";
 export * from "./metadata.js";
 export * from "./model.js";
+export * from "./presentation-suggestions.js";
 export * from "./reserved-files.js";
 export * from "./titles.js";

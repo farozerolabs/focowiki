@@ -1,5 +1,6 @@
 import type { ModelSuggestionResult } from "@focowiki/okf";
 import type { AdminRepositories } from "../db/admin-repositories.js";
+import type { ModelApiMode } from "../runtime-settings/types.js";
 
 export type ModelInvocationTracker = {
   start: (sourceFileId: string, startedAt: string) => Promise<void>;
@@ -16,6 +17,7 @@ export function createModelInvocationTracker(input: {
   knowledgeBaseId: string;
   modelName: string | null;
   modelConfigId?: string | null;
+  apiMode?: ModelApiMode | null;
 }): ModelInvocationTracker {
   const invocations = input.repositories.modelInvocations;
   const invocationIdsBySourceId = new Map<string, string>();
@@ -26,6 +28,7 @@ export function createModelInvocationTracker(input: {
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId,
         modelConfigId: input.modelConfigId ?? null,
+        apiMode: input.apiMode ?? null,
         modelName: input.modelName ?? "disabled",
         status: "running",
         startedAt,
@@ -62,6 +65,7 @@ export function createModelInvocationTracker(input: {
       await invocations?.createModelInvocation({
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId,
+        apiMode: null,
         modelName: "disabled",
         status: "skipped",
         startedAt,

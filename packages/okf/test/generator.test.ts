@@ -158,10 +158,10 @@ describe("generateOkfBundle", () => {
             "timestamp: \"2026-06-14T00:00:00.000Z\"",
             "tags:",
             "  - onboarding",
-            "officialId: law-001",
+            "externalId: doc-001",
             "status: active",
-            "contract:",
-            "  partyCount: 2",
+            "review:",
+            "  cycleDays: 30",
             "objectKey: tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
             "releaseId: release-001",
             "taskId: task-001",
@@ -229,10 +229,10 @@ describe("generateOkfBundle", () => {
         resource: "https://example.com/source",
         timestamp: "2026-06-14T00:00:00.000Z",
         tags: ["onboarding"],
-        officialId: "law-001",
+        externalId: "doc-001",
         status: "active",
-        contract: {
-          partyCount: 2
+        review: {
+          cycleDays: 30
         }
       })
     });
@@ -259,10 +259,10 @@ describe("generateOkfBundle", () => {
         resource: "https://example.com/source",
         timestamp: "2026-06-14T00:00:00.000Z",
         tags: ["onboarding"],
-        officialId: "law-001",
+        externalId: "doc-001",
         status: "active",
-        contract: {
-          partyCount: 2
+        review: {
+          cycleDays: 30
         }
       })
     });
@@ -413,8 +413,8 @@ describe("generateOkfBundle", () => {
       },
       sources: [
         {
-          fileName: "外国企业常驻代表机构登记管理条例.md",
-          content: "---\ntitle: 外国企业常驻代表机构登记管理条例\n---\n# First"
+          fileName: "客户支持手册.md",
+          content: "---\ntitle: 客户支持手册\n---\n# First"
         },
         {
           fileName: "intro!.md",
@@ -430,7 +430,7 @@ describe("generateOkfBundle", () => {
         .sort()
     ).toEqual([
       "pages/intro!.md",
-      "pages/外国企业常驻代表机构登记管理条例.md"
+      "pages/客户支持手册.md"
     ]);
   });
 
@@ -492,6 +492,74 @@ describe("generateOkfBundle", () => {
       description: "Suggested description",
       keywords: ["intro", "suggested", "description", "agent"]
     });
+  });
+
+  it("keeps source descriptions over model suggestions", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "parks.md",
+          content: [
+            "---",
+            "type: page",
+            "title: City Parks",
+            "description: City Parks",
+            "---",
+            "# City Parks",
+            "",
+            "This document covers park planning, construction, public services, and management duties."
+          ].join("\n"),
+          suggestions: {
+            title: "",
+            type: "",
+            description: "A grounded summary of park planning, construction, public services, and management duties.",
+            related_links: [],
+            tags: [],
+            keywords: ["parks", "planning"]
+          }
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const page = matter(files["pages/parks.md"] ?? "");
+
+    expect(page.data.description).toBe("City Parks");
+  });
+
+  it("keeps usable source descriptions over model suggestions", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          fileName: "manual.md",
+          content: [
+            "---",
+            "type: page",
+            "title: Operations Manual",
+            "description: A reviewed operations manual for onboarding and support workflows.",
+            "---",
+            "# Operations Manual"
+          ].join("\n"),
+          suggestions: {
+            title: "",
+            type: "",
+            description: "A model-generated replacement summary.",
+            related_links: [],
+            tags: [],
+            keywords: ["operations"]
+          }
+        }
+      ]
+    });
+    const files = filesByPath(bundle.files);
+    const page = matter(files["pages/manual.md"] ?? "");
+
+    expect(page.data.description).toBe(
+      "A reviewed operations manual for onboarding and support workflows."
+    );
   });
 
   it("does not duplicate existing citations sections", () => {
@@ -703,6 +771,85 @@ describe("generateOkfBundle", () => {
         }
       ]
     });
+  });
+
+  it("filters weak shared-key graph edges from generated related files", () => {
+    const bundle = generateOkfBundle({
+      generatedAt: "2026-06-14T00:00:00.000Z",
+      defaults: {},
+      sources: [
+        {
+          id: "source-payment",
+          fileName: "payment.md",
+          content: "---\ntype: guide\ntitle: 支付配置指南\n---\n# 支付配置指南"
+        },
+        {
+          id: "source-release-notes",
+          fileName: "release-notes.md",
+          content: "---\ntype: page\ntitle: 发布说明\n---\n# 发布说明"
+        }
+      ],
+      graph: {
+        nodes: [
+          {
+            fileId: "source-payment",
+            path: "pages/payment.md",
+            title: "支付配置指南",
+            type: "guide",
+            subjects: ["支付配置指南", "支付配置"],
+            keywords: ["支付配置"],
+            metadata: { type: "guide", title: "支付配置指南" }
+          },
+          {
+            fileId: "source-release-notes",
+            path: "pages/release-notes.md",
+            title: "发布说明",
+            type: "page",
+            subjects: ["发布说明", "文档", "当前版本"],
+            keywords: ["文档", "当前版本", "相关内容"],
+            metadata: {
+              type: "page",
+              title: "发布说明"
+            }
+          }
+        ],
+        edges: [
+          {
+            fromFileId: "source-payment",
+            toFileId: "source-release-notes",
+            relationType: "shared_key_phrase",
+            weight: 0.69,
+            reason: "Both files share body-derived key phrases.",
+            source: "deterministic",
+            evidence: {
+              matchedTerms: ["文档", "相关内容"]
+            }
+          }
+        ]
+      }
+    });
+    const files = filesByPath(bundle.files);
+    const payment = matter(files["pages/payment.md"] ?? "");
+    const links = JSON.parse(files["_index/links.json"] ?? "{}") as {
+      links: Array<{ from: string; to: string; label: string; relation_type?: string }>;
+    };
+    const graphManifest = JSON.parse(files["_graph/manifest.json"] ?? "{}") as {
+      edge_count: number;
+    };
+    const byFile = JSON.parse(files["_graph/by-file/source-payment.json"] ?? "{}") as {
+      relationships: unknown[];
+    };
+
+    expect(payment.content).not.toContain("## Related");
+    expect(links.links).not.toContainEqual(
+      expect.objectContaining({
+        from: "pages/payment.md",
+        to: "pages/release-notes.md"
+      })
+    );
+    expect(graphManifest.edge_count).toBe(0);
+    expect(files["_graph/edges/0000.jsonl"]).toBeUndefined();
+    expect(byFile.relationships).toEqual([]);
   });
 
   it("replaces trailing source related sections with graph-backed related links", () => {

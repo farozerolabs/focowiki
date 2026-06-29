@@ -8,6 +8,7 @@ import type {
 
 export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "upload_generation";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
+export type ModelApiMode = "responses" | "chat_completions";
 
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
 export type RuntimeWorkerSettings = Required<Omit<WorkerRuntimeConfig, "databasePoolMax">>;
@@ -38,6 +39,7 @@ export type RuntimeSettingRecord<TValue = unknown> = {
 export type RuntimeModelConfigPublic = {
   id: string;
   displayName: string;
+  apiMode: ModelApiMode;
   baseUrl: string;
   apiKeyFingerprint: string;
   modelName: string;
@@ -60,6 +62,7 @@ export type RuntimeModelConfigPrivate = RuntimeModelConfigPublic & {
 
 export type RuntimeModelConfigDraft = {
   displayName: string;
+  apiMode?: ModelApiMode | undefined;
   baseUrl: string;
   apiKey: string;
   modelName: string;
@@ -76,6 +79,7 @@ export type RuntimeModelConfigUpdate = Partial<
   Pick<
     RuntimeModelConfigDraft,
     | "displayName"
+    | "apiMode"
     | "baseUrl"
     | "apiKey"
     | "modelName"
@@ -118,6 +122,7 @@ export function serializePublicModel(
   return {
     id: model.id,
     displayName: model.displayName,
+    apiMode: model.apiMode,
     baseUrl: model.baseUrl,
     apiKeyFingerprint: model.apiKeyFingerprint,
     modelName: model.modelName,
@@ -133,6 +138,10 @@ export function serializePublicModel(
     updatedAt: model.updatedAt,
     deletedAt: model.deletedAt
   };
+}
+
+export function modelApiModeValues(): ModelApiMode[] {
+  return ["responses", "chat_completions"];
 }
 
 export function publicationModeValues(): PublicationMode[] {

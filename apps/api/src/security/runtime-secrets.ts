@@ -1,12 +1,14 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
 const DEPLOYMENT_KEY_FILE = "deployment.key";
+const RUNTIME_SECRET_DIR = "runtime-secrets";
+const WORKSPACE_MARKER = "pnpm-workspace.yaml";
 
 export function loadDeploymentSecret(input?: { directory?: string | undefined }): string {
-  const directory = input?.directory ?? join(process.cwd(), "runtime-secrets");
+  const directory = input?.directory ?? resolveDefaultRuntimeSecretDirectory();
   const filePath = join(directory, DEPLOYMENT_KEY_FILE);
 
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -41,8 +43,65 @@ export function loadDeploymentSecret(input?: { directory?: string | undefined })
   return existing;
 }
 
+export function resolveDefaultRuntimeSecretDirectory(startDirectory = process.cwd()): string {
+  const workspaceRoot = findWorkspaceRoot(startDirectory);
+
+  if (!workspaceRoot) {
+    return join(startDirectory, RUNTIME_SECRET_DIR);
+  }
+
+  const directory = join(workspaceRoot, RUNTIME_SECRET_DIR);
+  const legacyDirectory = join(startDirectory, RUNTIME_SECRET_DIR);
+
+  migrateLegacyDeploymentKey({ directory, legacyDirectory });
+
+  return directory;
+}
+
 export function readLegacyRuntimeSecret(env: NodeJS.ProcessEnv = process.env): string | null {
   return env.SETTINGS_ENCRYPTION_SECRET?.trim() || env.ADMIN_SESSION_SECRET?.trim() || null;
+}
+
+function findWorkspaceRoot(startDirectory: string): string | null {
+  let current = resolve(startDirectory);
+
+  while (true) {
+    if (existsSync(join(current, WORKSPACE_MARKER))) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function migrateLegacyDeploymentKey(input: {
+  directory: string;
+  legacyDirectory: string;
+}): void {
+  const filePath = join(input.directory, DEPLOYMENT_KEY_FILE);
+  const legacyFilePath = join(input.legacyDirectory, DEPLOYMENT_KEY_FILE);
+
+  if (filePath === legacyFilePath || existsSync(filePath) || !existsSync(legacyFilePath)) {
+    return;
+  }
+
+  const legacy = readFileSync(legacyFilePath, "utf8").trim();
+  if (!isValidDeploymentSecret(legacy)) {
+    return;
+  }
+
+  mkdirSync(input.directory, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(filePath, `${legacy}\n`, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (!isNodeErrorCode(error, "EEXIST")) {
+      throw error;
+    }
+  }
 }
 
 function isValidDeploymentSecret(value: string): boolean {

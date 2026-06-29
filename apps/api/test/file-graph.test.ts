@@ -126,19 +126,19 @@ describe("file graph", () => {
   });
 
   it("does not publish relationships from weak shared metadata alone", async () => {
-    const source = createSourceFile("source-zunyi-gas", "zunyi-gas.md");
+    const source = createSourceFile("source-api-security", "api-security.md");
     const candidates = [
       {
-        ...createGraphNode("source-national-prosecutor", "national-prosecutor.md"),
-        title: "National prosecutor guidance",
-        tags: ["effective"],
+        ...createGraphNode("source-support-playbook", "support-playbook.md"),
+        title: "Support playbook",
+        tags: ["active"],
         headings: ["Related", "Citations"],
-        keywords: ["effective"],
+        keywords: ["active"],
         metadata: {
-          title: "National prosecutor guidance",
-          type: "local regulation",
-          tags: ["effective"],
-          status: "effective"
+          title: "Support playbook",
+          type: "guide",
+          tags: ["active"],
+          status: "active"
         }
       }
     ];
@@ -150,12 +150,12 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "Zunyi gas safety",
-        type: "local regulation",
-        tags: ["effective"],
-        status: "effective"
+        title: "API security checklist",
+        type: "checklist",
+        tags: ["active"],
+        status: "active"
       },
-      body: "# Zunyi gas safety\n\nThis document regulates city gas safety and facility operation.",
+      body: "# API security checklist\n\nThis document covers token rotation, request signing, and audit logging.",
       suggestions: null,
       pageSize: 10
     });
@@ -165,14 +165,14 @@ describe("file graph", () => {
   });
 
   it("does not publish relationships from external source links or generic fragments", async () => {
-    const source = createSourceFile("source-zunyi-heritage", "zunyi-heritage.md");
+    const source = createSourceFile("source-brand-assets", "brand-assets.md");
     const candidates = [
       {
-        ...createGraphNode("source-prosecutor", "prosecutor.md"),
-        title: "Supreme prosecutor salt case interpretation",
-        subjects: ["official source", "protection regulation"],
-        entities: ["Official source", "Protection regulation"],
-        keywords: ["official", "source", "protection", "regulation"]
+        ...createGraphNode("source-help-center", "help-center.md"),
+        title: "Help center reference",
+        subjects: ["official source", "reference page"],
+        entities: ["Official source", "Reference page"],
+        keywords: ["official", "source", "reference", "page"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -183,14 +183,14 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "Zunyi heritage protection regulation",
-        type: "local regulation",
-        tags: ["effective"]
+        title: "Brand asset usage",
+        type: "guide",
+        tags: ["active"]
       },
       body: [
-        "# Zunyi heritage protection regulation",
+        "# Brand asset usage",
         "",
-        "This source describes cultural heritage protection in one city.",
+        "This source describes logo files, image usage, and review steps.",
         "",
         "[Official source](https://example.com/source)"
       ].join("\n"),
@@ -203,14 +203,14 @@ describe("file graph", () => {
   });
 
   it("keeps content-scoped relationships from specific body-derived subjects", async () => {
-    const source = createSourceFile("source-sanya-river", "sanya-river.md");
+    const source = createSourceFile("source-payment-callback", "payment-callback.md");
     const candidates = [
       {
-        ...createGraphNode("source-sanya-river-ecology", "sanya-river-ecology.md"),
-        title: "三亚市河道生态保护管理条例",
-        subjects: ["三亚市", "河道生态保护"],
-        entities: ["三亚市", "河道"],
-        keywords: ["三亚市", "河道", "生态保护", "监督管理"]
+        ...createGraphNode("source-payment-callback-retry", "payment-callback-retry.md"),
+        title: "支付回调重试指南",
+        subjects: ["支付回调", "重试策略"],
+        entities: ["支付回调"],
+        keywords: ["支付回调", "重试策略", "幂等处理"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -221,29 +221,29 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "三亚市河道管理条例",
-        type: "local regulation",
+        title: "支付回调配置指南",
+        type: "guide",
         tags: []
       },
       body:
-        "# 三亚市河道管理条例\n\n本文件规定三亚市河道保护、生态治理、建设、养护和监督管理，并与三亚市河道生态保护管理条例衔接。",
+        "# 支付回调配置指南\n\n本文介绍支付回调地址、签名校验、幂等处理和失败重试，并与支付回调重试指南衔接。",
       suggestions: null,
       pageSize: 10
     });
 
     expect(result.edgeCount).toBe(1);
-    expect(storedEdges[0]?.toFileId).toBe("source-sanya-river-ecology");
+    expect(storedEdges[0]?.toFileId).toBe("source-payment-callback-retry");
   });
 
   it("connects related Chinese files through body-derived key phrase overlap", async () => {
-    const source = createSourceFile("source-rural-road-maintenance", "rural-road-maintenance.md");
+    const source = createSourceFile("source-user-permission-setup", "user-permission-setup.md");
     const candidates = [
       {
-        ...createGraphNode("source-rural-road-management", "rural-road-management.md"),
-        title: "农村公路管理规定",
-        subjects: ["农村公路管理"],
-        entities: ["农村公路"],
-        keywords: ["农村公路", "公路养护", "交通运输"]
+        ...createGraphNode("source-user-permission-audit", "user-permission-audit.md"),
+        title: "用户权限审计指南",
+        subjects: ["用户权限审计"],
+        entities: ["用户权限"],
+        keywords: ["用户权限", "权限审计", "访问控制"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -254,36 +254,36 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "农村公路养护办法",
-        type: "local regulation",
+        title: "用户权限配置指南",
+        type: "guide",
         tags: []
       },
       body: [
-        "# 农村公路养护办法",
+        "# 用户权限配置指南",
         "",
-        "本文件规定农村公路建设、养护资金、路产路权保护和交通运输主管部门监督管理。",
-        "农村公路养护质量评定、养护责任和安全保障应当与农村公路管理制度衔接。"
+        "本文介绍用户权限分配、角色继承、访问控制和审批流程。",
+        "用户权限配置需要与用户权限审计制度衔接。"
       ].join("\n"),
       suggestions: null,
       pageSize: 10
     });
 
     expect(result.edgeCount).toBe(1);
-    expect(storedEdges[0]?.toFileId).toBe("source-rural-road-management");
+    expect(storedEdges[0]?.toFileId).toBe("source-user-permission-audit");
     expect(storedEdges[0]?.evidence).toMatchObject({
-      matchedTerms: expect.arrayContaining(["农村公路"])
+      matchedTerms: expect.arrayContaining(["用户权限"])
     });
   });
 
-  it("does not publish cross-scope relationships from boilerplate body phrases", async () => {
-    const source = createSourceFile("source-qitaihe-park", "qitaihe-park.md");
+  it("does not connect unrelated files through generic document phrases", async () => {
+    const source = createSourceFile("source-payment", "payment.md");
     const candidates = [
       {
-        ...createGraphNode("source-zunyi-gas", "zunyi-gas.md"),
-        title: "遵义市城镇燃气安全管理条例",
-        subjects: ["遵义市", "城镇燃气安全管理"],
-        entities: ["遵义市", "城镇燃气安全管理"],
-        keywords: ["结合本市实际", "制定本条例", "法规的规定"]
+        ...createGraphNode("source-release", "release.md"),
+        title: "发布说明",
+        subjects: ["发布说明", "文档", "当前版本"],
+        entities: ["发布说明"],
+        keywords: ["文档", "当前版本", "相关内容"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -294,12 +294,88 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "七台河市城市公园条例",
-        type: "local regulation",
+        title: "支付配置指南",
+        type: "guide",
+        tags: []
+      },
+      body: [
+        "# 支付配置指南",
+        "",
+        "本文介绍支付配置、回调地址、密钥轮换和错误排查。",
+        "当前文档提供配置步骤和常见问题。"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("keeps same-subject Chinese files when the shared phrase names the subject", async () => {
+    const source = createSourceFile("source-payment-setup", "payment-setup.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-payment-troubleshooting", "payment-troubleshooting.md"),
+        title: "支付配置故障排查",
+        subjects: ["支付配置故障排查", "支付配置"],
+        entities: ["支付配置"],
+        keywords: ["支付配置", "回调地址", "密钥轮换"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "支付配置指南",
+        type: "guide",
+        tags: []
+      },
+      body: [
+        "# 支付配置指南",
+        "",
+        "本文介绍支付配置、回调地址、密钥轮换和错误排查。"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-payment-troubleshooting",
+      relationType: "shared_key_phrase"
+    });
+  });
+
+  it("does not publish cross-scope relationships from boilerplate body phrases", async () => {
+    const source = createSourceFile("source-product-roadmap", "product-roadmap.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-support-manual", "support-manual.md"),
+        title: "客户支持手册",
+        subjects: ["客户支持", "文档"],
+        entities: ["客户支持"],
+        keywords: ["本文档", "相关信息", "当前内容"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "产品路线图",
+        type: "roadmap",
         tags: []
       },
       body:
-        "# 七台河市城市公园条例\n\n为了加强城市公园管理，根据有关法律法规的规定，结合本市实际，制定本条例。",
+        "# 产品路线图\n\n本文档提供当前内容和相关信息，用于说明后续计划和参考事项。",
       suggestions: null,
       pageSize: 10
     });
@@ -309,14 +385,14 @@ describe("file graph", () => {
   });
 
   it("does not promote model related-link hints to explicit references without content evidence", async () => {
-    const source = createSourceFile("source-hunan-traffic", "hunan-traffic.md");
+    const source = createSourceFile("source-procurement-approval", "procurement-approval.md");
     const candidates = [
       {
-        ...createGraphNode("source-hunan-seed", "hunan-seed.md"),
-        title: "《湖南省实施<中华人民共和国种子法>办法》",
-        subjects: ["湖南省", "种子法"],
-        entities: ["湖南省", "种子"],
-        keywords: ["湖南省", "种子", "农业"]
+        ...createGraphNode("source-onboarding-handbook", "onboarding-handbook.md"),
+        title: "员工入职手册",
+        subjects: ["员工入职"],
+        entities: ["员工入职"],
+        keywords: ["入职流程", "账号开通", "培训安排"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -327,21 +403,21 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "《湖南省水上交通安全条例》",
-        type: "local regulation",
+        title: "采购审批流程",
+        type: "workflow",
         tags: []
       },
-      body: "# 《湖南省水上交通安全条例》\n\n本文件规定水上交通安全、船舶航行和港口监督管理。",
+      body: "# 采购审批流程\n\n本文介绍采购申请、预算复核、审批节点和供应商确认。",
       suggestions: {
-        type: "local regulation",
-        title: "《湖南省水上交通安全条例》",
+        type: "workflow",
+        title: "采购审批流程",
         description: "",
         tags: [],
         keywords: [],
         related_links: [
           {
-            title: "《湖南省实施<中华人民共和国种子法>办法》",
-            path: "pages/hunan-seed.md"
+            title: "员工入职手册",
+            path: "pages/onboarding-handbook.md"
           }
         ]
       },
@@ -353,14 +429,14 @@ describe("file graph", () => {
   });
 
   it("does not promote stale generated Related sections to explicit references", async () => {
-    const source = createSourceFile("source-hunan-traffic", "hunan-traffic.md");
+    const source = createSourceFile("source-procurement-approval", "procurement-approval.md");
     const candidates = [
       {
-        ...createGraphNode("source-hunan-seed", "hunan-seed.md"),
-        title: "《湖南省实施<中华人民共和国种子法>办法》",
-        subjects: ["湖南省", "种子法"],
-        entities: ["湖南省", "种子"],
-        keywords: ["湖南省", "种子", "农业"]
+        ...createGraphNode("source-onboarding-handbook", "onboarding-handbook.md"),
+        title: "员工入职手册",
+        subjects: ["员工入职"],
+        entities: ["员工入职"],
+        keywords: ["入职流程", "账号开通", "培训安排"]
       }
     ];
     const storedEdges: OkfGraphEdge[] = [];
@@ -371,18 +447,18 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "《湖南省水上交通安全条例》",
-        type: "local regulation",
+        title: "采购审批流程",
+        type: "workflow",
         tags: []
       },
       body: [
-        "# 《湖南省水上交通安全条例》",
+        "# 采购审批流程",
         "",
-        "本文件规定水上交通安全、船舶航行和港口监督管理。",
+        "本文介绍采购申请、预算复核、审批节点和供应商确认。",
         "",
         "## Related",
         "",
-        "- [《湖南省实施<中华人民共和国种子法>办法》](hunan-seed.md)"
+        "- [员工入职手册](onboarding-handbook.md)"
       ].join("\n"),
       suggestions: null,
       pageSize: 10
@@ -468,6 +544,209 @@ describe("file graph", () => {
                     relationType: "title_mention",
                     weight: 0,
                     reason: "The title mention is not enough evidence."
+                  }
+                ]
+              })
+            })
+          }
+        }
+      }
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not publish candidates omitted by model confirmation output", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const candidates = [createGraphNode("source-related", "related.md")];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "page",
+        tags: []
+      },
+      body: "# Current\n\nThis file mentions related.",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: JSON.stringify({
+                relationships: []
+              })
+            })
+          }
+        }
+      }
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not publish model-confirmed relationships with non-generic relation types", async () => {
+    const source = createSourceFile("source-payment-callback", "payment-callback.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-payment-retry", "payment-retry.md"),
+        title: "支付回调重试指南",
+        subjects: ["支付回调"],
+        entities: ["支付回调"],
+        keywords: ["支付回调", "重试策略"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "支付回调配置指南",
+        type: "guide",
+        tags: []
+      },
+      body: "# 支付回调配置指南\n\n本文介绍支付回调重试指南、签名校验、幂等处理和失败重试。",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: JSON.stringify({
+                relationships: [
+                  {
+                    targetFileId: "source-payment-retry",
+                    accepted: true,
+                    relationType: "same_region",
+                    weight: 0.85,
+                    reason: "Broad grouping is not enough."
+                  }
+                ]
+              })
+            })
+          }
+        }
+      }
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(result.warnings.join("\n")).toContain("Graph relationship confirmation failed local schema validation");
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not let model confirmation upgrade weak shared phrase edges", async () => {
+    const source = createSourceFile("source-payment-setup", "payment-setup.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-payment-troubleshooting", "payment-troubleshooting.md"),
+        title: "支付配置故障排查",
+        subjects: ["支付配置故障排查", "支付配置"],
+        entities: ["支付配置"],
+        keywords: ["支付配置", "回调地址", "密钥轮换"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "支付配置指南",
+        type: "guide",
+        tags: []
+      },
+      body: "# 支付配置指南\n\n本文介绍支付配置、回调地址、密钥轮换和错误排查。",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => {
+              throw new Error("Weak phrase edges must not be sent to the model.");
+            }
+          }
+        }
+      }
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("rejects model confirmations that change the candidate relationship type", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-payment-retry", "payment-retry.md"),
+        title: "Payment Retry"
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "guide",
+        tags: []
+      },
+      body: "# Current\n\nRead Payment Retry for failure handling.",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => ({
+              status: "completed",
+              output_text: JSON.stringify({
+                relationships: [
+                  {
+                    targetFileId: "source-payment-retry",
+                    accepted: true,
+                    relationType: "same_subject",
+                    weight: 0.9,
+                    reason: "The model tried to change the deterministic relationship type."
                   }
                 ]
               })

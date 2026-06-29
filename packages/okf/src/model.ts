@@ -59,6 +59,20 @@ export const MODEL_SUGGESTION_SCHEMA = {
   }
 } as const;
 
+export const GRAPH_RELATIONSHIP_TYPES = [
+  "explicit_reference",
+  "title_mention",
+  "model_related_link",
+  "same_subject",
+  "same_entity",
+  "version_relationship",
+  "prerequisite",
+  "background",
+  "adjacent_process",
+  "shared_subject",
+  "shared_entity"
+] as const;
+
 export const GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -78,7 +92,8 @@ export const GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA = {
             type: "boolean"
           },
           relationType: {
-            type: "string"
+            type: "string",
+            enum: GRAPH_RELATIONSHIP_TYPES
           },
           weight: {
             type: "number",
@@ -109,7 +124,7 @@ export type ModelSuggestions = {
 export type ModelSuggestionRequest = {
   model: string;
   instructions: string;
-  input: string;
+  input: ModelRequestInput;
   text: {
     format: {
       type: "json_schema";
@@ -133,7 +148,7 @@ export type GraphRelationshipConfirmation = {
 export type GraphRelationshipConfirmationRequest = {
   model: string;
   instructions: string;
-  input: string;
+  input: ModelRequestInput;
   text: {
     format: {
       type: "json_schema";
@@ -145,6 +160,14 @@ export type GraphRelationshipConfirmationRequest = {
   };
   store: false;
 };
+
+export type ModelRequestInput = Array<{
+  role: "user";
+  content: Array<{
+    type: "input_text";
+    text: string;
+  }>;
+}>;
 
 export type BuildModelSuggestionRequestInput = {
   modelName: string;
@@ -168,7 +191,10 @@ export type GraphRelationshipConfirmationResult = {
   warnings: string[];
 };
 
+export type ModelApiMode = "responses" | "chat_completions";
+
 export type OpenAIResponsesClient = {
+  apiMode?: "responses";
   responses: {
     create: (
       request: ModelSuggestionRequest | GraphRelationshipConfirmationRequest
@@ -176,7 +202,31 @@ export type OpenAIResponsesClient = {
   };
 };
 
+export type ChatCompletionsJsonRequest = {
+  model: string;
+  messages: Array<{
+    role: "system" | "user";
+    content: string;
+  }>;
+  response_format: {
+    type: "json_object";
+  };
+  stream: false;
+};
+
+export type OpenAIChatCompletionsClient = {
+  apiMode: "chat_completions";
+  chat: {
+    completions: {
+      create: (request: ChatCompletionsJsonRequest) => Promise<unknown>;
+    };
+  };
+};
+
+export type OpenAIModelClient = OpenAIResponsesClient | OpenAIChatCompletionsClient;
+
 export type OpenAIModelClientConfig = {
+  apiMode?: ModelApiMode | undefined;
   apiKey: string;
   baseUrl: string;
   requestTimeoutMs: number;
@@ -220,7 +270,7 @@ const graphRelationshipConfirmationSchema = z
         .object({
           targetFileId: z.string(),
           accepted: z.boolean(),
-          relationType: z.string(),
+          relationType: z.enum(GRAPH_RELATIONSHIP_TYPES),
           weight: z.number().min(0).max(1),
           reason: z.string()
         })
@@ -240,6 +290,29 @@ export function createOpenAIResponsesClient(
   }) as OpenAIResponsesClient;
 }
 
+export function createOpenAIModelClient(
+  config: OpenAIModelClientConfig
+): OpenAIModelClient {
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.baseUrl,
+    timeout: config.requestTimeoutMs,
+    maxRetries: 0
+  });
+
+  if (config.apiMode === "chat_completions") {
+    return {
+      apiMode: "chat_completions",
+      chat: client.chat as OpenAIChatCompletionsClient["chat"]
+    };
+  }
+
+  return {
+    apiMode: "responses",
+    responses: client.responses as OpenAIResponsesClient["responses"]
+  };
+}
+
 export function buildModelSuggestionRequest(
   input: BuildModelSuggestionRequestInput
 ): ModelSuggestionRequest {
@@ -250,28 +323,40 @@ export function buildModelSuggestionRequest(
     contextWindowTokens: input.contextWindowTokens
   });
 
+  const userInput = [
+    `Title: ${input.title}`,
+    ...(input.repair
+      ? ["", "Previous attempt error:", sanitizeRepairText(input.repair.previousError)]
+      : []),
+    "",
+    "Candidate related bundle paths:",
+    ...input.candidatePaths.map((path) => `- ${path}`),
+    "",
+    sourceView.body
+  ].join("\n");
+
   return {
     model: input.modelName,
     instructions: [
-      "Suggest optional presentation metadata for an OKF-style Markdown knowledge bundle.",
+      "You are a Markdown file analysis assistant.",
+      "Task: read one uploaded Markdown file and return safe suggestions for generated presentation and navigation fields.",
+      "Use only the provided title, candidate related paths, and Markdown content.",
       "Return exactly one JSON object with all required keys: title, type, description, tags, related_links, and keywords.",
       "Return raw JSON only. Do not wrap the JSON in Markdown fences and do not include explanatory text.",
+      "Inside JSON string values, avoid ASCII double quote characters; use plain words or non-ASCII quotation marks when a quoted term is needed.",
       "Do not omit any required key.",
+      'Example output structure: {"title":"","type":"","description":"","tags":[],"related_links":[{"path":"","title":""}],"keywords":[]}.',
+      "For title, use the provided title when it is clear. If the title is missing or weak, derive a short title from the Markdown content.",
+      "For type, suggest a generic document type from the visible content. Use an empty string when uncertain.",
+      "For description, write a short factual summary grounded in the Markdown content.",
+      "For tags and keywords, return short topic labels found or clearly supported by the Markdown content.",
+      "For related_links, include only useful related files from the provided candidate related paths.",
+      "Every related_links.path must exactly match one provided candidate path.",
       "Use an empty string or empty array when no safe suggestion is available.",
-      "Suggest title and type only as generic fallbacks when the source does not provide them.",
-      "Do not create or modify factual metadata such as resource, timestamp, official identifiers, source URLs, hashes, status, owner fields, or other domain-specific frontmatter."
+      "Do not invent facts, dates, identifiers, status values, source URLs, citations, owners, departments, locations, or user-provided metadata fields.",
+      "Do not create or modify factual metadata such as resource, timestamp, official identifiers, source URLs, hashes, status, owner fields, or other frontmatter fields from the source file."
     ].join(" "),
-    input: [
-      `Title: ${input.title}`,
-      ...(input.repair
-        ? ["", "Previous attempt error:", sanitizeRepairText(input.repair.previousError)]
-        : []),
-      "",
-      "Candidate related bundle paths:",
-      ...input.candidatePaths.map((path) => `- ${path}`),
-      "",
-      sourceView.body
-    ].join("\n"),
+    input: createUserTextInput(userInput),
     text: {
       format: {
         type: "json_schema",
@@ -315,38 +400,52 @@ export function buildGraphRelationshipConfirmationRequest(
     };
   });
 
+  const userInput = [
+    `Current file ID: ${input.currentFile.fileId}`,
+    `Current path: ${input.currentFile.path}`,
+    `Current title: ${input.currentFile.title}`,
+    input.currentFile.type ? `Current type: ${input.currentFile.type}` : "",
+    input.currentFile.summary ? `Current summary: ${input.currentFile.summary}` : "",
+    input.currentFile.subjects?.length ? `Current subjects: ${input.currentFile.subjects.join(", ")}` : "",
+    input.currentFile.tags?.length ? `Current tags: ${input.currentFile.tags.join(", ")}` : "",
+    input.currentFile.keywords?.length ? `Current keywords: ${input.currentFile.keywords.join(", ")}` : "",
+    input.currentFile.entities?.length ? `Current entities: ${input.currentFile.entities.join(", ")}` : "",
+    ...(input.repair
+      ? ["", "Previous attempt error:", sanitizeRepairText(input.repair.previousError)]
+      : []),
+    "",
+    "Candidate relationships:",
+    JSON.stringify(candidateCards, null, 2),
+    "",
+    sourceView.body
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+
   return {
     model: input.modelName,
     instructions: [
-      "Confirm file graph relationships for an OKF-style Markdown knowledge bundle.",
-      "You must only evaluate the provided candidate relationships.",
-      "Do not invent target files, target paths, metadata fields, or facts.",
-      "Return exactly one JSON object with a relationships array.",
-      "For each item, set accepted to true or false and keep targetFileId from the candidate.",
-      "Use a short safe reason that can be shown to developers and Agents.",
-      "Return raw JSON only. Do not wrap the JSON in Markdown fences and do not include explanatory text."
+      "You are a Markdown file relationship reviewer.",
+      "Task: review candidate relationships between the current Markdown file and other Markdown files.",
+      "Evaluate only the provided candidate relationships.",
+      "Use only the current file metadata, current Markdown content, candidate relationship records, and candidate file summaries.",
+      "Return exactly one JSON object with one key: relationships.",
+      "Return raw JSON only. Do not wrap the JSON in Markdown fences and do not include explanatory text.",
+      "Inside JSON string values, avoid ASCII double quote characters; use plain words or non-ASCII quotation marks when a quoted term is needed.",
+      'Return this JSON structure: {"relationships":[{"targetFileId":"source-file-id-from-candidate","accepted":true,"relationType":"same_subject","weight":0.85,"reason":"Short factual reason based on visible evidence."}]}.',
+      'If no candidate relationship is strong enough, return {"relationships":[]}.',
+      "For each returned item, keep targetFileId exactly as provided.",
+      `Use only these relationType values: ${GRAPH_RELATIONSHIP_TYPES.join(", ")}.`,
+      "For accepted relationships, relationType must exactly match the candidateRelationType value from that candidate.",
+      "Set accepted to true only when there is clear content evidence that the target file helps readers or AI agents continue exploring the current file.",
+      "Accept relationships supported by direct mention, same specific subject, same entity, version relationship, prerequisite or background relationship, adjacent process, or clearly connected topic.",
+      "Reject weak relationships based only on generic shared words, broad category matches, dates, status words, missing evidence, or product-specific assumptions.",
+      "Do not create relationship labels for broad metadata groups, locations, teams, departments, document status, dates, or file type alone.",
+      "weight must be between 0 and 1.",
+      "reason must be short, factual, and based on visible evidence.",
+      "Do not invent target files, target paths, metadata fields, facts, citations, or hidden context."
     ].join(" "),
-    input: [
-      `Current file ID: ${input.currentFile.fileId}`,
-      `Current path: ${input.currentFile.path}`,
-      `Current title: ${input.currentFile.title}`,
-      input.currentFile.type ? `Current type: ${input.currentFile.type}` : "",
-      input.currentFile.summary ? `Current summary: ${input.currentFile.summary}` : "",
-      input.currentFile.subjects?.length ? `Current subjects: ${input.currentFile.subjects.join(", ")}` : "",
-      input.currentFile.tags?.length ? `Current tags: ${input.currentFile.tags.join(", ")}` : "",
-      input.currentFile.keywords?.length ? `Current keywords: ${input.currentFile.keywords.join(", ")}` : "",
-      input.currentFile.entities?.length ? `Current entities: ${input.currentFile.entities.join(", ")}` : "",
-      ...(input.repair
-        ? ["", "Previous attempt error:", sanitizeRepairText(input.repair.previousError)]
-        : []),
-      "",
-      "Candidate relationships:",
-      JSON.stringify(candidateCards, null, 2),
-      "",
-      sourceView.body
-    ]
-      .filter((line) => line !== "")
-      .join("\n"),
+    input: createUserTextInput(userInput),
     text: {
       format: {
         type: "json_schema",
@@ -361,6 +460,20 @@ export function buildGraphRelationshipConfirmationRequest(
   };
 }
 
+function createUserTextInput(text: string): ModelRequestInput {
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text
+        }
+      ]
+    }
+  ];
+}
+
 export function validateModelSuggestions(input: unknown): ModelSuggestions {
   return modelSuggestionsSchema.parse(input);
 }
@@ -373,7 +486,7 @@ export function validateGraphRelationshipConfirmations(
 
 export async function requestModelSuggestions(
   input: BuildModelSuggestionRequestInput & {
-    client: OpenAIResponsesClient;
+    client: OpenAIModelClient;
     receiveTimeouts: ModelReceiveTimeouts;
   }
 ): Promise<ModelSuggestionResult> {
@@ -406,7 +519,7 @@ export async function requestModelSuggestions(
 
 export async function requestGraphRelationshipConfirmations(
   input: BuildGraphRelationshipConfirmationRequestInput & {
-    client: OpenAIResponsesClient;
+    client: OpenAIModelClient;
     receiveTimeouts: ModelReceiveTimeouts;
   }
 ): Promise<GraphRelationshipConfirmationResult> {
@@ -455,14 +568,14 @@ function warning(message: string): ModelSuggestionResult {
 }
 
 async function runModelSuggestionAttempt(input: {
-  client: OpenAIResponsesClient;
+  client: OpenAIModelClient;
   request: ModelSuggestionRequest;
   receiveTimeouts: ModelReceiveTimeouts;
 }): Promise<ModelSuggestionResult> {
   try {
     const response = await receiveWithProgressTimeout({
       timeouts: input.receiveTimeouts,
-      start: () => input.client.responses.create(input.request)
+      start: () => sendModelRequest(input.client, input.request)
     });
 
     if (containsRefusal(response)) {
@@ -504,14 +617,14 @@ async function runModelSuggestionAttempt(input: {
 }
 
 async function runGraphRelationshipConfirmationAttempt(input: {
-  client: OpenAIResponsesClient;
+  client: OpenAIModelClient;
   request: GraphRelationshipConfirmationRequest;
   receiveTimeouts: ModelReceiveTimeouts;
 }): Promise<GraphRelationshipConfirmationResult> {
   try {
     const response = await receiveWithProgressTimeout({
       timeouts: input.receiveTimeouts,
-      start: () => input.client.responses.create(input.request)
+      start: () => sendModelRequest(input.client, input.request)
     });
 
     if (containsRefusal(response)) {
@@ -535,10 +648,10 @@ async function runGraphRelationshipConfirmationAttempt(input: {
       return graphWarning("Graph relationship confirmation failed local schema validation");
     }
 
-      return {
-        confirmations: validateGraphRelationshipConfirmations(parseModelOutputJson(outputText)),
-        warnings: []
-      };
+    return {
+      confirmations: validateGraphRelationshipConfirmations(parseModelOutputJson(outputText)),
+      warnings: []
+    };
   } catch (error) {
     if (error instanceof z.ZodError) {
       return graphWarning(
@@ -554,6 +667,49 @@ async function runGraphRelationshipConfirmationAttempt(input: {
 
     return graphWarning(`Model provider error: ${redactSecrets(error)}`);
   }
+}
+
+function sendModelRequest(
+  client: OpenAIModelClient,
+  request: ModelSuggestionRequest | GraphRelationshipConfirmationRequest
+): Promise<unknown> {
+  if (isChatCompletionsClient(client)) {
+    return client.chat.completions.create(toChatCompletionsJsonRequest(request));
+  }
+
+  return client.responses.create(request);
+}
+
+function isChatCompletionsClient(client: OpenAIModelClient): client is OpenAIChatCompletionsClient {
+  return client.apiMode === "chat_completions";
+}
+
+function toChatCompletionsJsonRequest(
+  request: ModelSuggestionRequest | GraphRelationshipConfirmationRequest
+): ChatCompletionsJsonRequest {
+  return {
+    model: request.model,
+    messages: [
+      {
+        role: "system",
+        content: request.instructions
+      },
+      {
+        role: "user",
+        content: readModelInputText(request.input)
+      }
+    ],
+    response_format: {
+      type: "json_object"
+    },
+    stream: false
+  };
+}
+
+function readModelInputText(input: ModelRequestInput): string {
+  return input
+    .flatMap((item) => item.content.map((part) => part.text))
+    .join("\n");
 }
 
 function graphWarning(message: string): GraphRelationshipConfirmationResult {
@@ -616,27 +772,34 @@ function containsRefusal(response: unknown): boolean {
 
   const output = (response as { output?: unknown }).output;
 
-  if (!Array.isArray(output)) {
-    return false;
+  if (Array.isArray(output)) {
+    return output.some((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+
+      const content = (item as { content?: unknown }).content;
+
+      if (!Array.isArray(content)) {
+        return false;
+      }
+
+      return content.some(
+        (part) =>
+          typeof part === "object" &&
+          part !== null &&
+          (part as { type?: unknown }).type === "refusal"
+      );
+    });
   }
 
-  return output.some((item) => {
-    if (!item || typeof item !== "object") {
-      return false;
-    }
+  const choices = Array.isArray((response as { choices?: unknown }).choices)
+    ? (response as { choices: unknown[] }).choices
+    : [];
 
-    const content = (item as { content?: unknown }).content;
-
-    if (!Array.isArray(content)) {
-      return false;
-    }
-
-    return content.some(
-      (part) =>
-        typeof part === "object" &&
-        part !== null &&
-        (part as { type?: unknown }).type === "refusal"
-    );
+  return choices.some((choice) => {
+    const message = readRecord(readRecord(choice)?.message);
+    return typeof message?.refusal === "string" && message.refusal.trim().length > 0;
   });
 }
 

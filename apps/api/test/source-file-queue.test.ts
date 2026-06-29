@@ -762,6 +762,103 @@ describe("source file queue", () => {
     expect(records.events.some((event) => event.stageKey === "release_activation")).toBe(true);
   });
 
+  it("keeps source descriptions while retaining model suggestions", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const suggestedDescription =
+      "Guide explains the practical setup flow, validation steps, and release checks for operators.";
+    const sourceFileIds = await acceptUploadSourceFiles({
+      files: [
+        {
+          fileName: "guide.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Guide\ndescription: Guide\ntype: page\n---\n# Guide\n\nSetup flow."
+          ),
+          content:
+            "---\ntitle: Guide\ndescription: Guide\ntype: page\n---\n# Guide\n\nSetup flow."
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      createSourceFiles: records.repositories.files!.createSourceFiles!
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, {
+      apiMode: "responses",
+      client: {
+        responses: {
+          create: async () => ({
+            status: "completed",
+            output_text: JSON.stringify({
+              description: suggestedDescription,
+              title: "",
+              type: "",
+              tags: ["operations"],
+              related_links: [],
+              keywords: ["setup", "validation"]
+            })
+          })
+        }
+      },
+      modelName: "gpt-test",
+      contextWindowTokens: 200_000,
+      receiveTimeouts: {
+        maxMs: 5_000,
+        idleMs: 5_000
+      },
+      suggestionConcurrency: 1,
+      transientRetryDelayMs: 1
+    });
+
+    await processor?.processFile({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      sourceFileId,
+      generatedAt: now,
+      batchSize: 20,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1
+    });
+
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+    await publicationService?.publishNow({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 20,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      },
+      reason: "bootstrap"
+    });
+
+    const page = records.bundleFiles.find((file) => file.logicalPath === "pages/guide.md");
+
+    expect(records.sources.get(sourceFileId)?.modelSuggestions?.description).toBe(
+      suggestedDescription
+    );
+    expect(page?.description).toBe("Guide");
+    expect(page?.frontmatter.description).toBe("Guide");
+  });
+
   it("continues a reclaimed running source file after worker restart", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
@@ -814,7 +911,7 @@ describe("source file queue", () => {
     expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(1);
   });
 
-  it("fails the source file when enabled model suggestions are invalid", async () => {
+  it("continues source file processing when enabled model suggestions are invalid", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
@@ -838,6 +935,7 @@ describe("source file queue", () => {
     }
 
     const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, {
+      apiMode: "responses",
       client: {
         responses: {
           create: async () => ({
@@ -866,23 +964,24 @@ describe("source file queue", () => {
         cursorTtlSeconds: 900,
         fileProcessingConcurrency: 1
       })
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({
+      id: sourceFileId,
+      processingStatus: "completed"
+    });
 
-    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("failed");
-    expect(records.sources.get(sourceFileId)?.processingErrorCode).toBe(
-      "MODEL_SUGGESTION_FAILED"
-    );
+    expect(records.sources.get(sourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(sourceFileId)?.processingErrorCode).toBeNull();
     expect(records.sources.get(sourceFileId)?.modelSuggestions).toBeNull();
     expect(
       records.events.some(
-        (event) => event.stageKey === "llm_suggestion" && event.severity === "error"
+        (event) => event.stageKey === "llm_suggestion" && event.severity === "warning"
       )
     ).toBe(true);
-    expect(records.graphNodes.has(sourceFileId)).toBe(false);
-    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(0);
+    expect(records.graphNodes.has(sourceFileId)).toBe(true);
+    expect(records.workerJobs.filter((job) => job.kind === "publication")).toHaveLength(1);
   });
 
-  it("fails only the relevant source file when model assistance throws", async () => {
+  it("keeps processing each source file when model assistance returns warnings", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
@@ -916,6 +1015,7 @@ describe("source file queue", () => {
 
     let modelCallCount = 0;
     const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, {
+      apiMode: "responses",
       client: {
         responses: {
           create: async () => {
@@ -958,7 +1058,10 @@ describe("source file queue", () => {
         cursorTtlSeconds: 900,
         fileProcessingConcurrency: 1
       })
-    ).rejects.toThrow("Model service unavailable");
+    ).resolves.toMatchObject({
+      id: failedSourceFileId,
+      processingStatus: "completed"
+    });
     await expect(
       processor?.processFile({
         knowledgeBaseId: records.knowledgeBase.id,
@@ -974,12 +1077,11 @@ describe("source file queue", () => {
       processingStatus: "completed"
     });
 
-    expect(records.sources.get(failedSourceFileId)?.processingStatus).toBe("failed");
-    expect(records.sources.get(failedSourceFileId)?.processingErrorCode).toBe(
-      "MODEL_SUGGESTION_FAILED"
-    );
+    expect(records.sources.get(failedSourceFileId)?.processingStatus).toBe("completed");
+    expect(records.sources.get(failedSourceFileId)?.processingErrorCode).toBeNull();
     expect(records.sources.get(failedSourceFileId)?.generatedOutputStatus).toBe("pending");
     expect(records.sources.get(successfulSourceFileId)?.processingStatus).toBe("completed");
+    expect(records.graphNodes.has(failedSourceFileId)).toBe(true);
     expect(records.graphNodes.has(successfulSourceFileId)).toBe(true);
   });
 

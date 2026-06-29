@@ -95,7 +95,7 @@ async function main() {
 
     report.validationRun = {
       knowledgeBaseId,
-      uploadedLegalFileCount: upload.files.length,
+      uploadedMarkdownFileCount: upload.files.length,
       completedSourceFileCount: sourceFiles.length,
       directSurface: config.openApiBaseUrl,
       demoSurface: config.demoBaseUrl,

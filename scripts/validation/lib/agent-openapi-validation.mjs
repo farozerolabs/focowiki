@@ -1,13 +1,13 @@
 export const MIN_AGENT_VALIDATION_SAMPLE_COUNT = 50;
 export const DEFAULT_AGENT_PROCESSING_TIMEOUT_MS = 1_800_000;
 export const AGENT_PROCESSING_TIMEOUT_PER_SAMPLE_MS = 90_000;
-export const AGENT_PERSONAS = ["generic", "legal-domain"];
-export const LEGAL_SCENARIO_TYPES = [
+export const AGENT_PERSONAS = ["generic", "domain"];
+export const AGENT_SCENARIO_TYPES = [
   "precise_lookup",
-  "status_or_effective_date",
+  "metadata_check",
   "comparison",
-  "regional_or_issuer_exploration",
-  "related_law_traversal",
+  "topic_or_source_exploration",
+  "related_file_traversal",
   "insufficient_evidence"
 ];
 
@@ -39,7 +39,7 @@ export function buildAgentScenarioPlan(samples) {
   requireValidationSampleCount(samples);
   const byTitleLength = [...samples].sort((left, right) => right.title.length - left.title.length);
   const duplicated = firstDuplicatedTitleSamples(samples);
-  const regional = samples.find((sample) => /地方|省|市|自治区|人大|常委会/.test(`${sample.category} ${sample.title}`)) ?? samples[3];
+  const topical = samples.find((sample) => sample.category || sample.type) ?? samples[3];
   const related = samples.find((sample) => sample.status && sample.type) ?? samples[4];
   const baseScenarios = [
     {
@@ -49,9 +49,9 @@ export function buildAgentScenarioPlan(samples) {
       expectedVisibleClues: [samples[0].title]
     },
     {
-      scenarioType: "status_or_effective_date",
+      scenarioType: "metadata_check",
       sample: samples[1],
-      question: `Check the status or date metadata for "${samples[1].title}" using generated files only.`,
+      question: `Check visible metadata for "${samples[1].title}" using generated files only.`,
       expectedVisibleClues: [samples[1].title, samples[1].status || samples[1].publicationDate || samples[1].type]
     },
     {
@@ -62,13 +62,13 @@ export function buildAgentScenarioPlan(samples) {
       expectedVisibleClues: [(duplicated[0] ?? byTitleLength[0]).title, (duplicated[1] ?? byTitleLength[1]).title]
     },
     {
-      scenarioType: "regional_or_issuer_exploration",
-      sample: regional,
-      question: `Explore regional or issuer clues for "${regional.title}" and identify supporting generated files.`,
-      expectedVisibleClues: [regional.title, regional.category || regional.type]
+      scenarioType: "topic_or_source_exploration",
+      sample: topical,
+      question: `Explore topic or source clues for "${topical.title}" and identify supporting generated files.`,
+      expectedVisibleClues: [topical.title, topical.category || topical.type]
     },
     {
-      scenarioType: "related_law_traversal",
+      scenarioType: "related_file_traversal",
       sample: related,
       question: `Start from "${related.title}" and follow visible graph or related-file evidence to another generated page.`,
       expectedVisibleClues: [related.title, related.type]
@@ -86,8 +86,8 @@ export function buildAgentScenarioPlan(samples) {
     baseScenarios.map((scenario) => ({
       persona,
       ...scenario,
-      question: persona === "legal-domain"
-        ? `${scenario.question} Use legal reading order: title, status, date, issuer or region, then related laws.`
+      question: persona === "domain"
+        ? `${scenario.question} Use the document's visible title, metadata, source clues, and related files before answering.`
         : scenario.question
     }))
   );

@@ -31,7 +31,8 @@ export async function processSourceFileModelStage(input: {
     repositories: input.repositories,
     knowledgeBaseId: input.knowledgeBaseId,
     modelName: input.modelAssistance?.modelName ?? null,
-    modelConfigId: input.modelAssistance?.modelConfigId ?? null
+    modelConfigId: input.modelAssistance?.modelConfigId ?? null,
+    apiMode: input.modelAssistance?.apiMode ?? null
   });
 
   if (!input.modelAssistance) {
@@ -73,18 +74,9 @@ export async function processSourceFileModelStage(input: {
     suggestions
   });
 
-  if (!suggestions && result.warnings.length > 0) {
-    throw new Error(summarizeModelSuggestionWarnings(result.warnings));
-  }
-
   return {
     suggestions,
     severity: result.warnings.length > 0 ? "warning" : "info",
     endedAt
   };
-}
-
-function summarizeModelSuggestionWarnings(warnings: string[]): string {
-  const summary = warnings.join(" | ").trim();
-  return summary ? summary.slice(0, 500) : "Model suggestions failed";
 }

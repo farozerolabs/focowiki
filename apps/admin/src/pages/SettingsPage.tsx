@@ -118,6 +118,8 @@ const uploadGenerationFields = [
   "storageConcurrency"
 ] as const satisfies readonly (keyof UploadGenerationSettings)[];
 
+const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
+
 const modelNumberFields = [
   "contextWindowTokens",
   "requestMaxTimeoutMs",
@@ -161,6 +163,7 @@ const uploadGenerationTipItems = uploadGenerationFields.map((field) => ({
 
 const modelTipItems = [
   "displayName",
+  "apiMode",
   "baseUrl",
   "apiKey",
   "modelName",
@@ -175,6 +178,7 @@ type RateLimitGroup = (typeof rateLimitGroups)[number];
 type WorkerField = (typeof workerFields)[number];
 type PublicationField = (typeof publicationFields)[number];
 type UploadGenerationField = (typeof uploadGenerationFields)[number];
+type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
 
 type EditableRateLimitSettings = Record<
@@ -191,6 +195,7 @@ type EditablePublicationSettings = {
 type EditableUploadGenerationSettings = Record<UploadGenerationField, EditableNumber>;
 type EditableModelForm = {
   displayName: string;
+  apiMode: ModelApiMode;
   baseUrl: string;
   apiKey: string;
   modelName: string;
@@ -620,12 +625,17 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                     </Button>
                   }
                 >
-                  <Table>
+                  <Table className="min-w-[1280px]">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>{t("settings.models.table.name")}</TableHead>
-                        <TableHead>{t("settings.models.table.model")}</TableHead>
-                        <TableHead>{t("settings.models.table.key")}</TableHead>
+                        <TableHead>{t("settings.fields.displayName")}</TableHead>
+                        <TableHead>{t("settings.fields.apiMode")}</TableHead>
+                        <TableHead>{t("settings.fields.baseUrl")}</TableHead>
+                        <TableHead>{t("settings.fields.apiKey")}</TableHead>
+                        <TableHead>{t("settings.fields.modelName")}</TableHead>
+                        {modelNumberFields.map((field) => (
+                          <TableHead key={field}>{t(`settings.fields.${field}`)}</TableHead>
+                        ))}
                         <TableHead>{t("settings.models.table.status")}</TableHead>
                         <TableHead>{t("settings.models.table.actions")}</TableHead>
                       </TableRow>
@@ -634,8 +644,13 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                       {data.models.map((model) => (
                         <TableRow key={model.id}>
                           <TableCell>{model.displayName}</TableCell>
-                          <TableCell>{model.modelName}</TableCell>
+                          <TableCell>{t(`settings.modelApiModes.${model.apiMode}`)}</TableCell>
+                          <TableCell>{model.baseUrl}</TableCell>
                           <TableCell>{model.apiKeyFingerprint}</TableCell>
+                          <TableCell>{model.modelName}</TableCell>
+                          {modelNumberFields.map((field) => (
+                            <TableCell key={field}>{model[field]}</TableCell>
+                          ))}
                           <TableCell>
                             {model.isActive ? t("settings.models.active") : t(`settings.models.status.${model.status}`)}
                           </TableCell>
@@ -719,6 +734,28 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                 required
                 onChange={(value) => setModelForm({ ...modelForm, displayName: value })}
               />
+              <Field>
+                <FieldLabel htmlFor="model-api-mode">
+                  <RequiredLabel label={t("settings.fields.apiMode")} required />
+                </FieldLabel>
+                <Select
+                  value={modelForm.apiMode}
+                  onValueChange={(value) =>
+                    setModelForm({ ...modelForm, apiMode: value as ModelApiMode })
+                  }
+                >
+                  <SelectTrigger id="model-api-mode">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelApiModes.map((mode) => (
+                      <SelectItem key={mode} value={mode}>
+                        {t(`settings.modelApiModes.${mode}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
               <TextField
                 id="model-base-url"
                 label={t("settings.fields.baseUrl")}
@@ -1037,6 +1074,7 @@ function buildModelPayload(
 
   return {
     displayName: input.displayName,
+    apiMode: input.apiMode,
     baseUrl: input.baseUrl,
     apiKey: input.apiKey,
     modelName: input.modelName,
@@ -1074,6 +1112,7 @@ function readRequiredInteger(value: EditableNumber, min = 1): number | null {
 function createEmptyModelForm(): EditableModelForm {
   return {
     displayName: "",
+    apiMode: "responses",
     baseUrl: "https://api.openai.com/v1",
     apiKey: "",
     modelName: "",

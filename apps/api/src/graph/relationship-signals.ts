@@ -1,4 +1,4 @@
-import type { OkfGraphNode } from "@focowiki/okf";
+import { isLowInformationSharedGraphTerm, type OkfGraphNode } from "@focowiki/okf";
 import { isUsefulTerm, normalizeTerm } from "./content-profile.js";
 
 export function findSharedSpecificPhrases(source: OkfGraphNode, candidate: OkfGraphNode): string[] {
@@ -22,11 +22,15 @@ export function findSharedSpecificPhrases(source: OkfGraphNode, candidate: OkfGr
 export function isSpecificSharedSignal(value: string): boolean {
   const normalized = normalizeTerm(value);
 
-  if (!isUsefulTerm(normalized) || /^https?:\/\//iu.test(normalized)) {
+  if (!isUsefulTerm(normalized) || isLowInformationSharedGraphTerm(normalized) || /^https?:\/\//iu.test(normalized)) {
     return false;
   }
 
   if (/official|source|citation|reference/iu.test(normalized)) {
+    return false;
+  }
+
+  if (hasGenericBoilerplateShape(normalized)) {
     return false;
   }
 
@@ -43,10 +47,6 @@ export function isSpecificSharedSignal(value: string): boolean {
       return false;
     }
 
-    if (/人民代表大会常务委员会/u.test(normalized) && normalized.length > 12) {
-      return false;
-    }
-
     return true;
   }
 
@@ -56,7 +56,11 @@ export function isSpecificSharedSignal(value: string): boolean {
 export function isStrongContentSignal(value: string): boolean {
   const normalized = normalizeTerm(value);
 
-  if (!isSpecificSharedSignal(normalized) || isJurisdictionOnlySignal(normalized)) {
+  if (!isSpecificSharedSignal(normalized)) {
+    return false;
+  }
+
+  if (isCjkTerm(normalized) && normalized.replace(/\s+/gu, "").length < 4) {
     return false;
   }
 
@@ -102,12 +106,16 @@ function matchSpecificPhrase(left: string, right: string): string | null {
   return null;
 }
 
-function isJurisdictionOnlySignal(value: string): boolean {
-  return /^[\p{Script=Han}]{1,12}(?:省|市|县|区|州|盟|旗)$/u.test(value);
-}
-
 function isCjkTerm(value: string): boolean {
   return /\p{Script=Han}/u.test(value);
+}
+
+function hasGenericBoilerplateShape(value: string): boolean {
+  if (!/\p{Script=Han}/u.test(value)) {
+    return false;
+  }
+
+  return /^(?:本|该|此)(?:文|文件|文档|页面|资料|章节)?|^(?:为了|根据|有关|相关|结合|制定)/u.test(value);
 }
 
 function unique(values: string[]): string[] {

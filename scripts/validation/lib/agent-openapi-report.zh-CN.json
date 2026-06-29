@@ -21,7 +21,7 @@
     "change": "变更名称",
     "startedAt": "开始时间",
     "finishedAt": "结束时间",
-    "uploadedLegalFileCount": "上传法律文件数",
+    "uploadedMarkdownFileCount": "上传 Markdown 文件数",
     "personaCount": "Agent 类型数",
     "scenarioCount": "场景数",
     "explorationRoundCount": "探索轮次数",
@@ -91,15 +91,15 @@
   },
   "personas": {
     "generic": "通用 Agent",
-    "legal-domain": "法律领域 Agent",
+    "domain": "领域 Agent",
     "combined": "合计"
   },
   "scenarioTypes": {
     "precise_lookup": "精确查找",
-    "status_or_effective_date": "状态或生效日期判断",
+    "metadata_check": "元数据检查",
     "comparison": "对比",
-    "regional_or_issuer_exploration": "地域或发布机关探索",
-    "related_law_traversal": "关联法规追踪",
+    "topic_or_source_exploration": "主题或来源探索",
+    "related_file_traversal": "关联文件追踪",
     "insufficient_evidence": "证据不足判断"
   },
   "answerability": {
@@ -155,12 +155,12 @@
   },
   "questions": {
     "findGeneratedFile": "查找“$1”的生成知识文件，并引用可见文件证据。",
-    "checkStatusOrDate": "仅使用生成文件检查“$1”的状态或日期元数据。",
+    "checkVisibleMetadata": "仅使用生成文件检查“$1”的可见元数据。",
     "compareMetadata": "对比“$1”和“$2”的可见元数据与生成文件证据。",
-    "exploreRegionOrIssuer": "探索“$1”的地域或发布机关线索，并识别支持性的生成文件。",
+    "exploreTopicOrSource": "探索“$1”的主题或来源线索，并识别支持性的生成文件。",
     "followRelated": "从“$1”开始，沿着可见图关系或关联文件证据进入另一个生成页面。",
     "missingDocument": "判断知识库是否包含标题为 __focowiki_validation_missing_document__ 的文档。",
-    "legalReadingOrder": " 阅读顺序使用法律场景：标题、状态、日期、发布机关或地域，然后查看关联法规。"
+    "domainReadingOrder": " 阅读顺序使用可见标题、元数据、来源线索和关联文件。"
   },
   "summaries": {
     "candidateCount": "候选数量=$1",

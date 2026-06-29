@@ -1,4 +1,4 @@
-import { createOpenAIResponsesClient } from "@focowiki/okf";
+import { createOpenAIModelClient } from "@focowiki/okf";
 import type { ModelAssistanceOptions } from "../admin/model-suggestions.js";
 import { createBoundedTaskRunner } from "../runtime/task-runner.js";
 import type { RuntimeSettingsSnapshot } from "./types.js";
@@ -14,7 +14,9 @@ export function createModelAssistanceFromRuntimeSettings(
 
   return {
     modelConfigId: model.id,
-    client: createOpenAIResponsesClient({
+    apiMode: model.apiMode,
+    client: createOpenAIModelClient({
+      apiMode: model.apiMode,
       apiKey: model.apiKey,
       baseUrl: model.baseUrl,
       requestTimeoutMs: model.requestMaxTimeoutMs

@@ -11,24 +11,29 @@ const matter = requireFromOkfPackage("gray-matter");
 export const CONTENT_SAMPLE_COUNT_ENV = "FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT";
 
 const GENERIC_TOKENS = new Set([
-  "办法",
-  "条例",
-  "规定",
   "规则",
   "管理",
   "实施",
-  "法律",
-  "法规",
-  "地方",
   "有效",
   "修改",
   "修订",
   "发布",
   "施行",
-  "中华人民共和国",
-  "人民政府",
-  "人民代表大会",
-  "常务委员会"
+  "文档",
+  "文件",
+  "资料",
+  "内容",
+  "信息",
+  "页面",
+  "来源",
+  "标题",
+  "索引",
+  "相关",
+  "引用",
+  "参考",
+  "当前",
+  "部分",
+  "章节"
 ]);
 
 export function readContentQualitySampleLimit(env = process.env) {
@@ -40,8 +45,8 @@ export function readContentQualitySampleLimit(env = process.env) {
 
   const parsed = Number(configured);
 
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 30) {
-    throw new Error(`${CONTENT_SAMPLE_COUNT_ENV} must be an integer between 1 and 30.`);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 200) {
+    throw new Error(`${CONTENT_SAMPLE_COUNT_ENV} must be an integer between 1 and 200.`);
   }
 
   return parsed;

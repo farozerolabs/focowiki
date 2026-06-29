@@ -8,8 +8,10 @@ import {
 } from "./encryption.js";
 import type { RuntimeSettingsRepository } from "./repository.js";
 import {
+  modelApiModeValues,
   RuntimeSettingsValidationError,
   serializePublicModel,
+  type ModelApiMode,
   type RuntimeModelConfigDraft,
   type RuntimeModelConfigPrivate,
   type RuntimeModelConfigPublic,
@@ -221,6 +223,7 @@ export function createRuntimeSettingsService(input: {
 
     const model = await input.repository.createModel({
       displayName: draft.displayName.trim(),
+      apiMode: normalizeModelApiMode(draft.apiMode),
       baseUrl: draft.baseUrl.trim(),
       encryptedApiKey: encryptRuntimeSecret({
         value: draft.apiKey,
@@ -256,6 +259,13 @@ export function createRuntimeSettingsService(input: {
     action: string;
   }): Promise<RuntimeModelConfigPublic | null> {
     await ensureBootstrapped();
+    if (inputValue.status === "active") {
+      const existing = await input.repository.getModel(inputValue.id);
+      if (!existing) {
+        return null;
+      }
+      assertModelKeyRecoverable(existing);
+    }
     const model = await input.repository.setModelStatus({
       id: inputValue.id,
       status: inputValue.status,
@@ -329,6 +339,11 @@ export function createRuntimeSettingsService(input: {
     },
     async activateModel({ id, actor }) {
       await ensureBootstrapped();
+      const existing = await input.repository.getModel(id);
+      if (!existing) {
+        return null;
+      }
+      assertModelKeyRecoverable(existing);
       const model = await input.repository.setActiveModel(id);
       if (!model) {
         return null;
@@ -453,6 +468,23 @@ export function createRuntimeSettingsService(input: {
       apiKey
     };
   }
+
+  function assertModelKeyRecoverable(model: RuntimeModelConfigPrivate): void {
+    if (tryDecryptModel(model)) {
+      return;
+    }
+
+    throw new RuntimeSettingsValidationError([
+      {
+        field: "model",
+        message: "model api key is unrecoverable"
+      }
+    ]);
+  }
+}
+
+function normalizeModelApiMode(value: ModelApiMode | undefined): ModelApiMode {
+  return modelApiModeValues().includes(value as never) ? (value as ModelApiMode) : "responses";
 }
 
 function tryDecryptRuntimeModel(model: RuntimeModelConfigPrivate, secret: string): string | null {

@@ -73,6 +73,26 @@ const DEFAULT_GRAPH_LIMITS: Required<OkfGraphLimits> = {
   edgeShardSize: 1000
 };
 
+const LOW_INFORMATION_SHARED_TERMS = new Set([
+  "mergeformat",
+  "document",
+  "section",
+  "reference",
+  "related",
+  "source",
+  "current",
+  "文档",
+  "文件",
+  "资料",
+  "内容",
+  "信息",
+  "章节",
+  "引用",
+  "参考",
+  "相关",
+  "当前"
+]);
+
 export function normalizeOkfGraph(input: OkfGraphInput | undefined): NormalizedOkfGraph | null {
   if (!input) {
     return null;
@@ -90,7 +110,8 @@ export function normalizeOkfGraph(input: OkfGraphInput | undefined): NormalizedO
           edge &&
             edge.fromFileId !== edge.toFileId &&
             nodesByFileId.has(edge.fromFileId) &&
-            nodesByFileId.has(edge.toFileId)
+            nodesByFileId.has(edge.toFileId) &&
+            isPublishableGraphEdge(edge, nodesByFileId)
         )
       ),
     (edge) => `${edge.fromFileId}\u0000${edge.toFileId}\u0000${edge.relationType}`
@@ -352,6 +373,84 @@ function compareRelationships(left: OkfGraphRelationship, right: OkfGraphRelatio
     left.title.localeCompare(right.title) ||
     left.fileId.localeCompare(right.fileId)
   );
+}
+
+function isPublishableGraphEdge(edge: OkfGraphEdge, nodesByFileId: Map<string, OkfGraphNode>): boolean {
+  if (edge.relationType !== "shared_key_phrase" || edge.source === "model_confirmed") {
+    return true;
+  }
+
+  const from = nodesByFileId.get(edge.fromFileId);
+  const to = nodesByFileId.get(edge.toFileId);
+
+  if (!from || !to) {
+    return false;
+  }
+
+  return readMatchedTerms(edge).some((term) => isStrongSharedPhraseForNodes(term, from, to));
+}
+
+function readMatchedTerms(edge: OkfGraphEdge): string[] {
+  const matchedTerms = edge.evidence?.matchedTerms;
+  return Array.isArray(matchedTerms)
+    ? matchedTerms.filter((term): term is string => typeof term === "string")
+    : [];
+}
+
+function isStrongSharedPhraseForNodes(term: string, from: OkfGraphNode, to: OkfGraphNode): boolean {
+  const normalized = normalizeComparableText(term);
+
+  if (normalized.length < 4 || isLowInformationSharedTerm(normalized)) {
+    return false;
+  }
+
+  const fromTitle = normalizeComparableText(from.title);
+  const toTitle = normalizeComparableText(to.title);
+
+  if (fromTitle.includes(normalized) && toTitle.includes(normalized)) {
+    return true;
+  }
+
+  return normalized.length >= 5 && nodeTerms(from).has(normalized) && nodeTerms(to).has(normalized);
+}
+
+function nodeTerms(node: OkfGraphNode): Set<string> {
+  return new Set(
+    [
+      ...(node.subjects ?? []),
+      ...(node.entities ?? []),
+      ...(node.keywords ?? []),
+      ...(node.relationshipHints ?? [])
+    ]
+      .map(normalizeComparableText)
+      .filter((term) => term.length >= 5 && !isLowInformationSharedTerm(term))
+  );
+}
+
+export function isLowInformationSharedGraphTerm(value: string): boolean {
+  const normalized = normalizeComparableText(value);
+
+  if (!normalized || LOW_INFORMATION_SHARED_TERMS.has(normalized)) {
+    return true;
+  }
+
+  if (/^\d+$/u.test(normalized)) {
+    return true;
+  }
+
+  if (/^(?:第|项|条|章|节|页|段|部分|篇|卷|版|次|年月日号)+$/u.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isLowInformationSharedTerm(value: string): boolean {
+  return isLowInformationSharedGraphTerm(value);
+}
+
+function normalizeComparableText(value: string): string {
+  return value.toLowerCase().trim().replace(/\s+/gu, "");
 }
 
 function positiveIntegerOr(value: number | undefined, fallback: number): number {

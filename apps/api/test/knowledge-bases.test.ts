@@ -385,7 +385,7 @@ describe("Knowledge base Admin API", () => {
     ).toBe(true);
 
     const mismatch = await app.request(
-      `/admin/api/knowledge-bases?query=legal&limit=1&cursor=${firstBody.nextCursor}`,
+      `/admin/api/knowledge-bases?query=support&limit=1&cursor=${firstBody.nextCursor}`,
       {
         headers: { cookie }
       }

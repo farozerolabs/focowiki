@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client.js";
 import type {
   ModelConfigStatus,
+  ModelApiMode,
   RuntimeModelConfigPrivate,
   RuntimeSettingKey,
   RuntimeSettingRecord
@@ -19,6 +20,7 @@ type RuntimeSettingRow = {
 type ModelConfigRow = {
   id: string;
   display_name: string;
+  api_mode?: ModelApiMode | null;
   base_url: string;
   encrypted_api_key: string;
   api_key_fingerprint: string;
@@ -55,6 +57,7 @@ export type RuntimeSettingsRepository = {
   getActiveModel: () => Promise<RuntimeModelConfigPrivate | null>;
   createModel: (input: {
     displayName: string;
+    apiMode: ModelApiMode;
     baseUrl: string;
     encryptedApiKey: string;
     apiKeyFingerprint: string;
@@ -181,6 +184,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         INSERT INTO focowiki.model_configs (
           id,
           display_name,
+          api_mode,
           base_url,
           encrypted_api_key,
           api_key_fingerprint,
@@ -197,6 +201,7 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
         VALUES (
           ${`model-config-${randomUUID()}`},
           ${input.displayName},
+          ${input.apiMode},
           ${input.baseUrl},
           ${input.encryptedApiKey},
           ${input.apiKeyFingerprint},
@@ -314,6 +319,7 @@ function toPrivateModel(row: ModelConfigRow): RuntimeModelConfigPrivate {
   return {
     id: row.id,
     displayName: row.display_name,
+    apiMode: normalizeModelApiMode(row.api_mode),
     baseUrl: row.base_url,
     apiKey: row.encrypted_api_key,
     apiKeyFingerprint: row.api_key_fingerprint,
@@ -330,4 +336,8 @@ function toPrivateModel(row: ModelConfigRow): RuntimeModelConfigPrivate {
     updatedAt: row.updated_at.toISOString(),
     deletedAt: row.deleted_at?.toISOString() ?? null
   };
+}
+
+function normalizeModelApiMode(value: unknown): ModelApiMode {
+  return value === "chat_completions" ? "chat_completions" : "responses";
 }

@@ -120,12 +120,16 @@ export function registerAdminRuntimeSettingsRoutes(
         return service;
       }
 
-      const model = await service.activateModel({
-        id: context.req.param("modelId"),
-        actor: "admin"
-      });
+      try {
+        const model = await service.activateModel({
+          id: context.req.param("modelId"),
+          actor: "admin"
+        });
 
-      return model ? context.json({ model }) : context.json({ error: { code: "NOT_FOUND" } }, 404);
+        return model ? context.json({ model }) : context.json({ error: { code: "NOT_FOUND" } }, 404);
+      } catch (error) {
+        return writeSettingsError(context, error);
+      }
     }
   );
 
@@ -216,12 +220,16 @@ async function writeModelStatus(
     return context.json({ error: { code: "NOT_FOUND" } }, 404);
   }
 
-  const model =
-    action === "pause"
-      ? await settings.pauseModel({ id: modelId, actor: "admin" })
-      : await settings.resumeModel({ id: modelId, actor: "admin" });
+  try {
+    const model =
+      action === "pause"
+        ? await settings.pauseModel({ id: modelId, actor: "admin" })
+        : await settings.resumeModel({ id: modelId, actor: "admin" });
 
-  return model ? context.json({ model }) : context.json({ error: { code: "NOT_FOUND" } }, 404);
+    return model ? context.json({ model }) : context.json({ error: { code: "NOT_FOUND" } }, 404);
+  } catch (error) {
+    return writeSettingsError(context, error);
+  }
 }
 
 function requireRuntimeSettings(

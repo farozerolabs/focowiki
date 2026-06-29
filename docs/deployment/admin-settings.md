@@ -94,6 +94,7 @@ Model assistance is optional. When no model is active, uploads continue with det
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
 | Display name | Admin-facing model name. | Include provider and usage. |
+| API mode | Provider protocol used for model calls. `responses` uses Responses API structured outputs. `chat_completions` uses Chat Completions JSON object output. | Use `responses` for providers with `/responses`. Use `chat_completions` for providers with `/chat/completions` JSON output. |
 | Base URL | OpenAI-compatible API base URL. | Include `/v1` when the provider requires it. |
 | API key | Provider API key. | Use a scoped key and rotate it regularly. |
 | Model name | Model identifier sent to the provider. | Match provider documentation exactly. |

@@ -17,6 +17,7 @@ function modelAssistance(
 ) {
   return {
     client,
+    apiMode: "responses" as const,
     modelName: "gpt-test",
     contextWindowTokens: 200_000,
     receiveTimeouts,
@@ -24,6 +25,18 @@ function modelAssistance(
     transientRetryDelayMs: 1,
     ...options
   };
+}
+
+function readRequestInputText(request: ModelSuggestionRequest | undefined): string {
+  if (!request) {
+    return "";
+  }
+
+  return request.input
+    .flatMap((item) =>
+      item.content.map((part) => (part.type === "input_text" ? part.text : ""))
+    )
+    .join("\n");
 }
 
 describe("readModelSuggestions", () => {
@@ -139,7 +152,7 @@ describe("readModelSuggestions", () => {
       modelAssistance: modelAssistance(client)
     });
 
-    const firstCandidateLines = requests[0]?.input
+    const firstCandidateLines = readRequestInputText(requests[0])
       .split("\n")
       .filter((line) => line.startsWith("- /pages/")) ?? [];
 
@@ -181,7 +194,7 @@ describe("readModelSuggestions", () => {
       modelAssistance: modelAssistance(client)
     });
 
-    expect(requests[1]?.input).toContain("Two");
-    expect(requests[1]?.input).not.toContain("One");
+    expect(readRequestInputText(requests[1])).toContain("Two");
+    expect(readRequestInputText(requests[1])).not.toContain("One");
   });
 });

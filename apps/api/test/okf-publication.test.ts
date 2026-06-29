@@ -297,7 +297,7 @@ describe("publishOkfRelease", () => {
   });
 
   it("keeps original Markdown file names in public bundle paths", async () => {
-    const sourceName = "外国企业常驻代表机构登记管理条例.md";
+    const sourceName = "客户支持手册.md";
     const sources: SourceRecord[] = [
       sourceRecord("source-001", sourceName, "tenant/demo/source/original.md")
     ];
@@ -307,7 +307,7 @@ describe("publishOkfRelease", () => {
 
     const result = await publishOkfRelease({
       knowledgeBaseId: "kb-001",
-      knowledgeBaseName: "Legal docs",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
       pageSize: 50,
@@ -338,9 +338,9 @@ describe("publishOkfRelease", () => {
       })
     );
     expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain(
-      `[外国企业常驻代表机构登记管理条例](/pages/${encodeURIComponent(sourceName)})`
+      `[客户支持手册](/pages/${encodeURIComponent(sourceName)})`
     );
-    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("# Legal docs");
+    expect(storage.objects.get(`${result.bundleRootKey}index.md`)).toContain("# Developer docs");
     expect(storage.objects.get(`${result.bundleRootKey}_index/manifest.json`)).toContain(
       `"${pagePath}"`
     );
@@ -350,21 +350,21 @@ describe("publishOkfRelease", () => {
     const sources: SourceRecord[] = [
       {
         id: "source-001",
-        originalName: "legal-rule.md",
-        objectKey: "tenant/demo/source/legal-rule.md",
+        originalName: "support-guide.md",
+        objectKey: "tenant/demo/source/support-guide.md",
         metadata: {
-          type: "regulation",
-          title: "Legal rule",
+          type: "guide",
+          title: "Support guide",
           description: "Factual rule description",
-          resource: "https://example.com/legal-rule",
+          resource: "https://example.com/support-guide",
           timestamp: "2026-06-14T00:00:00.000Z",
-          tags: ["legal", "rule"],
-          officialId: "law-001",
+          tags: ["support", "rule"],
+          externalId: "doc-001",
           status: "active",
-          jurisdiction: "example",
-          objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/legal-rule.md",
+          department: "example",
+          objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/support-guide.md",
           releaseId: "release-001",
-          localPath: "/private/tmp/legal-rule.md",
+          localPath: "/private/tmp/support-guide.md",
           providerPayload: {
             id: "provider-output"
           }
@@ -375,7 +375,7 @@ describe("publishOkfRelease", () => {
 
     const result = await publishOkfRelease({
       knowledgeBaseId: "kb-001",
-      knowledgeBaseName: "Legal docs",
+      knowledgeBaseName: "Developer docs",
       releaseId: "release-001",
       generatedAt: "2026-06-14T00:00:00.000Z",
       pageSize: 50,
@@ -406,17 +406,17 @@ describe("publishOkfRelease", () => {
       }>;
     };
 
-    const manifestPage = manifest.files.find((file) => file.path === "pages/legal-rule.md");
+    const manifestPage = manifest.files.find((file) => file.path === "pages/support-guide.md");
     expect(manifestPage?.metadata).toMatchObject({
-      type: "regulation",
-      title: "Legal rule",
+      type: "guide",
+      title: "Support guide",
       description: "Factual rule description",
-      resource: "https://example.com/legal-rule",
+      resource: "https://example.com/support-guide",
       timestamp: "2026-06-14T00:00:00.000Z",
-      tags: ["legal", "rule"],
-      officialId: "law-001",
+      tags: ["support", "rule"],
+      externalId: "doc-001",
       status: "active",
-      jurisdiction: "example"
+      department: "example"
     });
     expect(manifestPage?.metadata).not.toHaveProperty("objectKey");
     expect(manifestPage?.metadata).not.toHaveProperty("releaseId");
@@ -426,21 +426,21 @@ describe("publishOkfRelease", () => {
 
     expect(search.items).toContainEqual(
       expect.objectContaining({
-        path: "pages/legal-rule.md",
-        type: "regulation",
-        title: "Legal rule",
+        path: "pages/support-guide.md",
+        type: "guide",
+        title: "Support guide",
         description: "Factual rule description",
-        resource: "https://example.com/legal-rule",
+        resource: "https://example.com/support-guide",
         timestamp: "2026-06-14T00:00:00.000Z",
-        tags: ["legal", "rule"],
+        tags: ["support", "rule"],
         metadata: expect.objectContaining({
-          officialId: "law-001",
+          externalId: "doc-001",
           status: "active",
-          jurisdiction: "example"
+          department: "example"
         })
       })
     );
-    const searchPage = search.items.find((item) => item.path === "pages/legal-rule.md");
+    const searchPage = search.items.find((item) => item.path === "pages/support-guide.md");
     expect(searchPage?.metadata).not.toHaveProperty("objectKey");
     expect(searchPage?.metadata).not.toHaveProperty("releaseId");
     expect(searchPage?.metadata).not.toHaveProperty("taskId");

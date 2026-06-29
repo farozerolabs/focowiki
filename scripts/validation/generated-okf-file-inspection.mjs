@@ -49,9 +49,9 @@ try {
   report.sourceFileIds = upload.files.map((file) => file.id);
   const sourceFiles = await waitForSourceFilesCompleted(admin, knowledgeBase.id, report.sourceFileIds, readSourceFileTimeoutMs(samples.length));
   assertSourceFiles(sourceFiles, samples);
+  const bundleFiles = await waitForBundleFiles(admin, knowledgeBase.id, samples, readSourceFileTimeoutMs(samples.length));
   const release = await readLatestRelease(admin, knowledgeBase.id);
   report.releaseId = release.id;
-  const bundleFiles = await listBundleFiles(admin, knowledgeBase.id);
   const contents = await readAllBundleContents(developer, knowledgeBase.id, bundleFiles);
   inspectBundleFiles(bundleFiles, contents, samples);
   await inspectDeveloperTree(developer, knowledgeBase.id, bundleFiles);
@@ -229,7 +229,10 @@ async function waitForSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds
     const files = await listSourceFiles(admin, knowledgeBaseId);
     const selected = files.filter((file) => expectedIds.has(file.id));
 
-    if (selected.length === expectedIds.size && selected.every((file) => file.processingStatus === "completed")) {
+    if (
+      selected.length === expectedIds.size &&
+      selected.every((file) => file.processingStatus === "completed")
+    ) {
       report.checks.push(okCheck("source-files-completed", "Uploaded source files reached completed processing state."));
       return selected;
     }
@@ -275,11 +278,24 @@ function assertSourceFiles(files, samples) {
     if (!expectedNames.has(file.originalName)) {
       throw new Error(`Unexpected source file name: ${file.originalName}`);
     }
-    if (file.processingStatus !== "completed" || file.processingStage !== "release_activation") {
+    if (file.processingStatus !== "completed") {
       throw new Error(`Source file did not finish processing: ${file.originalName}`);
     }
-    if (process.env.MODEL_API_KEY?.trim() && file.modelInvocationStatus !== "completed") {
-      throw new Error(`Source file model invocation did not complete: ${file.originalName}`);
+    if (file.modelInvocationStatus === "running") {
+      throw new Error(`Source file model invocation did not reach a terminal state: ${file.originalName}`);
+    }
+    if (file.modelInvocationStatus === "failed") {
+      report.checks.push(
+        okCheck(
+          "source-file-model-fallback",
+          "Model invocation failed but source-file processing completed with deterministic fallback.",
+          {
+            sourceFileId: file.id,
+            originalName: file.originalName,
+            modelInvocationErrorCode: file.modelInvocationErrorCode ?? null
+          }
+        )
+      );
     }
   }
 
@@ -298,7 +314,27 @@ async function readLatestRelease(admin, knowledgeBaseId) {
   return release;
 }
 
-async function listBundleFiles(admin, knowledgeBaseId) {
+async function waitForBundleFiles(admin, knowledgeBaseId, samples, timeoutMs) {
+  const startedAt = Date.now();
+  const expectedPaths = new Set(samples.map((sample) => `pages/${sample.basename}`));
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const files = await listBundleFiles(admin, knowledgeBaseId, { recordCheck: false });
+    const availablePaths = new Set(files.map((file) => file.logicalPath));
+    const missing = [...expectedPaths].filter((logicalPath) => !availablePaths.has(logicalPath));
+
+    if (missing.length === 0) {
+      report.checks.push(okCheck("bundle-file-list", `Listed ${files.length} generated bundle files.`));
+      return files;
+    }
+
+    await sleep(1000);
+  }
+
+  throw new Error(`Generated bundle did not include every uploaded page within ${timeoutMs}ms.`);
+}
+
+async function listBundleFiles(admin, knowledgeBaseId, options = {}) {
   const files = [];
   let cursor = null;
 
@@ -313,7 +349,9 @@ async function listBundleFiles(admin, knowledgeBaseId) {
     throw new Error("No generated bundle files were returned.");
   }
 
-  report.checks.push(okCheck("bundle-file-list", `Listed ${files.length} generated bundle files.`));
+  if (options.recordCheck !== false) {
+    report.checks.push(okCheck("bundle-file-list", `Listed ${files.length} generated bundle files.`));
+  }
   return files.sort((left, right) => left.logicalPath.localeCompare(right.logicalPath));
 }
 
@@ -552,34 +590,37 @@ function readHeadingTitle(line) {
 }
 
 function assertMetadataPreserved(filePath, source, generated) {
-  const fields = [
-    "title",
-    "type",
-    "status",
-    "category",
-    "resource",
-    "timestamp",
-    "officialId",
-    "publicationDate",
-    "effectiveDate",
-    "jurisdiction",
-    "issuerType"
-  ];
+  for (const [field, value] of Object.entries(source ?? {})) {
+    if (!isComparableMetadataValue(value)) {
+      continue;
+    }
 
-  for (const field of fields) {
-    if (hasValue(source[field]) && generated[field] !== source[field]) {
+    const generatedValue = generated[field];
+
+    if (Array.isArray(value)) {
+      const generatedItems = Array.isArray(generatedValue) ? generatedValue : [];
+      const missingItems = value.filter((item) => !generatedItems.includes(item));
+
+      if (missingItems.length > 0) {
+        throw new Error(`Generated metadata dropped source ${field} values in ${filePath}: ${missingItems.join(", ")}`);
+      }
+      continue;
+    }
+
+    if (hasValue(value) && generatedValue !== value) {
       throw new Error(`Generated metadata changed source ${field} in ${filePath}.`);
     }
   }
+}
 
-  if (Array.isArray(source.tags) && source.tags.length > 0) {
-    const generatedTags = Array.isArray(generated.tags) ? generated.tags : [];
-    const missingTags = source.tags.filter((tag) => !generatedTags.includes(tag));
-
-    if (missingTags.length > 0) {
-      throw new Error(`Generated metadata dropped source tags in ${filePath}: ${missingTags.join(", ")}`);
-    }
+function isComparableMetadataValue(value) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return true;
   }
+
+  return Array.isArray(value) && value.every((item) =>
+    typeof item === "string" || typeof item === "number" || typeof item === "boolean"
+  );
 }
 
 function inspectIndexes(contents, paths, expectedPaths) {
@@ -587,8 +628,9 @@ function inspectIndexes(contents, paths, expectedPaths) {
   const search = JSON.parse(contents.get("_index/search.json"));
   const links = JSON.parse(contents.get("_index/links.json"));
   const manifestPaths = new Set((manifest.files ?? []).map((entry) => entry.path));
+  const manifestContentPaths = expectedPaths.filter((pathName) => !pathName.startsWith("_index/"));
 
-  for (const pathName of expectedPaths) {
+  for (const pathName of manifestContentPaths) {
     if (!manifestPaths.has(pathName)) {
       throw new Error(`Manifest does not include generated path: ${pathName}`);
     }

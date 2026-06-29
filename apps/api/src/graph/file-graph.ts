@@ -1,9 +1,10 @@
 import {
   requestGraphRelationshipConfirmations,
+  isLowInformationSharedGraphTerm,
   type ModelReceiveTimeouts,
   type OkfGraphEdge,
   type OkfGraphNode,
-  type OpenAIResponsesClient,
+  type OpenAIModelClient,
   type SourceMetadataDefaults,
   type SourceModelSuggestions
 } from "@focowiki/okf";
@@ -33,7 +34,7 @@ export type BuildSourceFileGraphInput = {
 };
 
 export type GraphModelConfirmationOptions = {
-  client: OpenAIResponsesClient;
+  client: OpenAIModelClient;
   modelName: string;
   contextWindowTokens: number;
   receiveTimeouts: ModelReceiveTimeouts;
@@ -240,6 +241,21 @@ async function confirmGraphEdges(input: {
     };
   }
 
+  const confirmationCandidates = input.edges.filter(isModelConfirmationCandidateEdge);
+  const locallyRejectedEdges = input.edges
+    .filter((edge) => !isModelConfirmationCandidateEdge(edge))
+    .map((edge) =>
+      createRejectedEdge(edge, "The local signal was not strong enough for model confirmation.")
+    );
+
+  if (confirmationCandidates.length === 0) {
+    return {
+      edges: [],
+      rejectedEdges: locallyRejectedEdges,
+      warnings: []
+    };
+  }
+
   const result = await requestGraphRelationshipConfirmations({
     client: input.modelConfirmation.client,
     modelName: input.modelConfirmation.modelName,
@@ -247,14 +263,27 @@ async function confirmGraphEdges(input: {
     receiveTimeouts: input.modelConfirmation.receiveTimeouts,
     currentFile: input.node,
     body: input.body,
-    candidates: input.edges,
-    candidateFiles: listEdgeCandidateFiles(input.candidates, input.edges)
+    candidates: confirmationCandidates,
+    candidateFiles: listEdgeCandidateFiles(input.candidates, confirmationCandidates)
   });
 
   if (result.confirmations.length === 0) {
+    const hasModelDecision = result.warnings.length === 0;
+    const allowLocalFallback = !hasUnsafeModelOutputWarning(result.warnings);
     return {
-      edges: input.edges,
-      rejectedEdges: [],
+      edges: hasModelDecision || !allowLocalFallback ? [] : confirmationCandidates.filter(isSafeLocalFallbackEdge),
+      rejectedEdges: [
+        ...locallyRejectedEdges,
+        ...(hasModelDecision || !allowLocalFallback
+          ? confirmationCandidates.map((edge) =>
+              createRejectedEdge(edge, "The model did not accept this candidate relationship.")
+            )
+          : confirmationCandidates
+              .filter((edge) => !isSafeLocalFallbackEdge(edge))
+              .map((edge) =>
+                createRejectedEdge(edge, "The model confirmation failed and the local signal was not strong enough.")
+              ))
+      ],
       warnings: result.warnings
     };
   }
@@ -263,13 +292,13 @@ async function confirmGraphEdges(input: {
     result.confirmations.map((confirmation) => [confirmation.targetFileId, confirmation])
   );
   const acceptedEdges: OkfGraphEdge[] = [];
-  const rejectedEdges: OkfGraphEdge[] = [];
+  const rejectedEdges: OkfGraphEdge[] = [...locallyRejectedEdges];
 
-  for (const edge of input.edges) {
+  for (const edge of confirmationCandidates) {
     const confirmation = confirmationByTarget.get(edge.toFileId);
 
     if (!confirmation) {
-      acceptedEdges.push(edge);
+      rejectedEdges.push(createRejectedEdge(edge, "The model did not return this candidate relationship."));
       continue;
     }
 
@@ -278,9 +307,14 @@ async function confirmGraphEdges(input: {
       continue;
     }
 
+    if (confirmation.relationType !== edge.relationType) {
+      rejectedEdges.push(createRejectedEdge(edge, "The model returned a different relationship type than the candidate."));
+      continue;
+    }
+
     acceptedEdges.push({
       ...edge,
-      relationType: confirmation.relationType.trim() || edge.relationType,
+      relationType: edge.relationType,
       weight: Math.max(edge.weight, confirmation.weight),
       reason: confirmation.reason.trim() || edge.reason,
       source: "model_confirmed",
@@ -297,6 +331,22 @@ async function confirmGraphEdges(input: {
     rejectedEdges,
     warnings: result.warnings
   };
+}
+
+function isModelConfirmationCandidateEdge(edge: OkfGraphEdge): boolean {
+  return (
+    edge.relationType === "explicit_reference" ||
+    edge.relationType === "title_mention" ||
+    edge.relationType === "model_related_link" ||
+    edge.relationType === "shared_entity" ||
+    edge.relationType === "shared_subject"
+  );
+}
+
+function hasUnsafeModelOutputWarning(warnings: string[]): boolean {
+  return warnings.some((warning) =>
+    /local schema validation|incomplete|did not complete|refused/i.test(warning)
+  );
 }
 
 function resolveMaxCandidateNodes(input: BuildSourceFileGraphInput): number {
@@ -349,6 +399,9 @@ function bestEdgeForCandidate(
   const sharedKeyPhrases = findSharedSpecificPhrases(source, candidate).filter((term) =>
     normalizedBody.includes(normalizeSearchText(term))
   );
+  const strongSharedKeyPhrases = sharedKeyPhrases.filter((term) =>
+    isStrongSharedKeyPhrase(term, source, candidate)
+  );
   const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
   const hasExplicitReference = matchesExplicitReference(source, candidate);
   const hasTitleMention =
@@ -357,7 +410,7 @@ function bestEdgeForCandidate(
   const hasContentOverlap =
     strongSharedSubjects.length > 0 ||
     strongSharedEntities.length > 0 ||
-    sharedKeyPhrases.length > 0 ||
+    strongSharedKeyPhrases.length > 0 ||
     hasExplicitReference ||
     hasTitleMention;
 
@@ -395,9 +448,9 @@ function bestEdgeForCandidate(
     }));
   }
 
-  if (sharedKeyPhrases.length > 0) {
+  if (strongSharedKeyPhrases.length > 0) {
     signals.push(createEdge(source, candidate, "shared_key_phrase", 0.69, "Both files share specific body-derived key phrases.", {
-      matchedTerms: sharedKeyPhrases.slice(0, 8)
+      matchedTerms: strongSharedKeyPhrases.slice(0, 8)
     }));
   }
 
@@ -442,6 +495,49 @@ function createRejectedEdge(edge: OkfGraphEdge, reason: string): OkfGraphEdge {
       rejectedWeight: edge.weight
     }
   };
+}
+
+function isSafeLocalFallbackEdge(edge: OkfGraphEdge): boolean {
+  return (
+    edge.relationType === "explicit_reference" ||
+    edge.relationType === "title_mention" ||
+    edge.relationType === "model_related_link" ||
+    edge.relationType === "shared_entity" ||
+    edge.relationType === "shared_subject"
+  );
+}
+
+function isStrongSharedKeyPhrase(term: string, source: OkfGraphNode, candidate: OkfGraphNode): boolean {
+  const normalized = normalizeSearchText(term).replace(/\s+/gu, "");
+
+  if (!normalized || isLowInformationSharedGraphTerm(normalized) || normalized.length < 4) {
+    return false;
+  }
+
+  const sourceTitle = normalizeSearchText(source.title).replace(/\s+/gu, "");
+  const candidateTitle = normalizeSearchText(candidate.title).replace(/\s+/gu, "");
+
+  if (sourceTitle.includes(normalized) && candidateTitle.includes(normalized)) {
+    return true;
+  }
+
+  const sourceTerms = normalizedStrongNodeTerms(source);
+  const candidateTerms = normalizedStrongNodeTerms(candidate);
+
+  return normalized.length >= 5 && sourceTerms.has(normalized) && candidateTerms.has(normalized);
+}
+
+function normalizedStrongNodeTerms(node: OkfGraphNode): Set<string> {
+  return new Set(
+    [
+      ...(node.subjects ?? []),
+      ...(node.entities ?? []),
+      ...(node.keywords ?? []),
+      ...(node.relationshipHints ?? [])
+    ]
+      .map((term) => normalizeSearchText(term).replace(/\s+/gu, ""))
+      .filter((term) => term && isStrongContentSignal(term) && !isLowInformationSharedGraphTerm(term))
+  );
 }
 
 function matchesExplicitReference(source: OkfGraphNode, candidate: OkfGraphNode): boolean {

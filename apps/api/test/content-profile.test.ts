@@ -4,31 +4,31 @@ import { buildSourceContentProfile, isUsefulTerm } from "../src/graph/content-pr
 describe("content profile", () => {
   it("extracts bounded CJK relationship phrases from titles, headings, and body text", () => {
     const profile = buildSourceContentProfile({
-      title: "农村公路养护办法",
+      title: "支付配置指南",
       metadata: {
-        title: "农村公路养护办法",
-        type: "local regulation",
+        title: "支付配置指南",
+        type: "guide",
         tags: []
       },
       suggestions: null,
       body: [
-        "# 农村公路养护办法",
+        "# 支付配置指南",
         "",
-        "本文件规定农村公路建设、养护资金、路产路权保护和交通运输主管部门监督管理。",
-        "农村公路养护质量评定和养护责任应当与农村公路管理制度衔接。"
+        "本文介绍支付配置、回调地址、密钥轮换和错误排查。",
+        "支付配置需要与部署指南和用户权限设置保持一致。"
       ].join("\n")
     });
 
-    expect(profile.keywords).toContain("农村公路");
-    expect(profile.subjects).toContain("农村公路");
-    expect(profile.headingOutline).toEqual(["农村公路养护办法"]);
+    expect(profile.keywords).toContain("支付配置");
+    expect(profile.subjects).toContain("支付配置");
+    expect(profile.headingOutline).toEqual(["支付配置指南"]);
     expect(profile.sourceExcerpt).not.toContain("Related");
   });
 
-  it("filters low-information CJK boilerplate terms", () => {
-    expect(isUsefulTerm("制定本条例")).toBe(false);
-    expect(isUsefulTerm("本文件规定")).toBe(false);
-    expect(isUsefulTerm("监督管理")).toBe(false);
-    expect(isUsefulTerm("农村公路")).toBe(true);
+  it("filters low-information generic document terms", () => {
+    expect(isUsefulTerm("本文件")).toBe(false);
+    expect(isUsefulTerm("文档")).toBe(false);
+    expect(isUsefulTerm("相关")).toBe(false);
+    expect(isUsefulTerm("支付配置")).toBe(true);
   });
 });

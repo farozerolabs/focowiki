@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import type { OpenAIResponsesClient } from "@focowiki/okf";
+import type { OpenAIModelClient } from "@focowiki/okf";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
@@ -28,7 +28,7 @@ export type DeveloperOpenApiRouteServices = {
   storage: StorageAdapter;
   repositories: AdminRepositories | null;
   redis: RedisCoordinator | null;
-  modelClient: OpenAIResponsesClient | null;
+  modelClient: OpenAIModelClient | null;
   runtimeSettings: RuntimeSettingsService | null;
 };
 

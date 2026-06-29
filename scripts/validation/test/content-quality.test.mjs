@@ -14,29 +14,29 @@ test("content quality validation checks source body, indexes, model fields, and 
 
   try {
     const intro = writeSample(root, "intro.md", {
-      title: "Shanghai Free Trade Pilot Zone Rules",
-      type: "legal",
-      body: "Shanghai free trade pilot zone rules support trade facilitation and investment services."
+      title: "API Security Checklist",
+      type: "checklist",
+      body: "API security checklist covers token rotation and request signing."
     });
-    const trade = writeSample(root, "trade.md", {
-      title: "Trade Facilitation Measures",
-      type: "legal",
-      body: "Trade facilitation measures define single window services and customs coordination."
+    const keys = writeSample(root, "keys.md", {
+      title: "Key Rotation Guide",
+      type: "guide",
+      body: "Key rotation guide defines token rotation schedules and incident response."
     });
     const bodies = new Map([
       [
         "pages/intro.md",
-        "---\ntype: legal\ntitle: Shanghai Free Trade Pilot Zone Rules\ndescription: Rules for trade facilitation\ntags:\n  - trade\n---\n# Shanghai Free Trade Pilot Zone Rules\n\nShanghai free trade pilot zone rules support trade facilitation and investment services."
+        "---\ntype: checklist\ntitle: API Security Checklist\ndescription: Checklist for API security controls\ntags:\n  - security\n---\n# API Security Checklist\n\nAPI security checklist covers token rotation and request signing."
       ],
       [
-        "pages/trade.md",
-        "---\ntype: legal\ntitle: Trade Facilitation Measures\ndescription: Measures for trade facilitation\ntags:\n  - trade\n---\n# Trade Facilitation Measures\n\nTrade facilitation measures define single window services and customs coordination."
+        "pages/keys.md",
+        "---\ntype: guide\ntitle: Key Rotation Guide\ndescription: Guide for token rotation schedules\ntags:\n  - security\n---\n# Key Rotation Guide\n\nKey rotation guide defines token rotation schedules and incident response."
       ]
     ]);
-    const indexes = buildIndexes([intro, trade]);
+    const indexes = buildIndexes([intro, keys]);
 
     const summary = validateGeneratedContentQuality({
-      samples: [intro, trade],
+      samples: [intro, keys],
       bodies,
       indexes,
       modelAssistance: { enabled: true },
@@ -59,7 +59,7 @@ test("content quality validation rejects missing index entries", () => {
   try {
     const sample = writeSample(root, "missing.md", {
       title: "Missing Index",
-      type: "legal",
+      type: "page",
       body: "Missing index content still has a source body."
     });
 
@@ -70,7 +70,7 @@ test("content quality validation rejects missing index entries", () => {
           bodies: new Map([
             [
               "pages/missing.md",
-              "---\ntype: legal\ntitle: Missing Index\n---\n# Missing Index\n\nMissing index content still has a source body."
+              "---\ntype: page\ntitle: Missing Index\n---\n# Missing Index\n\nMissing index content still has a source body."
             ]
           ]),
           indexes: {
@@ -90,10 +90,10 @@ test("content quality validation rejects missing index entries", () => {
 
 test("content quality sample limit validates configured bounds", () => {
   assert.equal(readContentQualitySampleLimit({}), 25);
-  assert.equal(readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "30" }), 30);
+  assert.equal(readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "200" }), 200);
   assert.throws(
-    () => readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "31" }),
-    /between 1 and 30/
+    () => readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "201" }),
+    /between 1 and 200/
   );
 });
 
@@ -109,7 +109,7 @@ function writeSample(root, inputName, input) {
     filePath,
     title: input.title,
     type: input.type,
-    status: "有效",
+    status: "active",
     category: "test",
     publicationDate: "2026-01-01",
     sizeBytes: fs.statSync(filePath).size
@@ -126,7 +126,7 @@ function buildIndexes(samples) {
           type: sample.type,
           title: sample.title,
           description: `Description for ${sample.title}`,
-          tags: ["trade"]
+          tags: ["security"]
         }
       }))
     },
@@ -136,13 +136,13 @@ function buildIndexes(samples) {
         type: sample.type,
         title: sample.title,
         description: `Description for ${sample.title}`,
-        tags: ["trade"],
-        keywords: ["trade", "facilitation"],
+        tags: ["security"],
+        keywords: ["security", "rotation"],
         metadata: {
           type: sample.type,
           title: sample.title,
           description: `Description for ${sample.title}`,
-          tags: ["trade"]
+          tags: ["security"]
         }
       }))
     },
@@ -150,10 +150,10 @@ function buildIndexes(samples) {
       links: [
         {
           from: "pages/intro.md",
-          to: "pages/trade.md",
-          label: "Trade Facilitation Measures",
+          to: "pages/keys.md",
+          label: "Key Rotation Guide",
           relation_type: "shared_tag",
-          reason: "Both files discuss trade facilitation."
+          reason: "Both files discuss token rotation."
         }
       ]
     }

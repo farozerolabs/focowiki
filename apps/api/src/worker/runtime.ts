@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { OpenAIResponsesClient } from "@focowiki/okf";
+import type { OpenAIModelClient } from "@focowiki/okf";
 import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
 import type {
   AdminRepositories,
@@ -43,7 +43,7 @@ export function createWorkerRuntime(input: {
   repositories: AdminRepositories;
   storage: StorageAdapter;
   redis: RedisCoordinator;
-  modelClient: OpenAIResponsesClient | null;
+  modelClient: OpenAIModelClient | null;
   runtimeSettings?: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): WorkerRuntime {
@@ -63,6 +63,7 @@ export function createWorkerRuntime(input: {
     input.modelClient && input.config.model.enabled
       ? {
           client: input.modelClient,
+          apiMode: "responses",
           modelName: input.config.model.modelName,
           contextWindowTokens: input.config.model.contextWindowTokens,
           receiveTimeouts: {

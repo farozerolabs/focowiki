@@ -287,6 +287,7 @@ export type UploadGenerationSettings = {
 export type RuntimeModelConfig = {
   id: string;
   displayName: string;
+  apiMode: "responses" | "chat_completions";
   baseUrl: string;
   apiKeyFingerprint: string;
   modelName: string;
@@ -526,6 +527,7 @@ export async function updateUploadGenerationSettings(
 
 export async function createRuntimeModel(input: {
   displayName: string;
+  apiMode: RuntimeModelConfig["apiMode"];
   baseUrl: string;
   apiKey: string;
   modelName: string;

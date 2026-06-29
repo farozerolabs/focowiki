@@ -5,6 +5,7 @@ import {
   type WorkerRuntimeConfig
 } from "../config.js";
 import {
+  modelApiModeValues,
   publicationModeValues,
   rateLimitKeys,
   type RuntimeModelConfigDraft,
@@ -30,8 +31,9 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     },
     uploadGeneration: sanitizeUploadGenerationSettings(config.upload),
     model: config.model.enabled
-      ? {
+        ? {
           displayName: config.model.modelName,
+          apiMode: "responses",
           baseUrl: config.model.baseUrl,
           apiKey: config.model.apiKey,
           modelName: config.model.modelName,
@@ -165,6 +167,9 @@ export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSetti
   const issues: RuntimeSettingsValidationIssue[] = [];
 
   requireNonEmptyString(input.displayName, "displayName", issues);
+  if (input.apiMode && !modelApiModeValues().includes(input.apiMode)) {
+    issues.push({ field: "apiMode", message: "apiMode must be responses or chat_completions" });
+  }
   requireUrl(input.baseUrl, "baseUrl", issues);
   requireNonEmptyString(input.apiKey, "apiKey", issues);
   requireNonEmptyString(input.modelName, "modelName", issues);

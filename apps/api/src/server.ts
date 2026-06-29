@@ -1,6 +1,6 @@
 import {
-  createOpenAIResponsesClient,
-  type OpenAIResponsesClient
+  createOpenAIModelClient,
+  type OpenAIModelClient
 } from "@focowiki/okf";
 import { Hono } from "hono";
 import { resolveSecurityConfig, type RuntimeConfig } from "./config.js";
@@ -22,7 +22,7 @@ import {
 export type ApiAppOptions = {
   config: RuntimeConfig;
   storage?: StorageAdapter;
-  modelClient?: OpenAIResponsesClient;
+  modelClient?: OpenAIModelClient;
   redis?: RedisCoordinator;
   repositories?: AdminRepositories;
   runtimeSettings?: RuntimeSettingsService;
@@ -31,7 +31,7 @@ export type ApiAppOptions = {
 type ApiAppServices = {
   config: RuntimeConfig;
   storage: StorageAdapter;
-  modelClient: OpenAIResponsesClient | null;
+  modelClient: OpenAIModelClient | null;
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;
@@ -84,7 +84,8 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     modelClient:
       options.modelClient ??
       (options.config.model.enabled
-        ? createOpenAIResponsesClient({
+        ? createOpenAIModelClient({
+            apiMode: "responses",
             apiKey: options.config.model.apiKey,
             baseUrl: options.config.model.baseUrl,
             requestTimeoutMs: options.config.model.requestMaxTimeoutMs

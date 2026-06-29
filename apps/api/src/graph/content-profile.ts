@@ -1,4 +1,5 @@
-import type { SourceMetadataDefaults, SourceModelSuggestions } from "@focowiki/okf";
+import type { SourceMetadata, SourceMetadataDefaults, SourceModelSuggestions } from "@focowiki/okf";
+import { applyPresentationSuggestions } from "@focowiki/okf";
 
 export type SourceContentProfile = {
   summary: string;
@@ -47,9 +48,7 @@ const LOW_INFORMATION_TERMS = new Set([
   "official",
   "official source",
   "source",
-  "regulation",
   "protection",
-  "protection regulation",
   "effective",
   "valid",
   "related",
@@ -61,20 +60,16 @@ const LOW_INFORMATION_TERMS = new Set([
   "本章",
   "本文",
   "本文件",
-  "结合本市实际",
-  "制定本条例",
-  "制定本办法",
-  "有关法律法规",
-  "法律法规",
-  "法规的规定",
-  "本文件规定",
-  "为了加强",
-  "根据有关",
-  "有关规定",
-  "相关规定",
-  "监督管理",
+  "本资料",
+  "本页面",
+  "文档",
+  "文件",
+  "资料",
+  "内容",
+  "信息",
   "相关",
   "引用",
+  "参考",
   "有效"
 ]);
 
@@ -92,7 +87,11 @@ export function buildSourceContentProfile(input: {
   const metadataTags = readStringArray(input.metadata.tags);
   const suggestionTags = readStringArray(input.suggestions?.tags);
   const suggestionKeywords = readStringArray(input.suggestions?.keywords);
-  const metadataDescription = readString(input.metadata.description);
+  const effectiveMetadata = applyPresentationSuggestions(
+    toResolvedProfileMetadata(input.metadata, input.title),
+    input.suggestions
+  );
+  const metadataDescription = readString(effectiveMetadata.description);
   const description = metadataDescription || firstSentence(plainText);
   const quotedPhrases = extractQuotedPhrases(plainText);
   const keywords = unique([
@@ -153,6 +152,22 @@ export function buildSourceContentProfile(input: {
     sourceExcerpt: plainText.slice(0, 2_000),
     profileVersion: CONTENT_PROFILE_VERSION,
     profileSource: "deterministic"
+  };
+}
+
+function toResolvedProfileMetadata(
+  metadata: SourceMetadataDefaults,
+  fallbackTitle: string
+): SourceMetadata {
+  const title = typeof metadata.title === "string" && metadata.title.trim()
+    ? metadata.title
+    : fallbackTitle;
+  const type = typeof metadata.type === "string" && metadata.type.trim() ? metadata.type : "page";
+
+  return {
+    ...metadata,
+    type,
+    title
   };
 }
 
@@ -256,29 +271,41 @@ function extractCjkTerms(value: string): string[] {
 
 function extractCjkSubterms(value: string): string[] {
   const chunk = stripDocumentSuffix(value);
+  const words = segmentCjkWords(chunk);
   const terms: string[] = [];
-  const minLength = 4;
-  const maxLength = Math.min(8, chunk.length);
 
-  if (chunk.length < minLength) {
-    return terms;
-  }
+  for (let windowSize = 1; windowSize <= 4; windowSize += 1) {
+    for (let index = 0; index + windowSize <= words.length; index += 1) {
+      const term = words.slice(index, index + windowSize).join("");
 
-  for (let length = minLength; length <= maxLength; length += 1) {
-    for (let index = 0; index + length <= chunk.length; index += 1) {
-      const term = chunk.slice(index, index + length);
-
-      if (isUsefulTerm(term)) {
+      if (term.length >= 3 && term.length <= 18 && isUsefulTerm(term)) {
         terms.push(term);
       }
 
       if (terms.length >= 24) {
-        return terms;
+        return unique(terms);
       }
     }
   }
 
-  return terms;
+  return unique(terms);
+}
+
+function segmentCjkWords(value: string): string[] {
+  const segmenter =
+    typeof Intl !== "undefined" && "Segmenter" in Intl
+      ? new Intl.Segmenter("zh", { granularity: "word" })
+      : null;
+
+  if (!segmenter) {
+    return value.length >= 3 && value.length <= 18 ? [value] : [];
+  }
+
+  return Array.from(segmenter.segment(value), (segment) => segment.segment)
+    .map((segment) => segment.trim())
+    .filter((segment) => /^[\p{Script=Han}]+$/u.test(segment))
+    .filter((segment) => segment.length > 0)
+    .filter((segment) => isUsefulTerm(segment));
 }
 
 function extractTitleTerms(value: string): string[] {
@@ -303,7 +330,8 @@ function extractTitleTerms(value: string): string[] {
 
 function stripDocumentSuffix(value: string): string {
   return value
-    .replace(/(条例|办法|规定|细则|规则|决定|解释|批复|通知|指南|手册|规范|标准)$/u, "")
+    .replace(/(文档|手册|指南|规范|标准|说明|报告|方案|计划|清单|策略|流程|教程|索引)$/u, "")
+    .replace(/\b(guide|manual|docs?|document|report|proposal|plan|spec|standard|policy|procedure|checklist)$/iu, "")
     .trim();
 }
 

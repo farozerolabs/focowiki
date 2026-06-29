@@ -12,10 +12,10 @@ describe("storage key normalization", () => {
       keys.sourceFileKey(
         "kb-001",
         "source-001",
-        "外国企业常驻代表机构登记管理条例.md"
+        "客户支持手册.md"
       )
     ).toBe(
-      "tenant/demo/knowledge-bases/kb-001/sources/source-001/外国企业常驻代表机构登记管理条例.md"
+      "tenant/demo/knowledge-bases/kb-001/sources/source-001/客户支持手册.md"
     );
     expect(keys.releaseRootKey("kb-001", "release-001")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/"
@@ -33,10 +33,10 @@ describe("storage key normalization", () => {
       keys.releaseBundleKey(
         "kb-001",
         "release-001",
-        "pages/外国企业常驻代表机构登记管理条例.md"
+        "pages/客户支持手册.md"
       )
     ).toBe(
-      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/外国企业常驻代表机构登记管理条例.md"
+      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/客户支持手册.md"
     );
     expect(keys.releaseBundleKey("kb-001", "release-001", "_index/search.json")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json"

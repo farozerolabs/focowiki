@@ -24,22 +24,22 @@ const publicSearchIndex = {
   generated_at: "2026-06-14T00:00:00.000Z",
   items: [
     {
-      path: "pages/外国企业常驻代表机构登记管理条例.md",
-      type: "regulation",
-      title: "外国企业常驻代表机构登记管理条例",
+      path: "pages/客户支持手册.md",
+      type: "guide",
+      title: "客户支持手册",
       description: "Public scoped metadata fixture",
-      resource: "https://example.com/legal-rule",
+      resource: "https://example.com/support-guide",
       timestamp: "2026-06-14T00:00:00.000Z",
-      tags: ["legal", "rule"],
+      tags: ["support", "rule"],
       keywords: ["public", "scoped", "metadata"],
       metadata: {
-        type: "regulation",
-        title: "外国企业常驻代表机构登记管理条例",
+        type: "guide",
+        title: "客户支持手册",
         description: "Public scoped metadata fixture",
-        resource: "https://example.com/legal-rule",
+        resource: "https://example.com/support-guide",
         timestamp: "2026-06-14T00:00:00.000Z",
-        tags: ["legal", "rule"],
-        officialId: "law-001",
+        tags: ["support", "rule"],
+        externalId: "doc-001",
         status: "active"
       }
     }
@@ -264,21 +264,21 @@ function createRepositories(options: { publicKeyStatus?: "active" | "revoked" | 
       }
     ],
     [
-      "pages/外国企业常驻代表机构登记管理条例.md",
+      "pages/客户支持手册.md",
       {
         id: "bundle-file-original-name",
         knowledgeBaseId: "kb-001",
         releaseId: "release-001",
         sourceFileId: "source-001",
         fileKind: "page" as const,
-        logicalPath: "pages/外国企业常驻代表机构登记管理条例.md",
+        logicalPath: "pages/客户支持手册.md",
         objectKey:
-          "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/外国企业常驻代表机构登记管理条例.md",
+          "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/客户支持手册.md",
         contentType: "text/markdown; charset=utf-8",
         sizeBytes: 36,
         checksumSha256: "checksum",
         okfType: "page",
-        title: "外国企业常驻代表机构登记管理条例",
+        title: "客户支持手册",
         description: null,
         tags: [],
         frontmatter: {}
@@ -483,7 +483,7 @@ describe("Scoped public file OpenAPI", () => {
         path: "_index/search/000001.jsonl",
         fileKind: "search_index_shard"
       },
-      content: expect.stringContaining("\"外国企业常驻代表机构登记管理条例\"")
+      content: expect.stringContaining("\"客户支持手册\"")
     });
   });
 
@@ -495,10 +495,10 @@ describe("Scoped public file OpenAPI", () => {
       storage,
       repositories
     });
-    const fileName = "外国企业常驻代表机构登记管理条例.md";
+    const fileName = "客户支持手册.md";
     storage.objects.set(
       `tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/${fileName}`,
-      "---\ntype: page\ntitle: 外国企业常驻代表机构登记管理条例\n---\n# 外国企业"
+      "---\ntype: page\ntitle: 客户支持手册\n---\n# 外国企业"
     );
 
     const response = await app.request(
@@ -516,7 +516,7 @@ describe("Scoped public file OpenAPI", () => {
     await expect(response.json()).resolves.toMatchObject({
       file: {
         path: `pages/${fileName}`,
-        title: "外国企业常驻代表机构登记管理条例"
+        title: "客户支持手册"
       },
       content: expect.stringContaining("# 外国企业")
     });

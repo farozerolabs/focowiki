@@ -1,4 +1,4 @@
-import type { OpenAIResponsesClient } from "@focowiki/okf";
+import type { OpenAIModelClient } from "@focowiki/okf";
 import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import { type RuntimeConfig } from "../config.js";
@@ -70,7 +70,7 @@ import {
 export type AdminApiServices = {
   config: RuntimeConfig;
   storage: StorageAdapter;
-  modelClient: OpenAIResponsesClient | null;
+  modelClient: OpenAIModelClient | null;
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;

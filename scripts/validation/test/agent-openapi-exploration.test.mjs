@@ -13,7 +13,7 @@ import {
 } from "../lib/agent-openapi-validation.mjs";
 import { redactAgentValidationText } from "../lib/agent-openapi-report.mjs";
 
-test("agent validation requires at least 50 legal Markdown samples", () => {
+test("agent validation requires at least 50 Markdown samples", () => {
   assert.equal(MIN_AGENT_VALIDATION_SAMPLE_COUNT, 50);
   assert.throws(
     () => requireValidationSampleCount(new Array(49).fill({ basename: "sample.md" })),
@@ -26,12 +26,12 @@ test("agent validation processing timeout scales for 50-file model runs", () => 
   assert.equal(defaultAgentProcessingTimeoutMs(10), 1_800_000);
 });
 
-test("agent scenario plan includes generic and legal-domain personas with legal task variety", () => {
+test("agent scenario plan includes generic and domain personas with varied task coverage", () => {
   const samples = buildSamples(52);
   const plan = buildAgentScenarioPlan(samples);
 
   assert.equal(new Set(plan.map((scenario) => scenario.persona)).has("generic"), true);
-  assert.equal(new Set(plan.map((scenario) => scenario.persona)).has("legal-domain"), true);
+  assert.equal(new Set(plan.map((scenario) => scenario.persona)).has("domain"), true);
   assert.equal(new Set(plan.map((scenario) => scenario.scenarioType)).size >= 5, true);
   assert.equal(plan.every((scenario) => scenario.question && scenario.expectedVisibleClues.length > 0), true);
 });
@@ -39,11 +39,11 @@ test("agent scenario plan includes generic and legal-domain personas with legal 
 test("persona scores stay separate before combined scoring", () => {
   const scores = scorePersonaResults([
     { persona: "generic", answerability: "partially_answered", score: 62 },
-    { persona: "legal-domain", answerability: "answered", score: 86 }
+    { persona: "domain", answerability: "answered", score: 86 }
   ]);
 
   assert.equal(scores.generic.score, 62);
-  assert.equal(scores["legal-domain"].score, 86);
+  assert.equal(scores.domain.score, 86);
   assert.equal(scores.combined.score, 74);
 });
 
@@ -92,10 +92,10 @@ test("report staging policy documents local-only ReferenceDocs output", () => {
 function buildSamples(count) {
   return Array.from({ length: count }, (_, index) => ({
     basename: `${String(index + 1).padStart(2, "0")}.md`,
-    title: index === 2 ? "Duplicated title" : `Legal sample ${index + 1}`,
-    type: ["法律", "行政法规", "地方性法规", "司法解释", "监察法规"][index % 5],
-    status: ["有效", "已修改", "尚未生效"][index % 3],
-    category: index % 4 === 0 ? "地方人大及其常委会 > 浙江" : "法律",
+    title: index === 2 ? "Duplicated title" : `Knowledge sample ${index + 1}`,
+    type: ["policy", "guide", "manual", "workflow", "reference"][index % 5],
+    status: ["active", "revised", "draft"][index % 3],
+    category: index % 4 === 0 ? "Operations > Support" : "Knowledge",
     publicationDate: `2026-01-${String((index % 28) + 1).padStart(2, "0")}`,
     sizeBytes: 1024 + index
   }));

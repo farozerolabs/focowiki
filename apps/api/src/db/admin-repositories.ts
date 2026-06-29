@@ -28,6 +28,7 @@ import {
   createRuntimeSettingsRepository,
   type RuntimeSettingsRepository
 } from "../runtime-settings/repository.js";
+import type { ModelApiMode } from "../runtime-settings/types.js";
 
 export type CursorPage<T> = {
   items: T[];
@@ -324,6 +325,7 @@ export type ModelInvocationRecord = {
   knowledgeBaseId: string;
   sourceFileId: string;
   modelConfigId?: string | null;
+  apiMode?: ModelApiMode | null;
   modelName: string;
   status: ModelInvocationStatus;
   startedAt: string;
@@ -877,6 +879,7 @@ type ModelInvocationRow = {
   knowledge_base_id: string;
   source_file_id: string;
   model_config_id: string | null;
+  api_mode: ModelApiMode | null;
   model_name: string;
   status: ModelInvocationStatus;
   started_at: Date;
@@ -2295,6 +2298,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               knowledge_base_id,
               source_file_id,
               model_config_id,
+              api_mode,
               model_name,
               status,
               started_at,
@@ -2308,6 +2312,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${input.knowledgeBaseId},
               ${input.sourceFileId},
               ${input.modelConfigId ?? null},
+              ${input.apiMode ?? null},
               ${input.modelName},
               ${input.status},
               ${input.startedAt},
@@ -2321,6 +2326,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               knowledge_base_id,
               source_file_id,
               model_config_id,
+              api_mode,
               model_name,
               status,
               started_at,
@@ -2373,6 +2379,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               knowledge_base_id,
               source_file_id,
               model_config_id,
+              api_mode,
               model_name,
               status,
               started_at,
@@ -2966,6 +2973,7 @@ function mapModelInvocationRow(row: ModelInvocationRow): ModelInvocationRecord {
     knowledgeBaseId: row.knowledge_base_id,
     sourceFileId: row.source_file_id,
     modelConfigId: row.model_config_id,
+    apiMode: row.api_mode,
     modelName: row.model_name,
     status: row.status,
     startedAt: row.started_at.toISOString(),

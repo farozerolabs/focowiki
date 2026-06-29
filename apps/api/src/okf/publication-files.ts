@@ -1,5 +1,6 @@
 import {
   buildSearchIndex,
+  applyPresentationSuggestions,
   buildGraphGeneratedFiles,
   buildGraphLinkIndexEntries,
   bundleSchemaTitle,
@@ -86,17 +87,7 @@ export type PublicationGraphFilesInput = {
   generatedAt: string;
 };
 
-export function applyPresentationSuggestions(
-  metadata: SourceMetadata,
-  suggestions: SourceModelSuggestions | null
-): SourceMetadata {
-  if (typeof metadata.description === "string" && metadata.description.trim()) {
-    return metadata;
-  }
-
-  const description = suggestions?.description.trim();
-  return description ? { ...metadata, description } : metadata;
-}
+export { applyPresentationSuggestions };
 
 export function renderPageFile(
   page: GeneratedPageSummary,

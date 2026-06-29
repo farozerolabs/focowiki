@@ -598,6 +598,7 @@ function writeReport(report) {
     "",
     `- Required: ${report.modelAssistance?.required ? "yes" : "no"}`,
     `- Enabled: ${report.modelAssistance?.enabled ? "yes" : "no"}`,
+    `- API mode: ${report.modelAssistance?.apiMode ?? "not-configured"}`,
     `- Model: ${report.modelAssistance?.modelName ?? "none"}`,
     `- Context window tokens: ${report.modelAssistance?.contextWindowTokens ?? "not-configured"}`,
     `- Suggestion concurrency: ${report.modelAssistance?.suggestionConcurrency ?? "not-configured"}`,
@@ -823,6 +824,7 @@ function readModelAssistanceMode(env) {
   return {
     required,
     enabled: false,
+    apiMode: null,
     modelName: null,
     baseUrl: null,
     contextWindowTokens: null,
@@ -890,6 +892,9 @@ async function readRuntimeModelAssistanceMode(admin, env) {
   return {
     ...mode,
     enabled: true,
+    apiMode: ["responses", "chat_completions"].includes(activeModel.apiMode)
+      ? activeModel.apiMode
+      : null,
     modelName: activeModel.modelName ?? null,
     baseUrl: activeModel.baseUrl ? redactUrl(activeModel.baseUrl) : null,
     contextWindowTokens: Number(activeModel.contextWindowTokens ?? 0),
@@ -920,6 +925,7 @@ async function validateModelAssistanceMode(admin, env, report) {
   }
 
   if (
+    !["responses", "chat_completions"].includes(mode.apiMode) ||
     !Number.isSafeInteger(mode.contextWindowTokens) ||
     mode.contextWindowTokens <= 0 ||
     !Number.isSafeInteger(mode.requestMaxTimeoutMs) ||
@@ -930,7 +936,7 @@ async function validateModelAssistanceMode(admin, env, report) {
     !Number.isSafeInteger(mode.suggestionConcurrency) ||
     mode.suggestionConcurrency <= 0
   ) {
-    throw new Error("Model assistance validation requires valid context, timeout, and concurrency settings.");
+    throw new Error("Model assistance validation requires valid API mode, context, timeout, and concurrency settings.");
   }
 
   report.checks.push(
@@ -939,6 +945,7 @@ async function validateModelAssistanceMode(admin, env, report) {
       "Model assistance is enabled with bounded context, timeout, and concurrency settings.",
       {
         modelName: mode.modelName,
+        apiMode: mode.apiMode,
         baseUrl: mode.baseUrl,
         contextWindowTokens: mode.contextWindowTokens,
         requestMaxTimeoutMs: mode.requestMaxTimeoutMs,
@@ -1494,7 +1501,13 @@ function validateSourceFileModelEvidence(files, samples, env, report, options = 
   const failed = matchingFiles.filter((file) => file.modelInvocationStatus === "failed");
   const completed = matchingFiles.filter((file) => file.modelInvocationStatus === "completed");
 
-  if (missingModel.length > 0 || skipped.length > 0 || failed.length > 0 || completed.length !== samples.length) {
+  if (failed.length > 0) {
+    report.manualReviewItems.push(
+      `Model provider returned warnings for ${failed.length} source file(s); generated files used deterministic fallback and model output quality could not be judged for those files.`
+    );
+  }
+
+  if (missingModel.length > 0 || skipped.length > 0 || completed.length + failed.length !== samples.length) {
     throw new Error(
       `Source-file model evidence is incomplete: missing=${missingModel.length}, skipped=${skipped.length}, failed=${failed.length}, completed=${completed.length}.`
     );
@@ -1507,7 +1520,7 @@ function validateSourceFileModelEvidence(files, samples, env, report, options = 
   report.checks.push(
     okCheck(
       options.checkName ?? "source-file-llm-detail",
-      options.message ?? "Source-file rows expose LLM stage and model invocation summaries.",
+      options.message ?? "Source-file rows expose terminal LLM stage and model invocation summaries.",
       {
         expectedSamples: samples.length,
         completed: completed.length,
@@ -3165,7 +3178,12 @@ async function validateModelInvocationBoundaries(
          FROM focowiki.model_invocations
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND source_file_id = ANY(${sourceFileIds})
-           AND model_name = ${mode.modelName ?? ""}) AS matching_model_name
+           AND model_name = ${mode.modelName ?? ""}) AS matching_model_name,
+        (SELECT count(*)::int
+         FROM focowiki.model_invocations
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND source_file_id = ANY(${sourceFileIds})
+           AND api_mode = ${mode.apiMode ?? ""}) AS matching_api_mode
     `;
 
     if (shape.source_files !== samples.length) {
@@ -3189,17 +3207,23 @@ async function validateModelInvocationBoundaries(
     if (
       shape.llm_phase_events !== expectedLlmPhaseEvents ||
       shape.invocations !== samples.length ||
-      shape.completed !== samples.length ||
-      shape.failed !== 0 ||
+      shape.completed + shape.failed !== samples.length ||
       shape.skipped !== 0 ||
       shape.non_terminal !== 0 ||
-      shape.matching_model_name !== samples.length
+      shape.matching_model_name !== samples.length ||
+      shape.matching_api_mode !== samples.length
     ) {
       throw new Error(`Unexpected model invocation state: ${JSON.stringify(shape)}`);
     }
 
+    if (shape.failed > 0) {
+      report.manualReviewItems.push(
+        `Model invocation failed for ${shape.failed} source file(s); review provider connectivity before using model-generated suggestions as quality evidence.`
+      );
+    }
+
     const rows = await sql`
-      SELECT s.original_name, m.status, m.model_name, m.warning_count, m.error_code, m.error_message
+      SELECT s.original_name, m.status, m.api_mode, m.model_name, m.warning_count, m.error_code, m.error_message
       FROM focowiki.model_invocations m
       JOIN focowiki.source_files s ON s.id = m.source_file_id
       WHERE m.knowledge_base_id = ${knowledgeBaseId}
@@ -3211,6 +3235,10 @@ async function validateModelInvocationBoundaries(
     for (const row of rows) {
       if (!expectedNames.has(row.original_name)) {
         throw new Error(`Model invocation was linked to an unexpected source filename: ${row.original_name}`);
+      }
+
+      if (row.api_mode !== mode.apiMode) {
+        throw new Error(`Model invocation used unexpected API mode: ${row.api_mode ?? "missing"}.`);
       }
 
       const safeSummary = JSON.stringify({ errorCode: row.error_code, errorMessage: row.error_message });

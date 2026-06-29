@@ -111,6 +111,10 @@ export const resources = {
           manual: "Manual",
           per_file: "Per file"
         },
+        modelApiModes: {
+          responses: "Responses API",
+          chat_completions: "Chat Completions API"
+        },
         toast: {
           saveSuccess: "Settings saved",
           saveFailed: "Settings save failed",
@@ -184,6 +188,7 @@ export const resources = {
           },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
+            apiMode: "Provider protocol used for model requests. Use Responses API for OpenAI Structured Outputs providers; use Chat Completions API for providers that expose /chat/completions JSON output.",
             baseUrl: "OpenAI-compatible API base URL. Recommended: include /v1 when the provider requires it.",
             apiKey: "Provider API key. Recommended: use a scoped key and rotate it regularly.",
             modelName: "Model identifier sent to the provider. Recommended: match provider documentation exactly.",
@@ -245,6 +250,7 @@ export const resources = {
           fileProcessingConcurrency: "File processing concurrency",
           storageConcurrency: "Storage concurrency",
           displayName: "Display name",
+          apiMode: "API mode",
           baseUrl: "Base URL",
           apiKey: "API key",
           modelName: "Model name",
@@ -639,6 +645,10 @@ export const resources = {
           manual: "手动",
           per_file: "按文件"
         },
+        modelApiModes: {
+          responses: "Responses API",
+          chat_completions: "Chat Completions API"
+        },
         toast: {
           saveSuccess: "设置已保存",
           saveFailed: "设置保存失败",
@@ -712,6 +722,7 @@ export const resources = {
           },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
+            apiMode: "模型请求使用的接口协议。支持 OpenAI Structured Outputs 的服务商使用 Responses API；只提供 /chat/completions JSON 输出的服务商使用 Chat Completions API。",
             baseUrl: "OpenAI 兼容 API 地址。服务商要求时推荐包含 /v1。",
             apiKey: "模型服务 API key。推荐使用独立权限 key，并定期轮换。",
             modelName: "发送给模型服务的模型标识。推荐与服务商文档完全一致。",
@@ -773,6 +784,7 @@ export const resources = {
           fileProcessingConcurrency: "文件处理并发",
           storageConcurrency: "存储并发",
           displayName: "显示名称",
+          apiMode: "API 模式",
           baseUrl: "Base URL",
           apiKey: "API key",
           modelName: "模型名称",

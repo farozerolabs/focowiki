@@ -3,15 +3,17 @@ import {
   type ModelSuggestionResult,
   type ModelReceiveTimeouts,
   type ModelSuggestions,
-  type OpenAIResponsesClient
+  type OpenAIModelClient
 } from "@focowiki/okf";
+import type { ModelApiMode } from "../runtime-settings/types.js";
 import { mapWithConcurrency } from "../runtime/bounded.js";
 import type { BoundedTaskRunner } from "../runtime/task-runner.js";
 import { selectModelCandidatePaths } from "./model-candidates.js";
 
 export type ModelAssistanceOptions = {
   modelConfigId?: string | null;
-  client: OpenAIResponsesClient;
+  apiMode: ModelApiMode;
+  client: OpenAIModelClient;
   modelName: string;
   contextWindowTokens: number;
   receiveTimeouts: ModelReceiveTimeouts;

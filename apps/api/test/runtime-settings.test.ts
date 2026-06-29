@@ -98,6 +98,7 @@ describe("runtime settings service", () => {
 
     const model = await service.createModel({
       displayName: "OpenAI production",
+      apiMode: "chat_completions",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test-secret",
       modelName: "gpt-test",
@@ -111,6 +112,7 @@ describe("runtime settings service", () => {
     });
 
     expect(JSON.stringify(model)).not.toContain("sk-test-secret");
+    expect(model.apiMode).toBe("chat_completions");
     await expect(service.deleteModel({ id: model.id })).rejects.toMatchObject({
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
@@ -142,6 +144,7 @@ describe("runtime settings service", () => {
     });
     await firstService.createModel({
       displayName: "OpenAI production",
+      apiMode: "responses",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-restart-secret",
       modelName: "gpt-test",
@@ -183,6 +186,7 @@ describe("runtime settings service", () => {
     repository.models.set("model-legacy", {
       id: "model-legacy",
       displayName: "Legacy model",
+      apiMode: "responses",
       baseUrl: "https://api.openai.com/v1",
       apiKey: legacyEncrypted,
       apiKeyFingerprint: fingerprintRuntimeSecret("sk-legacy-secret"),
@@ -231,6 +235,57 @@ describe("runtime settings service", () => {
         process.env.SETTINGS_ENCRYPTION_SECRET = previousSecret;
       }
     }
+  });
+
+  it("rejects activating or resuming models whose key cannot be recovered", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const now = new Date().toISOString();
+    repository.models.set("model-unrecoverable", {
+      id: "model-unrecoverable",
+      displayName: "Unrecoverable model",
+      apiMode: "responses",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: encryptRuntimeSecret({
+        value: "sk-lost-secret",
+        secret: "different-deployment-secret"
+      }),
+      apiKeyFingerprint: fingerprintRuntimeSecret("sk-lost-secret"),
+      modelName: "gpt-test",
+      contextWindowTokens: 200_000,
+      requestMaxTimeoutMs: 600_000,
+      requestIdleTimeoutMs: 120_000,
+      suggestionConcurrency: 2,
+      transientRetryDelayMs: 60_000,
+      requestMinIntervalMs: 2_000,
+      status: "paused",
+      isActive: false,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    });
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+
+    await expect(service.resumeModel({ id: "model-unrecoverable" })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: [
+        {
+          field: "model",
+          message: "model api key is unrecoverable"
+        }
+      ]
+    });
+    await expect(service.activateModel({ id: "model-unrecoverable" })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+    expect(repository.models.get("model-unrecoverable")).toMatchObject({
+      status: "paused",
+      isActive: false
+    });
   });
 
   it("serves runtime settings through authenticated Admin API routes", async () => {
@@ -497,6 +552,7 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
 
   public async createModel(input: {
     displayName: string;
+    apiMode: RuntimeModelConfigPrivate["apiMode"];
     baseUrl: string;
     encryptedApiKey: string;
     apiKeyFingerprint: string;
@@ -513,6 +569,7 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     const model: RuntimeModelConfigPrivate = {
       id: `model-${this.models.size + 1}`,
       displayName: input.displayName,
+      apiMode: input.apiMode,
       baseUrl: input.baseUrl,
       apiKey: input.encryptedApiKey,
       apiKeyFingerprint: input.apiKeyFingerprint,

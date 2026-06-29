@@ -24,6 +24,7 @@ import {
   type SourceMetadataDefaults
 } from "./metadata.js";
 import { prepareGeneratedMarkdownBody } from "./markdown-appendix.js";
+import { applyPresentationSuggestions } from "./presentation-suggestions.js";
 import {
   DEFAULT_OKF_LOG_LIMITS,
   renderOkfIndex,
@@ -367,18 +368,6 @@ function isSafePublicPathSegment(segment: string): boolean {
     !segment.includes("/") &&
     !/[\u0000-\u001F\u007F]/.test(segment)
   );
-}
-
-function applyPresentationSuggestions(
-  metadata: SourceMetadata,
-  suggestions: SourceModelSuggestions | null
-): SourceMetadata {
-  if (typeof metadata.description === "string" && metadata.description.trim()) {
-    return metadata;
-  }
-
-  const description = suggestions?.description.trim();
-  return description ? { ...metadata, description } : metadata;
 }
 
 function applyGraphMetadata(

@@ -62,7 +62,7 @@ function renderAgentReport(report) {
     line("change", report.change),
     line("startedAt", report.startedAt),
     line("finishedAt", report.finishedAt),
-    line("uploadedLegalFileCount", report.sampleCount),
+    line("uploadedMarkdownFileCount", report.sampleCount),
     line("personaCount", Object.keys(counts.personas).length),
     line("scenarioCount", counts.scenarioCount),
     line("explorationRoundCount", counts.roundCount),
@@ -247,12 +247,12 @@ function translateDecision(value) {
 function translateQuestion(value) {
   return String(value)
     .replace(/^Find the generated knowledge file for "(.+)" and cite the visible file evidence\.$/u, REPORT_LOCALE.questions.findGeneratedFile)
-    .replace(/^Check the status or date metadata for "(.+)" using generated files only\.$/u, REPORT_LOCALE.questions.checkStatusOrDate)
+    .replace(/^Check visible metadata for "(.+)" using generated files only\.$/u, REPORT_LOCALE.questions.checkVisibleMetadata)
     .replace(/^Compare the visible metadata and generated file evidence for "(.+)" and "(.+)"\.$/u, REPORT_LOCALE.questions.compareMetadata)
-    .replace(/^Explore regional or issuer clues for "(.+)" and identify supporting generated files\.$/u, REPORT_LOCALE.questions.exploreRegionOrIssuer)
+    .replace(/^Explore topic or source clues for "(.+)" and identify supporting generated files\.$/u, REPORT_LOCALE.questions.exploreTopicOrSource)
     .replace(/^Start from "(.+)" and follow visible graph or related-file evidence to another generated page\.$/u, REPORT_LOCALE.questions.followRelated)
     .replace(/^Determine whether the knowledge base contains a document titled __focowiki_validation_missing_document__\.$/u, REPORT_LOCALE.questions.missingDocument)
-    .replace(/ Use legal reading order: title, status, date, issuer or region, then related laws\.$/u, REPORT_LOCALE.questions.legalReadingOrder);
+    .replace(/ Use the document's visible title, metadata, source clues, and related files before answering\.$/u, REPORT_LOCALE.questions.domainReadingOrder);
 }
 
 function translateSummary(value) {

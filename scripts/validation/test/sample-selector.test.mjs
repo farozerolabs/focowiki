@@ -46,12 +46,8 @@ test("selectSamples chooses a deterministic bounded Markdown sample without read
     assert.equal(result.coverage.includesDuplicatedTitle, true);
     assert.equal(result.coverage.includesNonAsciiBasename, true);
     assert.equal(result.coverage.includesUnknownMetadata, true);
-    for (const status of REQUIRED_SAMPLE_COVERAGE.statuses) {
-      assert.equal(result.coverage.statuses.includes(status), true);
-    }
-    for (const type of REQUIRED_SAMPLE_COVERAGE.types) {
-      assert.equal(result.coverage.types.includes(type), true);
-    }
+    assert.equal(result.coverage.statuses.length >= REQUIRED_SAMPLE_COVERAGE.minDistinctStatuses, true);
+    assert.equal(result.coverage.types.length >= REQUIRED_SAMPLE_COVERAGE.minDistinctTypes, true);
     assert.equal(result.samples.every((sample) => sample.hasBody), true);
     assert.equal(result.samples.some((sample) => Object.hasOwn(sample, "body")), false);
     assert.equal(result.samples.some((sample) => sample.hasNonAsciiBasename), true);
@@ -215,21 +211,23 @@ test("selectSingleAndBatchSamples rejects invalid flow sample settings", () => {
 function writeCoverageFiles(markdownDir, count = 14) {
   const longTitle = "Long validation title ".repeat(5).trim();
   const duplicateTitle = "Duplicated validation title";
+  const types = ["policy", "guide", "manual", "workflow", "reference"];
+  const statuses = ["active", "revised", "draft"];
   const baseRows = [
-    ["01__unknown-date__.md", "Sample one", REQUIRED_SAMPLE_COVERAGE.types[0], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["02.md", "Sample two", REQUIRED_SAMPLE_COVERAGE.types[1], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
-    ["03.md", "Sample three", REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
-    ["04.md", "Sample four", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["05.md", "Sample five", REQUIRED_SAMPLE_COVERAGE.types[4], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
-    ["06.md", longTitle, REQUIRED_SAMPLE_COVERAGE.types[0], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
-    ["07.md", duplicateTitle, REQUIRED_SAMPLE_COVERAGE.types[1], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["08.md", duplicateTitle, REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
-    ["09.md", "Sample nine", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
-    ["10.md", "Sample ten", REQUIRED_SAMPLE_COVERAGE.types[4], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["11.md", "Sample eleven", REQUIRED_SAMPLE_COVERAGE.types[0], REQUIRED_SAMPLE_COVERAGE.statuses[1]],
-    ["12.md", "Sample twelve", REQUIRED_SAMPLE_COVERAGE.types[1], REQUIRED_SAMPLE_COVERAGE.statuses[2]],
-    ["13.md", "Sample thirteen", REQUIRED_SAMPLE_COVERAGE.types[2], REQUIRED_SAMPLE_COVERAGE.statuses[0]],
-    ["法规14.md", "Sample fourteen", REQUIRED_SAMPLE_COVERAGE.types[3], REQUIRED_SAMPLE_COVERAGE.statuses[1]]
+    ["01__unknown-date__.md", "Sample one", types[0], statuses[0]],
+    ["02.md", "Sample two", types[1], statuses[1]],
+    ["03.md", "Sample three", types[2], statuses[2]],
+    ["04.md", "Sample four", types[3], statuses[0]],
+    ["05.md", "Sample five", types[4], statuses[1]],
+    ["06.md", longTitle, types[0], statuses[2]],
+    ["07.md", duplicateTitle, types[1], statuses[0]],
+    ["08.md", duplicateTitle, types[2], statuses[1]],
+    ["09.md", "Sample nine", types[3], statuses[2]],
+    ["10.md", "Sample ten", types[4], statuses[0]],
+    ["11.md", "Sample eleven", types[0], statuses[1]],
+    ["12.md", "Sample twelve", types[1], statuses[2]],
+    ["13.md", "Sample thirteen", types[2], statuses[0]],
+    ["示例14.md", "Sample fourteen", types[3], statuses[1]]
   ];
   const rows = [...baseRows];
 
@@ -237,8 +235,8 @@ function writeCoverageFiles(markdownDir, count = 14) {
     rows.push([
       `${String(index).padStart(2, "0")}.md`,
       `Sample ${index}`,
-      REQUIRED_SAMPLE_COVERAGE.types[index % REQUIRED_SAMPLE_COVERAGE.types.length],
-      REQUIRED_SAMPLE_COVERAGE.statuses[index % REQUIRED_SAMPLE_COVERAGE.statuses.length]
+      types[index % types.length],
+      statuses[index % statuses.length]
     ]);
   }
 
