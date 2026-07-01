@@ -37,6 +37,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "verify": "pnpm lint && pnpm typecheck && pnpm test",
+    "security:audit": "pnpm --config.registry=https://registry.npmjs.org audit --audit-level=low",
     "validate:cleaned-markdown:samples": "node scripts/validation/cleaned-markdown-flow.mjs samples",
     "validate:cleaned-markdown:api": "node scripts/validation/cleaned-markdown-flow.mjs api",
     "validate:cleaned-markdown:browser": "node scripts/validation/cleaned-markdown-browser.mjs",
@@ -85,7 +86,7 @@
     "test:validation": "node --test scripts/validation/test/*.test.mjs"
   },
   "devDependencies": {
-    "@redocly/cli": "2.33.2",
+    "@redocly/cli": "2.35.1",
     "@types/node": "^25.9.3",
     "eslint": "^10.5.0",
     "jsdom": "^29.1.1",
