@@ -188,7 +188,9 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const deleted = await deletionService.deleteKnowledgeBase({
         knowledgeBaseId,
         deletedAt: new Date().toISOString(),
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+        hardDeleteMaxAttempts: (await services.runtimeSettings?.getSnapshot())?.worker
+          .hardDeleteMaxAttempts
       });
 
       if (!deleted) {
@@ -384,7 +386,9 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         knowledgeBaseId: knowledgeBase.id,
         sourceFileIds: input.sourceFileIds,
         deletedAt: new Date().toISOString(),
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+        hardDeleteMaxAttempts: (await services.runtimeSettings?.getSnapshot())?.worker
+          .hardDeleteMaxAttempts
       });
 
       if (!result) {
@@ -974,6 +978,9 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       config,
       runtimeSettings: services.runtimeSettings
     });
+    const runtimeSnapshot = services.runtimeSettings
+      ? await services.runtimeSettings.getSnapshot()
+      : null;
     const result = await deletionService.deleteSourcePage({
       knowledgeBaseId: file.knowledgeBaseId,
       logicalPath: file.logicalPath,
@@ -983,7 +990,8 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       cursorTtlSeconds: config.pagination.cursorTtlSeconds,
       fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
       okfLog: config.okf?.log,
-      publication: config.publication
+      publication: config.publication,
+      hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts
     });
 
     if (!result.ok) {

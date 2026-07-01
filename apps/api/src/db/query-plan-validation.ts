@@ -19,7 +19,16 @@ export type QueryPlanTargetName =
   | "generated-file-search-no-result"
   | "generated-file-search-kind-filter"
   | "generated-file-search-cache-hit"
-  | "source-file-graph-summary";
+  | "source-file-graph-summary"
+  | "hard-delete-source-search-documents"
+  | "hard-delete-source-tree-entries"
+  | "hard-delete-source-bundle-files"
+  | "hard-delete-source-worker-jobs"
+  | "hard-delete-knowledge-base-search-documents"
+  | "hard-delete-knowledge-base-tree-entries"
+  | "hard-delete-knowledge-base-bundle-files"
+  | "hard-delete-knowledge-base-source-files"
+  | "hard-delete-knowledge-base-worker-jobs";
 
 export type QueryPlanTarget = {
   name: QueryPlanTargetName;
@@ -412,6 +421,165 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND deleted_at IS NULL
           AND task_deleted_at IS NULL
         LIMIT 1
+      `
+    }
+  ];
+}
+
+export function createHardDeletePlanTargets(): QueryPlanTarget[] {
+  return [
+    {
+      name: "hard-delete-source-search-documents",
+      description: "Source-file hard delete search-document cleanup must stay source scoped.",
+      sql: `
+        WITH target AS (
+          SELECT release_id, bundle_file_id
+          FROM focowiki.bundle_file_search_documents
+          WHERE knowledge_base_id = 'kb-plan'
+            AND source_file_id = 'source-file-plan'
+          ORDER BY bundle_file_id ASC
+          LIMIT 100
+        )
+        SELECT document.bundle_file_id
+        FROM focowiki.bundle_file_search_documents document
+        JOIN target
+          ON document.release_id = target.release_id
+         AND document.bundle_file_id = target.bundle_file_id
+      `
+    },
+    {
+      name: "hard-delete-source-tree-entries",
+      description: "Source-file hard delete tree cleanup must resolve entries through owned bundle files.",
+      sql: `
+        WITH target AS (
+          SELECT entry.id
+          FROM focowiki.bundle_tree_entries entry
+          JOIN focowiki.bundle_files bundle
+            ON bundle.id = entry.bundle_file_id
+          WHERE bundle.knowledge_base_id = 'kb-plan'
+            AND bundle.source_file_id = 'source-file-plan'
+          ORDER BY entry.id ASC
+          LIMIT 100
+        )
+        SELECT entry.id
+        FROM focowiki.bundle_tree_entries entry
+        JOIN target ON target.id = entry.id
+      `
+    },
+    {
+      name: "hard-delete-source-bundle-files",
+      description: "Source-file hard delete bundle cleanup must use knowledge-base and source-file scope.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = 'kb-plan'
+            AND source_file_id = 'source-file-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT file.id
+        FROM focowiki.bundle_files file
+        JOIN target ON target.id = file.id
+      `
+    },
+    {
+      name: "hard-delete-source-worker-jobs",
+      description: "Source-file hard delete worker cleanup must target only the source-file job scope.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.worker_jobs
+          WHERE knowledge_base_id = 'kb-plan'
+            AND source_file_id = 'source-file-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT job.id
+        FROM focowiki.worker_jobs job
+        JOIN target ON target.id = job.id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-search-documents",
+      description: "Knowledge-base hard delete search cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT release_id, bundle_file_id
+          FROM focowiki.bundle_file_search_documents
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY bundle_file_id ASC
+          LIMIT 100
+        )
+        SELECT document.bundle_file_id
+        FROM focowiki.bundle_file_search_documents document
+        JOIN target
+          ON document.release_id = target.release_id
+         AND document.bundle_file_id = target.bundle_file_id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-tree-entries",
+      description: "Knowledge-base hard delete tree cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.bundle_tree_entries
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT entry.id
+        FROM focowiki.bundle_tree_entries entry
+        JOIN target ON target.id = entry.id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-bundle-files",
+      description: "Knowledge-base hard delete bundle cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT file.id
+        FROM focowiki.bundle_files file
+        JOIN target ON target.id = file.id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-source-files",
+      description: "Knowledge-base hard delete source cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.source_files
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT source_file.id
+        FROM focowiki.source_files source_file
+        JOIN target ON target.id = source_file.id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-worker-jobs",
+      description: "Knowledge-base hard delete worker cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.worker_jobs
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT job.id
+        FROM focowiki.worker_jobs job
+        JOIN target ON target.id = job.id
       `
     }
   ];

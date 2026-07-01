@@ -2709,6 +2709,7 @@ async function validateSourceDeletionFullFlow({
     knowledgeBaseId,
     sourceFileId: pageFile.sourceFileId,
     deletedPagePath: pageFile.logicalPath,
+    timeoutMs: processingTimeoutMs,
     report
   });
 
@@ -2720,12 +2721,13 @@ async function validateSourceDeletionFullFlow({
     throw new Error("Deletion validation requires at least one non-deleted source-backed page.");
   }
 
-  await validatePublicDeletionState({
+  await pollPublicDeletionState({
     publicApi,
     env,
     knowledgeBaseId,
     deletedPagePath: pageFile.logicalPath,
     remainingPagePath: remainingPage.logicalPath,
+    timeoutMs: processingTimeoutMs,
     report
   });
 
@@ -2797,66 +2799,106 @@ async function validateDeletionDatabaseBoundaries({
   knowledgeBaseId,
   sourceFileId,
   deletedPagePath,
+  timeoutMs,
   report
 }) {
   const postgresModule = requireFromApiPackage("postgres");
   const postgres = postgresModule.default ?? postgresModule;
   const sql = postgres(databaseUrl, { max: 1 });
+  const deadline = Date.now() + timeoutMs;
+  let lastShape = null;
 
   try {
-    const [shape] = await sql`
-      SELECT
-        (SELECT active_release_id
-         FROM focowiki.knowledge_bases
-         WHERE id = ${knowledgeBaseId}) AS active_release_id,
-        (SELECT count(*)::int
-         FROM focowiki.source_files
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = ${sourceFileId}
-           AND deleted_at IS NOT NULL) AS deleted_sources,
-        (SELECT count(*)::int
-         FROM focowiki.releases
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = (
-             SELECT active_release_id
-             FROM focowiki.knowledge_bases
-             WHERE id = ${knowledgeBaseId}
-           )
-           AND published_at IS NOT NULL) AS published_releases,
-        (SELECT count(*)::int
-         FROM focowiki.source_file_events
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ${sourceFileId}
-           AND stage_key = 'source_deletion') AS source_deletion_events,
-        (SELECT count(*)::int
-         FROM focowiki.bundle_files
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND release_id = (
-             SELECT active_release_id
-             FROM focowiki.knowledge_bases
-             WHERE id = ${knowledgeBaseId}
-           )
-           AND logical_path = ${deletedPagePath}) AS stale_active_pages
-    `;
+    while (Date.now() < deadline) {
+      const [shape] = await sql`
+        SELECT
+          (SELECT active_release_id
+           FROM focowiki.knowledge_bases
+           WHERE id = ${knowledgeBaseId}) AS active_release_id,
+          (SELECT count(*)::int
+           FROM focowiki.source_files
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+             AND id = ${sourceFileId}) AS source_rows,
+          (SELECT count(*)::int
+           FROM focowiki.source_files
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+             AND id = ${sourceFileId}
+             AND deleted_at IS NOT NULL) AS deleted_sources,
+          (SELECT count(*)::int
+           FROM focowiki.releases
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+             AND id = (
+               SELECT active_release_id
+               FROM focowiki.knowledge_bases
+               WHERE id = ${knowledgeBaseId}
+             )
+             AND published_at IS NOT NULL) AS published_releases,
+          (SELECT count(*)::int
+           FROM focowiki.source_file_events
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+             AND source_file_id = ${sourceFileId}
+             AND stage_key = 'source_deletion') AS source_deletion_events,
+          (SELECT count(*)::int
+           FROM focowiki.bundle_files
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+             AND release_id = (
+               SELECT active_release_id
+               FROM focowiki.knowledge_bases
+               WHERE id = ${knowledgeBaseId}
+             )
+             AND logical_path = ${deletedPagePath}) AS stale_active_pages
+      `;
 
-    if (
-      !shape.active_release_id ||
-      shape.deleted_sources !== 1 ||
-      shape.published_releases !== 1 ||
-      shape.source_deletion_events < 1 ||
-      shape.stale_active_pages !== 0
-    ) {
-      throw new Error(`Unexpected deletion database state: ${JSON.stringify(shape)}`);
+      lastShape = shape;
+
+      const sourceRemovedOrTombstoned = shape.source_rows === 0 || shape.deleted_sources === 1;
+      const deletionRecordedOrFinalized = shape.source_deletion_events >= 1 || shape.source_rows === 0;
+
+      if (
+        shape.active_release_id &&
+        sourceRemovedOrTombstoned &&
+        shape.published_releases === 1 &&
+        deletionRecordedOrFinalized &&
+        shape.stale_active_pages === 0
+      ) {
+        report.checks.push(
+          okCheck(
+            "deletion-database-boundaries",
+            "PostgreSQL records source deletion or finalized hard deletion with a replacement active release.",
+            shape,
+            WHITE_BOX
+          )
+        );
+
+        return shape.active_release_id;
+      }
+
+      await sleep(1_000);
     }
 
-    report.checks.push(
-      okCheck("deletion-database-boundaries", "PostgreSQL records source deletion, file events, and a replacement active release.", shape, WHITE_BOX)
-    );
-
-    return shape.active_release_id;
+    throw new Error(`Timed out waiting for deletion database state: ${JSON.stringify(lastShape)}`);
   } finally {
     await sql.end({ timeout: 5 });
   }
+}
+
+async function pollPublicDeletionState(input) {
+  const deadline = Date.now() + input.timeoutMs;
+  let lastError = null;
+
+  while (Date.now() < deadline) {
+    try {
+      await validatePublicDeletionState(input);
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(1_000);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Timed out waiting for public deletion state.");
 }
 
 async function validatePublicDeletionState({

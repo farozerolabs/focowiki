@@ -24,10 +24,13 @@ describe("knowledge base cache invalidation", () => {
         "source-files:kb-001",
         "developer-openapi:source-files:kb-001",
         "source-file-events:kb-001:source-001",
+        "developer-openapi:source-file-events:kb-001:source-001",
+        "developer-openapi:related:kb-001:source-001",
         "file-tree:kb-001:release-002",
         "developer-openapi:tree:kb-001:release-002",
         "bundle-files:kb-001:release-002",
-        "public-files:kb-001:release-002"
+        "public-files:kb-001:release-002",
+        "developer-openapi:file-search:kb-001:release-002"
       ])
     );
   });

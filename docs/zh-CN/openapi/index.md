@@ -213,6 +213,8 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/so
 
 任务删除只影响来源文件任务可见性。生成文件删除使用生成文件删除接口，并传入 `generatedFileId` 或逻辑 `generatedFilePath`。
 
+知识库删除和来源文件关联生成页面删除成功后，Admin UI 与 Developer OpenAPI 的读取结果会立即移除对应数据。Focowiki 会在删除请求成功后自动清理已存储的生成数据。
+
 列出生成文件树，并保存第一个逻辑 `path` 和生成文件标识符：
 
 ```bash

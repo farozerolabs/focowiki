@@ -34,6 +34,9 @@ describe("runtime settings service", () => {
     const snapshot = await service.getSnapshot();
 
     expect(snapshot.worker.sourceFileConcurrency).toBe(2);
+    expect(snapshot.worker.hardDeleteConcurrency).toBe(1);
+    expect(snapshot.worker.hardDeleteObjectBatchSize).toBe(1_000);
+    expect(snapshot.worker.hardDeleteVersionPurgeEnabled).toBe(false);
     expect(snapshot.worker).not.toHaveProperty("databasePoolMax");
     expect(snapshot.rateLimits.publicOpenApi.max).toBe(1_200);
     expect(snapshot.uploadGeneration).toEqual({
@@ -353,6 +356,46 @@ describe("runtime settings service", () => {
       }
     });
 
+    const invalidHardDeleteBatch = await app.request("/admin/api/settings/worker", {
+      method: "PUT",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        sourceFileConcurrency: 2,
+        claimBatchSize: 10,
+        pollIntervalMs: 1_000,
+        lockTtlSeconds: 900,
+        heartbeatIntervalMs: 15_000,
+        jobMaxAttempts: 3,
+        jobRetryDelayMs: 30_000,
+        queueBackpressureLimit: 5_000,
+        queueBackpressureKnowledgeBaseLimit: 2_000,
+        queueBackpressureMaxAgeSeconds: 3_600,
+        queueBackpressureRetryAfterSeconds: 60,
+        shutdownGraceMs: 30_000,
+        completedJobRetentionDays: 7,
+        failedJobRetentionDays: 30,
+        deadLetterJobRetentionDays: 90,
+        retentionCleanupBatchSize: 1_000,
+        hardDeleteConcurrency: 1,
+        hardDeleteDatabaseBatchSize: 1_000,
+        hardDeleteObjectBatchSize: 1_001,
+        hardDeleteMaxAttempts: 3,
+        hardDeleteRetryDelayMs: 60_000,
+        hardDeleteFailedRetentionDays: 30,
+        hardDeleteVersionPurgeEnabled: false
+      })
+    });
+    expect(invalidHardDeleteBatch.status).toBe(400);
+    await expect(invalidHardDeleteBatch.json()).resolves.toMatchObject({
+      error: {
+        code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+        messageKey: "errors.runtimeSettingsValidationFailed"
+      }
+    });
+
     const invalidUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
       method: "PUT",
       headers: withTrustedAdminOrigin({
@@ -471,7 +514,14 @@ function createConfig(input: {
       jobMaxAttempts: 3,
       jobRetryDelayMs: 30_000,
       queueBackpressureLimit: 5_000,
-      shutdownGraceMs: 30_000
+      shutdownGraceMs: 30_000,
+      hardDeleteConcurrency: 1,
+      hardDeleteDatabaseBatchSize: 1_000,
+      hardDeleteObjectBatchSize: 1_000,
+      hardDeleteMaxAttempts: 3,
+      hardDeleteRetryDelayMs: 60_000,
+      hardDeleteFailedRetentionDays: 30,
+      hardDeleteVersionPurgeEnabled: false
     },
     model: input.modelEnabled
       ? {

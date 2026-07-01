@@ -14,6 +14,10 @@ import type {
 } from "../public-openapi/keys.js";
 import type { DatabaseClient } from "./client.js";
 import { createPostgresFileGraphRepository } from "./file-graph-repository.js";
+import {
+  createPostgresHardDeleteRepository,
+  type HardDeleteRepository
+} from "./hard-delete-repository.js";
 import { createSourceFileListFilterPredicate } from "./source-file-list-predicates.js";
 import {
   createPostgresWorkerJobRepository,
@@ -714,6 +718,7 @@ export type AdminRepositories = {
   knowledgeBases: KnowledgeBaseRepository;
   files?: BundleFileRepository;
   graph?: FileGraphRepository;
+  hardDelete?: HardDeleteRepository;
   workerJobs?: WorkerJobRepository;
   modelInvocations?: {
     createModelInvocation: (input: ModelInvocationDraft) => Promise<ModelInvocationRecord>;
@@ -1037,7 +1042,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
     files: {
       async createSourceFiles(files) {
         for (const file of files) {
-          await sql`
+          const rows = await sql<Array<{ id: string }>>`
             INSERT INTO focowiki.source_files (
               id,
               knowledge_base_id,
@@ -1056,7 +1061,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               processing_error_message,
               retry_count
             )
-            VALUES (
+            SELECT
               ${file.id},
               ${file.knowledgeBaseId},
               ${file.originalName},
@@ -1073,8 +1078,18 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               ${file.processingErrorCode ?? null},
               ${file.processingErrorMessage ?? null},
               ${file.retryCount ?? 0}
+            WHERE EXISTS (
+              SELECT 1
+              FROM focowiki.knowledge_bases knowledge_base
+              WHERE knowledge_base.id = ${file.knowledgeBaseId}
+                AND knowledge_base.deleted_at IS NULL
             )
+            RETURNING id
           `;
+
+          if (rows.length === 0) {
+            throw new Error("Source file creation skipped because the knowledge base is unavailable.");
+          }
         }
       },
       async createRelease(release) {
@@ -1391,10 +1406,12 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
               FROM focowiki.bundle_tree_entries entry
               LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+              LEFT JOIN focowiki.source_files source ON source.id = file.source_file_id
               WHERE entry.knowledge_base_id = ${knowledgeBaseId}
                 AND entry.release_id = ${releaseId}
                 AND entry.parent_path = ${parentPath}
                 ${entryTypeFilter}
+                AND (file.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
                 AND (entry.sort_key > ${cursorValue.sortKey} OR (entry.sort_key = ${cursorValue.sortKey} AND entry.id > ${cursorValue.id}))
               ORDER BY entry.sort_key ASC, entry.id ASC
               LIMIT ${limit + 1}
@@ -1403,10 +1420,12 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
               FROM focowiki.bundle_tree_entries entry
               LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+              LEFT JOIN focowiki.source_files source ON source.id = file.source_file_id
               WHERE entry.knowledge_base_id = ${knowledgeBaseId}
                 AND entry.release_id = ${releaseId}
                 AND entry.parent_path = ${parentPath}
                 ${entryTypeFilter}
+                AND (file.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
               ORDER BY entry.sort_key ASC, entry.id ASC
               LIMIT ${limit + 1}
             `;
@@ -1431,8 +1450,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
           FROM focowiki.bundle_tree_entries entry
           LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+          LEFT JOIN focowiki.source_files source ON source.id = file.source_file_id
           WHERE entry.knowledge_base_id = ${knowledgeBaseId}
             AND entry.release_id = ${releaseId}
+            AND (file.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
             AND (entry.name || ' ' || entry.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"}
             ${cursorFilter}
           ORDER BY entry.sort_key ASC, entry.id ASC
@@ -1447,8 +1468,10 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
                 SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path, entry.name, entry.logical_path, entry.sort_key, entry.entry_type, entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
                 FROM focowiki.bundle_tree_entries entry
                 LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+                LEFT JOIN focowiki.source_files source ON source.id = file.source_file_id
                 WHERE entry.knowledge_base_id = ${knowledgeBaseId}
                   AND entry.release_id = ${releaseId}
+                  AND (file.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
                   AND entry.logical_path = ANY(${ancestorPaths})
                 ORDER BY entry.logical_path ASC
               `
@@ -1476,25 +1499,27 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       async getBundleFile({ knowledgeBaseId, releaseId, logicalPath }) {
         const rows = await sql<BundleFileRow[]>`
           SELECT
-            id,
-            knowledge_base_id,
-            release_id,
-            logical_path,
-            object_key,
-            content_type,
-            size_bytes,
-            checksum_sha256,
-            source_file_id,
-            file_kind,
-            okf_type,
-            title,
-            description,
-            tags_json,
-            frontmatter_json
+            bundle_files.id,
+            bundle_files.knowledge_base_id,
+            bundle_files.release_id,
+            bundle_files.logical_path,
+            bundle_files.object_key,
+            bundle_files.content_type,
+            bundle_files.size_bytes,
+            bundle_files.checksum_sha256,
+            bundle_files.source_file_id,
+            bundle_files.file_kind,
+            bundle_files.okf_type,
+            bundle_files.title,
+            bundle_files.description,
+            bundle_files.tags_json,
+            bundle_files.frontmatter_json
           FROM focowiki.bundle_files
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND release_id = ${releaseId}
-            AND logical_path = ${logicalPath}
+          LEFT JOIN focowiki.source_files source ON source.id = bundle_files.source_file_id
+          WHERE bundle_files.knowledge_base_id = ${knowledgeBaseId}
+            AND bundle_files.release_id = ${releaseId}
+            AND bundle_files.logical_path = ${logicalPath}
+            AND (bundle_files.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
           LIMIT 1
         `;
         const row = rows[0];
@@ -1503,25 +1528,27 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       async getBundleFileById({ knowledgeBaseId, releaseId, fileId }) {
         const rows = await sql<BundleFileRow[]>`
           SELECT
-            id,
-            knowledge_base_id,
-            release_id,
-            logical_path,
-            object_key,
-            content_type,
-            size_bytes,
-            checksum_sha256,
-            source_file_id,
-            file_kind,
-            okf_type,
-            title,
-            description,
-            tags_json,
-            frontmatter_json
+            bundle_files.id,
+            bundle_files.knowledge_base_id,
+            bundle_files.release_id,
+            bundle_files.logical_path,
+            bundle_files.object_key,
+            bundle_files.content_type,
+            bundle_files.size_bytes,
+            bundle_files.checksum_sha256,
+            bundle_files.source_file_id,
+            bundle_files.file_kind,
+            bundle_files.okf_type,
+            bundle_files.title,
+            bundle_files.description,
+            bundle_files.tags_json,
+            bundle_files.frontmatter_json
           FROM focowiki.bundle_files
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND release_id = ${releaseId}
-            AND id = ${fileId}
+          LEFT JOIN focowiki.source_files source ON source.id = bundle_files.source_file_id
+          WHERE bundle_files.knowledge_base_id = ${knowledgeBaseId}
+            AND bundle_files.release_id = ${releaseId}
+            AND bundle_files.id = ${fileId}
+            AND (bundle_files.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
           LIMIT 1
         `;
         const row = rows[0];
@@ -1662,20 +1689,24 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseLogicalPathCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<BundleFileRow[]>`
-              SELECT id, knowledge_base_id, release_id, source_file_id, file_kind, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              SELECT bundle_files.id, bundle_files.knowledge_base_id, bundle_files.release_id, bundle_files.source_file_id, bundle_files.file_kind, bundle_files.logical_path, bundle_files.object_key, bundle_files.content_type, bundle_files.size_bytes, bundle_files.checksum_sha256, bundle_files.okf_type, bundle_files.title, bundle_files.description, bundle_files.tags_json, bundle_files.frontmatter_json
               FROM focowiki.bundle_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND release_id = ${releaseId}
-                AND (logical_path > ${cursorValue.logicalPath} OR (logical_path = ${cursorValue.logicalPath} AND id > ${cursorValue.id}))
-              ORDER BY logical_path ASC, id ASC
+              LEFT JOIN focowiki.source_files source ON source.id = bundle_files.source_file_id
+              WHERE bundle_files.knowledge_base_id = ${knowledgeBaseId}
+                AND bundle_files.release_id = ${releaseId}
+                AND (bundle_files.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
+                AND (bundle_files.logical_path > ${cursorValue.logicalPath} OR (bundle_files.logical_path = ${cursorValue.logicalPath} AND bundle_files.id > ${cursorValue.id}))
+              ORDER BY bundle_files.logical_path ASC, bundle_files.id ASC
               LIMIT ${limit + 1}
             `
           : await sql<BundleFileRow[]>`
-              SELECT id, knowledge_base_id, release_id, source_file_id, file_kind, logical_path, object_key, content_type, size_bytes, checksum_sha256, okf_type, title, description, tags_json, frontmatter_json
+              SELECT bundle_files.id, bundle_files.knowledge_base_id, bundle_files.release_id, bundle_files.source_file_id, bundle_files.file_kind, bundle_files.logical_path, bundle_files.object_key, bundle_files.content_type, bundle_files.size_bytes, bundle_files.checksum_sha256, bundle_files.okf_type, bundle_files.title, bundle_files.description, bundle_files.tags_json, bundle_files.frontmatter_json
               FROM focowiki.bundle_files
-              WHERE knowledge_base_id = ${knowledgeBaseId}
-                AND release_id = ${releaseId}
-              ORDER BY logical_path ASC, id ASC
+              LEFT JOIN focowiki.source_files source ON source.id = bundle_files.source_file_id
+              WHERE bundle_files.knowledge_base_id = ${knowledgeBaseId}
+                AND bundle_files.release_id = ${releaseId}
+                AND (bundle_files.source_file_id IS NULL OR (source.id IS NOT NULL AND source.deleted_at IS NULL))
+              ORDER BY bundle_files.logical_path ASC, bundle_files.id ASC
               LIMIT ${limit + 1}
             `;
         const pageRows = rows.slice(0, limit);
@@ -2288,6 +2319,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       }
     },
     graph: createPostgresFileGraphRepository(sql),
+    hardDelete: createPostgresHardDeleteRepository(sql),
     workerJobs: createPostgresWorkerJobRepository(sql),
     modelInvocations: {
       async createModelInvocation(input) {

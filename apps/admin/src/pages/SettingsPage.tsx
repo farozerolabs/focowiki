@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -75,7 +76,7 @@ const rateLimitGroups = [
   "publicOpenApi"
 ] as const satisfies readonly (keyof RateLimitSettings)[];
 
-const workerFields = [
+const workerNumberFields = [
   "sourceFileConcurrency",
   "claimBatchSize",
   "pollIntervalMs",
@@ -91,8 +92,18 @@ const workerFields = [
   "completedJobRetentionDays",
   "failedJobRetentionDays",
   "deadLetterJobRetentionDays",
-  "retentionCleanupBatchSize"
-] as const satisfies readonly (keyof WorkerSettings)[];
+  "retentionCleanupBatchSize",
+  "hardDeleteConcurrency",
+  "hardDeleteDatabaseBatchSize",
+  "hardDeleteObjectBatchSize",
+  "hardDeleteMaxAttempts",
+  "hardDeleteRetryDelayMs",
+  "hardDeleteFailedRetentionDays"
+] as const satisfies readonly (keyof Omit<WorkerSettings, "hardDeleteVersionPurgeEnabled">)[];
+
+const workerBooleanFields = [
+  "hardDeleteVersionPurgeEnabled"
+] as const satisfies readonly (keyof Pick<WorkerSettings, "hardDeleteVersionPurgeEnabled">)[];
 
 const publicationFields = [
   "batchSize",
@@ -140,7 +151,7 @@ const rateLimitTipItems = rateLimitGroups.flatMap((group) => [
   }
 ]);
 
-const workerTipItems = workerFields.map((field) => ({
+const workerTipItems = [...workerNumberFields, ...workerBooleanFields].map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.worker.${field}`
 }));
@@ -175,7 +186,7 @@ const modelTipItems = [
 
 type EditableNumber = number | "";
 type RateLimitGroup = (typeof rateLimitGroups)[number];
-type WorkerField = (typeof workerFields)[number];
+type WorkerNumberField = (typeof workerNumberFields)[number];
 type PublicationField = (typeof publicationFields)[number];
 type UploadGenerationField = (typeof uploadGenerationFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
@@ -188,7 +199,8 @@ type EditableRateLimitSettings = Record<
     windowSeconds: EditableNumber;
   }
 >;
-type EditableWorkerSettings = Record<WorkerField, EditableNumber>;
+type EditableWorkerSettings = Record<WorkerNumberField, EditableNumber> &
+  Pick<WorkerSettings, "hardDeleteVersionPurgeEnabled">;
 type EditablePublicationSettings = {
   mode: PublicationSettings["mode"];
 } & Record<PublicationField, EditableNumber>;
@@ -509,7 +521,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                     <form noValidate onSubmit={handleWorkerSave}>
                       <FieldGroup>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                          {workerFields.map((field) => (
+                          {workerNumberFields.map((field) => (
                             <NumberField
                               key={field}
                               id={`worker-${field}`}
@@ -519,6 +531,27 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                               onChange={(value) => setWorker({ ...worker, [field]: value })}
                             />
                           ))}
+                          <Field>
+                            <FieldLabel htmlFor="worker-hardDeleteVersionPurgeEnabled">
+                              <RequiredLabel
+                                label={t("settings.fields.hardDeleteVersionPurgeEnabled")}
+                                required
+                              />
+                            </FieldLabel>
+                            <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm">
+                              <Checkbox
+                                id="worker-hardDeleteVersionPurgeEnabled"
+                                checked={worker.hardDeleteVersionPurgeEnabled}
+                                onCheckedChange={(checked) =>
+                                  setWorker({
+                                    ...worker,
+                                    hardDeleteVersionPurgeEnabled: checked === true
+                                  })
+                                }
+                              />
+                              <span>{t("settings.fields.hardDeleteVersionPurgeEnabled")}</span>
+                            </label>
+                          </Field>
                         </div>
                         <SaveButton isSaving={isSaving === "worker"} />
                       </FieldGroup>
@@ -1032,9 +1065,14 @@ function buildRateLimitGroup(
 }
 
 function buildWorkerSettings(input: EditableWorkerSettings): WorkerSettings | null {
-  const settings = buildNumberRecord(input, workerFields);
+  const settings = buildNumberRecord(input, workerNumberFields);
 
-  return settings ? (settings as WorkerSettings) : null;
+  return settings
+    ? ({
+        ...settings,
+        hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled
+      } as WorkerSettings)
+    : null;
 }
 
 function buildPublicationSettings(input: EditablePublicationSettings): PublicationSettings | null {

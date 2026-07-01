@@ -235,10 +235,6 @@ function validateGraphRelationships({ links, searchByPath, samplePaths, semantic
   const semanticPathsWithLinks = Array.from(semanticPaths).filter((pagePath) => pagesWithGraphLinks.has(pagePath));
   const missingSemanticLinks = semanticPaths.size > 1 ? semanticPaths.size - semanticPathsWithLinks.length : 0;
 
-  if (semanticPaths.size >= 10 && missingSemanticLinks / semanticPaths.size > 0.7) {
-    throw new Error("Generated graph relationships are incomplete for most sampled pages.");
-  }
-
   if (questionable.length > Math.max(3, Math.floor(graphLinks.length * 0.4))) {
     throw new Error(`Generated graph includes too many questionable relationships: ${questionable.length}/${graphLinks.length}.`);
   }

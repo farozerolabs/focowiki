@@ -18,6 +18,7 @@ describe("worker runtime contract", () => {
 
     expect(failJobSection).toContain("input.job.attemptcount < input.job.maxattempts");
     expect(failJobSection).toContain("workerconfig.jobretrydelayms");
+    expect(failJobSection).toContain("options?.retrydelayms");
     expect(failJobSection).toContain("input.workerjobs.failworkerjob");
     expect(failJobSection).toContain("retryafter");
     expect(failJobSection).toContain("input.workerjobs.deadletterworkerjob");
@@ -27,9 +28,16 @@ describe("worker runtime contract", () => {
   it("stops new work and releases unstarted claimed jobs during shutdown", () => {
     const runtime = readRuntime();
 
+    expect(runtime).toContain("runlane({ kinds: [\"hard_delete\"]");
     expect(runtime).toContain("runlane({ kinds: [\"publication\"]");
     expect(runtime).toContain("runlane({ kinds: [\"source_file_processing\"]");
-    expect(runtime).toContain("input.role === \"publication\" ? math.min(workerconfig.pollintervalms, 1_000)");
+    expect(runtime).toContain("await promise.all([ runlane({ kinds: [\"hard_delete\"]");
+    expect(runtime).toContain("input.role === \"publication\" || input.role === \"hard_delete\"");
+    expect(runtime).toContain("workerconfig.harddeleteconcurrency");
+    expect(runtime).toContain("databasebatchsize: workerconfig.harddeletedatabasebatchsize");
+    expect(runtime).toContain("harddeleteobjectbatchsize");
+    expect(runtime).toContain("workerconfig.sourcefileconcurrency");
+    expect(runtime).toContain("workerconfig.claimbatchsize");
     expect(runtime).toContain("await readeffectiveruntimesettings()");
     expect(runtime).toContain("uploadgeneration.generationbatchsize");
     expect(runtime).toContain("uploadgeneration.fileprocessingconcurrency");

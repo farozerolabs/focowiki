@@ -34,6 +34,9 @@ describe("database schema migration", () => {
       "bundle_files",
       "bundle_file_search_documents",
       "bundle_tree_entries",
+      "worker_jobs",
+      "worker_queue_summaries",
+      "hard_delete_object_deletions",
       "public_api_keys"
     ]) {
       expect(sql).toContain(`create table if not exists focowiki.${table}`);
@@ -56,6 +59,17 @@ describe("database schema migration", () => {
     expect(sql).not.toMatch(/\bdrop\s+table\b/);
     expect(sql).not.toMatch(/\bdrop\s+column\b/);
     expect(sql).not.toContain("update focowiki.knowledge_bases set active_release_id = null");
+    expect(sql).toContain("create table if not exists focowiki.hard_delete_object_deletions");
+    expect(sql).toContain("create index if not exists hard_delete_object_deletions_job_pending_idx");
+    expect(sql).toContain("create index if not exists hard_delete_object_deletions_kb_idx");
+    expect(sql).toContain("create index if not exists hard_delete_object_deletions_source_idx");
+    expect(sql).toContain("check (kind in ('source_file_processing', 'publication', 'hard_delete'))");
+    expect(sql).toContain(
+      "check (status in ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'))"
+    );
+    expect(sql).toContain("add column if not exists hard_delete_stage text");
+    expect(sql).toContain("add column if not exists hard_delete_cursor_json jsonb");
+    expect(sql).toContain("add column if not exists hard_delete_progress_at timestamptz");
     for (const table of [
       "focowiki.bundle_tree_entries",
       "focowiki.bundle_files",

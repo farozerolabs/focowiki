@@ -467,13 +467,21 @@ CREATE TABLE IF NOT EXISTS focowiki.worker_jobs (
   failed_at timestamptz,
   last_error_code text,
   last_error_message text,
+  hard_delete_stage text,
+  hard_delete_cursor_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  hard_delete_progress_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (kind IN ('source_file_processing', 'publication')),
+  CHECK (kind IN ('source_file_processing', 'publication', 'hard_delete')),
   CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled')),
   CHECK (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at),
   CHECK (failed_at IS NULL OR started_at IS NULL OR failed_at >= started_at)
 );
+
+ALTER TABLE focowiki.worker_jobs
+  ADD COLUMN IF NOT EXISTS hard_delete_stage text,
+  ADD COLUMN IF NOT EXISTS hard_delete_cursor_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS hard_delete_progress_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS focowiki.worker_heartbeats (
   worker_id text PRIMARY KEY,
@@ -491,8 +499,19 @@ CREATE TABLE IF NOT EXISTS focowiki.worker_queue_summaries (
   job_count bigint NOT NULL DEFAULT 0 CHECK (job_count >= 0),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (knowledge_base_id, kind, status),
-  CHECK (kind IN ('source_file_processing', 'publication')),
+  CHECK (kind IN ('source_file_processing', 'publication', 'hard_delete')),
   CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'))
+);
+
+CREATE TABLE IF NOT EXISTS focowiki.hard_delete_object_deletions (
+  id text PRIMARY KEY,
+  job_id text NOT NULL REFERENCES focowiki.worker_jobs(id) ON DELETE CASCADE,
+  knowledge_base_id text NOT NULL REFERENCES focowiki.knowledge_bases(id),
+  source_file_id text REFERENCES focowiki.source_files(id),
+  object_key text NOT NULL,
+  deleted_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (job_id, object_key)
 );
 
 ALTER TABLE focowiki.source_file_graph_nodes
@@ -540,10 +559,20 @@ ALTER TABLE focowiki.worker_jobs
   ADD CONSTRAINT worker_jobs_status_check
   CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'));
 
+ALTER TABLE focowiki.worker_jobs
+  DROP CONSTRAINT IF EXISTS worker_jobs_kind_check,
+  ADD CONSTRAINT worker_jobs_kind_check
+  CHECK (kind IN ('source_file_processing', 'publication', 'hard_delete'));
+
 ALTER TABLE focowiki.worker_queue_summaries
   DROP CONSTRAINT IF EXISTS worker_queue_summaries_status_check,
   ADD CONSTRAINT worker_queue_summaries_status_check
   CHECK (status IN ('queued', 'running', 'completed', 'failed', 'dead_letter', 'cancelled'));
+
+ALTER TABLE focowiki.worker_queue_summaries
+  DROP CONSTRAINT IF EXISTS worker_queue_summaries_kind_check,
+  ADD CONSTRAINT worker_queue_summaries_kind_check
+  CHECK (kind IN ('source_file_processing', 'publication', 'hard_delete'));
 
 CREATE OR REPLACE FUNCTION focowiki.adjust_worker_queue_summary(
   input_knowledge_base_id text,
@@ -1147,6 +1176,11 @@ CREATE INDEX IF NOT EXISTS worker_jobs_claim_idx
 CREATE INDEX IF NOT EXISTS worker_jobs_kind_status_idx
   ON focowiki.worker_jobs(kind, status, run_after, id);
 
+CREATE INDEX IF NOT EXISTS worker_jobs_hard_delete_active_idx
+  ON focowiki.worker_jobs(knowledge_base_id, kind, status, run_after, id)
+  WHERE kind = 'hard_delete'
+    AND status IN ('queued', 'running');
+
 CREATE INDEX IF NOT EXISTS worker_jobs_queued_oldest_idx
   ON focowiki.worker_jobs(kind, knowledge_base_id, run_after, id)
   WHERE status = 'queued';
@@ -1183,6 +1217,17 @@ CREATE INDEX IF NOT EXISTS worker_heartbeats_seen_idx
 
 CREATE INDEX IF NOT EXISTS worker_queue_summaries_kind_status_idx
   ON focowiki.worker_queue_summaries(kind, status, knowledge_base_id);
+
+CREATE INDEX IF NOT EXISTS hard_delete_object_deletions_job_pending_idx
+  ON focowiki.hard_delete_object_deletions(job_id, created_at, id)
+  WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS hard_delete_object_deletions_kb_idx
+  ON focowiki.hard_delete_object_deletions(knowledge_base_id, job_id, id);
+
+CREATE INDEX IF NOT EXISTS hard_delete_object_deletions_source_idx
+  ON focowiki.hard_delete_object_deletions(knowledge_base_id, source_file_id, job_id, id)
+  WHERE source_file_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS admin_audit_events_created_idx
   ON focowiki.admin_audit_events(created_at DESC, id);

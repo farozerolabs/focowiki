@@ -23,14 +23,16 @@ export async function invalidateKnowledgeBaseCaches(
     `releases:${input.knowledgeBaseId}`,
     ...sourceFileIds.flatMap((sourceFileId) => [
       `source-file-events:${input.knowledgeBaseId}:${sourceFileId}`,
-      `developer-openapi:source-file-events:${input.knowledgeBaseId}:${sourceFileId}`
+      `developer-openapi:source-file-events:${input.knowledgeBaseId}:${sourceFileId}`,
+      `developer-openapi:related:${input.knowledgeBaseId}:${sourceFileId}`
     ]),
     ...(input.releaseId
       ? [
           `file-tree:${input.knowledgeBaseId}:${input.releaseId}`,
           `developer-openapi:tree:${input.knowledgeBaseId}:${input.releaseId}`,
           `bundle-files:${input.knowledgeBaseId}:${input.releaseId}`,
-          `public-files:${input.knowledgeBaseId}:${input.releaseId}`
+          `public-files:${input.knowledgeBaseId}:${input.releaseId}`,
+          `developer-openapi:file-search:${input.knowledgeBaseId}:${input.releaseId}`
         ]
       : [])
   ];

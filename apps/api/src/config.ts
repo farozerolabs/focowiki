@@ -30,6 +30,13 @@ const DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS = 7;
 const DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS = 30;
 const DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS = 90;
 const DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE = 1_000;
+const DEFAULT_WORKER_HARD_DELETE_CONCURRENCY = 1;
+const DEFAULT_WORKER_HARD_DELETE_DATABASE_BATCH_SIZE = 1_000;
+const DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE = 1_000;
+const DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS = 3;
+const DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS = 60_000;
+const DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS = 30;
+const DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED = false;
 const DEFAULT_PUBLICATION_MODE = "batch";
 const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
 const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
@@ -67,6 +74,13 @@ export type WorkerRuntimeConfig = {
   failedJobRetentionDays?: number;
   deadLetterJobRetentionDays?: number;
   retentionCleanupBatchSize?: number;
+  hardDeleteConcurrency?: number;
+  hardDeleteDatabaseBatchSize?: number;
+  hardDeleteObjectBatchSize?: number;
+  hardDeleteMaxAttempts?: number;
+  hardDeleteRetryDelayMs?: number;
+  hardDeleteFailedRetentionDays?: number;
+  hardDeleteVersionPurgeEnabled?: boolean;
 };
 
 export type RateLimitConfig = {
@@ -569,7 +583,14 @@ function parseWorkerConfig(env: RuntimeEnv, issues: string[]): WorkerRuntimeConf
     completedJobRetentionDays: DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
     failedJobRetentionDays: DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
     deadLetterJobRetentionDays: DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
-    retentionCleanupBatchSize: DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE
+    retentionCleanupBatchSize: DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE,
+    hardDeleteConcurrency: DEFAULT_WORKER_HARD_DELETE_CONCURRENCY,
+    hardDeleteDatabaseBatchSize: DEFAULT_WORKER_HARD_DELETE_DATABASE_BATCH_SIZE,
+    hardDeleteObjectBatchSize: DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE,
+    hardDeleteMaxAttempts: DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS,
+    hardDeleteRetryDelayMs: DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
+    hardDeleteFailedRetentionDays: DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
+    hardDeleteVersionPurgeEnabled: DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
   };
 }
 
@@ -606,7 +627,24 @@ export function resolveWorkerConfig(
     deadLetterJobRetentionDays:
       config.worker?.deadLetterJobRetentionDays ?? DEFAULT_WORKER_DEAD_LETTER_RETENTION_DAYS,
     retentionCleanupBatchSize:
-      config.worker?.retentionCleanupBatchSize ?? DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE
+      config.worker?.retentionCleanupBatchSize ?? DEFAULT_WORKER_RETENTION_CLEANUP_BATCH_SIZE,
+    hardDeleteConcurrency:
+      config.worker?.hardDeleteConcurrency ?? DEFAULT_WORKER_HARD_DELETE_CONCURRENCY,
+    hardDeleteDatabaseBatchSize:
+      config.worker?.hardDeleteDatabaseBatchSize ??
+      DEFAULT_WORKER_HARD_DELETE_DATABASE_BATCH_SIZE,
+    hardDeleteObjectBatchSize:
+      config.worker?.hardDeleteObjectBatchSize ?? DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE,
+    hardDeleteMaxAttempts:
+      config.worker?.hardDeleteMaxAttempts ?? DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS,
+    hardDeleteRetryDelayMs:
+      config.worker?.hardDeleteRetryDelayMs ?? DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
+    hardDeleteFailedRetentionDays:
+      config.worker?.hardDeleteFailedRetentionDays ??
+      DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
+    hardDeleteVersionPurgeEnabled:
+      config.worker?.hardDeleteVersionPurgeEnabled ??
+      DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
   };
 }
 

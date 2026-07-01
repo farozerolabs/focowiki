@@ -320,6 +320,14 @@ export function createSourceFileQueueProcessor(
       }
 
       async function assertSourceFileProcessingEligible(): Promise<void> {
+        const currentKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+          input.knowledgeBaseId
+        );
+
+        if (!currentKnowledgeBase) {
+          throw new SourceFileProcessingCancelledError();
+        }
+
         const currentSource = await getSourceFile({
           knowledgeBaseId: input.knowledgeBaseId,
           sourceFileId: input.sourceFileId

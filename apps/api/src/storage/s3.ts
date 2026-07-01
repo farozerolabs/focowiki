@@ -1,7 +1,9 @@
 import {
+  DeleteObjectsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   NoSuchKey,
   PutObjectCommand,
   S3Client,
@@ -41,6 +43,8 @@ export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
   putObject: (object: StoredObject) => Promise<void>;
   deleteObject?: (key: string) => Promise<void>;
+  deleteObjects?: (keys: string[]) => Promise<void>;
+  deleteObjectVersions?: (keys: string[]) => Promise<void>;
   getObjectBody?: (key: string) => Promise<BodyInit | null>;
   getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
   writeCurrentPointer: (pointer: CurrentPointer) => Promise<void>;
@@ -109,6 +113,70 @@ export class S3StorageAdapter implements StorageAdapter {
         Key: key
       })
     );
+  }
+
+  public async deleteObjects(keys: string[]): Promise<void> {
+    for (const chunk of chunkArray(uniqueKeys(keys), 1_000)) {
+      if (chunk.length === 0) {
+        continue;
+      }
+
+      await this.client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: {
+            Objects: chunk.map((key) => ({ Key: key })),
+            Quiet: true
+          }
+        })
+      );
+    }
+  }
+
+  public async deleteObjectVersions(keys: string[]): Promise<void> {
+    for (const key of uniqueKeys(keys)) {
+      let keyMarker: string | undefined;
+      let versionIdMarker: string | undefined;
+
+      do {
+        const listed = await this.client.send(
+          new ListObjectVersionsCommand({
+            Bucket: this.bucket,
+            Prefix: key,
+            KeyMarker: keyMarker,
+            VersionIdMarker: versionIdMarker
+          })
+        );
+        const versionedObjects = [
+          ...(listed.Versions ?? []),
+          ...(listed.DeleteMarkers ?? [])
+        ]
+          .filter((version) => version.Key === key && version.VersionId)
+          .map((version) => ({
+            Key: key,
+            VersionId: version.VersionId
+          }));
+
+        for (const chunk of chunkArray(versionedObjects, 1_000)) {
+          if (chunk.length === 0) {
+            continue;
+          }
+
+          await this.client.send(
+            new DeleteObjectsCommand({
+              Bucket: this.bucket,
+              Delete: {
+                Objects: chunk,
+                Quiet: true
+              }
+            })
+          );
+        }
+
+        keyMarker = listed.NextKeyMarker;
+        versionIdMarker = listed.NextVersionIdMarker;
+      } while (keyMarker);
+    }
   }
 
   public async getObjectText(
@@ -187,6 +255,20 @@ export class S3StorageAdapter implements StorageAdapter {
 
     return parseCurrentPointer(rawPointer);
   }
+}
+
+function uniqueKeys(keys: string[]): string[] {
+  return [...new Set(keys.filter((key) => key.length > 0))];
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
 }
 
 function responseBodyToBodyInit(body: unknown): BodyInit {

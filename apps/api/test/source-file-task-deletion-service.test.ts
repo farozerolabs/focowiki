@@ -33,6 +33,27 @@ describe("source file task deletion service", () => {
     ]);
     const deleteGraphForSourceFile = vi.fn(async () => undefined);
     const deleteObject = vi.fn(async () => undefined);
+    const enqueueHardDeleteJob = vi.fn(async () => ({
+      id: "worker-job-hard-delete-001",
+      kind: "hard_delete" as const,
+      status: "queued" as const,
+      knowledgeBaseId: knowledgeBase.id,
+      sourceFileId: null,
+      payload: {},
+      runAfter: "2026-06-14T00:00:00.000Z",
+      attemptCount: 0,
+      maxAttempts: 3,
+      lockedBy: null,
+      lockedAt: null,
+      heartbeatAt: null,
+      startedAt: null,
+      completedAt: null,
+      failedAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: "2026-06-14T00:00:00.000Z",
+      updatedAt: "2026-06-14T00:00:00.000Z"
+    }));
     const markPaginationInvalid = vi.fn(async () => undefined);
     const service = createSourceFileTaskDeletionService(
       {
@@ -46,6 +67,9 @@ describe("source file task deletion service", () => {
         },
         graph: {
           deleteGraphForSourceFile
+        },
+        workerJobs: {
+          enqueueHardDeleteJob
         }
       } as unknown as AdminRepositories,
       {
@@ -64,7 +88,8 @@ describe("source file task deletion service", () => {
         "source-file-33333333-3333-4333-8333-333333333333"
       ],
       deletedAt: "2026-06-14T00:00:00.000Z",
-      cursorTtlSeconds: 900
+      cursorTtlSeconds: 900,
+      hardDeleteMaxAttempts: 5
     });
 
     expect(deleteSourceFileTasks).toHaveBeenCalledWith({
@@ -81,7 +106,15 @@ describe("source file task deletion service", () => {
       sourceFileId: "source-file-11111111-1111-4111-8111-111111111111"
     });
     expect(deleteGraphForSourceFile).toHaveBeenCalledTimes(1);
-    expect(deleteObject).toHaveBeenCalledWith("tenant/raw/private-source.md");
+    expect(deleteObject).not.toHaveBeenCalled();
+    expect(enqueueHardDeleteJob).toHaveBeenCalledWith({
+      knowledgeBaseId: knowledgeBase.id,
+      targetKind: "source_file",
+      sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
+      reason: "source_file_task_deleted",
+      runAfter: "2026-06-14T00:00:00.000Z",
+      maxAttempts: 5
+    });
     expect(JSON.stringify(result)).not.toContain("tenant/raw/private-source.md");
     expect(result).toEqual({
       results: [
@@ -111,7 +144,17 @@ describe("source file task deletion service", () => {
       900
     );
     expect(markPaginationInvalid).toHaveBeenCalledWith(
+      `developer-openapi:related:${knowledgeBase.id}:source-file-11111111-1111-4111-8111-111111111111`,
+      "changed",
+      900
+    );
+    expect(markPaginationInvalid).toHaveBeenCalledWith(
       `source-file-events:${knowledgeBase.id}:source-file-22222222-2222-4222-8222-222222222222`,
+      "changed",
+      900
+    );
+    expect(markPaginationInvalid).toHaveBeenCalledWith(
+      `developer-openapi:file-search:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`,
       "changed",
       900
     );

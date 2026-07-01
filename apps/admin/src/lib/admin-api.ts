@@ -259,6 +259,13 @@ export type WorkerSettings = {
   failedJobRetentionDays: number;
   deadLetterJobRetentionDays: number;
   retentionCleanupBatchSize: number;
+  hardDeleteConcurrency: number;
+  hardDeleteDatabaseBatchSize: number;
+  hardDeleteObjectBatchSize: number;
+  hardDeleteMaxAttempts: number;
+  hardDeleteRetryDelayMs: number;
+  hardDeleteFailedRetentionDays: number;
+  hardDeleteVersionPurgeEnabled: boolean;
 };
 
 export type PublicationSettings = {

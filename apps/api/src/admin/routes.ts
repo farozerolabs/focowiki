@@ -127,7 +127,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminSourceFileTaskDeletionRoutes(
     app,
-    { config, storage, redis, repositories },
+    { config, storage, redis, repositories, runtimeSettings },
     {
       requireAuth,
       requireWriteProtection
@@ -299,10 +299,12 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return missingRepositoryBackend(context);
       }
 
+      const runtimeSnapshot = runtimeSettings ? await runtimeSettings.getSnapshot() : null;
       const deleted = await deletionService.deleteKnowledgeBase({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         deletedAt: new Date().toISOString(),
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+        hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts
       });
 
       if (!deleted) {
@@ -389,6 +391,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         config,
         runtimeSettings
       });
+      const runtimeSnapshot = runtimeSettings ? await runtimeSettings.getSnapshot() : null;
       const result = await deletionService.deleteSourcePage({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         logicalPath,
@@ -398,7 +401,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         cursorTtlSeconds: config.pagination.cursorTtlSeconds,
         fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
         okfLog: config.okf?.log,
-        publication: config.publication
+        publication: config.publication,
+        hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts
       });
 
       if (!result.ok) {

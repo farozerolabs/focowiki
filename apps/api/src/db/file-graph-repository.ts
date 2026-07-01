@@ -343,18 +343,26 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
       const rows = cursorValue
         ? await sql<FileGraphNodeRow[]>`
-            SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
-            FROM focowiki.source_file_graph_nodes
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-              AND source_file_id > ${cursorValue.id}
-            ORDER BY source_file_id ASC
+            SELECT node.knowledge_base_id, node.source_file_id, node.path, node.title, node.type, node.description, node.summary, node.subjects_json, node.tags_json, node.entities_json, node.explicit_references_json, node.relationship_hints_json, node.headings_json, node.keywords_json, node.language, node.profile_version, node.profile_source, node.profile_json, node.metadata_json, node.updated_at
+            FROM focowiki.source_file_graph_nodes node
+            JOIN focowiki.source_files source
+              ON source.knowledge_base_id = node.knowledge_base_id
+             AND source.id = node.source_file_id
+             AND source.deleted_at IS NULL
+            WHERE node.knowledge_base_id = ${knowledgeBaseId}
+              AND node.source_file_id > ${cursorValue.id}
+            ORDER BY node.source_file_id ASC
             LIMIT ${limit + 1}
           `
         : await sql<FileGraphNodeRow[]>`
-            SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
-            FROM focowiki.source_file_graph_nodes
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-            ORDER BY source_file_id ASC
+            SELECT node.knowledge_base_id, node.source_file_id, node.path, node.title, node.type, node.description, node.summary, node.subjects_json, node.tags_json, node.entities_json, node.explicit_references_json, node.relationship_hints_json, node.headings_json, node.keywords_json, node.language, node.profile_version, node.profile_source, node.profile_json, node.metadata_json, node.updated_at
+            FROM focowiki.source_file_graph_nodes node
+            JOIN focowiki.source_files source
+              ON source.knowledge_base_id = node.knowledge_base_id
+             AND source.id = node.source_file_id
+             AND source.deleted_at IS NULL
+            WHERE node.knowledge_base_id = ${knowledgeBaseId}
+            ORDER BY node.source_file_id ASC
             LIMIT ${limit + 1}
           `;
       const pageRows = rows.slice(0, limit);
@@ -372,20 +380,36 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       const cursorValue = cursor ? parseGraphIdCursor(cursor) : null;
       const rows = cursorValue
         ? await sql<FileGraphEdgeRow[]>`
-            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, status, evidence_json, updated_at
-            FROM focowiki.source_file_graph_edges
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-              AND status = 'accepted'
-              AND id > ${cursorValue.id}
-            ORDER BY id ASC
+            SELECT edge.id, edge.knowledge_base_id, edge.from_source_file_id, edge.to_source_file_id, edge.relation_type, edge.weight, edge.reason, edge.source, edge.status, edge.evidence_json, edge.updated_at
+            FROM focowiki.source_file_graph_edges edge
+            JOIN focowiki.source_files from_source
+              ON from_source.knowledge_base_id = edge.knowledge_base_id
+             AND from_source.id = edge.from_source_file_id
+             AND from_source.deleted_at IS NULL
+            JOIN focowiki.source_files to_source
+              ON to_source.knowledge_base_id = edge.knowledge_base_id
+             AND to_source.id = edge.to_source_file_id
+             AND to_source.deleted_at IS NULL
+            WHERE edge.knowledge_base_id = ${knowledgeBaseId}
+              AND edge.status = 'accepted'
+              AND edge.id > ${cursorValue.id}
+            ORDER BY edge.id ASC
             LIMIT ${limit + 1}
           `
         : await sql<FileGraphEdgeRow[]>`
-            SELECT id, knowledge_base_id, from_source_file_id, to_source_file_id, relation_type, weight, reason, source, status, evidence_json, updated_at
-            FROM focowiki.source_file_graph_edges
-            WHERE knowledge_base_id = ${knowledgeBaseId}
-              AND status = 'accepted'
-            ORDER BY id ASC
+            SELECT edge.id, edge.knowledge_base_id, edge.from_source_file_id, edge.to_source_file_id, edge.relation_type, edge.weight, edge.reason, edge.source, edge.status, edge.evidence_json, edge.updated_at
+            FROM focowiki.source_file_graph_edges edge
+            JOIN focowiki.source_files from_source
+              ON from_source.knowledge_base_id = edge.knowledge_base_id
+             AND from_source.id = edge.from_source_file_id
+             AND from_source.deleted_at IS NULL
+            JOIN focowiki.source_files to_source
+              ON to_source.knowledge_base_id = edge.knowledge_base_id
+             AND to_source.id = edge.to_source_file_id
+             AND to_source.deleted_at IS NULL
+            WHERE edge.knowledge_base_id = ${knowledgeBaseId}
+              AND edge.status = 'accepted'
+            ORDER BY edge.id ASC
             LIMIT ${limit + 1}
           `;
       const pageRows = rows.slice(0, limit);
@@ -436,10 +460,14 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       const lowerTerms = cleanTerms.map((term) => term.toLowerCase());
       const likeTerms = lowerTerms.map((term) => `%${escapeLikePattern(term)}%`);
       const rows = await sql<FileGraphNodeRow[]>`
-        SELECT knowledge_base_id, source_file_id, path, title, type, description, summary, subjects_json, tags_json, entities_json, explicit_references_json, relationship_hints_json, headings_json, keywords_json, language, profile_version, profile_source, profile_json, metadata_json, updated_at
-        FROM focowiki.source_file_graph_nodes
-        WHERE knowledge_base_id = ${knowledgeBaseId}
-          AND source_file_id <> ${sourceFileId}
+        SELECT node.knowledge_base_id, node.source_file_id, node.path, node.title, node.type, node.description, node.summary, node.subjects_json, node.tags_json, node.entities_json, node.explicit_references_json, node.relationship_hints_json, node.headings_json, node.keywords_json, node.language, node.profile_version, node.profile_source, node.profile_json, node.metadata_json, node.updated_at
+        FROM focowiki.source_file_graph_nodes node
+        JOIN focowiki.source_files source
+          ON source.knowledge_base_id = node.knowledge_base_id
+         AND source.id = node.source_file_id
+         AND source.deleted_at IS NULL
+        WHERE node.knowledge_base_id = ${knowledgeBaseId}
+          AND node.source_file_id <> ${sourceFileId}
           AND (
             lower(title) LIKE ANY(${likeTerms})
             OR lower(coalesce(description, '')) LIKE ANY(${likeTerms})
@@ -459,8 +487,8 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           + CASE WHEN entities_json ?| ${cleanTerms} THEN 25 ELSE 0 END
           + CASE WHEN keywords_json ?| ${cleanTerms} THEN 20 ELSE 0 END
         ) DESC,
-        updated_at DESC,
-        source_file_id ASC
+        node.updated_at DESC,
+        node.source_file_id ASC
         LIMIT ${limit}
       `;
 
@@ -608,6 +636,14 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       JOIN focowiki.source_file_graph_nodes node
         ON node.knowledge_base_id = ${knowledgeBaseId}
        AND node.source_file_id = relationships.related_source_file_id
+      JOIN focowiki.source_files current_source
+        ON current_source.knowledge_base_id = ${knowledgeBaseId}
+       AND current_source.id = ${sourceFileId}
+       AND current_source.deleted_at IS NULL
+      JOIN focowiki.source_files related_source
+        ON related_source.knowledge_base_id = ${knowledgeBaseId}
+       AND related_source.id = node.source_file_id
+       AND related_source.deleted_at IS NULL
       LEFT JOIN active_release release ON true
       LEFT JOIN focowiki.bundle_files bundle
         ON bundle.knowledge_base_id = ${knowledgeBaseId}

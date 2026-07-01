@@ -63,6 +63,18 @@ export async function acceptUploadSourceFiles(input: {
     }
   );
 
-  await input.createSourceFiles(drafts);
+  try {
+    await input.createSourceFiles(drafts);
+  } catch (error) {
+    const objectKeys = drafts.map((draft) => draft.objectKey);
+    if (input.storage.deleteObjects) {
+      await input.storage.deleteObjects(objectKeys).catch(() => undefined);
+    } else if (input.storage.deleteObject) {
+      await Promise.all(
+        objectKeys.map((objectKey) => input.storage.deleteObject?.(objectKey).catch(() => undefined))
+      );
+    }
+    throw error;
+  }
   return drafts.map((draft) => draft.id);
 }

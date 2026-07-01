@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExplainAnalyzeSql,
+  createHardDeletePlanTargets,
   createLargeScaleReadPlanTargets,
   summarizeQueryPlan
 } from "../src/db/query-plan-validation.js";
@@ -41,6 +42,44 @@ describe("query plan validation helpers", () => {
     expect(targets.length).toBeGreaterThan(0);
     for (const target of targets) {
       expect(target.sql).toContain("task_deleted_at IS NULL");
+    }
+  });
+
+  it("builds bounded hard-delete cleanup plan targets", () => {
+    const targets = createHardDeletePlanTargets();
+
+    expect(targets.map((target) => target.name)).toEqual(
+      expect.arrayContaining([
+        "hard-delete-source-search-documents",
+        "hard-delete-source-tree-entries",
+        "hard-delete-source-bundle-files",
+        "hard-delete-source-worker-jobs",
+        "hard-delete-knowledge-base-search-documents",
+        "hard-delete-knowledge-base-tree-entries",
+        "hard-delete-knowledge-base-bundle-files",
+        "hard-delete-knowledge-base-source-files",
+        "hard-delete-knowledge-base-worker-jobs"
+      ])
+    );
+
+    for (const target of targets) {
+      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
+
+      expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
+      expect(normalizedSql).toContain("knowledge_base_id = 'kb-plan'");
+      expect(normalizedSql).toContain("limit 100");
+      expect(normalizedSql).not.toContain(" offset ");
+    }
+  });
+
+  it("keeps normal read plan targets decoupled from hard-delete tables", () => {
+    const targets = createLargeScaleReadPlanTargets();
+
+    for (const target of targets) {
+      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
+
+      expect(normalizedSql).not.toContain("hard_delete_object_deletions");
+      expect(normalizedSql).not.toContain("kind = 'hard_delete'");
     }
   });
 

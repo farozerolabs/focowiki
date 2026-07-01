@@ -34,12 +34,13 @@ export type SourceFileTaskDeletionService = {
     sourceFileIds: string[];
     deletedAt: string;
     cursorTtlSeconds: number;
+    hardDeleteMaxAttempts?: number | undefined;
   }) => Promise<SourceFileTaskDeletionResponse | null>;
 };
 
 export function createSourceFileTaskDeletionService(
   repositories: AdminRepositories,
-  storage: StorageAdapter,
+  _storage: StorageAdapter,
   redis: RedisCoordinator
 ): SourceFileTaskDeletionService | null {
   const deleteSourceFileTasks = repositories.files?.deleteSourceFileTasks;
@@ -47,6 +48,8 @@ export function createSourceFileTaskDeletionService(
   if (!deleteSourceFileTasks) {
     return null;
   }
+
+  const workerJobs = repositories.workerJobs ?? null;
 
   return {
     async deleteTasks(input) {
@@ -69,8 +72,10 @@ export function createSourceFileTaskDeletionService(
 
       await cleanupDeletedSourceFiles({
         repositories,
-        storage,
+        workerJobs,
         knowledgeBaseId: knowledgeBase.id,
+        deletedAt: input.deletedAt,
+        hardDeleteMaxAttempts: input.hardDeleteMaxAttempts,
         deletedResults
       });
 
@@ -94,8 +99,10 @@ export function createSourceFileTaskDeletionService(
 
 async function cleanupDeletedSourceFiles(input: {
   repositories: AdminRepositories;
-  storage: StorageAdapter;
+  workerJobs: AdminRepositories["workerJobs"] | null;
   knowledgeBaseId: string;
+  deletedAt: string;
+  hardDeleteMaxAttempts?: number | undefined;
   deletedResults: Array<Extract<SourceFileTaskDeletionRepositoryResult, { outcome: "deleted" }>>;
 }): Promise<void> {
   for (const result of input.deletedResults) {
@@ -103,7 +110,14 @@ async function cleanupDeletedSourceFiles(input: {
       knowledgeBaseId: input.knowledgeBaseId,
       sourceFileId: result.sourceFileId
     });
-    await input.storage.deleteObject?.(result.objectKey).catch(() => undefined);
+    await input.workerJobs?.enqueueHardDeleteJob?.({
+      knowledgeBaseId: input.knowledgeBaseId,
+      targetKind: "source_file",
+      sourceFileId: result.sourceFileId,
+      reason: "source_file_task_deleted",
+      runAfter: input.deletedAt,
+      maxAttempts: input.hardDeleteMaxAttempts ?? 3
+    });
   }
 }
 

@@ -2,6 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { readSourceFileTaskDeletionRequest } from "./source-file-task-deletion-request.js";
 import { createSourceFileTaskDeletionService } from "./source-file-task-deletion-service.js";
@@ -13,13 +14,14 @@ export function registerAdminSourceFileTaskDeletionRoutes(
     storage: StorageAdapter;
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
+    runtimeSettings?: RuntimeSettingsService | null | undefined;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, storage, redis, repositories } = services;
+  const { config, storage, redis, repositories, runtimeSettings } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/task-deletions",
@@ -64,7 +66,8 @@ export function registerAdminSourceFileTaskDeletionRoutes(
         knowledgeBaseId: knowledgeBase.id,
         sourceFileIds: request.sourceFileIds,
         deletedAt: new Date().toISOString(),
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds
+        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
+        hardDeleteMaxAttempts: (await runtimeSettings?.getSnapshot())?.worker.hardDeleteMaxAttempts
       });
 
       if (!result) {

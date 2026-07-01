@@ -83,7 +83,14 @@ describe("parseRuntimeConfig", () => {
       completedJobRetentionDays: 7,
       failedJobRetentionDays: 30,
       deadLetterJobRetentionDays: 90,
-      retentionCleanupBatchSize: 1_000
+      retentionCleanupBatchSize: 1_000,
+      hardDeleteConcurrency: 1,
+      hardDeleteDatabaseBatchSize: 1_000,
+      hardDeleteObjectBatchSize: 1_000,
+      hardDeleteMaxAttempts: 3,
+      hardDeleteRetryDelayMs: 60_000,
+      hardDeleteFailedRetentionDays: 30,
+      hardDeleteVersionPurgeEnabled: false
     });
     expect(config.logging).toEqual({
       level: "debug",

@@ -117,6 +117,11 @@ export function createKnowledgeBasePublicationService(
       const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
         input.knowledgeBaseId
       );
+
+      if (!knowledgeBase) {
+        return { published: false, releaseId: null };
+      }
+
       const reason = resolvePublicationReason({
         mode: input.options.mode,
         dirtyCount: dirty.count,
@@ -181,6 +186,14 @@ export function createKnowledgeBasePublicationService(
             return result;
           }
 
+          const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+            input.knowledgeBaseId
+          );
+
+          if (!knowledgeBase) {
+            return result;
+          }
+
           const job = await createPublicationJob({
             id: `publication-job-${randomUUID()}`,
             knowledgeBaseId: input.knowledgeBaseId,
@@ -199,10 +212,7 @@ export function createKnowledgeBasePublicationService(
           }
 
           try {
-            const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-              input.knowledgeBaseId
-            );
-            const previousReleaseId = knowledgeBase?.activeReleaseId ?? null;
+            const previousReleaseId = knowledgeBase.activeReleaseId ?? null;
             const releaseId = createReleaseId();
             const bundleRootKey = storage.keyspace.releaseRootKey(input.knowledgeBaseId, releaseId);
             await createRelease({
@@ -302,6 +312,19 @@ export function createKnowledgeBasePublicationService(
               persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries)
             });
             const endedAt = new Date().toISOString();
+            const activeKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+              input.knowledgeBaseId
+            );
+
+            if (!activeKnowledgeBase) {
+              await failPublicationJob({
+                id: job.id,
+                endedAt,
+                errorCode: "KNOWLEDGE_BASE_DELETED",
+                errorMessage: "Knowledge base was deleted before release activation."
+              }).catch(() => undefined);
+              return result;
+            }
 
             await activateRelease({
               knowledgeBaseId: input.knowledgeBaseId,

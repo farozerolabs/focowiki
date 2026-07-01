@@ -14,6 +14,7 @@ export type RedisCommandClient = {
   incr: (key: string) => Promise<number>;
   expire: (key: string, seconds: number) => Promise<number | boolean>;
   ttl: (key: string) => Promise<number>;
+  scanIterator?: (options: { MATCH?: string; COUNT?: number }) => AsyncIterable<string | string[]>;
 };
 
 export type RedisCoordinator = {
@@ -70,6 +71,14 @@ export type RedisCoordinator = {
   getPageCache: <T = unknown>(scope: string, pageId: string) => Promise<T | null>;
   markPaginationInvalid: (scope: string, reason: string, ttlSeconds: number) => Promise<void>;
   getPaginationInvalid: (scope: string) => Promise<string | null>;
+  clearSourceFileRuntimeKeys: (input: {
+    knowledgeBaseId: string;
+    sourceFileId: string;
+  }) => Promise<number>;
+  clearKnowledgeBaseRuntimeKeys: (input: {
+    knowledgeBaseId: string;
+    sourceFileIds?: string[];
+  }) => Promise<number>;
   setPublicOpenApiKeyCache: (
     keyHash: string,
     value: { id: string },
@@ -244,6 +253,21 @@ export function createRedisCoordinator(
     async getPaginationInvalid(scope) {
       return client.get(buildKey("pagination-invalid", scope));
     },
+    async clearSourceFileRuntimeKeys(input) {
+      return clearSourceFileRuntimeKeys(client, buildKey, input);
+    },
+    async clearKnowledgeBaseRuntimeKeys(input) {
+      let deleted = await clearKnowledgeBaseRuntimeKeys(client, buildKey, input.knowledgeBaseId);
+
+      for (const sourceFileId of uniqueStrings(input.sourceFileIds ?? [])) {
+        deleted += await clearSourceFileRuntimeKeys(client, buildKey, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          sourceFileId
+        });
+      }
+
+      return deleted;
+    },
     async setPublicOpenApiKeyCache(keyHash, value, ttlSeconds) {
       await client.set(buildKey("public-openapi-key-cache", keyHash), JSON.stringify(value), {
         EX: ttlSeconds
@@ -311,4 +335,87 @@ function normalizeKeyPart(value: string): string {
     .trim()
     .replace(/^:+|:+$/g, "")
     .replace(/[^a-zA-Z0-9:._-]/g, "_");
+}
+
+async function clearSourceFileRuntimeKeys(
+  client: RedisCommandClient,
+  buildKey: (...parts: string[]) => string,
+  input: { knowledgeBaseId: string; sourceFileId: string }
+): Promise<number> {
+  const sourceFileId = normalizeKeyPart(input.sourceFileId);
+  const knowledgeBaseId = normalizeKeyPart(input.knowledgeBaseId);
+  const exactKeys = [
+    buildKey("source-file-events", sourceFileId),
+    buildKey("source-file-graph-state", sourceFileId),
+    buildKey("source-file-locks", sourceFileId),
+    buildKey("source-file-graph-locks", sourceFileId)
+  ];
+  const patterns = [
+    `${buildKey("pagination-invalid")}:*${sourceFileId}*`,
+    `${buildKey("pagination-cursors")}:*${sourceFileId}*`,
+    `${buildKey("page-cache")}:*${sourceFileId}*`,
+    `${buildKey("pagination-invalid")}:*${knowledgeBaseId}*${sourceFileId}*`,
+    `${buildKey("pagination-cursors")}:*${knowledgeBaseId}*${sourceFileId}*`,
+    `${buildKey("page-cache")}:*${knowledgeBaseId}*${sourceFileId}*`
+  ];
+
+  return (await deleteExactKeys(client, exactKeys)) + (await deleteMatchingKeys(client, patterns));
+}
+
+async function clearKnowledgeBaseRuntimeKeys(
+  client: RedisCommandClient,
+  buildKey: (...parts: string[]) => string,
+  knowledgeBaseId: string
+): Promise<number> {
+  const normalizedKnowledgeBaseId = normalizeKeyPart(knowledgeBaseId);
+  const exactKeys = [buildKey("knowledge-base-publication-locks", normalizedKnowledgeBaseId)];
+  const patterns = [
+    `${buildKey("pagination-invalid")}:*${normalizedKnowledgeBaseId}*`,
+    `${buildKey("pagination-cursors")}:*${normalizedKnowledgeBaseId}*`,
+    `${buildKey("page-cache")}:*${normalizedKnowledgeBaseId}*`
+  ];
+
+  return (await deleteExactKeys(client, exactKeys)) + (await deleteMatchingKeys(client, patterns));
+}
+
+async function deleteExactKeys(client: RedisCommandClient, keys: string[]): Promise<number> {
+  let deleted = 0;
+
+  for (const key of uniqueStrings(keys)) {
+    deleted += await client.del(key);
+  }
+
+  return deleted;
+}
+
+async function deleteMatchingKeys(
+  client: RedisCommandClient,
+  patterns: string[]
+): Promise<number> {
+  if (!client.scanIterator) {
+    return 0;
+  }
+
+  let deleted = 0;
+  const seenKeys = new Set<string>();
+
+  for (const pattern of uniqueStrings(patterns)) {
+    for await (const entry of client.scanIterator({ MATCH: pattern, COUNT: 100 })) {
+      const keys = Array.isArray(entry) ? entry : [entry];
+      const nextKeys = keys.filter((key) => {
+        if (seenKeys.has(key)) {
+          return false;
+        }
+        seenKeys.add(key);
+        return true;
+      });
+      deleted += await deleteExactKeys(client, nextKeys);
+    }
+  }
+
+  return deleted;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }

@@ -21,6 +21,7 @@ describe("tree and generated-content repository contract", () => {
     expect(section).toContain("entry.release_id = ${releaseid}");
     expect(section).toContain("entry.parent_path = ${parentpath}");
     expect(section).toContain("entry.entry_type = ${entrytype}");
+    expect(section).toContain("source.deleted_at is null");
     expect(section).toContain("entry.sort_key > ${cursorvalue.sortkey}");
     expect(section).toContain("order by entry.sort_key asc, entry.id asc");
     expect(section).toContain("limit ${limit + 1}");
@@ -38,13 +39,17 @@ describe("tree and generated-content repository contract", () => {
       repository.indexOf("async getsourcefile")
     );
 
-    expect(logicalPathSection).toContain("where knowledge_base_id = ${knowledgebaseid}");
-    expect(logicalPathSection).toContain("and release_id = ${releaseid}");
-    expect(logicalPathSection).toContain("and logical_path = ${logicalpath}");
+    expect(logicalPathSection).toContain(
+      "where bundle_files.knowledge_base_id = ${knowledgebaseid}"
+    );
+    expect(logicalPathSection).toContain("and bundle_files.release_id = ${releaseid}");
+    expect(logicalPathSection).toContain("and bundle_files.logical_path = ${logicalpath}");
+    expect(logicalPathSection).toContain("source.deleted_at is null");
     expect(logicalPathSection).toContain("limit 1");
-    expect(idSection).toContain("where knowledge_base_id = ${knowledgebaseid}");
-    expect(idSection).toContain("and release_id = ${releaseid}");
-    expect(idSection).toContain("and id = ${fileid}");
+    expect(idSection).toContain("where bundle_files.knowledge_base_id = ${knowledgebaseid}");
+    expect(idSection).toContain("and bundle_files.release_id = ${releaseid}");
+    expect(idSection).toContain("and bundle_files.id = ${fileid}");
+    expect(idSection).toContain("source.deleted_at is null");
     expect(idSection).toContain("limit 1");
   });
 

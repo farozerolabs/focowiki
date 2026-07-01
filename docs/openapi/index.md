@@ -213,6 +213,8 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/so
 
 Task deletion only affects source-file task visibility. Generated file deletion uses the generated file delete endpoints and the `generatedFileId` or logical `generatedFilePath` values.
 
+Deleted knowledge bases and deleted source-backed generated pages are removed from Admin UI and Developer OpenAPI read results immediately. Focowiki then cleans stored generated data automatically after the delete request succeeds.
+
 List the generated file tree and store the first logical `path` plus generated file identifier:
 
 ```bash

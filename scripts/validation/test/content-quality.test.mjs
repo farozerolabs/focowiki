@@ -88,6 +88,56 @@ test("content quality validation rejects missing index entries", () => {
   }
 });
 
+test("content quality validation allows sparse explainable graph links", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-content-quality-sparse-"));
+
+  try {
+    const samples = Array.from({ length: 12 }, (_, index) =>
+      writeSample(root, `topic-${index + 1}.md`, {
+        title:
+          index < 2
+            ? `Shared Deployment Topic ${index + 1}`
+            : `Independent Topic ${index + 1}`,
+        type: "page",
+        body:
+          index < 2
+            ? "Shared deployment topic covers release windows and rollout checks."
+            : `Independent topic ${index + 1} covers a separate business process.`
+      })
+    );
+    const bodies = new Map(
+      samples.map((sample) => [
+        `pages/${sample.basename}`,
+        `---\ntype: page\ntitle: ${sample.title}\ndescription: Description for ${sample.title}\ntags:\n  - deployment\n---\n# ${sample.title}\n\n${fs.readFileSync(sample.filePath, "utf8").split("\n\n").at(-1)?.trim()}`
+      ])
+    );
+    const indexes = buildIndexes(samples);
+    indexes.links.links = [
+      {
+        from: "pages/topic-1.md",
+        to: "pages/topic-2.md",
+        label: "Shared Deployment Topic 2",
+        relation_type: "shared_subject",
+        reason: "Both files discuss shared deployment rollout checks."
+      }
+    ];
+
+    const summary = validateGeneratedContentQuality({
+      samples,
+      bodies,
+      indexes,
+      modelAssistance: { enabled: true },
+      semanticSampleLimit: 12
+    });
+
+    assert.equal(summary.graphLinks, 1);
+    assert.equal(summary.pagesWithGraphLinks, 1);
+    assert.match(summary.warnings.join("\n"), /Sampled pages without outgoing graph links/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("content quality sample limit validates configured bounds", () => {
   assert.equal(readContentQualitySampleLimit({}), 25);
   assert.equal(readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "200" }), 200);

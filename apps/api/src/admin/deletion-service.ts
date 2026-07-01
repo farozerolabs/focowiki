@@ -10,6 +10,7 @@ export type AdminDeletionService = {
     knowledgeBaseId: string;
     deletedAt: string;
     cursorTtlSeconds: number;
+    hardDeleteMaxAttempts?: number | undefined;
   }) => Promise<boolean>;
   deleteSourcePage: (input: {
     knowledgeBaseId: string;
@@ -21,6 +22,7 @@ export type AdminDeletionService = {
     fileProcessingConcurrency: number;
     okfLog?: Partial<OkfLogLimits> | undefined;
     publication: PublicationRuntimeOptions;
+    hardDeleteMaxAttempts?: number | undefined;
   }) => Promise<SourcePageDeletionResult>;
 };
 
@@ -89,6 +91,22 @@ export function createDeletionService(
         knowledgeBaseId: knowledgeBase.id,
         batchSize: 200
       });
+      const hardDeleteJob = await workerJobs.enqueueHardDeleteJob?.({
+        knowledgeBaseId: knowledgeBase.id,
+        targetKind: "knowledge_base",
+        reason: "knowledge_base_deleted",
+        runAfter: input.deletedAt,
+        maxAttempts: input.hardDeleteMaxAttempts ?? 3
+      });
+      if (hardDeleteJob) {
+        await workerJobs.cancelQueuedKnowledgeBaseJobs?.({
+          knowledgeBaseId: knowledgeBase.id,
+          excludedJobIds: [hardDeleteJob.id],
+          cancelledAt: input.deletedAt,
+          errorCode: "KNOWLEDGE_BASE_DELETED",
+          errorMessage: "Knowledge base was deleted before queued work started."
+        });
+      }
       return true;
     },
     async deleteSourcePage(input) {
@@ -161,6 +179,14 @@ export function createDeletionService(
         releaseId: knowledgeBase.activeReleaseId,
         sourceFileId: file.sourceFileId,
         ttlSeconds: input.cursorTtlSeconds
+      });
+      await workerJobs.enqueueHardDeleteJob?.({
+        knowledgeBaseId: knowledgeBase.id,
+        targetKind: "source_file",
+        sourceFileId: file.sourceFileId,
+        reason: "source_page_deleted",
+        runAfter: new Date().toISOString(),
+        maxAttempts: input.hardDeleteMaxAttempts ?? input.publication.workerJobMaxAttempts ?? 3
       });
 
       return {

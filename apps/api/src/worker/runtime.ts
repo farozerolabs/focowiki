@@ -26,6 +26,7 @@ import {
   SourceFileProcessingCancelledError
 } from "../admin/source-file-processor.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import { processHardDeleteJob } from "./hard-delete-jobs.js";
 
 export type WorkerRuntimeLogger = {
   info: (message: string, details?: Record<string, unknown>) => void;
@@ -104,6 +105,7 @@ export function createWorkerRuntime(input: {
       workerJobs: jobRepository,
       workerId,
       limit: workerConfig.claimBatchSize,
+      workerConfig,
       now: now.toISOString(),
       staleBefore: new Date(now.getTime() - workerConfig.lockTtlSeconds * 1_000).toISOString()
     });
@@ -212,7 +214,7 @@ export function createWorkerRuntime(input: {
 
   async function runLane(input: {
     kinds: WorkerJobKind[];
-    role: "publication" | "source_file_processing";
+    role: "hard_delete" | "publication" | "source_file_processing";
     signal: AbortSignal;
   }): Promise<void> {
     while (!input.signal.aborted) {
@@ -220,14 +222,19 @@ export function createWorkerRuntime(input: {
       const workerConfig = runtimeSettings?.worker ?? fallbackWorkerConfig;
       const claimed = await claimJobs({
         kinds: input.kinds,
-        limit: input.role === "publication" ? 1 : workerConfig.claimBatchSize,
+        limit:
+          input.role === "publication"
+            ? 1
+            : input.role === "hard_delete"
+              ? workerConfig.hardDeleteConcurrency ?? 1
+              : workerConfig.claimBatchSize,
         workerConfig,
         now: new Date()
       });
 
       if (claimed.length === 0) {
         await sleep(
-          input.role === "publication"
+          input.role === "publication" || input.role === "hard_delete"
             ? Math.min(workerConfig.pollIntervalMs, 1_000)
             : workerConfig.pollIntervalMs,
           input.signal
@@ -247,7 +254,12 @@ export function createWorkerRuntime(input: {
 
       await processClaimedJobs({
         claimed,
-        concurrency: input.role === "publication" ? 1 : workerConfig.sourceFileConcurrency,
+        concurrency:
+          input.role === "source_file_processing"
+            ? workerConfig.sourceFileConcurrency
+            : input.role === "hard_delete"
+              ? workerConfig.hardDeleteConcurrency ?? 1
+              : 1,
         workerConfig,
         signal: input.signal
       });
@@ -263,6 +275,11 @@ export function createWorkerRuntime(input: {
       input.logger.info("Worker service started", { workerId });
 
       await Promise.all([
+        runLane({
+          kinds: ["hard_delete"],
+          role: "hard_delete",
+          signal
+        }),
         runLane({
           kinds: ["publication"],
           role: "publication",
@@ -289,6 +306,7 @@ async function claimWorkerJobsForTick(input: {
   workerJobs: WorkerJobRepository;
   workerId: string;
   limit: number;
+  workerConfig: ReturnType<typeof resolveWorkerConfig>;
   now: string;
   staleBefore: string;
 }): Promise<WorkerJobRecord[]> {
@@ -296,17 +314,30 @@ async function claimWorkerJobsForTick(input: {
     return [];
   }
 
-  const publicationJobs = await input.workerJobs.claimWorkerJobs({
+  const hardDeleteJobs = await input.workerJobs.claimWorkerJobs({
     workerId: input.workerId,
-    kinds: ["publication"],
-    limit: Math.min(1, input.limit),
+    kinds: ["hard_delete"],
+    limit: Math.min(input.workerConfig.hardDeleteConcurrency ?? 1, input.limit),
     now: input.now,
     staleBefore: input.staleBefore
   });
-  const remainingLimit = input.limit - publicationJobs.length;
+  const publicationLimit = input.limit - hardDeleteJobs.length;
+
+  if (publicationLimit <= 0) {
+    return hardDeleteJobs;
+  }
+
+  const publicationJobs = await input.workerJobs.claimWorkerJobs({
+    workerId: input.workerId,
+    kinds: ["publication"],
+    limit: Math.min(1, publicationLimit),
+    now: input.now,
+    staleBefore: input.staleBefore
+  });
+  const remainingLimit = input.limit - hardDeleteJobs.length - publicationJobs.length;
 
   if (remainingLimit <= 0) {
-    return publicationJobs;
+    return [...hardDeleteJobs, ...publicationJobs];
   }
 
   const sourceFileJobs = await input.workerJobs.claimWorkerJobs({
@@ -317,7 +348,7 @@ async function claimWorkerJobsForTick(input: {
     staleBefore: input.staleBefore
   });
 
-  return [...publicationJobs, ...sourceFileJobs];
+  return [...hardDeleteJobs, ...publicationJobs, ...sourceFileJobs];
 }
 
 async function processWorkerJob(input: {
@@ -337,7 +368,83 @@ async function processWorkerJob(input: {
     return;
   }
 
+  if (input.job.kind === "hard_delete") {
+    await processInternalHardDeleteJob(input);
+    return;
+  }
+
   await processSourceFileJob(input);
+}
+
+async function processInternalHardDeleteJob(input: {
+  job: WorkerJobRecord;
+  workerId: string;
+  workerJobs: WorkerJobRepository;
+  repositories: AdminRepositories;
+  storage: StorageAdapter;
+  redis: RedisCoordinator;
+  config: RuntimeConfig;
+  runtimeSettings: RuntimeSettingsService | null;
+  logger: WorkerRuntimeLogger;
+}): Promise<void> {
+  try {
+    const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+    const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
+    input.logger.info("Hard delete job started", {
+      jobId: input.job.id,
+      kind: input.job.kind,
+      knowledgeBaseId: input.job.knowledgeBaseId,
+      attemptCount: input.job.attemptCount
+    });
+    const result = await processHardDeleteJob({
+      job: input.job,
+      repositories: input.repositories,
+      storage: input.storage,
+      redis: input.redis,
+      cursorTtlSeconds: input.config.pagination.cursorTtlSeconds,
+      settings: {
+        databaseBatchSize: workerConfig.hardDeleteDatabaseBatchSize ?? 1_000,
+        objectBatchSize: workerConfig.hardDeleteObjectBatchSize ?? 1_000,
+        versionPurgeEnabled: workerConfig.hardDeleteVersionPurgeEnabled ?? false
+      }
+    });
+
+    if (result.retryAfter) {
+      await input.workerJobs.releaseWorkerJob({
+        id: input.job.id,
+        workerId: input.workerId,
+        releasedAt: new Date().toISOString(),
+        runAfter: result.retryAfter,
+        preserveAttempt: true
+      });
+      input.logger.info("Hard delete job deferred", {
+        jobId: input.job.id,
+        kind: input.job.kind,
+        knowledgeBaseId: input.job.knowledgeBaseId
+      });
+      return;
+    }
+
+    if (!result.workerJobDeleted) {
+      await input.workerJobs.completeWorkerJob({
+        id: input.job.id,
+        workerId: input.workerId,
+        completedAt: new Date().toISOString()
+      });
+    }
+    input.logger.info("Hard delete job completed", {
+      jobId: input.job.id,
+      kind: input.job.kind,
+      knowledgeBaseId: input.job.knowledgeBaseId
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Hard delete worker job failed";
+    const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
+    const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
+    await failJob(input, "HARD_DELETE_JOB_FAILED", message, {
+      retryDelayMs: workerConfig.hardDeleteRetryDelayMs
+    });
+  }
 }
 
 async function processSourceFileJob(input: {
@@ -614,13 +721,18 @@ async function failJob(
     logger?: WorkerRuntimeLogger;
   },
   errorCode: string,
-  errorMessage: string
+  errorMessage: string,
+  options?: {
+    retryDelayMs?: number | undefined;
+  }
 ): Promise<void> {
   const failedAt = new Date();
   const workerConfig = resolveWorkerConfig(input.config);
   const retryAfter =
     input.job.attemptCount < input.job.maxAttempts
-      ? new Date(failedAt.getTime() + workerConfig.jobRetryDelayMs).toISOString()
+      ? new Date(
+          failedAt.getTime() + (options?.retryDelayMs ?? workerConfig.jobRetryDelayMs)
+        ).toISOString()
       : null;
 
   if (retryAfter) {

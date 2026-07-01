@@ -6,6 +6,8 @@ import type {
   BundleTreeEntryRecord,
   KnowledgeBaseRecord,
   SourceFileListFilters,
+  SourceFileEventDraft,
+  SourceFileEventRecord,
   SourceFileTaskDeletionRepositoryResult,
   SourceFileRecord,
   WebhookDeliveryRecord,
@@ -225,6 +227,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
     createdAt: now,
     updatedAt: now
   };
+  let knowledgeBaseDeleted = false;
   const sourceFile: SourceFileRecord = {
     id: "source-guide",
     knowledgeBaseId: "kb-seeded",
@@ -291,6 +294,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
     [bundleFile.id, bundleFile],
     [hiddenBundleFile.id, hiddenBundleFile]
   ]);
+  const sourceFileEvents: SourceFileEventRecord[] = [];
   const treeEntry: BundleTreeEntryRecord = {
     id: "tree-guide",
     knowledgeBaseId: "kb-seeded",
@@ -304,6 +308,22 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
     sourceFileId: "source-guide",
     fileKind: "page",
     childCount: 0
+  };
+  const isBundleFileVisible = (file: BundleFileRecord) => {
+    if (!file.sourceFileId) {
+      return true;
+    }
+
+    const source = sourceFiles.get(file.sourceFileId);
+    return Boolean(source && !source.deletedAt);
+  };
+  const isTreeEntryVisible = (entry: BundleTreeEntryRecord) => {
+    if (!entry.sourceFileId) {
+      return true;
+    }
+
+    const source = sourceFiles.get(entry.sourceFileId);
+    return Boolean(source && !source.deletedAt);
   };
   const webhooks = new Map<string, WebhookSubscriptionRecord>();
   const webhookDeliveries = new Map<string, WebhookDeliveryRecord>();
@@ -345,7 +365,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
     },
     knowledgeBases: {
       async listKnowledgeBases() {
-        return { items: [knowledgeBase], nextCursor: null };
+        return { items: knowledgeBaseDeleted ? [] : [knowledgeBase], nextCursor: null };
       },
       async createKnowledgeBase(input) {
         return {
@@ -358,9 +378,14 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
         };
       },
       async getKnowledgeBase(id) {
-        return id === knowledgeBase.id ? knowledgeBase : null;
+        return id === knowledgeBase.id && !knowledgeBaseDeleted ? knowledgeBase : null;
       },
-      async softDeleteKnowledgeBase() {
+      async softDeleteKnowledgeBase({ id }) {
+        if (id !== knowledgeBase.id || knowledgeBaseDeleted) {
+          return false;
+        }
+
+        knowledgeBaseDeleted = true;
         return true;
       }
     },
@@ -415,7 +440,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
       },
       async listBundleTreeEntries({ parentPath }) {
         return {
-          items: parentPath === "pages" ? [treeEntry] : [],
+          items: parentPath === "pages" && isTreeEntryVisible(treeEntry) ? [treeEntry] : [],
           nextCursor: null
         };
       },
@@ -425,13 +450,17 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
             (file) =>
               file.knowledgeBaseId === knowledgeBaseId &&
               file.releaseId === releaseId &&
-              file.logicalPath === logicalPath
+              file.logicalPath === logicalPath &&
+              isBundleFileVisible(file)
           ) ?? null
         );
       },
       async getBundleFileById({ knowledgeBaseId, releaseId, fileId }) {
         const file = bundleFiles.get(fileId) ?? null;
-        return file && file.knowledgeBaseId === knowledgeBaseId && file.releaseId === releaseId
+        return file &&
+          file.knowledgeBaseId === knowledgeBaseId &&
+          file.releaseId === releaseId &&
+          isBundleFileVisible(file)
           ? file
           : null;
       },
@@ -454,6 +483,26 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
       async getSourceFile({ sourceFileId }) {
         const file = sourceFiles.get(sourceFileId) ?? null;
         return file && !file.deletedAt && !file.taskDeletedAt ? file : null;
+      },
+      async createSourceFileEvent(input: SourceFileEventDraft) {
+        const event: SourceFileEventRecord = {
+          id: `source-file-event-${sourceFileEvents.length + 1}`,
+          ...input,
+          createdAt: now
+        };
+        sourceFileEvents.push(event);
+        return event;
+      },
+      async listSourceFileEvents({ knowledgeBaseId, sourceFileId, limit }) {
+        return {
+          items: sourceFileEvents
+            .filter(
+              (event) =>
+                event.knowledgeBaseId === knowledgeBaseId && event.sourceFileId === sourceFileId
+            )
+            .slice(0, limit),
+          nextCursor: null
+        };
       },
       async listSourceFiles(request) {
         const filters = request as SourceFileListFilters;
@@ -512,7 +561,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
         return { items: [], nextCursor: null };
       },
       async listBundleFiles() {
-        return { items: Array.from(bundleFiles.values()), nextCursor: null };
+        return { items: Array.from(bundleFiles.values()).filter(isBundleFileVisible), nextCursor: null };
       },
       async searchBundleFiles({ query, fileKind, limit }) {
         const normalizedQuery = query.toLowerCase();
@@ -1042,6 +1091,81 @@ describe("Developer OpenAPI", () => {
     const response = await app.request("/openapi/v1/knowledge-bases");
 
     expect(response.status).toBe(401);
+  });
+
+  it("hides deleted knowledge bases from Developer OpenAPI read surfaces", async () => {
+    const { app } = createApp();
+    const headers = authHeaders();
+
+    const [listBefore, detailBefore, treeBefore, searchBefore, contentBefore, sourceFilesBefore] =
+      await Promise.all([
+        app.request("/openapi/v1/knowledge-bases", { headers }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded", { headers }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages&limit=10", {
+          headers
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&limit=10", {
+          headers
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+          headers
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files?limit=10", { headers })
+      ]);
+
+    expect([
+      listBefore.status,
+      detailBefore.status,
+      treeBefore.status,
+      searchBefore.status,
+      contentBefore.status,
+      sourceFilesBefore.status
+    ]).toEqual([200, 200, 200, 200, 200, 200]);
+
+    const deleteResponse = await app.request("/openapi/v1/knowledge-bases/kb-seeded", {
+      method: "DELETE",
+      headers
+    });
+    const [
+      listAfter,
+      detailAfter,
+      treeAfter,
+      searchAfter,
+      contentAfter,
+      sourceFilesAfter,
+      relatedAfter
+    ] = await Promise.all([
+      app.request("/openapi/v1/knowledge-bases", { headers }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded", { headers }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages&limit=10", {
+        headers
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&limit=10", {
+        headers
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+        headers
+      }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files?limit=10", { headers }),
+      app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide/related", { headers })
+    ]);
+    const listAfterBody = (await listAfter.json()) as {
+      items: Array<{ knowledgeBaseId: string }>;
+    };
+
+    expect(deleteResponse.status).toBe(200);
+    expect(listAfter.status).toBe(200);
+    expect(listAfterBody.items).not.toContainEqual(
+      expect.objectContaining({ knowledgeBaseId: "kb-seeded" })
+    );
+    expect([
+      detailAfter.status,
+      treeAfter.status,
+      searchAfter.status,
+      contentAfter.status,
+      sourceFilesAfter.status,
+      relatedAfter.status
+    ]).toEqual([404, 404, 404, 404, 404, 404]);
   });
 
   it("returns queue backpressure guidance when upload work is above capacity", async () => {
@@ -1628,6 +1752,49 @@ describe("Developer OpenAPI", () => {
     ]);
   });
 
+  it("keeps existing Developer OpenAPI reads compatible while hard-delete work is queued", async () => {
+    const { app, repositories } = createApp();
+
+    await repositories.workerJobs?.enqueueWorkerJob({
+      kind: "hard_delete",
+      knowledgeBaseId: "kb-seeded",
+      sourceFileId: null,
+      payload: {
+        targetKind: "source_file",
+        sourceFileId: "source-deleted"
+      },
+      runAfter: now,
+      maxAttempts: 3
+    });
+
+    const [treeResponse, contentResponse, detailResponse, searchResponse, sourceFilesResponse] =
+      await Promise.all([
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&limit=10", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/source-files?limit=10", {
+          headers: authHeaders()
+        })
+      ]);
+
+    expect([
+      treeResponse.status,
+      contentResponse.status,
+      detailResponse.status,
+      searchResponse.status,
+      sourceFilesResponse.status
+    ]).toEqual([200, 200, 200, 200, 200]);
+  });
+
   it("returns no-candidate search status from an available generated file index", async () => {
     const { app } = createApp();
     const response = await app.request(
@@ -1702,6 +1869,74 @@ describe("Developer OpenAPI", () => {
     );
     expect(guideResponse.status).toBe(200);
     expect(guideBody.items).not.toContainEqual(expect.objectContaining({ fileId: "bundle-guide" }));
+  });
+
+  it("does not serve warmed generated file search cache after generated file deletion", async () => {
+    const { app } = createApp();
+    const searchUrl =
+      "/openapi/v1/knowledge-bases/kb-seeded/files/search?query=guide&scope=all&fileKind=page&limit=10";
+    const firstSearch = await app.request(searchUrl, {
+      headers: authHeaders()
+    });
+    const firstSearchBody = (await firstSearch.json()) as {
+      items: Array<{ fileId: string }>;
+      searchStatus: string;
+    };
+
+    expect(firstSearch.status).toBe(200);
+    expect(firstSearchBody.searchStatus).toBe("ok");
+    expect(firstSearchBody.items).toContainEqual(expect.objectContaining({ fileId: "bundle-guide" }));
+
+    const deleteResponse = await app.request(
+      "/openapi/v1/knowledge-bases/kb-seeded/files?path=pages%2Fguide.md",
+      {
+        method: "DELETE",
+        headers: authHeaders()
+      }
+    );
+    const [detailResponse, contentResponse, pathContentResponse, relatedResponse, treeResponse] =
+      await Promise.all([
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide/content", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/content?path=pages%2Fguide.md", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/files/bundle-guide/related", {
+          headers: authHeaders()
+        }),
+        app.request("/openapi/v1/knowledge-bases/kb-seeded/tree?parentPath=pages&limit=10", {
+          headers: authHeaders()
+        })
+      ]);
+    const repeatedSearch = await app.request(searchUrl, {
+      headers: authHeaders()
+    });
+    const treeBody = (await treeResponse.json()) as {
+      items: Array<{ fileId: string | null; path: string }>;
+    };
+    const repeatedSearchBody = (await repeatedSearch.json()) as {
+      items: Array<{ fileId: string }>;
+      searchStatus: string;
+    };
+
+    expect(deleteResponse.status).toBe(200);
+    expect(detailResponse.status).toBe(404);
+    expect(contentResponse.status).toBe(404);
+    expect(pathContentResponse.status).toBe(404);
+    expect(relatedResponse.status).toBe(404);
+    expect(treeResponse.status).toBe(200);
+    expect(treeBody.items).not.toContainEqual(
+      expect.objectContaining({ fileId: "bundle-guide" })
+    );
+    expect(repeatedSearch.status).toBe(200);
+    expect(repeatedSearchBody.searchStatus).toBe("no_candidates");
+    expect(repeatedSearchBody.items).not.toContainEqual(
+      expect.objectContaining({ fileId: "bundle-guide" })
+    );
   });
 
   it("returns generated file search candidates that continue into existing read APIs", async () => {

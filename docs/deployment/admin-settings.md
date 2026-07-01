@@ -49,6 +49,13 @@ Background processing settings control source-file concurrency, job claiming, re
 | Failed retention days | Days to keep failed job records. | 30 or longer. |
 | Dead-letter retention days | Days to keep dead-letter records. | 90. |
 | Retention cleanup batch size | Rows removed in each cleanup pass. | 500 to 2000. |
+| Cleanup concurrency | Number of backend cleanup jobs processed at the same time. | 1 for most deployments. |
+| Cleanup database batch size | Database rows handled in one backend cleanup batch. | 500 to 2000. |
+| Cleanup object batch size | Stored objects handled in one backend cleanup request. | 1000, and never higher than 1000. |
+| Cleanup max attempts | Maximum attempts for backend cleanup work. | 3. |
+| Cleanup retry delay ms | Delay before retrying backend cleanup after a transient failure. | 60000 to 300000 ms. |
+| Cleanup failed retention days | Days to keep failed backend cleanup records for maintenance. | 30. |
+| Versioned cleanup | Requires storage version deletion support during backend cleanup. | Keep disabled unless the deployment uses versioned storage cleanup. |
 
 Keep queue limits high enough for planned imports and low enough to preserve Admin UI and OpenAPI responsiveness. Increase concurrency gradually while observing CPU, memory, storage speed, processing speed, and model response time.
 

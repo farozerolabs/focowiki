@@ -245,6 +245,9 @@ function createRepositories() {
       source: "deterministic"
     }
   ];
+  const searchDocuments = new Map<string, { sourceFileId: string; removedAt: string | null }>([
+    ["bundle-file-page", { sourceFileId: "source-001", removedAt: null }]
+  ]);
   const graphDeletedSourceFileIds: string[] = [];
 
   return {
@@ -255,6 +258,7 @@ function createRepositories() {
       sourceEvents,
       graphNodes,
       graphEdges,
+      searchDocuments,
       graphDeletedSourceFileIds,
       publicationJobs,
       workerJobs,
@@ -319,6 +323,11 @@ function createRepositories() {
           }
 
           source.deletedAt = input.deletedAt;
+          for (const document of searchDocuments.values()) {
+            if (document.sourceFileId === input.sourceFileId && !document.removedAt) {
+              document.removedAt = input.deletedAt;
+            }
+          }
           return true;
         },
         async createSourceFileEvent(input: SourceFileEventDraft) {
@@ -621,6 +630,7 @@ describe("admin source deletion", () => {
     );
     expect(records.knowledgeBase.activeReleaseId).toBe("release-001");
     expect(records.sourceEvents.some((event) => event.stageKey === "source_deletion")).toBe(true);
+    expect(records.searchDocuments.get("bundle-file-page")?.removedAt).toEqual(expect.any(String));
     expect(records.graphDeletedSourceFileIds).toContain("source-001");
     expect(records.graphNodes.has("source-001")).toBe(false);
     expect(records.graphEdges).toHaveLength(0);
@@ -628,6 +638,12 @@ describe("admin source deletion", () => {
     expect(records.workerJobs).toHaveLength(1);
     expect(records.workerJobs[0]?.payload.reason).toBe("deletion");
     expect(storage.objects.size).toBe(storageObjectCountBeforeDelete);
+    await expect(
+      redis.getPaginationInvalid("developer-openapi:file-search:kb-001:release-001")
+    ).resolves.toBe("changed");
+    await expect(redis.getPaginationInvalid("file-tree:kb-001:release-001")).resolves.toBe(
+      "changed"
+    );
   });
 });
 

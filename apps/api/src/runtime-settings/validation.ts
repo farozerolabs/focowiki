@@ -91,8 +91,28 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     "completedJobRetentionDays",
     "failedJobRetentionDays",
     "deadLetterJobRetentionDays",
-    "retentionCleanupBatchSize"
+    "retentionCleanupBatchSize",
+    "hardDeleteConcurrency",
+    "hardDeleteDatabaseBatchSize",
+    "hardDeleteObjectBatchSize",
+    "hardDeleteMaxAttempts",
+    "hardDeleteRetryDelayMs",
+    "hardDeleteFailedRetentionDays"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  if (value.hardDeleteObjectBatchSize && Number(value.hardDeleteObjectBatchSize) > 1_000) {
+    issues.push({
+      field: "hardDeleteObjectBatchSize",
+      message: "hardDeleteObjectBatchSize must be less than or equal to 1000"
+    });
+  }
+
+  if (typeof value.hardDeleteVersionPurgeEnabled !== "boolean") {
+    issues.push({
+      field: "hardDeleteVersionPurgeEnabled",
+      message: "hardDeleteVersionPurgeEnabled must be true or false"
+    });
+  }
 
   return issues;
 }
@@ -114,7 +134,14 @@ export function sanitizeWorkerSettings(input: WorkerRuntimeConfig): RuntimeWorke
     completedJobRetentionDays: input.completedJobRetentionDays!,
     failedJobRetentionDays: input.failedJobRetentionDays!,
     deadLetterJobRetentionDays: input.deadLetterJobRetentionDays!,
-    retentionCleanupBatchSize: input.retentionCleanupBatchSize!
+    retentionCleanupBatchSize: input.retentionCleanupBatchSize!,
+    hardDeleteConcurrency: input.hardDeleteConcurrency!,
+    hardDeleteDatabaseBatchSize: input.hardDeleteDatabaseBatchSize!,
+    hardDeleteObjectBatchSize: Math.min(input.hardDeleteObjectBatchSize!, 1_000),
+    hardDeleteMaxAttempts: input.hardDeleteMaxAttempts!,
+    hardDeleteRetryDelayMs: input.hardDeleteRetryDelayMs!,
+    hardDeleteFailedRetentionDays: input.hardDeleteFailedRetentionDays!,
+    hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled!
   };
 }
 

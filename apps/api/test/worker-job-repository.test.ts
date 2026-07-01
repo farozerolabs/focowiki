@@ -82,6 +82,86 @@ describe("worker job repository contract", () => {
     expect(publicationSection).toContain("limit 1");
   });
 
+  it("prevents duplicate active hard-delete jobs without source-file foreign keys", () => {
+    const repository = readRepository();
+    const hardDeleteSection = repository.slice(
+      repository.indexOf("async enqueueharddeletejob"),
+      repository.indexOf("async claimworkerjobs")
+    );
+
+    expect(hardDeleteSection).toContain("'hard_delete'");
+    expect(hardDeleteSection).toContain("source_file_id");
+    expect(hardDeleteSection).toContain("null");
+    expect(hardDeleteSection).toContain("payload_json->>'targetkind' = 'knowledge_base'");
+    expect(hardDeleteSection).toContain("payload_json->>'targetkind' = 'source_file'");
+    expect(hardDeleteSection).toContain("payload_json->>'sourcefileid'");
+    expect(hardDeleteSection).toContain("status in ('queued', 'running')");
+    expect(hardDeleteSection).toContain("order by run_after asc, created_at asc, id asc");
+  });
+
+  it("keeps hard-delete restart, duplicate, and multi-worker claim semantics bounded", () => {
+    const repository = readRepository();
+    const claimSection = repository.slice(
+      repository.indexOf("async claimworkerjobs"),
+      repository.indexOf("async completeworkerjob")
+    );
+    const hardDeleteSection = repository.slice(
+      repository.indexOf("async enqueueharddeletejob"),
+      repository.indexOf("async claimworkerjobs")
+    );
+
+    expect(hardDeleteSection).toContain("where not exists");
+    expect(hardDeleteSection).toContain("status in ('queued', 'running')");
+    expect(hardDeleteSection).toContain("payload_json->>'targetkind' = 'knowledge_base'");
+    expect(hardDeleteSection).toContain("payload_json->>'targetkind' = 'source_file'");
+    expect(hardDeleteSection).toContain("payload_json->>'sourcefileid'");
+
+    expect(claimSection).toContain("status = 'running'");
+    expect(claimSection).toContain("coalesce(heartbeat_at, locked_at) < ${input.stalebefore}");
+    expect(claimSection).toContain("for update skip locked");
+    expect(claimSection).toContain("locked_by = ${input.workerid}");
+    expect(claimSection).toContain("attempt_count = job.attempt_count + 1");
+  });
+
+  it("cancels queued knowledge-base child work without cancelling the scope delete job", () => {
+    const repository = readRepository();
+    const cancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedknowledgebasejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+
+    expect(cancelSection).toContain("knowledge_base_id = ${input.knowledgebaseid}");
+    expect(cancelSection).toContain("status = 'queued'");
+    expect(cancelSection).toContain("kind in ('source_file_processing', 'publication')");
+    expect(cancelSection).toContain("payload_json->>'targetkind'");
+    expect(cancelSection).toContain("<> 'knowledge_base'");
+    expect(cancelSection).not.toContain("status = 'running'");
+  });
+
+  it("keeps delete-time cancellation scoped to queued child work", () => {
+    const repository = readRepository();
+    const sourceCancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedsourcefilejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+    const knowledgeBaseCancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedknowledgebasejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+
+    expect(sourceCancelSection).toContain("kind = 'source_file_processing'");
+    expect(sourceCancelSection).toContain("status = 'queued'");
+    expect(sourceCancelSection).toContain("status = 'cancelled'");
+    expect(sourceCancelSection).not.toContain("status = 'running'");
+
+    expect(knowledgeBaseCancelSection).toContain("kind in ('source_file_processing', 'publication')");
+    expect(knowledgeBaseCancelSection).toContain("kind = 'hard_delete'");
+    expect(knowledgeBaseCancelSection).toContain("<> 'knowledge_base'");
+    expect(knowledgeBaseCancelSection).toContain("status = 'queued'");
+    expect(knowledgeBaseCancelSection).toContain("status = 'cancelled'");
+    expect(knowledgeBaseCancelSection).not.toContain("status = 'running'");
+  });
+
   it("moves running jobs through retry, failure, dead-letter, heartbeat, and completion by worker ownership", () => {
     const repository = readRepository();
     const failSection = repository.slice(
@@ -157,6 +237,7 @@ describe("worker job repository contract", () => {
     for (const index of [
       "worker_jobs_claim_idx",
       "worker_jobs_kind_status_idx",
+      "worker_jobs_hard_delete_active_idx",
       "worker_jobs_queued_oldest_idx",
       "worker_jobs_running_heartbeat_idx",
       "worker_jobs_source_active_idx",
@@ -171,5 +252,7 @@ describe("worker job repository contract", () => {
     }
     expect(migration).toContain("create table if not exists focowiki.worker_queue_summaries");
     expect(migration).toContain("create trigger worker_jobs_summary_sync_trigger");
+    expect(migration).toContain("create table if not exists focowiki.hard_delete_object_deletions");
+    expect(migration).toContain("hard_delete_object_deletions_job_pending_idx");
   });
 });
