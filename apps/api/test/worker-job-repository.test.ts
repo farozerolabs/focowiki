@@ -162,6 +162,24 @@ describe("worker job repository contract", () => {
     expect(knowledgeBaseCancelSection).not.toContain("status = 'running'");
   });
 
+  it("keeps cancelled queued jobs valid when a deferred job already has a start timestamp", () => {
+    const repository = readRepository();
+    const sourceCancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedsourcefilejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+    const knowledgeBaseCancelSection = repository.slice(
+      repository.indexOf("async cancelqueuedknowledgebasejobs"),
+      repository.indexOf("async releaseworkerjob")
+    );
+
+    for (const section of [sourceCancelSection, knowledgeBaseCancelSection]) {
+      expect(section).toContain("completed_at = greatest(");
+      expect(section).toContain("${input.cancelledat}");
+      expect(section).toContain("coalesce(started_at, ${input.cancelledat})");
+    }
+  });
+
   it("moves running jobs through retry, failure, dead-letter, heartbeat, and completion by worker ownership", () => {
     const repository = readRepository();
     const failSection = repository.slice(
