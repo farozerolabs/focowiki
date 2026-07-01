@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="./docs/public/images/focowiki-og.png" alt="Focowiki Markdown-file-first enterprise knowledge base" width="880" />
+  <img src="./docs/public/images/focowiki-og.png" alt="Focowiki Markdown-native, file-first enterprise knowledge base" width="880" />
 </p>
 
 <h1 align="center">Focowiki</h1>
 
 <p align="center">
-  <strong>Markdown-file-first enterprise knowledge base for people, applications, and Agents.</strong>
+  <strong>Markdown-native, file-first enterprise knowledge base for people, applications, and Agents.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/farozerolabs/focowiki/releases"><img src="https://img.shields.io/github/v/release/farozerolabs/focowiki?label=release" alt="GitHub release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/farozerolabs/focowiki" alt="License" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-modified%20Apache--2.0-blue" alt="License" /></a>
   <a href="https://github.com/farozerolabs/focowiki/pkgs/container/focowiki-api"><img src="https://img.shields.io/badge/docker-GHCR-2496ED?logo=docker&logoColor=white" alt="Docker images on GHCR" /></a>
   <a href="https://docs.focowiki.com"><img src="https://img.shields.io/badge/docs-docs.focowiki.com-111827" alt="Documentation" /></a>
   <a href="https://docs.focowiki.com/openapi/"><img src="https://img.shields.io/badge/OpenAPI-Developer_API-0EA5E9" alt="Developer OpenAPI" /></a>
@@ -25,25 +25,25 @@
 </p>
 
 <p align="center">
-  <a href="./README.zh-CN.md">中文</a> · English
+  English · <a href="./README.zh-CN.md">中文</a>
 </p>
 
-Focowiki turns cleaned Markdown files into an OKF-style knowledge base for people, applications, and Agents. It follows Google's Open Knowledge Format direction, which builds on Andrej Karpathy's LLM-Wiki concept: knowledge should be readable files with metadata, links, indexes, and update logs.
+Focowiki turns cleaned Markdown files into an OKF-style knowledge base for people, applications, and Agents. It follows Google's Open Knowledge Format approach, which builds on Andrej Karpathy's LLM-Wiki concept: knowledge should be organized as readable files with metadata, links, indexes, and update logs.
 
-We tested RAG-style search first. Chunk recall often missed document context, cross-file relationships, update status, and domain structure. It also required repeated tuning of embeddings, rerankers, and chunking strategies for each dataset.
+We tested RAG-style search first. Chunk recall often missed document context, cross-file relationships, update status, and domain structure. It also required repeated tuning of embeddings, rerankers, and chunking strategies for each dataset. That led us toward a file-first knowledge base system.
 
-Focowiki uses readable Markdown as the core knowledge representation. It preserves metadata, generates indexes and graph files, records related links, and gives Agents a corpus they can inspect in a Loop: read the index, open files, extract leads, search again, compare evidence, and answer with cited sources.
+Focowiki uses readable Markdown as the core knowledge representation. It preserves metadata, generates indexes and graph files, records related links, and gives Agents a corpus they can explore in a loop: read the index, open files, follow leads, search again, compare evidence, and answer with cited sources.
 
 <img src="./docs/public/images/focowiki-architecture.png" alt="Focowiki architecture" width="880" />
 
 ## Quick Start
 
-Run Focowiki with Docker Compose and the published GHCR images.
+Run Focowiki with Docker Compose and the published images on GHCR.
 
-Before installing Focowiki, make sure your machine meets the following requirements:
+Before installing Focowiki, make sure your machine meets these requirements:
 
-- Minimum: CPU >= 2 Core, RAM >= 2 GiB
-- Recommended: CPU >= 2 Core, RAM >= 4 GiB or higher
+- Minimum: CPU >= 2 cores, RAM >= 2 GiB
+- Recommended: CPU >= 2 cores, RAM >= 4 GiB or more
 
 ```bash
 cp .env.example .env
@@ -55,7 +55,7 @@ docker compose -f docker-compose.yml up -d
 
 ### Agent-assisted Deployment
 
-If you use Codex, Claude Code, or a similar coding Agent, you can ask the Agent to read this repository and help deploy Focowiki with Docker Compose.
+If you use Codex, Claude Code, or a similar coding agent, you can ask it to read this repository and help deploy Focowiki with Docker Compose.
 
 ```text
 Review the farozerolabs/focowiki repository:
@@ -64,7 +64,7 @@ https://github.com/farozerolabs/focowiki
 Read README.md and help me deploy Focowiki with Docker Compose.
 ```
 
-The Docker Compose template uses `latest` by default. To pin a release, set the image tag in `.env`:
+The Docker Compose template uses `latest` by default. To pin a release, set the image tags in `.env`:
 
 ```env
 FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.1.0
@@ -89,7 +89,7 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 ## What Focowiki Provides
 
 - Markdown-only upload workflow for `.md` files.
-- Frontmatter, headings, links, and body-content extraction.
+- Frontmatter, headings, links, and body content extraction.
 - OKF-style files: `index.md`, `log.md`, `schema.md`, `pages/*.md`, `_index/*.json`, and `_graph/*`.
 - PostgreSQL records, Redis coordination, and S3-compatible file storage.
 - Admin UI for knowledge-base management, uploads, file browsing, processing status, and OpenAPI keys.
@@ -101,7 +101,7 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 
 ## Agent Demo Result
 
-The demo Agent result shows a third-party Agent reading a Focowiki-backed legal knowledge base through the demo backend and Skill.
+The demo shows a third-party Agent reading a Focowiki-backed legal knowledge base through a demo backend and Skill.
 
 <img src="./docs/public/images/demo-agent-en-us-1.png" alt="Demo Agent result in English, part 1" width="880" />
 
@@ -113,7 +113,7 @@ See the [Agent demo result documentation](https://docs.focowiki.com/agent-integr
 
 [Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes a portable way to represent knowledge as Markdown files with YAML frontmatter. The [OKF specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) defines metadata, Markdown pages, links, indexes, and update logs.
 
-Focowiki turns this model into an open-source product workflow. Teams upload cleaned Markdown files, Focowiki parses document signals, generates an OKF-style knowledge base, stores every generated file, and exposes the result through Admin UI and Developer OpenAPI.
+Focowiki turns this model into an open-source product workflow. Teams upload cleaned Markdown files, Focowiki parses document signals, generates an OKF-style knowledge base, stores every generated file, and exposes the result through the Admin UI and Developer OpenAPI.
 
 ## Markdown Input
 
@@ -157,7 +157,7 @@ Local service URLs:
 - Admin API: `http://127.0.0.1:43000`
 - Developer OpenAPI: `http://127.0.0.1:43200`
 
-Real upload parsing requires S3-compatible storage settings in `.env`.
+Parsing real uploads requires S3-compatible storage settings in `.env`.
 
 ## License
 
@@ -168,3 +168,5 @@ Focowiki is distributed under a modified Apache License 2.0. See [LICENSE](./LIC
 - [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
 - [OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
+
+<p><sub><small>Related links: <a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>
