@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a reproducible problem in Focowiki.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove secrets, local paths, private object-storage URLs, and private data before submitting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest reproducible steps.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Admin UI
+        - Admin API
+        - Developer OpenAPI
+        - Upload processing
+        - Worker
+        - Docker Compose
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Focowiki version
+      description: Release tag, Docker image tag, or commit SHA.
+      placeholder: v0.5.4
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Deployment method, operating system, browser, database, Redis, and S3-compatible storage provider if relevant.
+      placeholder: Docker Compose on Ubuntu 24.04, Chrome, PostgreSQL 18, Redis 8, S3-compatible storage
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs or screenshots with secrets removed.
+      render: text
+    validations:
+      required: false

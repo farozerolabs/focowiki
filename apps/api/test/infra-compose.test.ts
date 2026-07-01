@@ -310,9 +310,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("pnpm test:validation");
     expect(workflow).toContain("pnpm openapi:validate");
     expect(workflow).toContain("org.opencontainers.image.version=${{ steps.release.outputs.version }}");
-    expect(workflow).toContain(
-      "type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' }}"
-    );
+    expect(workflow).toContain("name: Verify main release source");
+    expect(workflow).toContain("Manual Docker publishing must run from the main branch.");
+    expect(workflow).toContain("Docker publishing is allowed only for commits already contained in main.");
+    expect(workflow).not.toContain("type=ref,event=branch");
     expect(workflow).toContain("type=ref,event=tag");
     expect(workflow).toContain("type=semver,pattern={{version}}");
     expect(workflow).toContain("type=semver,pattern={{major}}.{{minor}}");
@@ -333,6 +334,9 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("Documentation deployment requires a release tag.");
     expect(workflow).toContain("Documentation releases require a semantic version tag like v1.2.3.");
+    expect(workflow).toContain("name: Verify main documentation source");
+    expect(workflow).toContain("Documentation release tags must point to commits already contained in main.");
+    expect(workflow).toContain("Documentation source refs must be contained in main.");
     expect(workflow).toContain("FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}");
     expect(workflow).toContain("pnpm docs:validate");
     expect(workflow).toContain("actions/upload-pages-artifact@v5.0.0");
