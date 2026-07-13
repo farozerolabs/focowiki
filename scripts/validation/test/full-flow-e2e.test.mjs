@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,14 +12,9 @@ import {
   summarizeFullCodebaseMatrix
 } from "../lib/full-codebase-validation.mjs";
 
-const DEMO_REPO_ENV = "FOCOWIKI_DEMO_E2E_DEMO_REPO";
-
 test("full-flow plan composes bounded API validation without optional layers", () => {
-  const demoRepo = path.join(os.tmpdir(), "missing-focowiki-demo-repo");
   const config = readFullFlowConfig("all", {
-    [DEMO_REPO_ENV]: demoRepo,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"
   });
 
@@ -36,11 +29,8 @@ test("full-flow plan composes bounded API validation without optional layers", (
 });
 
 test("full-flow plan names codebase regression commands explicitly", () => {
-  const demoRepo = path.join(os.tmpdir(), "missing-focowiki-demo-repo");
   const config = readFullFlowConfig("all", {
-    [DEMO_REPO_ENV]: demoRepo,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER: "false"
   });
   const plan = buildFullFlowPlan(config);
@@ -66,7 +56,6 @@ test("full-flow plan command generates matrix without runtime steps", () => {
   const config = readFullFlowConfig("plan", {
     FOCOWIKI_FULL_FLOW_RUN_ID: "validation-plan-run",
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "true",
     FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER: "true"
   });
@@ -83,18 +72,13 @@ test("full-flow config rejects unknown commands", () => {
 });
 
 test("full-flow plan keeps Docker checks optional", () => {
-  const demoRepo = path.join(os.tmpdir(), "missing-focowiki-demo-repo");
   const disabled = readFullFlowConfig("all", {
-    [DEMO_REPO_ENV]: demoRepo,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER: "false"
   });
   const enabled = readFullFlowConfig("all", {
-    [DEMO_REPO_ENV]: demoRepo,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER: "true"
   });
@@ -107,11 +91,8 @@ test("full-flow plan keeps Docker checks optional", () => {
 });
 
 test("full-flow plan switches to large profile commands without reading fixture bodies", () => {
-  const demoRepo = path.join(os.tmpdir(), "missing-focowiki-demo-repo");
   const config = readFullFlowConfig("large", {
-    [DEMO_REPO_ENV]: demoRepo,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "true",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"
   });
 
@@ -125,31 +106,11 @@ test("full-flow plan switches to large profile commands without reading fixture 
   assert.equal(plan[1].extraEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, "10000");
 });
 
-test("full-flow plan enables demo validation when the demo repository is available", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-demo-plan-"));
-  fs.writeFileSync(path.join(root, "package.json"), "{}\n");
-
-  try {
-    const config = readFullFlowConfig("all", {
-      [DEMO_REPO_ENV]: root,
-      FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-      FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"
-    });
-    const plan = buildFullFlowPlan(config);
-
-    assert.equal(config.includeDemo, true);
-    assert.equal(plan.some((step) => step.id === "demo-agent-e2e"), true);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("full-flow report stores only redacted runtime source hints", () => {
   const fixtureRoot = "private-fixtures-root";
   const config = readFullFlowConfig("all", {
     FOCOWIKI_VALIDATION_MARKDOWN_DIR: fixtureRoot,
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"
   });
   const report = createFullFlowReport(config, buildFullFlowPlan(config));
@@ -164,7 +125,6 @@ test("full-flow report records run id, local-only report dir, and full codebase 
     FOCOWIKI_FULL_FLOW_RUN_ID: "validation-test-run",
     FOCOWIKI_FULL_FLOW_REPORT_DIR: "ReferenceDocs/test-full-codebase",
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"
   });
   const report = createFullFlowReport(config, buildFullFlowPlan(config));

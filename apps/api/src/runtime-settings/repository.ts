@@ -70,11 +70,6 @@ export type RuntimeSettingsRepository = {
     requestMinIntervalMs: number;
     isActive: boolean;
   }) => Promise<RuntimeModelConfigPrivate>;
-  updateModelApiKeyProtection: (input: {
-    id: string;
-    encryptedApiKey: string;
-    apiKeyFingerprint: string;
-  }) => Promise<RuntimeModelConfigPrivate | null>;
   setModelStatus: (input: {
     id: string;
     status: Exclude<ModelConfigStatus, "deleted">;
@@ -223,19 +218,6 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
       }
 
       return toPrivateModel(rows[0]);
-    },
-    async updateModelApiKeyProtection(input) {
-      const rows = await sql<ModelConfigRow[]>`
-        UPDATE focowiki.model_configs
-        SET encrypted_api_key = ${input.encryptedApiKey},
-            api_key_fingerprint = ${input.apiKeyFingerprint},
-            updated_at = now()
-        WHERE id = ${input.id}
-          AND deleted_at IS NULL
-        RETURNING *
-      `;
-
-      return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async setModelStatus(input) {
       const rows = await sql<ModelConfigRow[]>`

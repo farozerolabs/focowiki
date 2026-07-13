@@ -6,7 +6,6 @@ import type {
   BundleTreeEntryDraft,
   PublicationJobRecord,
   ReleaseDraft,
-  SourceFileDraft,
   SourceFileEventDraft,
   SourceFileRecord
 } from "../src/db/admin-repositories.js";
@@ -15,14 +14,23 @@ import type {
   WorkerJobRepository
 } from "../src/db/worker-job-repository.js";
 import { createSourceFileQueueProcessor } from "../src/admin/source-file-processor.js";
-import { acceptUploadSourceFiles } from "../src/admin/source-file-upload.js";
 import { createKnowledgeBasePublicationService } from "../src/admin/publication-scheduler.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
 import { MemoryRedisCommandClient } from "./support/session.js";
 import type { RuntimeConfig } from "../src/config.js";
+import type {
+  ReleaseMarkdownLinkRecord,
+  ReleaseNavigationEntryRecord,
+  ReleaseSourceFileRecord
+} from "../src/application/ports/release-publication-repository.js";
 import { createWorkerRuntime } from "../src/worker/runtime.js";
+import { PublicationCatalogStaleError } from "../src/domain/publication.js";
+import {
+  seedSourceFileFixtures,
+  type SourceFileFixtureDraft
+} from "./support/source-file-fixture.js";
 
 const now = "2026-06-18T00:00:00.000Z";
 
@@ -41,13 +49,12 @@ class MemoryStorage implements StorageAdapter {
     return this.objects.get(key) ?? null;
   }
 
-  public async writeCurrentPointer(): Promise<void> {
-    throw new Error("Not used by source file queue tests");
+  public async copyObject(input: { sourceKey: string; destinationKey: string }): Promise<void> {
+    const content = this.objects.get(input.sourceKey);
+    if (content === undefined) throw new Error(`Missing copy source: ${input.sourceKey}`);
+    this.objects.set(input.destinationKey, content);
   }
 
-  public async readCurrentPointer(): Promise<null> {
-    return null;
-  }
 }
 
 class DelayedStorage extends MemoryStorage {
@@ -84,6 +91,8 @@ function createRepositories() {
   const graphNodes = new Map<string, OkfGraphNode>();
   const graphEdges: OkfGraphEdge[] = [];
   const workerJobs: WorkerJobRecord[] = [];
+  const releaseSources = new Map<string, ReleaseSourceFileRecord[]>();
+  const releaseMarkdownLinks = new Map<string, ReleaseMarkdownLinkRecord[]>();
   const workerJobRepository: WorkerJobRepository = {
     async enqueueWorkerJob(input) {
       const record = createWorkerJob(input);
@@ -319,6 +328,28 @@ function createRepositories() {
     }
   };
 
+  const persistSourceFileFixtures = async (files: SourceFileFixtureDraft[]) => {
+    for (const file of files) {
+      sources.set(file.id, {
+        ...file,
+        processingStatus: file.processingStatus ?? "queued",
+        processingStage: file.processingStage ?? "upload_storage",
+        processingStartedAt: file.processingStartedAt ?? null,
+        processingEndedAt: file.processingEndedAt ?? null,
+        processingErrorCode: file.processingErrorCode ?? null,
+        processingErrorMessage: file.processingErrorMessage ?? null,
+        generatedOutputStatus: file.generatedOutputStatus ?? "pending",
+        publicationDirtyAt: file.publicationDirtyAt ?? null,
+        publicationVisibleAt: file.publicationVisibleAt ?? null,
+        publicationErrorCode: file.publicationErrorCode ?? null,
+        publicationErrorMessage: file.publicationErrorMessage ?? null,
+        retryCount: file.retryCount ?? 0,
+        createdAt: now,
+        deletedAt: null
+      });
+    }
+  };
+
   const repositories: AdminRepositories = {
     knowledgeBases: {
       async listKnowledgeBases() {
@@ -331,28 +362,171 @@ function createRepositories() {
         return id === knowledgeBase.id ? knowledgeBase : null;
       }
     },
-    files: {
-      async createSourceFiles(files: SourceFileDraft[]) {
-        for (const file of files) {
-          sources.set(file.id, {
-            ...file,
-            processingStatus: file.processingStatus ?? "queued",
-            processingStage: file.processingStage ?? "upload_storage",
-            processingStartedAt: file.processingStartedAt ?? null,
-            processingEndedAt: file.processingEndedAt ?? null,
-            processingErrorCode: file.processingErrorCode ?? null,
-            processingErrorMessage: file.processingErrorMessage ?? null,
-            generatedOutputStatus: file.generatedOutputStatus ?? "pending",
-            publicationDirtyAt: file.publicationDirtyAt ?? null,
-            publicationVisibleAt: file.publicationVisibleAt ?? null,
-            publicationErrorCode: file.publicationErrorCode ?? null,
-            publicationErrorMessage: file.publicationErrorMessage ?? null,
-            retryCount: file.retryCount ?? 0,
-            createdAt: now,
-            deletedAt: null
-          });
-        }
+    releasePublication: {
+      async materializeSourceSnapshot(input) {
+        const publicationTargets = new Set(input.publicationSourceFileIds);
+        const snapshot = Array.from(sources.values())
+          .filter((source) =>
+            source.knowledgeBaseId === input.knowledgeBaseId
+            && source.processingStatus === "completed"
+            && !source.deletedAt
+            && (source.generatedOutputStatus === "visible" || publicationTargets.has(source.id))
+          )
+          .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+          .map((source) => ({
+            ...toReleaseSourceFile(source),
+            publicationRequired: publicationTargets.has(source.id)
+          }));
+        releaseSources.set(input.releaseId, snapshot);
+        return {
+          directoryCount: new Set(snapshot.map((source) => parentSourcePath(source.relativePath)).filter(Boolean)).size,
+          sourceFileCount: snapshot.length
+        };
       },
+      async countSourceFiles(input) {
+        return releaseSources.get(input.releaseId)?.length ?? 0;
+      },
+      async listSourceFiles(input) {
+        const snapshot = releaseSources.get(input.releaseId) ?? [];
+        const start = input.cursor ? Number(input.cursor) : 0;
+        const items = snapshot.slice(start, start + input.limit);
+        return {
+          items,
+          nextCursor: start + input.limit < snapshot.length ? String(start + input.limit) : null
+        };
+      },
+      async listNavigationEntries(input) {
+        const entries = createReleaseNavigationEntries(releaseSources.get(input.releaseId) ?? []);
+        const start = input.cursor ? Number(input.cursor) : 0;
+        return {
+          items: entries.slice(start, start + input.limit),
+          nextCursor: start + input.limit < entries.length ? String(start + input.limit) : null
+        };
+      },
+      async listReusablePages(input) {
+        const requested = new Set(input.sourceFileIds);
+        return bundleFiles
+          .filter((file) =>
+            file.releaseId === input.releaseId
+            && file.fileKind === "page"
+            && file.sourceFileId !== null
+            && requested.has(file.sourceFileId)
+          )
+          .map((file) => ({
+            sourceFileId: file.sourceFileId!,
+            logicalPath: file.logicalPath,
+            objectKey: file.objectKey,
+            contentType: file.contentType,
+            sizeBytes: file.sizeBytes,
+            checksumSha256: file.checksumSha256,
+            okfType: file.okfType,
+            title: file.title,
+            description: file.description,
+            tags: [...file.tags],
+            frontmatter: { ...file.frontmatter }
+          }));
+      },
+      async persistMarkdownLinks(input) {
+        const current = releaseMarkdownLinks.get(input.releaseId) ?? [];
+        current.push(...input.links);
+        releaseMarkdownLinks.set(input.releaseId, current);
+      },
+      async copyReusableMarkdownLinks(input) {
+        const requested = new Set(input.sourceFileIds);
+        const copied = (releaseMarkdownLinks.get(input.previousReleaseId) ?? [])
+          .filter((link) => link.sourceFileId !== null && requested.has(link.sourceFileId));
+        const current = releaseMarkdownLinks.get(input.releaseId) ?? [];
+        current.push(...copied);
+        releaseMarkdownLinks.set(input.releaseId, current);
+      },
+      async pruneInvalidSourceMarkdownLinks(input) {
+        const targetPaths = new Set([
+          ...bundleFiles
+            .filter((file) => file.releaseId === input.releaseId)
+            .map((file) => file.logicalPath),
+          ...input.plannedTargetPaths
+        ]);
+        const current = releaseMarkdownLinks.get(input.releaseId) ?? [];
+        const retained = current.filter((link) => link.navigationOnly || targetPaths.has(link.to));
+        releaseMarkdownLinks.set(input.releaseId, retained);
+        return current.length - retained.length;
+      },
+      async listValidMarkdownLinks(input) {
+        const targetPaths = new Set([
+          ...bundleFiles
+            .filter((file) => file.releaseId === input.releaseId)
+            .map((file) => file.logicalPath),
+          ...input.plannedTargetPaths
+        ]);
+        const links = (releaseMarkdownLinks.get(input.releaseId) ?? [])
+          .filter((link) => targetPaths.has(link.to))
+          .sort((left, right) =>
+            `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
+              `${right.from}\u0000${right.to}\u0000${right.label}`
+            )
+          );
+        const start = input.cursor ? Number(input.cursor) : 0;
+        return {
+          items: links.slice(start, start + input.limit).map(({ from, to, label }) => ({
+            from,
+            to,
+            label
+          })),
+          nextCursor: start + input.limit < links.length ? String(start + input.limit) : null
+        };
+      },
+      async summarizeChanges(input) {
+        return {
+          created: releaseSources.get(input.releaseId)?.filter((source) => source.publicationRequired).length ?? 0,
+          updated: 0,
+          moved: 0,
+          deleted: 0,
+          affectedDirectories: []
+        };
+      },
+      async listChanges() {
+        return { items: [], nextCursor: null };
+      },
+      async listSourceGraphNeighborhood(input) {
+        const snapshot = releaseSources.get(input.releaseId) ?? [];
+        const byId = new Map(snapshot.map((source) => [source.sourceFileId, source]));
+        return graphEdges.flatMap((edge) => {
+          const outgoing = edge.fromFileId === input.sourceFileId;
+          const incoming = edge.toFileId === input.sourceFileId;
+          if (!outgoing && !incoming) return [];
+          const relatedId = outgoing ? edge.toFileId : edge.fromFileId;
+          const related = byId.get(relatedId);
+          if (!related) return [];
+          return [{
+            fileId: relatedId,
+            path: related.generatedPath,
+            title: graphNodes.get(relatedId)?.title ?? related.name.replace(/\.md$/i, ""),
+            relationType: edge.relationType,
+            direction: outgoing ? "outgoing" as const : "incoming" as const,
+            weight: edge.weight,
+            reason: edge.reason,
+            source: edge.source,
+            ...(edge.evidence ? { evidence: edge.evidence } : {})
+          }];
+        }).slice(0, input.limit);
+      },
+      async materializeTree(input) {
+        const files = bundleFiles.filter((file) => file.releaseId === input.releaseId);
+        const directories = new Set(
+          files.flatMap((file) => {
+            const segments = file.logicalPath.split("/");
+            return segments.slice(0, -1).map((_segment, index) =>
+              segments.slice(0, index + 1).join("/")
+            );
+          })
+        );
+        return { entryCount: files.length + directories.size };
+      },
+      async validateRelease() {
+        return { issues: [], truncated: false };
+      }
+    },
+    files: {
       async createRelease(release) {
         releases.set(release.id, release);
       },
@@ -372,6 +546,31 @@ function createRepositories() {
         }
 
         knowledgeBase.activeReleaseId = input.releaseId;
+
+        const publicationTargets = new Set(
+          (releaseSources.get(input.releaseId) ?? [])
+            .filter((source) => source.publicationRequired)
+            .map((source) => source.sourceFileId)
+        );
+        const visiblePages = bundleFiles.filter((file) =>
+          file.releaseId === input.releaseId
+          && file.fileKind === "page"
+          && file.sourceFileId
+          && publicationTargets.has(file.sourceFileId)
+        );
+        for (const file of visiblePages) {
+          const source = sources.get(file.sourceFileId!);
+          if (!source || !source.publicationDirtyAt) continue;
+          source.processingStage = "release_activation";
+          source.processingEndedAt = input.publishedAt;
+          source.generatedOutputStatus = "visible";
+          source.generatedBundleFileId = file.id;
+          source.generatedBundleFilePath = file.logicalPath;
+          source.publicationDirtyAt = null;
+          source.publicationVisibleAt = input.publishedAt;
+          source.publicationErrorCode = null;
+          source.publicationErrorMessage = null;
+        }
       },
       async updateSourceFileProcessingState(input) {
         for (const id of input.sourceFileIds) {
@@ -412,6 +611,9 @@ function createRepositories() {
       async getSourceFile(input) {
         return sources.get(input.sourceFileId) ?? null;
       },
+      async getSourceFileForProcessing(input) {
+        return sources.get(input.sourceFileId) ?? null;
+      },
       async listSourceFiles(input) {
         const items = Array.from(sources.values()).filter(
           (source) => source.knowledgeBaseId === input.knowledgeBaseId && !source.deletedAt
@@ -431,6 +633,9 @@ function createRepositories() {
         return { items: [], nextCursor: null };
       },
       async listBundleFiles() {
+        return { items: bundleFiles, nextCursor: null };
+      },
+      async listReusableBundleFiles() {
         return { items: bundleFiles, nextCursor: null };
       },
       async listPublicationLogHistory() {
@@ -603,6 +808,18 @@ function createRepositories() {
       async listGraphNeighborhood() {
         return { items: [], nextCursor: null };
       },
+      async listActiveGraphNodes(input) {
+        return {
+          items: Array.from(graphNodes.values()).slice(0, input.limit),
+          nextCursor: null
+        };
+      },
+      async listActiveGraphEdges(input) {
+        return { items: graphEdges.slice(0, input.limit), nextCursor: null };
+      },
+      async listActiveGraphNeighborhood() {
+        return { items: [], nextCursor: null };
+      },
       async deleteGraphForSourceFile(input) {
         graphNodes.delete(input.sourceFileId);
       }
@@ -620,8 +837,91 @@ function createRepositories() {
     events,
     graphNodes,
     graphEdges,
-    workerJobs
+    workerJobs,
+    persistSourceFileFixtures
   };
+}
+
+function toReleaseSourceFile(source: SourceFileRecord): ReleaseSourceFileRecord {
+  const relativePath = source.relativePath;
+  return {
+    sourceFileId: source.id,
+    sourceRevisionId: `revision-${source.id}`,
+    sourceDirectoryId: parentSourcePath(relativePath) || null,
+    name: relativePath.split("/").at(-1) ?? relativePath,
+    relativePath,
+    generatedPath: `pages/${relativePath}`,
+    objectKey: source.objectKey,
+    contentType: source.contentType,
+    sizeBytes: source.sizeBytes,
+    checksumSha256: source.checksumSha256,
+    metadata: source.metadata,
+    suggestions: source.modelSuggestions ?? null,
+    publicationRequired: false
+  };
+}
+
+function createReleaseNavigationEntries(
+  sources: ReleaseSourceFileRecord[]
+): ReleaseNavigationEntryRecord[] {
+  const children = new Map<string, ReleaseNavigationEntryRecord[]>();
+  const ensure = (path: string) => {
+    const current = children.get(path) ?? [];
+    children.set(path, current);
+    return current;
+  };
+  ensure("pages");
+  for (const source of sources) {
+    const segments = source.generatedPath.split("/");
+    const parentPath = segments.slice(0, -1).join("/");
+    ensure(parentPath).push({
+      id: `file:${source.sourceFileId}`,
+      parentPath,
+      kind: "file",
+      name: source.name,
+      targetPath: source.name,
+      label: source.name.replace(/\.md$/i, ""),
+      entryCount: null
+    });
+    for (let index = 1; index < segments.length - 1; index += 1) {
+      const directoryPath = segments.slice(0, index + 1).join("/");
+      const ownerPath = segments.slice(0, index).join("/");
+      const name = segments[index] ?? "";
+      ensure(directoryPath);
+      const owner = ensure(ownerPath);
+      if (!owner.some((entry) => entry.kind === "directory" && entry.name === name)) {
+        owner.push({
+          id: `directory:${directoryPath}`,
+          parentPath: ownerPath,
+          kind: "directory",
+          name,
+          targetPath: `${name}/index.md`,
+          label: name,
+          entryCount: null
+        });
+      }
+    }
+  }
+  return [...children.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([parentPath, entries]) => [
+      {
+        id: `start:${parentPath}`,
+        parentPath,
+        kind: "directory_start" as const,
+        name: "",
+        targetPath: "",
+        label: "",
+        entryCount: entries.length
+      },
+      ...entries.sort((left, right) =>
+        `${left.kind}:${left.name}`.localeCompare(`${right.kind}:${right.name}`)
+      )
+    ]);
+}
+
+function parentSourcePath(relativePath: string): string {
+  return relativePath.split("/").slice(0, -1).join("/");
 }
 
 function createWorkerJob(input: {
@@ -673,12 +973,12 @@ describe("source file queue", () => {
       content: `---\ntitle: File ${index + 1}\ntype: page\n---\n# File ${index + 1}`
     }));
 
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files,
       storageConcurrency: 2,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
 
     expect(sourceFileIds).toHaveLength(4);
@@ -689,7 +989,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "guide.md",
@@ -700,7 +1000,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, null);
     const sourceFileId = sourceFileIds[0];
@@ -762,13 +1062,13 @@ describe("source file queue", () => {
     expect(records.events.some((event) => event.stageKey === "release_activation")).toBe(true);
   });
 
-  it("keeps source descriptions while retaining model suggestions", async () => {
+  it("uses persisted model descriptions when source descriptions repeat titles", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
     const suggestedDescription =
       "Guide explains the practical setup flow, validation steps, and release checks for operators.";
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "guide.md",
@@ -782,7 +1082,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -855,15 +1155,15 @@ describe("source file queue", () => {
     expect(records.sources.get(sourceFileId)?.modelSuggestions?.description).toBe(
       suggestedDescription
     );
-    expect(page?.description).toBe("Guide");
-    expect(page?.frontmatter.description).toBe("Guide");
+    expect(page?.description).toBe(suggestedDescription);
+    expect(page?.frontmatter.description).toBe(suggestedDescription);
   });
 
   it("continues a reclaimed running source file after worker restart", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "reclaimed.md",
@@ -874,7 +1174,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -915,7 +1215,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "model-warning.md",
@@ -926,7 +1226,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -985,7 +1285,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "model-failure.md",
@@ -1005,7 +1305,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const [failedSourceFileId, successfulSourceFileId] = sourceFileIds;
 
@@ -1089,7 +1389,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "alpha.md",
@@ -1105,7 +1405,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const processor = createSourceFileQueueProcessor(records.repositories, storage, redis, null);
     const [firstSourceFileId, secondSourceFileId] = sourceFileIds;
@@ -1175,11 +1475,80 @@ describe("source file queue", () => {
     expect(records.bundleFiles.filter((file) => file.fileKind === "page")).toHaveLength(2);
   });
 
+  it("marks existing files dirty when a new graph relationship changes their published page", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "current.md",
+          bytes: new TextEncoder().encode("---\ntitle: Current\ntype: page\n---\n# Current"),
+          content: "---\ntitle: Current\ntype: page\n---\n# Current"
+        },
+        {
+          fileName: "related.md",
+          bytes: new TextEncoder().encode("---\ntitle: Related\ntype: page\n---\n# Related"),
+          content: "---\ntitle: Related\ntype: page\n---\n# Related"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const [currentSourceFileId, relatedSourceFileId] = sourceFileIds;
+
+    if (!currentSourceFileId || !relatedSourceFileId) {
+      throw new Error("Source files were not created");
+    }
+
+    for (const sourceFileId of sourceFileIds) {
+      const source = records.sources.get(sourceFileId);
+      if (source) {
+        source.processingStatus = "completed";
+        source.generatedOutputStatus = "visible";
+      }
+    }
+
+    const publicationService = createKnowledgeBasePublicationService(
+      records.repositories,
+      storage,
+      redis
+    );
+    await publicationService?.markSourceFileReady({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      sourceFileId: currentSourceFileId,
+      relatedSourceFileIds: [relatedSourceFileId],
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 20,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      }
+    });
+
+    expect(records.sources.get(currentSourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(relatedSourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(relatedSourceFileId)?.generatedOutputStatus).toBe("pending");
+  });
+
   it("limits each publication job to the configured dirty source batch size", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: ["alpha", "beta", "gamma"].map((name) => ({
         fileName: `${name}.md`,
         bytes: new TextEncoder().encode(`---\ntitle: ${name}\ntype: page\n---\n# ${name}`),
@@ -1188,7 +1557,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
 
     for (const sourceFileId of sourceFileIds) {
@@ -1243,7 +1612,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "alpha.md",
@@ -1259,7 +1628,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const [firstSourceFileId, secondSourceFileId] = sourceFileIds;
 
@@ -1334,7 +1703,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "manual.md",
@@ -1345,7 +1714,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1389,7 +1758,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "publication-failure.md",
@@ -1402,7 +1771,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1456,11 +1825,167 @@ describe("source file queue", () => {
     expect(Array.from(records.publicationJobs.values()).at(-1)?.status).toBe("failed");
   });
 
+  it("rejects release activation when OKF validation reports an issue", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "conformance-rejection.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Conformance Rejection\ntype: page\n---\n# Conformance"
+          ),
+          content: "---\ntitle: Conformance Rejection\ntype: page\n---\n# Conformance"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const sourceFileId = sourceFileIds[0];
+    if (!sourceFileId) throw new Error("Source file was not created");
+    const source = records.sources.get(sourceFileId);
+    if (!sourceFileId || !source) throw new Error("Source file record was not created");
+    records.knowledgeBase.activeReleaseId = "release-previous";
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+
+    let activationAttempts = 0;
+    records.repositories.releasePublication!.validateRelease = async () => ({
+      issues: [
+        {
+          ruleId: "OKF-0.1-CONCEPT-TYPE",
+          path: "pages/conformance-rejection.md",
+          message: "Concept frontmatter must contain a non-empty type field."
+        }
+      ],
+      truncated: false
+    });
+    records.repositories.files!.activateRelease = async () => {
+      activationAttempts += 1;
+    };
+    const publicationService = createKnowledgeBasePublicationService(
+      records.repositories,
+      storage,
+      redis
+    );
+
+    await expect(
+      publicationService?.publishNow({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        generatedAt: now,
+        pageSize: 100,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1,
+        options: {
+          mode: "batch",
+          batchSize: 20,
+          intervalSeconds: 300,
+          indexShardSize: 1_000,
+          linkIndexShardSize: 1_000,
+          manifestShardSize: 1_000,
+          graphEdgeShardSize: 5_000,
+          graphCandidateLimit: 200,
+          graphMaintenanceBatchSize: 500,
+          rootSummaryLimit: 500
+        },
+        reason: "bootstrap"
+      })
+    ).rejects.toThrow(
+      "Release validation failed: OKF-0.1-CONCEPT-TYPE pages/conformance-rejection.md"
+    );
+
+    expect(activationAttempts).toBe(0);
+    expect(records.knowledgeBase.activeReleaseId).toBe("release-previous");
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("unavailable");
+  });
+
+  it("does not activate a release when graph search publication fails after bundle writes", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "graph-publication-failure.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Graph Publication Failure\ntype: page\n---\n# Graph"
+          ),
+          content: "---\ntitle: Graph Publication Failure\ntype: page\n---\n# Graph"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+
+    if (!source) {
+      throw new Error("Source file record was not created");
+    }
+
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+    records.repositories.files!.rebuildBundleGraphSearchDocuments = async () => {
+      throw new Error("Graph search publication failed");
+    };
+    const publicationService = createKnowledgeBasePublicationService(records.repositories, storage, redis);
+
+    await expect(
+      publicationService?.publishNow({
+        knowledgeBaseId: records.knowledgeBase.id,
+        knowledgeBaseName: records.knowledgeBase.name,
+        generatedAt: now,
+        pageSize: 100,
+        cursorTtlSeconds: 900,
+        fileProcessingConcurrency: 1,
+        options: {
+          mode: "batch",
+          batchSize: 20,
+          intervalSeconds: 300,
+          indexShardSize: 1_000,
+          linkIndexShardSize: 1_000,
+          manifestShardSize: 1_000,
+          graphEdgeShardSize: 5_000,
+          graphCandidateLimit: 200,
+          graphMaintenanceBatchSize: 500,
+          rootSummaryLimit: 500
+        },
+        reason: "bootstrap"
+      })
+    ).rejects.toThrow("Graph search publication failed");
+
+    const release = Array.from(records.releases.values()).at(-1);
+
+    expect(records.bundleFiles.length).toBeGreaterThan(0);
+    expect(release?.publishedAt).toBeNull();
+    expect(records.knowledgeBase.activeReleaseId).toBeNull();
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+    expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("unavailable");
+    expect(records.sources.get(sourceFileId)?.publicationErrorCode).toBe("PUBLICATION_FAILED");
+    expect(Array.from(records.publicationJobs.values()).at(-1)?.status).toBe("failed");
+  });
+
   it("retries failed publication worker jobs without clearing dirty files", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "publication-worker-retry.md",
@@ -1473,7 +1998,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1525,11 +2050,70 @@ describe("source file queue", () => {
     expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("unavailable");
   });
 
+  it("defers stale publication snapshots without consuming a retry attempt", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "publication-catalog-stale.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Publication Catalog Stale\ntype: page\n---\n# Stale"
+          ),
+          content: "---\ntitle: Publication Catalog Stale\ntype: page\n---\n# Stale"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const sourceFileId = sourceFileIds[0];
+    const source = sourceFileId ? records.sources.get(sourceFileId) : null;
+    if (!sourceFileId || !source) throw new Error("Source file record was not created");
+    source.processingStatus = "completed";
+    source.processingStage = "index_publication";
+    source.generatedOutputStatus = "pending";
+    source.publicationDirtyAt = now;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "publication",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId: null,
+        payload: { reason: "bootstrap" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    records.repositories.files!.activateRelease = async () => {
+      throw new PublicationCatalogStaleError();
+    };
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBe(1);
+    expect(records.workerJobs[0]?.status).toBe("queued");
+    expect(records.workerJobs[0]?.attemptCount).toBe(1);
+    expect(records.workerJobs[0]?.lastErrorCode).toBeNull();
+    expect(records.sources.get(sourceFileId)?.publicationDirtyAt).toBe(now);
+  });
+
   it("queues another publication job when a running publication leaves new dirty files", async () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "worker-publication-head.md",
@@ -1545,7 +2129,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const [headSourceFileId, tailSourceFileId] = sourceFileIds;
 
@@ -1581,12 +2165,11 @@ describe("source file queue", () => {
         maxAttempts: 2
       })
     );
-    const visibleSourceFileCalls: string[][] = [];
-    const originalMarkSourceFilesPublicationVisible =
-      records.repositories.files!.markSourceFilesPublicationVisible!;
-    records.repositories.files!.markSourceFilesPublicationVisible = async (input) => {
-      visibleSourceFileCalls.push(input.sourceFileIds);
-      await originalMarkSourceFilesPublicationVisible(input);
+    let activateReleaseCalls = 0;
+    const originalActivateRelease = records.repositories.files!.activateRelease!;
+    records.repositories.files!.activateRelease = async (input) => {
+      activateReleaseCalls += 1;
+      await originalActivateRelease(input);
     };
     const originalCreateBundleFiles = records.repositories.files!.createBundleFiles!;
     let injectedTailDirtyFile = false;
@@ -1617,7 +2200,7 @@ describe("source file queue", () => {
     });
 
     await expect(runtime.tick()).resolves.toBe(1);
-    expect(visibleSourceFileCalls).toEqual([[headSourceFileId]]);
+    expect(activateReleaseCalls).toBe(1);
     expect(records.workerJobs[0]?.status).toBe("completed");
     expect(records.sources.get(headSourceFileId)?.generatedOutputStatus).toBe("visible");
     expect(records.sources.get(tailSourceFileId)?.generatedOutputStatus).toBe("pending");
@@ -1633,7 +2216,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "publication-priority.md",
@@ -1644,7 +2227,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1727,7 +2310,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "missing-object.md",
@@ -1738,7 +2321,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1770,7 +2353,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "worker-success.md",
@@ -1781,7 +2364,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1822,7 +2405,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "worker-retry.md",
@@ -1833,7 +2416,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -1876,7 +2459,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "worker-dead-letter.md",
@@ -1887,7 +2470,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 
@@ -2054,7 +2637,7 @@ describe("source file queue", () => {
     const storage = new MemoryStorage();
     const redis = createRedisCoordinator(new MemoryRedisCommandClient());
     const records = createRepositories();
-    const sourceFileIds = await acceptUploadSourceFiles({
+    const sourceFileIds = await seedSourceFileFixtures({
       files: [
         {
           fileName: "worker-restart.md",
@@ -2065,7 +2648,7 @@ describe("source file queue", () => {
       storageConcurrency: 1,
       knowledgeBaseId: records.knowledgeBase.id,
       storage,
-      createSourceFiles: records.repositories.files!.createSourceFiles!
+      persist: records.persistSourceFileFixtures
     });
     const sourceFileId = sourceFileIds[0];
 

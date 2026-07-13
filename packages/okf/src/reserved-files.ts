@@ -1,9 +1,4 @@
-export type OkfIndexPage = {
-  path: string;
-  title: string;
-  type?: string;
-  description?: string;
-};
+import { toBundleMarkdownHref } from "./public-bundle-path.js";
 
 export type OkfLogEntry = {
   occurredAt: string;
@@ -32,7 +27,6 @@ export const DEFAULT_OKF_LOG_LIMITS: OkfLogLimits = {
   maxBytes: 65_536
 };
 
-const FALLBACK_INDEX_GROUP = "Documents";
 const FORBIDDEN_LOG_PATTERNS = [
   /\bS3_PREFIX\b/gi,
   /\bs3:\/\/[^\s)]+/gi,
@@ -41,29 +35,6 @@ const FORBIDDEN_LOG_PATTERNS = [
   /\/(?:Users|home|private|var|tmp|etc)\/[^\s)]+/gi,
   /(?:^|\/)knowledge-bases\/[^/\s]+\/(?:uploads|releases)\/[^\s)]*/gi
 ];
-
-export function renderOkfIndex(input: {
-  title: string;
-  generatedAt: string;
-  pages: OkfIndexPage[];
-}): string {
-  const grouped = groupIndexPages(input.pages);
-  const lines = [
-    `# ${input.title}`,
-    "",
-    `Generated at: ${input.generatedAt}`
-  ];
-
-  for (const [group, pages] of grouped) {
-    lines.push("", `## ${group}`, "");
-
-    for (const page of pages) {
-      lines.push(renderIndexPageLine(page));
-    }
-  }
-
-  return `${lines.join("\n")}\n`;
-}
 
 export function renderOkfLog(input: {
   entries: OkfLogEntry[];
@@ -108,65 +79,22 @@ export function renderOkfLog(input: {
   return trimToMaxBytes(renderLogContent(selectedEntries, summaries), limits.maxBytes);
 }
 
-function renderIndexPageLine(page: OkfIndexPage): string {
-  const description = cleanText(page.description);
-  const link = `[${escapeMarkdownLabel(page.title)}](${toMarkdownHref(page.path)})`;
-  return description ? `- ${link} - ${description}` : `- ${link}`;
-}
-
-function groupIndexPages(pages: OkfIndexPage[]): Array<[string, OkfIndexPage[]]> {
-  const groups = new Map<string, OkfIndexPage[]>();
-
-  for (const page of pages) {
-    const group = indexGroupLabel(page.type);
-    groups.set(group, [...(groups.get(group) ?? []), page]);
-  }
-
-  return Array.from(groups.entries())
-    .map(([group, groupPages]) => [
-      group,
-      groupPages
-        .slice()
-        .sort((left, right) =>
-          `${left.title}\u0000${left.path}`.localeCompare(`${right.title}\u0000${right.path}`)
-        )
-    ] as [string, OkfIndexPage[]])
-    .sort(([left], [right]) => left.localeCompare(right));
-}
-
-function indexGroupLabel(type: string | undefined): string {
-  const normalized = cleanText(type);
-
-  if (!normalized || normalized === "document") {
-    return FALLBACK_INDEX_GROUP;
-  }
-
-  if (normalized === "page") {
-    return "Pages";
-  }
-
-  return normalized;
-}
-
 function renderLogContent(entries: OkfLogEntry[], summaries: OkfLogMonthlySummary[]): string {
   const lines = ["# Directory Update Log"];
   const grouped = groupLogEntriesByDate(entries);
 
-  for (const [date, dateEntries] of grouped) {
+  for (const [index, [date, dateEntries]] of grouped.entries()) {
     lines.push("", `## ${date}`, "");
 
     for (const entry of dateEntries) {
       lines.push(renderLogEntryLine(entry));
     }
-  }
-
-  if (summaries.length > 0) {
-    lines.push("", "## Older Updates", "");
-
-    for (const summary of summaries) {
-      lines.push(
-        `* ${summary.month}: ${summary.publicationCount} publication events, ${summary.changedFileCount} documents changed.`
-      );
+    if (index === 0) {
+      for (const summary of summaries) {
+        lines.push(
+          `* **History summary**: ${summary.month} contains ${summary.publicationCount} publication events and ${summary.changedFileCount} changed files.`
+        );
+      }
     }
   }
 
@@ -193,7 +121,7 @@ function renderLogEntryLine(entry: OkfLogEntry): string {
       path: cleanText(link.path)
     }))
     .filter((link) => link.title && isPublicBundlePath(link.path))
-    .map((link) => `[${escapeMarkdownLabel(link.title)}](${toMarkdownHref(link.path)})`);
+    .map((link) => `[${escapeMarkdownLabel(link.title)}](${toBundleMarkdownHref(link.path)})`);
   const linkSuffix = links.length > 0 ? ` ${links.join(", ")}` : "";
 
   return `* **${escapeMarkdownLabel(action)}**: ${message}${linkSuffix}`;
@@ -265,10 +193,6 @@ function datePart(value: string): string {
 
 function monthPart(value: string): string {
   return /^\d{4}-\d{2}/.test(value) ? value.slice(0, 7) : "1970-01";
-}
-
-function toMarkdownHref(path: string): string {
-  return `/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function isPublicBundlePath(path: string): boolean {

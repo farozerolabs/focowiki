@@ -60,17 +60,14 @@ export const MODEL_SUGGESTION_SCHEMA = {
 } as const;
 
 export const GRAPH_RELATIONSHIP_TYPES = [
-  "explicit_reference",
-  "title_mention",
-  "model_related_link",
-  "same_subject",
+  "direct_reference",
+  "same_specific_subject",
   "same_entity",
-  "version_relationship",
-  "prerequisite",
+  "version_relation",
   "background",
-  "adjacent_process",
-  "shared_subject",
-  "shared_entity"
+  "process_adjacent",
+  "parent_child",
+  "collection_neighbor"
 ] as const;
 
 export const GRAPH_RELATIONSHIP_CONFIRMATION_SCHEMA = {
@@ -120,6 +117,8 @@ export type ModelSuggestions = {
   }>;
   keywords: string[];
 };
+
+export type SourceModelSuggestions = ModelSuggestions;
 
 export type ModelSuggestionRequest = {
   model: string;
@@ -349,6 +348,7 @@ export function buildModelSuggestionRequest(
       "For title, use the provided title when it is clear. If the title is missing or weak, derive a short title from the Markdown content.",
       "For type, suggest a generic document type from the visible content. Use an empty string when uncertain.",
       "For description, write a short factual summary grounded in the Markdown content.",
+      "Use the primary natural language of the Markdown content for title, type, description, tags, and keywords.",
       "For tags and keywords, return short topic labels found or clearly supported by the Markdown content.",
       "For related_links, include only useful related files from the provided candidate related paths.",
       "Every related_links.path must exactly match one provided candidate path.",
@@ -432,13 +432,22 @@ export function buildGraphRelationshipConfirmationRequest(
       "Return exactly one JSON object with one key: relationships.",
       "Return raw JSON only. Do not wrap the JSON in Markdown fences and do not include explanatory text.",
       "Inside JSON string values, avoid ASCII double quote characters; use plain words or non-ASCII quotation marks when a quoted term is needed.",
-      'Return this JSON structure: {"relationships":[{"targetFileId":"source-file-id-from-candidate","accepted":true,"relationType":"same_subject","weight":0.85,"reason":"Short factual reason based on visible evidence."}]}.',
+      'Return this JSON structure: {"relationships":[{"targetFileId":"source-file-id-from-candidate","accepted":true,"relationType":"same_specific_subject","weight":0.85,"reason":"Short factual reason based on visible evidence."}]}.',
       'If no candidate relationship is strong enough, return {"relationships":[]}.',
       "For each returned item, keep targetFileId exactly as provided.",
       `Use only these relationType values: ${GRAPH_RELATIONSHIP_TYPES.join(", ")}.`,
       "For accepted relationships, relationType must exactly match the candidateRelationType value from that candidate.",
       "Set accepted to true only when there is clear content evidence that the target file helps readers or AI agents continue exploring the current file.",
-      "Accept relationships supported by direct mention, same specific subject, same entity, version relationship, prerequisite or background relationship, adjacent process, or clearly connected topic.",
+      "Accept relationships supported by direct mention, same specific subject, same entity, version relationship, background relationship, adjacent process, or clearly connected topic.",
+      "For same_entity and same_specific_subject, require the shared subject or entity to be a central subject or primary entity in both files.",
+      "Use same_entity only when the same uniquely identifiable entity is a substantive focus in both files.",
+      "A shared location, publisher, authority, owner, namespace, or collection does not establish same_entity by itself.",
+      "Use same_specific_subject only when both files materially address the same narrow topic, object, or problem.",
+      "Use version_relation only for the same document or a visible replacement, revision, supersession, or version chain.",
+      "Use direct_reference only when the current content visibly identifies or links the target.",
+      "Use background or process_adjacent only when the target supplies a visible prerequisite, explanation, or neighboring process step.",
+      "Reject relationships based on incidental references, generic authorities, common templates, boilerplate, background citations, or an entity that is central to only one file.",
+      "Reject a candidate when its candidate relationship type does not match the visible evidence, including replacement, revision, or version evidence presented as another relationship type.",
       "Reject weak relationships based only on generic shared words, broad category matches, dates, status words, missing evidence, or product-specific assumptions.",
       "Do not create relationship labels for broad metadata groups, locations, teams, departments, document status, dates, or file type alone.",
       "weight must be between 0 and 1.",

@@ -1,61 +1,61 @@
-import matter from "gray-matter";
-import type { OkfBundleFile } from "./generator.js";
+import { posix } from "node:path";
+import type { OkfBundleFile } from "./bundle-file.js";
+import { OKF_RESERVED_MARKDOWN_FILES } from "./conformance-baseline.js";
+import { validateConceptFile } from "./concept-validation.js";
+import {
+  validateBundleNavigation,
+  validateStandardMarkdownLinks
+} from "./generated-link-validation.js";
+import { validateReservedFile } from "./reserved-file-validation.js";
+import type { OkfConformanceIssue, OkfValidationProfile } from "./conformance-types.js";
 
-const RESERVED_MARKDOWN_FILES = new Set(["index.md", "log.md"]);
+export type { OkfConformanceIssue, OkfValidationProfile } from "./conformance-types.js";
+
+const RESERVED = new Set<string>(OKF_RESERVED_MARKDOWN_FILES);
 
 export class OkfConformanceError extends Error {
-  public readonly issues: string[];
+  public readonly issues: OkfConformanceIssue[];
 
-  public constructor(issues: string[]) {
-    super(`OKF conformance failed: ${issues.join("; ")}`);
+  public constructor(issues: OkfConformanceIssue[]) {
+    super(`OKF conformance failed: ${issues.map(formatIssue).join("; ")}`);
     this.name = "OkfConformanceError";
     this.issues = issues;
   }
 }
 
 export function validateOkfBundle(files: OkfBundleFile[]): void {
-  const issues = files.flatMap(validateBundleFile);
+  validateOkfBundleProfile(files, "normative");
+}
 
+export function validateOkfBundleProfile(
+  files: OkfBundleFile[],
+  profile: OkfValidationProfile
+): void {
+  const issues = [
+    ...files.flatMap((file) => validateBundleFile(file, profile)),
+    ...validateBundleNavigation(files, profile)
+  ];
   if (issues.length > 0) {
     throw new OkfConformanceError(issues);
   }
 }
 
-function validateBundleFile(file: OkfBundleFile): string[] {
-  if (!file.path.endsWith(".md")) {
-    return [];
+function validateBundleFile(
+  file: OkfBundleFile,
+  profile: OkfValidationProfile
+): OkfConformanceIssue[] {
+  if (!file.path.endsWith(".md")) return [];
+  const standardLinkIssues = validateStandardMarkdownLinks(file, profile);
+  const basename = posix.basename(file.path);
+  if (RESERVED.has(basename)) {
+    return [
+      ...standardLinkIssues,
+      ...validateReservedFile(file, basename as "index.md" | "log.md", profile)
+    ];
   }
-
-  const issues: string[] = [];
-
-  if (containsWikiLink(file.content)) {
-    issues.push(`${file.path} must use standard Markdown links`);
-  }
-
-  if (RESERVED_MARKDOWN_FILES.has(file.path)) {
-    return issues;
-  }
-
-  try {
-    const parsed = matter(file.content);
-    const type = typeof parsed.data.type === "string" ? parsed.data.type.trim() : "";
-    const title = typeof parsed.data.title === "string" ? parsed.data.title.trim() : "";
-
-    if (!type) {
-      issues.push(`${file.path} frontmatter type is required`);
-    }
-
-    if (!title) {
-      issues.push(`${file.path} frontmatter title is required`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "invalid YAML";
-    issues.push(`${file.path} frontmatter is invalid: ${message}`);
-  }
-
-  return issues;
+  return [...standardLinkIssues, ...validateConceptFile(file, profile)];
 }
 
-function containsWikiLink(markdown: string): boolean {
-  return /\[\[[^\]]+\]\]/.test(markdown);
+function formatIssue(value: OkfConformanceIssue): string {
+  return `[${value.ruleId}] ${value.path}: ${value.message}`;
 }

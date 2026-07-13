@@ -6,24 +6,31 @@ import type {
   WorkerRuntimeConfig
 } from "../config.js";
 
-export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "upload_generation";
+export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "upload_generation" | "graph";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
 export type RuntimeWorkerSettings = Required<Omit<WorkerRuntimeConfig, "databasePoolMax">>;
 
-export type RuntimePublicationSettings = RuntimeConfig["publication"] & {
+export type RuntimePublicationSettings = Omit<
+  RuntimeConfig["publication"],
+  "directoryIndexMaxEntries" | "directoryIndexMaxBytes"
+> & {
+  directoryIndexMaxEntries: number;
+  directoryIndexMaxBytes: number;
   okfLogMaxEntries: number;
   okfLogMaxBytes: number;
 };
-export type RuntimeUploadGenerationSettings = RuntimeConfig["upload"];
+export type RuntimeUploadGenerationSettings = Required<RuntimeConfig["upload"]>;
+export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
 
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   uploadGeneration: RuntimeUploadGenerationSettings;
+  graph: RuntimeGraphSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
 
@@ -97,6 +104,7 @@ export type RuntimeSettingsDefaults = {
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   uploadGeneration: RuntimeUploadGenerationSettings;
+  graph: RuntimeGraphSettings;
   model: RuntimeModelConfigDraft | null;
 };
 

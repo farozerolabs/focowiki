@@ -9,7 +9,8 @@ import type { SourceFileRecord } from "../src/lib/admin-api";
 
 function sourceFile(input: Partial<SourceFileRecord> & Pick<SourceFileRecord, "id">): SourceFileRecord {
   return {
-    originalName: `${input.id}.md`,
+    name: `${input.id}.md`,
+    relativePath: `${input.id}.md`,
     createdAt: "2026-06-14T00:00:00.000Z",
     ...input
   };

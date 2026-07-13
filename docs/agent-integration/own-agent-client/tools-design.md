@@ -16,6 +16,7 @@ The Skill should describe only user-visible tool behavior and knowledge evidence
 | `get_file` | Read safe metadata for one file. | `fileId` | file metadata |
 | `read_file` | Read one Markdown file. | `fileId` or `path` | Markdown content and metadata |
 | `read_related` | Read bounded related files for one generated page. | `fileId` | related file records |
+| `expand_graph` | Explore related files from a file or query. | `fileId` or `query` | relationship paths and file read actions |
 | `search_files` | Return candidate files for an Agent-generated search phrase. | `query` | `items`, `searchStatus`, `nextActions` |
 
 ## `list_tree`
@@ -108,7 +109,7 @@ Output:
 }
 ```
 
-Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, `_graph/by-file/{fileId}.json`, visible `generatedFilePath`, or pages discovered from links.
+Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, a returned `graphRef`, a visible `generatedFilePath`, or pages discovered from links.
 
 ## `read_related`
 
@@ -143,7 +144,61 @@ Output:
 }
 ```
 
-This tool is optional. The Agent can also read `_graph/by-file/{fileId}.json` through `read_file` by logical path.
+This tool is optional. The Agent can also pass a returned `graphRef` to `read_file`. It should not construct that path from a generated `fileId`.
+
+## `expand_graph`
+
+This tool is optional. Implement it when the Agent should use Developer OpenAPI graph expansion directly. It should accept exactly one seed.
+
+Input by file:
+
+```json
+{
+  "fileId": "file_123",
+  "depth": 1,
+  "fanout": 10,
+  "cursor": null
+}
+```
+
+Input by query:
+
+```json
+{
+  "query": "renewal notice",
+  "depth": 1,
+  "fanout": 10,
+  "cursor": null
+}
+```
+
+Output:
+
+```json
+{
+  "seed": {
+    "type": "file",
+    "fileId": "file_123",
+    "path": "pages/example.md"
+  },
+  "relationships": [
+    {
+      "fileId": "file_456",
+      "path": "pages/related.md",
+      "title": "Related",
+      "relationType": "same_specific_subject",
+      "confidence": 0.86,
+      "readActions": {
+        "contentByPath": "/files/content?path=pages/related.md",
+        "graphExpansionByFileId": "/graph/expand?fileId=file_456"
+      }
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+Use this tool after a promising file, search result, related-file entry, graph file, or graph candidate appears. Read returned Markdown files before using them as answer evidence.
 
 ## `search_files`
 
@@ -182,7 +237,7 @@ Output:
 }
 ```
 
-For direct questions, the Agent derives concise phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, it can derive new phrases and continue with `search_files`, `nextActions`, `list_tree`, links, graph files, and related files.
+For direct questions, the Agent derives concise phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, it can derive new phrases and continue with `search_files`, `nextActions`, `list_tree`, links, graph files, `expand_graph`, and related files.
 
 ## Error Shape
 

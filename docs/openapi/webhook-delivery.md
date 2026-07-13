@@ -4,14 +4,14 @@ title: Webhook Delivery
 
 # Webhook Delivery
 
-Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v1/webhooks`. Use webhooks when another system needs source-file processing, release, file-deletion, or knowledge-base deletion events.
+Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v2/webhooks`. Use webhooks when another system needs source-file progress, content updates, file deletion, or knowledge-base deletion events.
 
 ## Register A Webhook
 
 Create a webhook subscription with the event types your endpoint should receive:
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
   --data '{
@@ -33,7 +33,7 @@ Focowiki sends each delivery as an HTTP `POST` request.
 | Content-Type | `application/json` |
 | Success acknowledgement | Any `2xx` response status. |
 | Delivery timeout | 10 seconds. |
-| Redelivery | Use `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` for manual redelivery. |
+| Redelivery | Use `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` for manual redelivery. |
 
 ## Request Headers
 
@@ -102,71 +102,23 @@ Use the raw request body bytes or exact raw body string received by the server. 
 | `source_file.progress` | A source file starts or continues processing. | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.completed` | A source file completes processing. | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.failed` | A source file fails processing. | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `release.published` | A release is published after file processing or deletion. | `knowledgeBaseId`, `sourceFileId`, `releaseId` when available |
-| `file.deleted` | A source-backed generated file is deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
+| `release.published` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `sourceFileId`, `releaseId` when available |
+| `file.deleted` | A source file and its readable page are deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
 | `knowledge_base.deleted` | A knowledge base is deleted. | `knowledgeBaseId` |
-
-## Payload Examples
-
-### `source_file.completed`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "source_file.completed",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123"
-  }
-}
-```
-
-### `source_file.failed`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "source_file.failed",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123",
-    "errorCode": "MODEL_OUTPUT_INVALID"
-  }
-}
-```
-
-### `file.deleted`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "file.deleted",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "fileId": "file_page_123",
-    "sourceFileId": "file_source_123",
-    "path": "pages/guide.md",
-    "releaseId": "release_123"
-  }
-}
-```
 
 ## Delivery Records And Redelivery
 
 Focowiki stores each delivery record. Read records with:
 
 ```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/webhook-deliveries?limit=50" \
+curl -X GET "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
 When a delivery fails, call redelivery with the `deliveryId` returned by the delivery list:
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhook-deliveries/delivery_123/redeliver" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redeliver" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 

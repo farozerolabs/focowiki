@@ -70,6 +70,8 @@ backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis 
 
 外部 S3 兼容 bucket 或 prefix 需要通过存储服务的 snapshot、replication、export 或 S3 兼容复制工具备份。PostgreSQL 备份和 S3 备份应来自同一个部署时间点。
 
+更换知识库生成结构的升级会基于保留的来源文件重新生成已发布 Markdown。升级后的知识库检查完成前，应保留旧应用镜像及同一部署时间点的 PostgreSQL 和 S3 备份。回滚时需要成套恢复这三项数据；只启动旧应用镜像无法恢复升级时删除的生成版本。
+
 继续升级前，先检查备份文件。
 
 ```bash
@@ -109,9 +111,7 @@ docker compose -f docker-compose.yml run --rm migrate
 
 迁移容器使用 API 镜像，数据库迁移完成后退出。这个命令适合在启动前显式检查迁移。生产 Compose 模板也会让 `api` service 依赖 `migrate` service，所以 `docker compose -f docker-compose.yml up -d` 会在 API 启动前执行迁移。
 
-已有部署升级时使用同一迁移流程。迁移会新增运行时设置表，并保留已有知识库数据。升级后的首次启动中，如果数据库里还没有 Admin UI 保存的设置，Focowiki 会用启动默认值初始化 Admin 配置。
-
-从使用 env session 签名的版本升级后，已有 Admin UI session 可能需要重新登录。知识库、OpenAPI key、文件和已保存的运行时配置会继续保留。
+迁移命令会初始化当前应用需要的数据库结构和默认 Admin 配置。
 
 ## 启动服务
 
@@ -174,14 +174,16 @@ pnpm compose:clean
 
 3. 将外部 S3 兼容 bucket 或 prefix 还原或复制到 `.env` 当前配置的位置。
 
-4. 执行迁移并启动 stack。
+4. 将 API 和 Admin 镜像标签改为备份对应的版本。
+
+5. 执行迁移并启动 stack。
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-5. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
+6. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
 
 ## 图关系处理说明
 
@@ -190,5 +192,3 @@ Focowiki 将 file graph nodes、graph edges 和 graph job records 保存在 Post
 图关系处理应受 Admin UI 运行时设置控制。避免使用自定义脚本把完整 source corpus 或完整 graph 加载到进程内存。
 
 Worker、发布、上传生成、限流和模型配置见 [Admin 配置](./admin-settings.md)。
-
-未发布阶段的开发部署可以破坏式重建数据。需要清空本地 PostgreSQL 和 Redis 数据时，先停止 stack，执行 `pnpm compose:clean`，按需删除本地 `data`、`runtime-secrets` 和 `logs` 目录，再启动 stack、执行迁移，并重新上传 Markdown 文件生成 graph-backed bundles。

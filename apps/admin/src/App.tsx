@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { AdminHomePage } from "@/pages/AdminHomePage";
+import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { AdminToaster } from "@/components/admin-toaster";
-import { KnowledgeBaseDetailPage } from "@/pages/KnowledgeBaseDetailPage";
-import { LoginPage } from "@/pages/LoginPage";
-import { SettingsPage } from "@/pages/SettingsPage";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  AdminHomePage,
+  KnowledgeBaseDetailPage,
+  LoginPage,
+  SettingsPage
+} from "@/pages/lazy-admin-pages";
 import {
   checkAdminSession,
   createKnowledgeBase,
   createPublicOpenApiKey,
   deleteKnowledgeBase,
   deletePublicOpenApiKey,
+  fetchKnowledgeBase,
   listKnowledgeBases,
   listPublicOpenApiKeys,
   logoutAdmin,
@@ -20,6 +23,8 @@ import {
   type OneTimePublicOpenApiKey,
   type PublicOpenApiKey
 } from "@/lib/admin-api";
+import { updateKnowledgeBaseMetadata } from "@/lib/resource-editing-api";
+import { navigateAdminView, readAdminView, type AdminView } from "@/lib/admin-navigation";
 import {
   completeCursorPageRequest,
   createInitialCursorPageState,
@@ -29,6 +34,17 @@ import {
 } from "@/lib/cursor-page-state";
 
 type AuthState = "checking" | "anonymous" | "authenticated";
+
+function AdminPageBoundary({ children }: { children: ReactNode }) {
+  return (
+    <TooltipProvider>
+      <Suspense fallback={<main className="min-h-svh bg-background" aria-busy="true" />}>
+        {children}
+      </Suspense>
+      <AdminToaster />
+    </TooltipProvider>
+  );
+}
 
 export function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -49,6 +65,7 @@ export function App() {
   const [isLoadingPublicOpenApiKeys, setIsLoadingPublicOpenApiKeys] = useState(false);
   const [hasLoadedPublicOpenApiKeys, setHasLoadedPublicOpenApiKeys] = useState(false);
   const knowledgeBaseLoadIdRef = useRef(0);
+  const adminViewLoadIdRef = useRef(0);
 
   useEffect(() => {
     setAdminAuthFailureHandler(() => {
@@ -87,6 +104,7 @@ export function App() {
       setKnowledgeBases(page.items);
       setKnowledgeBasePageState(completeCursorPageRequest(initialPageState, page.nextCursor));
       setIsLoadingKnowledgeBases(false);
+      await restoreAdminView();
     }
 
     void restoreSession();
@@ -101,13 +119,71 @@ export function App() {
     const initialPageState = createInitialCursorPageState();
     setKnowledgeBasePageState(initialPageState);
     await loadKnowledgeBases({ pageState: initialPageState });
+    await restoreAdminView();
   }
 
   async function handleLogout() {
     await logoutAdmin();
+    navigateAdminView({ type: "home" }, "replace");
     setAuthState("anonymous");
     clearProtectedState();
   }
+
+  async function restoreAdminView(view: AdminView = readAdminView()) {
+    const loadId = adminViewLoadIdRef.current + 1;
+    adminViewLoadIdRef.current = loadId;
+
+    if (view.type === "home") {
+      setSelectedKnowledgeBase(null);
+      setIsSettingsOpen(false);
+      return;
+    }
+    if (view.type === "settings") {
+      setSelectedKnowledgeBase(null);
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    const knowledgeBase = await fetchKnowledgeBase(view.knowledgeBaseId);
+    if (loadId !== adminViewLoadIdRef.current) {
+      return;
+    }
+    if (!knowledgeBase) {
+      navigateAdminView({ type: "home" }, "replace");
+      setSelectedKnowledgeBase(null);
+      setIsSettingsOpen(false);
+      return;
+    }
+    setIsSettingsOpen(false);
+    setSelectedKnowledgeBase(knowledgeBase);
+  }
+
+  function openKnowledgeBase(knowledgeBase: KnowledgeBase) {
+    navigateAdminView({ type: "knowledge-base", knowledgeBaseId: knowledgeBase.id });
+    setIsSettingsOpen(false);
+    setSelectedKnowledgeBase(knowledgeBase);
+  }
+
+  function openSettings() {
+    navigateAdminView({ type: "settings" });
+    setSelectedKnowledgeBase(null);
+    setIsSettingsOpen(true);
+  }
+
+  function returnHome() {
+    navigateAdminView({ type: "home" });
+    setSelectedKnowledgeBase(null);
+    setIsSettingsOpen(false);
+  }
+
+  useEffect(() => {
+    if (authState !== "authenticated") {
+      return;
+    }
+    const handlePopState = () => void restoreAdminView();
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [authState]);
 
   function clearProtectedState() {
     setKnowledgeBases([]);
@@ -206,10 +282,35 @@ export function App() {
     setKnowledgeBases((current) => current.filter((item) => item.id !== knowledgeBase.id));
 
     if (selectedKnowledgeBase?.id === knowledgeBase.id) {
+      navigateAdminView({ type: "home" }, "replace");
       setSelectedKnowledgeBase(null);
     }
 
     return result;
+  }
+
+  async function handleUpdateKnowledgeBase(input: {
+    knowledgeBase: KnowledgeBase;
+    name: string;
+    description: string;
+  }): Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure> {
+    if (!input.knowledgeBase.resourceRevision) {
+      return { messageKey: "errors.resourceRevisionConflict" };
+    }
+    const result = await updateKnowledgeBaseMetadata({
+      knowledgeBaseId: input.knowledgeBase.id,
+      resourceRevision: input.knowledgeBase.resourceRevision,
+      name: input.name,
+      description: input.description
+    });
+    if ("messageKey" in result) return result;
+    setKnowledgeBases((current) =>
+      current.map((item) => item.id === result.knowledgeBase.id ? result.knowledgeBase : item)
+    );
+    setSelectedKnowledgeBase((current) =>
+      current?.id === result.knowledgeBase.id ? result.knowledgeBase : current
+    );
+    return { knowledgeBase: result.knowledgeBase };
   }
 
   async function loadPublicOpenApiKeys(input: { replace: boolean }) {
@@ -261,49 +362,45 @@ export function App() {
 
   if (authState === "checking") {
     return (
-      <TooltipProvider>
+      <AdminPageBoundary>
         <main className="min-h-svh bg-background" aria-busy="true" />
-        <AdminToaster />
-      </TooltipProvider>
+      </AdminPageBoundary>
     );
   }
 
   if (authState === "anonymous") {
     return (
-      <TooltipProvider>
+      <AdminPageBoundary>
         <LoginPage onAuthenticated={() => void handleAuthenticated()} />
-        <AdminToaster />
-      </TooltipProvider>
+      </AdminPageBoundary>
     );
   }
 
   if (selectedKnowledgeBase) {
     return (
-      <TooltipProvider>
+      <AdminPageBoundary>
         <KnowledgeBaseDetailPage
           knowledgeBase={selectedKnowledgeBase}
-          onBack={() => setSelectedKnowledgeBase(null)}
+          onBack={returnHome}
           onLogout={() => void handleLogout()}
         />
-        <AdminToaster />
-      </TooltipProvider>
+      </AdminPageBoundary>
     );
   }
 
   if (isSettingsOpen) {
     return (
-      <TooltipProvider>
+      <AdminPageBoundary>
         <SettingsPage
-          onBack={() => setIsSettingsOpen(false)}
+          onBack={returnHome}
           onLogout={() => void handleLogout()}
         />
-        <AdminToaster />
-      </TooltipProvider>
+      </AdminPageBoundary>
     );
   }
 
   return (
-    <TooltipProvider>
+    <AdminPageBoundary>
       <AdminHomePage
         knowledgeBases={knowledgeBases}
         knowledgeBaseQuery={knowledgeBaseQuery}
@@ -316,6 +413,7 @@ export function App() {
         publicOpenApiKeysOneTimeKey={publicOpenApiKeysOneTimeKey}
         isLoadingPublicOpenApiKeys={isLoadingPublicOpenApiKeys}
         onCreate={handleCreateKnowledgeBase}
+        onUpdate={handleUpdateKnowledgeBase}
         onDelete={handleDeleteKnowledgeBase}
         onCreatePublicOpenApiKey={handleCreatePublicOpenApiKey}
         onDeletePublicOpenApiKey={handleDeletePublicOpenApiKey}
@@ -326,10 +424,9 @@ export function App() {
         onNextKnowledgeBasePage={() => void handleKnowledgeBaseNextPage()}
         onSearchKnowledgeBases={(query) => void handleKnowledgeBaseQueryChange(query)}
         onLogout={() => void handleLogout()}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenKnowledgeBase={setSelectedKnowledgeBase}
+        onOpenSettings={openSettings}
+        onOpenKnowledgeBase={openKnowledgeBase}
       />
-      <AdminToaster />
-    </TooltipProvider>
+    </AdminPageBoundary>
   );
 }

@@ -5,7 +5,6 @@ import { createDeveloperOpenApiDocument } from "../../apps/api/src/developer-ope
 type OpenApiDocument = ReturnType<typeof createDeveloperOpenApiDocument> & {
   paths: Record<string, Record<string, OperationObject>>;
   components: { schemas: Record<string, SchemaObject> };
-  "x-field-continuity": Record<string, string[]>;
 };
 type SchemaObject = Record<string, unknown>;
 type OperationObject = Record<string, unknown>;
@@ -37,7 +36,6 @@ type LocaleCopy = {
   noRequestBody: string;
   requestExampleHeading: string;
   successExampleHeading: string;
-  errorExampleHeading: string;
   successfulResponsesHeading: string;
   noSuccessResponse: string;
   errorCodesHeading: string;
@@ -45,20 +43,15 @@ type LocaleCopy = {
   stableErrorCodeColumn: string;
   explanationColumn: string;
   noErrorResponse: string;
-  workflowContinuityHeading: string;
-  acceptedValuesHeading: string;
-  returnedValuesHeading: string;
-  noContinuity: string;
+  commonErrorsNote: string;
+  nextStepsHeading: string;
   yes: string;
   no: string;
-  groupIntroTemplate: string;
-  acceptedLaterTemplate: string;
   webhookDeliveryTitle: string;
-  returnedContinuityNotes: Record<string, Record<string, string>>;
-  fieldSources: Record<string, string>;
   operationSummaries: Record<string, string>;
   operationDescriptions: Record<string, string>;
   tagLabels: Record<string, string>;
+  fieldDescriptions: Record<string, string>;
   descriptions: Record<string, string>;
 };
 
@@ -87,6 +80,40 @@ const generatedDir = path.join(docsRoot, ".vitepress", "generated");
 const localeCopyPath = path.join(docsRoot, ".vitepress", "openapi-locales.json");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
 const methods = new Set(["get", "post", "put", "patch", "delete"]);
+const tagOrder = new Map(
+  [
+    "Metadata",
+    "Knowledge Bases",
+    "Upload Sessions",
+    "Source Directories",
+    "Source Files",
+    "Resource Operations",
+    "Files",
+    "Webhooks"
+  ].map((tag, index) => [tag, index])
+);
+const nextOperationIds: Record<string, string[]> = {
+  createKnowledgeBase: ["createUploadSession", "getKnowledgeBase"],
+  createUploadSession: ["addUploadManifestEntries", "getUploadSession"],
+  addUploadManifestEntries: ["sealUploadManifest", "getUploadSession"],
+  sealUploadManifest: ["uploadSessionContentBatch", "getUploadSession"],
+  uploadSessionContentBatch: ["finalizeUploadSession", "getUploadSession"],
+  reconcileUploadSession: ["getUploadSession", "finalizeUploadSession"],
+  finalizeUploadSession: ["getUploadSession", "listKnowledgeBaseSourceFiles"],
+  getUploadSession: ["uploadSessionContentBatch", "reconcileUploadSession", "finalizeUploadSession"],
+  getKnowledgeBaseSourceFile: ["getSourceFileContent", "listKnowledgeBaseSourceFileEvents"],
+  moveSourceFile: ["getResourceOperation"],
+  replaceSourceFileContent: ["getResourceOperation"],
+  deleteSourceFile: ["getResourceOperation"],
+  moveSourceDirectory: ["getResourceOperation"],
+  deleteSourceDirectory: ["getResourceOperation"],
+  listKnowledgeBaseTree: ["getFileContentByPath", "getFileContentById"],
+  searchGeneratedFiles: ["getFileContentByPath", "getFileContentById", "expandGraph"],
+  expandGraph: ["getFileContentByPath", "listRelatedFiles"],
+  listRelatedFiles: ["getFileContentByPath", "expandGraph"],
+  createWebhook: ["listWebhookDeliveries"],
+  listWebhookDeliveries: ["redeliverWebhook"]
+};
 
 async function main() {
   const document = createDeveloperOpenApiDocument() as OpenApiDocument;
@@ -102,7 +129,10 @@ async function main() {
     await mkdir(locale.operationsDir, { recursive: true });
     await writeFile(path.join(locale.operationsDir, "index.md"), renderOperationsIndex(locale.copy, operations));
     for (const entry of operations) {
-      await writeFile(path.join(locale.operationsDir, `${entry.slug}.md`), renderOperationPage(document, locale.copy, entry));
+      await writeFile(
+        path.join(locale.operationsDir, `${entry.slug}.md`),
+        renderOperationPage(document, locale.copy, entry, operations)
+      );
     }
     await writeFile(locale.sidebarPath, `${JSON.stringify(createSidebar(locale, operations), null, 2)}\n`);
   }
@@ -145,7 +175,13 @@ function collectOperations(document: OpenApiDocument): OperationEntry[] {
           slug: slugifyOperationId(String(operation.operationId))
         }))
     )
-    .sort((a, b) => a.tag.localeCompare(b.tag) || a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+    .sort(
+      (a, b) =>
+        (tagOrder.get(a.tag) ?? Number.MAX_SAFE_INTEGER) -
+          (tagOrder.get(b.tag) ?? Number.MAX_SAFE_INTEGER) ||
+        a.path.localeCompare(b.path) ||
+        a.method.localeCompare(b.method)
+    );
 }
 
 function renderOperationsIndex(copy: LocaleCopy, operations: OperationEntry[]): string {
@@ -170,18 +206,18 @@ function renderOperationsIndex(copy: LocaleCopy, operations: OperationEntry[]): 
   ].join("\n");
 }
 
-function renderOperationPage(document: OpenApiDocument, copy: LocaleCopy, entry: OperationEntry): string {
+function renderOperationPage(
+  document: OpenApiDocument,
+  copy: LocaleCopy,
+  entry: OperationEntry,
+  operations: OperationEntry[]
+): string {
   const successResponses = Object.entries(readRecord(entry.operation.responses)).filter(([status]) => status.startsWith("2"));
   const errorResponses = Object.entries(readRecord(entry.operation.responses)).filter(([status]) => !status.startsWith("2"));
   const parameters = readArray(entry.operation.parameters) as SchemaObject[];
   const requestBody = readRecord(entry.operation.requestBody);
-  const continuity = document["x-field-continuity"];
-  const returnedFields = collectReturnedContinuityFields(document, successResponses, Object.keys(continuity));
-  const requestedFields = parameters
-    .map((parameter) => String(parameter.name ?? ""))
-    .filter((name) => name in copy.fieldSources);
   const summary = operationSummary(copy, entry);
-  const group = tagLabel(copy, entry.tag);
+  const nextSteps = renderNextSteps(copy, entry.operationId, operations);
 
   return [
     "---",
@@ -196,8 +232,6 @@ function renderOperationPage(document: OpenApiDocument, copy: LocaleCopy, entry:
     `## ${copy.interfaceDescriptionHeading}`,
     "",
     operationDescription(copy, entry),
-    "",
-    copy.groupIntroTemplate.replace("{group}", group),
     "",
     `## ${copy.endpointHeading}`,
     "",
@@ -231,14 +265,7 @@ function renderOperationPage(document: OpenApiDocument, copy: LocaleCopy, entry:
     `## ${copy.errorCodesHeading}`,
     "",
     renderErrorResponses(copy, errorResponses),
-    "",
-    `## ${copy.errorExampleHeading}`,
-    "",
-    renderErrorExample(errorResponses),
-    "",
-    `## ${copy.workflowContinuityHeading}`,
-    "",
-    renderContinuity(copy, entry.operationId, requestedFields, returnedFields, continuity),
+    ...(nextSteps ? ["", `## ${copy.nextStepsHeading}`, "", nextSteps] : []),
     ""
   ].join("\n");
 }
@@ -247,23 +274,42 @@ function renderRequestExample(entry: OperationEntry): string {
   const requestExample = readRecord(entry.operation["x-request-example"]);
   const pathParameters = readRecord(requestExample.path);
   const query = readRecord(requestExample.query);
-  const body = readRecord(requestExample.body);
+  const headerExamples = readRecord(requestExample.header);
+  const rawBody = requestExample.body;
+  const body = readRecord(rawBody);
   const url = `https://openapi.example.com${buildExamplePath(entry.path, pathParameters, query)}`;
   const requestBody = readRecord(entry.operation.requestBody);
   const content = readRecord(requestBody.content);
   const contentTypes = Object.keys(content);
   const isMultipart = contentTypes.includes("multipart/form-data");
   const isJsonBody = contentTypes.includes("application/json");
+  const isMarkdownBody = contentTypes.includes("text/markdown");
   const lines = [`curl -X ${entry.method} ${JSON.stringify(url)}`, '  -H "Authorization: Bearer <openapi-key>"'];
+
+  for (const parameterValue of readArray(entry.operation.parameters)) {
+    const parameter = readRecord(parameterValue);
+    if (parameter.in !== "header" || typeof parameter.name !== "string") {
+      continue;
+    }
+    const schema = readRecord(parameter.schema);
+    const value =
+      headerExamples[parameter.name] ??
+      schema.example ??
+      parameterExample(entry, parameter, schema);
+    lines.push(`  -H ${JSON.stringify(`${parameter.name}: ${String(value)}`)}`);
+  }
 
   if (isJsonBody && Object.keys(body).length > 0) {
     lines.push('  -H "Content-Type: application/json"');
     lines.push(`  --data '${JSON.stringify(body, null, 2)}'`);
   } else if (isMultipart) {
-    const files = Array.isArray(body.files) ? body.files.map(String) : ["example.md"];
-    for (const file of files) {
-      lines.push(`  -F "files=@${file};type=text/markdown"`);
+    const entries = Object.entries(body);
+    for (const [entryId, file] of entries) {
+      lines.push(`  -F "${entryId}=@${String(file)};type=text/markdown"`);
     }
+  } else if (isMarkdownBody && typeof rawBody === "string") {
+    lines.push('  -H "Content-Type: text/markdown"');
+    lines.push(`  --data-binary ${JSON.stringify(rawBody)}`);
   }
 
   return ["```bash", lines.join(" \\\n"), "```"].join("\n");
@@ -271,21 +317,17 @@ function renderRequestExample(entry: OperationEntry): string {
 
 function renderSuccessExample(responses: [string, unknown][]): string {
   for (const [, response] of responses) {
-    const example = readRecord(readRecord(readRecord(response).content)["application/json"]).example;
-    if (example !== undefined) {
-      return renderJsonBlock(example);
+    const content = readRecord(readRecord(response).content);
+    for (const [contentType, media] of Object.entries(content)) {
+      const example = readRecord(media).example;
+      if (example !== undefined) {
+        return contentType === "application/json"
+          ? renderJsonBlock(example)
+          : ["```", String(example), "```"].join("\n");
+      }
     }
   }
   return "No success response example is documented.";
-}
-
-function renderErrorExample(responses: [string, unknown][]): string {
-  const preferred = responses.find(([status]) => status === "401") ?? responses[0];
-  const example = readRecord(readRecord(readRecord(preferred?.[1]).content)["application/json"]).example;
-  if (example !== undefined) {
-    return renderJsonBlock(example);
-  }
-  return "No error response example is documented.";
 }
 
 function renderParameters(copy: LocaleCopy, parameters: SchemaObject[], entry: OperationEntry): string {
@@ -300,7 +342,7 @@ function renderParameters(copy: LocaleCopy, parameters: SchemaObject[], entry: O
       const example = parameterExample(entry, parameter, schema);
       return `| \`${String(parameter.name)}\` | ${String(parameter.in)} | ${yesNo(copy, Boolean(parameter.required))} | ${escapeTable(
         schemaType(schema)
-      )} | ${escapeTable(example)} | ${escapeTable(translateDescription(copy, String(parameter.description ?? "")))} |`;
+      )} | ${escapeTable(example)} | ${escapeTable(fieldDescription(copy, String(parameter.name), parameter.description))} |`;
     })
   ].join("\n");
 }
@@ -312,6 +354,9 @@ function parameterExample(entry: OperationEntry, parameter: SchemaObject, schema
   const explicitExample = readRecord(requestExample[location])[name];
   if (explicitExample !== undefined && explicitExample !== null) {
     return formatInlineExample(explicitExample);
+  }
+  if (schema.example !== undefined && schema.example !== null) {
+    return formatInlineExample(schema.example);
   }
   const namedExample = parameterExampleByName(name);
   if (namedExample) {
@@ -343,11 +388,10 @@ function parameterExampleByName(name: string): string | undefined {
     limit: "50",
     path: "pages/guide.md",
     parentPath: "pages",
-    fileNameQuery: "guide",
-    fileIdQuery: "source-file-11111111",
-    processingStatus: "completed",
-    processingStage: "release_activation",
-    modelInvocationStatus: "completed",
+    pathQuery: "handbook/guide",
+    sourceFileIdPrefix: "source-file-11111111",
+    processingState: "completed",
+    currentStage: "release_activation",
     generatedOutputStatus: "visible",
     startedFrom: "2026-06-17T00:00:00.000Z",
     startedTo: "2026-06-18T00:00:00.000Z",
@@ -403,13 +447,14 @@ function renderSuccessResponses(document: OpenApiDocument, copy: LocaleCopy, res
 }
 
 function renderErrorResponses(copy: LocaleCopy, responses: [string, unknown][]): string {
-  if (responses.length === 0) {
-    return copy.noErrorResponse;
-  }
+  const operationSpecific = responses.filter(([status]) => !["401", "429", "500"].includes(status));
+  if (operationSpecific.length === 0) return copy.commonErrorsNote;
   return [
+    copy.commonErrorsNote,
+    "",
     `| ${copy.httpStatusColumn} | ${copy.stableErrorCodeColumn} | ${copy.explanationColumn} |`,
     "| --- | --- | --- |",
-    ...responses.map(([status, response]) => {
+    ...operationSpecific.map(([status, response]) => {
       const responseObject = readRecord(response);
       return `| ${status} | \`${errorCodeForStatus(status)}\` | ${escapeTable(
         translateDescription(copy, String(responseObject.description ?? ""))
@@ -418,42 +463,13 @@ function renderErrorResponses(copy: LocaleCopy, responses: [string, unknown][]):
   ].join("\n");
 }
 
-function renderContinuity(
-  copy: LocaleCopy,
-  operationId: string,
-  requestedFields: string[],
-  returnedFields: string[],
-  continuity: Record<string, string[]>
-): string {
-  const lines: string[] = [];
-  if (requestedFields.length > 0) {
-    lines.push(`### ${copy.acceptedValuesHeading}`, "");
-    for (const field of requestedFields) {
-      lines.push(`- \`${field}\`: ${copy.fieldSources[field]}`);
-    }
-    lines.push("");
-  }
-  if (returnedFields.length > 0) {
-    lines.push(`### ${copy.returnedValuesHeading}`, "");
-    for (const field of returnedFields) {
-      const operationNote = copy.returnedContinuityNotes[operationId]?.[field];
-      if (operationNote) {
-        lines.push(`- \`${field}\`: ${operationNote}`);
-        continue;
-      }
-      const targets = continuity[field] ?? [];
-      lines.push(
-        `- \`${field}\`: ${copy.acceptedLaterTemplate.replace(
-          "{targets}",
-          targets.map((target) => `\`${target}\``).join(", ")
-        )}`
-      );
-    }
-  }
-  if (lines.length === 0) {
-    return copy.noContinuity;
-  }
-  return lines.join("\n");
+function renderNextSteps(copy: LocaleCopy, operationId: string, operations: OperationEntry[]): string {
+  const operationById = new Map(operations.map((operation) => [operation.operationId, operation]));
+  return (nextOperationIds[operationId] ?? [])
+    .map((nextOperationId) => operationById.get(nextOperationId))
+    .filter((operation): operation is OperationEntry => Boolean(operation))
+    .map((operation) => `- [${operationSummary(copy, operation)}](./${operation.slug}.md)`)
+    .join("\n");
 }
 
 function renderSchemaFields(
@@ -474,7 +490,7 @@ function renderSchemaFields(
         const example = schemaFieldExample(name, propertySchema, options.example?.[name]);
         return `| \`${name}\` | ${yesNo(copy, required)} | ${escapeTable(schemaType(propertySchema))} | ${escapeTable(
           example
-        )} | ${escapeTable(translateDescription(copy, String(propertySchema.description ?? "")))} |`;
+        )} | ${escapeTable(fieldDescription(copy, name, propertySchema.description))} |`;
       })
     ].join("\n");
   }
@@ -484,7 +500,7 @@ function renderSchemaFields(
     ...properties.map(
       ({ name, required, schema: propertySchema }) =>
         `| \`${name}\` | ${yesNo(copy, required)} | ${escapeTable(schemaType(propertySchema))} | ${escapeTable(
-          translateDescription(copy, String(propertySchema.description ?? ""))
+          fieldDescription(copy, name, propertySchema.description)
         )} |`
     )
   ].join("\n");
@@ -546,44 +562,6 @@ function schemaProperties(document: OpenApiDocument, schema: SchemaObject) {
     });
   }
   return [...merged.values()];
-}
-
-function collectReturnedContinuityFields(
-  document: OpenApiDocument,
-  responses: [string, unknown][],
-  fieldNames: string[]
-): string[] {
-  const found = new Set<string>();
-  for (const [, response] of responses) {
-    collectSchemaFieldNames(document, responseSchema(readRecord(response)), new Set(fieldNames), found, 0);
-  }
-  return [...found].sort();
-}
-
-function collectSchemaFieldNames(
-  document: OpenApiDocument,
-  schema: SchemaObject,
-  targets: Set<string>,
-  found: Set<string>,
-  depth: number
-) {
-  if (depth > 4) {
-    return;
-  }
-  const resolved = resolveSchema(document, schema);
-  for (const [name, propertySchema] of Object.entries(readRecord(resolved.properties))) {
-    if (targets.has(name)) {
-      found.add(name);
-    }
-    collectSchemaFieldNames(document, readRecord(propertySchema), targets, found, depth + 1);
-  }
-  for (const item of [...readArray(resolved.oneOf), ...readArray(resolved.anyOf), ...readArray(resolved.allOf)]) {
-    collectSchemaFieldNames(document, readRecord(item), targets, found, depth + 1);
-  }
-  const items = readRecord(resolved.items);
-  if (Object.keys(items).length > 0) {
-    collectSchemaFieldNames(document, items, targets, found, depth + 1);
-  }
 }
 
 function responseSchema(response: SchemaObject): SchemaObject {
@@ -665,7 +643,8 @@ function errorCodeForStatus(status: string): string {
     "413": "PAYLOAD_TOO_LARGE",
     "422": "VALIDATION_ERROR",
     "429": "RATE_LIMITED",
-    "500": "INTERNAL_ERROR"
+    "500": "INTERNAL_ERROR",
+    "503": "QUEUE_BACKPRESSURE"
   };
   return map[status] ?? "ERROR";
 }
@@ -684,6 +663,11 @@ function tagLabel(copy: LocaleCopy, tag: string): string {
 
 function translateDescription(copy: LocaleCopy, value: string): string {
   return copy.descriptions[value] ?? value;
+}
+
+function fieldDescription(copy: LocaleCopy, name: string, description: unknown): string {
+  const translated = translateDescription(copy, String(description ?? "")).trim();
+  return translated || copy.fieldDescriptions[name] || copy.fieldDescriptions.value;
 }
 
 function slugifyOperationId(operationId: string): string {

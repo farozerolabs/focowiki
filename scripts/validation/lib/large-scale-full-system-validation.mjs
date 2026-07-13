@@ -113,7 +113,6 @@ export function readLargeScaleFullSystemConfig(command = "all", env = process.en
     ),
     requireModel: readBoolean(env.FOCOWIKI_VALIDATION_REQUIRE_MODEL, false),
     includeBrowser: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER, true),
-    includeDemo: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DEMO, false),
     includeRepositoryChecks: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY, true),
     includeDocker: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER, false),
     includeUploadPressure: readBoolean(
@@ -150,7 +149,6 @@ export function buildLargeScaleFullSystemPlan(config) {
     FOCOWIKI_VALIDATION_MAX_MUTATION_ENDPOINT_MS: "60000",
     FOCOWIKI_VALIDATION_REQUIRE_MODEL: config.requireModel ? "true" : "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER: config.includeBrowser ? "true" : "false",
-    FOCOWIKI_FULL_FLOW_INCLUDE_DEMO: config.includeDemo ? "true" : "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: config.includeRepositoryChecks ? "true" : "false",
     FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER: config.includeDocker ? "true" : "false"
   };
@@ -163,8 +161,8 @@ export function buildLargeScaleFullSystemPlan(config) {
       touchesConfiguredExternals: true,
       safeReportPath: "<change-dir>/full-codebase-e2e-report.json"
     }),
-    validationStep("large-content-resource-coverage", {
-      args: ["scripts/validation/large-legal-full-coverage.mjs", "all"],
+    validationStep("generated-content-review", {
+      args: ["scripts/validation/generated-okf-file-inspection.mjs"],
       extraEnv: {
         ...sharedEnv,
         FOCOWIKI_VALIDATION_ALLOW_CONFIGURED_EXTERNALS: config.allowConfiguredExternals
@@ -174,7 +172,7 @@ export function buildLargeScaleFullSystemPlan(config) {
       },
       layer: "mixed",
       touchesConfiguredExternals: true,
-      safeReportPath: "<change-dir>/large-legal-full-coverage-report.json"
+      safeReportPath: "<change-dir>/file-inspection-report.json"
     })
   ];
 
@@ -212,7 +210,6 @@ export function createLargeScaleFullSystemReport(config, steps) {
     config: {
       requireModel: config.requireModel,
       includeBrowser: config.includeBrowser,
-      includeDemo: config.includeDemo,
       includeRepositoryChecks: config.includeRepositoryChecks,
       includeDocker: config.includeDocker,
       includeUploadPressure: config.includeUploadPressure,
@@ -382,7 +379,6 @@ function isResumeCompatible(report, existingReport) {
     existingReport.sample?.minBatchFiles === report.sample.minBatchFiles &&
     existingReport.config?.requireModel === report.config.requireModel &&
     existingReport.config?.includeBrowser === report.config.includeBrowser &&
-    existingReport.config?.includeDemo === report.config.includeDemo &&
     existingReport.config?.includeRepositoryChecks === report.config.includeRepositoryChecks &&
     existingReport.config?.includeDocker === report.config.includeDocker
   );

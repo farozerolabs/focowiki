@@ -10,15 +10,6 @@ import type {
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
-import { acceptUploadSourceFiles } from "./source-file-upload.js";
-import { readBoundedUploadFiles } from "./upload-processor-utils.js";
-import {
-  hasDuplicateUploadFileNames,
-  hasExistingSourceFileName,
-  hasUnsafeUploadFileNames,
-  isUploadFile
-} from "./upload-input.js";
 import {
   StorageObjectTooLargeError,
   type StorageAdapter
@@ -26,22 +17,17 @@ import {
 import { createDeletionService } from "./deletion-service.js";
 import { readGeneratedOutputsForSourceFilesSafely } from "./source-file-generated-output.js";
 import {
-  assertSourceFileQueueCapacity,
-  enqueueSourceFileProcessingJobs,
-  WorkerQueueBackpressureError
-} from "../worker/source-file-jobs.js";
-import {
   adminUnauthorized,
   createAdminAuthMiddleware,
   createAdminWriteProtectionMiddleware,
   limitAdminLoginRequest,
-  limitAdminUploadRequest,
   missingSessionBackend,
   recordAdminAudit,
   registerAdminSecurityMiddlewares
 } from "./security.js";
 import {
   toAdminBundleFile,
+  toAdminGraphSummary,
   toAdminRelease,
   toAdminSourceFile,
   toAdminSourceFileEvent
@@ -66,6 +52,15 @@ import {
   readSourceFileListFiltersFromQuery,
   type SourceFileListFilterErrorCode
 } from "./source-file-list-filters.js";
+import { registerAdminUploadSessionRoutes } from "./upload-session-routes.js";
+import { registerAdminSourceDirectoryDeletionRoutes } from "./source-directory-deletion-routes.js";
+import { registerAdminSourceResourceEditingRoutes } from "./source-resource-editing-routes.js";
+import type { ApplicationRuntime } from "../application/ports/runtime.js";
+import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
+import {
+  resolveReleaseSnapshotPage,
+  writeReleaseSnapshotCursor
+} from "./release-snapshot-pagination.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -75,6 +70,8 @@ export type AdminApiServices = {
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;
   runtimeSettings: RuntimeSettingsService | null;
+  applicationRuntime: ApplicationRuntime;
+  uploadSessionStorage: UploadSessionStoragePort;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -141,6 +138,23 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
   );
   registerAdminFileTreeSearchRoutes(app, { config, redis, repositories }, { requireAuth });
+  registerAdminSourceDirectoryDeletionRoutes(
+    app,
+    { config, repositories, redis, runtimeSettings, applicationRuntime: services.applicationRuntime },
+    { requireAuth, requireWriteProtection }
+  );
+  registerAdminSourceResourceEditingRoutes(
+    app,
+    {
+      config,
+      repositories,
+      redis,
+      runtimeSettings,
+      storage,
+      applicationRuntime: services.applicationRuntime
+    },
+    { requireAuth, requireWriteProtection }
+  );
   registerAdminProcessingSummaryRoutes(
     app,
     { repositories },
@@ -161,6 +175,18 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     {
       requireAuth
     }
+  );
+  registerAdminUploadSessionRoutes(
+    app,
+    {
+      config,
+      redis,
+      repositories,
+      runtimeSettings,
+      applicationRuntime: services.applicationRuntime,
+      uploadSessionStorage: services.uploadSessionStorage
+    },
+    { requireAuth, requireWriteProtection }
   );
 
   app.post("/admin/api/login", async (context) => {
@@ -293,7 +319,11 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return missingRepositoryBackend(context);
       }
 
-      const deletionService = createDeletionService(repositories, storage, redis);
+      const deletionService = createDeletionService(
+        repositories,
+        redis,
+        services.applicationRuntime
+      );
 
       if (!deletionService) {
         return missingRepositoryBackend(context);
@@ -356,9 +386,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       if (content === null) {
         return notFound(context);
       }
+      const includeRelationships = context.req.query("includeRelationships") === "1";
+      const graphSummary =
+        includeRelationships && file.sourceFileId && repositories.graph?.getGraphSummary
+          ? await repositories.graph.getGraphSummary({
+              knowledgeBaseId: knowledgeBase.id,
+              sourceFileId: file.sourceFileId,
+              limit: 8
+            })
+          : null;
 
       return context.json({
         file: toAdminBundleFile(file),
+        relationships: graphSummary ? toAdminGraphSummary(graphSummary).relationships : [],
         content,
         readOnly: true
       });
@@ -380,28 +420,23 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return notFound(context);
       }
 
-      const deletionService = createDeletionService(repositories, storage, redis);
+      const deletionService = createDeletionService(
+        repositories,
+        redis,
+        services.applicationRuntime
+      );
 
       if (!deletionService) {
         return missingRepositoryBackend(context);
       }
 
       const deletedAt = new Date().toISOString();
-      const uploadGeneration = await resolveUploadGenerationSettings({
-        config,
-        runtimeSettings
-      });
       const runtimeSnapshot = runtimeSettings ? await runtimeSettings.getSnapshot() : null;
       const result = await deletionService.deleteSourcePage({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         logicalPath,
         deletedAt,
-        generatedAt: deletedAt,
-        batchSize: uploadGeneration.generationBatchSize,
         cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-        fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
-        okfLog: config.okf?.log,
-        publication: config.publication,
         hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts
       });
 
@@ -492,26 +527,30 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
-      const cursorScope = `bundle-files:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`;
+      const cursorScope = `bundle-files:${knowledgeBase.id}`;
       const cursorToken = context.req.query("cursor") ?? null;
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
+      const snapshot = await resolveReleaseSnapshotPage({
+        redis,
+        scope: cursorScope,
+        cursorToken,
+        activeReleaseId: knowledgeBase.activeReleaseId
+      });
 
-      if (cursorToken && !repositoryCursor) {
+      if (!snapshot) {
         return invalidPagination(context);
       }
 
       const page = await repositories.files.listBundleFiles({
         knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
+        releaseId: snapshot.releaseId,
         limit,
-        cursor: repositoryCursor
+        cursor: snapshot.repositoryCursor
       });
-      const nextCursor = await writeOpaqueCursor({
+      const nextCursor = await writeReleaseSnapshotCursor({
         redis,
         scope: cursorScope,
-        cursor: page.nextCursor,
+        releaseId: snapshot.releaseId,
+        repositoryCursor: page.nextCursor,
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
 
@@ -694,192 +733,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
   );
 
-  app.post(
-    "/admin/api/knowledge-bases/:knowledgeBaseId/uploads",
-    requireAuth,
-    requireWriteProtection,
-    async (context) => {
-      if (
-         !repositories?.files?.createSourceFiles ||
-         !repositories.files.getSourceFile ||
-         !repositories.workerJobs ||
-         !redis
-       ) {
-         return missingRepositoryBackend(context);
-       }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      const uploadLimited = await limitAdminUploadRequest({
-        config,
-        redis,
-        repositories,
-        runtimeSettings,
-        context
-      });
-      if (uploadLimited) {
-        return uploadLimited;
-      }
-      try {
-        await assertSourceFileQueueCapacity({
-          repositories,
-          knowledgeBaseId: knowledgeBase.id,
-          config,
-          worker: (await runtimeSettings?.getSnapshot())?.worker
-        });
-      } catch (error) {
-        if (error instanceof WorkerQueueBackpressureError) {
-          return queueBackpressure(context, error);
-        }
-        throw error;
-      }
-
-      const formData = await context.req.formData();
-      const files = formData.getAll("files").filter(isUploadFile);
-      const uploadGeneration = await resolveUploadGenerationSettings({
-        config,
-        runtimeSettings
-      });
-
-      if (files.length === 0) {
-        return context.json(
-          {
-            error: {
-              code: "NO_UPLOAD_FILES",
-              messageKey: "errors.noUploadFiles"
-            }
-          },
-          400
-        );
-      }
-
-      if (files.length > uploadGeneration.maxFiles) {
-        await recordAdminAudit({
-          repositories,
-          config,
-          context,
-          eventType: "upload_rejected",
-          result: "blocked",
-          errorCode: "UPLOAD_FILE_COUNT_LIMIT_EXCEEDED"
-        });
-        return context.json(
-          {
-            error: {
-              code: "UPLOAD_FILE_COUNT_LIMIT_EXCEEDED",
-              messageKey: "errors.uploadFileCountLimit"
-            }
-          },
-          413
-        );
-      }
-
-      if (hasUnsafeUploadFileNames(files)) {
-        return context.json(
-          {
-            error: {
-              code: "UNSUPPORTED_FILE_TYPE",
-              messageKey: "errors.uploadMarkdownOnly"
-            }
-          },
-          400
-        );
-      }
-
-      if (hasDuplicateUploadFileNames(files)) {
-        return context.json(
-          {
-            error: {
-              code: "DUPLICATE_UPLOAD_FILE_NAME",
-              messageKey: "errors.duplicateUploadFileName"
-            }
-          },
-          400
-        );
-      }
-
-      if (
-        await hasExistingSourceFileName({
-          filesRepository: repositories.files,
-          knowledgeBaseId: knowledgeBase.id,
-          fileNames: files.map((file) => file.name),
-          limit: config.pagination.maxPageSize
-        })
-      ) {
-        return context.json(
-          {
-            error: {
-              code: "DUPLICATE_UPLOAD_FILE_NAME",
-              messageKey: "errors.duplicateUploadFileName"
-            }
-          },
-          400
-        );
-      }
-
-      const loadedFiles = await readBoundedUploadFiles(files);
-      const totalBytes = loadedFiles.reduce((sum, file) => sum + file.bytes.byteLength, 0);
-
-      if (totalBytes > uploadGeneration.maxBytes) {
-        await recordAdminAudit({
-          repositories,
-          config,
-          context,
-          eventType: "upload_rejected",
-          result: "blocked",
-          errorCode: "UPLOAD_BYTE_LIMIT_EXCEEDED"
-        });
-        return context.json(
-          {
-            error: {
-              code: "UPLOAD_BYTE_LIMIT_EXCEEDED",
-              messageKey: "errors.uploadByteLimit"
-            }
-          },
-          413
-        );
-      }
-
-      const sourceFileIds = await acceptUploadSourceFiles({
-        files: loadedFiles,
-        storageConcurrency: uploadGeneration.storageConcurrency,
-        knowledgeBaseId: knowledgeBase.id,
-        storage,
-        createSourceFiles: repositories.files.createSourceFiles
-      });
-      const sourceFiles = (
-        await Promise.all(
-          sourceFileIds.map((sourceFileId) =>
-            repositories.files?.getSourceFile?.({
-              knowledgeBaseId: knowledgeBase.id,
-              sourceFileId
-            })
-          )
-        )
-      ).filter(isDefined);
-
-       await enqueueSourceFileProcessingJobs({
-         repositories,
-         sourceFileIds,
-         knowledgeBaseId: knowledgeBase.id,
-         reason: "upload",
-         config,
-         worker: (await runtimeSettings?.getSnapshot())?.worker
-       });
-
-      return context.json(
-        {
-          files: sourceFiles.map((sourceFile) => toAdminSourceFile(sourceFile))
-        },
-        202
-      );
-    }
-  );
 }
 
 async function readAdminSourceFileWithGraphSummary(input: {
@@ -1057,32 +910,4 @@ function fileNotDeletable(context: Parameters<MiddlewareHandler>[0]): Response {
     },
     400
   );
-}
-
-function queueBackpressure(
-  context: Parameters<MiddlewareHandler>[0],
-  error: WorkerQueueBackpressureError
-): Response {
-  return context.json(
-    {
-      error: {
-        code: error.code,
-        messageKey: "errors.queueBackpressure",
-        details: {
-          activeJobCount: error.activeJobCount,
-          limit: error.limit,
-          knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
-          knowledgeBaseLimit: error.knowledgeBaseLimit,
-          oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
-          maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
-          retryAfterSeconds: error.retryAfterSeconds
-        }
-      }
-    },
-    503
-  );
-}
-
-function isDefined<T>(value: T | null | undefined): value is T {
-  return value !== null && value !== undefined;
 }

@@ -50,7 +50,7 @@ _graph/
 | `_graph/edges/*.jsonl` | 分片关系记录，适合导出和审计。 |
 | `_graph/by-file/{fileId}.json` | 单个生成页面的有界本地关系，这是 Agent 探索关系的主要文件。 |
 
-Agent 的常规读取路径应从生成后的 Markdown 页面开始，再读取 `_graph/by-file/{fileId}.json`。完整 edge shards 通常用于导出和检查。
+存在图输出时，根目录 `index.md` 会链接 `_graph/index.md`。Agent 的常规读取路径从生成后的 Markdown 页面开始，再读取 `_graph/by-file/{fileId}.json`。完整 edge shards 通常用于导出和检查。
 
 ## 页面引用
 
@@ -72,7 +72,7 @@ graph: "../_graph/by-file/source-file-123.json"
 | `fileId` | 相关 source-backed file identifier。 |
 | `path` | 相关生成 Markdown 路径，例如 `pages/example.md`。 |
 | `title` | 相关文件标题。 |
-| `relationType` | 关系类型，例如 `explicit_reference`、`title_mention`、`shared_entity`、`shared_subject`、`metadata_supported_content` 或 `model_related_link`。 |
+| `relationType` | 关系类型，例如 `direct_reference`、`direct_reference`、`same_entity`、`same_specific_subject`、`metadata_supported_content` 或 `same_specific_subject`。 |
 | `direction` | 当前文件指向相关文件时为 `outgoing`，其他文件指向当前文件时为 `incoming`。 |
 | `weight` | `0` 到 `1` 的有界优先级分数。 |
 | `reason` | 面向用户、开发者和 Agent 的安全解释。 |
@@ -84,17 +84,29 @@ graph: "../_graph/by-file/source-file-123.json"
 ## Agent 探索流程
 
 1. 读取 `index.md`，了解知识库整体结构。
-2. 读取 `schema.md`，理解 metadata 和生成文件约定。
-3. 分页列出生成文件树。
-4. 打开相关的 `pages/*.md` 文件。
-5. 读取页面 frontmatter，找到 `fileId` 和 `graph`。
-6. 打开 `_graph/by-file/{fileId}.json`。
-7. 读取图关系文件返回的相关页面路径。
-8. 根据任务需要继续沿 Markdown links 和图关系读取证据。
+2. 需要发现关系时，沿 `index.md` 中的图入口继续读取。
+3. 读取 `schema.md`，理解 metadata 和生成文件约定。
+4. 在任务需要时检查 `_index/*`，获取生成后的 search、links、manifest 或 tree 线索。
+5. 分页列出生成文件树。
+6. 打开相关的 `pages/*.md` 文件，并读取完整 Markdown 正文。
+7. 读取页面 frontmatter，找到 `fileId`、`path` 和 `graph`。
+8. 打开 `_graph/by-file/{fileId}.json`，调用 related-file endpoint，或用已知 file ID 调用 Developer OpenAPI graph expansion。
+9. 读取图扩展或图关系文件返回的相关页面路径。
+10. 根据任务需要继续沿 Markdown links、文件树、`_index/*`、搜索候选和图关系读取证据。
 
 Developer OpenAPI 也提供一个有界 related-file endpoint，方便偏好 JSON list 的后端集成。文件读取仍然是 Agent-facing 的主要契约。
 
 管理后台预览页复制的是当前选中生成文件的 Developer OpenAPI content URL。`pages/示例.md` 这样的安全 Unicode 页面路径会在复制 URL 中被编码，并由 Developer OpenAPI 解析到 active generated file。
+
+## 图搜索
+
+Developer OpenAPI 文件搜索默认使用生成文件发现。`mode=file` 搜索生成文件文档，并保持既有文件搜索调用契约。`mode=hybrid` 将文件候选和图候选合并成一个去重后的文件级结果列表。`mode=graph` 搜索持久化图节点和图关系搜索文档。
+
+图搜索读取的是生成 `_graph/` 文件和 `Related` section 的同一份持久化关系数据。请求过程中不会临时解析图文件。这样可以让大规模知识库查询保持有界，并让导入、删除和重新发布流程通过同一组 release-scoped read models 更新搜索数据。
+
+每个图搜索结果可以包含 `matchType`、`graphContext.graphRef`、`graphContext.relationships`、`graphContext.graphPaths` 和结果级 `readActions`。图字段用于导航，随后通过 `readActions` 按 ID 或路径读取生成后的 Markdown 文件。生成后的 Markdown 文件内容仍然是回答前应该读取的证据来源。
+
+图扩展可以使用 file、node、edge 或 query 作为 seed，并返回有界关系路径和文件读取动作。Agent 拿到有价值的文件或图候选后，可以使用图扩展继续发现相邻文件，再回到同一个 loop 读取 Markdown 文件。搜索和图扩展用于发现线索。完整 Markdown 文件仍然是最终回答的证据来源。
 
 ## 运行说明
 

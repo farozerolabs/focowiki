@@ -70,6 +70,8 @@ This archive contains the Compose file, `.env`, PostgreSQL data, Redis data, run
 
 Back up the external S3-compatible bucket or prefix with your storage provider snapshot, replication, export, or S3-compatible copy tool. PostgreSQL and S3 backups should come from the same deployment point.
 
+Upgrades that replace the generated knowledge-base structure rebuild published Markdown from retained source files. Keep the previous application images together with the matching PostgreSQL and S3 backups until the upgraded knowledge bases have been checked. Rolling back requires restoring all three from the same deployment point; starting an older application image against the upgraded data does not restore removed generated releases.
+
 Check the backup file before continuing.
 
 ```bash
@@ -109,9 +111,7 @@ docker compose -f docker-compose.yml run --rm migrate
 
 The migration container uses the API image and exits after database migration completes. This command is a useful explicit check before startup. The production Compose template also wires the `api` service to the `migrate` service, so `docker compose -f docker-compose.yml up -d` runs migration before the API starts.
 
-Existing deployments use the same migration path during upgrades. The migration adds runtime settings tables and preserves existing knowledge-base data. On the first startup after upgrade, Focowiki seeds Admin Settings from startup defaults when saved Admin UI settings do not already exist.
-
-After upgrading from a release that used env-provided session signing, existing Admin UI sessions may require signing in again. Knowledge bases, OpenAPI keys, files, and saved runtime settings remain in place.
+The migration command initializes the database schema and default Admin settings required by the current application.
 
 ## Start Services
 
@@ -174,14 +174,16 @@ Restore only into the intended deployment directory. Create a fresh backup of th
 
 3. Restore or copy the external S3-compatible bucket or prefix to the location configured in `.env`.
 
-4. Run migration and start the stack.
+4. Set the API and Admin image tags to the versions captured by the backup.
+
+5. Run migration and start the stack.
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-5. Verify Admin UI login, knowledge-base list, file preview, Developer OpenAPI health, and Worker status.
+6. Verify Admin UI login, knowledge-base list, file preview, Developer OpenAPI health, and Worker status.
 
 ## Graph Processing Notes
 
@@ -190,5 +192,3 @@ Focowiki stores file graph nodes, graph edges, and graph job records in PostgreS
 Keep graph processing bounded by Admin UI runtime settings. Avoid custom scripts that load the full source corpus or full graph into process memory.
 
 See [Admin Settings](./admin-settings.md) for Worker, publication, upload generation, rate-limit, and model configuration.
-
-For unreleased development deployments, data can be rebuilt destructively. Stop the stack, run `pnpm compose:clean`, remove the local `data`, `runtime-secrets`, and `logs` directories when needed, start the stack again, run migrations, and upload Markdown files to regenerate graph-backed bundles.

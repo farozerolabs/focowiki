@@ -1,4 +1,3 @@
-import { createDeveloperOpenApiFieldContinuity } from "./openapi-field-continuity.js";
 import { createDeveloperOpenApiPaths } from "./openapi-paths.js";
 import { createDeveloperOpenApiSchemas } from "./openapi-schemas.js";
 import { bearerSecurity } from "./openapi-shared.js";
@@ -21,9 +20,12 @@ export function createDeveloperOpenApiDocument() {
     security: bearerSecurity,
     tags: [
       { name: "Metadata", description: "Health, version, and contract discovery." },
-      { name: "Knowledge Bases", description: "Knowledge-base lifecycle and upload entry points." },
-      { name: "Source Files", description: "Source-file processing observation and retry." },
-      { name: "Files", description: "Generated tree, file detail, content, and deletion reads." },
+      { name: "Knowledge Bases", description: "Knowledge-base creation, metadata, listing, and deletion." },
+      { name: "Upload Sessions", description: "Resumable Markdown uploads that preserve relative paths." },
+      { name: "Source Directories", description: "Source-directory listing, movement, and deletion." },
+      { name: "Source Files", description: "Source-file content, processing, replacement, movement, retry, and deletion." },
+      { name: "Resource Operations", description: "Status and results for asynchronous source changes." },
+      { name: "Files", description: "Generated file tree, content, search, and relationship exploration." },
       { name: "Webhooks", description: "Webhook subscriptions and delivery operations." }
     ],
     components: {
@@ -36,7 +38,6 @@ export function createDeveloperOpenApiDocument() {
       },
       schemas: createDeveloperOpenApiSchemas()
     },
-    "x-field-continuity": createDeveloperOpenApiFieldContinuity(),
     paths: createDeveloperOpenApiPaths()
   };
 }

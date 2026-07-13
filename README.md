@@ -46,6 +46,7 @@ Before installing Focowiki, make sure your machine meets these requirements:
 - Recommended: CPU >= 2 cores, RAM >= 4 GiB or more
 
 ```bash
+git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
 docker compose -f docker-compose.yml pull
@@ -111,7 +112,7 @@ See the [Agent demo result documentation](https://docs.focowiki.com/agent-integr
 
 ## Why File-First
 
-[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes a portable way to represent knowledge as Markdown files with YAML frontmatter. The [OKF specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) defines metadata, Markdown pages, links, indexes, and update logs.
+[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes a portable way to represent knowledge as Markdown files with YAML frontmatter. The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines metadata, Markdown pages, links, indexes, and update logs.
 
 Focowiki turns this model into an open-source product workflow. Teams upload cleaned Markdown files, Focowiki parses document signals, generates an OKF-style knowledge base, stores every generated file, and exposes the result through the Admin UI and Developer OpenAPI.
 
@@ -166,7 +167,7 @@ Focowiki is distributed under a modified Apache License 2.0. See [LICENSE](./LIC
 ## References
 
 - [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+- [OKF v0.1 specification, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
 
 <p><sub><small>Related links: <a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>

@@ -143,7 +143,7 @@ describe("readModelSuggestions", () => {
     await readModelSuggestions({
       sources: Array.from({ length: 40 }, (_value, index) => ({
         id: `source-${index}`,
-        fileName: `topic-${index}.md`,
+        fileName: `collection-${Math.floor(index / 10)}/topic-${index}.md`,
         title: index === 0 ? "Alpha guide" : `Alpha reference ${index}`,
         type: "page",
         tags: ["alpha"],
@@ -158,7 +158,8 @@ describe("readModelSuggestions", () => {
 
     expect(firstCandidateLines.length).toBeGreaterThan(0);
     expect(firstCandidateLines.length).toBeLessThanOrEqual(32);
-    expect(firstCandidateLines).not.toContain("- /pages/topic-0.md");
+    expect(firstCandidateLines.some((line) => line.startsWith("- /pages/collection-"))).toBe(true);
+    expect(firstCandidateLines).not.toContain("- /pages/collection-0/topic-0.md");
   });
 
   it("does not reuse prompt state across calls", async () => {

@@ -1,4 +1,4 @@
-export const apiVersion = "v1";
+export const apiVersion = "v2";
 export const fallbackProductVersion = "0.0.0-dev";
 
 const safeReleaseVersionPattern = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/;

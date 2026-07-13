@@ -10,7 +10,8 @@ import type {
   ModelConfigStatus,
   RuntimeModelConfigPrivate,
   RuntimeSettingKey,
-  RuntimeSettingRecord
+  RuntimeSettingRecord,
+  RuntimeSettingsSnapshot
 } from "../src/runtime-settings/types.js";
 import {
   createTestRedisCoordinator,
@@ -41,10 +42,12 @@ describe("runtime settings service", () => {
     expect(snapshot.rateLimits.publicOpenApi.max).toBe(1_200);
     expect(snapshot.uploadGeneration).toEqual({
       maxBytes: 1_048_576,
-      maxFiles: 8,
+      sessionTtlSeconds: 86_400,
+      manifestPageSize: 500,
+      contentBatchMaxFiles: 24,
+      contentBatchMaxBytes: 16_777_216,
       generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
+      fileProcessingConcurrency: 1
     });
     expect(snapshot.activeModel).toBeNull();
   });
@@ -55,10 +58,8 @@ describe("runtime settings service", () => {
       key: "upload_generation",
       value: {
         maxBytes: 512,
-        maxFiles: 2,
         generationBatchSize: 3,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 1
+        fileProcessingConcurrency: 1
       },
       source: "admin"
     });
@@ -67,10 +68,8 @@ describe("runtime settings service", () => {
         modelEnabled: false,
         upload: {
           maxBytes: 9_999,
-          maxFiles: 99,
           generationBatchSize: 88,
-          fileProcessingConcurrency: 7,
-          storageConcurrency: 6
+          fileProcessingConcurrency: 7
         }
       }),
       repository,
@@ -82,10 +81,12 @@ describe("runtime settings service", () => {
 
     expect(snapshot.uploadGeneration).toEqual({
       maxBytes: 512,
-      maxFiles: 2,
+      sessionTtlSeconds: 86_400,
+      manifestPageSize: 500,
+      contentBatchMaxFiles: 24,
+      contentBatchMaxBytes: 16_777_216,
       generationBatchSize: 3,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 1
+      fileProcessingConcurrency: 1
     });
   });
 
@@ -169,75 +170,6 @@ describe("runtime settings service", () => {
     const snapshot = await secondService.getSnapshot();
 
     expect(snapshot.activeModel?.apiKey).toBe("sk-restart-secret");
-  });
-
-  it("migrates decryptable legacy model keys to deployment protection", async () => {
-    const previousSecret = process.env.SETTINGS_ENCRYPTION_SECRET;
-    const legacySecret = "legacy-settings-secret";
-    process.env.SETTINGS_ENCRYPTION_SECRET = legacySecret;
-    const runtimeSecretDirectory = join(
-      tmpdir(),
-      "focowiki-runtime-settings-test",
-      randomUUID()
-    );
-    const repository = new MemoryRuntimeSettingsRepository();
-    const now = new Date().toISOString();
-    const legacyEncrypted = encryptRuntimeSecret({
-      value: "sk-legacy-secret",
-      secret: legacySecret
-    });
-    repository.models.set("model-legacy", {
-      id: "model-legacy",
-      displayName: "Legacy model",
-      apiMode: "responses",
-      baseUrl: "https://api.openai.com/v1",
-      apiKey: legacyEncrypted,
-      apiKeyFingerprint: fingerprintRuntimeSecret("sk-legacy-secret"),
-      modelName: "gpt-test",
-      contextWindowTokens: 200_000,
-      requestMaxTimeoutMs: 600_000,
-      requestIdleTimeoutMs: 120_000,
-      suggestionConcurrency: 2,
-      transientRetryDelayMs: 60_000,
-      requestMinIntervalMs: 2_000,
-      status: "active",
-      isActive: true,
-      createdAt: now,
-      updatedAt: now,
-      deletedAt: null
-    });
-
-    try {
-      const service = createRuntimeSettingsService({
-        config: createConfig({ modelEnabled: false }),
-        repository,
-        redis: createTestRedisCoordinator(),
-        deploymentSecretDirectory: runtimeSecretDirectory
-      });
-      const snapshot = await service.getSnapshot();
-
-      expect(snapshot.activeModel?.apiKey).toBe("sk-legacy-secret");
-      expect(repository.models.get("model-legacy")?.apiKey).not.toBe(legacyEncrypted);
-      delete process.env.SETTINGS_ENCRYPTION_SECRET;
-
-      const restartedService = createRuntimeSettingsService({
-        config: createConfig({ modelEnabled: false }),
-        repository,
-        redis: createTestRedisCoordinator(),
-        deploymentSecretDirectory: runtimeSecretDirectory
-      });
-      await expect(restartedService.getSnapshot()).resolves.toMatchObject({
-        activeModel: {
-          apiKey: "sk-legacy-secret"
-        }
-      });
-    } finally {
-      if (previousSecret === undefined) {
-        delete process.env.SETTINGS_ENCRYPTION_SECRET;
-      } else {
-        process.env.SETTINGS_ENCRYPTION_SECRET = previousSecret;
-      }
-    }
   });
 
   it("rejects activating or resuming models whose key cannot be recovered", async () => {
@@ -335,15 +267,17 @@ describe("runtime settings service", () => {
     });
 
     expect(initial.status).toBe(200);
-    await expect(initial.json()).resolves.toMatchObject({
+    const initialBody = (await initial.json()) as {
+      settings: RuntimeSettingsSnapshot;
+      models: unknown[];
+    };
+    expect(initialBody).toMatchObject({
       settings: {
         activeModel: null,
         uploadGeneration: {
           maxBytes: 1_048_576,
-          maxFiles: 8,
           generationBatchSize: 50,
-          fileProcessingConcurrency: 1,
-          storageConcurrency: 4
+          fileProcessingConcurrency: 1
         }
       },
       models: []
@@ -404,10 +338,12 @@ describe("runtime settings service", () => {
       }),
       body: JSON.stringify({
         maxBytes: 0,
-        maxFiles: 2,
+        sessionTtlSeconds: 86_400,
+        manifestPageSize: 500,
+        contentBatchMaxFiles: 24,
+        contentBatchMaxBytes: 16_777_216,
         generationBatchSize: 3,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 1
+        fileProcessingConcurrency: 1
       })
     });
     expect(invalidUploadGeneration.status).toBe(400);
@@ -426,10 +362,12 @@ describe("runtime settings service", () => {
       }),
       body: JSON.stringify({
         maxBytes: 2_097_152,
-        maxFiles: 12,
+        sessionTtlSeconds: 86_400,
+        manifestPageSize: 500,
+        contentBatchMaxFiles: 12,
+        contentBatchMaxBytes: 16_777_216,
         generationBatchSize: 80,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 2
+        fileProcessingConcurrency: 1
       })
     });
     expect(validUploadGeneration.status).toBe(200);
@@ -437,11 +375,29 @@ describe("runtime settings service", () => {
       settings: {
         uploadGeneration: {
           maxBytes: 2_097_152,
-          maxFiles: 12,
+          sessionTtlSeconds: 86_400,
+          manifestPageSize: 500,
+          contentBatchMaxFiles: 12,
+          contentBatchMaxBytes: 16_777_216,
           generationBatchSize: 80,
-          fileProcessingConcurrency: 1,
-          storageConcurrency: 2
+          fileProcessingConcurrency: 1
         }
+      }
+    });
+
+    const validGraph = await app.request("/admin/api/settings/graph", {
+      method: "PUT",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify(initialBody.settings.graph)
+    });
+
+    expect(validGraph.status).toBe(200);
+    await expect(validGraph.json()).resolves.toMatchObject({
+      settings: {
+        graph: initialBody.settings.graph
       }
     });
   });
@@ -481,10 +437,8 @@ function createConfig(input: {
     },
     upload: input.upload ?? {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
+      fileProcessingConcurrency: 1
     },
     publication: {
       mode: "batch",
@@ -637,21 +591,6 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
       deletedAt: null
     };
     this.models.set(model.id, model);
-    return model;
-  }
-
-  public async updateModelApiKeyProtection(input: {
-    id: string;
-    encryptedApiKey: string;
-    apiKeyFingerprint: string;
-  }) {
-    const model = this.models.get(input.id);
-    if (!model) {
-      return null;
-    }
-    model.apiKey = input.encryptedApiKey;
-    model.apiKeyFingerprint = input.apiKeyFingerprint;
-    model.updatedAt = new Date().toISOString();
     return model;
   }
 

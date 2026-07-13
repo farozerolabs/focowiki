@@ -50,7 +50,7 @@ _graph/
 | `_graph/edges/*.jsonl` | Sharded relationship records. These are useful for exports and audits. |
 | `_graph/by-file/{fileId}.json` | Bounded local neighborhood for one generated source-backed page. This is the primary Agent exploration file. |
 
-Normal Agent reading should start from generated Markdown pages and then use `_graph/by-file/{fileId}.json`. Agents rarely need to read full edge shards.
+The root `index.md` links to `_graph/index.md` whenever graph output is available. Normal Agent reading should start from generated Markdown pages and then use `_graph/by-file/{fileId}.json`. Agents rarely need to read full edge shards.
 
 ## Page References
 
@@ -72,7 +72,7 @@ Each relationship record contains safe public fields.
 | `fileId` | Related source-backed file identifier. |
 | `path` | Related generated Markdown path, such as `pages/example.md`. |
 | `title` | Related file title. |
-| `relationType` | Relationship type, such as `explicit_reference`, `title_mention`, `shared_entity`, `shared_subject`, `metadata_supported_content`, or `model_related_link`. |
+| `relationType` | Relationship type, such as `direct_reference`, `direct_reference`, `same_entity`, `same_specific_subject`, `metadata_supported_content`, or `same_specific_subject`. |
 | `direction` | `outgoing` when the current file points to the related file, `incoming` when another file points to the current file. |
 | `weight` | Bounded priority score from `0` to `1`. |
 | `reason` | Safe explanation for users, developers, and Agents. |
@@ -84,17 +84,29 @@ Graph files expose logical identifiers and paths. They do not expose S3 object k
 ## Agent Exploration Flow
 
 1. Read `index.md` to understand the knowledge base.
-2. Read `schema.md` when metadata or generated file conventions are unclear.
-3. List the generated file tree with pagination.
-4. Open a relevant `pages/*.md` file.
-5. Read the page frontmatter and find `fileId` and `graph`.
-6. Open `_graph/by-file/{fileId}.json`.
-7. Read related page paths returned by the graph file.
-8. Continue following Markdown links and graph relationships while the task needs more evidence.
+2. Follow the graph entry in `index.md` when relationship discovery is useful.
+3. Read `schema.md` when metadata or generated file conventions are unclear.
+4. Inspect `_index/*` when the task needs generated search, link, manifest, or tree hints.
+5. List the generated file tree with pagination.
+6. Open relevant `pages/*.md` files and read complete Markdown content.
+7. Read the page frontmatter and find `fileId`, `path`, and `graph`.
+8. Open `_graph/by-file/{fileId}.json`, call the related-file endpoint, or use Developer OpenAPI graph expansion with the known file ID.
+9. Read related page paths returned by graph expansion or graph files.
+10. Continue following Markdown links, tree entries, `_index/*`, search candidates, and graph relationships while the task needs more evidence.
 
 Developer OpenAPI also exposes a bounded related-file endpoint for backend integrations that prefer JSON lists. File reads remain the primary Agent-facing contract.
 
 Admin previews copy a Developer OpenAPI content URL for the selected generated file. Safe Unicode page paths such as `pages/示例.md` are encoded in the copied URL and resolved back to the active generated file by the Developer OpenAPI.
+
+## Graph Search
+
+Developer OpenAPI file search uses generated file discovery by default. `mode=file` searches generated file documents and preserves the existing file-search contract. `mode=hybrid` combines file and graph candidates into one deduplicated file-level result list. `mode=graph` searches persisted graph node and relationship search documents.
+
+Graph search reads the same persisted relationship data that generates `_graph/` files and `Related` sections. It does not parse graph files during the request. This keeps large knowledge-base queries bounded and lets ingestion, deletion, and publication update search data through the same release-scoped read models.
+
+Each graph result can include `matchType`, `graphContext.graphRef`, `graphContext.relationships`, `graphContext.graphPaths`, and result-level `readActions`. Use graph fields as navigation hints, then follow `readActions` to read the generated Markdown file by ID or path. The generated Markdown file content remains the evidence source that should be read before producing an answer.
+
+Graph expansion accepts a file, node, edge, or query seed and returns bounded relationship paths with file read actions. Use it after an Agent has a promising file or graph candidate, then continue the same loop by reading the returned Markdown files. Search and graph expansion are discovery tools. Complete Markdown files remain the evidence that supports the final answer.
 
 ## Operational Notes
 

@@ -160,7 +160,7 @@ function parseMarkdown(content: string): matter.GrayMatterFile<string> {
 }
 
 function parseMetadataRecord(value: unknown, sourceName: string): SourceMetadataDefaults {
-  const result = metadataRecordSchema.safeParse(value ?? {});
+  const result = metadataRecordSchema.safeParse(normalizeYamlValue(value ?? {}));
 
   if (!result.success) {
     const issues = result.error.issues.map(
@@ -170,6 +170,33 @@ function parseMetadataRecord(value: unknown, sourceName: string): SourceMetadata
   }
 
   return removeUndefinedValues(result.data) as SourceMetadataDefaults;
+}
+
+function normalizeYamlValue(value: unknown): unknown {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? value : value.toISOString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(normalizeYamlValue);
+  }
+
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, normalizeYamlValue(entryValue)])
+    );
+  }
+
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function cleanMetadataString(value: unknown): string {

@@ -36,15 +36,16 @@ The backend usually calls these Focowiki interfaces:
 | Purpose | Developer OpenAPI operation |
 | --- | --- |
 | Resolve available knowledge bases | `listKnowledgeBases` |
-| Create and maintain knowledge bases | `createKnowledgeBase`, `deleteKnowledgeBase` |
-| Upload Markdown files | `uploadMarkdownFiles` |
+| Create and maintain knowledge bases | `createKnowledgeBase`, `updateKnowledgeBase`, `deleteKnowledgeBase` |
+| Upload Markdown files and folders | `createUploadSession`, `addUploadManifestEntries`, `sealUploadManifest`, `uploadSessionContentBatch`, `getUploadSession`, `finalizeUploadSession` |
 | Observe source-file processing | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
+| Maintain source files and directories | `moveSourceFile`, `replaceSourceFileContent`, `deleteSourceFile`, `listSourceDirectories`, `moveSourceDirectory`, `deleteSourceDirectory` |
+| Observe asynchronous changes | `listResourceOperations`, `getResourceOperation` |
 | Read the generated file tree | `listKnowledgeBaseTree` |
 | Read file metadata | `getFileById` |
 | Read file content by stable identifier | `getFileContentById` |
 | Read file content by logical path | `getFileContentByPath` |
-| Read bounded related files | `listRelatedFiles` |
-| Delete generated files | `deleteFileById`, `deleteFileByPath` |
+| Search and explore related files | `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphInsights` |
 | Manage webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
 These operations are for the developer backend and product workflows. The Agent-facing interface should stay read-focused by default. Expose write or delete capabilities to an Agent only when the product explicitly needs Agent-driven maintenance.
@@ -59,7 +60,8 @@ A minimal Agent-facing backend can expose these operations. In an own Agent clie
 | `read_file` | Return Markdown content by `fileId` or logical `path`. |
 | `get_file` | Return safe metadata for a file. |
 | `search_files` | Optional candidate lookup for Agent-generated search phrases, backed by `searchGeneratedFiles` or your own read layer. |
-| `read_related` | Optional shortcut for bounded related files. Agents can also read `_graph/by-file/{fileId}.json`. |
+| `read_related` | Optional shortcut for related files. Agents can also follow the `graphRef` returned with a generated page. |
+| `expand_graph` | Optional relationship exploration from a file or query, backed by Developer OpenAPI graph expansion. |
 
 Keep this interface small. Agents work better when they can discover a file tree, read one file, follow links, and repeat the loop.
 
@@ -74,13 +76,14 @@ Keep this interface small. Agents work better when they can discover a file tree
 
 Agent reads should run as a small loop with broad discovery, deep file reading, lead extraction, and evidence checks before answering.
 
-1. Start with `index.md`, or derive initial search phrases when the question names a concrete concept.
-2. Discover candidate files through search, tree entries, graph files, related files, or Markdown links.
-3. Read useful candidates by `fileId` or logical `path`.
-4. Extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the files read.
-5. Repeat breadth and depth while new leads can add useful evidence.
-6. Track visited `fileId` and `path` values.
-7. Stop after the collected evidence covers the user's scope, no new relevant candidates remain for the remaining gap, or additional rounds repeat already-visited files.
+1. Start with `index.md`, then read `schema.md` when file conventions or metadata are unclear.
+2. Inspect the file tree and `_index/*` when generated index, link, manifest, or directory hints can narrow the next read.
+3. Discover candidate files through search, tree entries, graph expansion, graph files, related files, or Markdown links.
+4. Read useful candidates by `fileId` or logical `path`.
+5. Extract new phrases, paths, links, titles, headings, metadata terms, graph relations, and remaining gaps from the files read.
+6. Repeat breadth and depth while new leads can add useful evidence.
+7. Track visited `fileId` and `path` values.
+8. Stop after the collected evidence covers the user's scope, no new relevant candidates remain for the remaining gap, or additional rounds repeat already-visited files.
 
 This keeps requests predictable while reducing shallow answers from one-file reads.
 

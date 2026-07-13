@@ -77,7 +77,7 @@ async function checkDeveloperOpenApiRateLimit(
       windowSeconds: 60
     };
   const result = await services.redis.hitRateLimit(
-    "developer-openapi",
+    developerOpenApiRateLimitScope(context),
     getRateLimitClientKey(services.config, context),
     limit
   );
@@ -88,7 +88,30 @@ async function checkDeveloperOpenApiRateLimit(
 
   const retryAfterSeconds = coarseRetryAfterSeconds(result.resetAt);
   context.header("retry-after", String(retryAfterSeconds));
+  await recordSecurityAudit({
+    repositories: services.repositories,
+    config: services.config,
+    context,
+    eventType: "developer_openapi_rate_limited",
+    result: "blocked",
+    errorCode: "RATE_LIMITED"
+  });
   return writeDeveloperOpenApiError(context, rateLimited({ retryAfterSeconds }));
+}
+
+function developerOpenApiRateLimitScope(
+  context: Parameters<MiddlewareHandler>[0]
+): string {
+  const method = context.req.method.toUpperCase();
+  const path = context.req.path;
+
+  if (method !== "GET" && path.includes("/upload-sessions")) {
+    return "developer-openapi-upload-session";
+  }
+  if (method === "DELETE" && path.includes("/source-directories/")) {
+    return "developer-openapi-directory-delete";
+  }
+  return "developer-openapi-read";
 }
 
 function readBearerToken(authorization: string | undefined): string | null {

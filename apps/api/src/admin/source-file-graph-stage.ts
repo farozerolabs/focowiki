@@ -19,13 +19,15 @@ export async function processSourceFileGraphStage(input: {
   suggestions: SourceModelSuggestions | null;
   pageSize: number;
   maxCandidateNodes: number | undefined;
+  acceptedEdgeLimit: number | undefined;
+  genericPhraseThreshold: number | undefined;
   ttlSeconds: number;
   ownerId: string;
   modelAssistance: ModelAssistanceOptions | null;
   progressClock: () => string;
   mark: SourceFileStageMarker;
   recordStage: SourceFileStageRecorder;
-}): Promise<void> {
+}): Promise<{ affectedSourceFileIds: string[] }> {
   const stage: SourceFileProcessingStage = "graph_generation";
   const startedAt = input.progressClock();
   let graphJobId: string | null = null;
@@ -40,8 +42,10 @@ export async function processSourceFileGraphStage(input: {
       endedAt: input.progressClock(),
       severity: "info"
     });
-    return;
+    return { affectedSourceFileIds: [input.source.id] };
   }
+
+  let affectedSourceFileIds = [input.source.id];
 
   try {
     graphLockAcquired = await input.redis.acquireSourceFileGraphLock(
@@ -79,6 +83,10 @@ export async function processSourceFileGraphStage(input: {
       suggestions: input.suggestions,
       pageSize: input.pageSize,
       ...(input.maxCandidateNodes ? { maxCandidateNodes: input.maxCandidateNodes } : {}),
+      ...(input.acceptedEdgeLimit ? { acceptedEdgeLimit: input.acceptedEdgeLimit } : {}),
+      ...(input.genericPhraseThreshold
+        ? { genericPhraseThreshold: input.genericPhraseThreshold }
+        : {}),
       modelConfirmation: input.modelAssistance
         ? {
             client: input.modelAssistance.client,
@@ -88,6 +96,7 @@ export async function processSourceFileGraphStage(input: {
           }
         : null
     });
+    affectedSourceFileIds = graphResult.affectedSourceFileIds;
 
     if (graphJobId) {
       await input.repositories.graph.completeGraphJob?.({
@@ -149,4 +158,6 @@ export async function processSourceFileGraphStage(input: {
     endedAt: input.progressClock(),
     severity: "info"
   });
+
+  return { affectedSourceFileIds };
 }

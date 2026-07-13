@@ -1,18 +1,13 @@
 import {
+  deduplicateGraphRelationships,
   graphRefForFile,
-  pageGraphRefForFile,
   type OkfGraphEdge,
   type OkfGraphLimits,
   type OkfGraphNode,
   type OkfGraphRelationship
 } from "@focowiki/okf";
-import { attachGraphToPage, type BundleFileKind, type GeneratedOkfFile, type GeneratedPageSummary } from "./publication-files.js";
+import type { BundleFileKind, GeneratedOkfFile, GeneratedPageSummary } from "./publication-files.js";
 import { mapWithConcurrency, type CursorPage, type CursorPageRequest } from "../runtime/bounded.js";
-
-export type PublicationPublicFilePlans = {
-  bySourceId: Map<string, { publicFileName: string; pagePath: string }>;
-  publicPaths: Set<string>;
-};
 
 export type PublicationGraphState = {
   available: boolean;
@@ -32,23 +27,15 @@ export function resolvePublicationGraphState(input: {
 
 export function attachPublicationGraphToPage(
   page: GeneratedPageSummary,
-  graph: PublicationGraphState,
-  publicPaths: Set<string>
+  graph: PublicationGraphState
 ): GeneratedPageSummary {
-  const attached = attachGraphToPage(page, null, publicPaths);
-
   if (!graph.available) {
-    return attached;
+    return page;
   }
 
   return {
-    ...attached,
-    graphRef: graphRefForFile(page.fileId),
-    metadata: {
-      ...attached.metadata,
-      fileId: page.fileId,
-      graph: pageGraphRefForFile(page.fileId)
-    }
+    ...page,
+    graphRef: graphRefForFile(page.fileId)
   };
 }
 
@@ -56,7 +43,6 @@ export async function writePublicationGraphFiles(input: {
   generatedAt: string;
   pageSize: number;
   concurrency: number;
-  plans: PublicationPublicFilePlans;
   graphState: PublicationGraphState;
   fetchGraphNodePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphNode>>) | undefined;
   fetchGraphEdgePage?: ((request: CursorPageRequest) => Promise<CursorPage<OkfGraphEdge>>) | undefined;
@@ -88,8 +74,7 @@ export async function writePublicationGraphFiles(input: {
       limit: input.pageSize
     });
 
-    const graphFiles = await mapWithConcurrency(page.items, input.concurrency, async (rawNode) => {
-      const node = toPublicGraphNode(rawNode, input.plans);
+    const graphFiles = await mapWithConcurrency(page.items, input.concurrency, async (node) => {
       return {
         nodeLine: JSON.stringify(node),
         file: createGraphFile({
@@ -195,7 +180,9 @@ export async function writePublicationGraphFiles(input: {
       content: renderGraphIndexMarkdown({
         generatedAt: input.generatedAt,
         nodeCount,
-        edgeCount
+        edgeCount,
+        edgeShardCount: edgeShardIndex,
+        insightEnabled: input.graphState.limits.insightEnabled
       })
     }),
     createGraphFile({
@@ -209,12 +196,35 @@ export async function writePublicationGraphFiles(input: {
         edge_shard_count: edgeShardIndex,
         node_shard_pattern: "_graph/nodes/{shard}.jsonl",
         by_file_pattern: "_graph/by-file/{fileId}.json",
-        edge_shard_pattern: "_graph/edges/{shard}.jsonl"
+        edge_shard_pattern: "_graph/edges/{shard}.jsonl",
+        communities_path: "_graph/communities.json",
+        insight_enabled: input.graphState.limits.insightEnabled,
+        ...(input.graphState.limits.insightEnabled ? { insights_path: "_graph/insights.json" } : {})
       })
-    })
+    }),
+    createGraphFile({
+      logicalPath: "_graph/communities.json",
+      fileKind: "graph_community",
+      content: stringifyJson({
+        generated_at: input.generatedAt,
+        communities: []
+      })
+    }),
+    ...(input.graphState.limits.insightEnabled
+      ? [
+          createGraphFile({
+            logicalPath: "_graph/insights.json",
+            fileKind: "graph_insight",
+            content: stringifyJson({
+              generated_at: input.generatedAt,
+              insights: []
+            })
+          })
+        ]
+      : [])
   ]);
 
-  return fileCount + 2;
+  return fileCount + (input.graphState.limits.insightEnabled ? 4 : 3);
 }
 
 async function flushGraphNodeShard(input: {
@@ -249,9 +259,7 @@ async function renderGraphByFile(
     path: node.path,
     title: node.title,
     generatedAt: input.generatedAt,
-    relationships: neighborhood.relationships.map((relationship) =>
-      toPublicGraphRelationship(relationship, input.plans)
-    )
+    relationships: deduplicateGraphRelationships(neighborhood.relationships)
   });
 }
 
@@ -275,26 +283,8 @@ function normalizePublicationGraphLimits(
   return {
     pageRelatedLimit: normalizePositiveInteger(limits?.pageRelatedLimit, 10),
     perFileLimit: normalizePositiveInteger(limits?.perFileLimit, 50),
-    edgeShardSize: normalizePositiveInteger(limits?.edgeShardSize, 1_000)
-  };
-}
-
-function toPublicGraphNode(node: OkfGraphNode, plans: PublicationPublicFilePlans): OkfGraphNode {
-  const plan = plans.bySourceId.get(node.fileId);
-  return {
-    ...node,
-    ...(plan ? { path: plan.pagePath } : {})
-  };
-}
-
-function toPublicGraphRelationship(
-  relationship: OkfGraphRelationship,
-  plans: PublicationPublicFilePlans
-): OkfGraphRelationship {
-  const plan = plans.bySourceId.get(relationship.fileId);
-  return {
-    ...relationship,
-    ...(plan ? { path: plan.pagePath } : {})
+    edgeShardSize: normalizePositiveInteger(limits?.edgeShardSize, 1_000),
+    insightEnabled: limits?.insightEnabled ?? true
   };
 }
 
@@ -302,21 +292,29 @@ function renderGraphIndexMarkdown(input: {
   generatedAt: string;
   nodeCount: number;
   edgeCount: number;
+  edgeShardCount: number;
+  insightEnabled: boolean;
 }): string {
   return [
-    "---",
-    'type: "graph-index"',
-    'title: "File graph"',
-    `generatedAt: ${JSON.stringify(input.generatedAt)}`,
-    "---",
     "# File graph",
+    "",
+    `Generated at: ${input.generatedAt}`,
     "",
     "This directory contains file-first relationship data for Agent navigation.",
     "",
     `- Nodes: ${input.nodeCount}`,
     `- Edges: ${input.edgeCount}`,
-    "- Node index: `_graph/nodes.jsonl`",
-    "- Per-file relationships: `_graph/by-file/{fileId}.json`"
+    "- [Browse documents](/pages/index.md) - Continue from graph discovery to source-backed Markdown evidence.",
+    "- [Manifest](/_graph/manifest.json) - Review graph counts, shard patterns, and available resources.",
+    "- [Node index](/_graph/nodes.jsonl) - Resolve graph nodes to source-backed Markdown paths.",
+    ...(input.edgeShardCount > 0
+      ? ["- [Edge shards](/_graph/edges/0000.jsonl) - Follow accepted relationships between source-backed Markdown files."]
+      : []),
+    "- [Communities](/_graph/communities.json) - Browse bounded groups of related source-backed files.",
+    ...(input.insightEnabled
+      ? ["- [Insights](/_graph/insights.json) - Read bounded generated observations about the file graph."]
+      : []),
+    "Graph records return source-backed Markdown paths for continued reading."
   ].join("\n");
 }
 

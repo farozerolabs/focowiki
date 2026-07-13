@@ -24,4 +24,65 @@ describe("Markdown preview security", () => {
     expect(html).toContain("https://example.com/docs");
     expect(html).toContain("title: Unsafe");
   });
+
+  it("renders generated root navigation as internal preview controls", () => {
+    const html = renderMarkdownPreview(
+      [
+        "# Knowledge base",
+        "",
+        "- [Relationship graph](_graph/index.md)",
+        "- [Update history](log.md)"
+      ].join("\n"),
+      "index.md"
+    );
+
+    expect(html).toContain('data-preview-path="_graph/index.md"');
+    expect(html).toContain('data-preview-path="log.md"');
+    expect(html).not.toContain('href=""');
+  });
+
+  it("resolves nested generated links without allowing paths outside the bundle", () => {
+    const html = renderMarkdownPreview(
+      [
+        "# File graph",
+        "",
+        "- [Manifest](manifest.json)",
+        "- [Knowledge base](../index.md)",
+        "- [Outside](../../outside.md)"
+      ].join("\n"),
+      "_graph/index.md"
+    );
+
+    expect(html).toContain('data-preview-path="_graph/manifest.json"');
+    expect(html).toContain('data-preview-path="index.md"');
+    expect(html).not.toContain('data-preview-path="outside.md"');
+  });
+
+  it.each([
+    ["schema.md", "schema-frontmatter.md", "schema-frontmatter.md"],
+    ["log.md", "log-000001.md", "log-000001.md"],
+    ["log-000002.md", "log-000001.md", "log-000001.md"],
+    ["_index/index.md", "manifest.json", "_index/manifest.json"],
+    ["_graph/index.md", "nodes.jsonl", "_graph/nodes.jsonl"],
+    ["_graph/index.md", "edges/0000.jsonl", "_graph/edges/0000.jsonl"],
+    ["pages/team/index.md", "guide.md", "pages/team/guide.md"],
+    ["pages/team/index-000002.md", "index-000001.md", "pages/team/index-000001.md"],
+    ["pages/team/guide.md", "/pages/reference.md", "pages/reference.md"]
+  ])("resolves generated link %s -> %s", (currentPath, href, expectedPath) => {
+    const html = renderMarkdownPreview(`[Open](${href})`, currentPath);
+
+    expect(html).toContain(`data-preview-path="${expectedPath}"`);
+  });
+
+  it("renders unsupported local and unsafe links without navigating to the current page", () => {
+    const html = renderMarkdownPreview(
+      ["[missing](missing.txt)", "[unsafe](javascript:alert(1))"].join("\n"),
+      "index.md"
+    );
+
+    expect(html).not.toContain("<a");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain('href=""');
+    expect(html).toContain("<span");
+  });
 });

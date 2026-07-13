@@ -28,7 +28,7 @@ test("large-scale full-system plan composes runtime and repository validation", 
     plan.map((step) => step.id),
     [
       "full-flow-large-system",
-      "large-content-resource-coverage",
+      "generated-content-review",
       "validation-unit-tests",
       "openapi-contract",
       "docs-contract",
@@ -52,7 +52,7 @@ test("large-scale full-system plan command writes scope without runtime steps", 
 });
 
 test("large-scale full-system report redacts source roots", () => {
-  const fixtureRoot = "/private/legal-fixtures";
+  const fixtureRoot = "/private/markdown-fixtures";
   const config = readLargeScaleFullSystemConfig("all", {
     FOCOWIKI_VALIDATION_MARKDOWN_DIR: fixtureRoot,
     FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY: "false"

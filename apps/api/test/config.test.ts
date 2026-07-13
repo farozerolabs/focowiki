@@ -49,10 +49,12 @@ describe("parseRuntimeConfig", () => {
     });
     expect(config.upload).toEqual({
       maxBytes: 1_048_576,
-      maxFiles: 24,
+      sessionTtlSeconds: 86_400,
+      manifestPageSize: 500,
+      contentBatchMaxFiles: 24,
+      contentBatchMaxBytes: 16_777_216,
       generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
+      fileProcessingConcurrency: 1
     });
     expect(config.publication).toEqual({
       mode: "batch",
@@ -61,10 +63,23 @@ describe("parseRuntimeConfig", () => {
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
       graphMaintenanceBatchSize: 500,
       rootSummaryLimit: 500
+    });
+    expect(config.graph).toEqual({
+      candidateLimit: 200,
+      acceptedEdgeLimit: 50,
+      searchDefaultDepth: 1,
+      searchMaxDepth: 2,
+      searchDefaultFanout: 10,
+      searchMaxFanout: 25,
+      insightEnabled: true,
+      modelReviewEnabled: true,
+      publicationShardSize: 5_000,
+      cacheTtlSeconds: 5,
+      genericPhraseThreshold: 4
     });
     expect(config.worker).toEqual({
       databasePoolMax: 6,
@@ -428,29 +443,15 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/TREE_CHILD_DEFAULT_PAGE_SIZE/);
   });
 
-  it("does not require upload-generation env fields and ignores invalid stale values", () => {
+  it("uses bootstrap defaults for Admin-managed upload and generation settings", () => {
     expect(parseRuntimeConfig(validEnv).upload).toEqual({
       maxBytes: 1_048_576,
-      maxFiles: 24,
+      sessionTtlSeconds: 86_400,
+      manifestPageSize: 500,
+      contentBatchMaxFiles: 24,
+      contentBatchMaxBytes: 16_777_216,
       generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
-    });
-    expect(
-      parseRuntimeConfig({
-        ...validEnv,
-        MAX_UPLOAD_BYTES: "0",
-        MAX_UPLOAD_FILES: "-1",
-        GENERATION_BATCH_SIZE: "invalid",
-        UPLOAD_FILE_PROCESSING_CONCURRENCY: "-1",
-        UPLOAD_STORAGE_CONCURRENCY: "0"
-      }).upload
-    ).toEqual({
-      maxBytes: 1_048_576,
-      maxFiles: 24,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
+      fileProcessingConcurrency: 1
     });
   });
 
@@ -475,19 +476,13 @@ describe("parseRuntimeConfig", () => {
     });
   });
 
-  it("parses stale upload-generation env values for bootstrap and the startup-only worker database pool", () => {
+  it("parses startup-only database pools independently from runtime upload settings", () => {
     expect(parseRuntimeConfig(validEnv).upload).toMatchObject({
-      fileProcessingConcurrency: 1,
-      storageConcurrency: 4
+      fileProcessingConcurrency: 1
     });
     expect(
       parseRuntimeConfig({
         ...validEnv,
-        UPLOAD_FILE_PROCESSING_CONCURRENCY: "4",
-        UPLOAD_STORAGE_CONCURRENCY: "6",
-        MAX_UPLOAD_BYTES: "2097152",
-        MAX_UPLOAD_FILES: "12",
-        GENERATION_BATCH_SIZE: "80",
         DATABASE_POOL_MAX: "16",
         WORKER_DATABASE_POOL_MAX: "8",
         WORKER_SOURCE_FILE_CONCURRENCY: "3",
@@ -506,11 +501,9 @@ describe("parseRuntimeConfig", () => {
         poolMax: 16
       },
       upload: {
-        maxBytes: 2_097_152,
-        maxFiles: 12,
-        generationBatchSize: 80,
-        fileProcessingConcurrency: 4,
-        storageConcurrency: 6
+        maxBytes: 1_048_576,
+        generationBatchSize: 50,
+        fileProcessingConcurrency: 1
       },
       worker: {
         databasePoolMax: 8,
@@ -549,8 +542,8 @@ describe("parseRuntimeConfig", () => {
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
       graphMaintenanceBatchSize: 500,
       rootSummaryLimit: 500
     });
@@ -575,8 +568,8 @@ describe("parseRuntimeConfig", () => {
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
+      directoryIndexMaxEntries: 200,
+      directoryIndexMaxBytes: 65_536,
       graphMaintenanceBatchSize: 500,
       rootSummaryLimit: 500
     });

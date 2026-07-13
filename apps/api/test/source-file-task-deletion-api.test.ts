@@ -49,10 +49,8 @@ function createConfig(): RuntimeConfig {
     },
     upload: {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
-      storageConcurrency: 4
     },
     publication: {
       mode: "batch",

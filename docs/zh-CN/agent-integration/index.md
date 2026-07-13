@@ -36,15 +36,16 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 用途 | Developer OpenAPI operation |
 | --- | --- |
 | 解析可用知识库 | `listKnowledgeBases` |
-| 创建和维护知识库 | `createKnowledgeBase`、`deleteKnowledgeBase` |
-| 上传 Markdown 文件 | `uploadMarkdownFiles` |
+| 创建和维护知识库 | `createKnowledgeBase`、`updateKnowledgeBase`、`deleteKnowledgeBase` |
+| 上传 Markdown 文件和文件夹 | `createUploadSession`、`addUploadManifestEntries`、`sealUploadManifest`、`uploadSessionContentBatch`、`getUploadSession`、`finalizeUploadSession` |
 | 观察源文件处理进度 | `listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
+| 维护来源文件和目录 | `moveSourceFile`、`replaceSourceFileContent`、`deleteSourceFile`、`listSourceDirectories`、`moveSourceDirectory`、`deleteSourceDirectory` |
+| 查看异步变更 | `listResourceOperations`、`getResourceOperation` |
 | 读取生成文件树 | `listKnowledgeBaseTree` |
 | 读取文件元数据 | `getFileById` |
 | 按稳定标识读取文件内容 | `getFileContentById` |
 | 按逻辑路径读取文件内容 | `getFileContentByPath` |
-| 读取有界相关文件 | `listRelatedFiles` |
-| 删除生成文件 | `deleteFileById`、`deleteFileByPath` |
+| 搜索和探索相关文件 | `searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphInsights` |
 | 管理 Webhook | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
 这些接口服务于开发者后端和产品工作流。Agent-facing interface 默认保持读取为主。只有产品明确需要 Agent 维护知识库时，才向 Agent 暴露写入或删除能力。
@@ -59,7 +60,8 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | `read_file` | 按 `fileId` 或逻辑 `path` 返回 Markdown 内容。 |
 | `get_file` | 返回文件的安全元数据。 |
 | `search_files` | 可选候选查找操作，可由 `searchGeneratedFiles` 或你自己的读取层支持，查询短语由 Agent 生成。 |
-| `read_related` | 可选的有界相关文件快捷接口。Agent 也可以读取 `_graph/by-file/{fileId}.json`。 |
+| `read_related` | 可选的相关文件快捷接口。Agent 也可以跟随生成页面返回的 `graphRef`。 |
+| `expand_graph` | 可选的关系探索操作，可以从文件或查询词继续探索。 |
 
 接口保持小而稳定。Agent 可以发现文件树、读取单个文件、沿着链接继续探索，并重复这个过程。
 
@@ -74,13 +76,14 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 
 Agent 读取应采用小型循环，在回答前完成广度发现、深度阅读、线索提取和证据检查。
 
-1. 从 `index.md` 开始，或在问题包含明确概念时先拆解初始查询短语。
-2. 通过搜索、文件树、图文件、相关文件或 Markdown links 发现候选文件。
-3. 按 `fileId` 或逻辑 `path` 读取有价值的候选文件。
-4. 从已读文件中提取新的短语、路径、链接、标题、heading、metadata terms、图关系和剩余缺口。
-5. 当新线索可以补充证据时，继续重复广度发现和深度阅读。
-6. 记录已经访问过的 `fileId` 和 `path`。
-7. 当已收集证据覆盖用户范围、剩余缺口没有新的相关候选，或后续轮次只会重复已读文件时停止。
+1. 从 `index.md` 开始，文件约定或 metadata 不清晰时读取 `schema.md`。
+2. 在生成索引、链接、manifest 或目录线索有助于缩小范围时，检查文件树和 `_index/*`。
+3. 通过搜索、文件树、图扩展、图文件、相关文件或 Markdown links 发现候选文件。
+4. 按 `fileId` 或逻辑 `path` 读取有价值的候选文件。
+5. 从已读文件中提取新的短语、路径、链接、标题、heading、metadata terms、图关系和剩余缺口。
+6. 当新线索可以补充证据时，继续重复广度发现和深度阅读。
+7. 记录已经访问过的 `fileId` 和 `path`。
+8. 当已收集证据覆盖用户范围、剩余缺口没有新的相关候选，或后续轮次只会重复已读文件时停止。
 
 这个流程可以保持请求可控，并减少浅层回答。
 

@@ -10,12 +10,13 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import type { KnowledgeBasePublicUrls } from "@/lib/admin-api";
+import type { BundleFileDetail, KnowledgeBasePublicUrls } from "@/lib/admin-api";
 
 export function FilePreviewPanel({
   copiedUrl,
   previewHtml,
   publicUrls,
+  relationships = [],
   selectedFileTitle,
   selectedFilePath,
   onCopy,
@@ -24,6 +25,7 @@ export function FilePreviewPanel({
   copiedUrl: string;
   previewHtml: string;
   publicUrls: KnowledgeBasePublicUrls | null;
+  relationships?: BundleFileDetail["relationships"];
   selectedFileTitle: string;
   selectedFilePath: string;
   onCopy: (url: string) => void;
@@ -85,6 +87,47 @@ export function FilePreviewPanel({
             {t("detail.noFileSelected")}
           </div>
         )}
+        {relationships.length > 0 ? (
+          <section className="mt-6 border-t pt-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-medium">{t("detail.relatedFiles")}</h3>
+              <p className="text-xs text-muted-foreground">{t("detail.relatedFilesDescription")}</p>
+            </div>
+            <div className="space-y-2">
+              {relationships.map((relationship) => (
+                <div
+                  key={`${relationship.fileId}:${relationship.direction}:${relationship.relationType}`}
+                  className="rounded-md border p-3"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{relationship.title || relationship.path}</p>
+                      <p className="truncate text-xs text-muted-foreground">{relationship.path}</p>
+                    </div>
+                    {relationship.contentAvailable ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onOpenPreviewPath(relationship.path, relationship.title || relationship.path)}
+                      >
+                        {t("detail.openRelatedFile")}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                    <span>{t("detail.relationshipType", { type: relationship.relationType })}</span>
+                    <span>{t("detail.relationshipDirection", { direction: relationship.direction })}</span>
+                    <span>{t("detail.relationshipWeight", { weight: relationship.weight.toFixed(2) })}</span>
+                  </div>
+                  {relationship.reason ? (
+                    <p className="mt-2 text-xs text-muted-foreground">{relationship.reason}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </CardContent>
     </Card>
   );

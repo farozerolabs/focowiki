@@ -54,10 +54,8 @@ function createConfig(): RuntimeConfig {
     },
     upload: {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
-      storageConcurrency: 4
     },
     publication: {
       mode: "batch",
@@ -106,13 +104,6 @@ class MemoryStorage implements StorageAdapter {
     return this.objects.get(key) ?? null;
   }
 
-  public async writeCurrentPointer(): Promise<void> {
-    throw new Error("Not used by knowledge base file tests");
-  }
-
-  public async readCurrentPointer(): Promise<null> {
-    return null;
-  }
 }
 
 function createRepositories() {
@@ -206,6 +197,7 @@ function createRepositories() {
       },
       files: {
         async listBundleTreeEntries(request: {
+          releaseId: string;
           limit: number;
           cursor: string | null;
           parentPath: string;
@@ -353,7 +345,8 @@ function createRepositories() {
               {
                 id: "source-001",
                 knowledgeBaseId: "kb-001",
-                originalName: "intro.md",
+                name: "intro.md",
+                relativePath: "intro.md",
                 objectKey: "tenant/demo/source/intro.md",
                 contentType: "text/markdown; charset=utf-8",
                 sizeBytes: 42,
@@ -394,7 +387,11 @@ function createRepositories() {
             nextCursor: null
           };
         },
-        async listBundleFiles(request: { limit: number; cursor: string | null }) {
+        async listBundleFiles(request: {
+          releaseId: string;
+          limit: number;
+          cursor: string | null;
+        }): Promise<{ items: typeof bundleFile[]; nextCursor: string | null }> {
           bundleCalls.push(request);
           return {
             items: [bundleFile].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
@@ -556,6 +553,9 @@ describe("Knowledge base file Admin API", () => {
           sourceFileId: null,
           fileKind: null,
           childCount: 1,
+          directFileCount: 0,
+          descendantFileCount: 0,
+          resourceRevision: null,
           deletable: false
         },
         {
@@ -569,6 +569,9 @@ describe("Knowledge base file Admin API", () => {
           sourceFileId: null,
           fileKind: "index",
           childCount: 0,
+          directFileCount: 0,
+          descendantFileCount: 0,
+          resourceRevision: null,
           deletable: false
         }
       ],
@@ -654,7 +657,7 @@ describe("Knowledge base file Admin API", () => {
     expect(firstBody.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
-        key.startsWith("focowiki-test:pagination-cursors:file-tree:kb-001:release-001:")
+        key.startsWith("focowiki-test:pagination-cursors:file-tree:kb-001:root:")
       )
     ).toBe(true);
 
@@ -671,6 +674,76 @@ describe("Knowledge base file Admin API", () => {
     expect(records.treeCalls).toEqual([
       expect.objectContaining({ limit: 1, cursor: null, parentPath: "" }),
       expect.objectContaining({ limit: 1, cursor: "1", parentPath: "" })
+    ]);
+  });
+
+  it("continues file-tree pagination on the original release after activation changes", async () => {
+    const fixture = createRepositories();
+    let activeReleaseId = "release-001";
+    const treeCalls: Array<{ releaseId: string; cursor: string | null }> = [];
+    fixture.repositories.knowledgeBases.getKnowledgeBase = async (id: string) =>
+      id === "kb-001" ? { ...knowledgeBase, activeReleaseId } : null;
+    fixture.repositories.files!.listBundleTreeEntries = async (request) => {
+      treeCalls.push({ releaseId: request.releaseId, cursor: request.cursor });
+      const entries = [
+        {
+          id: "tree-pages",
+          knowledgeBaseId: "kb-001",
+          releaseId: request.releaseId,
+          parentPath: "",
+          name: "pages",
+          logicalPath: "pages",
+          sortKey: "0:pages",
+          entryType: "directory" as const,
+          bundleFileId: null,
+          sourceFileId: null,
+          fileKind: null,
+          childCount: 1
+        },
+        {
+          id: "tree-index",
+          knowledgeBaseId: "kb-001",
+          releaseId: request.releaseId,
+          parentPath: "",
+          name: "index.md",
+          logicalPath: "index.md",
+          sortKey: "1:index.md",
+          entryType: "file" as const,
+          bundleFileId: "bundle-file-index",
+          sourceFileId: null,
+          fileKind: "index" as const,
+          childCount: 0
+        }
+      ];
+      const start = request.cursor ? Number(request.cursor) : 0;
+      return {
+        items: entries.slice(start, start + request.limit),
+        nextCursor: start + request.limit < entries.length ? String(start + request.limit) : null
+      };
+    };
+    const app = createApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      redis: createTestRedisCoordinator(),
+      repositories: fixture.repositories
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const first = await app.request("/admin/api/knowledge-bases/kb-001/files/tree?limit=1", {
+      headers: { cookie }
+    });
+    const firstBody = (await first.json()) as { nextCursor: string | null };
+
+    activeReleaseId = "release-002";
+    const second = await app.request(
+      `/admin/api/knowledge-bases/kb-001/files/tree?limit=1&cursor=${firstBody.nextCursor}`,
+      { headers: { cookie } }
+    );
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(treeCalls).toEqual([
+      { releaseId: "release-001", cursor: null },
+      { releaseId: "release-001", cursor: "1" }
     ]);
   });
 
@@ -721,6 +794,9 @@ describe("Knowledge base file Admin API", () => {
             sourceFileId: "source-001",
             fileKind: "page",
             childCount: 0,
+            directFileCount: 0,
+            descendantFileCount: 0,
+            resourceRevision: null,
             deletable: true
           },
           ancestors: [
@@ -735,6 +811,9 @@ describe("Knowledge base file Admin API", () => {
               sourceFileId: null,
               fileKind: null,
               childCount: 1,
+              directFileCount: 0,
+              descendantFileCount: 0,
+              resourceRevision: null,
               deletable: false
             }
           ]
@@ -852,6 +931,57 @@ describe("Knowledge base file Admin API", () => {
     expect(records.graphSummaryCalls).toEqual([]);
     expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
+  });
+
+  it("continues bundle-file pagination on the original release after activation changes", async () => {
+    const fixture = createRepositories();
+    let activeReleaseId = "release-001";
+    const bundleCalls: Array<{ releaseId: string; cursor: string | null }> = [];
+    fixture.repositories.knowledgeBases.getKnowledgeBase = async (id: string) =>
+      id === "kb-001" ? { ...knowledgeBase, activeReleaseId } : null;
+    fixture.repositories.files!.listBundleFiles = async (request) => {
+      bundleCalls.push({ releaseId: request.releaseId, cursor: request.cursor });
+      const files = [
+        fixture.records.bundleFile,
+        {
+          ...fixture.records.bundleFile,
+          id: "bundle-file-002",
+          logicalPath: "pages/setup.md",
+          title: "Setup"
+        }
+      ];
+      const start = request.cursor ? Number(request.cursor) : 0;
+      return {
+        items: files.slice(start, start + request.limit),
+        nextCursor: start + request.limit < files.length ? String(start + request.limit) : null
+      };
+    };
+    const app = createApiApp({
+      config: createConfig(),
+      storage: new MemoryStorage(),
+      redis: createTestRedisCoordinator(),
+      repositories: fixture.repositories
+    });
+    const cookie = await loginAndReadSessionCookie(app);
+    const first = await app.request("/admin/api/knowledge-bases/kb-001/bundle-files?limit=1", {
+      headers: { cookie }
+    });
+    const firstBody = (await first.json()) as { nextCursor: string | null };
+
+    activeReleaseId = "release-002";
+    const second = await app.request(
+      `/admin/api/knowledge-bases/kb-001/bundle-files?limit=1&cursor=${firstBody.nextCursor}`,
+      { headers: { cookie } }
+    );
+    const secondBody = (await second.json()) as { items: Array<{ id: string }> };
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(secondBody.items.map((file) => file.id)).toEqual(["bundle-file-002"]);
+    expect(bundleCalls).toEqual([
+      { releaseId: "release-001", cursor: null },
+      { releaseId: "release-001", cursor: "1" }
+    ]);
   });
 
   it("passes source file lifecycle filters to the repository", async () => {
@@ -1033,11 +1163,11 @@ describe("Knowledge base file Admin API", () => {
     await expect(response.json()).resolves.toEqual({
       publicUrls: {
         index:
-          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md",
         search:
-          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
         links:
-          "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Flinks.json"
+          "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Flinks.json"
       }
     });
     expect(response.status).toBe(200);

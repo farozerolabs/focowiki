@@ -167,10 +167,8 @@ describe("Docker Compose infrastructure", () => {
 
     for (const field of [
       "MAX_UPLOAD_BYTES",
-      "MAX_UPLOAD_FILES",
       "GENERATION_BATCH_SIZE",
-      "UPLOAD_FILE_PROCESSING_CONCURRENCY",
-      "UPLOAD_STORAGE_CONCURRENCY"
+      "UPLOAD_FILE_PROCESSING_CONCURRENCY"
     ]) {
       expect(configSource).not.toContain(`requirePositiveInteger(env, "${field}"`);
     }

@@ -50,16 +50,7 @@ export function resolveDefaultRuntimeSecretDirectory(startDirectory = process.cw
     return join(startDirectory, RUNTIME_SECRET_DIR);
   }
 
-  const directory = join(workspaceRoot, RUNTIME_SECRET_DIR);
-  const legacyDirectory = join(startDirectory, RUNTIME_SECRET_DIR);
-
-  migrateLegacyDeploymentKey({ directory, legacyDirectory });
-
-  return directory;
-}
-
-export function readLegacyRuntimeSecret(env: NodeJS.ProcessEnv = process.env): string | null {
-  return env.SETTINGS_ENCRYPTION_SECRET?.trim() || env.ADMIN_SESSION_SECRET?.trim() || null;
+  return join(workspaceRoot, RUNTIME_SECRET_DIR);
 }
 
 function findWorkspaceRoot(startDirectory: string): string | null {
@@ -75,32 +66,6 @@ function findWorkspaceRoot(startDirectory: string): string | null {
       return null;
     }
     current = parent;
-  }
-}
-
-function migrateLegacyDeploymentKey(input: {
-  directory: string;
-  legacyDirectory: string;
-}): void {
-  const filePath = join(input.directory, DEPLOYMENT_KEY_FILE);
-  const legacyFilePath = join(input.legacyDirectory, DEPLOYMENT_KEY_FILE);
-
-  if (filePath === legacyFilePath || existsSync(filePath) || !existsSync(legacyFilePath)) {
-    return;
-  }
-
-  const legacy = readFileSync(legacyFilePath, "utf8").trim();
-  if (!isValidDeploymentSecret(legacy)) {
-    return;
-  }
-
-  mkdirSync(input.directory, { recursive: true, mode: 0o700 });
-  try {
-    writeFileSync(filePath, `${legacy}\n`, { flag: "wx", mode: 0o600 });
-  } catch (error) {
-    if (!isNodeErrorCode(error, "EEXIST")) {
-      throw error;
-    }
   }
 }
 

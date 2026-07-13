@@ -51,11 +51,13 @@ import {
   fetchRuntimeSettings,
   pauseRuntimeModel,
   resumeRuntimeModel,
+  updateGraphSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
   updateUploadGenerationSettings,
   updateWorkerSettings,
   type ApiFailure,
+  type GraphSettings,
   type PublicationSettings,
   type RateLimitSettings,
   type RuntimeModelConfig,
@@ -111,22 +113,41 @@ const publicationFields = [
   "indexShardSize",
   "linkIndexShardSize",
   "manifestShardSize",
-  "graphEdgeShardSize",
-  "graphCandidateLimit",
   "graphMaintenanceBatchSize",
   "rootSummaryLimit",
+  "directoryIndexMaxEntries",
+  "directoryIndexMaxBytes",
   "okfLogMaxEntries",
   "okfLogMaxBytes"
 ] as const satisfies readonly (keyof Omit<PublicationSettings, "mode">)[];
 
 const publicationModes = ["batch", "manual", "per_file"] as const satisfies readonly PublicationSettings["mode"][];
 
+const graphNumberFields = [
+  "candidateLimit",
+  "acceptedEdgeLimit",
+  "searchDefaultDepth",
+  "searchMaxDepth",
+  "searchDefaultFanout",
+  "searchMaxFanout",
+  "publicationShardSize",
+  "cacheTtlSeconds",
+  "genericPhraseThreshold"
+] as const satisfies readonly (keyof Omit<GraphSettings, "insightEnabled" | "modelReviewEnabled">)[];
+
+const graphBooleanFields = [
+  "insightEnabled",
+  "modelReviewEnabled"
+] as const satisfies readonly (keyof Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">)[];
+
 const uploadGenerationFields = [
   "maxBytes",
-  "maxFiles",
   "generationBatchSize",
   "fileProcessingConcurrency",
-  "storageConcurrency"
+  "sessionTtlSeconds",
+  "manifestPageSize",
+  "contentBatchMaxFiles",
+  "contentBatchMaxBytes"
 ] as const satisfies readonly (keyof UploadGenerationSettings)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
@@ -167,6 +188,11 @@ const publicationTipItems = [
   }))
 ];
 
+const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) => ({
+  labelKey: `settings.fields.${field}`,
+  descriptionKey: `settings.tips.graph.${field}`
+}));
+
 const uploadGenerationTipItems = uploadGenerationFields.map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.uploadGeneration.${field}`
@@ -188,6 +214,7 @@ type EditableNumber = number | "";
 type RateLimitGroup = (typeof rateLimitGroups)[number];
 type WorkerNumberField = (typeof workerNumberFields)[number];
 type PublicationField = (typeof publicationFields)[number];
+type GraphNumberField = (typeof graphNumberFields)[number];
 type UploadGenerationField = (typeof uploadGenerationFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
@@ -204,6 +231,8 @@ type EditableWorkerSettings = Record<WorkerNumberField, EditableNumber> &
 type EditablePublicationSettings = {
   mode: PublicationSettings["mode"];
 } & Record<PublicationField, EditableNumber>;
+type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
+  Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">;
 type EditableUploadGenerationSettings = Record<UploadGenerationField, EditableNumber>;
 type EditableModelForm = {
   displayName: string;
@@ -220,11 +249,13 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   const [rateLimits, setRateLimits] = useState<EditableRateLimitSettings | null>(null);
   const [worker, setWorker] = useState<EditableWorkerSettings | null>(null);
   const [publication, setPublication] = useState<EditablePublicationSettings | null>(null);
+  const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
   const [uploadGeneration, setUploadGeneration] =
     useState<EditableUploadGenerationSettings | null>(null);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
+  const [hasModelFormError, setHasModelFormError] = useState(false);
   const [deleteModelTarget, setDeleteModelTarget] = useState<RuntimeModelConfig | null>(null);
   const [modelForm, setModelForm] = useState(createEmptyModelForm);
 
@@ -288,6 +319,19 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     await saveSettings("publication", () => updatePublicationSettings(payload));
   }
 
+  async function handleGraphSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!graph) {
+      return;
+    }
+    const payload = buildGraphSettings(graph);
+    if (!payload) {
+      showNumberValidationError();
+      return;
+    }
+    await saveSettings("graph", () => updateGraphSettings(payload));
+  }
+
   async function handleUploadGenerationSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!uploadGeneration) {
@@ -319,6 +363,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setRateLimits(toEditableRateLimits(result.settings.rateLimits));
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
+    setGraph(toEditableGraphSettings(result.settings.graph));
     setUploadGeneration(toEditableUploadGenerationSettings(result.settings.uploadGeneration));
     showAdminToast({ title: t("settings.toast.saveSuccess") });
   }
@@ -327,9 +372,16 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     event.preventDefault();
     const payload = buildModelPayload(modelForm);
     if (!payload) {
-      showNumberValidationError();
+      const messageKey = "settings.models.requiredHint";
+      setHasModelFormError(true);
+      showAdminToast({
+        title: t("settings.toast.saveFailed"),
+        description: t(messageKey),
+        variant: "destructive"
+      });
       return;
     }
+    setHasModelFormError(false);
     setIsSaving("model");
     setError("");
     const result = await createRuntimeModel(payload);
@@ -346,6 +398,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     }
 
     setIsModelDialogOpen(false);
+    setHasModelFormError(false);
     setModelForm(createEmptyModelForm());
     showAdminToast({ title: t("settings.toast.modelCreated") });
     await loadSettings();
@@ -356,6 +409,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setRateLimits(toEditableRateLimits(result.settings.rateLimits));
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
+    setGraph(toEditableGraphSettings(result.settings.graph));
     setUploadGeneration(toEditableUploadGenerationSettings(result.settings.uploadGeneration));
   }
 
@@ -415,7 +469,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   }
 
   return (
-    <main className="min-h-svh bg-background">
+    <main className="min-h-svh min-w-0 overflow-x-hidden bg-background">
       <header className="border-b bg-card">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -436,7 +490,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
           </div>
         </div>
       </header>
-      <section className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-6">
+      <section className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>{t(error)}</AlertTitle>
@@ -447,16 +501,19 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
             <AlertTitle>{t("settings.loading")}</AlertTitle>
           </Alert>
         ) : (
-          <Tabs defaultValue="rate-limits">
-            <TabsList>
-              <TabsTrigger value="rate-limits">{t("settings.tabs.rateLimits")}</TabsTrigger>
-              <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
-              <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
-              <TabsTrigger value="upload-generation">
-                {t("settings.tabs.uploadGeneration")}
-              </TabsTrigger>
-              <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
-            </TabsList>
+          <Tabs defaultValue="rate-limits" className="min-w-0">
+            <div className="max-w-full overflow-x-auto">
+              <TabsList>
+                <TabsTrigger value="rate-limits">{t("settings.tabs.rateLimits")}</TabsTrigger>
+                <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
+                <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
+                <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
+                <TabsTrigger value="upload-generation">
+                  {t("settings.tabs.uploadGeneration")}
+                </TabsTrigger>
+                <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
+              </TabsList>
+            </div>
             <TabsContent value="rate-limits">
               {rateLimits ? (
                 <div className="space-y-3">
@@ -615,6 +672,57 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                 </div>
               ) : null}
             </TabsContent>
+            <TabsContent value="graph">
+              {graph ? (
+                <div className="space-y-3">
+                  <SettingsCard
+                    title={t("settings.graph.title")}
+                    description={t("settings.graph.description")}
+                  >
+                    <form noValidate onSubmit={handleGraphSave}>
+                      <FieldGroup>
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {graphNumberFields.map((field) => (
+                            <NumberField
+                              key={field}
+                              id={`graph-${field}`}
+                              label={t(`settings.fields.${field}`)}
+                              min={
+                                field === "searchDefaultDepth" || field === "searchMaxDepth"
+                                  ? 0
+                                  : 1
+                              }
+                              value={graph[field]}
+                              required
+                              onChange={(value) => setGraph({ ...graph, [field]: value })}
+                            />
+                          ))}
+                          {graphBooleanFields.map((field) => (
+                            <Field key={field}>
+                              <FieldLabel htmlFor={`graph-${field}`}>
+                                <RequiredLabel label={t(`settings.fields.${field}`)} required />
+                              </FieldLabel>
+                              <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm">
+                                <Checkbox
+                                  id={`graph-${field}`}
+                                  checked={graph[field]}
+                                  onCheckedChange={(checked) =>
+                                    setGraph({ ...graph, [field]: checked === true })
+                                  }
+                                />
+                                <span>{t(`settings.fields.${field}`)}</span>
+                              </label>
+                            </Field>
+                          ))}
+                        </div>
+                        <SaveButton isSaving={isSaving === "graph"} />
+                      </FieldGroup>
+                    </form>
+                  </SettingsCard>
+                  <PlainTips items={graphTipItems} />
+                </div>
+              ) : null}
+            </TabsContent>
             <TabsContent value="upload-generation">
               <div className="space-y-3">
                 <SettingsCard
@@ -652,7 +760,13 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                   title={t("settings.models.title")}
                   description={t("settings.models.description")}
                   action={
-                    <Button type="button" onClick={() => setIsModelDialogOpen(true)}>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        setHasModelFormError(false);
+                        setIsModelDialogOpen(true);
+                      }}
+                    >
                       <PlusIcon data-icon="inline-start" />
                       {t("settings.models.add")}
                     </Button>
@@ -752,13 +866,21 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
           </Tabs>
         )}
       </section>
-      <Dialog open={isModelDialogOpen} onOpenChange={setIsModelDialogOpen}>
+      <Dialog
+        open={isModelDialogOpen}
+        onOpenChange={(open) => {
+          setIsModelDialogOpen(open);
+          if (!open) {
+            setHasModelFormError(false);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("settings.models.add")}</DialogTitle>
             <DialogDescription>{t("settings.models.addDescription")}</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleCreateModel}>
+          <form noValidate onSubmit={handleCreateModel}>
             <FieldGroup>
               <TextField
                 id="model-display-name"
@@ -823,9 +945,18 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                   />
                 ))}
               </div>
-              <FieldError>{t("settings.models.requiredHint")}</FieldError>
+              {hasModelFormError ? (
+                <FieldError>{t("settings.models.requiredHint")}</FieldError>
+              ) : null}
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setIsModelDialogOpen(false)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setHasModelFormError(false);
+                    setIsModelDialogOpen(false);
+                  }}
+                >
                   {t("common.cancel")}
                 </Button>
                 <Button type="submit" disabled={isSaving === "model"}>
@@ -887,9 +1018,9 @@ function SettingsCard({
   children: ReactNode;
 }) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
-        <div>
+    <Card className="min-w-0 overflow-hidden">
+      <CardHeader className="flex flex-col items-start justify-between gap-4 sm:flex-row">
+        <div className="min-w-0">
           <CardTitle className="flex items-center gap-2 text-base">
             <SettingsIcon className="size-4" />
             {title}
@@ -898,7 +1029,7 @@ function SettingsCard({
         </div>
         {action}
       </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="min-w-0">{children}</CardContent>
     </Card>
   );
 }
@@ -1031,6 +1162,10 @@ function toEditablePublicationSettings(settings: PublicationSettings): EditableP
   return { ...settings };
 }
 
+function toEditableGraphSettings(settings: GraphSettings): EditableGraphSettings {
+  return { ...settings };
+}
+
 function toEditableUploadGenerationSettings(
   settings: UploadGenerationSettings
 ): EditableUploadGenerationSettings {
@@ -1081,6 +1216,35 @@ function buildPublicationSettings(input: EditablePublicationSettings): Publicati
   return settings ? { mode: input.mode, ...(settings as Record<PublicationField, number>) } : null;
 }
 
+function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null {
+  const settings = {} as Record<GraphNumberField, number>;
+
+  for (const field of graphNumberFields) {
+    const min = field === "searchDefaultDepth" || field === "searchMaxDepth" ? 0 : 1;
+    const value = readRequiredInteger(input[field], min);
+    if (value === null) {
+      return null;
+    }
+    settings[field] = value;
+  }
+
+  if (!isGraphDepth(settings.searchDefaultDepth) || !isGraphDepth(settings.searchMaxDepth)) {
+    return null;
+  }
+
+  return {
+    ...(settings as Record<GraphNumberField, number>),
+    searchDefaultDepth: settings.searchDefaultDepth,
+    searchMaxDepth: settings.searchMaxDepth,
+    insightEnabled: input.insightEnabled,
+    modelReviewEnabled: input.modelReviewEnabled
+  };
+}
+
+function isGraphDepth(value: number): value is GraphSettings["searchDefaultDepth"] {
+  return value === 0 || value === 1 || value === 2;
+}
+
 function buildUploadGenerationSettings(
   input: EditableUploadGenerationSettings
 ): UploadGenerationSettings | null {
@@ -1092,6 +1256,10 @@ function buildUploadGenerationSettings(
 function buildModelPayload(
   input: EditableModelForm
 ): Parameters<typeof createRuntimeModel>[0] | null {
+  const displayName = input.displayName.trim();
+  const baseUrl = input.baseUrl.trim();
+  const apiKey = input.apiKey.trim();
+  const modelName = input.modelName.trim();
   const contextWindowTokens = readRequiredInteger(input.contextWindowTokens);
   const requestMaxTimeoutMs = readRequiredInteger(input.requestMaxTimeoutMs);
   const requestIdleTimeoutMs = readRequiredInteger(input.requestIdleTimeoutMs);
@@ -1100,6 +1268,10 @@ function buildModelPayload(
   const requestMinIntervalMs = readRequiredInteger(input.requestMinIntervalMs, 0);
 
   if (
+    !displayName ||
+    !baseUrl ||
+    !apiKey ||
+    !modelName ||
     contextWindowTokens === null ||
     requestMaxTimeoutMs === null ||
     requestIdleTimeoutMs === null ||
@@ -1111,11 +1283,11 @@ function buildModelPayload(
   }
 
   return {
-    displayName: input.displayName,
+    displayName,
     apiMode: input.apiMode,
-    baseUrl: input.baseUrl,
-    apiKey: input.apiKey,
-    modelName: input.modelName,
+    baseUrl,
+    apiKey,
+    modelName,
     contextWindowTokens,
     requestMaxTimeoutMs,
     requestIdleTimeoutMs,

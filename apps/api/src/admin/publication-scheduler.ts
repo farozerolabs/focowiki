@@ -2,16 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { OkfGraphLimits, OkfLogLimits } from "@focowiki/okf";
 import type {
   AdminRepositories,
-  BundleFileRecord,
   PublicationJobReason,
-  PublicationJobMode,
-  SourceFileRecord
+  PublicationJobMode
 } from "../db/admin-repositories.js";
-import {
-  publishOkfRelease,
-  type PreviousBundleFileForPublication,
-  type SourceFileForPublication
-} from "../okf/publication.js";
+import type { ReleaseSourceFileRecord } from "../application/ports/release-publication-repository.js";
+import { assertReleaseCandidate } from "../application/release-candidate-validation.js";
+import { publishOkfRelease, type SourceFileForPublication } from "../okf/publication.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
@@ -24,10 +20,14 @@ export type PublicationRuntimeOptions = {
   indexShardSize: number;
   linkIndexShardSize: number;
   manifestShardSize: number;
-  graphEdgeShardSize: number;
-  graphCandidateLimit: number;
   graphMaintenanceBatchSize: number;
   rootSummaryLimit: number;
+  directoryIndexMaxEntries?: number;
+  directoryIndexMaxBytes?: number;
+  graphCandidateLimit?: number;
+  graphEdgeShardSize?: number;
+  graphPublicationShardSize?: number;
+  graphInsightEnabled?: boolean;
   workerJobMaxAttempts?: number;
 };
 
@@ -36,6 +36,7 @@ export type KnowledgeBasePublicationService = {
     knowledgeBaseId: string;
     knowledgeBaseName: string;
     sourceFileId: string;
+    relatedSourceFileIds?: string[] | undefined;
     generatedAt: string;
     pageSize: number;
     cursorTtlSeconds: number;
@@ -63,18 +64,17 @@ export function createKnowledgeBasePublicationService(
   redis: RedisCoordinator
 ): KnowledgeBasePublicationService | null {
   const files = repositories.files;
+  const releasePublication = repositories.releasePublication;
 
   if (
     !files?.createRelease ||
     !files.createBundleFiles ||
-    !files.createBundleTreeEntries ||
     !files.activateRelease ||
-    !files.listSourceFiles ||
+    !releasePublication ||
     !files.listPublicationLogHistory ||
     !files.markSourceFilesPublicationDirty ||
     !files.countDirtySourceFiles ||
     !files.listDirtySourceFiles ||
-    !files.markSourceFilesPublicationVisible ||
     !files.markSourceFilesPublicationFailed ||
     !files.createPublicationJob ||
     !files.startPublicationJob ||
@@ -86,15 +86,13 @@ export function createKnowledgeBasePublicationService(
 
   const createRelease = files.createRelease;
   const createBundleFiles = files.createBundleFiles;
-  const createBundleTreeEntries = files.createBundleTreeEntries;
   const activateRelease = files.activateRelease;
-  const listSourceFiles = files.listSourceFiles;
-  const listBundleFiles = files.listBundleFiles;
   const listPublicationLogHistory = files.listPublicationLogHistory;
+  const rebuildBundleGraphSearchDocuments = files.rebuildBundleGraphSearchDocuments;
+  const rebuildReleaseGraphProjection = files.rebuildReleaseGraphProjection;
   const markSourceFilesPublicationDirty = files.markSourceFilesPublicationDirty;
   const countDirtySourceFiles = files.countDirtySourceFiles;
   const listDirtySourceFiles = files.listDirtySourceFiles;
-  const markSourceFilesPublicationVisible = files.markSourceFilesPublicationVisible;
   const markSourceFilesPublicationFailed = files.markSourceFilesPublicationFailed;
   const createSourceFileEvent = files.createSourceFileEvent;
   const createPublicationJob = files.createPublicationJob;
@@ -107,7 +105,9 @@ export function createKnowledgeBasePublicationService(
     async markSourceFileReady(input) {
       await markSourceFilesPublicationDirty({
         knowledgeBaseId: input.knowledgeBaseId,
-        sourceFileIds: [input.sourceFileId],
+        sourceFileIds: Array.from(
+          new Set([input.sourceFileId, ...(input.relatedSourceFileIds ?? [])])
+        ),
         dirtyAt: input.generatedAt
       });
 
@@ -224,60 +224,90 @@ export function createKnowledgeBasePublicationService(
               fileCount: 0,
               manifestChecksumSha256: "pending"
             });
+            const snapshot = await releasePublication.materializeSourceSnapshot({
+              knowledgeBaseId: input.knowledgeBaseId,
+              releaseId,
+              publicationSourceFileIds: dirtySourceIds
+            });
+            const releaseChangeSummary = await releasePublication.summarizeChanges({
+              knowledgeBaseId: input.knowledgeBaseId,
+              previousReleaseId,
+              releaseId,
+              directoryLimit: 20
+            });
 
             const publication = await publishOkfRelease({
               knowledgeBaseId: input.knowledgeBaseId,
-              knowledgeBaseName: input.knowledgeBaseName,
+              knowledgeBaseName: knowledgeBase.name,
+              knowledgeBaseDescription: knowledgeBase.description,
               releaseId,
               generatedAt: input.generatedAt,
               pageSize: input.pageSize,
               concurrency: input.fileProcessingConcurrency,
+              sourceFileCount: snapshot.sourceFileCount,
               log: input.okfLog,
               storage,
               indexShardSize: input.options.indexShardSize,
               linkIndexShardSize: input.options.linkIndexShardSize,
               manifestShardSize: input.options.manifestShardSize,
               rootSummaryLimit: input.options.rootSummaryLimit,
+              directoryIndexMaxEntries: input.options.directoryIndexMaxEntries,
+              directoryIndexMaxBytes: input.options.directoryIndexMaxBytes,
               graph: publicationGraphLimits(input.options),
-              dirtySourceFileIds: dirtySourceIds.length > 0 ? dirtySourceIds : undefined,
+              dirtySourceFileIds: dirtySourceIds,
+              releaseChangeSummary,
+              fetchReleaseChangePage: ({ cursor, limit }) =>
+                releasePublication.listChanges({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  previousReleaseId,
+                  releaseId,
+                  cursor,
+                  limit
+                }),
               fetchPublicationLogHistory: ({ knowledgeBaseId, maxEntries }) =>
                 listPublicationLogHistory({
                   knowledgeBaseId,
                   maxEntries
                 }),
-              fetchPreviousBundleFilePage: previousReleaseId
-                ? ({ cursor, limit }) =>
-                    listBundleFiles({
-                      knowledgeBaseId: input.knowledgeBaseId,
-                      releaseId: previousReleaseId,
-                      cursor,
-                      limit
-                    }).then((page) => ({
-                      ...page,
-                      items: page.items.map(toPreviousBundleFileForPublication)
-                    }))
+              fetchReusablePages: previousReleaseId
+                ? (sourceFileIds) => releasePublication.listReusablePages({
+                    knowledgeBaseId: input.knowledgeBaseId,
+                    releaseId: previousReleaseId,
+                    candidateReleaseId: releaseId,
+                    sourceFileIds
+                  })
                 : undefined,
-              fetchGraphNodePage: repositories.graph
+              fetchGraphNodePage: repositories.graph?.listActiveGraphNodes
                 ? ({ cursor, limit }) =>
-                    repositories.graph!.listGraphNodes({
+                    repositories.graph!.listActiveGraphNodes!({
                       knowledgeBaseId: input.knowledgeBaseId,
+                      releaseId,
                       cursor,
                       limit
                     })
                 : undefined,
-              fetchGraphEdgePage: repositories.graph
+              fetchGraphEdgePage: repositories.graph?.listActiveGraphEdges
                 ? ({ cursor, limit }) =>
-                    repositories.graph!.listGraphEdges({
+                    repositories.graph!.listActiveGraphEdges!({
                       knowledgeBaseId: input.knowledgeBaseId,
+                      releaseId,
                       cursor,
                       limit
                     })
                 : undefined,
-              fetchGraphNeighborhood: repositories.graph
+              fetchSourceGraphNeighborhood: ({ sourceFileId, limit }) =>
+                releasePublication.listSourceGraphNeighborhood({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  releaseId,
+                  sourceFileId,
+                  limit
+                }).then((relationships) => ({ sourceFileId, relationships })),
+              fetchGraphNeighborhood: repositories.graph?.listActiveGraphNeighborhood
                 ? ({ sourceFileId, limit }) =>
                     repositories.graph!
-                      .listGraphNeighborhood({
+                      .listActiveGraphNeighborhood!({
                         knowledgeBaseId: input.knowledgeBaseId,
+                        releaseId,
                         sourceFileId,
                         limit,
                         cursor: null
@@ -297,19 +327,76 @@ export function createKnowledgeBasePublicationService(
                         }))
                       }))
                 : undefined,
+              materializeGraphProjection: rebuildReleaseGraphProjection
+                ? () => rebuildReleaseGraphProjection({
+                    knowledgeBaseId: input.knowledgeBaseId,
+                    releaseId
+                  }).then(() => undefined)
+                : undefined,
               fetchSourcePage: ({ cursor, limit }) =>
-                listSourceFiles({
+                releasePublication.listSourceFiles({
                   knowledgeBaseId: input.knowledgeBaseId,
+                  releaseId,
                   cursor,
                   limit
                 }).then((page) => ({
                   ...page,
-                  items: page.items
-                    .filter((item) => item.processingStatus === "completed")
-                    .map(toSourceFileForPublication)
+                  items: page.items.map(toSourceFileForPublication)
                 })),
+              fetchNavigationEntryPage: ({ cursor, limit }) =>
+                releasePublication.listNavigationEntries({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  releaseId,
+                  cursor,
+                  limit
+                }),
               persistBundleFiles: (filesToPersist) => createBundleFiles(filesToPersist),
-              persistBundleTreeEntries: (entries) => createBundleTreeEntries(entries)
+              persistMarkdownLinks: (links) => releasePublication.persistMarkdownLinks({
+                knowledgeBaseId: input.knowledgeBaseId,
+                releaseId,
+                links
+              }),
+              copyReusableMarkdownLinks: previousReleaseId
+                ? (sourceFileIds) => releasePublication.copyReusableMarkdownLinks({
+                    knowledgeBaseId: input.knowledgeBaseId,
+                    previousReleaseId,
+                    releaseId,
+                    sourceFileIds
+                  })
+                : async () => undefined,
+              pruneInvalidSourceMarkdownLinks: ({ plannedTargetPaths, batchSize }) =>
+                releasePublication.pruneInvalidSourceMarkdownLinks({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  releaseId,
+                  plannedTargetPaths,
+                  batchSize
+                }),
+              fetchMarkdownLinkPage: ({ cursor, limit, plannedTargetPaths }) =>
+                releasePublication.listValidMarkdownLinks({
+                  knowledgeBaseId: input.knowledgeBaseId,
+                  releaseId,
+                  cursor,
+                  limit,
+                  plannedTargetPaths
+                }),
+              materializeBundleTree: () => releasePublication.materializeTree({
+                knowledgeBaseId: input.knowledgeBaseId,
+                releaseId
+              })
+            });
+            await rebuildBundleGraphSearchDocuments?.({
+              knowledgeBaseId: input.knowledgeBaseId,
+              releaseId
+            });
+            await assertReleaseCandidate({
+              repository: releasePublication,
+              knowledgeBaseId: input.knowledgeBaseId,
+              releaseId,
+              requireGraph: Boolean(
+                repositories.graph?.listActiveGraphNodes
+                && repositories.graph.listActiveGraphEdges
+                && rebuildReleaseGraphProjection
+              )
             });
             const endedAt = new Date().toISOString();
             const activeKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
@@ -332,12 +419,6 @@ export function createKnowledgeBasePublicationService(
               publishedAt: endedAt,
               fileCount: publication.fileCount,
               manifestChecksumSha256: publication.manifestChecksumSha256
-            });
-            await markSourceFilesPublicationVisible({
-              knowledgeBaseId: input.knowledgeBaseId,
-              sourceFileIds: dirtySourceIds,
-              generatedOutputs: publication.generatedSourceFileOutputs,
-              visibleAt: endedAt
             });
             await repositories.graph?.refreshGraphSummariesForSourceFiles?.({
               knowledgeBaseId: input.knowledgeBaseId,
@@ -576,39 +657,26 @@ function isIntervalDue(oldestDirtyAt: string, generatedAt: string, intervalSecon
   return Date.parse(generatedAt) - Date.parse(oldestDirtyAt) >= intervalSeconds * 1_000;
 }
 
-function toPreviousBundleFileForPublication(
-  file: BundleFileRecord
-): PreviousBundleFileForPublication {
+export function toSourceFileForPublication(
+  file: ReleaseSourceFileRecord
+): SourceFileForPublication {
   return {
-    sourceFileId: file.sourceFileId,
-    fileKind: file.fileKind,
-    logicalPath: file.logicalPath,
-    objectKey: file.objectKey,
-    contentType: file.contentType,
-    sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
-    okfType: file.okfType,
-    title: file.title,
-    description: file.description,
-    tags: file.tags,
-    frontmatter: file.frontmatter
-  };
-}
-
-export function toSourceFileForPublication(file: SourceFileRecord): SourceFileForPublication {
-  return {
-    id: file.id,
-    originalName: file.originalName,
+    id: file.sourceFileId,
+    name: file.name,
+    relativePath: file.relativePath,
+    generatedPath: file.generatedPath,
     objectKey: file.objectKey,
     metadata: file.metadata,
-    suggestions: file.modelSuggestions ?? null
+    suggestions: file.suggestions,
+    publicationRequired: file.publicationRequired
   };
 }
 
 function publicationGraphLimits(options: PublicationRuntimeOptions): OkfGraphLimits {
   return {
-    pageRelatedLimit: Math.min(options.graphCandidateLimit, 50),
-    perFileLimit: options.graphCandidateLimit,
-    edgeShardSize: options.graphEdgeShardSize
+    pageRelatedLimit: Math.min(options.graphCandidateLimit ?? 200, 50),
+    perFileLimit: options.graphCandidateLimit ?? 200,
+    edgeShardSize: options.graphPublicationShardSize ?? options.graphEdgeShardSize ?? 5_000,
+    insightEnabled: options.graphInsightEnabled ?? true
   };
 }

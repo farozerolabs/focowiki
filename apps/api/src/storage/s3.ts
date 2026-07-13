@@ -1,8 +1,10 @@
 import {
+  CopyObjectCommand,
   DeleteObjectsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   ListObjectVersionsCommand,
   NoSuchKey,
   PutObjectCommand,
@@ -12,9 +14,6 @@ import {
 import type { RuntimeConfig } from "../config.js";
 import {
   createStorageKeyspace,
-  parseCurrentPointer,
-  serializeCurrentPointer,
-  type CurrentPointer,
   type StorageKeyspace
 } from "./keys.js";
 
@@ -42,13 +41,19 @@ export class StorageObjectTooLargeError extends Error {
 export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
   putObject: (object: StoredObject) => Promise<void>;
+  copyObject?: (input: { sourceKey: string; destinationKey: string }) => Promise<void>;
+  listObjectKeys?: (input: {
+    prefix: string;
+    continuationToken?: string | null;
+    limit: number;
+  }) => Promise<{ keys: string[]; nextContinuationToken: string | null }>;
   deleteObject?: (key: string) => Promise<void>;
   deleteObjects?: (keys: string[]) => Promise<void>;
   deleteObjectVersions?: (keys: string[]) => Promise<void>;
+  purgePrefix?: (prefix: string) => Promise<{ deleted: number; remaining: number }>;
+  countPrefix?: (prefix: string) => Promise<number>;
   getObjectBody?: (key: string) => Promise<BodyInit | null>;
   getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
-  writeCurrentPointer: (pointer: CurrentPointer) => Promise<void>;
-  readCurrentPointer: () => Promise<CurrentPointer | null>;
 };
 
 type S3StorageOptions = {
@@ -104,6 +109,42 @@ export class S3StorageAdapter implements StorageAdapter {
         ...(object.cacheControl ? { CacheControl: object.cacheControl } : {})
       })
     );
+  }
+
+  public async copyObject(input: { sourceKey: string; destinationKey: string }): Promise<void> {
+    await this.client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: `${encodeURIComponent(this.bucket)}/${input.sourceKey
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`,
+        Key: input.destinationKey,
+        MetadataDirective: "COPY"
+      })
+    );
+  }
+
+  public async listObjectKeys(input: {
+    prefix: string;
+    continuationToken?: string | null;
+    limit: number;
+  }): Promise<{ keys: string[]; nextContinuationToken: string | null }> {
+    const response = await this.client.send(
+      new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: input.prefix,
+        ContinuationToken: input.continuationToken ?? undefined,
+        MaxKeys: Math.min(Math.max(input.limit, 1), 1_000)
+      })
+    );
+
+    return {
+      keys: (response.Contents ?? [])
+        .map((object) => object.Key)
+        .filter((key): key is string => Boolean(key)),
+      nextContinuationToken: response.NextContinuationToken ?? null
+    };
   }
 
   public async deleteObject(key: string): Promise<void> {
@@ -179,6 +220,95 @@ export class S3StorageAdapter implements StorageAdapter {
     }
   }
 
+  public async purgePrefix(prefix: string): Promise<{ deleted: number; remaining: number }> {
+    let deleted = 0;
+    try {
+      let keyMarker: string | undefined;
+      let versionIdMarker: string | undefined;
+
+      do {
+        const listed = await this.client.send(
+          new ListObjectVersionsCommand({
+            Bucket: this.bucket,
+            Prefix: prefix,
+            KeyMarker: keyMarker,
+            VersionIdMarker: versionIdMarker
+          })
+        );
+        const objects = [...(listed.Versions ?? []), ...(listed.DeleteMarkers ?? [])]
+          .filter((entry): entry is typeof entry & { Key: string; VersionId: string } =>
+            Boolean(entry.Key && entry.VersionId)
+          )
+          .map((entry) => ({ Key: entry.Key, VersionId: entry.VersionId }));
+
+        for (const chunk of chunkArray(objects, 1_000)) {
+          await this.client.send(
+            new DeleteObjectsCommand({
+              Bucket: this.bucket,
+              Delete: { Objects: chunk, Quiet: true }
+            })
+          );
+          deleted += chunk.length;
+        }
+
+        keyMarker = listed.IsTruncated ? listed.NextKeyMarker : undefined;
+        versionIdMarker = listed.IsTruncated ? listed.NextVersionIdMarker : undefined;
+      } while (keyMarker);
+    } catch (error) {
+      if (!isVersionListingUnsupported(error)) {
+        throw error;
+      }
+    }
+
+    let continuationToken: string | undefined;
+    do {
+      const listed = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+          MaxKeys: 1_000
+        })
+      );
+      const keys = (listed.Contents ?? [])
+        .map((entry) => entry.Key)
+        .filter((key): key is string => Boolean(key));
+
+      for (const chunk of chunkArray(keys, 1_000)) {
+        await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true }
+          })
+        );
+        deleted += chunk.length;
+      }
+
+      continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    return { deleted, remaining: await this.countPrefix(prefix) };
+  }
+
+  public async countPrefix(prefix: string): Promise<number> {
+    const verification = await this.client.send(
+      new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, MaxKeys: 1 })
+    );
+    try {
+      const versionVerification = await this.client.send(
+        new ListObjectVersionsCommand({ Bucket: this.bucket, Prefix: prefix, MaxKeys: 1 })
+      );
+      return (verification.Contents?.length ?? 0) +
+        (versionVerification.Versions?.length ?? 0) +
+        (versionVerification.DeleteMarkers?.length ?? 0);
+    } catch (error) {
+      if (!isVersionListingUnsupported(error)) {
+        throw error;
+      }
+      return verification.Contents?.length ?? 0;
+    }
+  }
+
   public async getObjectText(
     key: string,
     options: { maxBytes?: number } = {}
@@ -238,23 +368,21 @@ export class S3StorageAdapter implements StorageAdapter {
     }
   }
 
-  public async writeCurrentPointer(pointer: CurrentPointer): Promise<void> {
-    await this.putObject({
-      key: this.keyspace.currentPointerKey(),
-      body: serializeCurrentPointer(pointer),
-      contentType: "application/json"
-    });
+}
+
+function isVersionListingUnsupported(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
   }
 
-  public async readCurrentPointer(): Promise<CurrentPointer | null> {
-    const rawPointer = await this.getObjectText(this.keyspace.currentPointerKey());
-
-    if (!rawPointer) {
-      return null;
-    }
-
-    return parseCurrentPointer(rawPointer);
-  }
+  const candidate = error as {
+    name?: unknown;
+    Code?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+  };
+  return candidate.name === "NotImplemented"
+    || candidate.Code === "NotImplemented"
+    || candidate.$metadata?.httpStatusCode === 501;
 }
 
 function uniqueKeys(keys: string[]): string[] {

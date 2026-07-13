@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { cp, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -18,7 +18,6 @@ await build({
   entryPoints: {
     main: "src/main.ts",
     migrate: "src/db/migrate.ts",
-    "search-backfill": "src/search-backfill.ts",
     worker: "src/worker-main.ts"
   },
   format: "esm",
@@ -31,4 +30,8 @@ await build({
   platform: "node",
   sourcemap: false,
   target: "node24"
+});
+
+await cp(resolve(apiRoot, "migrations"), resolve(runtimeDir, "migrations"), {
+  recursive: true
 });

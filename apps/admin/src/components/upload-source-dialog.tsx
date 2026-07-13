@@ -11,16 +11,25 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { uploadKnowledgeBaseSources } from "@/lib/admin-api";
+import type { UploadSessionLimits } from "@/lib/admin-api";
 import {
+  cancelFolderUpload,
+  resumeUploadSession,
+  runUploadSession,
+  type UploadClientProgress
+} from "@/lib/upload-session-client";
+import {
+  fileRelativePath,
   filesFromSelection,
   formatUploadBytes,
   hasDuplicateFileName,
   hasUnsupportedMarkdownFile,
+  invalidSelectedUploadPaths,
   removeSelectedFileAt,
   totalSelectedFileBytes,
   visibleSelectedFiles
 } from "@/lib/upload-selection";
+import { selectDirectoryFiles } from "@/lib/directory-picker";
 
 type UploadSourceDialogProps = {
   knowledgeBaseId: string;
@@ -37,12 +46,20 @@ export function UploadSourceDialog({
 }: UploadSourceDialogProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadOperationEpochRef = useRef(0);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isSelectingFolder, setIsSelectingFolder] = useState(false);
+  const [progress, setProgress] = useState<UploadClientProgress | null>(null);
+  const [activeSession, setActiveSession] = useState<{
+    id: string;
+    limits: UploadSessionLimits;
+  } | null>(null);
   const selectedFileItems = visibleSelectedFiles(selectedFiles);
   const selectedFileTotalSize = formatUploadBytes(totalSelectedFileBytes(selectedFiles));
-  const uploadSelectionErrorKey = hasUnsupportedMarkdownFile(selectedFiles)
+  const invalidPaths = invalidSelectedUploadPaths(selectedFiles);
+  const uploadSelectionErrorKey = hasUnsupportedMarkdownFile(selectedFiles) || invalidPaths.length > 0
     ? "errors.uploadMarkdownOnly"
     : hasDuplicateFileName(selectedFiles)
       ? "errors.duplicateUploadFileName"
@@ -50,6 +67,8 @@ export function UploadSourceDialog({
 
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const operationEpoch = uploadOperationEpochRef.current + 1;
+    uploadOperationEpochRef.current = operationEpoch;
     setIsUploading(true);
     setUploadError("");
 
@@ -64,14 +83,38 @@ export function UploadSourceDialog({
       return;
     }
 
-    const result = await uploadKnowledgeBaseSources({
-      knowledgeBaseId,
-      files: selectedFiles
-    }).catch(() => ({ messageKey: "errors.uploadFailed" }));
+    const result = await (
+      activeSession
+        ? resumeUploadSession({
+            knowledgeBaseId,
+            sessionId: activeSession.id,
+            files: selectedFiles,
+            limits: activeSession.limits,
+            onProgress: setProgress
+          })
+        : runUploadSession({
+            knowledgeBaseId,
+            files: selectedFiles,
+            onProgress: setProgress,
+            onSessionReady: (id, limits) => {
+              if (uploadOperationEpochRef.current === operationEpoch) {
+                setActiveSession({ id, limits });
+              }
+            }
+          })
+    ).catch(() => ({
+      ok: false as const,
+      failure: { messageKey: "errors.uploadFailed" },
+      sessionId: activeSession?.id ?? null
+    }));
 
-    if ("messageKey" in result) {
+    if (uploadOperationEpochRef.current !== operationEpoch) {
+      return;
+    }
+
+    if (!result.ok) {
       setIsUploading(false);
-      setUploadError(result.messageKey);
+      setUploadError(result.failure.messageKey);
       return;
     }
 
@@ -82,9 +125,26 @@ export function UploadSourceDialog({
   }
 
   function handleSourceFilesChange(files: FileList | null) {
-    setSelectedFiles(filesFromSelection(files));
+    setSelectedFiles((current) => [...current, ...filesFromSelection(files)]);
     setUploadError("");
-    resetSourceFileInput();
+    resetInputs();
+  }
+
+  async function handleFolderSelection() {
+    setIsSelectingFolder(true);
+    setUploadError("");
+    try {
+      const result = await selectDirectoryFiles();
+      if (result.status === "selected") {
+        setSelectedFiles((current) => [...current, ...result.files]);
+      } else if (result.status === "unsupported") {
+        setUploadError("errors.folderPickerUnsupported");
+      }
+    } catch {
+      setUploadError("errors.folderPickerFailed");
+    } finally {
+      setIsSelectingFolder(false);
+    }
   }
 
   function handleRemoveSelectedFile(index: number) {
@@ -95,12 +155,24 @@ export function UploadSourceDialog({
   function resetSelection() {
     setSelectedFiles([]);
     setUploadError("");
-    resetSourceFileInput();
+    setProgress(null);
+    setActiveSession(null);
+    resetInputs();
   }
 
-  function resetSourceFileInput() {
+  function resetInputs() {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleCancelUpload() {
+    uploadOperationEpochRef.current += 1;
+    const sessionId = activeSession?.id ?? null;
+    setIsUploading(false);
+    resetSelection();
+    if (sessionId) {
+      await cancelFolderUpload({ knowledgeBaseId, sessionId }).catch(() => undefined);
     }
   }
 
@@ -128,6 +200,15 @@ export function UploadSourceDialog({
               >
                 <UploadIcon data-icon="inline-start" />
                 {t("upload.chooseFiles")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSelectingFolder || isUploading}
+                onClick={() => void handleFolderSelection()}
+              >
+                <UploadIcon data-icon="inline-start" />
+                {t("upload.chooseFolder")}
               </Button>
               <input
                 ref={fileInputRef}
@@ -162,7 +243,7 @@ export function UploadSourceDialog({
                           key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
                           className="flex items-center justify-between gap-2 text-foreground"
                         >
-                          <span className="min-w-0 truncate">{file.name}</span>
+                          <span className="min-w-0 truncate">{fileRelativePath(file)}</span>
                           <Button
                             type="button"
                             variant="ghost"
@@ -178,13 +259,22 @@ export function UploadSourceDialog({
                     {selectedFileItems.hiddenCount > 0 ? (
                       <p>{t("upload.hiddenFiles", { count: selectedFileItems.hiddenCount })}</p>
                     ) : null}
+                    <p>{t("upload.repeatedFolderMerge")}</p>
                   </div>
                 ) : (
                   <p>{t("upload.noFilesSelected")}</p>
                 )}
               </div>
               {uploadSelectionErrorKey ? (
-                <p className="text-sm text-destructive">{t(uploadSelectionErrorKey)}</p>
+                <div className="space-y-1 text-sm text-destructive">
+                  <p>{t(uploadSelectionErrorKey)}</p>
+                  {invalidPaths.slice(0, 8).map((path) => (
+                    <p key={path} className="truncate">{path}</p>
+                  ))}
+                  {invalidPaths.length > 8 ? (
+                    <p>{t("upload.hiddenInvalidFiles", { count: invalidPaths.length - 8 })}</p>
+                  ) : null}
+                </div>
               ) : null}
             </Field>
             {uploadError ? (
@@ -192,12 +282,44 @@ export function UploadSourceDialog({
                 <AlertTitle>{t(uploadError)}</AlertTitle>
               </Alert>
             ) : null}
+            {progress ? (
+              <div className="space-y-2" aria-live="polite">
+                <div className="h-2 overflow-hidden rounded-sm bg-muted">
+                  <div
+                    className="h-full bg-primary transition-[width]"
+                    style={{
+                      width: `${progress.total > 0 ? Math.min(100, (progress.completed / progress.total) * 100) : 0}%`
+                    }}
+                  />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {t(`upload.stages.${progress.stage}`, {
+                    completed: progress.completed,
+                    total: progress.total
+                  })}
+                </p>
+                {progress.session ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("upload.classification", progress.session.counts)}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <Button
               type="submit"
               disabled={selectedFiles.length === 0 || Boolean(uploadSelectionErrorKey) || isUploading}
             >
-              {isUploading ? t("upload.uploading") : t("upload.upload")}
+              {isUploading
+                ? t("upload.uploading")
+                : activeSession
+                  ? t("upload.resume")
+                  : t("upload.upload")}
             </Button>
+            {isUploading ? (
+              <Button type="button" variant="outline" onClick={handleCancelUpload}>
+                {t("upload.cancel")}
+              </Button>
+            ) : null}
           </FieldGroup>
         </form>
       </DialogContent>

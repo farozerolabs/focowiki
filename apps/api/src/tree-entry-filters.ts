@@ -16,11 +16,27 @@ export function createBundleTreeCursorScope(input: {
   parentPath: string;
   entryType: TreeEntryTypeFilter;
   scopePrefix: string;
+  query?: string | null;
 }): string {
   return [
     input.scopePrefix,
     input.knowledgeBaseId,
     input.releaseId,
+    input.parentPath || "root",
+    `entryType=${input.entryType ?? ""}`,
+    ...(input.query ? [`query=${input.query}`] : [])
+  ].join(":");
+}
+
+export function createBundleTreeSnapshotCursorScope(input: {
+  knowledgeBaseId: string;
+  parentPath: string;
+  entryType: TreeEntryTypeFilter;
+  scopePrefix: string;
+}): string {
+  return [
+    input.scopePrefix,
+    input.knowledgeBaseId,
     input.parentPath || "root",
     `entryType=${input.entryType ?? ""}`
   ].join(":");

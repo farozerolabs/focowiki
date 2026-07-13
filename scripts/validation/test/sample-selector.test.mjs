@@ -73,6 +73,28 @@ test("selectSamplesFromEnvironment validates local-only input configuration", ()
   );
 });
 
+test("selectSamples preserves relative paths for equal basenames in different directories", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-nested-samples-"));
+  const markdownDir = path.join(root, "markdown");
+  const nestedDir = path.join(markdownDir, "archive");
+  fs.mkdirSync(nestedDir, { recursive: true });
+  writeCoverageFiles(markdownDir);
+  fs.copyFileSync(path.join(markdownDir, "02.md"), path.join(nestedDir, "02.md"));
+
+  try {
+    const result = selectSamples(root, 15);
+    const equalBasenames = result.samples.filter((sample) => sample.basename === "02.md");
+
+    assert.equal(equalBasenames.length, 2);
+    assert.deepEqual(
+      equalBasenames.map((sample) => sample.relativePath).sort(),
+      ["markdown/02.md", "markdown/archive/02.md"]
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("selectSingleAndBatchSamples chooses non-overlapping single and batch Markdown samples", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-single-batch-"));
   const markdownDir = path.join(root, "markdown");

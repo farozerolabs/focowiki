@@ -4,17 +4,17 @@ import { buildPublicFileUrl } from "../src/public-url.js";
 describe("public URL builder", () => {
   it("builds knowledge base scoped public OpenAPI URLs", () => {
     expect(buildPublicFileUrl("https://kb.example.com/base/", "kb-001", "index.md")).toBe(
-      "https://kb.example.com/base/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md"
+      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md"
     );
     expect(
       buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/search.json")
     ).toBe(
-      "https://kb.example.com/base/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json"
+      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json"
     );
     expect(
       buildPublicFileUrl("https://kb.example.com/base", "kb-001", "_index/search/000001.jsonl")
     ).toBe(
-      "https://kb.example.com/base/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl"
+      "https://kb.example.com/base/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl"
     );
   });
 
@@ -22,7 +22,7 @@ describe("public URL builder", () => {
     const url = buildPublicFileUrl("https://kb.example.com", "kb-001", "pages/intro.md");
 
     expect(url).toBe(
-      "https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2Fintro.md"
+      "https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=pages%2Fintro.md"
     );
     expect(url).not.toContain("S3_PREFIX");
     expect(url).not.toContain("tenant/demo");
@@ -32,7 +32,7 @@ describe("public URL builder", () => {
   });
 
   it("builds URLs for safe Unicode generated file paths", () => {
-    const logicalPath = "pages/客户支持手册__2024-10-11__active__752a7652a90e.md";
+    const logicalPath = "pages/产品/客户支持/客户支持手册__2024-10-11__active__752a7652a90e.md";
 
     expect(
       buildPublicFileUrl(
@@ -41,9 +41,17 @@ describe("public URL builder", () => {
         logicalPath
       )
     ).toBe(
-      `https://kb.example.com/openapi/v1/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(
+      `https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(
         logicalPath
       )}`
+    );
+  });
+
+  it("builds URLs for nested directory navigation files", () => {
+    const logicalPath = "pages/产品/客户支持/index-000001.md";
+
+    expect(buildPublicFileUrl("https://kb.example.com", "kb-001", logicalPath)).toBe(
+      `https://kb.example.com/openapi/v2/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(logicalPath)}`
     );
   });
 

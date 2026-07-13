@@ -8,6 +8,7 @@ import { loadEnvFile } from "node:process";
 import { loadRuntimeConfig } from "./config.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
+import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createRuntimeLogger } from "./logger.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
@@ -28,6 +29,7 @@ async function runWorker(config: ReturnType<typeof loadRuntimeConfig>): Promise<
   const logger = createRuntimeLogger(config, console, { streamName: "worker" });
   const storage = createS3StorageAdapter(config.storage);
   const sql = createDatabaseClient(config, { role: "worker" });
+  await assertRuntimeSchemaGeneration(sql);
   const repositories = createPostgresAdminRepositories(sql);
   const redisClient = createRedisClient(config);
   let redisConnected = false;
@@ -78,6 +80,7 @@ async function runHealthcheck(config: ReturnType<typeof loadRuntimeConfig>): Pro
 
   try {
     await sql`select 1`;
+    await assertRuntimeSchemaGeneration(sql);
     await sql`select count(*)::int as count from focowiki.worker_jobs`;
     await sql`select count(*)::int as count from focowiki.worker_heartbeats`;
     await redisClient.connect();

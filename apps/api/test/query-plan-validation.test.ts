@@ -3,6 +3,7 @@ import {
   buildExplainAnalyzeSql,
   createHardDeletePlanTargets,
   createLargeScaleReadPlanTargets,
+  createReleaseValidationPlanTargets,
   summarizeQueryPlan
 } from "../src/db/query-plan-validation.js";
 
@@ -13,15 +14,21 @@ describe("query plan validation helpers", () => {
     expect(targets.map((target) => target.name)).toEqual(
       expect.arrayContaining([
         "knowledge-base-card-search",
-        "bundle-tree-search-name",
-        "bundle-tree-search-path",
-        "bundle-tree-search-next-page",
-        "bundle-tree-search-ancestors",
-        "generated-file-search-first-page",
-        "generated-file-search-next-page",
-        "generated-file-search-no-result",
-        "generated-file-search-kind-filter",
-        "generated-file-search-cache-hit",
+        "knowledge-tree-search-name",
+        "knowledge-tree-search-path",
+        "knowledge-tree-search-next-page",
+        "knowledge-tree-search-ancestors",
+        "knowledge-file-search-first-page",
+        "knowledge-file-search-next-page",
+        "knowledge-file-search-no-result",
+        "knowledge-file-search-kind-filter",
+        "knowledge-file-search-cache-hit",
+        "knowledge-graph-search-first-page",
+        "knowledge-graph-search-edge-match",
+        "graph-expand-file-neighborhood",
+        "graph-expand-edge-seed",
+        "graph-expand-query-seed",
+        "source-resource-list-filter",
         "worker-job-source-cancellation"
       ])
     );
@@ -32,6 +39,19 @@ describe("query plan validation helpers", () => {
       expect(explainSql).toContain("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)");
       expect(explainSql).toContain("focowiki.");
     }
+  });
+
+  it("keeps version-two source-resource filters bounded and independent from task visibility", () => {
+    const target = createLargeScaleReadPlanTargets().find((item) =>
+      item.name === "source-resource-list-filter"
+    );
+    expect(target).toBeDefined();
+    const normalizedSql = target!.sql.replace(/\s+/g, " ").toLowerCase();
+    expect(normalizedSql).toContain("deletion_intent_id is null");
+    expect(normalizedSql).toContain("order by id asc");
+    expect(normalizedSql).toContain("limit 51");
+    expect(normalizedSql).not.toContain("task_deleted_at");
+    expect(normalizedSql).not.toContain(" offset ");
   });
 
   it("keeps source-file task list plans task-hidden aware", () => {
@@ -50,11 +70,13 @@ describe("query plan validation helpers", () => {
 
     expect(targets.map((target) => target.name)).toEqual(
       expect.arrayContaining([
-        "hard-delete-source-search-documents",
-        "hard-delete-source-tree-entries",
+        "hard-delete-source-knowledge-graph-search-documents",
+        "hard-delete-source-knowledge-graph-edges",
+        "hard-delete-source-knowledge-tree-entries",
         "hard-delete-source-bundle-files",
         "hard-delete-source-worker-jobs",
-        "hard-delete-knowledge-base-search-documents",
+        "hard-delete-knowledge-base-graph-search-documents",
+        "hard-delete-knowledge-base-graph-edges",
         "hard-delete-knowledge-base-tree-entries",
         "hard-delete-knowledge-base-bundle-files",
         "hard-delete-knowledge-base-source-files",
@@ -72,6 +94,29 @@ describe("query plan validation helpers", () => {
     }
   });
 
+  it("builds bounded release validation plan targets", () => {
+    const targets = createReleaseValidationPlanTargets();
+
+    expect(targets.map((target) => target.name)).toEqual([
+      "release-validation-source-page",
+      "release-validation-tree-reachability",
+      "release-validation-concept-type",
+      "release-validation-generated-target",
+      "release-validation-continuation-chain",
+      "release-validation-index-coverage"
+    ]);
+
+    for (const target of targets) {
+      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
+
+      expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
+      expect(normalizedSql).toContain("knowledge_base_id = 'kb-okf-scale'");
+      expect(normalizedSql).toContain("release_id = 'release-okf-scale'");
+      expect(normalizedSql).toContain("limit 101");
+      expect(normalizedSql).not.toContain(" offset ");
+    }
+  });
+
   it("keeps normal read plan targets decoupled from hard-delete tables", () => {
     const targets = createLargeScaleReadPlanTargets();
 
@@ -81,6 +126,33 @@ describe("query plan validation helpers", () => {
       expect(normalizedSql).not.toContain("hard_delete_object_deletions");
       expect(normalizedSql).not.toContain("kind = 'hard_delete'");
     }
+  });
+
+  it("keeps graph expansion plan targets bounded and graph-index scoped", () => {
+    const targets = createLargeScaleReadPlanTargets().filter((target) =>
+      target.name.startsWith("graph-expand")
+    );
+
+    expect(targets.map((target) => target.name)).toEqual([
+      "graph-expand-file-neighborhood",
+      "graph-expand-edge-seed",
+      "graph-expand-query-seed"
+    ]);
+
+    for (const target of targets) {
+      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
+
+      expect(normalizedSql).toContain("knowledge_base_id = 'kb-plan'");
+      expect(normalizedSql).toContain("limit ");
+      expect(normalizedSql).not.toContain(" offset ");
+    }
+
+    expect(targets.find((target) => target.name === "graph-expand-file-neighborhood")?.sql).toContain(
+      "knowledge_graph_edges"
+    );
+    expect(targets.find((target) => target.name === "graph-expand-query-seed")?.sql).toContain(
+      "knowledge_graph_search_documents"
+    );
   });
 
   it("rejects empty and multi-statement query plan inputs", () => {

@@ -8,7 +8,7 @@ export function createSourceFileListFilterPredicate(
   filters: SourceFileListFilters
 ): SqlFragment {
   const fileNameFilter = filters.fileNameQuery
-    ? sql`AND source.original_name ILIKE ${containsPattern(filters.fileNameQuery)} ESCAPE ${"\\"}`
+    ? sql`AND source.relative_path ILIKE ${containsPattern(filters.fileNameQuery)} ESCAPE ${"\\"}`
     : sql``;
   const fileIdFilter = filters.fileIdQuery
     ? sql`AND source.id LIKE ${prefixPattern(filters.fileIdQuery)} ESCAPE ${"\\"}`

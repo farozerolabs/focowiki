@@ -41,15 +41,15 @@ function classifyReadEndpoint(
     return { plane: "admin", name: "file_preview" };
   }
 
-  if (path.match(/^\/openapi\/v1\/knowledge-bases\/[^/]+\/source-files$/)) {
+  if (path.match(/^\/openapi\/v2\/knowledge-bases\/[^/]+\/source-files$/)) {
     return { plane: "developer_openapi", name: "source_file_list" };
   }
 
-  if (path.match(/^\/openapi\/v1\/knowledge-bases\/[^/]+\/tree$/)) {
+  if (path.match(/^\/openapi\/v2\/knowledge-bases\/[^/]+\/tree$/)) {
     return { plane: "developer_openapi", name: "file_tree" };
   }
 
-  if (path.includes("/openapi/v1/knowledge-bases/") && path.includes("/content")) {
+  if (path.includes("/openapi/v2/knowledge-bases/") && path.includes("/content")) {
     return { plane: "developer_openapi", name: "file_content" };
   }
 

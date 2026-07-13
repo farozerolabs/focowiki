@@ -20,7 +20,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
   const responseExamples = createDeveloperOpenApiResponseExamples();
 
   return {
-    "/openapi/v1/health": {
+    "/openapi/v2/health": {
       get: operation({
         tag: "Metadata",
         operationId: "getDeveloperOpenApiHealth",
@@ -31,7 +31,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successExample: responseExamples.getDeveloperOpenApiHealth
       })
     },
-    "/openapi/v1/version": {
+    "/openapi/v2/version": {
       get: operation({
         tag: "Metadata",
         operationId: "getDeveloperOpenApiVersion",
@@ -42,7 +42,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successExample: responseExamples.getDeveloperOpenApiVersion
       })
     },
-    "/openapi/v1/openapi.json": {
+    "/openapi/v2/openapi.json": {
       get: operation({
         tag: "Metadata",
         operationId: "getDeveloperOpenApiContract",
@@ -60,7 +60,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successExample: responseExamples.getDeveloperOpenApiContract
       })
     },
-    "/openapi/v1/knowledge-bases": {
+    "/openapi/v2/knowledge-bases": {
       get: operation({
         tag: "Knowledge Bases",
         operationId: "listKnowledgeBases",
@@ -69,7 +69,8 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listKnowledgeBases,
         successStatus: 200,
         successSchema: ref("KnowledgeBaseListResponse"),
-        successExample: responseExamples.listKnowledgeBases
+        successExample: responseExamples.listKnowledgeBases,
+        additionalErrorStatuses: [422]
       }),
       post: operation({
         tag: "Knowledge Bases",
@@ -79,10 +80,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.createKnowledgeBase,
         successStatus: 201,
         successSchema: ref("KnowledgeBaseResponse"),
-        successExample: responseExamples.createKnowledgeBase
+        successExample: responseExamples.createKnowledgeBase,
+        additionalErrorStatuses: [422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}": {
       get: operation({
         tag: "Knowledge Bases",
         operationId: "getKnowledgeBase",
@@ -91,62 +93,161 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.getKnowledgeBase,
         successStatus: 200,
         successSchema: ref("KnowledgeBaseResponse"),
-        successExample: responseExamples.getKnowledgeBase
+        successExample: responseExamples.getKnowledgeBase,
+        additionalErrorStatuses: [404]
+      }),
+      patch: operation({
+        tag: "Knowledge Bases",
+        operationId: "updateKnowledgeBase",
+        summary: "Update knowledge-base metadata",
+        parameters: [knowledgeBaseIdParameter(), expectedResourceRevisionHeader()],
+        requestSchema: ref("UpdateKnowledgeBaseRequest"),
+        requestExample: requestExamples.updateKnowledgeBase,
+        successStatus: 200,
+        successSchema: ref("KnowledgeBaseResponse"),
+        successExample: responseExamples.updateKnowledgeBase,
+        additionalErrorStatuses: [404, 409, 422]
       }),
       delete: operation({
         tag: "Knowledge Bases",
         operationId: "deleteKnowledgeBase",
         summary: "Delete a knowledge base",
-        parameters: [knowledgeBaseIdParameter()],
+        parameters: [knowledgeBaseIdParameter(), idempotencyKeyHeader(), expectedResourceRevisionHeader()],
         requestExample: requestExamples.deleteKnowledgeBase,
-        successStatus: 200,
-        successSchema: ref("DeleteKnowledgeBaseResponse"),
-        successExample: responseExamples.deleteKnowledgeBase
+        successStatus: 202,
+        successSchema: ref("KnowledgeBaseDeletionResponse"),
+        successExample: responseExamples.deleteKnowledgeBase,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/uploads": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions": {
       post: operation({
-        tag: "Knowledge Bases",
-        operationId: "uploadMarkdownFiles",
-        summary: "Upload one or more Markdown files",
-        parameters: [knowledgeBaseIdParameter()],
-        requestExample: requestExamples.uploadMarkdownFiles,
+        tag: "Upload Sessions",
+        operationId: "createUploadSession",
+        summary: "Create a resumable upload session",
+        parameters: [knowledgeBaseIdParameter(), idempotencyKeyHeader()],
+        requestSchema: ref("CreateUploadSessionRequest"),
+        requestExample: requestExamples.createUploadSession,
+        successStatus: 201,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.createUploadSession,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/entries": {
+      post: operation({
+        tag: "Upload Sessions",
+        operationId: "addUploadManifestEntries",
+        summary: "Add files to an upload manifest",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestSchema: ref("UploadManifestPageRequest"),
+        requestExample: requestExamples.addUploadManifestEntries,
+        successStatus: 200,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.addUploadManifestEntries,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/seal": {
+      post: operation({
+        tag: "Upload Sessions",
+        operationId: "sealUploadManifest",
+        summary: "Confirm an upload manifest",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestExample: requestExamples.sealUploadManifest,
+        successStatus: 200,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.sealUploadManifest,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/content": {
+      post: operation({
+        tag: "Upload Sessions",
+        operationId: "uploadSessionContentBatch",
+        summary: "Upload Markdown content",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestExample: requestExamples.uploadSessionContentBatch,
         requestBody: {
           required: true,
           content: {
             "multipart/form-data": {
-              schema: objectSchema(
-                {
-                  files: {
-                    type: "array",
-                    items: { type: "string", format: "binary" },
-                    description: "One or more `.md` Markdown files."
-                  }
-                },
-                ["files"]
-              ),
-              example: requestExamples.uploadMarkdownFiles.body
+              example: requestExamples.uploadSessionContentBatch.body,
+              schema: {
+                type: "object",
+                description: "Each multipart field name is a server-issued upload entry ID and each field value is that entry's Markdown body.",
+                additionalProperties: { type: "string", format: "binary" }
+              }
             }
           }
         },
-        successStatus: 202,
-        successSchema: ref("UploadResponse"),
-        successExample: responseExamples.uploadMarkdownFiles,
-        extraResponses: {
-          "413": errorResponse(
-            "Uploaded files exceed configured limits.",
-            "PAYLOAD_TOO_LARGE",
-            413
-          ),
-          "503": errorResponse(
-            "Worker queue is above the configured backpressure limit.",
-            "QUEUE_BACKPRESSURE",
-            503
-          )
-        }
+        successStatus: 200,
+        successSchema: ref("UploadEntryBatchResponse"),
+        successExample: responseExamples.uploadSessionContentBatch,
+        additionalErrorStatuses: [404, 409, 413, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}": {
+      get: operation({
+        tag: "Upload Sessions",
+        operationId: "getUploadSession",
+        summary: "Get upload progress",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          uploadSessionIdParameter(),
+          ...paginationParameters(),
+          {
+            name: "transferState",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["missing", "failed", "uploaded"] }
+          }
+        ],
+        requestExample: requestExamples.getUploadSession,
+        successStatus: 200,
+        successSchema: ref("UploadSessionStatusResponse"),
+        successExample: responseExamples.getUploadSession,
+        additionalErrorStatuses: [404, 422]
+      }),
+      delete: operation({
+        tag: "Upload Sessions",
+        operationId: "cancelUploadSession",
+        summary: "Cancel an unfinished upload session",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestExample: requestExamples.cancelUploadSession,
+        successStatus: 200,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.cancelUploadSession,
+        additionalErrorStatuses: [404, 409]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/reconcile": {
+      post: operation({
+        tag: "Upload Sessions",
+        operationId: "reconcileUploadSession",
+        summary: "Refresh blocked upload entries",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestExample: requestExamples.reconcileUploadSession,
+        successStatus: 200,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.reconcileUploadSession,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/finalize": {
+      post: operation({
+        tag: "Upload Sessions",
+        operationId: "finalizeUploadSession",
+        summary: "Complete an upload session",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
+        requestExample: requestExamples.finalizeUploadSession,
+        successStatus: 202,
+        successSchema: ref("UploadSessionResponse"),
+        successExample: responseExamples.finalizeUploadSession,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files": {
       get: operation({
         tag: "Source Files",
         operationId: "listKnowledgeBaseSourceFiles",
@@ -158,24 +259,12 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         ],
         requestExample: requestExamples.listKnowledgeBaseSourceFiles,
         successStatus: 200,
-        successSchema: ref("SourceFileListResponse"),
-        successExample: responseExamples.listKnowledgeBaseSourceFiles
+        successSchema: ref("SourceResourceFileListResponse"),
+        successExample: responseExamples.listKnowledgeBaseSourceFiles,
+        additionalErrorStatuses: [404, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/task-deletions": {
-      post: operation({
-        tag: "Source Files",
-        operationId: "deleteKnowledgeBaseSourceFileTasks",
-        summary: "Delete source-file tasks",
-        parameters: [knowledgeBaseIdParameter()],
-        requestSchema: ref("SourceFileTaskDeletionRequest"),
-        requestExample: requestExamples.deleteKnowledgeBaseSourceFileTasks,
-        successStatus: 200,
-        successSchema: ref("SourceFileTaskDeletionResponse"),
-        successExample: responseExamples.deleteKnowledgeBaseSourceFileTasks
-      })
-    },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}": {
       get: operation({
         tag: "Source Files",
         operationId: "getKnowledgeBaseSourceFile",
@@ -183,11 +272,196 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
         requestExample: requestExamples.getKnowledgeBaseSourceFile,
         successStatus: 200,
-        successSchema: ref("SourceFileResponse"),
-        successExample: responseExamples.getKnowledgeBaseSourceFile
+        successSchema: ref("SourceResourceFileResponse"),
+        successExample: responseExamples.getKnowledgeBaseSourceFile,
+        additionalErrorStatuses: [404]
+      }),
+      patch: operation({
+        tag: "Source Files",
+        operationId: "moveSourceFile",
+        summary: "Rename or move a source file",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          sourceFileIdParameter(),
+          idempotencyKeyHeader(),
+          expectedResourceRevisionHeader()
+        ],
+        requestSchema: ref("MoveSourceResourceRequest"),
+        requestExample: requestExamples.moveSourceFile,
+        successStatus: 202,
+        successSchema: ref("ResourceOperationResponse"),
+        successExample: responseExamples.moveSourceFile,
+        additionalErrorStatuses: [404, 409, 422]
+      }),
+      delete: operation({
+        tag: "Source Files",
+        operationId: "deleteSourceFile",
+        summary: "Delete a source file",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          sourceFileIdParameter(),
+          idempotencyKeyHeader(),
+          expectedResourceRevisionHeader()
+        ],
+        requestExample: requestExamples.deleteSourceFile,
+        successStatus: 202,
+        successSchema: ref("ResourceDeletionResponse"),
+        successExample: responseExamples.deleteSourceFile,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/content": {
+      get: operation({
+        tag: "Source Files",
+        operationId: "getSourceFileContent",
+        summary: "Read source Markdown content",
+        parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
+        requestExample: requestExamples.getSourceFileContent,
+        successStatus: 200,
+        successSchema: { type: "string" },
+        successExample: responseExamples.getSourceFileContent,
+        successContentType: "text/markdown",
+        additionalErrorStatuses: [404]
+      }),
+      put: operation({
+        tag: "Source Files",
+        operationId: "replaceSourceFileContent",
+        summary: "Replace complete Markdown content and optionally move the source file",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          sourceFileIdParameter(),
+          idempotencyKeyHeader(),
+          expectedResourceRevisionHeader(),
+          {
+            name: "X-Source-Relative-Path",
+            in: "header",
+            required: false,
+            description:
+              "Optional safe target relative path for a combined replace-and-move operation. Its target parent directory must already exist and be active.",
+            schema: { type: "string", example: "handbook/setup/install.md" }
+          }
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "text/markdown": {
+              schema: { type: "string" },
+              example: requestExamples.replaceSourceFileContent.body
+            }
+          }
+        },
+        requestExample: requestExamples.replaceSourceFileContent,
+        successStatus: 202,
+        successSchema: ref("ResourceOperationResponse"),
+        successExample: responseExamples.replaceSourceFileContent,
+        additionalErrorStatuses: [404, 409, 413, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories": {
+      get: operation({
+        tag: "Source Directories",
+        operationId: "listSourceDirectories",
+        summary: "List direct source directories",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          {
+            name: "parentDirectoryId",
+            in: "query",
+            required: false,
+            description: "Stable parent directory ID. Omit or use `root` for top-level directories.",
+            schema: { type: "string" }
+          },
+          ...paginationParameters()
+        ],
+        requestExample: requestExamples.listSourceDirectories,
+        successStatus: 200,
+        successSchema: ref("SourceDirectoryListResponse"),
+        successExample: responseExamples.listSourceDirectories,
+        additionalErrorStatuses: [404, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}": {
+      get: operation({
+        tag: "Source Directories",
+        operationId: "getSourceDirectory",
+        summary: "Get one source directory",
+        parameters: [knowledgeBaseIdParameter(), sourceDirectoryIdParameter()],
+        requestExample: requestExamples.getSourceDirectory,
+        successStatus: 200,
+        successSchema: ref("SourceDirectoryResponse"),
+        successExample: responseExamples.getSourceDirectory,
+        additionalErrorStatuses: [404]
+      }),
+      patch: operation({
+        tag: "Source Directories",
+        operationId: "moveSourceDirectory",
+        summary: "Rename or move a source directory",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          sourceDirectoryIdParameter(),
+          idempotencyKeyHeader(),
+          expectedResourceRevisionHeader()
+        ],
+        requestSchema: ref("MoveSourceResourceRequest"),
+        requestExample: requestExamples.moveSourceDirectory,
+        successStatus: 202,
+        successSchema: ref("ResourceOperationResponse"),
+        successExample: responseExamples.moveSourceDirectory,
+        additionalErrorStatuses: [404, 409, 422]
+      }),
+      delete: operation({
+        tag: "Source Directories",
+        operationId: "deleteSourceDirectory",
+        summary: "Delete a source directory and its contents",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          sourceDirectoryIdParameter(),
+          idempotencyKeyHeader(),
+          expectedResourceRevisionHeader()
+        ],
+        requestExample: requestExamples.deleteSourceDirectory,
+        successStatus: 202,
+        successSchema: ref("ResourceDeletionResponse"),
+        successExample: responseExamples.deleteSourceDirectory,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations": {
+      get: operation({
+        tag: "Resource Operations",
+        operationId: "listResourceOperations",
+        summary: "List resource operations",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          {
+            name: "state",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"] }
+          },
+          ...paginationParameters()
+        ],
+        requestExample: requestExamples.listResourceOperations,
+        successStatus: 200,
+        successSchema: ref("ResourceOperationListResponse"),
+        successExample: responseExamples.listResourceOperations,
+        additionalErrorStatuses: [404, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations/{operationId}": {
+      get: operation({
+        tag: "Resource Operations",
+        operationId: "getResourceOperation",
+        summary: "Get a resource operation",
+        parameters: [knowledgeBaseIdParameter(), resourceOperationIdParameter()],
+        requestExample: requestExamples.getResourceOperation,
+        successStatus: 200,
+        successSchema: ref("ResourceOperationResponse"),
+        successExample: responseExamples.getResourceOperation,
+        additionalErrorStatuses: [404]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events": {
       get: operation({
         tag: "Source Files",
         operationId: "listKnowledgeBaseSourceFileEvents",
@@ -196,10 +470,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listKnowledgeBaseSourceFileEvents,
         successStatus: 200,
         successSchema: ref("SourceFileEventListResponse"),
-        successExample: responseExamples.listKnowledgeBaseSourceFileEvents
+        successExample: responseExamples.listKnowledgeBaseSourceFileEvents,
+        additionalErrorStatuses: [404, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry": {
       post: operation({
         tag: "Source Files",
         operationId: "retryKnowledgeBaseSourceFile",
@@ -207,18 +482,19 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
         requestExample: requestExamples.retryKnowledgeBaseSourceFile,
         successStatus: 202,
-        successSchema: ref("SourceFileRetryResponse"),
+        successSchema: ref("SourceResourceFileResponse"),
         successExample: responseExamples.retryKnowledgeBaseSourceFile,
+        additionalErrorStatuses: [404, 409, 422],
         extraResponses: {
           "503": errorResponse(
-            "Worker queue is above the configured backpressure limit.",
+            "The service is temporarily at processing capacity. Retry after a short delay.",
             "QUEUE_BACKPRESSURE",
             503
           )
         }
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/tree": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/tree": {
       get: operation({
         tag: "Files",
         operationId: "listKnowledgeBaseTree",
@@ -233,6 +509,13 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             schema: { type: "string", default: "" }
           },
           {
+            name: "query",
+            in: "query",
+            required: false,
+            description: "Optional fuzzy tree search query. When set, matching files and directories are returned with ancestor chains.",
+            schema: { type: "string", example: "guide" }
+          },
+          {
             name: "entryType",
             in: "query",
             required: false,
@@ -244,10 +527,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listKnowledgeBaseTree,
         successStatus: 200,
         successSchema: ref("TreeResponse"),
-        successExample: responseExamples.listKnowledgeBaseTree
+        successExample: responseExamples.listKnowledgeBaseTree,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/content": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/content": {
       get: operation({
         tag: "Files",
         operationId: "getFileContentByPath",
@@ -256,10 +540,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.getFileContentByPath,
         successStatus: 200,
         successSchema: ref("FileContentResponse"),
-        successExample: responseExamples.getFileContentByPath
+        successExample: responseExamples.getFileContentByPath,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/search": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/search": {
       get: operation({
         tag: "Files",
         operationId: "searchGeneratedFiles",
@@ -268,32 +553,95 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.searchGeneratedFiles,
         successStatus: 200,
         successSchema: ref("FileSearchResponse"),
-        successExample: responseExamples.searchGeneratedFiles
+        successExample: responseExamples.searchGeneratedFiles,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/expand": {
+      get: operation({
+        tag: "Files",
+        operationId: "expandGraph",
+        summary: "Expand file graph relationships",
+        parameters: [
+          knowledgeBaseIdParameter(),
+          {
+            name: "fileId",
+            in: "query",
+            required: false,
+            description: "Generated file ID or source file ID used to start exploration. Provide exactly one seed parameter.",
+            schema: { type: "string" }
+          },
+          {
+            name: "nodeId",
+            in: "query",
+            required: false,
+            description: "Relationship node identifier returned by a graph response. Provide exactly one seed parameter.",
+            schema: { type: "string" }
+          },
+          {
+            name: "edgeId",
+            in: "query",
+            required: false,
+            description: "Relationship edge identifier returned by a graph response. Provide exactly one seed parameter.",
+            schema: { type: "string" }
+          },
+          {
+            name: "query",
+            in: "query",
+            required: false,
+            description: "Short query used to find a starting file. Provide exactly one seed parameter.",
+            schema: { type: "string", minLength: 2, maxLength: 160 }
+          },
+          {
+            name: "depth",
+            in: "query",
+            required: false,
+            description: "Number of relationship levels to explore.",
+            schema: { type: "integer", enum: [0, 1, 2], default: 1 }
+          },
+          {
+            name: "fanout",
+            in: "query",
+            required: false,
+            description: "Maximum related files returned for each explored file.",
+            schema: { type: "integer", minimum: 0, maximum: 25, default: 10 }
+          },
+          ...paginationParameters()
+        ],
+        requestExample: requestExamples.expandGraph,
+        successStatus: 200,
+        successSchema: ref("GraphExpansionResponse"),
+        successExample: responseExamples.expandGraph,
+        additionalErrorStatuses: [404, 409, 422]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/insights": {
+      get: operation({
+        tag: "Files",
+        operationId: "getGraphInsights",
+        summary: "Get graph insights",
+        parameters: [knowledgeBaseIdParameter()],
+        requestExample: requestExamples.getGraphInsights,
+        successStatus: 200,
+        successSchema: ref("GraphInsightsResponse"),
+        successExample: responseExamples.getGraphInsights,
+        additionalErrorStatuses: [404, 409]
+      })
+    },
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}": {
       get: operation({
         tag: "Files",
         operationId: "getFileById",
-        summary: "Get generated or source file metadata",
+        summary: "Get generated file metadata",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.getFileById,
         successStatus: 200,
         successSchema: ref("FileDetailResponse"),
-        successExample: responseExamples.getFileById
-      }),
-      delete: operation({
-        tag: "Files",
-        operationId: "deleteFileById",
-        summary: "Delete a source-backed generated file",
-        parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
-        requestExample: requestExamples.deleteFileById,
-        successStatus: 200,
-        successSchema: ref("FileDeletionResponse"),
-        successExample: responseExamples.deleteFileById
+        successExample: responseExamples.getFileById,
+        additionalErrorStatuses: [404, 409]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content": {
       get: operation({
         tag: "Files",
         operationId: "getFileContentById",
@@ -302,10 +650,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.getFileContentById,
         successStatus: 200,
         successSchema: ref("FileContentResponse"),
-        successExample: responseExamples.getFileContentById
+        successExample: responseExamples.getFileContentById,
+        additionalErrorStatuses: [404, 409]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related": {
       get: operation({
         tag: "Files",
         operationId: "listRelatedFiles",
@@ -314,22 +663,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listRelatedFiles,
         successStatus: 200,
         successSchema: ref("RelatedFileListResponse"),
-        successExample: responseExamples.listRelatedFiles
+        successExample: responseExamples.listRelatedFiles,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v1/knowledge-bases/{knowledgeBaseId}/files": {
-      delete: operation({
-        tag: "Files",
-        operationId: "deleteFileByPath",
-        summary: "Delete a source-backed generated file by logical path",
-        parameters: [knowledgeBaseIdParameter(), filePathQueryParameter(true)],
-        requestExample: requestExamples.deleteFileByPath,
-        successStatus: 200,
-        successSchema: ref("FileDeletionResponse"),
-        successExample: responseExamples.deleteFileByPath
-      })
-    },
-    "/openapi/v1/webhooks": {
+    "/openapi/v2/webhooks": {
       post: operation({
         tag: "Webhooks",
         operationId: "createWebhook",
@@ -338,7 +676,8 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.createWebhook,
         successStatus: 201,
         successSchema: ref("WebhookCreateResponse"),
-        successExample: responseExamples.createWebhook
+        successExample: responseExamples.createWebhook,
+        additionalErrorStatuses: [422]
       }),
       get: operation({
         tag: "Webhooks",
@@ -348,10 +687,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listWebhooks,
         successStatus: 200,
         successSchema: ref("WebhookListResponse"),
-        successExample: responseExamples.listWebhooks
+        successExample: responseExamples.listWebhooks,
+        additionalErrorStatuses: [422]
       })
     },
-    "/openapi/v1/webhooks/{webhookId}": {
+    "/openapi/v2/webhooks/{webhookId}": {
       delete: operation({
         tag: "Webhooks",
         operationId: "deleteWebhook",
@@ -360,10 +700,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.deleteWebhook,
         successStatus: 200,
         successSchema: ref("DeleteResponse"),
-        successExample: responseExamples.deleteWebhook
+        successExample: responseExamples.deleteWebhook,
+        additionalErrorStatuses: [404]
       })
     },
-    "/openapi/v1/webhook-deliveries": {
+    "/openapi/v2/webhook-deliveries": {
       get: operation({
         tag: "Webhooks",
         operationId: "listWebhookDeliveries",
@@ -372,10 +713,11 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.listWebhookDeliveries,
         successStatus: 200,
         successSchema: ref("WebhookDeliveryListResponse"),
-        successExample: responseExamples.listWebhookDeliveries
+        successExample: responseExamples.listWebhookDeliveries,
+        additionalErrorStatuses: [422]
       })
     },
-    "/openapi/v1/webhook-deliveries/{deliveryId}/redeliver": {
+    "/openapi/v2/webhook-deliveries/{deliveryId}/redeliver": {
       post: operation({
         tag: "Webhooks",
         operationId: "redeliverWebhook",
@@ -384,8 +726,59 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestExample: requestExamples.redeliverWebhook,
         successStatus: 202,
         successSchema: ref("WebhookRedeliveryResponse"),
-        successExample: responseExamples.redeliverWebhook
+        successExample: responseExamples.redeliverWebhook,
+        additionalErrorStatuses: [404, 409]
       })
     }
+  };
+}
+
+function uploadSessionIdParameter() {
+  return {
+    name: "uploadSessionId",
+    in: "path",
+    required: true,
+    description: "Upload session identifier returned by createUploadSession.",
+    schema: { type: "string", example: "upload-session-123" }
+  };
+}
+
+function idempotencyKeyHeader() {
+  return {
+    name: "Idempotency-Key",
+    in: "header",
+    required: true,
+    description: "Stable client key for replaying the same mutation safely.",
+    schema: { type: "string", example: "upload-folder-2026-07-10-001" }
+  };
+}
+
+function expectedResourceRevisionHeader() {
+  return {
+    name: "If-Match",
+    in: "header",
+    required: true,
+    description: "Current positive resource revision. A stale revision returns a conflict.",
+    schema: { type: "string", example: '"3"' }
+  };
+}
+
+function sourceDirectoryIdParameter() {
+  return {
+    name: "directoryId",
+    in: "path",
+    required: true,
+    description: "Stable source-directory identifier returned by source-directory or tree reads.",
+    schema: { type: "string", example: "source-directory-123" }
+  };
+}
+
+function resourceOperationIdParameter() {
+  return {
+    name: "operationId",
+    in: "path",
+    required: true,
+    description: "Asynchronous resource-operation identifier returned by a source mutation.",
+    schema: { type: "string", example: "resource-operation-123" }
   };
 }

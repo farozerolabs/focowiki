@@ -62,6 +62,7 @@ Use them for tool inputs, exploration rounds, stop conditions, citation style, a
 - `get_file`: read safe metadata for one file.
 - `read_file`: read Markdown content by `fileId` or logical `path`.
 - `read_related`: read bounded related files for a file.
+- `expand_graph`: explore related files from a file or query when the host runtime provides relationship exploration.
 - `search_files`: find candidate files for an Agent-generated search phrase when the host runtime provides search.
 
 ## Process
@@ -71,17 +72,18 @@ Use an exploration loop before answering:
 1. Read all files listed in Required Reading in full.
 2. Call `read_file` with `path: "index.md"` for broad context.
 3. Call `read_file` with `path: "schema.md"` when metadata fields are unclear.
-4. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
-5. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
-6. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
-7. Use `search_files`, `list_tree`, Markdown links, `read_related`, or `read_file` with `path: "_graph/by-file/{fileId}.json"` as the next discovery action.
-8. Read useful candidates that can close the current evidence gap.
-9. Track visited `fileId` and `path` values to avoid repeated reads.
-10. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
-11. When `search_files` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions` when present, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
-12. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
-13. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
-14. Cite file titles or paths in the final answer.
+4. Inspect `_index/*` or the file tree when the question needs generated index, link, or directory context.
+5. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
+6. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
+7. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
+8. Use `search_files`, `list_tree`, Markdown links, `read_related`, `expand_graph`, or `read_file` with a returned `graphRef` as the next discovery action.
+9. Read useful candidates that can close the current evidence gap.
+10. Track visited `fileId` and `path` values to avoid repeated reads.
+11. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
+12. When `search_files` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions` when present, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
+13. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
+14. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
+15. Cite file titles or paths in the final answer.
 
 ## Identifier Rules
 
@@ -183,6 +185,34 @@ Output: candidate file entries, `searchStatus`, optional `message`, optional `ne
 Candidate entries can include `fileId`, `path`, `title`, `description`, `score`, and `matchedFields`.
 
 `search_files` is optional. The Agent chooses search phrases from the user question, visible knowledge-base context, already-read files, and remaining evidence gaps. After reading useful files, the Agent updates its phrase list, path list, related candidates, and remaining gap. When `searchStatus` is `no_candidates` or `index_unavailable`, follow `nextActions`, read `index.md`, use `list_tree`, try another phrase, or inspect graph context.
+
+## expand_graph
+
+Input by file:
+
+```json
+{
+  "fileId": "file_123",
+  "depth": 1,
+  "fanout": 10,
+  "cursor": null
+}
+```
+
+Input by query:
+
+```json
+{
+  "query": "workspace preparation",
+  "depth": 1,
+  "fanout": 10,
+  "cursor": null
+}
+```
+
+Output: seed details, bounded relationship records, file paths, read actions, and `nextCursor`.
+
+`expand_graph` is optional. Use it after a useful file, related record, graph record, or search candidate appears. Read returned Markdown files before using them as answer evidence.
 ````
 
 ## `references/exploration-workflow.md`
@@ -219,7 +249,7 @@ Use this loop before answering any substantive question.
 3. Derive initial search phrases when the question contains a concrete concept, title, product, date, status, version, owner, or named entity.
 4. Write the exploration plan.
 5. Start with a broad discovery action unless an exact path is already known.
-6. Use a discovery action to build a candidate set from search, tree, links, related files, or graph records.
+6. Use a discovery action to build a candidate set from search, tree, `_index/*`, links, related files, graph expansion, or graph records.
 7. Read useful candidates that can close the current gap, using logical `path` when present or `fileId` when no path is available.
 8. Extract new leads from the content, including titles, headings, terms, paths, links, graph records, and unresolved gaps.
 9. Record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap` for the round.
@@ -244,9 +274,10 @@ Before writing the final answer, confirm that the loop ended because a stop cond
 
 - Use `index.md` for scope, available groups, and obvious paths.
 - Use `schema.md` when metadata fields or file types are unclear.
+- Use `_index/*` when generated index, link, tree, or manifest hints can narrow the next file read.
 - Use `search_files` for concepts, titles, named entities, and terms from already-read files.
 - Use `list_tree` when search is weak, unavailable, or folder exploration is useful.
-- Use graph files, related files, and Markdown links when they can close a remaining evidence gap.
+- Use `expand_graph`, graph files, related files, and Markdown links when they can close a remaining evidence gap.
 
 ## Search and Read
 

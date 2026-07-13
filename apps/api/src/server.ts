@@ -18,6 +18,10 @@ import {
   createRuntimeSettingsService,
   type RuntimeSettingsService
 } from "./runtime-settings/service.js";
+import type { ApplicationRuntime } from "./application/ports/runtime.js";
+import type { UploadSessionStoragePort } from "./application/ports/upload-session-storage.js";
+import { systemApplicationRuntime } from "./infrastructure/runtime/system-runtime.js";
+import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -36,6 +40,8 @@ type ApiAppServices = {
   redis: RedisCoordinator | null;
   repositories: AdminRepositories | null;
   runtimeSettings: RuntimeSettingsService | null;
+  applicationRuntime: ApplicationRuntime;
+  uploadSessionStorage: UploadSessionStoragePort;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
@@ -68,6 +74,7 @@ export function createApiApp(options: ApiAppOptions): Hono {
 
 function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
   const repositories = options.repositories ?? null;
+  const storage = options.storage ?? createS3StorageAdapter(options.config.storage);
   const runtimeSettings =
     options.runtimeSettings ??
     (repositories?.runtimeSettings
@@ -80,7 +87,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
 
   return {
     config: options.config,
-    storage: options.storage ?? createS3StorageAdapter(options.config.storage),
+    storage,
     modelClient:
       options.modelClient ??
       (options.config.model.enabled
@@ -100,6 +107,8 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
       : null,
     redis: options.redis ?? null,
     repositories,
-    runtimeSettings
+    runtimeSettings,
+    applicationRuntime: systemApplicationRuntime,
+    uploadSessionStorage: createUploadSessionStoragePort(storage)
   };
 }

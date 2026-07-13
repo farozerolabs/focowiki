@@ -1,6 +1,6 @@
 import type { RuntimeConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import { loadDeploymentSecret, readLegacyRuntimeSecret } from "../security/runtime-secrets.js";
+import { loadDeploymentSecret } from "../security/runtime-secrets.js";
 import {
   decryptRuntimeSecret,
   encryptRuntimeSecret,
@@ -12,6 +12,7 @@ import {
   RuntimeSettingsValidationError,
   serializePublicModel,
   type ModelApiMode,
+  type RuntimeGraphSettings,
   type RuntimeModelConfigDraft,
   type RuntimeModelConfigPrivate,
   type RuntimeModelConfigPublic,
@@ -23,10 +24,12 @@ import {
 } from "./types.js";
 import {
   createRuntimeSettingsDefaults,
+  sanitizeGraphSettings,
   sanitizePublicationSettings,
   sanitizeRateLimitSettings,
   sanitizeUploadGenerationSettings,
   sanitizeWorkerSettings,
+  validateGraphSettings,
   validateModelDraft,
   validatePublicationSettings,
   validateRateLimitSettings,
@@ -50,6 +53,7 @@ export type RuntimeSettingsService = {
     worker: RuntimeSettingsSnapshot["worker"];
     publication: RuntimePublicationSettings;
     uploadGeneration: RuntimeUploadGenerationSettings;
+    graph: RuntimeGraphSettings;
     activeModel: RuntimeModelConfigPublic | null;
   }>;
   updateRateLimits: (input: {
@@ -66,6 +70,10 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   updateUploadGeneration: (input: {
     value: RuntimeUploadGenerationSettings;
+    actor?: string | null | undefined;
+  }) => Promise<RuntimeSettingsSnapshot>;
+  updateGraph: (input: {
+    value: RuntimeGraphSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   listModels: () => Promise<RuntimeModelConfigPublic[]>;
@@ -86,7 +94,6 @@ export function createRuntimeSettingsService(input: {
   const deploymentSecret = loadDeploymentSecret({
     directory: input.deploymentSecretDirectory
   });
-  const legacySecret = readLegacyRuntimeSecret();
   let bootstrapPromise: Promise<void> | null = null;
   let cache: RuntimeSettingsCache | null = null;
 
@@ -127,12 +134,19 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
+    if (!existingKeys.has("graph")) {
+      await input.repository.upsertSetting({
+        key: "graph",
+        value: defaults.graph,
+        source: "bootstrap"
+      });
+    }
 
     const models = await input.repository.listModels();
     if (models.length === 0 && defaults.model) {
       await createModelInternal(defaults.model, "bootstrap");
     }
-    await migrateModelKeyProtection();
+    await validateModelKeyProtection();
 
     await bumpVersion();
   }
@@ -150,12 +164,14 @@ export function createRuntimeSettingsService(input: {
       workerRecord,
       publicationRecord,
       uploadGenerationRecord,
+      graphRecord,
       model
     ] = await Promise.all([
       input.repository.getSetting("rate_limits"),
       input.repository.getSetting("worker"),
       input.repository.getSetting("publication"),
       input.repository.getSetting("upload_generation"),
+      input.repository.getSetting("graph"),
       input.repository.getActiveModel()
     ]);
     const snapshot: RuntimeSettingsSnapshot = {
@@ -176,6 +192,12 @@ export function createRuntimeSettingsService(input: {
           ...defaults.uploadGeneration,
           ...(uploadGenerationRecord?.value ?? {})
         } as RuntimeUploadGenerationSettings
+      ),
+      graph: sanitizeGraphSettings(
+        {
+          ...defaults.graph,
+          ...(graphRecord?.value ?? {})
+        } as RuntimeGraphSettings
       ),
       activeModel: model ? tryDecryptModel(model) : null
     };
@@ -297,6 +319,7 @@ export function createRuntimeSettingsService(input: {
         worker: snapshot.worker,
         publication: snapshot.publication,
         uploadGeneration: snapshot.uploadGeneration,
+        graph: snapshot.graph,
         activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
       };
     },
@@ -327,6 +350,13 @@ export function createRuntimeSettingsService(input: {
         throw new RuntimeSettingsValidationError(issues);
       }
       return updateSetting("upload_generation", sanitizeUploadGenerationSettings(value), actor);
+    },
+    async updateGraph({ value, actor }) {
+      const issues = validateGraphSettings(value);
+      if (issues.length > 0) {
+        throw new RuntimeSettingsValidationError(issues);
+      }
+      return updateSetting("graph", sanitizeGraphSettings(value), actor);
     },
     async listModels() {
       await ensureBootstrapped();
@@ -412,7 +442,7 @@ export function createRuntimeSettingsService(input: {
     await input.redis?.setRuntimeSettingsVersion?.(`${Date.now()}`);
   }
 
-  async function migrateModelKeyProtection(): Promise<void> {
+  async function validateModelKeyProtection(): Promise<void> {
     const models = await input.repository.listModels();
 
     for (const model of models) {
@@ -421,43 +451,28 @@ export function createRuntimeSettingsService(input: {
         continue;
       }
 
-      const legacy = legacySecret ? tryDecryptRuntimeModel(model, legacySecret) : null;
-      if (!legacy) {
-        if (model.status === "active" || model.isActive) {
-          await input.repository.setModelStatus({
-            id: model.id,
+      if (model.status === "active" || model.isActive) {
+        await input.repository.setModelStatus({
+          id: model.id,
+          status: "paused",
+          isActive: false
+        });
+        await input.repository.createAuditLog({
+          settingKey: "model_configs",
+          action: "pause_unrecoverable_key",
+          actor: "bootstrap",
+          value: serializePublicModel({
+            ...model,
             status: "paused",
             isActive: false
-          });
-          await input.repository.createAuditLog({
-            settingKey: "model_configs",
-            action: "pause_unrecoverable_key",
-            actor: "bootstrap",
-            value: serializePublicModel({
-              ...model,
-              status: "paused",
-              isActive: false
-            })
-          });
-        }
-        continue;
+          })
+        });
       }
-
-      await input.repository.updateModelApiKeyProtection({
-        id: model.id,
-        encryptedApiKey: encryptRuntimeSecret({
-          value: legacy,
-          secret: deploymentSecret
-        }),
-        apiKeyFingerprint: fingerprintRuntimeSecret(legacy)
-      });
     }
   }
 
   function tryDecryptModel(model: RuntimeModelConfigPrivate): RuntimeModelConfigPrivate | null {
-    const apiKey =
-      tryDecryptRuntimeModel(model, deploymentSecret) ??
-      (legacySecret ? tryDecryptRuntimeModel(model, legacySecret) : null);
+    const apiKey = tryDecryptRuntimeModel(model, deploymentSecret);
 
     if (!apiKey) {
       return null;

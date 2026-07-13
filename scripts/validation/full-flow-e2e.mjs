@@ -3,24 +3,20 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { loadEnvFile } from "node:process";
 import { pathToFileURL } from "node:url";
-import { createValidationRunId } from "./lib/compatible-full-flow/run-state.mjs";
+import { createValidationRunId } from "./lib/validation-run-id.mjs";
 import {
   DEFAULT_FULL_CODEBASE_REPORT_DIR,
   createFullCodebaseReport,
   writeFullCodebaseReport
 } from "./lib/full-codebase-validation.mjs";
 
-const DEFAULT_CHANGE_ID = "validate-unified-openapi-e2e";
-const DEMO_REPO_ENV = "FOCOWIKI_DEMO_E2E_DEMO_REPO";
-const DEFAULT_DEMO_REPO = "../focowiki-demo";
+const DEFAULT_CHANGE_ID = "validate-clean-architecture-full-system";
 
 loadLocalEnv();
 
 export function readFullFlowConfig(command = "all", env = process.env) {
   const normalizedCommand = normalizeCommand(command);
   const changeId = env.FOCOWIKI_FULL_FLOW_CHANGE_ID?.trim() || DEFAULT_CHANGE_ID;
-  const demoRepo = path.resolve(env[DEMO_REPO_ENV]?.trim() || DEFAULT_DEMO_REPO);
-  const demoRepoExists = fs.existsSync(path.join(demoRepo, "package.json"));
   const reportDir = path.resolve(
     env.FOCOWIKI_FULL_FLOW_REPORT_DIR?.trim() ||
       env.FOCOWIKI_VALIDATION_REPORT_DIR?.trim() ||
@@ -38,11 +34,8 @@ export function readFullFlowConfig(command = "all", env = process.env) {
     reportDir,
     largeProfile: normalizedCommand === "large",
     includeBrowser: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_BROWSER, true),
-    includeDemo: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DEMO, demoRepoExists),
     includeRepositoryChecks: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY, true),
     includeDocker: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER, false),
-    demoRepo,
-    demoRepoExists,
     requireModel: readBoolean(env.FOCOWIKI_VALIDATION_REQUIRE_MODEL, false),
     sampleSourceEnv: "FOCOWIKI_VALIDATION_MARKDOWN_DIR"
   };
@@ -63,12 +56,6 @@ export function buildFullFlowPlan(config) {
   if (config.largeProfile && !process.env.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS) {
     validationEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS = "10000";
   }
-  const demoEnv = {
-    FOCOWIKI_DEMO_E2E_REPORT_DIR: config.reportDir,
-    FOCOWIKI_DEMO_E2E_ENABLE_DEVELOPER_ROUTE_CHECKS:
-      process.env.FOCOWIKI_DEMO_E2E_ENABLE_DEVELOPER_ROUTE_CHECKS ?? "true"
-  };
-
   const steps = [
     validationStep("sample-selection", [
       process.execPath,
@@ -88,16 +75,6 @@ export function buildFullFlowPlan(config) {
         process.execPath,
         ["scripts/validation/cleaned-markdown-browser.mjs", browserCommand],
         validationEnv
-      ])
-    );
-  }
-
-  if (config.includeDemo) {
-    steps.push(
-      validationStep("demo-agent-e2e", [
-        process.execPath,
-        ["scripts/validation/demo-agent-e2e.mjs", "e2e"],
-        demoEnv
       ])
     );
   }
@@ -132,10 +109,6 @@ export function createFullFlowReport(config, steps) {
 
 async function main(argv = process.argv.slice(2)) {
   const config = readFullFlowConfig(argv[0] || "all");
-
-  if (config.includeDemo && !config.demoRepoExists) {
-    throw new Error(`${DEMO_REPO_ENV} must point to the standalone demo backend repository.`);
-  }
 
   const steps = buildFullFlowPlan(config);
   const report = createFullFlowReport(config, steps);
@@ -194,8 +167,6 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 function validationStep(id, [command, args, extraEnv]) {
-  const reportName = id === "demo-agent-e2e" ? "demo-agent-e2e-report.json" : null;
-
   return {
     id,
     layer:
@@ -203,14 +174,12 @@ function validationStep(id, [command, args, extraEnv]) {
         ? "black-box"
         : id === "api-whitebox-blackbox"
           ? "mixed"
-          : id === "demo-agent-e2e"
-            ? "black-box"
-            : "white-box",
+          : "white-box",
     command,
     args,
     extraEnv,
     safeCommand: `${path.basename(command)} ${args.join(" ")}`,
-    safeReportPath: reportName ? `<change-dir>/${reportName}` : null
+    safeReportPath: null
   };
 }
 
@@ -226,15 +195,11 @@ function pnpmStep(id, args) {
   };
 }
 
-async function runStep(step, config) {
+async function runStep(step) {
   const env = {
     ...process.env,
     ...step.extraEnv
   };
-
-  if (step.id === "demo-agent-e2e") {
-    env.FOCOWIKI_DEMO_E2E_DEMO_REPO = config.demoRepo;
-  }
 
   await spawnCommand(step.command, step.args, env);
 }

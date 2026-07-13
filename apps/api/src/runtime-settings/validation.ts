@@ -1,5 +1,7 @@
 import {
+  DEFAULT_UPLOAD_SESSION_SETTINGS,
   resolveSecurityConfig,
+  resolveGraphConfig,
   resolveWorkerConfig,
   type RuntimeConfig,
   type WorkerRuntimeConfig
@@ -8,6 +10,7 @@ import {
   modelApiModeValues,
   publicationModeValues,
   rateLimitKeys,
+  type RuntimeGraphSettings,
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
@@ -26,10 +29,13 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     worker: sanitizeWorkerSettings(resolveWorkerConfig(config)),
     publication: {
       ...config.publication,
+      directoryIndexMaxEntries: config.publication.directoryIndexMaxEntries ?? 200,
+      directoryIndexMaxBytes: config.publication.directoryIndexMaxBytes ?? 65_536,
       okfLogMaxEntries: config.okf?.log.maxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES,
       okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES
     },
     uploadGeneration: sanitizeUploadGenerationSettings(config.upload),
+    graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     model: config.model.enabled
         ? {
           displayName: config.model.modelName,
@@ -162,13 +168,69 @@ export function validatePublicationSettings(input: unknown): RuntimeSettingsVali
     "indexShardSize",
     "linkIndexShardSize",
     "manifestShardSize",
-    "graphEdgeShardSize",
-    "graphCandidateLimit",
     "graphMaintenanceBatchSize",
     "rootSummaryLimit",
+    "directoryIndexMaxEntries",
+    "directoryIndexMaxBytes",
     "okfLogMaxEntries",
     "okfLogMaxBytes"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  return issues;
+}
+
+export function validateGraphSettings(input: unknown): RuntimeSettingsValidationIssue[] {
+  const issues: RuntimeSettingsValidationIssue[] = [];
+  const value = objectValue(input);
+
+  [
+    "candidateLimit",
+    "acceptedEdgeLimit",
+    "searchDefaultFanout",
+    "searchMaxFanout",
+    "publicationShardSize",
+    "cacheTtlSeconds",
+    "genericPhraseThreshold"
+  ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  requireGraphDepth(value.searchDefaultDepth, "searchDefaultDepth", issues);
+  requireGraphDepth(value.searchMaxDepth, "searchMaxDepth", issues);
+
+  if (
+    Number.isInteger(value.searchDefaultDepth) &&
+    Number.isInteger(value.searchMaxDepth) &&
+    Number(value.searchDefaultDepth) > Number(value.searchMaxDepth)
+  ) {
+    issues.push({
+      field: "searchDefaultDepth",
+      message: "searchDefaultDepth must be less than or equal to searchMaxDepth"
+    });
+  }
+
+  if (
+    Number.isInteger(value.searchDefaultFanout) &&
+    Number.isInteger(value.searchMaxFanout) &&
+    Number(value.searchDefaultFanout) > Number(value.searchMaxFanout)
+  ) {
+    issues.push({
+      field: "searchDefaultFanout",
+      message: "searchDefaultFanout must be less than or equal to searchMaxFanout"
+    });
+  }
+
+  if (typeof value.insightEnabled !== "boolean") {
+    issues.push({
+      field: "insightEnabled",
+      message: "insightEnabled must be true or false"
+    });
+  }
+
+  if (typeof value.modelReviewEnabled !== "boolean") {
+    issues.push({
+      field: "modelReviewEnabled",
+      message: "modelReviewEnabled must be true or false"
+    });
+  }
 
   return issues;
 }
@@ -181,10 +243,12 @@ export function validateUploadGenerationSettings(
 
   [
     "maxBytes",
-    "maxFiles",
     "generationBatchSize",
     "fileProcessingConcurrency",
-    "storageConcurrency"
+    "sessionTtlSeconds",
+    "manifestPageSize",
+    "contentBatchMaxFiles",
+    "contentBatchMaxBytes"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
   return issues;
@@ -220,24 +284,46 @@ export function sanitizePublicationSettings(
     indexShardSize: input.indexShardSize,
     linkIndexShardSize: input.linkIndexShardSize,
     manifestShardSize: input.manifestShardSize,
-    graphEdgeShardSize: input.graphEdgeShardSize,
-    graphCandidateLimit: input.graphCandidateLimit,
     graphMaintenanceBatchSize: input.graphMaintenanceBatchSize,
     rootSummaryLimit: input.rootSummaryLimit,
+    directoryIndexMaxEntries: input.directoryIndexMaxEntries,
+    directoryIndexMaxBytes: input.directoryIndexMaxBytes,
     okfLogMaxEntries: input.okfLogMaxEntries,
     okfLogMaxBytes: input.okfLogMaxBytes
   };
 }
 
+export function sanitizeGraphSettings(input: RuntimeGraphSettings): RuntimeGraphSettings {
+  return {
+    candidateLimit: input.candidateLimit,
+    acceptedEdgeLimit: input.acceptedEdgeLimit,
+    searchDefaultDepth: input.searchDefaultDepth,
+    searchMaxDepth: input.searchMaxDepth,
+    searchDefaultFanout: input.searchDefaultFanout,
+    searchMaxFanout: input.searchMaxFanout,
+    insightEnabled: input.insightEnabled,
+    modelReviewEnabled: input.modelReviewEnabled,
+    publicationShardSize: input.publicationShardSize,
+    cacheTtlSeconds: input.cacheTtlSeconds,
+    genericPhraseThreshold: input.genericPhraseThreshold
+  };
+}
+
 export function sanitizeUploadGenerationSettings(
-  input: RuntimeUploadGenerationSettings
+  input: RuntimeConfig["upload"]
 ): RuntimeUploadGenerationSettings {
   return {
     maxBytes: input.maxBytes,
-    maxFiles: input.maxFiles,
     generationBatchSize: input.generationBatchSize,
     fileProcessingConcurrency: input.fileProcessingConcurrency,
-    storageConcurrency: input.storageConcurrency
+    sessionTtlSeconds:
+      input.sessionTtlSeconds ?? DEFAULT_UPLOAD_SESSION_SETTINGS.sessionTtlSeconds,
+    manifestPageSize:
+      input.manifestPageSize ?? DEFAULT_UPLOAD_SESSION_SETTINGS.manifestPageSize,
+    contentBatchMaxFiles:
+      input.contentBatchMaxFiles ?? DEFAULT_UPLOAD_SESSION_SETTINGS.contentBatchMaxFiles,
+    contentBatchMaxBytes:
+      input.contentBatchMaxBytes ?? DEFAULT_UPLOAD_SESSION_SETTINGS.contentBatchMaxBytes
   };
 }
 
@@ -261,6 +347,16 @@ function requireNonEmptyString(
 ) {
   if (typeof value !== "string" || !value.trim()) {
     issues.push({ field, message: `${field} is required` });
+  }
+}
+
+function requireGraphDepth(
+  value: unknown,
+  field: string,
+  issues: RuntimeSettingsValidationIssue[]
+) {
+  if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 2) {
+    issues.push({ field, message: `${field} must be 0, 1, or 2` });
   }
 }
 

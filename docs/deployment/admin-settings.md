@@ -82,15 +82,17 @@ The file-processing list shows both source-file processing state and generated-o
 
 ## Upload and Generation
 
-Upload and generation settings control Markdown upload size, request size, and generation work batching.
+Upload and generation settings control Markdown file size, resumable upload sessions, bounded transfer batches, and generation work batching. Folder size has no business-level file-count limit; the manifest and content are transferred in bounded pages.
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Max upload bytes | Maximum total bytes accepted by one upload request. | `10485760` for 10 MB, or lower for small deployments. |
-| Max upload files | Maximum Markdown files accepted by one upload request. | 50 on an 8C/32G server. |
+| Max upload bytes | Maximum bytes accepted for one Markdown source file. | `10485760` for 10 MB, or lower for small deployments. |
 | Generation batch size | Batch size used by generation, graph, indexing, and publication work. | 100 on an 8C/32G server. |
 | File processing concurrency | Number of file processing operations inside one background job. | 1 for stable large imports. |
-| Storage concurrency | Number of uploaded source files written to S3-compatible storage at the same time. | 4, or 6 when S3 is stable. |
+| Upload session TTL seconds | Time available to resume an unfinished upload session. | `86400`. |
+| Manifest page size | Maximum relative-path entries registered in one manifest request. | 500. |
+| Content batch max files | Maximum Markdown bodies transferred in one content request. | 24. |
+| Content batch max bytes | Maximum total bytes transferred in one content request. | `16777216` for 16 MB. |
 
 Uploads accept Markdown files only. A source file can be uploaded successfully while processing and publication continue in the background.
 
