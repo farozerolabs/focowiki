@@ -63,7 +63,7 @@
     "docs:build": "pnpm docs:generate-api && vitepress build docs",
     "docs:preview": "vitepress preview docs --host 127.0.0.1",
     "docs:validate": "pnpm docs:generate-api && tsx scripts/docs/validate-docs.ts && vitepress build docs",
-    "test:validation": "node --test scripts/validation/test/*.test.mjs"
+    "test:validation": "tsx scripts/openapi/export-developer-openapi.ts && node --test scripts/validation/test/*.test.mjs"
   },
   "devDependencies": {
     "@redocly/cli": "2.35.1",
