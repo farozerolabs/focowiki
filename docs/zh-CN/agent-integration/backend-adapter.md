@@ -34,9 +34,11 @@ title: 后端适配
 
 | 工作流 | 常用 operations |
 | --- | --- |
-| 知识库管理 | `listKnowledgeBases`、`createKnowledgeBase`、`deleteKnowledgeBase` |
-| Markdown 入库 | `uploadMarkdownFiles`、`listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
-| 生成文件维护 | `listKnowledgeBaseTree`、`getFileById`、`getFileContentById`、`getFileContentByPath`、`deleteFileById`、`deleteFileByPath` |
+| 知识库管理 | `listKnowledgeBases`、`createKnowledgeBase`、`updateKnowledgeBase`、`deleteKnowledgeBase` |
+| Markdown 入库 | `createUploadSession`、`addUploadManifestEntries`、`sealUploadManifest`、`uploadSessionContentBatch`、`getUploadSession`、`finalizeUploadSession` |
+| 来源状态查看 | `listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
+| 来源内容维护 | `moveSourceFile`、`replaceSourceFileContent`、`deleteSourceFile`、`listSourceDirectories`、`moveSourceDirectory`、`deleteSourceDirectory`、`listResourceOperations`、`getResourceOperation` |
+| 文件读取与探索 | `listKnowledgeBaseTree`、`getFileById`、`getFileContentById`、`getFileContentByPath`、`searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphInsights` |
 | Webhooks | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
 这些能力属于开发者后端。Agent-facing layer 默认只暴露探索所需的读取能力。只有产品明确支持 Agent 维护知识库时，才向 Agent 开放写入或删除能力。
@@ -65,7 +67,7 @@ title: 后端适配
 | `list_tree` | `GET /agent/knowledge/tree` |
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` 或 `GET /agent/knowledge/files/content?path=...` |
-| `read_related` | `GET /agent/knowledge/files/{fileId}/related` 或 `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
+| `read_related` | `GET /agent/knowledge/files/{fileId}/related`，或使用返回的 `graphRef` 读取关系文件 |
 | `search_files` | `GET /agent/knowledge/search?query=<agent-generated phrase>` |
 
 ## 标识符流转
@@ -78,7 +80,7 @@ title: 后端适配
 | `sourceFileId` | 上传响应和源文件处理记录 | 读取处理状态、读取事件、重试失败处理，并解析生成文件字段。 |
 | `generatedFileId` 或生成文件 `fileId` | 文件树条目、搜索结果、生成文件详情响应，或 source-file detail 返回的 `generatedFileId` | 读取生成文件元数据和 Markdown 内容。 |
 | `generatedFilePath` 或 `path` | 文件树条目、搜索结果、链接，或 source-file detail 返回的 `generatedFilePath` | 按逻辑路径读取生成文件内容。 |
-| `graphRef` | 页面 frontmatter 或 `_index/search.json` | 读取 `_graph/by-file/{fileId}.json` 关系文件。 |
+| `graphRef` | 页面 frontmatter 或搜索结果 | 直接读取返回的关系文件路径，无需自行拼接。 |
 | `cursor` | 列表响应 | 继续分页。 |
 
 这样可以保证 Agent 调用流程连续。上一个调用返回的值可以直接用于下一个调用。

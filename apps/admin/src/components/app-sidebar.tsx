@@ -4,9 +4,13 @@ import {
   ChevronRightIcon,
   FileTextIcon,
   FolderIcon,
+  FolderInputIcon,
+  FilePenLineIcon,
   ListChecksIcon,
   LogOutIcon,
   MoreHorizontalIcon,
+  PencilIcon,
+  LoaderCircleIcon,
   SearchIcon,
   XIcon,
   Trash2Icon
@@ -23,6 +27,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import {
@@ -54,6 +59,10 @@ export type AdminSidebarTreeNode = {
   isActive: boolean;
   nextCursor: string | null;
   deletable: boolean;
+  sourceDirectoryId: string | null;
+  sourceFileId: string | null;
+  resourceRevision: number | null;
+  descendantFileCount: number;
 };
 
 export type AdminSidebarSourceFile = {
@@ -73,7 +82,12 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     running: string;
     ended: string;
     deleteFile: string;
+    deleteDirectory: string;
     fileActions: string;
+    directoryActions: string;
+    rename: string;
+    move: string;
+    replaceContent: string;
     emptyFiles: string;
     loadingFiles: string;
     fileTreeSearchPlaceholder: string;
@@ -91,6 +105,9 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   onOpenProcessing: () => void;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
+  onDeleteDirectory: (node: AdminSidebarTreeNode) => void;
+  onEditResource: (action: "rename" | "move" | "replace", node: AdminSidebarTreeNode) => void;
+  isResourceBusy: (node: AdminSidebarTreeNode) => boolean;
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
   fileTreeSearch: {
@@ -126,6 +143,9 @@ export function AppSidebar({
   onOpenProcessing,
   onOpenFile,
   onDeleteFile,
+  onDeleteDirectory,
+  onEditResource,
+  isResourceBusy,
   onToggleDirectory,
   onLoadMoreTree,
   fileTreeSearch,
@@ -212,6 +232,9 @@ export function AppSidebar({
                   node={node}
                   onOpenFile={onOpenFile}
                   onDeleteFile={onDeleteFile}
+                  onDeleteDirectory={onDeleteDirectory}
+                  onEditResource={onEditResource}
+                  isResourceBusy={isResourceBusy}
                   onToggleDirectory={onToggleDirectory}
                   onLoadMoreTree={onLoadMoreTree}
                   isSearchMode={fileTreeSearch.isActive}
@@ -251,6 +274,9 @@ function TreeNode({
   node,
   onOpenFile,
   onDeleteFile,
+  onDeleteDirectory,
+  onEditResource,
+  isResourceBusy,
   onToggleDirectory,
   onLoadMoreTree,
   isSearchMode
@@ -259,6 +285,9 @@ function TreeNode({
   node: AdminSidebarTreeNode;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
+  onDeleteDirectory: (node: AdminSidebarTreeNode) => void;
+  onEditResource: AppSidebarProps["onEditResource"];
+  isResourceBusy: AppSidebarProps["isResourceBusy"];
   onToggleDirectory: (node: AdminSidebarTreeNode, open: boolean) => void;
   onLoadMoreTree: (parentPath: string) => void;
   isSearchMode: boolean;
@@ -277,7 +306,7 @@ function TreeNode({
               {node.name}
             </span>
           </SidebarMenuButton>
-          {node.deletable ? (
+          {node.deletable && node.sourceFileId ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -285,12 +314,26 @@ function TreeNode({
                   variant="ghost"
                   size="icon-xs"
                   aria-label={`${labels.fileActions}: ${node.name}`}
+                  disabled={isResourceBusy(node)}
                 >
-                  <MoreHorizontalIcon />
+                  {isResourceBusy(node) ? <LoaderCircleIcon className="animate-spin" /> : <MoreHorizontalIcon />}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => onEditResource("rename", node)}>
+                    <PencilIcon />
+                    {labels.rename}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onEditResource("move", node)}>
+                    <FolderInputIcon />
+                    {labels.move}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onEditResource("replace", node)}>
+                    <FilePenLineIcon />
+                    {labels.replaceContent}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
                     onSelect={() => {
@@ -320,15 +363,52 @@ function TreeNode({
         }}
         className="group/collapsible [&[data-state=open]>button>svg:first-child]:rotate-90"
       >
-        <CollapsibleTrigger asChild>
-          <SidebarMenuButton className="min-w-0">
-            <ChevronRightIcon className="transition-transform" />
-            <FolderIcon />
-            <span className="min-w-0 flex-1 truncate" title={node.name}>
-              {node.name}
-            </span>
-          </SidebarMenuButton>
-        </CollapsibleTrigger>
+        <div className="flex min-w-0 items-center gap-1">
+          <CollapsibleTrigger asChild>
+            <SidebarMenuButton className="min-w-0 flex-1">
+              <ChevronRightIcon className="transition-transform" />
+              <FolderIcon />
+              <span className="min-w-0 flex-1 truncate" title={node.name}>
+                {node.name}
+              </span>
+            </SidebarMenuButton>
+          </CollapsibleTrigger>
+          {node.deletable && node.sourceDirectoryId && node.resourceRevision ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`${labels.directoryActions}: ${node.name}`}
+                  disabled={isResourceBusy(node)}
+                >
+                  {isResourceBusy(node) ? <LoaderCircleIcon className="animate-spin" /> : <MoreHorizontalIcon />}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuItem onSelect={() => onEditResource("rename", node)}>
+                    <PencilIcon />
+                    {labels.rename}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onEditResource("move", node)}>
+                    <FolderInputIcon />
+                    {labels.move}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => onDeleteDirectory(node)}
+                  >
+                    <Trash2Icon />
+                    {labels.deleteDirectory}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
         <CollapsibleContent>
           <SidebarMenuSub>
             {node.children.map((child) => (
@@ -338,6 +418,9 @@ function TreeNode({
                 node={child}
                 onOpenFile={onOpenFile}
                 onDeleteFile={onDeleteFile}
+                onDeleteDirectory={onDeleteDirectory}
+                onEditResource={onEditResource}
+                isResourceBusy={isResourceBusy}
                 onToggleDirectory={onToggleDirectory}
                 onLoadMoreTree={onLoadMoreTree}
                 isSearchMode={isSearchMode}

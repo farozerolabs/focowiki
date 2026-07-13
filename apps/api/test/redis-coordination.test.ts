@@ -70,10 +70,15 @@ function createRedisClient(input: {
   keys: string[];
   deletedKeys: string[];
 }): RedisCommandClient {
+  const deleted = new Set<string>();
   return {
     set: vi.fn(async () => "OK"),
     get: vi.fn(async () => null),
     del: vi.fn(async (key: string) => {
+      if (deleted.has(key)) {
+        return 0;
+      }
+      deleted.add(key);
       input.deletedKeys.push(key);
       return 1;
     }),

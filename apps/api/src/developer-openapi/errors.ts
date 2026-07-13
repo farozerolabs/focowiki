@@ -93,20 +93,30 @@ export function rateLimited(input: { retryAfterSeconds: number }): DeveloperOpen
 }
 
 export function queueBackpressure(details: {
-  activeJobCount: number;
-  limit: number;
+  activeJobCount?: number;
+  limit?: number;
   knowledgeBaseActiveJobCount?: number | null;
   knowledgeBaseLimit?: number | null;
   oldestQueuedAgeSeconds?: number | null;
   maxQueuedAgeSeconds?: number | null;
   retryAfterSeconds?: number;
 }): DeveloperOpenApiError {
+  const suggestedWaitSeconds = approximateRetryDelay(details.retryAfterSeconds ?? 60);
   return createDeveloperOpenApiError(
     "QUEUE_BACKPRESSURE",
     503,
-    "Worker queue is above the configured backpressure limit.",
-    details
+    "Processing capacity is temporarily busy. Wait briefly and retry.",
+    {
+      retryHint: "retry_after_short_delay",
+      suggestedWaitSeconds,
+      retryGuidance: "Wait briefly, then retry the same request."
+    }
   );
+}
+
+function approximateRetryDelay(seconds: number): number {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(1, seconds) : 60;
+  return [5, 15, 30, 60, 120, 300].find((candidate) => candidate >= safeSeconds) ?? 300;
 }
 
 export function writeDeveloperOpenApiError(

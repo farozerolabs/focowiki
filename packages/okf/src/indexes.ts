@@ -4,6 +4,7 @@ import {
   type IndexMetadata,
   type IndexMetadataFields
 } from "./index-metadata.js";
+import { normalizeGeneratedLogicalPath } from "./source-path.js";
 
 export type BundleFileForIndex = {
   path: string;
@@ -61,7 +62,14 @@ export type LinkIndex = {
     }>;
 };
 
-const MARKDOWN_LINK_PATTERN = /\[([^\]]+)]\((\/?[^)\s]+)\)/g;
+export type MarkdownLinkIndexEntry = {
+  from: string;
+  to: string;
+  label: string;
+};
+
+const MARKDOWN_LINK_PATTERN = /(?<!!)\[([^\]\n]+)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/gu;
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
 
 export function buildManifestIndex(
   files: BundleFileForIndex[],
@@ -126,19 +134,9 @@ export function buildSearchIndex(
 
 export function buildLinkIndex(files: BundleFileForIndex[], generatedAt: string): LinkIndex {
   const publicPaths = new Set(files.map((file) => file.path));
-  const links = files.flatMap((file) => {
-    if (!file.path.endsWith(".md")) {
-      return [];
-    }
-
-    return extractMarkdownLinks(file.content)
-      .map((link) => ({
-        from: file.path,
-        to: normalizeLinkTarget(link.target),
-        label: link.label
-      }))
-      .filter((link) => publicPaths.has(link.to));
-  });
+  const links = files
+    .flatMap(extractMarkdownLinkEntries)
+    .filter((link) => publicPaths.has(link.to));
 
   return {
     generated_at: generatedAt,
@@ -148,6 +146,36 @@ export function buildLinkIndex(files: BundleFileForIndex[], generatedAt: string)
       )
     )
   };
+}
+
+export function extractMarkdownLinkEntries(file: BundleFileForIndex): MarkdownLinkIndexEntry[] {
+  if (!file.path.endsWith(".md")) {
+    return [];
+  }
+
+  const links: MarkdownLinkIndexEntry[] = [];
+  let activeFence: string | null = null;
+  for (const line of file.content.split("\n")) {
+    const fence = line.match(FENCE_PATTERN)?.[1] ?? null;
+    if (fence) {
+      if (!activeFence) activeFence = fence[0] ?? null;
+      else if (fence[0] === activeFence) activeFence = null;
+      continue;
+    }
+    if (activeFence) continue;
+
+    const searchable = removeInlineCode(line);
+    for (const match of searchable.matchAll(MARKDOWN_LINK_PATTERN)) {
+      const label = (match[1] ?? "").trim();
+      const target = match[2] ?? match[3] ?? "";
+      const normalized = normalizeLinkTarget(file.path, target);
+      if (label && normalized) {
+        links.push({ from: file.path, to: normalized, label });
+      }
+    }
+  }
+
+  return uniqueLinks(links);
 }
 
 export function stringifyIndex(index: ManifestIndex | SearchIndex | LinkIndex): string {
@@ -203,15 +231,17 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length >= 2);
 }
 
-function extractMarkdownLinks(content: string): Array<{ label: string; target: string }> {
-  return Array.from(content.matchAll(MARKDOWN_LINK_PATTERN), (match) => ({
-    label: match[1] ?? "",
-    target: match[2] ?? ""
-  }));
+function removeInlineCode(line: string): string {
+  return line.replace(/`+[^`]*`+/gu, "");
 }
 
-function normalizeLinkTarget(target: string): string {
-  let normalized = target.replace(/^\/+/, "").replace(/#.*$/, "");
+function normalizeLinkTarget(fromPath: string, target: string): string | null {
+  if (!target || target.startsWith("#") || /^[a-z][a-z0-9+.-]*:/iu.test(target) || target.startsWith("//")) {
+    return null;
+  }
+
+  const suffixIndex = firstSuffixIndex(target);
+  let normalized = suffixIndex < 0 ? target : target.slice(0, suffixIndex);
 
   for (let index = 0; index < 3; index += 1) {
     try {
@@ -227,7 +257,50 @@ function normalizeLinkTarget(target: string): string {
     }
   }
 
-  return normalized;
+  if (!normalized || normalized.includes("\\")) {
+    return null;
+  }
+
+  const baseSegments = normalized.startsWith("/")
+    ? []
+    : fromPath.split("/").slice(0, -1);
+  for (const segment of normalized.replace(/^\/+/, "").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (baseSegments.length === 0) return null;
+      baseSegments.pop();
+      continue;
+    }
+    baseSegments.push(segment);
+  }
+
+  if (baseSegments.length === 0) {
+    return null;
+  }
+
+  try {
+    return normalizeGeneratedLogicalPath(baseSegments.join("/"));
+  } catch {
+    return null;
+  }
+}
+
+function firstSuffixIndex(value: string): number {
+  const query = value.indexOf("?");
+  const fragment = value.indexOf("#");
+  if (query < 0) return fragment;
+  if (fragment < 0) return query;
+  return Math.min(query, fragment);
+}
+
+function uniqueLinks(links: MarkdownLinkIndexEntry[]): MarkdownLinkIndexEntry[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    const key = `${link.from}\u0000${link.to}\u0000${link.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function unique(values: string[]): string[] {

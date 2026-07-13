@@ -1,5 +1,9 @@
 import type { MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
+import {
+  isAllowedPublicBundleFilePath,
+  publicBundleContentType
+} from "../public-bundle-path.js";
 
 type RequestContext = Parameters<MiddlewareHandler>[0];
 
@@ -31,7 +35,7 @@ export function publicResponseHeaders(
   config: RuntimeConfig
 ): Headers {
   const headers = new Headers({
-    "content-type": publicContentType(path)
+    "content-type": publicBundleContentType(path)
   });
   const origin = context.req.header("origin");
 
@@ -44,37 +48,7 @@ export function publicResponseHeaders(
 }
 
 export function isAllowedPublicLogicalPath(path: string): boolean {
-  if (
-    path === "index.md" ||
-    path === "log.md" ||
-    path === "schema.md" ||
-    path === "_index/manifest.json" ||
-    path === "_index/search.json" ||
-    path === "_index/links.json" ||
-    path === "_graph/index.md" ||
-    path === "_graph/manifest.json" ||
-    path === "_graph/nodes.jsonl"
-  ) {
-    return true;
-  }
-
-  return (
-    /^pages\/[^/\\\u0000-\u001f\u007f]+\.md$/u.test(path) ||
-    /^_index\/(?:manifest|search|links)\/[0-9]{6}\.jsonl$/u.test(path) ||
-    /^_graph\/nodes\/[0-9]{4}\.jsonl$/u.test(path) ||
-    /^_graph\/edges\/[0-9]{4}\.jsonl$/u.test(path) ||
-    /^_graph\/by-file\/[^/\\\u0000-\u001f\u007f]+\.json$/u.test(path)
-  );
-}
-
-function publicContentType(path: string): string {
-  if (path.endsWith(".jsonl")) {
-    return "application/x-ndjson; charset=utf-8";
-  }
-
-  return path.endsWith(".json")
-    ? "application/json; charset=utf-8"
-    : "text/markdown; charset=utf-8";
+  return isAllowedPublicBundleFilePath(path);
 }
 
 export function invalidPath(context: RequestContext): Response {

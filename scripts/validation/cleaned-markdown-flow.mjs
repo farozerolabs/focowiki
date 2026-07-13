@@ -23,6 +23,17 @@ import {
   readContentQualitySampleLimit,
   validateGeneratedContentQuality
 } from "./lib/content-quality.mjs";
+import { uploadMarkdownFilesWithSession } from "./lib/upload-session-client.mjs";
+import {
+  matchAdminSourceFilesToSamples,
+  readUploadSourceFileId
+} from "./lib/source-file-contract.mjs";
+import {
+  isManifestOwnedPath,
+  requiresSourceBodyComparison
+} from "./lib/okf-file-contract.mjs";
+import { assertPagesReachableFromRootIndex } from "./lib/progressive-navigation.mjs";
+import { findInCursorPages } from "./lib/cursor-search.mjs";
 
 export {
   selectSamples,
@@ -31,7 +42,9 @@ export {
   selectSingleAndBatchSamplesFromEnvironment
 } from "./lib/sample-selector.mjs";
 
-const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
+const CHANGE_ID =
+  process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
+  "validate-clean-architecture-full-system";
 const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
@@ -569,7 +582,7 @@ function writeReport(report) {
   const whiteBoxChecks = report.checks.filter((check) => check.layer === WHITE_BOX);
   const blackBoxChecks = report.checks.filter((check) => check.layer === BLACK_BOX);
   const lines = [
-    "# Real Legal Full-Flow Validation Report",
+    "# Markdown Full-Flow Validation Report",
     "",
     `- Change: ${report.change}`,
     `- Kind: ${report.kind}`,
@@ -708,32 +721,20 @@ function writeReport(report) {
 }
 
 function defaultCommandsRun(kind, sampleProfile = "default") {
-  if (CHANGE_ID === "validate-large-legal-e2e-full-coverage") {
-    const command =
-      kind === "samples"
-        ? "pnpm validate:large-legal:full-coverage:samples"
-        : "FOCOWIKI_VALIDATION_ALLOW_CONFIGURED_EXTERNALS=true pnpm validate:large-legal:full-coverage:api";
-
-    return Array.from(new Set([
-      "pnpm validate:large-legal:full-coverage:samples",
-      command,
-      "pnpm test:validation",
-      `openspec validate ${CHANGE_ID} --strict`
-    ]));
-  }
-
-  const prefix = readBooleanEnv(process.env[REQUIRE_MODEL_ENV])
-    ? "pnpm validate:legal-llm"
-    : sampleProfile === "large-scale"
-      ? "pnpm validate:real-legal:large"
-      : "pnpm validate:real-legal";
+  const modelPrefix = readBooleanEnv(process.env[REQUIRE_MODEL_ENV])
+    ? "FOCOWIKI_VALIDATION_REQUIRE_MODEL=true "
+    : "";
+  const flowCommand = sampleProfile === "large-scale" ? `large-${kind}` : kind;
   const commands = [
-    `${prefix}:samples`,
-    `${prefix}:${kind}`
+    `${modelPrefix}node scripts/validation/cleaned-markdown-flow.mjs ${flowCommand}`
   ];
 
   if (kind === "api") {
-    commands.push(`${prefix}:browser`);
+    commands.push(
+      `${modelPrefix}node scripts/validation/cleaned-markdown-browser.mjs ${
+        sampleProfile === "large-scale" ? "large-browser" : "browser"
+      }`
+    );
     commands.push("pnpm verify");
     commands.push("pnpm build");
     commands.push("pnpm test:validation");
@@ -858,20 +859,17 @@ async function validateRuntimeUploadGenerationSettings(admin, sampleCount, repor
     }
   }
 
-  if (uploadGeneration.maxFiles < sampleCount) {
-    throw new Error(`Admin UI upload-generation maxFiles must be at least ${sampleCount} for this validation run.`);
-  }
-
   report.checks.push(
     okCheck(
       "runtime-upload-generation-settings",
-      "Admin UI runtime upload-generation settings are persisted and large enough for validation samples.",
+      "Admin UI runtime upload-generation settings persist bounded manifest and content transfer pages.",
       {
-        maxFiles: uploadGeneration.maxFiles,
         sampleCount,
         generationBatchSize: uploadGeneration.generationBatchSize,
         fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
-        storageConcurrency: uploadGeneration.storageConcurrency
+        manifestPageSize: uploadGeneration.manifestPageSize,
+        contentBatchMaxFiles: uploadGeneration.contentBatchMaxFiles,
+        contentBatchMaxBytes: uploadGeneration.contentBatchMaxBytes
       },
       WHITE_BOX
     )
@@ -1131,7 +1129,7 @@ async function validateS3Connectivity(env, report) {
 }
 
 async function validatePublicApiReachable(publicApi, env, report) {
-  const response = await publicApi.request("/openapi/v1/health");
+  const response = await publicApi.request("/openapi/v2/health");
 
   if (![200, 401].includes(response.status)) {
     throw new Error(`Developer OpenAPI prerequisite expected HTTP 200 or 401, got ${response.status}.`);
@@ -1144,7 +1142,7 @@ async function validateSecurityHeaders({ admin, publicApi, env, report }) {
   const adminResponse = await admin.request("/admin/api/knowledge-bases");
   assertSecurityHeaders(adminResponse, "Admin API");
 
-  const publicResponse = await publicApi.request("/openapi/v1/health", {
+  const publicResponse = await publicApi.request("/openapi/v2/health", {
     headers: {}
   });
   assertSecurityHeaders(publicResponse, "Developer OpenAPI");
@@ -1319,49 +1317,72 @@ async function createValidationKnowledgeBase(admin, report) {
 }
 
 async function validateUploadRejection(admin, knowledgeBaseId, report) {
-  const formData = new FormData();
-  formData.append("files", new Blob(["plain text"], { type: "text/plain" }), "invalid.txt");
-
-  const response = await admin.request(
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/uploads`,
-    {
-      method: "POST",
-      body: formData
-    }
-  );
+  const routeBase = `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`;
+  const createResponse = await admin.request(routeBase, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": randomUUID()
+    },
+    body: JSON.stringify({ declaredFileCount: 1, declaredByteCount: 10 })
+  });
+  if (createResponse.status !== 201) {
+    throw new Error(`Invalid-path session creation failed with HTTP ${createResponse.status}.`);
+  }
+  const created = await createResponse.json();
+  const sessionId = created.session?.id;
+  if (!sessionId) throw new Error("Invalid-path session creation did not return an id.");
+  const response = await admin.request(`${routeBase}/${encodeURIComponent(sessionId)}/entries`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      entries: [{
+        relativePath: "invalid.txt",
+        declaredSize: 10,
+        checksumSha256: createHash("sha256").update("plain text").digest("hex")
+      }]
+    })
+  });
 
   if (response.status !== 400) {
     throw new Error(`Non-Markdown upload rejection expected HTTP 400, got ${response.status}.`);
   }
 
+  await admin.request(`${routeBase}/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+
   report.checks.push(okCheck("upload-rejects-non-markdown", "Admin upload rejects non-Markdown files."));
 }
 
 async function uploadSamples(admin, knowledgeBaseId, samples, report, options = {}) {
-  const formData = new FormData();
+  const body = await uploadMarkdownFilesWithSession({
+    request: async (pathname, requestOptions) => {
+      const response = await admin.request(pathnameWithQuery(pathname, requestOptions.query), {
+        method: requestOptions.method,
+        headers: {
+          ...(requestOptions.headers ?? {}),
+          ...(requestOptions.body ? { "content-type": "application/json" } : {})
+        },
+        body: requestOptions.formData
+          ?? (requestOptions.body ? JSON.stringify(requestOptions.body) : undefined)
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Upload session request failed with HTTP ${response.status}: ${redactPotentialPathText(text)}`);
+      }
+      return await response.json();
+    },
+    routeBase: `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`,
+    files: samples.map((sample) => ({
+      relativePath: sample.relativePath ?? sample.basename,
+      bytes: fs.readFileSync(sample.filePath)
+    }))
+  });
+  const files = body.files.map((file) => ({
+    ...file,
+    id: readUploadSourceFileId(file)
+  }));
 
-  for (const sample of samples) {
-    const bytes = fs.readFileSync(sample.filePath);
-    formData.append("files", new Blob([bytes], { type: "text/markdown" }), sample.basename);
-  }
-
-  const response = await admin.request(
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/uploads`,
-    {
-      method: "POST",
-      body: formData
-    }
-  );
-
-  if (response.status !== 202) {
-    const text = await response.text();
-    throw new Error(`Sample upload failed with HTTP ${response.status}: ${redactPotentialPathText(text)}`);
-  }
-
-  const body = await response.json();
-  const files = Array.isArray(body.files) ? body.files : [];
-
-  if (files.length !== samples.length || files.some((file) => !file?.id || file.processingStatus !== "queued")) {
+  if (files.length !== samples.length || files.some((file) => !file?.id)) {
     throw new Error("Upload response did not include the expected source-file records.");
   }
 
@@ -1489,8 +1510,7 @@ function validateSourceFileModelEvidence(files, samples, env, report, options = 
     return;
   }
 
-  const expectedNames = new Set(samples.map((sample) => sample.basename));
-  const matchingFiles = files.filter((file) => expectedNames.has(file.originalName));
+  const matchingFiles = matchAdminSourceFilesToSamples(files, samples);
 
   if (matchingFiles.length !== samples.length) {
     throw new Error(`Source-file list returned ${matchingFiles.length} model-checked files, expected ${samples.length}.`);
@@ -1614,11 +1634,11 @@ async function validateSourceFilePagination(
 }
 
 async function validateAdminSourceFileFilters(admin, knowledgeBaseId, expectedFile, report) {
-  if (!expectedFile?.id || !expectedFile.originalName) {
+  if (!expectedFile?.id || !expectedFile.relativePath) {
     throw new Error("Admin source-file filter validation requires a completed source-file row.");
   }
 
-  const nameToken = createSearchTokenFromFilename(expectedFile.originalName);
+  const nameToken = createSearchTokenFromFilename(expectedFile.relativePath);
   const filteredByName = await readJson(
     admin,
     `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&fileNameQuery=${encodeURIComponent(nameToken)}`
@@ -1672,12 +1692,16 @@ async function validateAdminTreeSearch(admin, knowledgeBaseId, pageFile, report)
     throw new Error("Admin tree search validation requires a generated page file.");
   }
 
-  const query = createSearchTokenFromFilename(path.basename(pageFile.logicalPath));
-  const search = await readJson(
-    admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=${encodeURIComponent(query)}`
-  );
-  const match = search.items?.find((item) => item.entry?.logicalPath === pageFile.logicalPath);
+  const query = createAdminTreeSearchQuery(pageFile);
+  const match = await findInCursorPages({
+    loadPage: (cursor) => readJson(
+      admin,
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=${encodeURIComponent(query)}${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`
+    ),
+    matches: (item) => item.entry?.logicalPath === pageFile.logicalPath
+  });
 
   if (!match) {
     throw new Error("Admin file-tree search did not return the expected page file.");
@@ -1687,12 +1711,17 @@ async function validateAdminTreeSearch(admin, knowledgeBaseId, pageFile, report)
     throw new Error("Admin file-tree search did not include the expected parent directory ancestor.");
   }
 
-  const folderSearch = await readJson(
-    admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=pages`
-  );
+  const folderMatch = await findInCursorPages({
+    loadPage: (cursor) => readJson(
+      admin,
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree/search?limit=5&query=pages${
+        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+      }`
+    ),
+    matches: (item) => item.entry?.entryType === "directory" && item.entry.logicalPath === "pages"
+  });
 
-  if (!folderSearch.items?.some((item) => item.entry?.entryType === "directory" && item.entry.logicalPath === "pages")) {
+  if (!folderMatch) {
     throw new Error("Admin file-tree search did not return a matching folder entry.");
   }
 
@@ -1756,8 +1785,13 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
     throw new Error("Expected published release, bundle files, and root tree entries.");
   }
 
-  const pageFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("pages/"));
-  const pageFiles = bundleFiles.items.filter((file) => String(file.logicalPath).startsWith("pages/"));
+  const pageFiles = bundleFiles.items.filter(requiresSourceBodyComparison);
+  const pageFile = pageFiles[0];
+  const navigationFiles = bundleFiles.items.filter((file) =>
+    file.fileKind === "directory_index"
+    && typeof file.logicalPath === "string"
+    && file.logicalPath.endsWith(".md")
+  );
   const indexFile = bundleFiles.items.find((file) => file.logicalPath === "index.md");
   const logFile = bundleFiles.items.find((file) => file.logicalPath === "log.md");
   const schemaFile = bundleFiles.items.find((file) => file.logicalPath === "schema.md");
@@ -1797,6 +1831,7 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   return {
     pageFile,
     pageFiles,
+    navigationFiles,
     indexFile,
     logFile,
     schemaFile,
@@ -1888,9 +1923,10 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
   const headers = publicAuthHeaders(env);
   const knowledgeBaseName = `Focowiki OpenAPI validation ${new Date().toISOString()}`;
   let knowledgeBaseId = null;
+  let knowledgeBaseRevision = null;
 
   try {
-    const created = await readJson(publicApi, "/openapi/v1/knowledge-bases", {
+    const created = await readJson(publicApi, "/openapi/v2/knowledge-bases", {
       method: "POST",
       headers: {
         ...headers,
@@ -1902,40 +1938,48 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
       })
     });
     knowledgeBaseId = created.knowledgeBase?.knowledgeBaseId;
+    knowledgeBaseRevision = created.knowledgeBase?.resourceRevision;
 
-    if (!knowledgeBaseId) {
-      throw new Error("Developer OpenAPI create knowledge base response did not include knowledgeBaseId.");
+    if (!knowledgeBaseId || !Number.isInteger(knowledgeBaseRevision)) {
+      throw new Error("Developer OpenAPI create knowledge base response did not include a reusable identity and resource revision.");
     }
 
-    const formData = new FormData();
-    formData.append(
-      "files",
-      new Blob([fs.readFileSync(sample.filePath)], { type: "text/markdown" }),
-      sample.basename
-    );
-    const uploadResponse = await publicApi.request(
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/uploads`,
-      {
-        method: "POST",
-        headers,
-        body: formData
-      }
-    );
+    const upload = await uploadMarkdownFilesWithSession({
+      request: async (pathname, requestOptions) => {
+        const response = await publicApi.request(pathnameWithQuery(pathname, requestOptions.query), {
+          method: requestOptions.method,
+          headers: {
+            ...headers,
+            ...(requestOptions.headers ?? {}),
+            ...(requestOptions.body ? { "content-type": "application/json" } : {})
+          },
+          body: requestOptions.formData
+            ?? (requestOptions.body ? JSON.stringify(requestOptions.body) : undefined)
+        });
+        if (!response.ok) {
+          throw new Error(`Developer OpenAPI upload-session request failed with HTTP ${response.status}.`);
+        }
+        return await response.json();
+      },
+      routeBase: `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`,
+      files: [{
+        relativePath: sample.relativePath ?? sample.basename,
+        bytes: fs.readFileSync(sample.filePath)
+      }]
+    });
+    const fileId = upload.files?.[0]?.sourceFileId;
 
-    if (uploadResponse.status !== 202) {
-      throw new Error(`Developer OpenAPI upload expected HTTP 202, got ${uploadResponse.status}.`);
-    }
-
-    const upload = await uploadResponse.json();
-    const fileId = upload.files?.[0]?.fileId;
-
-    if (upload.knowledgeBaseId !== knowledgeBaseId || !fileId || upload.files?.[0]?.originalFilename !== sample.basename) {
-      throw new Error("Developer OpenAPI upload response did not return continuous knowledgeBaseId, fileId, and originalFilename fields.");
+    if (!fileId || upload.files?.[0]?.relativePath !== (sample.relativePath ?? sample.basename)) {
+      throw new Error("Developer OpenAPI upload response did not return continuous sourceFileId and relativePath fields.");
     }
 
     const sourceFile = await pollDeveloperSourceFileCompleted(publicApi, knowledgeBaseId, fileId, headers, processingTimeoutMs);
 
-    if (sourceFile.fileId !== fileId || sourceFile.knowledgeBaseId !== knowledgeBaseId || sourceFile.processingState !== "completed") {
+    if (
+      sourceFile.sourceFileId !== fileId
+      || sourceFile.knowledgeBaseId !== knowledgeBaseId
+      || sourceFile.processingState !== "completed"
+    ) {
       throw new Error("Developer OpenAPI source-file detail did not accept the upload fileId or return completed lifecycle state.");
     }
 
@@ -1946,7 +1990,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
     );
 
     if (!Array.isArray(sourceFileEvents.items) || sourceFileEvents.items.length === 0) {
-      throw new Error("Developer OpenAPI source-file events did not expose reusable fileId progress evidence.");
+      throw new Error("Developer OpenAPI source-file events did not expose reusable sourceFileId progress evidence.");
     }
 
     const sourceFileDetail = await readJson(
@@ -1955,21 +1999,33 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
       { headers }
     );
 
-    if (sourceFileDetail.file?.fileId !== fileId || sourceFileDetail.file?.originalFilename !== sample.basename) {
+    if (
+      sourceFileDetail.sourceFile?.sourceFileId !== fileId
+      || sourceFileDetail.sourceFile?.relativePath !== (sample.relativePath ?? sample.basename)
+    ) {
       throw new Error("Developer OpenAPI source-file detail did not preserve the upload response fileId.");
     }
 
     const rootTree = await readJson(
       publicApi,
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?limit=50`,
+      `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?limit=50`,
       { headers }
     );
     const pagesTree = await readJson(
       publicApi,
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?parentPath=pages&limit=50`,
+      `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?parentPath=pages&limit=50`,
       { headers }
     );
-    const pageEntry = pagesTree.items?.find((item) => item.path === `pages/${sample.basename}`);
+    const expectedPagePath = `pages/${sample.relativePath ?? sample.basename}`;
+    const expectedParentPath = expectedPagePath.slice(0, expectedPagePath.lastIndexOf("/"));
+    const parentTree = expectedParentPath === "pages"
+      ? pagesTree
+      : await readJson(
+          publicApi,
+          `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?parentPath=${encodeURIComponent(expectedParentPath)}&limit=50`,
+          { headers }
+        );
+    const pageEntry = parentTree.items?.find((item) => item.path === expectedPagePath);
 
     if (!rootTree.items?.some((item) => item.path === "index.md") || !pageEntry?.fileId) {
       throw new Error("Developer OpenAPI tree did not expose generated root and page file identifiers.");
@@ -1977,7 +2033,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
 
     const fileDetail = await readJson(
       publicApi,
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(pageEntry.fileId)}`,
+      `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(pageEntry.fileId)}`,
       { headers }
     );
 
@@ -1987,7 +2043,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
 
     const contentById = await readPublicText(
       publicApi,
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(pageEntry.fileId)}/content`,
+      `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(pageEntry.fileId)}/content`,
       headers
     );
     const contentByPath = await readPublicText(
@@ -2000,7 +2056,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
       throw new Error("Developer OpenAPI file content reads by ID and path did not return the same generated Markdown.");
     }
 
-    await validateDeveloperSourceFileFiltersAndTaskDeletion({
+    await validateDeveloperSourceFileFilters({
       publicApi,
       knowledgeBaseId,
       sourceFileId: fileId,
@@ -2025,9 +2081,13 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
   } finally {
     if (knowledgeBaseId) {
       await publicApi
-        .request(`/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+        .request(`/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
           method: "DELETE",
-          headers
+          headers: {
+            ...headers,
+            "idempotency-key": `delete-validation-knowledge-base-${knowledgeBaseId}`,
+            "if-match": `"${knowledgeBaseRevision}"`
+          }
         })
         .catch(() => undefined);
     }
@@ -2036,13 +2096,13 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
 
 async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
   const headers = publicAuthHeaders(env);
-  const listBefore = await readJson(publicApi, "/openapi/v1/webhooks?limit=10", { headers });
+  const listBefore = await readJson(publicApi, "/openapi/v2/webhooks?limit=10", { headers });
 
   if (!Array.isArray(listBefore.items)) {
     throw new Error("Developer OpenAPI webhook list did not return a paginated item array.");
   }
 
-  const created = await readJson(publicApi, "/openapi/v1/webhooks", {
+  const created = await readJson(publicApi, "/openapi/v2/webhooks", {
     method: "POST",
     headers: {
       ...headers,
@@ -2060,13 +2120,13 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
     throw new Error("Developer OpenAPI webhook creation did not return webhookId, endpoint host, and one-time signing secret.");
   }
 
-  const listAfterCreate = await readJson(publicApi, "/openapi/v1/webhooks?limit=50", { headers });
+  const listAfterCreate = await readJson(publicApi, "/openapi/v2/webhooks?limit=50", { headers });
 
   if (!listAfterCreate.items?.some((webhook) => webhook.webhookId === webhookId)) {
     throw new Error("Developer OpenAPI webhook list did not include the created webhookId.");
   }
 
-  const deliveries = await readJson(publicApi, "/openapi/v1/webhook-deliveries?limit=5", { headers });
+  const deliveries = await readJson(publicApi, "/openapi/v2/webhook-deliveries?limit=5", { headers });
 
   if (!Array.isArray(deliveries.items)) {
     throw new Error("Developer OpenAPI webhook delivery list did not return a paginated item array.");
@@ -2077,7 +2137,7 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
   if (delivery) {
     const redelivery = await readJson(
       publicApi,
-      `/openapi/v1/webhook-deliveries/${encodeURIComponent(delivery.deliveryId)}/redeliver`,
+      `/openapi/v2/webhook-deliveries/${encodeURIComponent(delivery.deliveryId)}/redeliver`,
       {
         method: "POST",
         headers
@@ -2090,14 +2150,14 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
   } else {
     await expectJsonError(
       publicApi,
-      "/openapi/v1/webhook-deliveries/delivery-validation-missing/redeliver",
+      "/openapi/v2/webhook-deliveries/delivery-validation-missing/redeliver",
       headers,
       [404],
       { method: "POST" }
     );
   }
 
-  const deleted = await readJson(publicApi, `/openapi/v1/webhooks/${encodeURIComponent(webhookId)}`, {
+  const deleted = await readJson(publicApi, `/openapi/v2/webhooks/${encodeURIComponent(webhookId)}`, {
     method: "DELETE",
     headers
   });
@@ -2106,7 +2166,7 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
     throw new Error("Developer OpenAPI webhook deletion did not preserve webhookId continuity.");
   }
 
-  const listAfterDelete = await readJson(publicApi, "/openapi/v1/webhooks?limit=50", { headers });
+  const listAfterDelete = await readJson(publicApi, "/openapi/v2/webhooks?limit=50", { headers });
 
   if (listAfterDelete.items?.some((webhook) => webhook.webhookId === webhookId)) {
     throw new Error("Developer OpenAPI webhook deletion left the webhook in active list results.");
@@ -2124,7 +2184,7 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
   );
 }
 
-async function validateDeveloperSourceFileFiltersAndTaskDeletion({
+async function validateDeveloperSourceFileFilters({
   publicApi,
   knowledgeBaseId,
   sourceFileId,
@@ -2136,65 +2196,45 @@ async function validateDeveloperSourceFileFiltersAndTaskDeletion({
   const nameToken = createSearchTokenFromFilename(sample.basename);
   const filtered = await readJson(
     publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileNameQuery=${encodeURIComponent(nameToken)}&processingStatus=completed`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&pathQuery=${encodeURIComponent(nameToken)}&processingState=completed`,
     { headers: authHeaders }
   );
 
-  if (!filtered.items?.some((file) => file.fileId === sourceFileId)) {
+  if (!filtered.items?.some((file) => file.sourceFileId === sourceFileId)) {
     throw new Error("Developer OpenAPI source-file filters did not return the uploaded fileId.");
   }
 
   await expectJsonError(
     publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingStatus=invalid`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingState=invalid`,
     authHeaders,
     [422]
   );
 
-  const deletion = await readJson(
+  const filteredById = await readJson(
     publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/task-deletions`,
-    {
-      method: "POST",
-      headers: {
-        ...authHeaders,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        sourceFileIds: [sourceFileId]
-      })
-    }
-  );
-  const deletionResult = deletion.results?.find((item) => item.sourceFileId === sourceFileId);
-
-  if (deletionResult?.result !== "hidden" || deletion.summary?.hidden !== 1) {
-    throw new Error("Developer OpenAPI source-file task deletion did not hide the completed source-file task.");
-  }
-
-  const afterDeletion = await readJson(
-    publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileIdQuery=${encodeURIComponent(sourceFileId)}`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&sourceFileIdPrefix=${encodeURIComponent(sourceFileId)}`,
     { headers: authHeaders }
   );
 
-  if (afterDeletion.items?.some((file) => file.fileId === sourceFileId)) {
-    throw new Error("Developer OpenAPI source-file task deletion left the hidden task in the source-file list.");
+  if (!filteredById.items?.some((file) => file.sourceFileId === sourceFileId)) {
+    throw new Error("Developer OpenAPI source-file ID prefix filter did not preserve sourceFileId continuity.");
   }
 
-  const contentAfterDeletion = await readPublicText(
+  const generatedContent = await readPublicText(
     publicApi,
     developerFileContentPath(knowledgeBaseId, pagePath),
     authHeaders
   );
 
-  if (!contentAfterDeletion.includes(sample.title)) {
-    throw new Error("Developer OpenAPI source-file task deletion removed generated content for a completed source file.");
+  if (!generatedContent.includes(sample.title)) {
+    throw new Error("Developer OpenAPI source-file filters did not preserve generated content readability.");
   }
 
   report.checks.push(
     okCheck(
-      "developer-openapi-source-file-filters-task-deletion",
-      "Developer OpenAPI source-file filters and task deletion preserve fileId continuity and keep completed generated content readable."
+      "developer-openapi-source-file-filters",
+      "Developer OpenAPI source-file filters preserve sourceFileId continuity and keep generated content readable."
     )
   );
 }
@@ -2208,7 +2248,7 @@ async function pollDeveloperSourceFileCompleted(publicApi, knowledgeBaseId, sour
       developerSourceFilePath(knowledgeBaseId, sourceFileId),
       { headers }
     );
-    const file = body.file;
+    const file = body.sourceFile;
 
     if (file?.processingState === "failed") {
       throw new Error(`Developer OpenAPI source file failed with ${file.processingErrorCode ?? "UNKNOWN"}.`);
@@ -2255,6 +2295,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     "index.md",
     "log.md",
     "schema.md",
+    ...adminFiles.navigationFiles.map((file) => file.logicalPath),
     ...adminFiles.pageFiles.map((file) => file.logicalPath),
     "_index/manifest.json",
     "_index/search.json",
@@ -2313,9 +2354,9 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   );
 
   if (
-    sourceFileStatus.file?.fileId !== options.sourceFileId ||
-    !sourceFileStatus.file?.processingStartedAt ||
-    sourceFileStatus.file?.phaseDetails
+    sourceFileStatus.sourceFile?.sourceFileId !== options.sourceFileId ||
+    !sourceFileStatus.sourceFile?.relativePath ||
+    sourceFileStatus.sourceFile?.phaseDetails
   ) {
     throw new Error("Developer OpenAPI source-file status does not match the file-level lifecycle shape.");
   }
@@ -2330,15 +2371,23 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     throw new Error("Developer OpenAPI source-file event list did not return bounded file events.");
   }
 
+  await validateDeveloperOpenApiSearchModes({
+    publicApi,
+    knowledgeBaseId,
+    pageFile: adminFiles.pageFile,
+    authHeaders,
+    report
+  });
+
   await expectJsonError(
     publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%252e%252e/secret.md`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%252e%252e/secret.md`,
     authHeaders,
     [400]
   );
   await expectJsonError(
     publicApi,
-    `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%5Csecret.md`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/pages/%5Csecret.md`,
     authHeaders,
     [400]
   );
@@ -2382,15 +2431,150 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
   );
 }
 
-function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, samples = [] }) {
+async function validateDeveloperOpenApiSearchModes({ publicApi, knowledgeBaseId, pageFile, authHeaders, report }) {
+  if (!pageFile?.logicalPath || !pageFile.sourceFileId) {
+    throw new Error("Developer OpenAPI graph search validation requires a source-backed generated page file.");
+  }
+
+  const query = createSearchTokenFromFilename(path.basename(pageFile.logicalPath));
+  const encodedKnowledgeBaseId = encodeURIComponent(knowledgeBaseId);
+  const encodedQuery = encodeURIComponent(query);
+  const fileSearch = await readJson(
+    publicApi,
+    `/openapi/v2/knowledge-bases/${encodedKnowledgeBaseId}/files/search?query=${encodedQuery}&scope=all&fileKind=page&limit=10`,
+    { headers: authHeaders }
+  );
+
+  if (fileSearch.searchMode !== "file" || fileSearch.graphStatus !== "disabled_for_file_mode") {
+    throw new Error("Developer OpenAPI default file search did not preserve compatible mode fields.");
+  }
+
+  assertSearchResultCanContinue(fileSearch, pageFile.logicalPath, "default file search");
+
+  const graphSearch = await readJson(
+    publicApi,
+    developerFileSearchPath(knowledgeBaseId, {
+      query,
+      mode: "graph",
+      graphDepth: "1",
+      graphFanout: "5",
+      limit: "10"
+    }),
+    { headers: authHeaders }
+  );
+
+  if (graphSearch.searchMode !== "graph" || graphSearch.graphStatus !== "available") {
+    throw new Error("Developer OpenAPI graph search did not report an available graph read model.");
+  }
+
+  const graphMatch = assertSearchResultCanContinue(graphSearch, pageFile.logicalPath, "graph search");
+
+  if (
+    !graphMatch.graphContext ||
+    typeof graphMatch.graphContext.graphRef !== "string" ||
+    !graphMatch.graphContext.graphRef.startsWith("_graph/by-file/") ||
+    !Array.isArray(graphMatch.graphContext.graphPaths) ||
+    !graphMatch.graphContext.graphPaths.includes(graphMatch.graphContext.graphRef)
+  ) {
+    throw new Error("Developer OpenAPI graph search result did not include usable graph context.");
+  }
+
+  if (
+    graphMatch.sourceFileId !== pageFile.sourceFileId ||
+    graphMatch.contentAvailable !== true ||
+    !["graph_node", "graph_edge", "graph_neighbor", "hybrid"].includes(graphMatch.matchType)
+  ) {
+    throw new Error("Developer OpenAPI graph search result did not preserve source-file continuity.");
+  }
+
+  const hybridSearch = await readJson(
+    publicApi,
+    developerFileSearchPath(knowledgeBaseId, {
+      query,
+      mode: "hybrid",
+      graphDepth: "1",
+      graphFanout: "5",
+      limit: "10"
+    }),
+    { headers: authHeaders }
+  );
+
+  if (hybridSearch.searchMode !== "hybrid" || hybridSearch.graphStatus !== "available") {
+    throw new Error("Developer OpenAPI hybrid search did not report an available graph read model.");
+  }
+
+  assertSearchResultCanContinue(hybridSearch, pageFile.logicalPath, "hybrid search");
+
+  const noResultSearch = await readJson(
+    publicApi,
+    developerFileSearchPath(knowledgeBaseId, {
+      query: `validation-no-such-graph-result-${Date.now()}`,
+      mode: "graph",
+      graphDepth: "1",
+      graphFanout: "5",
+      limit: "10"
+    }),
+    { headers: authHeaders }
+  );
+
+  if (
+    noResultSearch.searchStatus !== "no_candidates" ||
+    !Array.isArray(noResultSearch.nextActions) ||
+    noResultSearch.nextActions.length === 0
+  ) {
+    throw new Error("Developer OpenAPI graph search no-result response did not keep exploration guidance.");
+  }
+
+  report.checks.push(
+    okCheck("developer-openapi-graph-search", "Developer OpenAPI file, graph, hybrid, and graph no-result searches preserve bounded continuation fields.", {
+      query,
+      graphStatus: graphSearch.graphStatus,
+      hybridStatus: hybridSearch.searchStatus,
+      graphRelationships: graphMatch.graphContext.relationships?.length ?? 0
+    }, BLACK_BOX)
+  );
+}
+
+function assertSearchResultCanContinue(searchResponse, expectedPath, label) {
+  if (searchResponse.searchStatus !== "ok" || !Array.isArray(searchResponse.items)) {
+    throw new Error(`Developer OpenAPI ${label} did not return candidates.`);
+  }
+
+  const match = searchResponse.items.find((item) => item.path === expectedPath || item.generatedFilePath === expectedPath);
+
+  if (!match) {
+    throw new Error(`Developer OpenAPI ${label} did not return the expected generated file path.`);
+  }
+
+  if (
+    !match.fileId ||
+    !match.generatedFileId ||
+    !match.sourceFileId ||
+    !match.path ||
+    !match.generatedFilePath ||
+    match.contentAvailable !== true
+  ) {
+    throw new Error(`Developer OpenAPI ${label} result is missing continuation fields.`);
+  }
+
+  return match;
+}
+
+export function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, samples = [] }) {
   const index = bodies.get("index.md") ?? "";
   const log = bodies.get("log.md") ?? "";
   const manifest = indexes.manifest;
   const search = indexes.search;
   const links = indexes.links;
+  const parsedIndex = matter(index);
+  const indexFrontmatterKeys = Object.keys(parsedIndex.data ?? {});
 
-  if (index.startsWith("---\n") || !index.startsWith("# ")) {
-    throw new Error("Public index.md must be a reserved Markdown file without frontmatter.");
+  if (
+    parsedIndex.data?.okf_version !== "0.1" ||
+    indexFrontmatterKeys.some((key) => key !== "okf_version") ||
+    !parsedIndex.content.startsWith("# ")
+  ) {
+    throw new Error("Public index.md must declare only okf_version 0.1 and begin with a Markdown heading.");
   }
 
   if (/Focowiki knowledge base|placeholder/i.test(index)) {
@@ -2408,10 +2592,6 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, s
   for (const pagePath of pagePaths) {
     const page = bodies.get(pagePath) ?? "";
     const parsedPage = matter(page);
-
-    if (!index.includes(pagePath) && !index.includes(encodeURIComponent(path.basename(pagePath)))) {
-      throw new Error("Public index.md does not reference the sampled page path.");
-    }
 
     if (!page.startsWith("---\n") || !/\n#\s+/.test(page)) {
       throw new Error("Sampled public page does not include expected frontmatter and heading content.");
@@ -2444,6 +2624,8 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, s
     });
   }
 
+  const reachableNavigation = assertPagesReachableFromRootIndex({ bodies, pagePaths });
+
   const schema = bodies.get("schema.md") ?? "";
   const schemaMatter = matter(schema);
 
@@ -2472,8 +2654,8 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, s
   const manifestPaths = new Set((manifest.files ?? []).map((file) => file.path));
   for (const link of links.links) {
     if (
-      (link.from && !manifestPaths.has(link.from)) ||
-      (link.to && !manifestPaths.has(link.to))
+      (link.from && !manifestPaths.has(link.from) && !isManifestOwnedPath(link.from)) ||
+      (link.to && !manifestPaths.has(link.to) && !isManifestOwnedPath(link.to))
     ) {
       throw new Error("Link index references a path missing from the manifest.");
     }
@@ -2488,6 +2670,7 @@ function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, indexes, s
   report.checks.push(
     okCheck("okf-public-artifacts", "Public OKF Markdown, metadata indexes, headings, and graph links are internally consistent.", {
       pagePaths: pagePaths.length,
+      reachableMarkdownFiles: reachableNavigation.size,
       manifestFiles: manifest.files.length,
       searchItems: search.items.length,
       links: links.links.length
@@ -2589,6 +2772,14 @@ function hasNestedMetadataKey(value, key) {
 
 function readNonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function createAdminTreeSearchQuery(pageFile) {
+  if (!pageFile?.logicalPath) {
+    throw new Error("Admin tree search query requires a logical path.");
+  }
+
+  return createSearchTokenFromFilename(path.basename(pageFile.logicalPath));
 }
 
 function createSearchTokenFromFilename(filename) {
@@ -2839,14 +3030,12 @@ async function validateDeletionDatabaseBoundaries({
              AND source_file_id = ${sourceFileId}
              AND stage_key = 'source_deletion') AS source_deletion_events,
           (SELECT count(*)::int
-           FROM focowiki.bundle_files
-           WHERE knowledge_base_id = ${knowledgeBaseId}
-             AND release_id = (
-               SELECT active_release_id
-               FROM focowiki.knowledge_bases
-               WHERE id = ${knowledgeBaseId}
-             )
-             AND logical_path = ${deletedPagePath}) AS stale_active_pages
+           FROM focowiki.bundle_files file
+           JOIN focowiki.knowledge_bases knowledge_base
+             ON knowledge_base.id = file.knowledge_base_id
+            AND knowledge_base.active_release_id = file.release_id
+           WHERE file.knowledge_base_id = ${knowledgeBaseId}
+             AND file.logical_path = ${deletedPagePath}) AS stale_active_pages
       `;
 
       lastShape = shape;
@@ -3265,18 +3454,18 @@ async function validateModelInvocationBoundaries(
     }
 
     const rows = await sql`
-      SELECT s.original_name, m.status, m.api_mode, m.model_name, m.warning_count, m.error_code, m.error_message
+      SELECT s.relative_path AS source_path, m.status, m.api_mode, m.model_name, m.warning_count, m.error_code, m.error_message
       FROM focowiki.model_invocations m
       JOIN focowiki.source_files s ON s.id = m.source_file_id
       WHERE m.knowledge_base_id = ${knowledgeBaseId}
         AND m.source_file_id = ANY(${sourceFileIds})
-      ORDER BY s.original_name
+      ORDER BY s.relative_path
     `;
-    const expectedNames = new Set(samples.map((sample) => sample.basename));
+    const expectedNames = new Set(samples.map((sample) => sample.relativePath ?? sample.basename));
 
     for (const row of rows) {
-      if (!expectedNames.has(row.original_name)) {
-        throw new Error(`Model invocation was linked to an unexpected source filename: ${row.original_name}`);
+      if (!expectedNames.has(row.source_path)) {
+        throw new Error(`Model invocation was linked to an unexpected source path: ${row.source_path}`);
       }
 
       if (row.api_mode !== mode.apiMode) {
@@ -3315,6 +3504,7 @@ async function validateDatabaseBoundaries(
   const postgresModule = requireFromApiPackage("postgres");
   const postgres = postgresModule.default ?? postgresModule;
   const sql = postgres(databaseUrl, { max: 1 });
+  const internalSourceObjectPattern = `%/knowledge-bases/${knowledgeBaseId}/upload-sessions/%/entries/%/content.md`;
 
   try {
     const [recordCounts] = await sql`
@@ -3322,7 +3512,7 @@ async function validateDatabaseBoundaries(
         (SELECT count(*)::int FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_files,
         (SELECT count(*)::int FROM focowiki.releases WHERE knowledge_base_id = ${knowledgeBaseId}) AS releases,
         (SELECT count(*)::int FROM focowiki.bundle_files WHERE knowledge_base_id = ${knowledgeBaseId}) AS bundle_files,
-        (SELECT count(*)::int FROM focowiki.bundle_tree_entries WHERE knowledge_base_id = ${knowledgeBaseId}) AS bundle_tree_entries
+        (SELECT count(*)::int FROM focowiki.knowledge_file_tree_nodes WHERE knowledge_base_id = ${knowledgeBaseId}) AS knowledge_file_tree_nodes
     `;
     const storageShapeRows = await sql`
       SELECT
@@ -3330,12 +3520,18 @@ async function validateDatabaseBoundaries(
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND id = ANY(${sourceFileIds})
-           AND object_key LIKE '%/sources/%') AS internal_source_objects,
+           AND object_key LIKE ${internalSourceObjectPattern}
+           AND object_key NOT LIKE '%/releases/%') AS internal_source_objects,
         (SELECT count(*)::int
-         FROM focowiki.bundle_files
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND logical_path LIKE 'pages/%'
-           AND object_key LIKE '%/releases/%/bundle/pages/%') AS public_page_objects,
+         FROM focowiki.bundle_files file
+         JOIN focowiki.knowledge_bases knowledge_base
+           ON knowledge_base.id = file.knowledge_base_id
+          AND knowledge_base.active_release_id = file.release_id
+         WHERE file.knowledge_base_id = ${knowledgeBaseId}
+           AND file.file_kind = 'page'
+           AND file.source_file_id IS NOT NULL
+           AND file.logical_path LIKE 'pages/%'
+           AND file.object_key LIKE '%/releases/%/bundle/pages/%') AS public_page_objects,
         (SELECT count(*)::int
          FROM focowiki.bundle_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -3357,34 +3553,35 @@ async function validateDatabaseBoundaries(
       ORDER BY table_name, column_name
     `;
     const sourceRows = await sql`
-      SELECT original_name, object_key, metadata_json
+      SELECT name, relative_path, object_key, metadata_json
       FROM focowiki.source_files
       WHERE knowledge_base_id = ${knowledgeBaseId}
         AND id = ANY(${sourceFileIds})
-      ORDER BY original_name
+      ORDER BY relative_path
     `;
     const pageRows = await sql`
-      SELECT logical_path, object_key, frontmatter_json
-      FROM focowiki.bundle_files
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND release_id = (
-          SELECT active_release_id
-          FROM focowiki.knowledge_bases
-          WHERE id = ${knowledgeBaseId}
-        )
-        AND logical_path LIKE 'pages/%'
-      ORDER BY logical_path
+      SELECT file.logical_path, file.object_key, file.frontmatter_json
+      FROM focowiki.bundle_files file
+      JOIN focowiki.knowledge_bases knowledge_base
+        ON knowledge_base.id = file.knowledge_base_id
+       AND knowledge_base.active_release_id = file.release_id
+      WHERE file.knowledge_base_id = ${knowledgeBaseId}
+        AND file.file_kind = 'page'
+        AND file.source_file_id = ANY(${sourceFileIds})
+        AND file.logical_path LIKE 'pages/%'
+        AND file.object_key IS NOT NULL
+      ORDER BY file.logical_path
     `;
     const storageShape = storageShapeRows[0] ?? {};
-    const expectedSelectedNames = new Set(selectedSamples.map((sample) => sample.basename));
-    const expectedAllNames = new Set(allSamples.map((sample) => sample.basename));
-    const actualNames = new Set(sourceRows.map((row) => row.original_name));
+    const expectedSelectedNames = new Set(selectedSamples.map((sample) => sample.relativePath ?? sample.basename));
+    const expectedAllNames = new Set(allSamples.map((sample) => sample.relativePath ?? sample.basename));
+    const actualNames = new Set(sourceRows.map((row) => row.relative_path));
 
     if (
       recordCounts.source_files !== allSamples.length ||
       recordCounts.releases < 1 ||
       recordCounts.bundle_files < 1 ||
-      recordCounts.bundle_tree_entries < 1
+      recordCounts.knowledge_file_tree_nodes < 1
     ) {
       throw new Error(`Unexpected database record counts: ${JSON.stringify(recordCounts)}`);
     }
@@ -3409,13 +3606,13 @@ async function validateDatabaseBoundaries(
     }
 
     const allSourceRows = await sql`
-      SELECT original_name
+      SELECT relative_path
       FROM focowiki.source_files
       WHERE knowledge_base_id = ${knowledgeBaseId}
         AND deleted_at IS NULL
-      ORDER BY original_name
+      ORDER BY relative_path
     `;
-    const allActualNames = new Set(allSourceRows.map((row) => row.original_name));
+    const allActualNames = new Set(allSourceRows.map((row) => row.relative_path));
 
     for (const name of expectedAllNames) {
       if (!allActualNames.has(name)) {
@@ -3450,7 +3647,7 @@ async function validateDatabaseBoundaries(
       sourceObjectKey: firstSource.object_key,
       pageObjectKey: firstPage.object_key,
       pageLogicalPath: firstPage.logical_path,
-      sourceOriginalName: firstSource.original_name
+      sourceOriginalName: firstSource.name
     };
   } finally {
     await sql.end({ timeout: 5 });
@@ -3779,13 +3976,25 @@ async function responseBodyToString(body) {
 }
 
 function developerFileContentPath(knowledgeBaseId, logicalPath) {
-  return `/openapi/v1/knowledge-bases/${encodeURIComponent(
+  return `/openapi/v2/knowledge-bases/${encodeURIComponent(
     knowledgeBaseId
   )}/files/content?path=${encodeURIComponent(logicalPath)}`;
 }
 
+function pathnameWithQuery(pathname, query = {}) {
+  const entries = Object.entries(query).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (entries.length === 0) return pathname;
+  const searchParams = new URLSearchParams(entries.map(([key, value]) => [key, String(value)]));
+  return `${pathname}?${searchParams.toString()}`;
+}
+
+function developerFileSearchPath(knowledgeBaseId, params) {
+  const searchParams = new URLSearchParams(params);
+  return `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/search?${searchParams.toString()}`;
+}
+
 function developerSourceFilePath(knowledgeBaseId, sourceFileId) {
-  return `/openapi/v1/knowledge-bases/${encodeURIComponent(
+  return `/openapi/v2/knowledge-bases/${encodeURIComponent(
     knowledgeBaseId
   )}/source-files/${encodeURIComponent(sourceFileId)}`;
 }

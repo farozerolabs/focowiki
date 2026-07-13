@@ -88,4 +88,103 @@ describe("S3 storage adapter", () => {
       { Key: "objects/a.md", VersionId: "marker-a-1" }
     ]);
   });
+
+  it("purges versioned and current objects under a prefix before verifying emptiness", async () => {
+    let versionListCount = 0;
+    let objectListCount = 0;
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "ListObjectVersionsCommand") {
+        versionListCount += 1;
+        if (versionListCount === 1) {
+          return {
+            Versions: [{ Key: "tenant/knowledge-bases/a/page.md", VersionId: "v1" }],
+            DeleteMarkers: [{ Key: "tenant/knowledge-bases/a/old.md", VersionId: "m1" }],
+            IsTruncated: true,
+            NextKeyMarker: "tenant/knowledge-bases/a/page.md",
+            NextVersionIdMarker: "v1"
+          };
+        }
+        if (versionListCount === 2) {
+          return {
+            Versions: [{ Key: "tenant/knowledge-bases/b/page.md", VersionId: "v2" }],
+            IsTruncated: false
+          };
+        }
+        return { Versions: [], DeleteMarkers: [], IsTruncated: false };
+      }
+      if (command.constructor.name === "ListObjectsV2Command") {
+        objectListCount += 1;
+        if (objectListCount === 1) {
+          return {
+            Contents: [{ Key: "tenant/knowledge-bases/a/page.md" }],
+            IsTruncated: true,
+            NextContinuationToken: "next"
+          };
+        }
+        if (objectListCount === 2) {
+          return {
+            Contents: [{ Key: "tenant/knowledge-bases/b/page.md" }],
+            IsTruncated: false
+          };
+        }
+        return { Contents: [], IsTruncated: false };
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.purgePrefix("tenant/knowledge-bases/"))
+      .resolves.toEqual({ deleted: 5, remaining: 0 });
+
+    const calls = send.mock.calls as unknown as Array<[{ constructor: { name: string }; input: unknown }]>;
+    const deletedObjects = calls
+      .filter(([command]) => command.constructor.name === "DeleteObjectsCommand")
+      .flatMap(([command]) => (command.input as {
+        Delete: { Objects: Array<{ Key: string; VersionId?: string }> };
+      }).Delete.Objects);
+    expect(deletedObjects).toEqual([
+      { Key: "tenant/knowledge-bases/a/page.md", VersionId: "v1" },
+      { Key: "tenant/knowledge-bases/a/old.md", VersionId: "m1" },
+      { Key: "tenant/knowledge-bases/b/page.md", VersionId: "v2" },
+      { Key: "tenant/knowledge-bases/a/page.md" },
+      { Key: "tenant/knowledge-bases/b/page.md" }
+    ]);
+  });
+
+  it("falls back to current-object cleanup when version listing is unsupported", async () => {
+    let objectListCount = 0;
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "ListObjectVersionsCommand") {
+        throw Object.assign(new Error("ListObjectVersions not implemented"), {
+          name: "NotImplemented",
+          Code: "NotImplemented",
+          $metadata: { httpStatusCode: 501 }
+        });
+      }
+      if (command.constructor.name === "ListObjectsV2Command") {
+        objectListCount += 1;
+        return objectListCount === 1
+          ? {
+              Contents: [{ Key: "tenant/knowledge-bases/a/page.md" }],
+              IsTruncated: false
+            }
+          : { Contents: [], IsTruncated: false };
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.purgePrefix("tenant/knowledge-bases/"))
+      .resolves.toEqual({ deleted: 1, remaining: 0 });
+    const calls = send.mock.calls as unknown as Array<[{ constructor: { name: string } }]>;
+    expect(calls.some(([command]) => command.constructor.name === "DeleteObjectsCommand")).toBe(true);
+  });
 });

@@ -6,7 +6,7 @@ export function redactPotentialPathText(value) {
     .replace(/\/[^"'`\s]*\/[^"'`\s]*/g, "<redacted-path>")
     .replace(/[A-Z]:\\[^"'`\s]*/g, "<redacted-path>")
     .replace(/(knowledge-bases\/)[^"'`\s]+/g, "$1<redacted-object-key>")
-    .replace(/(uploads\/)[^"'`\s]+/g, "$1<redacted-object-key>")
+    .replace(/(upload-sessions\/)[^"'`\s]+/g, "$1<redacted-object-key>")
     .replace(/(releases\/)[^"'`\s]+/g, "$1<redacted-object-key>")
     .replace(/(Authorization:\s*Bearer\s+)[^"'`\s]+/gi, "$1<redacted>")
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/g, "$1<redacted>")

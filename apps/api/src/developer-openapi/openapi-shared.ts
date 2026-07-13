@@ -3,6 +3,7 @@ export type ParameterObject = Record<string, unknown>;
 export type ResponseObject = Record<string, unknown>;
 export type OperationObject = Record<string, unknown>;
 export type PathItemObject = Record<string, OperationObject>;
+type AdditionalErrorStatus = 404 | 409 | 413 | 422;
 
 export const bearerSecurity = [{ bearerAuth: [] }];
 export const jsonContentType = "application/json";
@@ -18,6 +19,8 @@ export function operation(input: {
   successStatus: number;
   successSchema: SchemaObject;
   successExample?: unknown;
+  successContentType?: string;
+  additionalErrorStatuses?: AdditionalErrorStatus[];
   extraResponses?: Record<string, ResponseObject>;
 }): OperationObject {
   return {
@@ -44,13 +47,33 @@ export function operation(input: {
         }
       : {}),
     responses: {
-      [String(input.successStatus)]: jsonResponse(
-        "Successful response.",
-        input.successSchema,
-        input.successExample
-      ),
-      ...standardErrorResponses(),
+      [String(input.successStatus)]: input.successContentType
+        ? contentResponse(
+            "Successful response.",
+            input.successContentType,
+            input.successSchema,
+            input.successExample
+          )
+        : jsonResponse("Successful response.", input.successSchema, input.successExample),
+      ...standardErrorResponses(input.additionalErrorStatuses),
       ...input.extraResponses
+    }
+  };
+}
+
+function contentResponse(
+  description: string,
+  contentType: string,
+  schema: SchemaObject,
+  example?: unknown
+): ResponseObject {
+  return {
+    description,
+    content: {
+      [contentType]: {
+        schema,
+        ...(example === undefined ? {} : { example })
+      }
     }
   };
 }
@@ -103,7 +126,7 @@ export function paginationParameters(): ParameterObject[] {
       name: "limit",
       in: "query",
       required: false,
-      description: "Maximum number of records to return, bounded by runtime configuration.",
+      description: "Maximum number of records to return. The deployment can enforce a lower limit.",
       schema: { type: "integer", minimum: 1 }
     },
     {
@@ -118,21 +141,30 @@ export function paginationParameters(): ParameterObject[] {
 
 export function sourceFileListFilterParameters(): ParameterObject[] {
   return [
-    queryParameter("fileNameQuery", "Case-insensitive filename substring filter.", {
+    queryParameter("directoryId", "Parent source-directory identifier. Use `root` for root files.", {
       type: "string",
       minLength: 1,
-      maxLength: 160
+      maxLength: 200,
+      example: "source-directory-handbook"
     }),
-    queryParameter("fileIdQuery", "Source file ID prefix filter.", {
+    queryParameter("pathQuery", "Case-insensitive source-relative path substring filter.", {
+      type: "string",
+      minLength: 1,
+      maxLength: 160,
+      example: "handbook/guide"
+    }),
+    queryParameter("sourceFileIdPrefix", "Source file ID prefix filter.", {
       type: "string",
       minLength: 8,
-      maxLength: 160
+      maxLength: 160,
+      example: "source-file-11111111"
     }),
-    queryParameter("processingStatus", "Source-file processing state filter.", {
+    queryParameter("processingState", "Source-file processing state filter.", {
       type: "string",
-      enum: ["queued", "running", "completed", "failed"]
+      enum: ["queued", "running", "completed", "failed"],
+      example: "completed"
     }),
-    queryParameter("processingStage", "Current source-file stage filter.", {
+    queryParameter("currentStage", "Current source-file stage filter.", {
       type: "string",
       enum: [
         "upload_storage",
@@ -143,44 +175,13 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
         "bundle_generation",
         "index_publication",
         "release_activation"
-      ]
-    }),
-    queryParameter("modelInvocationStatus", "Latest model-assistance state filter.", {
-      type: "string",
-      enum: ["running", "completed", "failed", "skipped", "not_recorded"]
+      ],
+      example: "release_activation"
     }),
     queryParameter("generatedOutputStatus", "Generated output state filter.", {
       type: "string",
-      enum: ["pending", "visible", "unavailable"]
-    }),
-    queryParameter("startedFrom", "Processing start lower bound.", {
-      type: "string",
-      format: "date-time"
-    }),
-    queryParameter("startedTo", "Processing start upper bound.", {
-      type: "string",
-      format: "date-time"
-    }),
-    queryParameter("endedFrom", "Processing end lower bound.", {
-      type: "string",
-      format: "date-time"
-    }),
-    queryParameter("endedTo", "Processing end upper bound.", {
-      type: "string",
-      format: "date-time"
-    }),
-    queryParameter("errorState", "Processing or publication error state filter.", {
-      type: "string",
-      enum: ["with_error", "without_error"]
-    }),
-    queryParameter("errorCodeQuery", "Processing or publication error-code substring filter.", {
-      type: "string",
-      minLength: 2,
-      maxLength: 160
-    }),
-    queryParameter("actionState", "Available follow-up action filter.", {
-      type: "string",
-      enum: ["openable", "retryable", "none"]
+      enum: ["pending", "visible", "unavailable"],
+      example: "visible"
     })
   ];
 }
@@ -194,7 +195,7 @@ export function sourceFileIdParameter(): ParameterObject {
 }
 
 export function fileIdParameter(): ParameterObject {
-  return pathParameter("fileId", "File identifier returned by upload, source-file, tree, or file detail APIs.");
+  return pathParameter("fileId", "Generated file identifier returned by tree, search, related-file, or file APIs.");
 }
 
 export function webhookIdParameter(): ParameterObject {
@@ -241,35 +242,71 @@ export function fileSearchParameters(): ParameterObject[] {
         "search_index_shard",
         "link_index",
         "link_index_shard",
+        "change_index",
+        "change_index_shard",
         "graph_index",
         "graph_manifest",
         "graph_node_index",
         "graph_edge_shard",
-        "graph_file"
+        "graph_file",
+        "graph_community",
+        "graph_insight"
       ],
       default: "page"
+    }),
+    queryParameter("mode", "Search mode. `file` is the default and searches generated file documents. `hybrid` merges file and graph candidates. `graph` searches graph relationships only.", {
+      type: "string",
+      enum: ["file", "graph", "hybrid"],
+      default: "file"
+    }),
+    queryParameter("graphDepth", "Number of relationship levels included by graph and hybrid search.", {
+      type: "integer",
+      enum: [0, 1, 2],
+      default: 1
+    }),
+    queryParameter("graphFanout", "Maximum relationship records returned per graph search item.", {
+      type: "integer",
+      minimum: 0,
+      maximum: 25,
+      default: 10
     }),
     ...paginationParameters()
   ];
 }
 
-function standardErrorResponses(): Record<string, ResponseObject> {
-  return {
+function standardErrorResponses(additionalStatuses: AdditionalErrorStatus[] = []): Record<string, ResponseObject> {
+  const responses: Record<string, ResponseObject> = {
     "401": errorResponse(
       "Bearer API key is missing, malformed, unknown, revoked, or deleted.",
       "UNAUTHORIZED",
       401
     ),
-    "404": errorResponse("The requested resource or route was not found.", "NOT_FOUND", 404),
-    "409": errorResponse(
-      "The requested operation conflicts with the current resource state.",
-      "CONFLICT",
-      409
-    ),
-    "422": errorResponse("The request failed validation.", "VALIDATION_ERROR", 422),
     "429": errorResponse("The request exceeded configured rate limits.", "RATE_LIMITED", 429),
     "500": errorResponse("The API encountered an internal error.", "INTERNAL_ERROR", 500)
   };
+
+  const additional: Record<AdditionalErrorStatus, ResponseObject> = {
+    404: errorResponse("The requested resource was not found.", "NOT_FOUND", 404),
+    409: errorResponse("The request conflicts with the current resource state.", "CONFLICT", 409),
+    413: errorResponse("The request body exceeds the accepted size limit.", "PAYLOAD_TOO_LARGE", 413),
+    422: errorResponse("The request failed validation.", "VALIDATION_ERROR", 422)
+  };
+
+  for (const status of [404, 409, 413, 422] as const) {
+    if (additionalStatuses.includes(status)) {
+      responses[String(status)] = additional[status];
+    }
+  }
+
+  return reorderResponses(responses);
+}
+
+function reorderResponses(responses: Record<string, ResponseObject>): Record<string, ResponseObject> {
+  const ordered: Record<string, ResponseObject> = {};
+  for (const status of ["401", "404", "409", "413", "422", "429", "500"]) {
+    if (responses[status]) ordered[status] = responses[status];
+  }
+  return ordered;
 }
 
 export function jsonResponse(description: string, schema: SchemaObject, example?: unknown): ResponseObject {
@@ -297,7 +334,7 @@ export function errorResponse(description: string, code: string, httpStatus: num
           retryGuidance: "Wait briefly before sending the next Developer OpenAPI request."
         }
       },
-      requestId: "req_123"
+      requestId: "req-11111111-1111-4111-8111-111111111111"
     });
   }
 
@@ -307,7 +344,7 @@ export function errorResponse(description: string, code: string, httpStatus: num
       message: description,
       httpStatus
     },
-    requestId: "req_123"
+    requestId: "req-11111111-1111-4111-8111-111111111111"
   });
 }
 

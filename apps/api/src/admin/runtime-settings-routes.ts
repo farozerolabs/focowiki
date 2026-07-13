@@ -2,6 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import {
   RuntimeSettingsValidationError,
   serializePublicModel,
+  type RuntimeGraphSettings,
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
@@ -81,6 +82,19 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) =>
         service.updateUploadGeneration({
           value: body as RuntimeUploadGenerationSettings,
+          actor: "admin"
+        })
+      )
+  );
+
+  app.put(
+    "/admin/api/settings/graph",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateGraph({
+          value: body as RuntimeGraphSettings,
           actor: "admin"
         })
       )
@@ -194,6 +208,7 @@ export function registerAdminRuntimeSettingsRoutes(
           worker: snapshot.worker,
           publication: snapshot.publication,
           uploadGeneration: snapshot.uploadGeneration,
+          graph: snapshot.graph,
           activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
         }
       });

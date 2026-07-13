@@ -69,6 +69,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(request.instructions).toContain("Example output structure");
     expect(request.instructions).toContain('"related_links":');
     expect(request.instructions).toContain("Do not invent facts");
+    expect(request.instructions).toContain("Use the primary natural language of the Markdown content");
     expect(request.instructions).toContain("avoid ASCII double quote characters");
     expect(request.instructions).not.toMatch(/OKF-style|knowledge bundle/i);
     expect(request.instructions).toContain("Return raw JSON only");
@@ -117,7 +118,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
         {
           fromFileId: "source-a",
           toFileId: "source-b",
-          relationType: "title_mention",
+          relationType: "direct_reference",
           weight: 0.7,
           reason: "The source body mentions the related file title.",
           source: "deterministic"
@@ -142,8 +143,13 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(request.instructions).toContain('{"relationships":[]}');
     expect(request.instructions).toContain("Evaluate only the provided candidate relationships");
     expect(request.instructions).toContain("Reject weak relationships");
+    expect(request.instructions).toContain("central subject or primary entity in both files");
+    expect(request.instructions).toContain("incidental references");
+    expect(request.instructions).toContain("candidate relationship type does not match");
+    expect(request.instructions).toContain("same uniquely identifiable entity");
+    expect(request.instructions).toContain("shared location, publisher, authority, owner, namespace, or collection");
     expect(request.instructions).toContain("Use only these relationType values");
-    expect(request.instructions).toContain("same_subject");
+    expect(request.instructions).toContain("same_specific_subject");
     expect(request.instructions).toContain("avoid ASCII double quote characters");
     expect(request.instructions).not.toMatch(/OKF-style|knowledge bundle/i);
     expect(readRequestInputText(request)).toContain("\"targetFileId\": \"source-b\"");
@@ -163,7 +169,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
           {
             targetFileId: "source-b",
             accepted: true,
-            relationType: "title_mention",
+            relationType: "direct_reference",
             weight: 0.8,
             reason: "The current file refers to the related title."
           }
@@ -173,7 +179,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
       {
         targetFileId: "source-b",
         accepted: true,
-        relationType: "title_mention",
+        relationType: "direct_reference",
         weight: 0.8,
         reason: "The current file refers to the related title."
       }
@@ -185,7 +191,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
           {
             targetFileId: "source-b",
             accepted: true,
-            relationType: "title_mention",
+            relationType: "direct_reference",
             weight: 1.2,
             reason: "Unsafe weight"
           }
@@ -199,7 +205,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
           {
             targetFileId: "source-b",
             accepted: true,
-            relationType: "title_mention",
+            relationType: "direct_reference",
             weight: 0.8,
             reason: "OK",
             inventedPath: "pages/c.md"
@@ -645,7 +651,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
                         {
                           targetFileId: "source-b",
                           accepted: true,
-                          relationType: "shared_subject",
+                          relationType: "same_specific_subject",
                           weight: 0.81,
                           reason: "The files share visible topic evidence."
                         }
@@ -665,7 +671,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
         {
           targetFileId: "source-b",
           accepted: true,
-          relationType: "shared_subject",
+          relationType: "same_specific_subject",
           weight: 0.81
         }
       ],
@@ -987,7 +993,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
                     {
                       targetFileId: "source-b",
                       accepted: true,
-                      relationType: "shared_subject",
+                      relationType: "same_specific_subject",
                       weight: 0.8,
                       reason: "The files share a stable topic."
                     }
@@ -1004,7 +1010,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
         {
           targetFileId: "source-b",
           accepted: true,
-          relationType: "shared_subject",
+          relationType: "same_specific_subject",
           weight: 0.8
         }
       ],
@@ -1084,7 +1090,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
                     {
                       targetFileId: "source-b",
                       accepted: true,
-                      relationType: "shared_subject",
+                      relationType: "same_specific_subject",
                       weight: "high",
                       reason: "Invalid"
                     }
@@ -1100,7 +1106,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
                   {
                     targetFileId: "source-b",
                     accepted: true,
-                    relationType: "shared_subject",
+                    relationType: "same_specific_subject",
                     weight: 0.85,
                     reason: "The files share a stable topic tag."
                   }
@@ -1117,7 +1123,7 @@ describe("OpenAI Structured Outputs model suggestions", () => {
         {
           targetFileId: "source-b",
           accepted: true,
-          relationType: "shared_subject",
+          relationType: "same_specific_subject",
           weight: 0.85,
           reason: "The files share a stable topic tag."
         }

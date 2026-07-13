@@ -9,6 +9,7 @@ import type {
   SourceFileRecord
 } from "../src/db/admin-repositories.js";
 import type { WorkerJobRecord, WorkerJobRepository } from "../src/db/worker-job-repository.js";
+import type { SourceResourceRepository } from "../src/application/ports/source-resource-repository.js";
 import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
@@ -52,10 +53,8 @@ function createConfig(): RuntimeConfig {
     },
     upload: {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
-      storageConcurrency: 4
     },
     publication: {
       mode: "batch",
@@ -107,13 +106,6 @@ class MemoryStorage implements StorageAdapter {
     return this.objects.get(key) ?? null;
   }
 
-  public async writeCurrentPointer(): Promise<void> {
-    throw new Error("Not used by admin deletion tests");
-  }
-
-  public async readCurrentPointer(): Promise<null> {
-    return null;
-  }
 }
 
 function createRepositories() {
@@ -122,6 +114,8 @@ function createRepositories() {
     name: "Developer docs",
     description: null,
     activeReleaseId: "release-001",
+    resourceRevision: 1,
+    catalogGeneration: 1,
     createdAt: now,
     updatedAt: now,
     deletedAt: null as string | null
@@ -130,7 +124,8 @@ function createRepositories() {
     {
       id: "source-001",
       knowledgeBaseId: "kb-001",
-      originalName: "intro.md",
+      name: "intro.md",
+      relativePath: "intro.md",
       objectKey: "tenant/demo/source/intro.md",
       contentType: "text/markdown; charset=utf-8",
       sizeBytes: 42,
@@ -150,7 +145,8 @@ function createRepositories() {
     {
       id: "source-002",
       knowledgeBaseId: "kb-001",
-      originalName: "setup.md",
+      name: "setup.md",
+      relativePath: "setup.md",
       objectKey: "tenant/demo/source/setup.md",
       contentType: "text/markdown; charset=utf-8",
       sizeBytes: 42,
@@ -170,7 +166,8 @@ function createRepositories() {
     {
       id: "source-003",
       knowledgeBaseId: "kb-001",
-      originalName: "advanced.md",
+      name: "advanced.md",
+      relativePath: "advanced.md",
       objectKey: "tenant/demo/source/advanced.md",
       contentType: "text/markdown; charset=utf-8",
       sizeBytes: 48,
@@ -212,7 +209,7 @@ function createRepositories() {
     id: string;
     knowledgeBaseId: string;
     mode: "batch" | "manual" | "per_file";
-    reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "deletion";
+    reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "metadata" | "deletion";
     status: "queued" | "running" | "completed" | "failed";
     dirtySourceCount: number;
     releaseId: string | null;
@@ -224,9 +221,9 @@ function createRepositories() {
     updatedAt: string;
   }> = [];
   const workerJobs: Array<{
-    kind: "publication";
+    kind: "publication" | "hard_delete";
     knowledgeBaseId: string;
-    payload: { reason: "deletion" };
+    payload: Record<string, unknown>;
     runAfter: string;
     maxAttempts: number;
   }> = [];
@@ -274,16 +271,95 @@ function createRepositories() {
         },
         async getKnowledgeBase(id: string) {
           return id === knowledgeBase.id && !knowledgeBase.deletedAt ? knowledgeBase : null;
-        },
-        async softDeleteKnowledgeBase(input: { id: string; deletedAt: string }) {
-          if (input.id !== knowledgeBase.id) {
-            return false;
-          }
-
-          knowledgeBase.deletedAt = input.deletedAt;
-          return true;
         }
       },
+      sourceResources: {
+        async updateKnowledgeBase() {
+          return null;
+        },
+        async listDirectories() {
+          return { items: [], nextCursor: null };
+        },
+        async getDirectory() {
+          return null;
+        },
+        async listSourceFiles() {
+          return { items: [], nextCursor: null };
+        },
+        async getSourceFile(input) {
+          const source = sourceFiles.find((item) => item.id === input.sourceFileId && !item.deletedAt);
+          return source ? {
+            id: source.id,
+            knowledgeBaseId: source.knowledgeBaseId,
+            directoryId: null,
+            name: source.relativePath,
+            relativePath: source.relativePath,
+            contentType: source.contentType,
+            sizeBytes: source.sizeBytes,
+            checksumSha256: source.checksumSha256,
+            resourceRevision: 1,
+            contentRevision: 1,
+            activeRevisionId: `source-revision-${source.id}`,
+            processingState: "completed" as const,
+            currentStage: source.processingStage ?? "release_activation",
+            processingErrorCode: null,
+            generatedOutputStatus: "visible" as const,
+            generatedPath: `pages/${source.relativePath}`,
+            deleting: false,
+            createdAt: source.createdAt
+          } : null;
+        },
+        async getSourceFileContentDescriptor() {
+          return null;
+        },
+        async createOperation() {
+          throw new Error("Not used by admin deletion tests");
+        },
+        async prepareOperation() {
+          throw new Error("Not used by admin deletion tests");
+        },
+        async failOperation() {
+          return { operation: null, objectKeys: [] };
+        },
+        async failSourceFileCandidateOperation() {
+          return { operation: null, objectKeys: [] };
+        },
+        async getOperation() {
+          return null;
+        },
+        async listOperations() {
+          return { items: [], nextCursor: null };
+        },
+        async acceptDirectoryDeletion() {
+          throw new Error("Not used by admin deletion tests");
+        },
+        async acceptSourceFileDeletion(input) {
+          const source = sourceFiles.find((item) => item.id === input.sourceFileId && !item.deletedAt);
+          if (!source) throw new Error("Source file was not found");
+          source.deletedAt = input.deletedAt;
+          return {
+            operation: {
+              id: input.operationId,
+              knowledgeBaseId: input.knowledgeBaseId,
+              kind: "source_file_delete" as const,
+              state: "accepted" as const,
+              expectedResourceRevision: input.expectedResourceRevision,
+              candidateCatalogGeneration: 2,
+              result: null,
+              errorCode: null,
+              createdAt: input.deletedAt,
+              updatedAt: input.deletedAt,
+              completedAt: null
+            },
+            replayed: false,
+            deletionIntentId: input.deletionIntentId,
+            sourceFileId: input.sourceFileId
+          };
+        },
+        async acceptKnowledgeBaseDeletion() {
+          throw new Error("Not used by admin deletion tests");
+        }
+      } satisfies SourceResourceRepository,
       files: {
         async getBundleFile(input: { logicalPath: string }) {
           return bundleFiles.find((file) => file.logicalPath === input.logicalPath) ?? null;
@@ -314,21 +390,6 @@ function createRepositories() {
             items: active.slice(0, input.limit),
             nextCursor: null
           };
-        },
-        async softDeleteSourceFile(input: { sourceFileId: string; deletedAt: string }) {
-          const source = sourceFiles.find((file) => file.id === input.sourceFileId);
-
-          if (!source || source.deletedAt) {
-            return false;
-          }
-
-          source.deletedAt = input.deletedAt;
-          for (const document of searchDocuments.values()) {
-            if (document.sourceFileId === input.sourceFileId && !document.removedAt) {
-              document.removedAt = input.deletedAt;
-            }
-          }
-          return true;
         },
         async createSourceFileEvent(input: SourceFileEventDraft) {
           sourceEvents.push(input);
@@ -369,7 +430,7 @@ function createRepositories() {
           id: string;
           knowledgeBaseId: string;
           mode: "batch" | "manual" | "per_file";
-          reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "deletion";
+          reason: "bootstrap" | "batch_threshold" | "batch_interval" | "manual" | "per_file" | "metadata" | "deletion";
           dirtySourceCount: number;
         }) {
           const job = {
@@ -539,6 +600,44 @@ function createRepositories() {
           };
           return record;
         },
+        async enqueueHardDeleteJob(input) {
+          const job = {
+            kind: "hard_delete" as const,
+            knowledgeBaseId: input.knowledgeBaseId,
+            payload: {
+              targetKind: input.targetKind,
+              sourceFileId: input.sourceFileId,
+              deletionIntentId: input.deletionIntentId
+            },
+            runAfter: input.runAfter,
+            maxAttempts: input.maxAttempts
+          };
+          workerJobs.push(job);
+          return {
+            id: `worker-job-${workerJobs.length}`,
+            kind: "hard_delete",
+            status: "queued",
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceFileId: input.sourceFileId ?? null,
+            payload: job.payload,
+            runAfter: input.runAfter,
+            attemptCount: 0,
+            maxAttempts: input.maxAttempts,
+            lockedBy: null,
+            lockedAt: null,
+            heartbeatAt: null,
+            startedAt: null,
+            completedAt: null,
+            failedAt: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            createdAt: now,
+            updatedAt: now
+          };
+        },
+        async cancelQueuedSourceFileJobs() {
+          return [];
+        },
         async claimWorkerJobs() {
           return [];
         },
@@ -629,14 +728,18 @@ describe("admin source deletion", () => {
       expect.any(String)
     );
     expect(records.knowledgeBase.activeReleaseId).toBe("release-001");
-    expect(records.sourceEvents.some((event) => event.stageKey === "source_deletion")).toBe(true);
-    expect(records.searchDocuments.get("bundle-file-page")?.removedAt).toEqual(expect.any(String));
-    expect(records.graphDeletedSourceFileIds).toContain("source-001");
-    expect(records.graphNodes.has("source-001")).toBe(false);
-    expect(records.graphEdges).toHaveLength(0);
+    expect(records.sourceEvents).toHaveLength(0);
+    expect(records.searchDocuments.get("bundle-file-page")?.removedAt).toBeNull();
+    expect(records.graphDeletedSourceFileIds).not.toContain("source-001");
+    expect(records.graphNodes.has("source-001")).toBe(true);
+    expect(records.graphEdges).toHaveLength(1);
     expect(records.publicationJobs).toHaveLength(0);
-    expect(records.workerJobs).toHaveLength(1);
+    expect(records.workerJobs).toHaveLength(2);
     expect(records.workerJobs[0]?.payload.reason).toBe("deletion");
+    expect(records.workerJobs[1]?.payload).toMatchObject({
+      targetKind: "source_file",
+      sourceFileId: "source-001"
+    });
     expect(storage.objects.size).toBe(storageObjectCountBeforeDelete);
     await expect(
       redis.getPaginationInvalid("developer-openapi:file-search:kb-001:release-001")

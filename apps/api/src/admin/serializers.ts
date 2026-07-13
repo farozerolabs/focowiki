@@ -19,9 +19,15 @@ export function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
     entryType: entry.entryType,
     bundleFileId: entry.bundleFileId,
     sourceFileId: entry.sourceFileId,
+    sourceDirectoryId: entry.sourceDirectoryId,
     fileKind: entry.fileKind,
     childCount: entry.childCount,
-    deletable: entry.fileKind === "page" && Boolean(entry.sourceFileId)
+    directFileCount: entry.directFileCount ?? 0,
+    descendantFileCount: entry.descendantFileCount ?? 0,
+    resourceRevision: entry.resourceRevision ?? null,
+    deletable:
+      (entry.fileKind === "page" && Boolean(entry.sourceFileId)) ||
+      (entry.entryType === "directory" && Boolean(entry.sourceDirectoryId))
   };
 }
 
@@ -71,7 +77,9 @@ export function toAdminSourceFile(
 
   return {
     id: file.id,
-    originalName: file.originalName,
+    name: file.name,
+    relativePath: file.relativePath,
+    resourceRevision: file.resourceRevision ?? 1,
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
     checksumSha256: file.checksumSha256,

@@ -5,10 +5,10 @@ describe("redactSecrets", () => {
   it("redacts named secret assignments", () => {
     expect(
       redactSecrets(
-        "ADMIN_PASSWORD=admin-secret ADMIN_SESSION_SECRET: session-secret S3_SECRET_ACCESS_KEY=s3-secret MODEL_API_KEY: model-secret rawKey=fwok_secret OPENAPI_KEY=fwok_other"
+        "ADMIN_PASSWORD=admin-secret S3_SECRET_ACCESS_KEY=s3-secret MODEL_API_KEY: model-secret rawKey=fwok_secret OPENAPI_KEY=fwok_other"
       )
     ).toBe(
-      "ADMIN_PASSWORD=<redacted> ADMIN_SESSION_SECRET: <redacted> S3_SECRET_ACCESS_KEY=<redacted> MODEL_API_KEY: <redacted> rawKey=<redacted> OPENAPI_KEY=<redacted>"
+      "ADMIN_PASSWORD=<redacted> S3_SECRET_ACCESS_KEY=<redacted> MODEL_API_KEY: <redacted> rawKey=<redacted> OPENAPI_KEY=<redacted>"
     );
   });
 

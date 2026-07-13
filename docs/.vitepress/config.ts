@@ -61,6 +61,7 @@ function englishThemeConfig(): DefaultTheme.Config {
           { text: "Project Introduction", link: "/" },
           { text: "Open Knowledge Format", link: "/guide/open-knowledge-format" },
           { text: "File-first Graph", link: "/guide/file-first-graph" },
+          { text: "Resource Management", link: "/guide/resource-management" },
           { text: "File Cleaning and Ingestion Guide", link: "/guide/file-cleaning-ingestion" }
         ]
       },
@@ -120,6 +121,7 @@ function chineseThemeConfig(): DefaultTheme.Config {
           { text: "项目介绍", link: "/zh-CN/" },
           { text: "Google OKF 规范", link: "/zh-CN/guide/open-knowledge-format" },
           { text: "文件优先图关系", link: "/zh-CN/guide/file-first-graph" },
+          { text: "知识库资源管理", link: "/zh-CN/guide/resource-management" },
           { text: "文件清洗入库指南", link: "/zh-CN/guide/file-cleaning-ingestion" }
         ]
       },

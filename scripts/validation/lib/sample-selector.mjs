@@ -110,17 +110,11 @@ export function selectSingleAndBatchSamples(
   }
 
   const batchSamples = selectedPool.samples
-    .filter((sample) => sample.basename !== singleSample.basename)
+    .filter((sample) => sample.relativePath !== singleSample.relativePath)
     .slice(0, batchSampleCount);
 
   if (batchSamples.length !== batchSampleCount) {
     throw new Error(`Expected ${batchSampleCount} batch samples, selected ${batchSamples.length}.`);
-  }
-
-  const duplicateNames = duplicatedNormalizedBasenames([singleSample, ...batchSamples]);
-
-  if (duplicateNames.length > 0) {
-    throw new Error(`Selected samples contain duplicate normalized filenames: ${duplicateNames.join(", ")}`);
   }
 
   const flowSamples = [singleSample, ...batchSamples];
@@ -179,7 +173,7 @@ export function selectSamples(sourceDir, sampleCount = DEFAULT_SAMPLE_COUNT, opt
     }
 
     scannedCandidateProfiles += 1;
-    const candidate = readSampleCandidateProfile(file);
+    const candidate = readSampleCandidateProfile(file, absoluteSourceDir);
 
     if (candidate) {
       candidates.push(candidate);
@@ -402,26 +396,9 @@ function hasCoreCandidateCoverage(candidates) {
   );
 }
 
-function duplicatedNormalizedBasenames(samples) {
-  const seen = new Set();
-  const duplicates = new Set();
-
-  for (const sample of samples) {
-    const normalized = sample.basename.trim().toLowerCase();
-
-    if (seen.has(normalized)) {
-      duplicates.add(sample.basename);
-      continue;
-    }
-
-    seen.add(normalized);
-  }
-
-  return Array.from(duplicates).sort();
-}
-
-function readSampleCandidateProfile(filePath) {
+function readSampleCandidateProfile(filePath, sourceDir) {
   const basename = path.basename(filePath);
+  const relativePath = path.relative(sourceDir, filePath).split(path.sep).join("/");
   const stat = fs.statSync(filePath);
   const preview = readFilePrefix(filePath, Math.min(stat.size, MAX_METADATA_BYTES));
   const { frontmatter, bodyOffset, bodyPreview } = splitFrontmatterPreview(preview.text);
@@ -440,6 +417,7 @@ function readSampleCandidateProfile(filePath) {
 
   return {
     basename,
+    relativePath,
     filePath,
     title: String(metadata.title ?? ""),
     type: String(metadata.type ?? ""),
@@ -565,7 +543,7 @@ function stripYamlValue(value) {
 }
 
 function addFirstMatching(selected, selectedNames, candidates, predicate) {
-  const candidate = candidates.find((item) => !selectedNames.has(item.basename) && predicate(item));
+  const candidate = candidates.find((item) => !selectedNames.has(item.relativePath) && predicate(item));
 
   if (!candidate) {
     return;
@@ -580,7 +558,7 @@ function addDistinctFieldSamples(selected, selectedNames, candidates, field, min
   for (const candidate of candidates) {
     const value = candidate[field];
 
-    if (!value || seen.has(value) || selectedNames.has(candidate.basename)) {
+    if (!value || seen.has(value) || selectedNames.has(candidate.relativePath)) {
       continue;
     }
 
@@ -594,12 +572,12 @@ function addDistinctFieldSamples(selected, selectedNames, candidates, field, min
 }
 
 function addCandidate(selected, selectedNames, candidate, sampleCount = DEFAULT_SAMPLE_COUNT) {
-  if (selectedNames.has(candidate.basename) || selected.length >= sampleCount) {
+  if (selectedNames.has(candidate.relativePath) || selected.length >= sampleCount) {
     return;
   }
 
   selected.push(candidate);
-  selectedNames.add(candidate.basename);
+  selectedNames.add(candidate.relativePath);
 }
 
 function duplicatedTitleCandidates(candidates) {

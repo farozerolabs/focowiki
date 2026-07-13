@@ -7,28 +7,42 @@ export type QueryPlanTargetName =
   | "source-file-list-error-filter"
   | "source-file-list-model-filter"
   | "source-file-list-action-filter"
-  | "worker-job-source-cancellation"
-  | "bundle-tree-page"
-  | "bundle-tree-search-name"
-  | "bundle-tree-search-path"
-  | "bundle-tree-search-next-page"
-  | "bundle-tree-search-ancestors"
-  | "bundle-file-content"
-  | "generated-file-search-first-page"
-  | "generated-file-search-next-page"
-  | "generated-file-search-no-result"
-  | "generated-file-search-kind-filter"
-  | "generated-file-search-cache-hit"
-  | "source-file-graph-summary"
-  | "hard-delete-source-search-documents"
-  | "hard-delete-source-tree-entries"
-  | "hard-delete-source-bundle-files"
-  | "hard-delete-source-worker-jobs"
-  | "hard-delete-knowledge-base-search-documents"
-  | "hard-delete-knowledge-base-tree-entries"
-  | "hard-delete-knowledge-base-bundle-files"
+	  | "source-resource-list-filter"
+	  | "worker-job-source-cancellation"
+	  | "knowledge-tree-page"
+	  | "knowledge-tree-search-name"
+	  | "knowledge-tree-search-path"
+	  | "knowledge-tree-search-next-page"
+	  | "knowledge-tree-search-ancestors"
+	  | "knowledge-file-content"
+	  | "knowledge-file-search-first-page"
+	  | "knowledge-file-search-next-page"
+	  | "knowledge-file-search-no-result"
+	  | "knowledge-file-search-kind-filter"
+	  | "knowledge-file-search-cache-hit"
+	  | "knowledge-graph-search-first-page"
+	  | "knowledge-graph-search-edge-match"
+	  | "graph-expand-file-neighborhood"
+	  | "graph-expand-edge-seed"
+	  | "graph-expand-query-seed"
+	  | "source-file-graph-summary"
+	  | "hard-delete-source-knowledge-graph-search-documents"
+	  | "hard-delete-source-knowledge-graph-edges"
+	  | "hard-delete-source-knowledge-tree-entries"
+	  | "hard-delete-source-bundle-files"
+	  | "hard-delete-source-worker-jobs"
+	  | "hard-delete-knowledge-base-graph-search-documents"
+	  | "hard-delete-knowledge-base-graph-edges"
+	  | "hard-delete-knowledge-base-tree-entries"
+	  | "hard-delete-knowledge-base-bundle-files"
   | "hard-delete-knowledge-base-source-files"
-  | "hard-delete-knowledge-base-worker-jobs";
+  | "hard-delete-knowledge-base-worker-jobs"
+  | "release-validation-source-page"
+  | "release-validation-tree-reachability"
+  | "release-validation-concept-type"
+  | "release-validation-generated-target"
+  | "release-validation-continuation-chain"
+  | "release-validation-index-coverage";
 
 export type QueryPlanTarget = {
   name: QueryPlanTargetName;
@@ -126,7 +140,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list",
       description: "Source-file cursor page must use knowledge-base scoped created_at/id indexes.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, generated_bundle_file_id, generated_bundle_file_path,
                model_invocation_status, model_invocation_model_name, created_at, deleted_at
         FROM focowiki.source_files
@@ -141,13 +155,13 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-filename-filter",
       description: "Source-file filename filter must stay bounded and use indexed searchable filename state.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
           AND deleted_at IS NULL
           AND task_deleted_at IS NULL
-          AND original_name ILIKE '%example%'
+          AND relative_path ILIKE '%example%'
         ORDER BY created_at DESC, id ASC
         LIMIT 51
       `
@@ -156,7 +170,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-status-stage-filter",
       description: "Source-file status and stage filters must use knowledge-base scoped processing indexes.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
@@ -172,7 +186,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-time-filter",
       description: "Source-file time range filters must apply in PostgreSQL before cursor pagination.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
@@ -188,7 +202,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-error-filter",
       description: "Source-file error filters must use persisted error summary columns.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
@@ -206,7 +220,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-model-filter",
       description: "Source-file model-state filters must use persisted latest model summary columns.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
@@ -221,7 +235,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       name: "source-file-list-action-filter",
       description: "Source-file action filters must derive from persisted source-file summary columns.",
       sql: `
-        SELECT id, knowledge_base_id, original_name, processing_status, processing_stage,
+        SELECT id, knowledge_base_id, relative_path, processing_status, processing_stage,
                generated_output_status, model_invocation_status, created_at, deleted_at
         FROM focowiki.source_files
         WHERE knowledge_base_id = 'kb-plan'
@@ -230,6 +244,26 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND generated_output_status = 'visible'
           AND generated_bundle_file_path IS NOT NULL
         ORDER BY created_at DESC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "source-resource-list-filter",
+      description: "Version-two source resources must use indexed path, processing, output, and ID cursor filters.",
+      sql: `
+        SELECT id, knowledge_base_id, directory_id, name, relative_path,
+               processing_status, processing_stage, generated_output_status,
+               generated_bundle_file_path, resource_revision, content_revision
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = 'kb-plan'
+          AND deleted_at IS NULL
+          AND deletion_intent_id IS NULL
+          AND relative_path ILIKE '%guide%' ESCAPE '\\'
+          AND processing_status = 'completed'
+          AND processing_stage = 'release_activation'
+          AND generated_output_status = 'visible'
+          AND id > 'source-file-plan'
+        ORDER BY id ASC
         LIMIT 51
       `
     },
@@ -248,90 +282,90 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       `
     },
     {
-      name: "bundle-tree-page",
-      description: "Active release tree page must use release and parent scoped tree indexes.",
+      name: "knowledge-tree-page",
+      description: "Knowledge tree pages must use parent scoped cursor indexes.",
       sql: `
-        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
-               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
-               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
-        FROM focowiki.bundle_tree_entries entry
-        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        SELECT entry.id, entry.knowledge_base_id, entry.parent_id,
+               entry.name, entry.path, entry.sort_key, entry.node_type,
+               entry.file_id, entry.child_count, entry.descendant_file_count,
+               file.source_file_id, file.file_kind
+        FROM focowiki.knowledge_file_tree_nodes entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND entry.release_id = 'release-plan'
-          AND entry.parent_path = ''
+          AND entry.parent_id IS NULL
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
     },
     {
-      name: "bundle-tree-search-name",
-      description: "Active release tree search by name must use indexed release-scoped search.",
+      name: "knowledge-tree-search-name",
+      description: "Knowledge tree search by name must use knowledge-base scoped indexed search.",
       sql: `
-        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
-               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
-               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
-        FROM focowiki.bundle_tree_entries entry
-        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        SELECT entry.id, entry.knowledge_base_id, entry.parent_id,
+               entry.name, entry.path, entry.sort_key, entry.node_type,
+               entry.file_id, entry.child_count, entry.descendant_file_count,
+               file.source_file_id, file.file_kind
+        FROM focowiki.knowledge_file_tree_nodes entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND entry.release_id = 'release-plan'
-          AND (entry.name || ' ' || entry.logical_path) ILIKE '%example%' ESCAPE '\\'
+          AND (entry.name || ' ' || entry.path) ILIKE '%example%' ESCAPE '\\'
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
     },
     {
-      name: "bundle-tree-search-path",
-      description: "Active release tree search by logical path must use indexed release-scoped search.",
+      name: "knowledge-tree-search-path",
+      description: "Knowledge tree search by path must use knowledge-base scoped indexed search.",
       sql: `
-        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
-               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
-               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
-        FROM focowiki.bundle_tree_entries entry
-        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        SELECT entry.id, entry.knowledge_base_id, entry.parent_id,
+               entry.name, entry.path, entry.sort_key, entry.node_type,
+               entry.file_id, entry.child_count, entry.descendant_file_count,
+               file.source_file_id, file.file_kind
+        FROM focowiki.knowledge_file_tree_nodes entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND entry.release_id = 'release-plan'
-          AND (entry.name || ' ' || entry.logical_path) ILIKE '%pages/example%' ESCAPE '\\'
+          AND (entry.name || ' ' || entry.path) ILIKE '%pages/example%' ESCAPE '\\'
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
     },
     {
-      name: "bundle-tree-search-next-page",
-      description: "Active release tree search next page must use cursor seek rather than offset.",
+      name: "knowledge-tree-search-next-page",
+      description: "Knowledge tree search next page must use cursor seek rather than offset.",
       sql: `
-        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
-               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
-               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
-        FROM focowiki.bundle_tree_entries entry
-        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        SELECT entry.id, entry.knowledge_base_id, entry.parent_id,
+               entry.name, entry.path, entry.sort_key, entry.node_type,
+               entry.file_id, entry.child_count, entry.descendant_file_count,
+               file.source_file_id, file.file_kind
+        FROM focowiki.knowledge_file_tree_nodes entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND entry.release_id = 'release-plan'
-          AND (entry.name || ' ' || entry.logical_path) ILIKE '%example%' ESCAPE '\\'
+          AND (entry.name || ' ' || entry.path) ILIKE '%example%' ESCAPE '\\'
           AND (entry.sort_key > '1:example.md' OR (entry.sort_key = '1:example.md' AND entry.id > 'tree-entry-plan'))
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
     },
     {
-      name: "bundle-tree-search-ancestors",
+      name: "knowledge-tree-search-ancestors",
       description: "Search result ancestor lookup must fetch only returned match ancestors.",
       sql: `
-        SELECT entry.id, entry.knowledge_base_id, entry.release_id, entry.parent_path,
-               entry.name, entry.logical_path, entry.sort_key, entry.entry_type,
-               entry.bundle_file_id, entry.child_count, file.source_file_id, file.file_kind
-        FROM focowiki.bundle_tree_entries entry
-        LEFT JOIN focowiki.bundle_files file ON file.id = entry.bundle_file_id
+        SELECT entry.id, entry.knowledge_base_id, entry.parent_id,
+               entry.name, entry.path, entry.sort_key, entry.node_type,
+               entry.file_id, entry.child_count, entry.descendant_file_count,
+               file.source_file_id, file.file_kind
+        FROM focowiki.knowledge_file_tree_nodes entry
+        LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND entry.release_id = 'release-plan'
-          AND entry.logical_path = ANY(ARRAY['pages', 'pages/guides'])
-        ORDER BY entry.logical_path ASC
+          AND entry.path = ANY(ARRAY['pages', 'pages/guides'])
+        ORDER BY entry.path ASC
       `
     },
     {
-      name: "bundle-file-content",
-      description: "Generated content lookup must resolve one active-release bundle file.",
+      name: "knowledge-file-content",
+      description: "Generated content lookup must resolve one knowledge file by path.",
       sql: `
-        SELECT id, knowledge_base_id, release_id, logical_path, object_key, source_file_id, file_kind
+        SELECT id, knowledge_base_id, logical_path, object_key, source_file_id, file_kind
         FROM focowiki.bundle_files
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
@@ -340,74 +374,96 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       `
     },
     {
-      name: "generated-file-search-first-page",
-      description: "Developer file search first page must use compact active-release search documents.",
+      name: "knowledge-file-search-first-page",
+      description: "Developer file search first page must use knowledge files without release joins.",
       sql: `
-        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_file_search_documents
+        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_files
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
-          AND removed_at IS NULL
           AND file_kind = 'page'
-          AND search_text ILIKE '%example%' ESCAPE '\\'
-        ORDER BY logical_path ASC, bundle_file_id ASC
+          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%example%' ESCAPE '\\'
+        ORDER BY logical_path ASC, id ASC
         LIMIT 51
       `
     },
     {
-      name: "generated-file-search-next-page",
-      description: "Developer file search next page must use cursor seek over bounded search documents.",
+      name: "knowledge-file-search-next-page",
+      description: "Developer file search next page must use cursor seek over knowledge files.",
       sql: `
-        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_file_search_documents
+        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_files
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
-          AND removed_at IS NULL
           AND file_kind = 'page'
-          AND search_text ILIKE '%example%' ESCAPE '\\'
-          AND (logical_path > 'pages/example.md' OR (logical_path = 'pages/example.md' AND bundle_file_id > 'bundle-file-plan'))
-        ORDER BY logical_path ASC, bundle_file_id ASC
+          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%example%' ESCAPE '\\'
+          AND (logical_path > 'pages/example.md' OR (logical_path = 'pages/example.md' AND id > 'bundle-file-plan'))
+        ORDER BY logical_path ASC, id ASC
         LIMIT 51
       `
     },
     {
-      name: "generated-file-search-no-result",
-      description: "Developer file search no-result checks must stay bounded on compact search documents.",
+      name: "knowledge-file-search-no-result",
+      description: "Developer file search no-result checks must stay bounded on knowledge files.",
       sql: `
-        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_file_search_documents
+        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_files
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
-          AND removed_at IS NULL
           AND file_kind = 'page'
-          AND search_text ILIKE '%no-such-file%' ESCAPE '\\'
-        ORDER BY logical_path ASC, bundle_file_id ASC
+          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%no-such-file%' ESCAPE '\\'
+        ORDER BY logical_path ASC, id ASC
         LIMIT 51
       `
     },
     {
-      name: "generated-file-search-kind-filter",
-      description: "Developer file search kind filter must use release and file-kind scoped search indexes.",
+      name: "knowledge-file-search-kind-filter",
+      description: "Developer file search kind filter must use knowledge-base and file-kind scoped indexes.",
       sql: `
-        SELECT bundle_file_id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_file_search_documents
+        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
+        FROM focowiki.bundle_files
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
-          AND removed_at IS NULL
           AND file_kind = 'schema'
-          AND search_text ILIKE '%schema%' ESCAPE '\\'
-        ORDER BY logical_path ASC, bundle_file_id ASC
+          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%schema%' ESCAPE '\\'
+        ORDER BY logical_path ASC, id ASC
         LIMIT 51
       `
     },
     {
-      name: "generated-file-search-cache-hit",
+      name: "knowledge-file-search-cache-hit",
       description: "Developer file search cache hits must not require database search SQL.",
       sql: `
         SELECT 1
-        FROM focowiki.bundle_file_search_documents
+        FROM focowiki.bundle_files
         WHERE false
         LIMIT 0
+      `
+    },
+    {
+      name: "knowledge-graph-search-first-page",
+      description: "Developer graph search first page must use knowledge graph search documents.",
+      sql: `
+        SELECT id, file_id, node_id, edge_id, path, anchor_type, title, summary,
+               relationship_count, top_neighbors_json
+        FROM focowiki.knowledge_graph_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+        ORDER BY path ASC NULLS LAST, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "knowledge-graph-search-edge-match",
+      description: "Developer graph search edge matches must use edge-anchored graph search documents.",
+      sql: `
+        SELECT id, file_id, node_id, edge_id, path, title, summary, matched_field_text
+        FROM focowiki.knowledge_graph_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND anchor_type = 'edge'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+        ORDER BY path ASC NULLS LAST, id ASC
+        LIMIT 26
       `
     },
     {
@@ -422,6 +478,88 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND task_deleted_at IS NULL
         LIMIT 1
       `
+    },
+    {
+      name: "graph-expand-file-neighborhood",
+      description: "Graph expansion from a file seed must use accepted edge indexes and bounded page reads.",
+      sql: `
+        WITH relationships AS (
+          SELECT
+            edge.to_file_id AS related_file_id,
+            edge.relation_type,
+            'outgoing'::text AS direction,
+            edge.weight,
+            edge.reason,
+            edge.evidence_json
+          FROM focowiki.knowledge_graph_edges edge
+          WHERE edge.knowledge_base_id = 'kb-plan'
+            AND edge.quality_status = 'accepted'
+            AND edge.from_file_id = 'knowledge-file-plan'
+          UNION ALL
+          SELECT
+            edge.from_file_id AS related_file_id,
+            edge.relation_type,
+            'incoming'::text AS direction,
+            edge.weight,
+            edge.reason,
+            edge.evidence_json
+          FROM focowiki.knowledge_graph_edges edge
+          WHERE edge.knowledge_base_id = 'kb-plan'
+            AND edge.quality_status = 'accepted'
+            AND edge.to_file_id = 'knowledge-file-plan'
+        )
+        SELECT
+          node.id AS node_id,
+          node.source_file_id,
+          file.id AS file_id,
+          file.logical_path,
+          relationships.relation_type,
+          relationships.direction,
+          relationships.weight,
+          relationships.reason
+        FROM relationships
+        JOIN focowiki.knowledge_graph_nodes node
+          ON node.knowledge_base_id = 'kb-plan'
+         AND node.file_id = relationships.related_file_id
+        JOIN focowiki.bundle_files file
+          ON file.knowledge_base_id = 'kb-plan'
+         AND file.id = node.file_id
+        ORDER BY relationships.weight DESC, node.id ASC
+        LIMIT 26
+      `
+    },
+    {
+      name: "graph-expand-edge-seed",
+      description: "Graph expansion from an edge seed must resolve one accepted edge before bounded neighbor reads.",
+      sql: `
+        SELECT edge.id, edge.knowledge_base_id, edge.from_file_id, edge.to_file_id,
+               edge.relation_type, edge.weight, edge.reason, edge.quality_status, edge.evidence_json
+        FROM focowiki.knowledge_graph_edges edge
+        JOIN focowiki.bundle_files from_file
+          ON from_file.knowledge_base_id = edge.knowledge_base_id
+         AND from_file.id = edge.from_file_id
+        JOIN focowiki.bundle_files to_file
+          ON to_file.knowledge_base_id = edge.knowledge_base_id
+         AND to_file.id = edge.to_file_id
+        WHERE edge.knowledge_base_id = 'kb-plan'
+          AND edge.release_id = 'release-plan'
+          AND edge.id = 'graph-edge-plan'
+          AND edge.quality_status = 'accepted'
+        LIMIT 1
+      `
+    },
+    {
+      name: "graph-expand-query-seed",
+      description: "Graph expansion from a query seed must use graph search documents before expansion.",
+      sql: `
+        SELECT id, file_id, node_id, edge_id, path, anchor_type, title, summary,
+               relationship_count, top_neighbors_json
+        FROM focowiki.knowledge_graph_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+        ORDER BY path ASC NULLS LAST, id ASC
+        LIMIT 26
+      `
     }
   ];
 }
@@ -429,40 +567,68 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
 export function createHardDeletePlanTargets(): QueryPlanTarget[] {
   return [
     {
-      name: "hard-delete-source-search-documents",
-      description: "Source-file hard delete search-document cleanup must stay source scoped.",
+      name: "hard-delete-source-knowledge-graph-search-documents",
+      description: "Source-file hard delete graph search cleanup must stay file scoped.",
       sql: `
         WITH target AS (
-          SELECT release_id, bundle_file_id
-          FROM focowiki.bundle_file_search_documents
-          WHERE knowledge_base_id = 'kb-plan'
-            AND source_file_id = 'source-file-plan'
-          ORDER BY bundle_file_id ASC
+          SELECT document.id
+          FROM focowiki.knowledge_graph_search_documents document
+          JOIN focowiki.bundle_files file
+            ON file.id = document.file_id
+          WHERE document.knowledge_base_id = 'kb-plan'
+            AND file.knowledge_base_id = 'kb-plan'
+            AND file.source_file_id = 'source-file-plan'
+          ORDER BY document.id ASC
           LIMIT 100
         )
-        SELECT document.bundle_file_id
-        FROM focowiki.bundle_file_search_documents document
-        JOIN target
-          ON document.release_id = target.release_id
-         AND document.bundle_file_id = target.bundle_file_id
+        SELECT document.id
+        FROM focowiki.knowledge_graph_search_documents document
+        JOIN target ON target.id = document.id
       `
     },
     {
-      name: "hard-delete-source-tree-entries",
-      description: "Source-file hard delete tree cleanup must resolve entries through owned bundle files.",
+      name: "hard-delete-source-knowledge-graph-edges",
+      description: "Source-file hard delete graph edge cleanup must stay file endpoint scoped.",
+      sql: `
+        WITH source_files AS (
+          SELECT id
+          FROM focowiki.bundle_files
+          WHERE knowledge_base_id = 'kb-plan'
+            AND source_file_id = 'source-file-plan'
+        ),
+        target AS (
+          SELECT edge.id
+          FROM focowiki.knowledge_graph_edges edge
+          WHERE edge.knowledge_base_id = 'kb-plan'
+            AND (
+              edge.from_file_id IN (SELECT id FROM source_files)
+              OR edge.to_file_id IN (SELECT id FROM source_files)
+            )
+          ORDER BY edge.id ASC
+          LIMIT 100
+        )
+        SELECT edge.id
+        FROM focowiki.knowledge_graph_edges edge
+        JOIN target ON target.id = edge.id
+      `
+    },
+    {
+      name: "hard-delete-source-knowledge-tree-entries",
+      description: "Source-file hard delete tree cleanup must resolve entries through knowledge files.",
       sql: `
         WITH target AS (
           SELECT entry.id
-          FROM focowiki.bundle_tree_entries entry
-          JOIN focowiki.bundle_files bundle
-            ON bundle.id = entry.bundle_file_id
-          WHERE bundle.knowledge_base_id = 'kb-plan'
-            AND bundle.source_file_id = 'source-file-plan'
+          FROM focowiki.knowledge_file_tree_nodes entry
+          JOIN focowiki.bundle_files file
+            ON file.id = entry.file_id
+          WHERE entry.knowledge_base_id = 'kb-plan'
+            AND file.knowledge_base_id = 'kb-plan'
+            AND file.source_file_id = 'source-file-plan'
           ORDER BY entry.id ASC
           LIMIT 100
         )
         SELECT entry.id
-        FROM focowiki.bundle_tree_entries entry
+        FROM focowiki.knowledge_file_tree_nodes entry
         JOIN target ON target.id = entry.id
       `
     },
@@ -501,21 +667,35 @@ export function createHardDeletePlanTargets(): QueryPlanTarget[] {
       `
     },
     {
-      name: "hard-delete-knowledge-base-search-documents",
-      description: "Knowledge-base hard delete search cleanup must stay knowledge-base scoped.",
+      name: "hard-delete-knowledge-base-graph-search-documents",
+      description: "Knowledge-base hard delete graph search cleanup must stay knowledge-base scoped.",
       sql: `
         WITH target AS (
-          SELECT release_id, bundle_file_id
-          FROM focowiki.bundle_file_search_documents
+          SELECT id
+          FROM focowiki.knowledge_graph_search_documents
           WHERE knowledge_base_id = 'kb-plan'
-          ORDER BY bundle_file_id ASC
+          ORDER BY id ASC
           LIMIT 100
         )
-        SELECT document.bundle_file_id
-        FROM focowiki.bundle_file_search_documents document
-        JOIN target
-          ON document.release_id = target.release_id
-         AND document.bundle_file_id = target.bundle_file_id
+        SELECT document.id
+        FROM focowiki.knowledge_graph_search_documents document
+        JOIN target ON target.id = document.id
+      `
+    },
+    {
+      name: "hard-delete-knowledge-base-graph-edges",
+      description: "Knowledge-base hard delete graph edge cleanup must stay knowledge-base scoped.",
+      sql: `
+        WITH target AS (
+          SELECT id
+          FROM focowiki.knowledge_graph_edges
+          WHERE knowledge_base_id = 'kb-plan'
+          ORDER BY id ASC
+          LIMIT 100
+        )
+        SELECT edge.id
+        FROM focowiki.knowledge_graph_edges edge
+        JOIN target ON target.id = edge.id
       `
     },
     {
@@ -524,13 +704,13 @@ export function createHardDeletePlanTargets(): QueryPlanTarget[] {
       sql: `
         WITH target AS (
           SELECT id
-          FROM focowiki.bundle_tree_entries
+          FROM focowiki.knowledge_file_tree_nodes
           WHERE knowledge_base_id = 'kb-plan'
           ORDER BY id ASC
           LIMIT 100
         )
         SELECT entry.id
-        FROM focowiki.bundle_tree_entries entry
+        FROM focowiki.knowledge_file_tree_nodes entry
         JOIN target ON target.id = entry.id
       `
     },
@@ -580,6 +760,142 @@ export function createHardDeletePlanTargets(): QueryPlanTarget[] {
         SELECT job.id
         FROM focowiki.worker_jobs job
         JOIN target ON target.id = job.id
+      `
+    }
+  ];
+}
+
+export function createReleaseValidationPlanTargets(): QueryPlanTarget[] {
+  return [
+    {
+      name: "release-validation-source-page",
+      description: "Release source-page validation must use release-scoped snapshot and page indexes.",
+      sql: `
+        SELECT expected.generated_path
+        FROM focowiki.release_source_files expected
+        LEFT JOIN focowiki.bundle_files actual
+          ON actual.knowledge_base_id = expected.knowledge_base_id
+         AND actual.release_id = expected.release_id
+         AND actual.source_file_id = expected.source_file_id
+         AND actual.logical_path = expected.generated_path
+         AND actual.file_kind = 'page'
+        WHERE expected.knowledge_base_id = 'kb-okf-scale'
+          AND expected.release_id = 'release-okf-scale'
+          AND actual.id IS NULL
+        ORDER BY expected.generated_path ASC
+        LIMIT 101
+      `
+    },
+    {
+      name: "release-validation-tree-reachability",
+      description: "Release tree validation must resolve generated files through indexed file identities.",
+      sql: `
+        SELECT file.logical_path
+        FROM focowiki.bundle_files file
+        LEFT JOIN focowiki.knowledge_file_tree_nodes tree
+          ON tree.knowledge_base_id = file.knowledge_base_id
+         AND tree.release_id = file.release_id
+         AND tree.file_id = file.id
+        WHERE file.knowledge_base_id = 'kb-okf-scale'
+          AND file.release_id = 'release-okf-scale'
+          AND tree.id IS NULL
+        ORDER BY file.logical_path ASC
+        LIMIT 101
+      `
+    },
+    {
+      name: "release-validation-concept-type",
+      description: "Release concept validation must inspect only non-reserved Markdown in one release.",
+      sql: `
+        SELECT file.logical_path
+        FROM focowiki.bundle_files file
+        WHERE file.knowledge_base_id = 'kb-okf-scale'
+          AND file.release_id = 'release-okf-scale'
+          AND file.logical_path LIKE '%.md'
+          AND file.logical_path <> 'log.md'
+          AND file.logical_path !~ '(^|/)index\\.md$'
+          AND NULLIF(btrim(file.okf_type), '') IS NULL
+        ORDER BY file.logical_path ASC
+        LIMIT 101
+      `
+    },
+    {
+      name: "release-validation-generated-target",
+      description: "Generated navigation links must resolve through the release logical-path index.",
+      sql: `
+        SELECT link.from_path
+        FROM focowiki.release_markdown_links link
+        LEFT JOIN focowiki.bundle_files target
+          ON target.knowledge_base_id = link.knowledge_base_id
+         AND target.release_id = link.release_id
+         AND target.logical_path = link.to_path
+        WHERE link.knowledge_base_id = 'kb-okf-scale'
+          AND link.release_id = 'release-okf-scale'
+          AND link.navigation_only = true
+          AND target.id IS NULL
+        ORDER BY link.from_path ASC, link.to_path ASC
+        LIMIT 101
+      `
+    },
+    {
+      name: "release-validation-continuation-chain",
+      description: "Continuation concepts must have one release-scoped incoming navigation link.",
+      sql: `
+        SELECT continuation.logical_path
+        FROM focowiki.bundle_files continuation
+        WHERE continuation.knowledge_base_id = 'kb-okf-scale'
+          AND continuation.release_id = 'release-okf-scale'
+          AND continuation.file_kind IN (
+            'history_page', 'directory_index_page', 'directory_index_map'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM focowiki.release_markdown_links link
+            JOIN focowiki.bundle_files source
+              ON source.knowledge_base_id = link.knowledge_base_id
+             AND source.release_id = link.release_id
+             AND source.logical_path = link.from_path
+            WHERE link.knowledge_base_id = continuation.knowledge_base_id
+              AND link.release_id = continuation.release_id
+              AND link.to_path = continuation.logical_path
+              AND link.navigation_only = true
+              AND (
+                (continuation.file_kind = 'history_page'
+                  AND source.file_kind IN ('log', 'history_page'))
+                OR
+                (continuation.file_kind IN ('directory_index_page', 'directory_index_map')
+                  AND source.file_kind IN (
+                    'directory_index', 'directory_index_page', 'directory_index_map'
+                  ))
+              )
+          )
+        ORDER BY continuation.logical_path ASC
+        LIMIT 101
+      `
+    },
+    {
+      name: "release-validation-index-coverage",
+      description: "Every source-backed page must have exactly one directory-navigation link.",
+      sql: `
+        SELECT page.logical_path
+        FROM focowiki.bundle_files page
+        LEFT JOIN focowiki.release_markdown_links link
+          ON link.knowledge_base_id = page.knowledge_base_id
+         AND link.release_id = page.release_id
+         AND link.to_path = page.logical_path
+         AND link.navigation_only = true
+        LEFT JOIN focowiki.bundle_files source
+          ON source.knowledge_base_id = link.knowledge_base_id
+         AND source.release_id = link.release_id
+         AND source.logical_path = link.from_path
+         AND source.file_kind IN ('directory_index', 'directory_index_page')
+        WHERE page.knowledge_base_id = 'kb-okf-scale'
+          AND page.release_id = 'release-okf-scale'
+          AND page.file_kind = 'page'
+        GROUP BY page.logical_path
+        HAVING count(source.id) <> 1
+        ORDER BY page.logical_path ASC
+        LIMIT 101
       `
     }
   ];

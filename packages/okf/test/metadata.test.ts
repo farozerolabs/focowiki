@@ -48,6 +48,30 @@ describe("resolveSourceMetadata", () => {
     expect(result.body).toBe("# Body");
   });
 
+  it("normalizes YAML timestamps into JSON-compatible metadata", () => {
+    const result = parseUploadedMarkdownSource({
+      fileName: "release.md",
+      content: [
+        "---",
+        "updatedAt: 2026-06-20",
+        "schedule:",
+        "  publishedAt: 2026-06-21T10:30:00.000Z",
+        "milestones:",
+        "  - 2026-06-22",
+        "---",
+        "# Release"
+      ].join("\n")
+    });
+
+    expect(result.metadata).toEqual({
+      updatedAt: "2026-06-20T00:00:00.000Z",
+      schedule: {
+        publishedAt: "2026-06-21T10:30:00.000Z"
+      },
+      milestones: ["2026-06-22T00:00:00.000Z"]
+    });
+  });
+
   it("accepts Markdown without frontmatter and persists empty metadata", () => {
     const result = parseUploadedMarkdownSource({
       fileName: "plain.md",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OkfGraphEdge, OkfGraphNode } from "@focowiki/okf";
 import { buildSourceFileGraph } from "../src/graph/file-graph.js";
+import { createGraphNode as createContentGraphNode } from "../src/graph/graph-node-profile.js";
 import type { FileGraphRepository, SourceFileRecord } from "../src/db/admin-repositories.js";
 
 const now = "2026-06-18T00:00:00.000Z";
@@ -64,6 +65,105 @@ describe("file graph", () => {
     expect(nodePageCalls).toBe(2);
   });
 
+  it("preserves nested source paths without using directory names as the fallback title", async () => {
+    const source = createSourceFile("source-nested", "handbook/setup/install.md");
+    const storedNodes: OkfGraphNode[] = [];
+    const graph: FileGraphRepository = {
+      async upsertGraphNode(input) {
+        storedNodes.push(input.node);
+      },
+      async upsertGraphEdges() {},
+      async listGraphNodes() {
+        return { items: [], nextCursor: null };
+      },
+      async listGraphEdges() {
+        return { items: [], nextCursor: null };
+      },
+      async listGraphNeighborhood() {
+        return { items: [], nextCursor: null };
+      },
+      async deleteGraphForSourceFile() {}
+    };
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: { type: "page" },
+      body: "# Install\n\nInstallation instructions.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedNodes[0]?.path).toBe("pages/handbook/setup/install.md");
+    expect(storedNodes[0]?.title).toBe("install");
+  });
+
+  it("stores canonical source-link paths for order-independent graph matching", () => {
+    const node = createContentGraphNode({
+      sourceFileId: "source-referrer",
+      sourceRelativePath: "guides/setup/current.md",
+      metadata: {
+        type: "guide",
+        title: "Current guide"
+      },
+      body: "# Current guide\n\nRead [Target guide](../reference/target.md).",
+      suggestions: null
+    });
+
+    expect(node.explicitReferences).toContain("/pages/guides/reference/target.md");
+  });
+
+  it("reconciles explicit referrers when their target node arrives later", async () => {
+    const source = createSourceFile("source-target", "guides/reference/target.md");
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({
+      candidates: [],
+      storedEdges,
+      explicitReconciliationResult: {
+        edgeCount: 1,
+        sourceFileIds: ["source-referrer"],
+        edge: {
+          fromFileId: "source-referrer",
+          toFileId: source.id,
+          relationType: "direct_reference",
+          weight: 0.95,
+          reason: "The source explicitly references this file.",
+          source: "deterministic",
+          evidence: {
+            signal: "direct_reference",
+            reconciliation: "explicit_reference"
+          }
+        }
+      }
+    });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        type: "guide",
+        title: "Target guide"
+      },
+      body: "# Target guide\n\nReference material.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).toContainEqual(
+      expect.objectContaining({
+        fromFileId: "source-referrer",
+        toFileId: source.id,
+        relationType: "direct_reference"
+      })
+    );
+    expect(result.edgeCount).toBe(1);
+    expect(result.affectedSourceFileIds).toEqual(
+      expect.arrayContaining([source.id, "source-referrer"])
+    );
+  });
+
   it("prefers indexed graph candidates before falling back to node pages", async () => {
     const source = createSourceFile("source-current", "current.md");
     const target = {
@@ -125,6 +225,80 @@ describe("file graph", () => {
     expect(storedEdges[0]?.toFileId).toBe("source-target");
   });
 
+  it("uses prior graph context as bounded candidates while requiring current content evidence", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const storedEdges: OkfGraphEdge[] = [];
+    let neighborhoodCalls = 0;
+    let nodePageCalls = 0;
+    const graph: FileGraphRepository = {
+      async upsertGraphNode() {
+        return undefined;
+      },
+      async upsertGraphEdges(input) {
+        storedEdges.push(...input.edges);
+      },
+      async listGraphCandidates() {
+        return [];
+      },
+      async listGraphNeighborhood(input) {
+        neighborhoodCalls += 1;
+        expect(input.limit).toBe(1);
+        return {
+          items: [
+            {
+              fileId: "source-related",
+              sourceFileId: "source-related",
+              bundleFileId: "bundle-related",
+              path: "pages/related-policy.md",
+              title: "Related policy",
+              relationType: "same_specific_subject",
+              direction: "outgoing",
+              weight: 0.7,
+              reason: "Prior graph context.",
+              source: "deterministic",
+              evidence: {},
+              contentAvailable: true
+            }
+          ],
+          nextCursor: null
+        };
+      },
+      async listGraphNodes() {
+        nodePageCalls += 1;
+        return { items: [createGraphNode("source-unrelated", "unrelated.md")], nextCursor: null };
+      },
+      async listGraphEdges() {
+        return { items: storedEdges, nextCursor: null };
+      },
+      async deleteGraphForSourceFile() {
+        return undefined;
+      }
+    };
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current",
+        type: "page",
+        tags: []
+      },
+      body: "# Current\n\nRead Related policy before changing the rollout process.",
+      suggestions: null,
+      pageSize: 10,
+      maxCandidateNodes: 1
+    });
+
+    expect(neighborhoodCalls).toBe(1);
+    expect(nodePageCalls).toBe(0);
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-related",
+      relationType: "direct_reference"
+    });
+  });
+
   it("does not publish relationships from weak shared metadata alone", async () => {
     const source = createSourceFile("source-api-security", "api-security.md");
     const candidates = [
@@ -160,8 +334,73 @@ describe("file graph", () => {
       pageSize: 10
     });
 
+    expect(storedEdges).toHaveLength(0);
+    expect(result.edgeCount).toBe(0);
+  });
+
+  it("does not connect unrelated files through a generic shared title suffix", async () => {
+    const source = createSourceFile("source-payment", "payment-callback.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-permissions", "user-permissions.md"),
+        title: "用户权限配置指南",
+        subjects: ["用户权限配置指南", "配置指南"],
+        entities: ["用户权限", "配置指南"],
+        keywords: ["用户权限", "角色继承", "配置指南"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "支付回调配置指南",
+        type: "guide",
+        tags: ["active"]
+      },
+      body: "# 支付回调配置指南\n\n本文介绍支付回调签名、幂等处理和失败重试。",
+      suggestions: null,
+      pageSize: 10
+    });
+
     expect(result.edgeCount).toBe(0);
     expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not treat a shared publisher prefix as a specific subject", async () => {
+    const source = createSourceFile("source-platform-access", "platform-access-policy.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-platform-retention", "platform-retention-policy.md"),
+        title: "Platform Operations Retention Guide",
+        subjects: ["Platform Operations", "Data Retention"],
+        entities: ["Platform Operations"],
+        keywords: ["Platform Operations", "Retention Period"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Platform Operations Access Guide",
+        type: "procedure",
+        tags: []
+      },
+      body:
+        "# Platform Operations Access Guide\n\nPlatform Operations publishes this guide for account access reviews.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).toHaveLength(0);
+    expect(result.edgeCount).toBe(0);
   });
 
   it("does not publish relationships from external source links or generic fragments", async () => {
@@ -254,15 +493,15 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: {
-        title: "用户权限配置指南",
+        title: "用户权限审计配置指南",
         type: "guide",
         tags: []
       },
       body: [
-        "# 用户权限配置指南",
+        "# 用户权限审计配置指南",
         "",
-        "本文介绍用户权限分配、角色继承、访问控制和审批流程。",
-        "用户权限配置需要与用户权限审计制度衔接。"
+        "本文介绍用户权限审计、角色继承、访问控制和审批流程。",
+        "用户权限审计配置需要与用户权限审计制度衔接。"
       ].join("\n"),
       suggestions: null,
       pageSize: 10
@@ -271,7 +510,8 @@ describe("file graph", () => {
     expect(result.edgeCount).toBe(1);
     expect(storedEdges[0]?.toFileId).toBe("source-user-permission-audit");
     expect(storedEdges[0]?.evidence).toMatchObject({
-      matchedTerms: expect.arrayContaining(["用户权限"])
+      signal: "same_specific_subject",
+      matchedTerms: expect.arrayContaining(["用户权限审计"])
     });
   });
 
@@ -347,7 +587,7 @@ describe("file graph", () => {
     expect(result.edgeCount).toBe(1);
     expect(storedEdges[0]).toMatchObject({
       toFileId: "source-payment-troubleshooting",
-      relationType: "shared_key_phrase"
+      relationType: "same_specific_subject"
     });
   });
 
@@ -468,6 +708,72 @@ describe("file graph", () => {
     expect(storedEdges).toHaveLength(0);
   });
 
+  it("does not turn directory proximity into a semantic relationship", async () => {
+    const source = createSourceFile("source-deployment-install", "runbooks/deployment-install.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-deployment-checklist", "deployment-checklist.md"),
+        path: "pages/runbooks/deployment-checklist.md",
+        title: "检查清单",
+        subjects: ["部署目标"],
+        entities: [],
+        keywords: []
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "部署目标安装指南",
+        type: "guide",
+        tags: []
+      },
+      body: "# 部署目标安装指南\n\n本文介绍部署目标的安装步骤、检查顺序和运行要求。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
+  it("does not use tree proximity for files from different generated directories", async () => {
+    const source = createSourceFile("source-deployment-install", "runbooks/deployment-install.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-deployment-checklist", "deployment-checklist.md"),
+        path: "pages/reference/deployment-checklist.md",
+        title: "检查清单",
+        subjects: ["部署目标"],
+        entities: [],
+        keywords: []
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "部署目标安装指南",
+        type: "guide",
+        tags: []
+      },
+      body: "# 部署目标安装指南\n\n本文介绍部署目标的安装步骤、检查顺序和运行要求。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.edgeCount).toBe(0);
+    expect(storedEdges).toHaveLength(0);
+  });
+
   it("excludes generated headings from graph node signals", async () => {
     const source = createSourceFile("source-current", "current.md");
     const storedNodes = new Map<string, OkfGraphNode>();
@@ -507,6 +813,50 @@ describe("file graph", () => {
     expect(storedNodes.get(source.id)?.keywords).not.toContain("citations");
   });
 
+  it("stores content-derived profile signals on graph nodes", async () => {
+    const source = createSourceFile("source-payment-callback", "payment-callback.md");
+    const storedNodes = new Map<string, OkfGraphNode>();
+    const graph = createMemoryGraphRepository({
+      candidates: [],
+      storedNodes
+    });
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Payment callback handbook",
+        type: "guide",
+        description: "Metadata-only summary",
+        tags: ["operations"]
+      },
+      body: [
+        "# Payment callback handbook",
+        "",
+        "Payment callback means the notification sent after a payment state changes.",
+        "The retry process starts after signature verification and idempotency checks.",
+        "Version 2 updated the timeout handling guidance."
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10
+    });
+
+    const node = storedNodes.get(source.id);
+    const contentProfile = node?.metadata?.contentProfile as Record<string, unknown>;
+
+    expect(node?.description).toBe("Payment callback means the notification sent after a payment state changes.");
+    expect(contentProfile.definitions).toEqual(
+      expect.arrayContaining(["Payment callback means the notification sent after a payment state changes."])
+    );
+    expect(contentProfile.processHints).toEqual(
+      expect.arrayContaining(["The retry process starts after signature verification and idempotency checks."])
+    );
+    expect(contentProfile.versionHints).toEqual(
+      expect.arrayContaining(["Version 2 updated the timeout handling guidance."])
+    );
+  });
+
   it("does not publish model-rejected candidate edges", async () => {
     const source = createSourceFile("source-current", "current.md");
     const candidates = [createGraphNode("source-related", "related.md")];
@@ -541,7 +891,7 @@ describe("file graph", () => {
                   {
                     targetFileId: "source-related",
                     accepted: false,
-                    relationType: "title_mention",
+                    relationType: "direct_reference",
                     weight: 0,
                     reason: "The title mention is not enough evidence."
                   }
@@ -555,6 +905,69 @@ describe("file graph", () => {
 
     expect(result.edgeCount).toBe(0);
     expect(storedEdges).toHaveLength(0);
+  });
+
+  it("keeps only independently safe edges when model confirmation is unavailable", async () => {
+    const source = createSourceFile("source-current", "current.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-direct", "direct-guide.md"),
+        title: "Direct guide",
+        subjects: ["通用组织名称"],
+        entities: ["通用组织名称"],
+        keywords: ["通用组织名称"]
+      },
+      {
+        ...createGraphNode("source-generic", "generic-reference.md"),
+        title: "Generic reference",
+        subjects: ["通用组织名称"],
+        entities: ["通用组织名称"],
+        keywords: ["通用组织名称"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Current workflow",
+        type: "workflow",
+        tags: []
+      },
+      body: [
+        "# Current workflow",
+        "",
+        "The Direct guide defines the next approval step.",
+        "通用组织名称只出现在普通背景文字中。"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "unavailable-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => {
+              throw new Error("provider unavailable");
+            }
+          }
+        }
+      }
+    });
+
+    expect(result.warnings.join("\n")).toContain("Model provider error");
+    expect(storedEdges).toHaveLength(1);
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-direct",
+      relationType: "direct_reference"
+    });
   });
 
   it("does not publish candidates omitted by model confirmation output", async () => {
@@ -658,7 +1071,7 @@ describe("file graph", () => {
     expect(storedEdges).toHaveLength(0);
   });
 
-  it("does not let model confirmation upgrade weak shared phrase edges", async () => {
+  it("sends strong shared phrase edges to model confirmation", async () => {
     const source = createSourceFile("source-payment-setup", "payment-setup.md");
     const candidates = [
       {
@@ -671,6 +1084,7 @@ describe("file graph", () => {
     ];
     const storedEdges: OkfGraphEdge[] = [];
     const graph = createMemoryGraphRepository({ candidates, storedEdges });
+    let modelCalled = false;
 
     const result = await buildSourceFileGraph({
       graph,
@@ -694,7 +1108,296 @@ describe("file graph", () => {
         client: {
           responses: {
             create: async () => {
-              throw new Error("Weak phrase edges must not be sent to the model.");
+              modelCalled = true;
+              return {
+                status: "completed",
+                output_text: JSON.stringify({
+                  relationships: [
+                    {
+                      targetFileId: "source-payment-troubleshooting",
+                      accepted: true,
+                      relationType: "same_specific_subject",
+                      weight: 0.82,
+                      reason: "Both files cover the same specific payment configuration subject."
+                    }
+                  ]
+                })
+              };
+            }
+          }
+        }
+      }
+    });
+
+    expect(modelCalled).toBe(true);
+    expect(result.edgeCount).toBe(1);
+    expect(storedEdges).toHaveLength(1);
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-payment-troubleshooting",
+      relationType: "same_specific_subject",
+      source: "model_confirmed"
+    });
+  });
+
+  it("classifies files with the same title as versions of the same document", async () => {
+    const source = createSourceFile("source-current-version", "access-policy-2026.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-previous-version", "access-policy-2025.md"),
+        title: "Access policy",
+        subjects: ["access policy"],
+        entities: ["access policy"],
+        keywords: ["access policy"],
+        metadata: {
+          contentProfile: {
+            versionHints: ["Version 1 was approved in 2025."]
+          }
+        }
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Access policy",
+        type: "policy",
+        tags: []
+      },
+      body: "# Access policy\n\nVersion 2 was approved in 2026. Access reviews run every quarter.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-previous-version",
+      relationType: "version_relation"
+    });
+  });
+
+  it("does not classify same-title duplicate content as a version or direct reference", async () => {
+    const source = createSourceFile("source-copy-a", "access-policy-copy-a.md");
+    const sharedVersionHint = "Approved in 2026 for the current access review process.";
+    const duplicateBody = `# Access policy\n\n${sharedVersionHint}\n\nAccess reviews run every quarter.`;
+    const candidates = [
+      createContentGraphNode({
+        sourceFileId: "source-copy-b",
+        sourceRelativePath: "access-policy-copy-b.md",
+        metadata: {
+          title: "Access policy",
+          type: "policy",
+          timestamp: "2026-01-01T00:00:00Z",
+          tags: []
+        },
+        body: duplicateBody,
+        suggestions: null
+      })
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Access policy",
+        type: "policy",
+        timestamp: "2026-01-01T00:00:00Z",
+        tags: []
+      },
+      body: duplicateBody,
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).not.toContainEqual(
+      expect.objectContaining({ relationType: "version_relation" })
+    );
+    expect(storedEdges).not.toContainEqual(
+      expect.objectContaining({ relationType: "direct_reference" })
+    );
+  });
+
+  it("classifies shared update provenance across different documents as collection context", async () => {
+    const source = createSourceFile("source-access-policy", "access-policy.md");
+    const sharedUpdate = "Updated under the 2026 platform documentation batch.";
+    const candidates = [
+      {
+        ...createGraphNode("source-retention-policy", "retention-policy.md"),
+        title: "Retention policy",
+        subjects: ["2026 platform documentation batch"],
+        entities: ["2026 platform documentation batch"],
+        keywords: ["2026 platform documentation batch"],
+        metadata: {
+          contentProfile: {
+            versionHints: [sharedUpdate]
+          }
+        }
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Access policy",
+        type: "policy",
+        tags: []
+      },
+      body: `# Access policy\n\n${sharedUpdate}\n\nAccess reviews run every quarter.`,
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges[0]).toMatchObject({
+      toFileId: "source-retention-policy",
+      relationType: "collection_neighbor"
+    });
+  });
+
+  it("reports every source file whose published graph projection changed", async () => {
+    const source = createSourceFile("source-current", "access-policy-current.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-previous", "access-policy-previous.md"),
+        title: "Access policy",
+        subjects: ["access policy"],
+        keywords: ["access policy"]
+      }
+    ];
+    const graph = createMemoryGraphRepository({
+      candidates,
+      replacedTargetFileIds: ["source-former-target"]
+    });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: { title: "Access policy", type: "policy", tags: [] },
+      body: "# Access policy\n\nAccess reviews run every quarter.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(result.affectedSourceFileIds).toEqual(
+      expect.arrayContaining(["source-current", "source-previous", "source-former-target"])
+    );
+  });
+
+  it("removes generated navigation sections before model relationship confirmation", async () => {
+    const source = createSourceFile("source-payment-guide", "payment-guide.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-payment-reference", "payment-reference.md"),
+        title: "Payment reference",
+        subjects: ["payment configuration"],
+        entities: ["payment configuration"],
+        keywords: ["payment configuration", "callback verification"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+    let serializedRequest = "";
+
+    await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "Payment configuration guide",
+        type: "guide",
+        tags: []
+      },
+      body: [
+        "# Payment configuration guide",
+        "",
+        "Payment configuration covers callback verification and signature rotation.",
+        "",
+        "## Related",
+        "",
+        "- generated-navigation-marker"
+      ].join("\n"),
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async (request) => {
+              serializedRequest = JSON.stringify(request);
+              return {
+                status: "completed",
+                output_text: JSON.stringify({
+                  relationships: [
+                    {
+                      targetFileId: "source-payment-reference",
+                      accepted: true,
+                      relationType: "same_specific_subject",
+                      weight: 0.8,
+                      reason: "Both files cover payment configuration."
+                    }
+                  ]
+                })
+              };
+            }
+          }
+        }
+      }
+    });
+
+    expect(serializedRequest).not.toContain("generated-navigation-marker");
+  });
+
+  it("does not send weak shared phrase edges to model confirmation", async () => {
+    const source = createSourceFile("source-current-notes", "current-notes.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-reference-notes", "reference-notes.md"),
+        title: "参考信息",
+        subjects: ["相关信息"],
+        entities: ["参考信息"],
+        keywords: ["当前内容", "相关信息"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "当前说明",
+        type: "guide",
+        tags: []
+      },
+      body: "# 当前说明\n\n本文提供当前内容和相关信息。",
+      suggestions: null,
+      pageSize: 10,
+      modelConfirmation: {
+        modelName: "test-model",
+        contextWindowTokens: 100_000,
+        receiveTimeouts: {
+          idleMs: 1_000,
+          maxMs: 5_000
+        },
+        client: {
+          responses: {
+            create: async () => {
+              throw new Error("Weak shared phrases must not be sent to the model.");
             }
           }
         }
@@ -744,7 +1447,7 @@ describe("file graph", () => {
                   {
                     targetFileId: "source-payment-retry",
                     accepted: true,
-                    relationType: "same_subject",
+                    relationType: "same_specific_subject",
                     weight: 0.9,
                     reason: "The model tried to change the deterministic relationship type."
                   }
@@ -766,7 +1469,7 @@ describe("file graph", () => {
       {
         fromFileId: source.id,
         toFileId: "source-stale",
-        relationType: "shared_key_phrase",
+        relationType: "same_specific_subject",
         weight: 0.7,
         reason: "Stale edge from previous processing.",
         source: "deterministic",
@@ -800,6 +1503,12 @@ function createMemoryGraphRepository(input: {
   candidates: OkfGraphNode[];
   storedNodes?: Map<string, OkfGraphNode>;
   storedEdges?: OkfGraphEdge[];
+  replacedTargetFileIds?: string[];
+  explicitReconciliationResult?: {
+    edgeCount: number;
+    sourceFileIds: string[];
+    edge?: OkfGraphEdge;
+  };
 }): FileGraphRepository {
   return {
     async upsertGraphNode(request) {
@@ -813,7 +1522,7 @@ function createMemoryGraphRepository(input: {
     },
     async replaceGraphEdgesForSourceFile(request) {
       if (!input.storedEdges) {
-        return;
+        return input.replacedTargetFileIds ?? [];
       }
 
       for (let index = input.storedEdges.length - 1; index >= 0; index -= 1) {
@@ -821,6 +1530,16 @@ function createMemoryGraphRepository(input: {
           input.storedEdges.splice(index, 1);
         }
       }
+      return input.replacedTargetFileIds ?? [];
+    },
+    async reconcileExplicitReferenceEdgesForTarget() {
+      if (input.explicitReconciliationResult?.edge) {
+        input.storedEdges?.push(input.explicitReconciliationResult.edge);
+      }
+      return input.explicitReconciliationResult ?? {
+        edgeCount: 0,
+        sourceFileIds: []
+      };
     },
     async listGraphNodes(request) {
       const offset = request.cursor ? Number(request.cursor) : 0;
@@ -843,12 +1562,14 @@ function createMemoryGraphRepository(input: {
   };
 }
 
-function createSourceFile(id: string, originalName: string): SourceFileRecord {
+function createSourceFile(id: string, relativePath: string): SourceFileRecord {
+  const name = relativePath.split("/").at(-1) ?? relativePath;
   return {
     id,
     knowledgeBaseId: "kb-graph",
-    originalName,
-    objectKey: `tenant/demo/knowledge-bases/kb-graph/sources/${id}/${originalName}`,
+    name,
+    relativePath,
+    objectKey: `tenant/demo/knowledge-bases/kb-graph/sources/${id}/${relativePath}`,
     contentType: "text/markdown; charset=utf-8",
     sizeBytes: 10,
     checksumSha256: "checksum",

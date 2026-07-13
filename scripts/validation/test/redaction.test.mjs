@@ -6,12 +6,12 @@ import { redactPotentialPathText, redactReportText } from "../lib/redaction.mjs"
 
 test("redactPotentialPathText removes local paths, bearer tokens, and object keys", () => {
   const redacted = redactPotentialPathText(
-    "Failed /var/tmp/private-project/input.md Authorization: Bearer token-value knowledge-bases/kb/uploads/task/sources/source/file.md"
+    "Failed /var/tmp/private-project/input.md Authorization: Bearer token-value knowledge-bases/kb/upload-sessions/session/entries/entry/content.md"
   );
 
   assert.equal(redacted.includes("/var/tmp/private-project"), false);
   assert.equal(redacted.includes("token-value"), false);
-  assert.equal(redacted.includes("task/sources/source"), false);
+  assert.equal(redacted.includes("session/entries/entry"), false);
   assert.equal(redacted.includes("<redacted-path>"), true);
   assert.equal(redacted.includes("<redacted>"), true);
 });

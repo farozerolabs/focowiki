@@ -82,6 +82,22 @@ describe("worker job repository contract", () => {
     expect(publicationSection).toContain("limit 1");
   });
 
+  it("keeps a required empty publication queued behind a running ordinary publication", () => {
+    const repository = readRepository();
+    const publicationSection = repository.slice(
+      repository.indexOf("async enqueuepublicationjob"),
+      repository.indexOf("async enqueueresourceoperationjob")
+    );
+
+    expect(publicationSection).toContain("input.reason === \"deletion\"");
+    expect(publicationSection).toContain("input.reason === \"metadata\"");
+    expect(publicationSection).toContain("status = 'queued'");
+    expect(publicationSection).toContain("status = 'running'");
+    expect(publicationSection).toContain("payload_json->>'reason' in ('deletion', 'metadata')");
+    expect(publicationSection).toContain("where not exists");
+    expect(publicationSection).toContain("status = 'queued'");
+  });
+
   it("prevents duplicate active hard-delete jobs without source-file foreign keys", () => {
     const repository = readRepository();
     const hardDeleteSection = repository.slice(
@@ -132,7 +148,7 @@ describe("worker job repository contract", () => {
 
     expect(cancelSection).toContain("knowledge_base_id = ${input.knowledgebaseid}");
     expect(cancelSection).toContain("status = 'queued'");
-    expect(cancelSection).toContain("kind in ('source_file_processing', 'publication')");
+    expect(cancelSection).toContain("kind in ('upload_session_finalization', 'source_file_processing', 'resource_operation', 'publication', 'generated_output_reset')");
     expect(cancelSection).toContain("payload_json->>'targetkind'");
     expect(cancelSection).toContain("<> 'knowledge_base'");
     expect(cancelSection).not.toContain("status = 'running'");
@@ -154,7 +170,7 @@ describe("worker job repository contract", () => {
     expect(sourceCancelSection).toContain("status = 'cancelled'");
     expect(sourceCancelSection).not.toContain("status = 'running'");
 
-    expect(knowledgeBaseCancelSection).toContain("kind in ('source_file_processing', 'publication')");
+    expect(knowledgeBaseCancelSection).toContain("kind in ('upload_session_finalization', 'source_file_processing', 'resource_operation', 'publication', 'generated_output_reset')");
     expect(knowledgeBaseCancelSection).toContain("kind = 'hard_delete'");
     expect(knowledgeBaseCancelSection).toContain("<> 'knowledge_base'");
     expect(knowledgeBaseCancelSection).toContain("status = 'queued'");
@@ -218,6 +234,7 @@ describe("worker job repository contract", () => {
     expect(releaseSection).toContain("locked_by = null");
     expect(releaseSection).toContain("heartbeat_at = null");
     expect(releaseSection).toContain("run_after = coalesce(${input.runafter ?? null}, run_after)");
+    expect(releaseSection).toContain("when ${input.preserveattempt ?? false} then greatest(attempt_count - 1, 0)");
     expect(releaseSection).toContain("and locked_by = ${input.workerid}");
     expect(releaseSection).toContain("and status = 'running'");
 
@@ -268,9 +285,9 @@ describe("worker job repository contract", () => {
     ]) {
       expect(migration).toContain(index);
     }
-    expect(migration).toContain("create table if not exists focowiki.worker_queue_summaries");
+    expect(migration).toContain("create table focowiki.worker_queue_summaries");
     expect(migration).toContain("create trigger worker_jobs_summary_sync_trigger");
-    expect(migration).toContain("create table if not exists focowiki.hard_delete_object_deletions");
+    expect(migration).toContain("create table focowiki.hard_delete_object_deletions");
     expect(migration).toContain("hard_delete_object_deletions_job_pending_idx");
   });
 });

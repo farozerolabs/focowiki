@@ -7,6 +7,7 @@ export async function processSourceFilePublicationStage(input: {
   knowledgeBaseId: string;
   knowledgeBaseName: string;
   sourceFileId: string;
+  relatedSourceFileIds?: string[] | undefined;
   generatedAt: string;
   pageSize: number;
   cursorTtlSeconds: number;
@@ -17,10 +18,17 @@ export async function processSourceFilePublicationStage(input: {
   mark: SourceFileStageMarker;
   recordStage: SourceFileStageRecorder;
 }): Promise<{ published: boolean; releaseId: string | null }> {
+  await input.mark({
+    status: "completed",
+    stage: "index_publication",
+    endedAt: input.progressClock(),
+    errorCode: null
+  });
   const publication = await input.publicationService.markSourceFileReady({
     knowledgeBaseId: input.knowledgeBaseId,
     knowledgeBaseName: input.knowledgeBaseName,
     sourceFileId: input.sourceFileId,
+    relatedSourceFileIds: input.relatedSourceFileIds ?? [],
     generatedAt: input.generatedAt,
     pageSize: input.pageSize,
     cursorTtlSeconds: input.cursorTtlSeconds,

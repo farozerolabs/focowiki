@@ -67,6 +67,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Validate Admin production bundle
+        run: pnpm validate:admin-build-debug-output
+
       - name: Validate OpenAPI contract
         run: pnpm openapi:validate
 

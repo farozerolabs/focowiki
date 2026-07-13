@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "../src/pages/SettingsPage";
 import { initI18n } from "../src/i18n";
 import {
+  createRuntimeModel,
   deleteRuntimeModel,
   fetchRuntimeSettings,
   updateRateLimitSettings,
@@ -70,15 +71,19 @@ vi.mock("@/lib/admin-api", () => ({
         graphCandidateLimit: 200,
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500,
+        directoryIndexMaxEntries: 200,
+        directoryIndexMaxBytes: 65536,
         okfLogMaxEntries: 100,
         okfLogMaxBytes: 65536
       },
       uploadGeneration: {
         maxBytes: 1048576,
-        maxFiles: 24,
+        sessionTtlSeconds: 86400,
+        manifestPageSize: 500,
+        contentBatchMaxFiles: 24,
+        contentBatchMaxBytes: 16777216,
         generationBatchSize: 50,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 4
+        fileProcessingConcurrency: 1
       },
       activeModel: {
         id: "model-001"
@@ -152,10 +157,8 @@ vi.mock("@/lib/admin-api", () => ({
       },
       uploadGeneration: {
         maxBytes: 2097152,
-        maxFiles: 12,
         generationBatchSize: 80,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 2
+        fileProcessingConcurrency: 1
       },
       activeModel: {
         id: "model-001"
@@ -219,6 +222,26 @@ describe("SettingsPage", () => {
     ).toBeTruthy();
   });
 
+  it("shows model required-field feedback only after an invalid submit", async () => {
+    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    const modelsTab = screen.getByRole("tab", { name: "Models" });
+    fireEvent.pointerDown(modelsTab);
+    fireEvent.mouseDown(modelsTab);
+    fireEvent.pointerUp(modelsTab);
+    fireEvent.click(modelsTab);
+    fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+
+    expect(screen.queryByText("Model fields are required when creating a model.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create model" }));
+
+    expect(
+      await screen.findByText("Model fields are required when creating a model.")
+    ).toBeTruthy();
+    expect(createRuntimeModel).not.toHaveBeenCalled();
+  });
+
   it("edits upload-generation settings and blocks empty required fields", async () => {
     render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
 
@@ -233,20 +256,17 @@ describe("SettingsPage", () => {
       expect(screen.getAllByText("Upload and generation").length).toBeGreaterThan(0);
     });
     expect(
-      screen.getByText("Maximum total bytes accepted by one upload request. Recommended: 10485760 for 10 MB, or lower for small deployments.")
+      screen.getByText("Maximum bytes accepted for one Markdown source file. Recommended: 10485760 for 10 MB, or lower for small deployments.")
     ).toBeTruthy();
 
     const maxBytes = document.getElementById(
       "upload-generation-maxBytes"
     ) as HTMLInputElement | null;
-    const maxFiles = document.getElementById(
-      "upload-generation-maxFiles"
-    ) as HTMLInputElement | null;
     const batchSize = document.getElementById(
       "upload-generation-generationBatchSize"
     ) as HTMLInputElement | null;
 
-    if (!maxBytes || !maxFiles || !batchSize) {
+    if (!maxBytes || !batchSize) {
       throw new Error("Expected upload-generation inputs.");
     }
 
@@ -259,17 +279,18 @@ describe("SettingsPage", () => {
     ).toBeTruthy();
 
     fireEvent.change(maxBytes, { target: { value: "2097152" } });
-    fireEvent.change(maxFiles, { target: { value: "12" } });
     fireEvent.change(batchSize, { target: { value: "80" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateUploadGenerationSettings).toHaveBeenCalledWith({
         maxBytes: 2_097_152,
-        maxFiles: 12,
+        sessionTtlSeconds: 86_400,
+        manifestPageSize: 500,
+        contentBatchMaxFiles: 24,
+        contentBatchMaxBytes: 16_777_216,
         generationBatchSize: 80,
-        fileProcessingConcurrency: 1,
-        storageConcurrency: 4
+        fileProcessingConcurrency: 1
       });
     });
   });

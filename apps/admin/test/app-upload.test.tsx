@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
@@ -7,11 +7,25 @@ import {
   listKnowledgeBases,
   listSourceFiles,
   loginAdmin,
-  logoutAdmin,
-  uploadKnowledgeBaseSources
+  logoutAdmin
 } from "../src/lib/admin-api";
+import {
+  cancelFolderUpload,
+  resumeUploadSession,
+  runUploadSession
+} from "../src/lib/upload-session-client";
+import { selectDirectoryFiles } from "../src/lib/directory-picker";
 
 vi.mock("../src/lib/admin-api", () => ({
+  adminFetch: vi.fn(async (path: string) => {
+    if (path.includes("/operations")) {
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response("{}", { status: 404 });
+  }),
   checkAdminSession: vi.fn(async () => false),
   createKnowledgeBase: vi.fn(),
   deleteKnowledgeBase: vi.fn(),
@@ -21,6 +35,7 @@ vi.mock("../src/lib/admin-api", () => ({
     items: [],
     nextCursor: null
   })),
+  fetchKnowledgeBase: vi.fn(async () => null),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
     sourceFileJobs: {
       queuedCount: 0,
@@ -76,13 +91,23 @@ vi.mock("../src/lib/admin-api", () => ({
   logoutAdmin: vi.fn(async () => undefined),
   setAdminAuthFailureHandler: vi.fn(),
   renderPreview: vi.fn(),
-  uploadKnowledgeBaseSources: vi.fn(),
   uploadSources: vi.fn()
+}));
+
+vi.mock("../src/lib/upload-session-client", () => ({
+  cancelFolderUpload: vi.fn(),
+  resumeUploadSession: vi.fn(),
+  runUploadSession: vi.fn()
+}));
+
+vi.mock("../src/lib/directory-picker", () => ({
+  selectDirectoryFiles: vi.fn(async () => ({ status: "cancelled" }))
 }));
 
 describe("Admin upload file picker", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/");
     await initI18n("en-US");
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
@@ -92,20 +117,7 @@ describe("Admin upload file picker", () => {
   });
 
   it("closes the upload dialog and refreshes source-file rows after submitting Markdown files", async () => {
-    vi.mocked(uploadKnowledgeBaseSources).mockResolvedValueOnce({
-      files: [
-        {
-          id: "source-new",
-          originalName: "intro.md",
-          processingStatus: "queued",
-          processingStage: "upload_storage",
-          processingStartedAt: null,
-          processingEndedAt: null,
-          processingErrorCode: null,
-          createdAt: "2026-06-14T00:00:00.000Z"
-        }
-      ]
-    });
+    vi.mocked(runUploadSession).mockResolvedValueOnce(createCompletedUploadResult());
     vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [],
@@ -115,7 +127,8 @@ describe("Admin upload file picker", () => {
         items: [
           {
             id: "source-new",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "queued",
             processingStage: "upload_storage",
             processingStartedAt: null,
@@ -125,7 +138,8 @@ describe("Admin upload file picker", () => {
           },
           {
             id: "source-ongoing",
-            originalName: "ongoing.md",
+            name: "ongoing.md",
+            relativePath: "ongoing.md",
             processingStatus: "running",
             processingStage: "llm_suggestion",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
@@ -158,34 +172,22 @@ describe("Admin upload file picker", () => {
       );
       expect(screen.getByText("intro.md")).toBeTruthy();
     });
-    expect(uploadKnowledgeBaseSources).toHaveBeenCalled();
-    expect(uploadKnowledgeBaseSources).toHaveBeenCalledWith({
+    expect(runUploadSession).toHaveBeenCalled();
+    expect(vi.mocked(runUploadSession).mock.calls[0]?.[0]).toMatchObject({
       knowledgeBaseId: "kb-docs",
       files: [file]
     });
   });
 
   it("resets source-file pagination to the first page after upload is accepted", async () => {
-    vi.mocked(uploadKnowledgeBaseSources).mockResolvedValueOnce({
-      files: [
-        {
-          id: "source-new",
-          originalName: "new.md",
-          processingStatus: "queued",
-          processingStage: "upload_storage",
-          processingStartedAt: null,
-          processingEndedAt: null,
-          processingErrorCode: null,
-          createdAt: "2026-06-14T00:00:03.000Z"
-        }
-      ]
-    });
+    vi.mocked(runUploadSession).mockResolvedValueOnce(createCompletedUploadResult());
     vi.mocked(listSourceFiles)
       .mockResolvedValueOnce({
         items: [
           {
             id: "source-page-one",
-            originalName: "page-one.md",
+            name: "page-one.md",
+            relativePath: "page-one.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -200,7 +202,8 @@ describe("Admin upload file picker", () => {
         items: [
           {
             id: "source-page-two",
-            originalName: "page-two.md",
+            name: "page-two.md",
+            relativePath: "page-two.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
@@ -215,7 +218,8 @@ describe("Admin upload file picker", () => {
         items: [
           {
             id: "source-new",
-            originalName: "new.md",
+            name: "new.md",
+            relativePath: "new.md",
             processingStatus: "queued",
             processingStage: "upload_storage",
             processingStartedAt: null,
@@ -329,7 +333,7 @@ describe("Admin upload file picker", () => {
       }
     });
 
-    expect(screen.getByText("Markdown file names must be unique")).toBeTruthy();
+    expect(screen.getByText("Markdown relative paths must be unique")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
       true
     );
@@ -344,6 +348,133 @@ describe("Admin upload file picker", () => {
     expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
       true
     );
+  });
+
+  it("preserves nested folder paths and allows equal basenames in different directories", async () => {
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const englishIntro = fileWithRelativePath("English", "handbook/en/intro.md");
+    const chineseIntro = fileWithRelativePath("Chinese", "handbook/zh/intro.md");
+    vi.mocked(selectDirectoryFiles).mockResolvedValueOnce({
+      status: "selected",
+      files: [englishIntro, chineseIntro]
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByText("handbook/en/intro.md")).toBeTruthy();
+    expect(await screen.findByText("handbook/zh/intro.md")).toBeTruthy();
+    expect(screen.queryByText("Markdown relative paths must be unique")).toBeNull();
+    expect(document.querySelector("[webkitdirectory]")).toBeNull();
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      false
+    );
+  });
+
+  it("rejects nested non-Markdown and generated navigation paths", async () => {
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const plainText = fileWithRelativePath("Plain text", "handbook/assets/notes.txt", "text/plain");
+    vi.mocked(selectDirectoryFiles).mockResolvedValueOnce({
+      status: "selected",
+      files: [plainText]
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByText("Upload cleaned .md files only")).toBeTruthy();
+    expect(screen.getAllByText("handbook/assets/notes.txt").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+
+    const reservedNavigation = fileWithRelativePath(
+      "Reserved",
+      "handbook/index-map-000001.md"
+    );
+    vi.mocked(selectDirectoryFiles).mockResolvedValueOnce({
+      status: "selected",
+      files: [reservedNavigation]
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByText("Upload cleaned .md files only")).toBeTruthy();
+    expect(screen.getAllByText("handbook/index-map-000001.md").length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: "Upload" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it("resumes a created upload session after a recoverable transfer failure", async () => {
+    vi.mocked(runUploadSession).mockImplementationOnce(async (input) => {
+      input.onSessionReady?.("upload-session-resume", createUploadLimits());
+      return {
+        ok: false,
+        failure: { messageKey: "errors.uploadFailed" },
+        sessionId: "upload-session-resume"
+      };
+    });
+    vi.mocked(resumeUploadSession).mockResolvedValueOnce(createCompletedUploadResult());
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    const file = new File(["# Resume"], "resume.md", { type: "text/markdown" });
+    fireEvent.change(document.querySelector<HTMLInputElement>("#source-files") as HTMLInputElement, {
+      target: { files: [file] }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+
+    expect(await screen.findByRole("button", { name: "Resume upload" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Resume upload" }));
+
+    await waitFor(() => {
+      expect(resumeUploadSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          knowledgeBaseId: "kb-docs",
+          sessionId: "upload-session-resume",
+          files: [file],
+          limits: createUploadLimits()
+        })
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+  });
+
+  it("ignores a stale upload completion after the user cancels", async () => {
+    let resolveUpload: ((result: ReturnType<typeof createCompletedUploadResult>) => void) | null = null;
+    vi.mocked(cancelFolderUpload).mockResolvedValueOnce(undefined);
+    vi.mocked(runUploadSession).mockImplementationOnce(
+      (input) =>
+        new Promise((resolve) => {
+          input.onSessionReady?.("upload-session-cancel", createUploadLimits());
+          resolveUpload = resolve;
+        })
+    );
+    render(<App />);
+
+    await openKnowledgeBaseDetail();
+
+    fireEvent.change(document.querySelector<HTMLInputElement>("#source-files") as HTMLInputElement, {
+      target: { files: [new File(["# Cancel"], "cancel.md", { type: "text/markdown" })] }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel upload" }));
+
+    await waitFor(() => {
+      expect(cancelFolderUpload).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        sessionId: "upload-session-cancel"
+      });
+      expect(screen.getByText("No Markdown files selected")).toBeTruthy();
+    });
+    await act(async () => {
+      resolveUpload?.(createCompletedUploadResult());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("No Markdown files selected")).toBeTruthy();
   });
 
   it("refreshes active source file pages with bounded polling", async () => {
@@ -381,7 +512,8 @@ describe("Admin upload file picker", () => {
         items: [
           {
             id: "source-new",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "running",
             processingStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -396,7 +528,8 @@ describe("Admin upload file picker", () => {
         items: [
           {
             id: "source-new",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -409,7 +542,8 @@ describe("Admin upload file picker", () => {
           },
           {
             id: "source-ongoing",
-            originalName: "ongoing.md",
+            name: "ongoing.md",
+            relativePath: "ongoing.md",
             processingStatus: "running",
             processingStage: "llm_suggestion",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
@@ -663,3 +797,46 @@ describe("Admin upload file picker", () => {
     expect(screen.queryByText("Markdown sources")).toBeNull();
   });
 });
+
+function createCompletedUploadResult() {
+  const now = "2026-06-14T00:00:00.000Z";
+  return {
+    ok: true as const,
+    session: {
+      id: "upload-session-test",
+      knowledgeBaseId: "kb-docs",
+      state: "completed" as const,
+      declaredFileCount: 1,
+      declaredByteCount: 64,
+      counts: {
+        selected: 1,
+        uploadRequired: 1,
+        skippedExisting: 0,
+        waitingReservation: 0,
+        rejectedDeleting: 0,
+        uploaded: 1,
+        failed: 0,
+        finalized: 1
+      },
+      expiresAt: now
+    }
+  };
+}
+
+function createUploadLimits() {
+  return {
+    manifestPageSize: 500,
+    contentBatchMaxFiles: 24,
+    contentBatchMaxBytes: 16_777_216,
+    maxFileBytes: 1_048_576
+  };
+}
+
+function fileWithRelativePath(content: string, relativePath: string, type = "text/markdown"): File {
+  const file = new File([content], relativePath.split("/").at(-1) ?? relativePath, { type });
+  Object.defineProperty(file, "webkitRelativePath", {
+    configurable: true,
+    value: relativePath
+  });
+  return file;
+}

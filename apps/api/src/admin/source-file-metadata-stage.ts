@@ -22,7 +22,7 @@ export async function processSourceFileMetadataStage(input: {
   }
 
   const parsed = parseUploadedMarkdownSource({
-    fileName: input.source.originalName,
+    fileName: input.source.name,
     content
   });
 
@@ -33,7 +33,7 @@ export async function processSourceFileMetadataStage(input: {
   });
 
   const resolved = resolveSourceMetadata({
-    fileName: input.source.originalName,
+    fileName: input.source.name,
     content,
     metadata: parsed.metadata
   });

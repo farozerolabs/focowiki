@@ -353,7 +353,7 @@ function sourceBodySnippets(sourceBody) {
 }
 
 function pagePathForSample(sample) {
-  return `pages/${sample.basename}`;
+  return `pages/${sample.relativePath ?? sample.basename}`;
 }
 
 function normalizeText(value) {

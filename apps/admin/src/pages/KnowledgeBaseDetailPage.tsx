@@ -1,22 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { FilePreviewPanel } from "@/components/file-preview-panel";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { SourceFileProgressPanel } from "@/components/task-progress-panel";
 import { UploadSourceDialog } from "@/components/upload-source-dialog";
+import { SourceDirectoryDeleteDialog } from "@/components/source-directory-delete-dialog";
+import { SourceFileDeleteDialog } from "@/components/source-file-delete-dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle
-} from "@/components/ui/alert-dialog";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+  SourceResourceEditor
+} from "@/components/source-resource-editor";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
@@ -48,6 +41,7 @@ import {
   type SourceFilePage,
   type SourceFileRecord
 } from "@/lib/admin-api";
+import { useSourceDirectoryDeletion } from "@/hooks/use-source-directory-deletion";
 import { useFileTreeSearch } from "@/hooks/use-file-tree-search";
 import {
   buildSidebarSearchTree,
@@ -60,6 +54,9 @@ import {
   type SourceFileListFilters
 } from "@/lib/source-file-list-filters";
 import { useSourceFileTaskDeletionHandler } from "@/hooks/use-source-file-task-deletion-handler";
+import { showAdminToast } from "@/hooks/use-admin-toast";
+import { useDetailResourceEditing } from "@/hooks/use-detail-resource-editing";
+import { useDetailSidebarLabels } from "@/hooks/use-detail-sidebar-labels";
 
 const ROOT_PARENT_PATH = "";
 const SOURCE_FILE_REFRESH_INTERVAL_MS = 2_000;
@@ -67,7 +64,6 @@ const SOURCE_FILE_FILTER_DEBOUNCE_MS = 300;
 const DETAIL_SIDEBAR_MIN_WIDTH_PX = 256;
 const DETAIL_SIDEBAR_MAX_WIDTH_PX = 512;
 const DETAIL_SIDEBAR_DEFAULT_WIDTH_PX = DETAIL_SIDEBAR_MIN_WIDTH_PX;
-
 type KnowledgeBaseDetailPageProps = {
   knowledgeBase: KnowledgeBase;
   onBack: () => void;
@@ -82,6 +78,7 @@ export function KnowledgeBaseDetailPage({
   onLogout
 }: KnowledgeBaseDetailPageProps) {
   const { t } = useTranslation();
+  const sidebarLabels = useDetailSidebarLabels();
   const sourceFileRefreshSnapshotsRef = useRef<Map<string, SourceFileRefreshSnapshot>>(new Map());
   const sourceFilePageStateRef = useRef<CursorPageState>(createInitialCursorPageState());
   const sourceFileFiltersRef = useRef<SourceFileListFilters>(createEmptySourceFileListFilters());
@@ -98,17 +95,15 @@ export function KnowledgeBaseDetailPage({
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [selectedFileTitle, setSelectedFileTitle] = useState("");
+  const [selectedSourceFileId, setSelectedSourceFileId] = useState<string | null>(null);
+  const [selectedFileRelationships, setSelectedFileRelationships] = useState<NonNullable<SourceFileRecord["graphSummary"]>["relationships"]>([]);
   const [previewHtml, setPreviewHtml] = useState("");
   const [deleteFileTarget, setDeleteFileTarget] = useState<AdminSidebarTreeNode | null>(null);
   const [deleteFileError, setDeleteFileError] = useState("");
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<SourceFileRecord[]>([]);
-  const [sourceFileFilters, setSourceFileFilters] = useState<SourceFileListFilters>(
-    createEmptySourceFileListFilters
-  );
-  const [sourceFilePageState, setSourceFilePageState] = useState<CursorPageState>(
-    createInitialCursorPageState
-  );
+  const [sourceFileFilters, setSourceFileFilters] = useState<SourceFileListFilters>(createEmptySourceFileListFilters);
+  const [sourceFilePageState, setSourceFilePageState] = useState<CursorPageState>(createInitialCursorPageState);
   const [isSourceFilePageLoading, setIsSourceFilePageLoading] = useState(false);
   const [sourceFileError, setSourceFileError] = useState("");
   const [retryingSourceFileId, setRetryingSourceFileId] = useState<string | null>(null);
@@ -123,6 +118,22 @@ export function KnowledgeBaseDetailPage({
     setRetryingSourceFileId,
     loadSourceFiles,
     loadProcessingSummary
+  });
+  const directoryDeletion = useSourceDirectoryDeletion({
+    knowledgeBaseId: knowledgeBase.id,
+    selectedFilePath,
+    setTreePages,
+    setExpandedDirectories,
+    clearSelectedFile,
+    refreshProcessingSummary: loadProcessingSummary
+  });
+  const resourceEditing = useDetailResourceEditing({
+    knowledgeBaseId: knowledgeBase.id,
+    selectedSourceFileId,
+    refresh: async () => {
+      await Promise.all([refreshGeneratedFiles(), loadFirstSourceFilePage()]);
+    },
+    reopen: openPreviewPath
   });
 
   const rootTreePage = treePages[ROOT_PARENT_PATH];
@@ -160,10 +171,10 @@ export function KnowledgeBaseDetailPage({
     setActiveView("processing");
     setTreePages({});
     setExpandedDirectories(new Set());
-    setSelectedFilePath("");
-    setSelectedFileTitle("");
-    setPreviewHtml("");
+    clearSelectedFile();
     setDeleteFileTarget(null);
+    resourceEditing.setRequest(null);
+    directoryDeletion.setTarget(null);
     setDeleteFileError("");
     setIsDeletingFile(false);
     setSourceFiles([]);
@@ -306,15 +317,27 @@ export function KnowledgeBaseDetailPage({
     });
 
     if (!detail) {
+      setSelectedFileRelationships([]);
       return;
     }
 
+    setSelectedFileRelationships(detail.relationships);
+    setSelectedSourceFileId(detail.file.sourceFileId);
+
     if (detail.file.contentType.includes("markdown") || logicalPath.endsWith(".md")) {
-      setPreviewHtml(renderMarkdownPreview(detail.content));
+      setPreviewHtml(renderMarkdownPreview(detail.content, logicalPath));
       return;
     }
 
     setPreviewHtml(`<pre>${escapeHtml(detail.content)}</pre>`);
+  }
+
+  function clearSelectedFile() {
+    setSelectedFilePath("");
+    setSelectedFileTitle("");
+    setSelectedFileRelationships([]);
+    setSelectedSourceFileId(null);
+    setPreviewHtml("");
   }
 
   async function loadSourceFiles(input: {
@@ -522,9 +545,7 @@ export function KnowledgeBaseDetailPage({
     }
 
     if (selectedFilePath === target.logicalPath) {
-      setSelectedFilePath("");
-      setSelectedFileTitle("");
-      setPreviewHtml("");
+      clearSelectedFile();
     }
 
     await loadFirstSourceFilePage();
@@ -536,23 +557,7 @@ export function KnowledgeBaseDetailPage({
       <AppSidebar
         appName={t("app.name")}
         knowledgeBaseName={knowledgeBase.name}
-        labels={{
-          back: t("detail.back"),
-          files: t("result.fileTree"),
-          uploadProgress: t("tasks.title"),
-          loadMore: t("home.loadMore"),
-          logout: t("auth.logout"),
-          running: t("tasks.runningShort"),
-          ended: t("tasks.endedShort"),
-          deleteFile: t("delete.action"),
-          fileActions: t("delete.fileMenu"),
-          emptyFiles: t("detail.emptyFiles"),
-          loadingFiles: t("detail.loadingFiles"),
-          fileTreeSearchPlaceholder: t("detail.fileTreeSearchPlaceholder"),
-          clearFileTreeSearch: t("detail.clearFileTreeSearch"),
-          fileTreeSearchNoResults: t("detail.fileTreeSearchNoResults"),
-          fileTreeSearchLoadMore: t("detail.fileTreeSearchLoadMore")
-        }}
+        labels={sidebarLabels}
         activeView={activeView}
         tree={sidebarTree}
         rootNextCursor={rootTreePage?.nextCursor ?? null}
@@ -566,6 +571,11 @@ export function KnowledgeBaseDetailPage({
           setDeleteFileError("");
           setDeleteFileTarget(node);
         }}
+        onDeleteDirectory={directoryDeletion.setTarget}
+        onEditResource={(action, node) => resourceEditing.setRequest({ action, node })}
+        isResourceBusy={(node) =>
+          resourceEditing.isTargetBusy(node.sourceFileId ?? node.sourceDirectoryId)
+        }
         onToggleDirectory={(node, open) => void handleToggleDirectory(node, open)}
         onLoadMoreTree={(parentPath) => void loadFileTree({ parentPath, replace: false })}
         fileTreeSearch={{
@@ -630,7 +640,7 @@ export function KnowledgeBaseDetailPage({
                 if (generatedFilePath) {
                   void (async () => {
                     await refreshGeneratedFiles();
-                    await openPreviewPath(generatedFilePath, generatedFilePath.split("/").at(-1) ?? sourceFile.originalName);
+                    await openPreviewPath(generatedFilePath, generatedFilePath.split("/").at(-1) ?? sourceFile.name);
                   })();
                 }
               }}
@@ -640,6 +650,7 @@ export function KnowledgeBaseDetailPage({
               copiedUrl={copiedUrl}
               previewHtml={previewHtml}
               publicUrls={publicUrls}
+              relationships={selectedFileRelationships}
               selectedFileTitle={selectedFileTitle}
               selectedFilePath={selectedFilePath}
               onCopy={(url) => void handleCopy(url)}
@@ -658,38 +669,31 @@ export function KnowledgeBaseDetailPage({
           await loadFirstSourceFilePage();
         }}
       />
-      <AlertDialog
-        open={Boolean(deleteFileTarget)}
-        onOpenChange={(open) => !open && !isDeletingFile && setDeleteFileTarget(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("delete.fileTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("delete.fileDescription", {
-                name: deleteFileTarget?.name ?? ""
-              })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {deleteFileError ? (
-            <Alert variant="destructive">
-              <AlertTitle>{t(deleteFileError)}</AlertTitle>
-            </Alert>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeletingFile}>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={isDeletingFile}
-              onClick={(event) => {
-                event.preventDefault();
-                void handleDeleteFile();
-              }}
-            >
-              {isDeletingFile ? t("delete.deleting") : t("delete.confirm")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <SourceFileDeleteDialog
+        target={deleteFileTarget}
+        busy={isDeletingFile}
+        errorMessageKey={deleteFileError}
+        onClose={() => setDeleteFileTarget(null)}
+        onConfirm={() => void handleDeleteFile()}
+      />
+      <SourceDirectoryDeleteDialog
+        target={directoryDeletion.target}
+        busy={directoryDeletion.isDeleting}
+        onClose={() => directoryDeletion.setTarget(null)}
+        onConfirm={() => void directoryDeletion.deleteTarget()}
+      />
+      <SourceResourceEditor
+        knowledgeBaseId={knowledgeBase.id}
+        request={resourceEditing.request}
+        onClose={() => resourceEditing.setRequest(null)}
+        onAccepted={(operation) => {
+          resourceEditing.accept(operation);
+          showAdminToast({
+            title: t("resourceEditing.acceptedTitle"),
+            description: t("resourceEditing.acceptedDescription")
+          });
+        }}
+      />
     </SidebarProvider>
   );
 }

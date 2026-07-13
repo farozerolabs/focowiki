@@ -32,7 +32,9 @@ export async function invalidateKnowledgeBaseCaches(
           `developer-openapi:tree:${input.knowledgeBaseId}:${input.releaseId}`,
           `bundle-files:${input.knowledgeBaseId}:${input.releaseId}`,
           `public-files:${input.knowledgeBaseId}:${input.releaseId}`,
-          `developer-openapi:file-search:${input.knowledgeBaseId}:${input.releaseId}`
+          `developer-openapi:file-search:${input.knowledgeBaseId}:${input.releaseId}`,
+          `developer-openapi:graph-search:${input.knowledgeBaseId}:${input.releaseId}`,
+          `developer-openapi:graph-expand:${input.knowledgeBaseId}:${input.releaseId}`
         ]
       : [])
   ];

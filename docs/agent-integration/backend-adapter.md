@@ -34,9 +34,11 @@ The backend can use the full Focowiki Developer OpenAPI surface:
 
 | Workflow | Typical operations |
 | --- | --- |
-| Knowledge-base management | `listKnowledgeBases`, `createKnowledgeBase`, `deleteKnowledgeBase` |
-| Markdown ingestion | `uploadMarkdownFiles`, `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
-| Generated file maintenance | `listKnowledgeBaseTree`, `getFileById`, `getFileContentById`, `getFileContentByPath`, `deleteFileById`, `deleteFileByPath` |
+| Knowledge-base management | `listKnowledgeBases`, `createKnowledgeBase`, `updateKnowledgeBase`, `deleteKnowledgeBase` |
+| Markdown ingestion | `createUploadSession`, `addUploadManifestEntries`, `sealUploadManifest`, `uploadSessionContentBatch`, `getUploadSession`, `finalizeUploadSession` |
+| Source observation | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
+| Source maintenance | `moveSourceFile`, `replaceSourceFileContent`, `deleteSourceFile`, `listSourceDirectories`, `moveSourceDirectory`, `deleteSourceDirectory`, `listResourceOperations`, `getResourceOperation` |
+| File reading and exploration | `listKnowledgeBaseTree`, `getFileById`, `getFileContentById`, `getFileContentByPath`, `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphInsights` |
 | Webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
 These operations belong to the developer backend. The Agent-facing layer should expose only the read operations needed for exploration unless the product intentionally supports Agent-driven maintenance.
@@ -65,7 +67,7 @@ For own Agent clients, register tools with the same contract:
 | `list_tree` | `GET /agent/knowledge/tree` |
 | `get_file` | `GET /agent/knowledge/files/{fileId}` |
 | `read_file` | `GET /agent/knowledge/files/{fileId}/content` or `GET /agent/knowledge/files/content?path=...` |
-| `read_related` | `GET /agent/knowledge/files/{fileId}/related` or `GET /agent/knowledge/files/content?path=_graph/by-file/{fileId}.json` |
+| `read_related` | `GET /agent/knowledge/files/{fileId}/related` or a content read using the returned `graphRef` |
 | `search_files` | `GET /agent/knowledge/search?query=<agent-generated phrase>` |
 
 ## Identifier Flow
@@ -78,7 +80,7 @@ The backend should preserve the same identifiers that Focowiki returns:
 | `sourceFileId` | Upload responses and source-file processing rows | Read processing status, read events, retry failed processing, and resolve generated output fields. |
 | `generatedFileId` or generated `fileId` | Tree entries, search results, generated file detail responses, or `generatedFileId` from source-file detail | Read generated file metadata and Markdown content. |
 | `generatedFilePath` or `path` | Tree entries, search results, links, or `generatedFilePath` from source-file detail | Read generated file content by logical path. |
-| `graphRef` | Page frontmatter or `_index/search.json` | Read `_graph/by-file/{fileId}.json` for related files. |
+| `graphRef` | Page frontmatter or search results | Read the referenced relationship file without constructing its path. |
 | `cursor` | List responses | Continue pagination. |
 
 This makes the Agent workflow continuous. The value returned by one call can be used by the next call.

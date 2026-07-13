@@ -4,328 +4,194 @@ title: Developer OpenAPI
 
 # Developer OpenAPI
 
-Developer OpenAPI lets applications operate Focowiki without the Admin UI. Use it to create knowledge bases, upload Markdown files, observe source-file processing, read generated files, delete source-backed pages, manage webhooks, and inspect webhook delivery state.
+Developer OpenAPI gives applications programmatic access to Focowiki. A product can create knowledge bases, upload Markdown files and folders, observe processing, read files, explore relationships, maintain source content, and receive Webhook events.
 
-## Base URL
+## Connection
 
-Use the public OpenAPI origin configured for your deployment.
+Use the Developer OpenAPI origin configured for your deployment. All API paths start with `/openapi/v2`.
 
 ```text
 https://openapi.example.com
 ```
 
-Local development commonly uses:
+Local development commonly uses `http://127.0.0.1:43200`.
 
-```text
-http://127.0.0.1:43200
-```
-
-All Developer OpenAPI paths start with `/openapi/v1`.
-
-## Authentication
-
-Every Developer OpenAPI request uses a bearer API key.
+Every request requires an OpenAPI key created in Admin UI:
 
 ```http
 Authorization: Bearer <openapi-key>
 ```
 
-Create and copy API keys from the Admin UI. API key creation is an Admin workflow and is not exposed through Developer OpenAPI.
-
-## Contract Source
-
-Use the runtime contract for the deployed service your client calls:
-
-```bash
-curl -X GET "https://openapi.example.com/openapi/v1/openapi.json" \
-  -H "Authorization: Bearer <openapi-key>"
-```
-
-The documentation site also publishes a static snapshot for the documented release:
+The running service publishes its machine-readable contract at:
 
 ```text
-https://docs.example.com/openapi/focowiki-openapi.json
+GET /openapi/v2/openapi.json
 ```
 
-API client generators, Postman imports, Swagger UI, and integration tests should prefer the runtime contract from the target deployment.
-When importing the static snapshot, set the generated client's server or base URL to your deployment's OpenAPI origin.
+The documentation site also provides a [contract snapshot](/openapi/focowiki-openapi.json) for the documented release. Use the runtime contract when generating a client for a specific deployment.
 
-## Response Shape
+## Response Conventions
 
-Successful responses return JSON. List endpoints return:
+Successful list responses contain `items` and `nextCursor`. Pass `nextCursor` back to the same endpoint with the same filters to read the next page.
 
-| Field | Meaning |
-| --- | --- |
-| `items` | Current page of records. |
-| `nextCursor` | Cursor for the next page. The value is `null` when no next page exists. |
+Errors use a stable envelope:
 
-Error responses use:
+```json
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "The request failed validation.",
+    "httpStatus": 422
+  },
+  "requestId": "req_123"
+}
+```
 
-| Field | Meaning |
-| --- | --- |
-| `error.code` | Stable error code for client handling. |
-| `error.message` | Safe explanation. |
-| `error.httpStatus` | HTTP status number. |
-| `error.details` | Optional safe details. |
-| `requestId` | Request identifier for troubleshooting. |
+All operations can return `401 UNAUTHORIZED`, `429 RATE_LIMITED`, or `500 INTERNAL_ERROR`. A rate-limited response includes coarse retry guidance. Clients should wait for the suggested interval and retry the current operation.
 
-## Rate Limits
+## Resource Identifiers
 
-All Developer OpenAPI endpoints share one deployment-level rate limit. When a client receives `RATE_LIMITED`, it should wait briefly and retry the next request. The response includes a safe `Retry-After` header and optional `error.details.retryAfterSeconds`, `error.details.retryHint`, and `error.details.retryGuidance` fields. These values are coarse retry guidance for Agent planning and do not expose the deployment's exact rate-limit configuration.
+Identifiers have distinct purposes and remain stable across related calls.
 
-## Source-File Status Fields
-
-Upload APIs return source-file records. Source-file records use two status fields:
-
-| Field | Values | Meaning |
+| Identifier | Obtained from | Used for |
 | --- | --- | --- |
-| `processingState` | `queued`, `running`, `completed`, `failed` | Source-file processing lifecycle. |
-| `generatedOutputStatus` | `pending`, `visible`, `unavailable` | Generated output visibility in the active knowledge-base tree. |
+| `knowledgeBaseId` | Knowledge-base create or list responses | Scope every knowledge-base operation. |
+| `uploadSessionId` | Upload-session create response | Resume, inspect, cancel, or complete an upload. |
+| `sourceFileId` | Upload and source-file responses | Read source state or content, retry, move, replace, and delete. |
+| `directoryId` | Source-directory and tree responses | Read, move, or delete a source directory. |
+| `operationId` | Move, replace, and delete responses | Observe an asynchronous resource change. |
+| `fileId` | Tree, search, related-file, and file responses | Read generated metadata, content, and relationships. |
+| `path` | Tree, search, links, and file responses | Read generated content by logical path. |
 
-`processingState` values:
+Storage paths and local filesystem paths are not accepted.
 
-| Value | Meaning |
-| --- | --- |
-| `queued` | The file was accepted and is waiting for processing. |
-| `running` | Storage, metadata, model, graph, bundle, validation, or publication work is in progress. |
-| `completed` | Source-file processing finished. |
-| `failed` | Processing stopped for this source file. The file can be retried with the source-file retry API. |
+## Upload Workflow
 
-`generatedOutputStatus` values:
+Uploads preserve relative folder paths. Every uploaded item must be a Markdown file.
 
-| Value | Meaning |
-| --- | --- |
-| `pending` | Generated output has not been published into the active tree yet. |
-| `visible` | The generated page is published in the active tree and can be read by generated file APIs. |
-| `unavailable` | Generated output is not currently available for this source file. |
+1. Create a knowledge base and keep its `knowledgeBaseId`.
+2. Create an upload session with the declared file and byte counts.
+3. Add manifest entries containing each file's relative path, size, and SHA-256 checksum.
+4. Confirm the manifest.
+5. Upload content for entries whose disposition is `upload_required`.
+6. Complete the upload session.
+7. Observe each returned `sourceFileId` until the file is readable.
 
-Treat a source file as fully complete and readable when both conditions are true:
+The session response declares accepted limits. Large folders should send manifest and content pages within those limits. Reusing an existing folder path adds new files. Existing files at the same relative path are skipped. Use the source-file replacement operation when content at an existing path must change.
 
-- `processingState` is `completed`.
-- `generatedOutputStatus` is `visible`.
+### Minimal Example
 
-`processingState=completed` alone means processing finished. The generated file tree and content APIs become reliable after `generatedOutputStatus=visible`.
-
-`currentStage` shows the latest processing stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `bundle_generation`, `okf_validation`, `index_publication`, and `release_activation`.
-
-## Workflow
-
-1. Create or list knowledge bases and keep `knowledgeBaseId`.
-2. Upload one or more `.md` files to the knowledge base and keep returned source-file `fileId` values.
-3. Poll source-file detail or source-file events until each file reaches `processingState=failed`, or reaches `processingState=completed` with `generatedOutputStatus=visible`.
-4. Read the generated tree and keep `path` or `fileId` values.
-5. Read file content by `path` or `fileId`.
-6. Read `_graph/by-file/{fileId}.json` or the related-file endpoint when the application needs relationship exploration.
-7. Delete source-backed generated pages when needed.
-8. Register webhooks when an external system needs event delivery.
-
-## Quick Start
-
-Set placeholders before running the examples. The examples use `jq` to pass returned identifiers between requests.
+The example uploads `guide.md` as `handbook/onboarding/guide.md`. It uses `jq`, `wc`, and `shasum` to pass values between requests.
 
 ```bash
 OPENAPI_BASE_URL="https://openapi.example.com"
 OPENAPI_KEY="<openapi-key>"
-```
+FILE_PATH="guide.md"
+RELATIVE_PATH="handbook/onboarding/guide.md"
 
-Check the API version:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/version" \
-  -H "Authorization: Bearer $OPENAPI_KEY"
-```
-
-Create a knowledge base and store `knowledgeBaseId`:
-
-```bash
-knowledge_base_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases" \
+kb=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
-  --data '{
-  "name": "Product Docs",
-  "description": "Product documentation"
-}')
+  --data '{"name":"Product Docs","description":"Product documentation"}')
+KNOWLEDGE_BASE_ID=$(printf '%s' "$kb" | jq -r '.knowledgeBase.knowledgeBaseId')
 
-KNOWLEDGE_BASE_ID=$(printf "%s" "$knowledge_base_response" | jq -r ".knowledgeBase.knowledgeBaseId")
-```
+FILE_SIZE=$(wc -c < "$FILE_PATH" | tr -d ' ')
+FILE_SHA256=$(shasum -a 256 "$FILE_PATH" | awk '{print $1}')
 
-Upload one or more Markdown files and store a returned source-file identifier. Replace `guide.md` and `faq.md` with local `.md` file paths.
-
-```bash
-upload_response=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/uploads" \
+session=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  -F "files=@guide.md;type=text/markdown" \
-  -F "files=@faq.md;type=text/markdown")
+  -H "Idempotency-Key: product-docs-upload-001" \
+  -H "Content-Type: application/json" \
+  --data "{\"declaredFileCount\":1,\"declaredByteCount\":$FILE_SIZE}")
+UPLOAD_SESSION_ID=$(printf '%s' "$session" | jq -r '.session.id')
 
-FIRST_SOURCE_FILE_ID=$(printf "%s" "$upload_response" | jq -r ".files[0].sourceFileId")
-```
+manifest=$(jq -n --arg path "$RELATIVE_PATH" --arg checksum "$FILE_SHA256" \
+  --argjson size "$FILE_SIZE" \
+  '{entries:[{relativePath:$path,declaredSize:$size,checksumSha256:$checksum}]}')
 
-Poll source-file processing until the file is fully complete or failed:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID" \
-  -H "Authorization: Bearer $OPENAPI_KEY"
-```
-
-The file is fully complete when the response contains:
-
-```json
-{
-  "file": {
-    "processingState": "completed",
-    "generatedOutputStatus": "visible"
-  }
-}
-```
-
-If the response contains `processingState=failed`, read `processingErrorCode`, `processingErrorMessage`, and source-file events before retrying.
-
-Read detailed processing events when you need stage history:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID/events?limit=50" \
-  -H "Authorization: Bearer $OPENAPI_KEY"
-```
-
-Filter source-file task records when a knowledge base contains many uploads. Filters are applied before pagination, and the returned `nextCursor` belongs to the same filter set:
-
-Task filters are query parameters on the [List source files](./operations/list-knowledge-base-source-files.md) operation.
-
-```bash
-curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files" \
-  -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "processingStatus=completed" \
-  --data-urlencode "generatedOutputStatus=visible" \
-  --data-urlencode "fileNameQuery=guide" \
-  --data-urlencode "limit=50"
-```
-
-Delete source-file task rows when an integration needs to clear obsolete upload records. `deleted` means an unpublished source-file task was removed. `hidden` means the source-file task row was hidden and the generated file remains readable through `generatedFileId` or `generatedFilePath`. `skipped` means the row stayed unchanged; read `reason`, then poll detail or events again when the reason is a temporary state such as `running`.
-
-```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/task-deletions" \
+curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/entries" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
-  --data "{
-  \"sourceFileIds\": [\"$FIRST_SOURCE_FILE_ID\"]
-}"
-```
+  --data "$manifest"
 
-Task deletion only affects source-file task visibility. Generated file deletion uses the generated file delete endpoints and the `generatedFileId` or logical `generatedFilePath` values.
+curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/seal" \
+  -H "Authorization: Bearer $OPENAPI_KEY"
 
-Deleted knowledge bases and deleted source-backed generated pages are removed from Admin UI and Developer OpenAPI read results immediately. Focowiki then cleans stored generated data automatically after the delete request succeeds.
-
-List the generated file tree and store the first logical `path` plus generated file identifier:
-
-```bash
-tree_response=$(curl -sS -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/tree?parentPath=pages&limit=50" \
+status=$(curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY")
+UPLOAD_ENTRY_ID=$(printf '%s' "$status" | jq -r '.entries.items[] | select(.disposition == "upload_required") | .id' | head -n 1)
 
-FIRST_PATH=$(printf "%s" "$tree_response" | jq -r ".items[0].path")
-FIRST_TREE_FILE_ID=$(printf "%s" "$tree_response" | jq -r ".items[0].fileId")
-```
-
-Search generated files when the integration has a short phrase and needs candidate files before reading evidence. Search returns file-level candidates only. Use the returned `fileId` or `generatedFileId` with file detail, content, and related-file endpoints. Use `path` or `generatedFilePath` with path-based content reads. Use `sourceFileId` with source-file status, events, retry, or task-deletion endpoints when source processing context is needed:
-
-```bash
-search_response=$(curl -sS -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
+uploaded=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/content" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "query=guide" \
-  --data-urlencode "scope=all" \
-  --data-urlencode "fileKind=page" \
-  --data-urlencode "limit=10")
+  -F "$UPLOAD_ENTRY_ID=@$FILE_PATH;type=text/markdown")
+SOURCE_FILE_ID=$(printf '%s' "$uploaded" | jq -r '.entries[0].sourceFileId')
 
-SEARCH_STATUS=$(printf "%s" "$search_response" | jq -r ".searchStatus")
-FIRST_SEARCH_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].fileId")
-FIRST_SEARCH_GENERATED_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].generatedFileId")
-FIRST_SEARCH_PATH=$(printf "%s" "$search_response" | jq -r ".items[0].path")
-FIRST_SEARCH_GENERATED_FILE_PATH=$(printf "%s" "$search_response" | jq -r ".items[0].generatedFilePath")
-FIRST_SEARCH_SOURCE_FILE_ID=$(printf "%s" "$search_response" | jq -r ".items[0].sourceFileId")
-SEARCH_RESULT_COUNT=$(printf "%s" "$search_response" | jq -r ".resultSummary.resultCount")
-SEARCH_SORT=$(printf "%s" "$search_response" | jq -r ".resultSummary.sort | join(\", \")")
-SEARCH_NEXT_CONTENT_TEMPLATE=$(printf "%s" "$search_response" | jq -r ".nextRequestTemplates.fileContentByPath")
-```
-
-`searchStatus` can be `ok`, `no_candidates`, or `index_unavailable`. `ok` means candidate files are returned. `no_candidates` means search documents exist and this phrase matched no generated files. Relevant data may still exist under different titles, paths, or metadata terms. `index_unavailable` means the active release has no generated-file search documents yet, usually because the release was created before this search read model existed.
-
-Search responses include `query`, `resultSummary`, and `nextRequestTemplates`. `query` echoes the normalized phrase and applied filters. `resultSummary.sort` describes result ordering, currently `score desc`, `path asc`, and `fileId asc`. `nextRequestTemplates` gives the next read routes for generated file detail, generated file content, path-based content, related files, source-file status, and source-file events. When `no_candidates` or `index_unavailable` is returned, follow `nextActions`, read `index.md`, list the tree, try shorter or adjacent phrases, or inspect related files and graph files.
-
-Read generated file content by logical path:
-
-```bash
-curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
-  -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "path=$FIRST_PATH"
-```
-
-Unicode page paths are supported when they belong to the generated public tree. Use `--data-urlencode` so filenames such as `pages/遵义市城镇燃气安全管理条例.md` are encoded safely:
-
-```bash
-curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
-  -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "path=pages/遵义市城镇燃气安全管理条例.md"
-```
-
-Read generated file content by file identifier:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/$FIRST_TREE_FILE_ID/content" \
+curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/finalize" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-Read the file-first graph entry for a source-backed page. The same graph path appears in page frontmatter and `_index/search.json` as `graphRef`.
+## Processing State
+
+Use the source-file detail operation to determine when content is ready.
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `processingState` | `queued`, `running`, `completed`, `failed` | Processing lifecycle. |
+| `generatedOutputStatus` | `pending`, `visible`, `unavailable` | Availability in generated file APIs. |
+
+A file is ready when `processingState` is `completed` and `generatedOutputStatus` is `visible`. A `failed` file can be inspected through its event list and submitted to the retry operation.
 
 ```bash
-curl -G "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
-  -H "Authorization: Bearer $OPENAPI_KEY" \
-  --data-urlencode "path=_graph/by-file/$FIRST_SOURCE_FILE_ID.json"
-```
-
-Read a bounded related-file list when your backend wants JSON relationship records directly:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/files/$FIRST_TREE_FILE_ID/related?limit=20" \
+curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$SOURCE_FILE_ID" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-Graph files are logical generated files. Use tree listing, content by path, content by ID, or the related-file endpoint. Published relationships come from accepted content-evidenced graph edges. The API returns logical paths and safe reasons, not S3 object keys or runtime internals.
+## File Reading And Exploration
 
-Read source file metadata returned by the upload response:
-
-```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$FIRST_SOURCE_FILE_ID" \
-  -H "Authorization: Bearer $OPENAPI_KEY"
-```
-
-Create a webhook when another system needs source-file or release events:
+Start with `index.md`, inspect the tree, and read candidate files before using them as evidence.
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
+curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  -H "Content-Type: application/json" \
-  --data '{
-  "name": "Source file updates",
-  "url": "https://hooks.example.com/focowiki",
-  "events": ["source_file.completed", "source_file.failed", "release.published"]
-}'
+  --data-urlencode "path=index.md"
 ```
 
-See [Webhook Delivery](./webhook-delivery.md) for delivery headers, payload format, signature verification, event types, and redelivery behavior.
+Nested source paths are published under `pages/`. The uploaded example can be read at `pages/handbook/onboarding/guide.md` after it becomes visible:
+
+```bash
+curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/content" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "path=pages/handbook/onboarding/guide.md"
+```
+
+The tree endpoint supports parent-path navigation, fuzzy lookup, type filtering, and cursor pagination. Search returns candidate files with `fileId`, `path`, match information, and read actions. Relationship exploration accepts a file or query and returns paths that can be opened through the file-content operations.
+
+Search and relationship results guide navigation. Applications should read the returned Markdown files before presenting an answer.
+
+```bash
+curl -sS -G "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/files/search" \
+  -H "Authorization: Bearer $OPENAPI_KEY" \
+  --data-urlencode "query=installation" \
+  --data-urlencode "mode=hybrid" \
+  --data-urlencode "limit=10"
+```
+
+Search can return `ok`, `no_candidates`, or `index_unavailable`. `no_candidates` describes the current query result and does not prove that the knowledge base lacks relevant content. Clients can try a shorter phrase, inspect `index.md`, browse the tree, or follow file relationships.
+
+## Source Maintenance
+
+Source files support content reads, moves, full-content replacement, retry, and deletion. Source directories support listing, moves, and recursive deletion. Move, replace, and delete requests return an `operationId`; use resource-operation endpoints to observe completion.
+
+Deleting a source file removes its generated page and relationships. Deleting a source directory removes all source files below it. Deleting a knowledge base accepts one knowledge-base-level deletion and makes that knowledge base unavailable to later reads.
+
+## Webhooks
+
+Webhook subscriptions deliver source-file and knowledge-base update events to an HTTPS endpoint. See [Webhook Delivery](./webhook-delivery.md) for event names, signature verification, payloads, retries, and redelivery.
 
 ## Agent Integration
 
-When an Agent needs to read a knowledge base, place a developer backend between the Agent and Focowiki. The backend keeps the Focowiki OpenAPI key, selects the target knowledge base, and exposes a small read-focused interface to the Agent. Agents can follow generated Markdown links and `_graph/by-file/{fileId}.json` files for deeper exploration.
+Keep the OpenAPI key in an application backend. Give the Agent a small read interface that can list the tree, read files, search candidates, and follow relationships. See [Agent Integration](../agent-integration/index.md) for integration patterns and Skill guidance.
 
-See [Agent Integration](../agent-integration/index.md) for backend adapter and Skill design guidance.
+## Interface Reference
 
-## Operation Pages
-
-Each operation page documents one OpenAPI `operationId`. Pages are generated from the backend OpenAPI contract during documentation build, so the method, path, parameters, request body, responses, and error codes stay aligned with runtime behavior.
-
-Run this command locally to generate the operation pages:
-
-```bash
-pnpm docs:generate-api
-```
-
-Then browse the operation pages from the navigation.
+The [Operation Index](./operations/index.md) contains one generated page for every `operationId`, including parameters, request bodies, examples, responses, and operation-specific errors.

@@ -1,5 +1,7 @@
 export const VISIBLE_UPLOAD_FILE_LIMIT = 8;
 
+const selectedRelativePaths = new WeakMap<File, string>();
+
 export function filesFromSelection(files: FileList | null): File[] {
   return files ? Array.from(files) : [];
 }
@@ -13,14 +15,14 @@ export function totalSelectedFileBytes(files: File[]): number {
 }
 
 export function hasUnsupportedMarkdownFile(files: File[]): boolean {
-  return files.some((file) => !file.name.toLowerCase().endsWith(".md"));
+  return files.some((file) => !fileRelativePath(file).toLowerCase().endsWith(".md"));
 }
 
 export function hasDuplicateFileName(files: File[]): boolean {
   const seen = new Set<string>();
 
   for (const file of files) {
-    const normalizedName = normalizeFileName(file.name);
+    const normalizedName = normalizeUploadRelativePath(fileRelativePath(file));
 
     if (seen.has(normalizedName)) {
       return true;
@@ -30,6 +32,25 @@ export function hasDuplicateFileName(files: File[]): boolean {
   }
 
   return false;
+}
+
+export function fileRelativePath(file: File): string {
+  return selectedRelativePaths.get(file) || file.webkitRelativePath || file.name;
+}
+
+export function setFileRelativePath(file: File, relativePath: string): File {
+  selectedRelativePaths.set(file, relativePath);
+  return file;
+}
+
+export function normalizeUploadRelativePath(relativePath: string): string {
+  return relativePath.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
+export function invalidSelectedUploadPaths(files: File[]): string[] {
+  return files
+    .map(fileRelativePath)
+    .filter((path) => !isSafeMarkdownRelativePath(path));
 }
 
 export function visibleSelectedFiles(files: File[]): {
@@ -62,6 +83,25 @@ export function formatUploadBytes(bytes: number): string {
   return `${formatted} ${units[unitIndex]}`;
 }
 
-function normalizeFileName(fileName: string): string {
-  return fileName.trim().toLowerCase();
+function isSafeMarkdownRelativePath(path: string): boolean {
+  if (!path || path !== path.trim() || path.startsWith("/") || path.includes("\\")) {
+    return false;
+  }
+  const segments = path.normalize("NFC").split("/");
+  const name = segments.at(-1) ?? "";
+  if (
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        segment.length > 240 ||
+        /[\u0000-\u001f\u007f]/u.test(segment)
+    ) ||
+    path.length > 2_048 ||
+    !name.toLocaleLowerCase("en-US").endsWith(".md")
+  ) {
+    return false;
+  }
+  return !/^(?:index(?:-map)?|log)(?:-\d+)?\.md$/iu.test(name);
 }

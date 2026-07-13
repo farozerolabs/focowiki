@@ -397,19 +397,11 @@ async function deleteMatchingKeys(
   }
 
   let deleted = 0;
-  const seenKeys = new Set<string>();
 
   for (const pattern of uniqueStrings(patterns)) {
     for await (const entry of client.scanIterator({ MATCH: pattern, COUNT: 100 })) {
       const keys = Array.isArray(entry) ? entry : [entry];
-      const nextKeys = keys.filter((key) => {
-        if (seenKeys.has(key)) {
-          return false;
-        }
-        seenKeys.add(key);
-        return true;
-      });
-      deleted += await deleteExactKeys(client, nextKeys);
+      deleted += await deleteExactKeys(client, keys);
     }
   }
 

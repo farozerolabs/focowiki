@@ -36,8 +36,9 @@ export async function writePageResponseCache<T>(input: {
   cacheId: string;
   value: T;
   refreshAfterMs?: number | null;
+  ttlSeconds?: number | null;
 }): Promise<void> {
-  const ttlSeconds = resolvePageResponseCacheTtlSeconds(input.refreshAfterMs ?? null);
+  const ttlSeconds = input.ttlSeconds ?? resolvePageResponseCacheTtlSeconds(input.refreshAfterMs ?? null);
   await input.redis.setPageCache(input.scope, input.cacheId, input.value, ttlSeconds);
 }
 

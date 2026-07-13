@@ -4,14 +4,14 @@ title: Webhook 推送
 
 # Webhook 推送
 
-Focowiki 会把 webhook 事件主动推送到 `POST /openapi/v1/webhooks` 注册的 HTTPS URL。外部系统需要来源文件处理、release、文件删除或知识库删除事件时，可以使用 webhook。
+Focowiki 会把 webhook 事件主动推送到 `POST /openapi/v2/webhooks` 注册的 HTTPS URL。外部系统需要来源文件进度、内容更新、文件删除或知识库删除事件时，可以使用 webhook。
 
 ## 注册 Webhook
 
 创建 webhook 订阅，并指定接收的事件类型：
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhooks" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
   -H "Content-Type: application/json" \
   --data '{
@@ -33,7 +33,7 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 | Content-Type | `application/json` |
 | 成功确认 | 任意 `2xx` 响应状态。 |
 | 投递超时 | 10 秒。 |
-| 重投递 | 失败后可用 `POST /openapi/v1/webhook-deliveries/{deliveryId}/redeliver` 手动重投递。 |
+| 重投递 | 失败后可用 `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` 手动重投递。 |
 
 ## 请求头
 
@@ -102,71 +102,23 @@ export function verifyFocowikiWebhook({ rawBody, timestamp, signatureHeader, sig
 | `source_file.progress` | 来源文件开始处理或继续处理。 | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.completed` | 来源文件处理完成。 | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.failed` | 来源文件处理失败。 | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `release.published` | 文件处理或删除后发布 release。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `releaseId` |
-| `file.deleted` | 有来源文件关联的生成文件被删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
+| `release.published` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `releaseId` |
+| `file.deleted` | 来源文件及其可读取页面已经删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
 | `knowledge_base.deleted` | 知识库被删除。 | `knowledgeBaseId` |
-
-## Payload 示例
-
-### `source_file.completed`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "source_file.completed",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123"
-  }
-}
-```
-
-### `source_file.failed`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "source_file.failed",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123",
-    "errorCode": "MODEL_OUTPUT_INVALID"
-  }
-}
-```
-
-### `file.deleted`
-
-```json
-{
-  "eventId": "event_123",
-  "eventType": "file.deleted",
-  "deliveryId": "delivery_123",
-  "payload": {
-    "knowledgeBaseId": "kb_123",
-    "fileId": "file_page_123",
-    "sourceFileId": "file_source_123",
-    "path": "pages/guide.md",
-    "releaseId": "release_123"
-  }
-}
-```
 
 ## 投递记录和重投递
 
 Focowiki 会保存每次投递记录。读取投递记录：
 
 ```bash
-curl -X GET "$OPENAPI_BASE_URL/openapi/v1/webhook-deliveries?limit=50" \
+curl -X GET "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
 当投递失败时，使用投递列表返回的 `deliveryId` 手动重投递：
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v1/webhook-deliveries/delivery_123/redeliver" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redeliver" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 

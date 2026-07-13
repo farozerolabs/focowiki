@@ -78,10 +78,8 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
     },
     upload: {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
-      storageConcurrency: 4
     },
     publication: {
       mode: "batch",
@@ -164,13 +162,6 @@ class MemoryStorage implements StorageAdapter {
     return value ? new Blob([value]) : null;
   }
 
-  public async writeCurrentPointer(): Promise<void> {
-    throw new Error("Not used by scoped public file tests");
-  }
-
-  public async readCurrentPointer(): Promise<null> {
-    return null;
-  }
 }
 
 function createRepositories(options: { publicKeyStatus?: "active" | "revoked" | "missing" } = {}) {
@@ -374,7 +365,7 @@ describe("Scoped public file OpenAPI", () => {
       repositories
     });
     const markdown = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -382,7 +373,7 @@ describe("Scoped public file OpenAPI", () => {
       }
     );
     const log = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=log.md",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=log.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -390,7 +381,7 @@ describe("Scoped public file OpenAPI", () => {
       }
     );
     const json = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch.json",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -446,7 +437,7 @@ describe("Scoped public file OpenAPI", () => {
       repositories: createRepositories()
     });
     const response = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -469,7 +460,7 @@ describe("Scoped public file OpenAPI", () => {
       repositories: createRepositories()
     });
     const response = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=_index%2Fsearch%2F000001.jsonl",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -502,7 +493,7 @@ describe("Scoped public file OpenAPI", () => {
     );
 
     const response = await app.request(
-      `/openapi/v1/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(
+      `/openapi/v2/knowledge-bases/kb-001/files/content?path=${encodeURIComponent(
         `pages/${fileName}`
       )}`,
       {
@@ -528,7 +519,7 @@ describe("Scoped public file OpenAPI", () => {
       storage: new MemoryStorage(),
       repositories: createRepositories()
     });
-    const path = "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md";
+    const path = "/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md";
     const missing = await app.request(path);
     const wrong = await app.request(path, {
       headers: {
@@ -551,7 +542,7 @@ describe("Scoped public file OpenAPI", () => {
       storage: new MemoryStorage(),
       repositories: createRepositories({ publicKeyStatus: "missing" })
     });
-    const path = "/openapi/v1/knowledge-bases/kb-001/files/content?path=index.md";
+    const path = "/openapi/v2/knowledge-bases/kb-001/files/content?path=index.md";
     const revoked = await revokedApp.request(path, {
       headers: {
         authorization: `Bearer ${publicKey}`
@@ -580,7 +571,7 @@ describe("Scoped public file OpenAPI", () => {
       repositories: createRepositories()
     });
     const missingKnowledgeBase = await app.request(
-      "/openapi/v1/knowledge-bases/kb-missing/files/content?path=index.md",
+      "/openapi/v2/knowledge-bases/kb-missing/files/content?path=index.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -588,7 +579,7 @@ describe("Scoped public file OpenAPI", () => {
       }
     );
     const missingFile = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=pages%2Fmissing.md",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=pages%2Fmissing.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -596,7 +587,7 @@ describe("Scoped public file OpenAPI", () => {
       }
     );
     const unsupported = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=unsupported.txt",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=unsupported.txt",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
@@ -604,14 +595,14 @@ describe("Scoped public file OpenAPI", () => {
       }
     );
     const sourceFile = await app.request(
-      "/openapi/v1/knowledge-bases/kb-001/files/content?path=sources%2Fintro.md",
+      "/openapi/v2/knowledge-bases/kb-001/files/content?path=sources%2Fintro.md",
       {
         headers: {
           authorization: `Bearer ${publicKey}`
         }
       }
     );
-    const traversal = await app.request("/openapi/v1/knowledge-bases/kb-001/pages/%252e%252e", {
+    const traversal = await app.request("/openapi/v2/knowledge-bases/kb-001/pages/%252e%252e", {
       headers: {
         authorization: `Bearer ${publicKey}`
       }

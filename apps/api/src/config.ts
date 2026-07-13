@@ -10,10 +10,14 @@ const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
 const DEFAULT_UPLOAD_MAX_BYTES = 1_048_576;
-const DEFAULT_UPLOAD_MAX_FILES = 24;
 const DEFAULT_GENERATION_BATCH_SIZE = 50;
 const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
-const DEFAULT_UPLOAD_STORAGE_CONCURRENCY = 4;
+export const DEFAULT_UPLOAD_SESSION_SETTINGS = {
+  sessionTtlSeconds: 86_400,
+  manifestPageSize: 500,
+  contentBatchMaxFiles: 24,
+  contentBatchMaxBytes: 16_777_216
+} as const;
 const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
 const DEFAULT_WORKER_CLAIM_BATCH_SIZE = 10;
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
@@ -43,10 +47,19 @@ const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
 const DEFAULT_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_LINK_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_MANIFEST_SHARD_SIZE = 1_000;
-const DEFAULT_GRAPH_EDGE_SHARD_SIZE = 5_000;
-const DEFAULT_GRAPH_CANDIDATE_LIMIT = 200;
 const DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE = 500;
 const DEFAULT_ROOT_SUMMARY_LIMIT = 500;
+const DEFAULT_DIRECTORY_INDEX_MAX_ENTRIES = 200;
+const DEFAULT_DIRECTORY_INDEX_MAX_BYTES = 65_536;
+const DEFAULT_GRAPH_CANDIDATE_LIMIT = 200;
+const DEFAULT_GRAPH_ACCEPTED_EDGE_LIMIT = 50;
+const DEFAULT_GRAPH_SEARCH_DEFAULT_DEPTH = 1;
+const DEFAULT_GRAPH_SEARCH_MAX_DEPTH = 2;
+const DEFAULT_GRAPH_SEARCH_DEFAULT_FANOUT = 10;
+const DEFAULT_GRAPH_SEARCH_MAX_FANOUT = 25;
+const DEFAULT_GRAPH_PUBLICATION_SHARD_SIZE = 5_000;
+const DEFAULT_GRAPH_CACHE_TTL_SECONDS = 5;
+const DEFAULT_GRAPH_GENERIC_PHRASE_THRESHOLD = 4;
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
@@ -55,6 +68,19 @@ const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
 export type PublicationMode = "batch" | "manual" | "per_file";
+export type GraphRuntimeConfig = {
+  candidateLimit: number;
+  acceptedEdgeLimit: number;
+  searchDefaultDepth: 0 | 1 | 2;
+  searchMaxDepth: 0 | 1 | 2;
+  searchDefaultFanout: number;
+  searchMaxFanout: number;
+  insightEnabled: boolean;
+  modelReviewEnabled: boolean;
+  publicationShardSize: number;
+  cacheTtlSeconds: number;
+  genericPhraseThreshold: number;
+};
 
 export type WorkerRuntimeConfig = {
   databasePoolMax?: number;
@@ -145,10 +171,12 @@ export type RuntimeConfig = {
   };
   upload: {
     maxBytes: number;
-    maxFiles: number;
     generationBatchSize: number;
     fileProcessingConcurrency: number;
-    storageConcurrency: number;
+    sessionTtlSeconds?: number;
+    manifestPageSize?: number;
+    contentBatchMaxFiles?: number;
+    contentBatchMaxBytes?: number;
   };
   worker?: WorkerRuntimeConfig;
   publication: {
@@ -158,11 +186,14 @@ export type RuntimeConfig = {
     indexShardSize: number;
     linkIndexShardSize: number;
     manifestShardSize: number;
-    graphEdgeShardSize: number;
-    graphCandidateLimit: number;
+    graphEdgeShardSize?: number;
+    graphCandidateLimit?: number;
     graphMaintenanceBatchSize: number;
     rootSummaryLimit: number;
+    directoryIndexMaxEntries?: number;
+    directoryIndexMaxBytes?: number;
   };
+  graph?: GraphRuntimeConfig;
   pagination: {
     defaultPageSize: number;
     maxPageSize: number;
@@ -241,32 +272,11 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const secretAccessKey = requireString(env, "S3_SECRET_ACCESS_KEY", issues);
   const prefix = normalizePrefix(requireString(env, "S3_PREFIX", issues), issues);
   const forcePathStyle = optionalBoolean(env, "S3_FORCE_PATH_STYLE", false, issues);
-  const maxBytes = optionalLegacyPositiveInteger(
-    env,
-    "MAX_UPLOAD_BYTES",
-    DEFAULT_UPLOAD_MAX_BYTES
-  );
-  const maxFiles = optionalLegacyPositiveInteger(
-    env,
-    "MAX_UPLOAD_FILES",
-    DEFAULT_UPLOAD_MAX_FILES
-  );
-  const generationBatchSize = optionalLegacyPositiveInteger(
-    env,
-    "GENERATION_BATCH_SIZE",
-    DEFAULT_GENERATION_BATCH_SIZE
-  );
-  const fileProcessingConcurrency = optionalLegacyPositiveInteger(
-    env,
-    "UPLOAD_FILE_PROCESSING_CONCURRENCY",
-    DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY
-  );
-  const storageConcurrency = optionalLegacyPositiveInteger(
-    env,
-    "UPLOAD_STORAGE_CONCURRENCY",
-    DEFAULT_UPLOAD_STORAGE_CONCURRENCY
-  );
+  const maxBytes = DEFAULT_UPLOAD_MAX_BYTES;
+  const generationBatchSize = DEFAULT_GENERATION_BATCH_SIZE;
+  const fileProcessingConcurrency = DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY;
   const publication = createDefaultPublicationConfig();
+  const graph = createDefaultGraphConfig();
   const worker = parseWorkerConfig(env, issues);
   const pagination = parsePaginationConfig(env, issues);
   const okf = createDefaultOkfConfig();
@@ -318,13 +328,13 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     },
     upload: {
       maxBytes,
-      maxFiles,
       generationBatchSize,
       fileProcessingConcurrency,
-      storageConcurrency
+      ...DEFAULT_UPLOAD_SESSION_SETTINGS
     },
     worker,
     publication,
+    graph,
     model,
     logging,
     corsOrigins,
@@ -370,21 +380,6 @@ function requireString(env: RuntimeEnv, field: string, issues: string[]): string
   return value;
 }
 
-function requireBoolean(env: RuntimeEnv, field: string, issues: string[]): boolean {
-  const value = optionalString(env, field);
-
-  if (value === "true") {
-    return true;
-  }
-
-  if (value === "false") {
-    return false;
-  }
-
-  issues.push(`${field} must be true or false`);
-  return false;
-}
-
 function optionalBoolean(
   env: RuntimeEnv,
   field: string,
@@ -409,18 +404,6 @@ function optionalBoolean(
   return fallback;
 }
 
-function requirePositiveInteger(env: RuntimeEnv, field: string, issues: string[]): number {
-  const value = optionalString(env, field);
-  const parsed = value ? Number(value) : Number.NaN;
-
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    issues.push(`${field} must be a positive integer`);
-    return 0;
-  }
-
-  return parsed;
-}
-
 function optionalPositiveInteger(
   env: RuntimeEnv,
   field: string,
@@ -441,22 +424,6 @@ function optionalPositiveInteger(
   }
 
   return parsed;
-}
-
-function optionalLegacyPositiveInteger(
-  env: RuntimeEnv,
-  field: string,
-  fallback: number
-): number {
-  const value = optionalString(env, field);
-
-  if (!value) {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseServicePorts(env: RuntimeEnv, issues: string[]): RuntimeConfig["ports"] {
@@ -553,10 +520,26 @@ function createDefaultPublicationConfig(): RuntimeConfig["publication"] {
     indexShardSize: DEFAULT_INDEX_SHARD_SIZE,
     linkIndexShardSize: DEFAULT_LINK_INDEX_SHARD_SIZE,
     manifestShardSize: DEFAULT_MANIFEST_SHARD_SIZE,
-    graphEdgeShardSize: DEFAULT_GRAPH_EDGE_SHARD_SIZE,
-    graphCandidateLimit: DEFAULT_GRAPH_CANDIDATE_LIMIT,
     graphMaintenanceBatchSize: DEFAULT_GRAPH_MAINTENANCE_BATCH_SIZE,
-    rootSummaryLimit: DEFAULT_ROOT_SUMMARY_LIMIT
+    rootSummaryLimit: DEFAULT_ROOT_SUMMARY_LIMIT,
+    directoryIndexMaxEntries: DEFAULT_DIRECTORY_INDEX_MAX_ENTRIES,
+    directoryIndexMaxBytes: DEFAULT_DIRECTORY_INDEX_MAX_BYTES
+  };
+}
+
+function createDefaultGraphConfig(): GraphRuntimeConfig {
+  return {
+    candidateLimit: DEFAULT_GRAPH_CANDIDATE_LIMIT,
+    acceptedEdgeLimit: DEFAULT_GRAPH_ACCEPTED_EDGE_LIMIT,
+    searchDefaultDepth: DEFAULT_GRAPH_SEARCH_DEFAULT_DEPTH,
+    searchMaxDepth: DEFAULT_GRAPH_SEARCH_MAX_DEPTH,
+    searchDefaultFanout: DEFAULT_GRAPH_SEARCH_DEFAULT_FANOUT,
+    searchMaxFanout: DEFAULT_GRAPH_SEARCH_MAX_FANOUT,
+    insightEnabled: true,
+    modelReviewEnabled: true,
+    publicationShardSize: DEFAULT_GRAPH_PUBLICATION_SHARD_SIZE,
+    cacheTtlSeconds: DEFAULT_GRAPH_CACHE_TTL_SECONDS,
+    genericPhraseThreshold: DEFAULT_GRAPH_GENERIC_PHRASE_THRESHOLD
   };
 }
 
@@ -645,6 +628,15 @@ export function resolveWorkerConfig(
     hardDeleteVersionPurgeEnabled:
       config.worker?.hardDeleteVersionPurgeEnabled ??
       DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
+  };
+}
+
+export function resolveGraphConfig(
+  config: Pick<RuntimeConfig, "graph">
+): GraphRuntimeConfig {
+  return {
+    ...createDefaultGraphConfig(),
+    ...(config.graph ?? {})
   };
 }
 

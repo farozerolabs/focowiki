@@ -28,7 +28,7 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 
 [Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes OKF as an open, portable, human-readable, and agent-readable way to represent knowledge with Markdown files and YAML frontmatter.
 
-The [OKF specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) defines field conventions and bundle structure. Focowiki uses the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
+The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines field conventions and bundle structure. Focowiki uses the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
 
 ## Markdown Upload Format
 

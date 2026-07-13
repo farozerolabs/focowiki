@@ -26,8 +26,16 @@ describe("storage key normalization", () => {
     expect(keys.releaseBundleKey("kb-001", "release-001", "/schema.md")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/schema.md"
     );
+    expect(keys.releaseBundleKey("kb-001", "release-001", "log-000001.md")).toBe(
+      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/log-000001.md"
+    );
     expect(keys.releaseBundleKey("kb-001", "release-001", "pages/intro.md")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md"
+    );
+    expect(
+      keys.releaseBundleKey("kb-001", "release-001", "pages/team/manual/setup.md")
+    ).toBe(
+      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/team/manual/setup.md"
     );
     expect(
       keys.releaseBundleKey(
@@ -40,6 +48,12 @@ describe("storage key normalization", () => {
     );
     expect(keys.releaseBundleKey("kb-001", "release-001", "_index/search.json")).toBe(
       "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/_index/search.json"
+    );
+    expect(keys.uploadSessionEntryKey("kb-001", "upload-session-001", "upload-entry-001")).toBe(
+      "tenant/demo/knowledge-bases/kb-001/upload-sessions/upload-session-001/entries/upload-entry-001/content.md"
+    );
+    expect(keys.sourceRevisionKey("kb-001", "source-001", "revision-002")).toBe(
+      "tenant/demo/knowledge-bases/kb-001/sources/source-001/revisions/revision-002/content.md"
     );
   });
 

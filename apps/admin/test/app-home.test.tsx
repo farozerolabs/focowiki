@@ -8,6 +8,7 @@ import {
   createPublicOpenApiKey,
   deleteKnowledgeBase,
   deletePublicOpenApiKey,
+  fetchKnowledgeBase,
   listKnowledgeBases,
   listPublicOpenApiKeys,
   loginAdmin,
@@ -15,6 +16,28 @@ import {
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
+  adminFetch: vi.fn(async (path: string) => {
+    if (path.includes("/operations")) {
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    if (path === "/admin/api/knowledge-bases/kb-docs") {
+      return new Response(JSON.stringify({
+        knowledgeBase: {
+          id: "kb-docs",
+          name: "Updated docs",
+          description: "Updated description",
+          activeReleaseId: "release-001",
+          resourceRevision: 4,
+          catalogGeneration: 3
+        },
+        publicationQueued: true
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 404 });
+  }),
   checkAdminSession: vi.fn(async () => false),
   createKnowledgeBase: vi.fn(async () => ({
     knowledgeBase: {
@@ -40,6 +63,7 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   deleteKnowledgeBase: vi.fn(async () => ({ deleted: true })),
   deletePublicOpenApiKey: vi.fn(async () => ({ deleted: true })),
+  fetchKnowledgeBase: vi.fn(async () => null),
   deleteKnowledgeBaseFile: vi.fn(),
   fetchKnowledgeBaseFileDetail: vi.fn(),
   fetchKnowledgeBaseFileTree: vi.fn(async () => ({
@@ -118,6 +142,7 @@ vi.mock("../src/lib/admin-api", () => ({
 describe("Admin knowledge base home", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/");
     Object.assign(navigator, {
       clipboard: {
         writeText: vi.fn(async () => undefined)
@@ -182,6 +207,28 @@ describe("Admin knowledge base home", () => {
     expect(loginAdmin).not.toHaveBeenCalled();
   });
 
+  it("restores a knowledge base detail view from the URL after refresh", async () => {
+    const knowledgeBase = {
+      id: "kb-docs",
+      name: "Developer docs",
+      description: "Markdown product knowledge",
+      activeReleaseId: null
+    };
+    window.history.replaceState(
+      null,
+      "",
+      "/?view=knowledge-base&knowledgeBaseId=kb-docs"
+    );
+    vi.mocked(checkAdminSession).mockResolvedValueOnce(true);
+    vi.mocked(fetchKnowledgeBase).mockResolvedValueOnce(knowledgeBase);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+    expect(fetchKnowledgeBase).toHaveBeenCalledWith("kb-docs");
+    expect(screen.getAllByText("Developer docs").length).toBeGreaterThan(0);
+  });
+
   it("clears protected home content when the admin session becomes invalid", async () => {
     vi.mocked(checkAdminSession).mockResolvedValueOnce(true);
     vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
@@ -239,6 +286,38 @@ describe("Admin knowledge base home", () => {
     expect(await screen.findByRole("button", { name: "Created docs" })).toBeTruthy();
   });
 
+  it("opens the knowledge-base edit dialog from the card menu", async () => {
+    vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
+      items: [
+        {
+          id: "kb-docs",
+          name: "Developer docs",
+          description: "Markdown product knowledge",
+          activeReleaseId: "release-001",
+          resourceRevision: 3,
+          catalogGeneration: 2
+        }
+      ],
+      nextCursor: null
+    });
+    render(<App />);
+
+    await login();
+    fireEvent.pointerDown(
+      await screen.findByRole("button", { name: "Knowledge base actions for Developer docs" }),
+      { button: 0, ctrlKey: false }
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Edit" }));
+
+    expect(screen.getByRole("dialog", { name: "Edit knowledge base" })).toBeTruthy();
+    expect(screen.getByLabelText("Knowledge base name").getAttribute("value")).toBe(
+      "Developer docs"
+    );
+    expect(screen.getByLabelText("Description").getAttribute("value")).toBe(
+      "Markdown product knowledge"
+    );
+  });
+
   it("navigates from a knowledge base card to the detail page", async () => {
     vi.mocked(listKnowledgeBases).mockResolvedValueOnce({
       items: [
@@ -259,12 +338,17 @@ describe("Admin knowledge base home", () => {
     fireEvent.click(knowledgeBaseCardButton);
 
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+    expect(window.location.search).toBe("?view=knowledge-base&knowledgeBaseId=kb-docs");
     expect(screen.getAllByText("Developer docs").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "File processing" }).getAttribute("data-active")).toBe(
       "true"
     );
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
     expect(screen.queryByText("No file selected")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Knowledge bases", level: 1 })).toBeTruthy();
+    expect(window.location.search).toBe("");
   });
 
   it("shows knowledge base IDs on cards and copies them without opening the card", async () => {

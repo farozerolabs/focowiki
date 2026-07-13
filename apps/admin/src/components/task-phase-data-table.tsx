@@ -21,7 +21,6 @@ import {
   TableHeader,
   TableRow
 } from "@/components/ui/table";
-import { formatDisplayFileName } from "@/lib/display-file-name";
 import type { SourceFileRecord } from "@/lib/admin-api";
 import type { SourceFileListFilters } from "@/lib/source-file-list-filters";
 import { isSourceFileTaskDeletionSelectable } from "@/lib/source-file-task-deletion";
@@ -148,7 +147,7 @@ export function SourceFileDataTable({
             <TableRow key={file.id} data-testid={`source-file-row-${file.id}`}>
               <TableCell>
                 <Checkbox
-                  aria-label={t("tasks.selection.selectRow", { name: formatDisplayFileName(file.originalName) })}
+                  aria-label={t("tasks.selection.selectRow", { name: file.relativePath })}
                   checked={selectedSourceFileIds.has(file.id)}
                   disabled={!isSourceFileTaskDeletionSelectable(file)}
                   onCheckedChange={(checked) => onToggleSourceFileSelection(file.id, checked === true)}
@@ -157,7 +156,7 @@ export function SourceFileDataTable({
               <TableCell>{formatFileStatus(file, t)}</TableCell>
               <TableCell>
                 <span className="block max-w-72 truncate">
-                  {formatDisplayFileName(file.originalName)}
+                  {file.relativePath}
                 </span>
               </TableCell>
               <TableCell>

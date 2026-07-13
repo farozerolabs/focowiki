@@ -141,11 +141,9 @@ export function createFullCodebaseReport(config, steps) {
     },
     config: {
       includeBrowser: config.includeBrowser,
-      includeDemo: config.includeDemo,
       includeRepositoryChecks: config.includeRepositoryChecks,
       includeDocker: config.includeDocker,
       requireModel: config.requireModel,
-      demoRepo: config.includeDemo ? "<FOCOWIKI_DEMO_E2E_DEMO_REPO>" : "not-enabled",
       reportDir: "<FOCOWIKI_FULL_FLOW_REPORT_DIR>"
     },
     matrix,
@@ -178,7 +176,7 @@ export function createFullCodebaseReport(config, steps) {
     },
     remainingRisks: [
       "External S3-compatible storage and model provider availability can affect full-flow runtime.",
-      "Browser, Docker, and demo checks are controlled by explicit validation flags when local prerequisites are unavailable."
+      "Browser and Docker checks are controlled by explicit validation flags when local prerequisites are unavailable."
     ]
   };
 }

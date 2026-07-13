@@ -35,10 +35,8 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
     },
     upload: {
       maxBytes: 1_048_576,
-      maxFiles: 8,
       generationBatchSize: 50,
       fileProcessingConcurrency: 1,
-      storageConcurrency: 4
     },
     publication: {
       mode: "batch",
@@ -67,7 +65,7 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
   };
 }
 
-describe("Public file API compatibility boundary", () => {
+describe("Public file API boundary", () => {
   it("does not require old unscoped single-bundle public paths", async () => {
     const app = createPublicOpenApiApp({ config: createConfig() });
 
@@ -139,8 +137,8 @@ describe("Public file API compatibility boundary", () => {
       redis: createTestRedisCoordinator()
     });
 
-    const first = await app.request("/openapi/v1/health");
-    const second = await app.request("/openapi/v1/health");
+    const first = await app.request("/openapi/v2/health");
+    const second = await app.request("/openapi/v2/health");
 
     expect(first.status).toBe(503);
     expect(second.status).toBe(429);

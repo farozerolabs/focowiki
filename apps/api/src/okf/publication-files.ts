@@ -1,20 +1,18 @@
 import {
   buildSearchIndex,
   applyPresentationSuggestions,
-  buildGraphGeneratedFiles,
-  buildGraphLinkIndexEntries,
-  bundleSchemaTitle,
+  bundleSchemaDescriptor,
+  schemaReferenceDescriptor,
   DEFAULT_OKF_LOG_LIMITS,
-  graphRefForFile,
+  generatedConceptFrontmatter,
   knowledgeBaseTitle,
-  listPageRelatedGraphLinks,
-  pageGraphRefForFile,
   prepareGeneratedMarkdownBody,
-  renderOkfIndex,
+  rewriteSourceMarkdownLinks,
   renderOkfLog,
-  stringifyIndex,
+  renderGeneratedCitations,
+  toBundleMarkdownHref,
+  updateHistoryPageDescriptor,
   type IndexMetadata,
-  type NormalizedOkfGraph,
   type OkfLogEntry,
   type OkfLogLimits,
   type OkfLogMonthlySummary,
@@ -27,18 +25,27 @@ export type BundleFileKind =
   | "page"
   | "index"
   | "log"
+  | "history_page"
   | "schema"
+  | "directory_index"
+  | "directory_index_page"
+  | "directory_index_map"
+  | "index_catalog"
   | "manifest_index"
   | "manifest_index_shard"
   | "search_index"
   | "search_index_shard"
   | "link_index"
   | "link_index_shard"
+  | "change_index"
+  | "change_index_shard"
   | "graph_index"
   | "graph_manifest"
   | "graph_node_index"
   | "graph_edge_shard"
-  | "graph_file";
+  | "graph_file"
+  | "graph_community"
+  | "graph_insight";
 
 export type GeneratedPageSummary = {
   pagePath: string;
@@ -82,26 +89,31 @@ export type PublicationLogHistory = {
   summaries: OkfLogMonthlySummary[];
 };
 
-export type PublicationGraphFilesInput = {
-  graph: NormalizedOkfGraph;
-  generatedAt: string;
+export type PublicationChangeSummary = {
+  created: number;
+  updated: number;
+  moved: number;
+  deleted: number;
+  affectedDirectories: Array<{ path: string; changedFileCount: number }>;
 };
 
 export { applyPresentationSuggestions };
 
 export function renderPageFile(
   page: GeneratedPageSummary,
-  body: string,
-  publicPaths: Set<string>,
-  graph: NormalizedOkfGraph | null
+  body: string
 ): string {
   const prepared = prepareGeneratedMarkdownBody(body);
+  const rewrittenBody = rewriteSourceMarkdownLinks(
+    prepared.content,
+    page.pagePath.replace(/^pages\//u, "")
+  );
   return renderConceptFile(
     page.metadata,
     [
-      prepared.content,
+      rewrittenBody,
       "",
-      ...renderRelatedLinks(publicPaths, page.graphLinks ?? [], graph),
+      ...renderRelatedLinks(page.graphLinks ?? []),
       ...(prepared.trailingCitations
         ? ["", prepared.trailingCitations]
         : renderCitations(page.metadata))
@@ -110,76 +122,176 @@ export function renderPageFile(
 }
 
 export function renderIndexFile(
-  pages: GeneratedPageSummary[],
+  _pages: GeneratedPageSummary[],
   generatedAt: string,
-  title: string
+  title: string,
+  options: { includeGraph?: boolean; description?: string | null } = {}
 ): GeneratedOkfFile {
+  const schema = bundleSchemaDescriptor(title);
   return {
     logicalPath: "index.md",
     sourceFileId: null,
     fileKind: "index",
     metadata: null,
-    content: renderOkfIndex({
-      title: knowledgeBaseTitle(title),
-      generatedAt,
-      pages: pages.map((page) => ({
-        path: page.pagePath,
-        title: page.metadata.title,
-        type: page.metadata.type,
-        ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
-          ? { description: page.metadata.description }
-          : {})
-      }))
-    }).trimEnd()
+    content: [
+      "---",
+      'okf_version: "0.1"',
+      "---",
+      `# ${knowledgeBaseTitle(title)}`,
+      "",
+      ...(options.description ? [options.description, ""] : []),
+      `Generated at: ${generatedAt}`,
+      "",
+      "## Explore",
+      "",
+      "- [Browse documents](/pages/index.md) - Explore source-backed Markdown files by directory.",
+      ...(options.includeGraph
+        ? ["- [Relationship graph](/_graph/index.md) - Follow relationships between source-backed files."]
+        : []),
+      `- [${schema.title}](/${schema.path}) - Review concept metadata and navigation conventions.`,
+      "- [Update history](/log.md) - Review bounded publication history.",
+      "- [Machine-readable indexes](/_index/index.md) - Access generated manifests, search records, links, and changes."
+    ].join("\n")
   };
 }
 
 export function renderLogFile(
   pages: GeneratedPageSummary[],
+  totalPageCount: number,
   generatedAt: string,
   limits: OkfLogLimits,
-  history: PublicationLogHistory
+  history: PublicationLogHistory,
+  changes: PublicationChangeSummary
 ): GeneratedOkfFile {
+  return renderLogFiles(pages, totalPageCount, generatedAt, limits, history, changes)[0]!;
+}
+
+export function renderLogFiles(
+  pages: GeneratedPageSummary[],
+  totalPageCount: number,
+  generatedAt: string,
+  limits: OkfLogLimits,
+  history: PublicationLogHistory,
+  changes: PublicationChangeSummary
+): GeneratedOkfFile[] {
+  const samples = pages.slice(0, 8);
+  const currentPagePaths = new Set(pages.map((page) => page.pagePath));
+  const directoryLinks = changes.affectedDirectories
+    .filter((directory) =>
+      Array.from(currentPagePaths).some((path) => path.startsWith(`${directory.path}/`))
+    )
+    .slice(0, 8)
+    .map((directory) => ({
+      path: `${directory.path}/index.md`,
+      title: `${directory.path} (${directory.changedFileCount})`
+    }));
   const currentEntries: OkfLogEntry[] = [
     {
       occurredAt: generatedAt,
-      action: "Update",
-      message: `Published ${pages.length} Markdown pages for this knowledge base.`,
-      changedFileCount: pages.length
-    },
-    ...pages.map((page) => ({
-      occurredAt: generatedAt,
-      action: "Creation",
-      message: `Added ${page.metadata.title}.`,
-      changedFileCount: 1,
-      links: [
-        {
-          path: page.pagePath,
-          title: page.metadata.title
-        }
-      ]
-    }))
+      action: "Publication",
+      message: [
+        `Published ${totalPageCount} Markdown pages.`,
+        `Created ${changes.created}, updated ${changes.updated}, moved ${changes.moved}, and deleted ${changes.deleted}.`
+      ].join(" "),
+      changedFileCount: changes.created + changes.updated + changes.moved + changes.deleted,
+      links: directoryLinks.length > 0
+        ? directoryLinks
+        : samples.map((page) => ({
+            path: page.pagePath,
+            title: page.metadata.title
+          }))
+    }
   ];
 
-  return {
+  const historyPages = partitionLogEntries(history.entries, limits).map((entries, index, all) => {
+    const page = index + 1;
+    const descriptor = updateHistoryPageDescriptor(page);
+    const metadata = {
+      ...generatedConceptFrontmatter(descriptor),
+      navigation_only: true
+    };
+    const navigation = [
+      "[Update history root](/log.md)",
+      index > 0 ? `[Previous page](/log-${String(page - 1).padStart(6, "0")}.md)` : null,
+      index + 1 < all.length
+        ? `[Next page](/log-${String(page + 1).padStart(6, "0")}.md)`
+        : null
+    ].filter((value): value is string => Boolean(value));
+    return {
+      logicalPath: descriptor.path,
+      sourceFileId: null,
+      fileKind: "history_page" as const,
+      metadata,
+      content: renderConceptFile(
+        metadata,
+        [
+          `# ${descriptor.heading}`,
+          "",
+          navigation.join(" · "),
+          "",
+          stripLogHeading(renderOkfLog({
+            entries,
+            summaries: [],
+            limits: { maxEntries: entries.length, maxBytes: limits.maxBytes }
+          }))
+        ].join("\n")
+      )
+    };
+  });
+  const firstHistoryLink = historyPages[0]
+    ? `[Update history page 1](/${historyPages[0].logicalPath})`
+    : null;
+  const rootContent = renderOkfLog({
+    entries: [...currentEntries, ...history.entries],
+    summaries: history.summaries,
+    limits: { ...limits, maxEntries: 1 }
+  }).trimEnd();
+
+  return [{
     logicalPath: "log.md",
     sourceFileId: null,
     fileKind: "log",
     metadata: null,
-    content: renderOkfLog({
-      entries: [...currentEntries, ...history.entries],
-      summaries: history.summaries,
-      limits
-    }).trimEnd()
-  };
+    content: [
+      rootContent,
+      ...(firstHistoryLink
+        ? ["", `* **History**: Continue with ${firstHistoryLink}.`]
+        : [])
+    ].join("\n")
+  }, ...historyPages];
+}
+
+function partitionLogEntries(entries: OkfLogEntry[], limits: OkfLogLimits): OkfLogEntry[][] {
+  const pages: OkfLogEntry[][] = [];
+  let current: OkfLogEntry[] = [];
+  for (const entry of [...entries].sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))) {
+    const candidate = [...current, entry];
+    const content = renderOkfLog({
+      entries: candidate,
+      summaries: [],
+      limits: { maxEntries: candidate.length, maxBytes: Number.MAX_SAFE_INTEGER }
+    });
+    if (
+      current.length > 0
+      && (candidate.length > limits.maxEntries || Buffer.byteLength(content, "utf8") > limits.maxBytes)
+    ) {
+      pages.push(current);
+      current = [entry];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) pages.push(current);
+  return pages;
+}
+
+function stripLogHeading(content: string): string {
+  return content.replace(/^# Directory Update Log\s*/u, "").trim();
 }
 
 export function renderSchemaFile(title: string): GeneratedOkfFile {
-  const metadata = {
-    type: "schema",
-    title: bundleSchemaTitle(title),
-    description: `Schema reference for ${knowledgeBaseTitle(title)}`
-  };
+  const descriptor = bundleSchemaDescriptor(title);
+  const metadata = generatedConceptFrontmatter(descriptor);
 
   return {
     logicalPath: "schema.md",
@@ -189,111 +301,141 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
     content: renderConceptFile(
       metadata,
       [
-        `# ${bundleSchemaTitle(title)}`,
+        `# ${descriptor.heading}`,
         "",
-        "Every non-reserved Markdown concept file includes parseable YAML frontmatter.",
+        "## Normative OKF 0.1",
+        "",
+        "Every concept file includes parseable YAML frontmatter.",
         "",
         "Required fields:",
         "",
         "- type",
-        "- title",
         "",
-        "File graph:",
+        "## Recommended OKF",
         "",
-        "- Source-backed pages may include `fileId` and `graph` frontmatter fields.",
+        "Recommended fields include `title`, `description`, `resource`, `tags`, and `timestamp`.",
+        "",
+        "## Producer Metadata",
+        "",
+        "Producer-defined metadata is preserved when it is safe and valid YAML.",
+        "",
+        "Detailed references:",
+        "",
+        "- [Browse documents](/pages/index.md) - Continue to source-backed Markdown evidence.",
+        "- [Frontmatter](/schema-frontmatter.md)",
+        "- [Navigation](/schema-navigation.md)",
+        "- [Generated extensions](/schema-extensions.md)",
+        "",
+        "## Focowiki Extensions",
+        "",
+        "- Source-backed pages remain the final evidence for generated relationships.",
         "- `_graph/index.md` introduces the file graph.",
         "- `_graph/manifest.json` describes graph file counts and path patterns.",
         "- `_graph/nodes.jsonl` stores graph nodes directly or lists graph node shards.",
         "- `_graph/nodes/*.jsonl` stores sharded graph nodes when present.",
         "- `_graph/edges/*.jsonl` stores sharded graph edges.",
-        "- `_graph/by-file/{fileId}.json` stores bounded incoming and outgoing relationships."
+        "- Graph records resolve relationships to source-backed Markdown paths."
       ].join("\n")
     )
   };
 }
 
-export function renderIndexFiles(
-  pages: GeneratedPageSummary[],
-  files: ManifestFileEntry[],
-  generatedAt: string,
-  graph: NormalizedOkfGraph | null = null,
-  options: {
-    shardSize?: number | undefined;
-    searchShardSize?: number | undefined;
-    linkShardSize?: number | undefined;
-    manifestShardSize?: number | undefined;
-  } = {}
-): GeneratedOkfFile[] {
-  const fallbackShardSize = normalizeShardSize(options.shardSize);
-  const searchShardSize = normalizeShardSize(options.searchShardSize ?? fallbackShardSize);
-  const linkShardSize = normalizeShardSize(options.linkShardSize ?? fallbackShardSize);
-  const manifestShardSize = normalizeShardSize(options.manifestShardSize ?? fallbackShardSize);
-  const searchIndex = buildSearchIndex(
-    pages.map((page) => ({
-      path: page.pagePath,
-      fileId: page.fileId,
-      ...(page.graphRef ? { graphRef: page.graphRef } : {}),
-      title: page.metadata.title,
-      ...(typeof page.metadata.description === "string" && page.metadata.description.trim()
-        ? { description: page.metadata.description }
-        : {}),
-      tags: Array.isArray(page.metadata.tags) ? page.metadata.tags : [],
-      keywords: readSuggestedStrings(page.suggestions?.keywords),
-      metadata: page.metadata
-    })),
-    generatedAt
-  );
-  const linkIndex = {
-    generated_at: generatedAt,
-    links: [
-      ...buildLinkEntries(pages),
-      ...(graph ? buildGraphLinkIndexEntries(graph) : [])
-    ].sort((left, right) =>
-      `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
-        `${right.from}\u0000${right.to}\u0000${right.label}`
-      )
+export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
+  return [
+    renderSchemaFile(title),
+    schemaConceptFile(
+      "schema-frontmatter.md",
+      "Frontmatter",
+      "Concept frontmatter requirements and recommendations.",
+      [
+        "# Frontmatter",
+        "",
+        "## Normative OKF 0.1",
+        "",
+        "The `type` field is required for every concept document.",
+        "",
+        "## Recommended OKF",
+        "",
+        "The `title`, `description`, `resource`, `tags`, and `timestamp` fields are recommended when known.",
+        "",
+        "## Producer Metadata",
+        "",
+        "Additional producer-defined fields remain available to consumers."
+      ].join("\n")
+    ),
+    schemaConceptFile(
+      "schema-navigation.md",
+      "Navigation",
+      "Directory indexes and progressive disclosure behavior.",
+      [
+        "# Navigation",
+        "",
+        "Every populated directory under `pages/` contains an `index.md` file.",
+        "",
+        "Index entries use generated concept titles and include concise descriptions when safe evidence is available.",
+        "",
+        "Large direct listings use linked `index-000001.md` pages and, when needed, `index-map-000001.md` pages.",
+        "",
+        "Navigation pages help readers discover source-backed Markdown files and do not represent source evidence."
+      ].join("\n")
+    ),
+    schemaConceptFile(
+      "schema-extensions.md",
+      "Generated extensions",
+      "Focowiki-generated machine-readable indexes and graph files.",
+      [
+        "# Generated extensions",
+        "",
+        "These resources belong to the Focowiki extension profile.",
+        "",
+        "The `_index/` directory contains manifests, search records, links, and change records.",
+        "",
+        "The `_graph/` directory contains file-linked graph nodes, edges, neighborhoods, and insights.",
+        "",
+        "The bundle-root `index.md` links to `_graph/index.md` whenever graph output is available.",
+        "",
+        "These files extend the bundle while preserving ordinary OKF concept and link semantics and real Markdown evidence paths."
+      ].join("\n")
+    )
+  ];
+}
+
+export function renderIndexCatalogFile(): GeneratedOkfFile {
+  return {
+    logicalPath: "_index/index.md",
+    sourceFileId: null,
+    fileKind: "index_catalog",
+    metadata: null,
+    content: [
+      "# Machine-readable indexes",
+      "",
+      "- [Browse documents](/pages/index.md) - Continue to source-backed Markdown evidence.",
+      "- [Manifest](/_index/manifest.json) - List generated release files and safe concept metadata.",
+      "- [Search index](/_index/search.json) - Discover source-backed concepts through generated search records.",
+      "- [Link index](/_index/links.json) - Follow standard Markdown and graph-backed concept relationships.",
+      "- [Release changes](/_index/changes.json) - Review created, updated, moved, and deleted concept paths."
+    ].join("\n")
+  };
+}
+
+function schemaConceptFile(
+  logicalPath: string,
+  title: string,
+  description: string,
+  body: string
+): GeneratedOkfFile {
+  const descriptor = schemaReferenceDescriptor({ path: logicalPath, title, description });
+  const metadata = generatedConceptFrontmatter(descriptor);
+  return {
+    logicalPath: descriptor.path,
+    sourceFileId: null,
+    fileKind: "schema",
+    metadata,
+    content: renderConceptFile(
+      metadata,
+      body.replace(/^# .+$/u, `# ${descriptor.heading}`)
     )
   };
-  const searchFiles = renderJsonCollectionIndex({
-    generatedAt,
-    rootPath: "_index/search.json",
-    shardDirectory: "_index/search",
-    rootKind: "search_index",
-    shardKind: "search_index_shard",
-    collectionKey: "items",
-    items: searchIndex.items,
-    shardSize: searchShardSize
-  });
-  const linkFiles = renderJsonCollectionIndex({
-    generatedAt,
-    rootPath: "_index/links.json",
-    shardDirectory: "_index/links",
-    rootKind: "link_index",
-    shardKind: "link_index_shard",
-    collectionKey: "links",
-    items: linkIndex.links,
-    shardSize: linkShardSize
-  });
-  const manifestFiles = renderManifestIndexFiles({
-    generatedAt,
-    shardSize: manifestShardSize,
-    files: [
-      ...files.map((file) => ({
-        path: file.path,
-        content_type: file.content_type,
-        ...(file.title ? { title: file.title } : {}),
-        ...(file.metadata ? { metadata: file.metadata } : {})
-      })),
-      ...indexFilesToManifestEntries(searchFiles),
-      ...indexFilesToManifestEntries(linkFiles),
-      {
-        path: "_index/manifest.json",
-        content_type: "application/json; charset=utf-8"
-      }
-    ].sort((left, right) => left.path.localeCompare(right.path))
-  });
-
-  return [...manifestFiles, ...searchFiles, ...linkFiles];
 }
 
 export function pageToSearchIndexItem(page: GeneratedPageSummary): SearchIndexItem {
@@ -318,25 +460,6 @@ export function pageToSearchIndexItem(page: GeneratedPageSummary): SearchIndexIt
   }
 
   return item;
-}
-
-export function pageToLinkIndexEntries(
-  page: GeneratedPageSummary,
-  publicPaths: Set<string>
-): LinkIndexEntry[] {
-  return [
-    {
-      from: "index.md",
-      to: page.pagePath,
-      label: page.metadata.title
-    },
-    {
-      from: "log.md",
-      to: page.pagePath,
-      label: page.metadata.title
-    },
-    ...buildRelatedLinkEntries(page, publicPaths)
-  ];
 }
 
 export function renderJsonCollectionRootFile<T>(input: {
@@ -392,182 +515,8 @@ export function renderJsonCollectionShardFile<T>(input: {
   };
 }
 
-function renderManifestIndexFiles(input: {
-  generatedAt: string;
-  shardSize: number;
-  files: ManifestFileEntry[];
-}): GeneratedOkfFile[] {
-  let files = input.files;
-  let rendered = renderJsonCollectionIndex({
-    generatedAt: input.generatedAt,
-    rootPath: "_index/manifest.json",
-    shardDirectory: "_index/manifest",
-    rootKind: "manifest_index",
-    shardKind: "manifest_index_shard",
-    collectionKey: "files",
-    items: files,
-    shardSize: input.shardSize
-  });
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const withManifestShards = [
-      ...input.files,
-      ...indexFilesToManifestEntries(rendered).filter((entry) => entry.path !== "_index/manifest.json")
-    ].sort((left, right) => left.path.localeCompare(right.path));
-    const next = renderJsonCollectionIndex({
-      generatedAt: input.generatedAt,
-      rootPath: "_index/manifest.json",
-      shardDirectory: "_index/manifest",
-      rootKind: "manifest_index",
-      shardKind: "manifest_index_shard",
-      collectionKey: "files",
-      items: withManifestShards,
-      shardSize: input.shardSize
-    });
-
-    if (rendered.map((file) => file.logicalPath).join("\n") === next.map((file) => file.logicalPath).join("\n")) {
-      return next;
-    }
-
-    files = withManifestShards;
-    rendered = next;
-  }
-
-  return renderJsonCollectionIndex({
-    generatedAt: input.generatedAt,
-    rootPath: "_index/manifest.json",
-    shardDirectory: "_index/manifest",
-    rootKind: "manifest_index",
-    shardKind: "manifest_index_shard",
-    collectionKey: "files",
-    items: files,
-    shardSize: input.shardSize
-  });
-}
-
-function renderJsonCollectionIndex<T>(input: {
-  generatedAt: string;
-  rootPath: string;
-  shardDirectory: string;
-  rootKind: BundleFileKind;
-  shardKind: BundleFileKind;
-  collectionKey: string;
-  items: T[];
-  shardSize: number;
-}): GeneratedOkfFile[] {
-  if (input.items.length <= input.shardSize) {
-    return [
-      {
-        logicalPath: input.rootPath,
-        sourceFileId: null,
-        fileKind: input.rootKind,
-        metadata: null,
-        content: stringifyJson({
-          generated_at: input.generatedAt,
-          [input.collectionKey]: input.items
-        })
-      }
-    ];
-  }
-
-  const shards = chunk(input.items, input.shardSize).map((items, index) => {
-    const path = `${input.shardDirectory}/${String(index + 1).padStart(6, "0")}.jsonl`;
-    return {
-      path,
-      items
-    };
-  });
-  const descriptor = {
-    generated_at: input.generatedAt,
-    mode: "sharded",
-    collection: input.collectionKey,
-    item_count: input.items.length,
-    shard_size: input.shardSize,
-    shards: shards.map((shard) => ({
-      path: shard.path,
-      count: shard.items.length
-    }))
-  };
-
-  return [
-    {
-      logicalPath: input.rootPath,
-      sourceFileId: null,
-      fileKind: input.rootKind,
-      metadata: null,
-      content: stringifyJson(descriptor)
-    },
-    ...shards.map((shard) => ({
-      logicalPath: shard.path,
-      sourceFileId: null,
-      fileKind: input.shardKind,
-      metadata: null,
-      content: `${shard.items.map((item) => JSON.stringify(item)).join("\n")}\n`
-    }))
-  ];
-}
-
-function indexFilesToManifestEntries(files: GeneratedOkfFile[]): ManifestFileEntry[] {
-  return files.map((file) => ({
-    path: file.logicalPath,
-    content_type: file.logicalPath.endsWith(".jsonl")
-      ? "application/x-ndjson; charset=utf-8"
-      : "application/json; charset=utf-8"
-  }));
-}
-
-function normalizeShardSize(value: number | undefined): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : Number.MAX_SAFE_INTEGER;
-}
-
 function stringifyJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const result: T[][] = [];
-
-  for (let index = 0; index < items.length; index += size) {
-    result.push(items.slice(index, index + size));
-  }
-
-  return result;
-}
-
-export function renderGraphFiles(input: PublicationGraphFilesInput): GeneratedOkfFile[] {
-  return buildGraphGeneratedFiles(input.graph, input.generatedAt).map((file) => ({
-    logicalPath: file.path,
-    sourceFileId: null,
-    fileKind: file.kind,
-    content: file.content,
-    metadata: null
-  }));
-}
-
-export function attachGraphToPage(
-  page: GeneratedPageSummary,
-  graph: NormalizedOkfGraph | null,
-  publicPaths: Set<string>
-): GeneratedPageSummary {
-  const graphRef = graph?.nodesByFileId.has(page.fileId) ? graphRefForFile(page.fileId) : undefined;
-
-  return {
-    ...page,
-    ...(graphRef ? { graphRef } : {}),
-    metadata: graphRef
-      ? {
-          ...page.metadata,
-          fileId: page.fileId,
-          graph: pageGraphRefForFile(page.fileId)
-        }
-      : page.metadata,
-    graphLinks:
-      page.graphLinks && page.graphLinks.length > 0
-        ? page.graphLinks
-        : listPageRelatedGraphLinks(graph, page.fileId, publicPaths)
-  };
 }
 
 export function normalizeLogLimits(limits: Partial<OkfLogLimits> | undefined): OkfLogLimits {
@@ -586,65 +535,43 @@ export function normalizeLogLimits(limits: Partial<OkfLogLimits> | undefined): O
   };
 }
 
-function buildLinkEntries(pages: GeneratedPageSummary[]): Array<{
-  from: string;
-  to: string;
-  label: string;
-}> {
-  const publicPaths = new Set(pages.flatMap((page) => [page.pagePath, "index.md", "log.md", "schema.md"]));
-  const links = pages.flatMap((page) => [
-    {
-      from: "index.md",
-      to: page.pagePath,
-      label: page.metadata.title
-    },
-    {
-      from: "log.md",
-      to: page.pagePath,
-      label: page.metadata.title
-    },
-    ...buildRelatedLinkEntries(page, publicPaths)
-  ]);
-
-  return links.sort((left, right) =>
-    `${left.from}\u0000${left.to}\u0000${left.label}`.localeCompare(
-      `${right.from}\u0000${right.to}\u0000${right.label}`
-    )
-  );
-}
-
-function buildRelatedLinkEntries(
-  page: GeneratedPageSummary,
-  publicPaths: Set<string>
-): Array<{ from: string; to: string; label: string }> {
-  return (page.graphLinks ?? [])
-    .map((link) => ({
-      from: page.pagePath,
-      to: normalizePublicPathReference(link.path),
-      label: link.title.trim()
-    }))
-    .filter((link) => link.to && link.label && publicPaths.has(link.to));
-}
-
 function renderCitations(metadata: SourceMetadata): string[] {
   const resource = typeof metadata.resource === "string" ? metadata.resource.trim() : "";
-  return resource ? ["", "# Citations", "", `- ${resource}`] : [];
+  return resource
+    ? renderGeneratedCitations([{ label: "Source", target: resource }])
+    : [];
 }
 
-function renderRelatedLinks(
-  publicPaths: Set<string>,
-  graphLinks: OkfGraphRelationship[],
-  graph: NormalizedOkfGraph | null
-): string[] {
+function renderRelatedLinks(graphLinks: OkfGraphRelationship[]): string[] {
   const graphRelated = graphLinks
-    .filter((link) => publicPaths.has(link.path))
-    .map((link) => `- [${link.title}](${toMarkdownHref(link.path)}) - ${link.relationType}`);
+    .map((link) => {
+      const title = escapeInlineMarkdown(cleanInlineGraphText(link.title) || "Related concept");
+      const reason = cleanInlineGraphText(link.reason)
+        || `Related through ${humanizeRelationshipType(link.relationType)}.`;
+      return `- [${title}](${toBundleMarkdownHref(link.path)}) - ${escapeInlineMarkdown(reason)}`;
+    });
 
   if (graphRelated.length > 0) {
     return ["", "## Related", "", ...graphRelated];
   }
 
   return [];
+}
+
+function cleanInlineGraphText(value: string): string {
+  return value.trim().replace(/\s+/gu, " ");
+}
+
+function humanizeRelationshipType(value: string): string {
+  const normalized = cleanInlineGraphText(value.replace(/[_-]+/gu, " "));
+  return normalized || "a documented relationship";
+}
+
+function escapeInlineMarkdown(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("[", "\\[")
+    .replaceAll("]", "\\]");
 }
 
 function renderConceptFile(metadata: SourceMetadata, body: string): string {
@@ -667,29 +594,6 @@ function serializeYamlField(key: string, value: unknown): string[] {
   return [`${key}: ${JSON.stringify(value)}`];
 }
 
-function normalizePublicPathReference(path: string): string {
-  let normalized = path.trim().replace(/^\/+/, "").replace(/#.*$/, "");
-
-  for (let index = 0; index < 3; index += 1) {
-    try {
-      const next = decodeURIComponent(normalized);
-
-      if (next === normalized) {
-        break;
-      }
-
-      normalized = next;
-    } catch {
-      break;
-    }
-  }
-
-  return normalized;
-}
-
-function toMarkdownHref(path: string): string {
-  return `/${path.split("/").map(encodeURIComponent).join("/")}`;
-}
 
 function readSuggestedStrings(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);

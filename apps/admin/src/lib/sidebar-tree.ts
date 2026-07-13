@@ -31,7 +31,11 @@ export function buildSidebarTree(
     isExpanded: expandedDirectories.has(entry.logicalPath),
     isActive: selectedFilePath === entry.logicalPath,
     nextCursor: entry.entryType === "directory" ? treePages[entry.logicalPath]?.nextCursor ?? null : null,
-    deletable: Boolean(entry.deletable)
+    deletable: Boolean(entry.deletable),
+    sourceDirectoryId: entry.sourceDirectoryId ?? null,
+    sourceFileId: entry.sourceFileId ?? null,
+    resourceRevision: entry.resourceRevision ?? null,
+    descendantFileCount: entry.descendantFileCount ?? 0
   }));
 }
 
@@ -90,6 +94,10 @@ function createSearchNode(
     isExpanded: true,
     isActive: selectedFilePath === entry.logicalPath,
     nextCursor: null,
-    deletable: Boolean(entry.deletable)
+    deletable: Boolean(entry.deletable),
+    sourceDirectoryId: entry.sourceDirectoryId ?? null,
+    sourceFileId: entry.sourceFileId ?? null,
+    resourceRevision: entry.resourceRevision ?? null,
+    descendantFileCount: entry.descendantFileCount ?? 0
   };
 }

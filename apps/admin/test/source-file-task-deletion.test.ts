@@ -8,7 +8,8 @@ import {
 function sourceFile(input: Partial<SourceFileRecord>): SourceFileRecord {
   return {
     id: "source-file-001",
-    originalName: "example.md",
+    name: "example.md",
+    relativePath: "example.md",
     processingStatus: "queued",
     processingStage: "upload_storage",
     processingStartedAt: null,

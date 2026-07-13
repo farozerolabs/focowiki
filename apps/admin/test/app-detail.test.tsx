@@ -4,6 +4,7 @@ import { App } from "../src/App";
 import { initI18n } from "../src/i18n";
 import {
   deleteKnowledgeBaseFile,
+  deleteKnowledgeBaseSourceDirectory,
   deleteKnowledgeBaseSourceFileTasks,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
@@ -16,12 +17,28 @@ import {
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
+  adminFetch: vi.fn(async (path: string) => {
+    if (path.includes("/operations")) {
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response("{}", { status: 404 });
+  }),
   checkAdminSession: vi.fn(async () => false),
   createKnowledgeBase: vi.fn(),
   deleteKnowledgeBase: vi.fn(),
   deleteKnowledgeBaseFile: vi.fn(async () => ({
     deleted: true,
     publicationQueued: true
+  })),
+  deleteKnowledgeBaseSourceDirectory: vi.fn(async () => ({
+    accepted: true,
+    operationId: "operation-delete-handbook",
+    directoryId: "source-directory-handbook",
+    affectedDirectoryCount: 1,
+    affectedFileCount: 2
   })),
   deleteKnowledgeBaseSourceFileTasks: vi.fn(async () => ({
     results: [
@@ -58,11 +75,20 @@ vi.mock("../src/lib/admin-api", () => ({
         entryType: "file",
         bundleFileId: "file-001",
         sourceFileId: "source-001",
+        resourceRevision: 2,
         fileKind: "page",
         deletable: true
       }
     ],
     nextCursor: null
+  })),
+  fetchKnowledgeBase: vi.fn(async () => null),
+  fetchSourceFile: vi.fn(async () => ({
+    id: "source-001",
+    name: "intro.md",
+    relativePath: "intro.md",
+    resourceRevision: 2,
+    createdAt: "2026-06-14T00:00:00.000Z"
   })),
   searchKnowledgeBaseFileTree: vi.fn(async () => ({
     items: [
@@ -118,11 +144,11 @@ vi.mock("../src/lib/admin-api", () => ({
     }
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => ({
-    index: "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=index.md",
+    index: "https://kb.example.com/openapi/v2/knowledge-bases/kb-docs/files/content?path=index.md",
     search:
-      "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=_index%2Fsearch.json",
+      "https://kb.example.com/openapi/v2/knowledge-bases/kb-docs/files/content?path=_index%2Fsearch.json",
     links:
-      "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=_index%2Flinks.json"
+      "https://kb.example.com/openapi/v2/knowledge-bases/kb-docs/files/content?path=_index%2Flinks.json"
   })),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
@@ -142,7 +168,8 @@ vi.mock("../src/lib/admin-api", () => ({
     items: [
       {
         id: "source-001",
-        originalName: "ff8081819c46fdc3019cd19068731f64-intro-e656df554f9e.md",
+        name: "intro.md",
+        relativePath: "intro.md",
         processingStatus: "running",
         processingStage: "metadata_resolution",
         processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -152,7 +179,8 @@ vi.mock("../src/lib/admin-api", () => ({
       },
       {
         id: "source-002",
-        originalName: "setup.md",
+        name: "setup.md",
+        relativePath: "setup.md",
         processingStatus: "queued",
         processingStage: "upload_storage",
         processingStartedAt: "2026-06-14T00:00:01.000Z",
@@ -195,6 +223,7 @@ vi.mock("../src/lib/admin-api", () => ({
 describe("Admin knowledge base detail", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/");
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 1024
@@ -252,6 +281,19 @@ describe("Admin knowledge base detail", () => {
     });
     expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
     expect(screen.getByText(/type: guide/)).toBeTruthy();
+  });
+
+  it("exposes source-file editing actions from the file tree menu", async () => {
+    await openDetail();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "File actions: intro.md" }), {
+      button: 0,
+      ctrlKey: false
+    });
+
+    expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Move" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Replace content" })).toBeTruthy();
   });
 
   it("searches the file tree and renders ancestor folders", async () => {
@@ -500,7 +542,8 @@ describe("Admin knowledge base detail", () => {
       items: [
         {
           id: "source-001",
-          originalName: "intro.md",
+          name: "intro.md",
+          relativePath: "intro.md",
           processingStatus: "completed",
           processingStage: "release_activation",
           processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -537,7 +580,8 @@ describe("Admin knowledge base detail", () => {
       items: [
         {
           id: "source-failed",
-          originalName: "broken.md",
+          name: "broken.md",
+          relativePath: "broken.md",
           processingStatus: "failed",
           processingStage: "llm_suggestion",
           processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -566,7 +610,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -581,7 +626,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-002",
-            originalName: "setup.md",
+            name: "setup.md",
+            relativePath: "setup.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:11.000Z",
@@ -631,7 +677,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -650,7 +697,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -723,7 +771,7 @@ describe("Admin knowledge base detail", () => {
         knowledgeBaseId: "kb-docs"
       });
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "https://kb.example.com/openapi/v1/knowledge-bases/kb-docs/files/content?path=pages%2Fintro.md"
+        "https://kb.example.com/openapi/v2/knowledge-bases/kb-docs/files/content?path=pages%2Fintro.md"
       );
     });
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith(
@@ -782,7 +830,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "running",
             processingStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -797,7 +846,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-002",
-            originalName: "setup.md",
+            name: "setup.md",
+            relativePath: "setup.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-13T00:00:00.000Z",
@@ -812,7 +862,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "running",
             processingStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
@@ -853,7 +904,8 @@ describe("Admin knowledge base detail", () => {
         items: [
           {
             id: "source-001",
-            originalName: "intro.md",
+            name: "intro.md",
+            relativePath: "intro.md",
             processingStatus: "completed",
             processingStage: "release_activation",
             processingStartedAt: "2026-06-14T00:00:03.000Z",
@@ -920,6 +972,50 @@ describe("Admin knowledge base detail", () => {
 
     expect(await screen.findByRole("button", { name: "index.md" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "File actions: index.md" })).toBeNull();
+  });
+
+  it("deletes a source directory through its tree action", async () => {
+    vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
+      items: [
+        {
+          id: "tree-handbook",
+          name: "handbook",
+          logicalPath: "pages/handbook",
+          entryType: "directory",
+          bundleFileId: null,
+          sourceFileId: null,
+          fileKind: null,
+          childCount: 2,
+          sourceDirectoryId: "source-directory-handbook",
+          resourceRevision: 3,
+          descendantFileCount: 2,
+          deletable: true
+        }
+      ],
+      nextCursor: null
+    });
+
+    await openDetail();
+
+    fireEvent.pointerDown(
+      await screen.findByRole("button", { name: "Directory actions: handbook" }),
+      { button: 0, ctrlKey: false }
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete directory" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "Delete source directory" });
+    expect(within(dialog).getByText(/2 source files/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(deleteKnowledgeBaseSourceDirectory).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        sourceDirectoryId: "source-directory-handbook",
+        expectedResourceRevision: 3
+      });
+      expect(screen.getByText("Directory deletion accepted")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "handbook" })).toBeNull();
+    });
   });
 
   it("loads a directory page only when the directory is opened", async () => {

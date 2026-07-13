@@ -39,8 +39,9 @@ Recommended terminal commands:
 | Read metadata | `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}"` |
 | Read content by generated file ID | `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"` |
 | Read content by path | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"` |
-| Read graph by path | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=_graph/by-file/{fileId}.json"` |
+| Read graph by path | `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path={graphRef}"` |
 | Read related files | `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"` |
+| Expand graph | `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"` |
 | Search candidates | `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "limit=10"` |
 
 These URLs are the developer-provided read interface for the Agent.
@@ -94,8 +95,9 @@ Use them for request shapes, exploration rounds, stop conditions, citation style
 - Read metadata: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}"`
 - Read content by generated file ID: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/content"`
 - Read content by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=index.md"`
-- Read graph by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=_graph/by-file/{fileId}.json"`
+- Read graph by path: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path={graphRef}"`
 - Read related files: `curl -sS "$KNOWLEDGE_BASE_URL/files/{fileId}/related?limit=20"`
+- Expand graph: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
 - Search candidates: `curl -sS -G "$KNOWLEDGE_BASE_URL/search" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "limit=10"`
 
 ## Process
@@ -105,17 +107,18 @@ Use an exploration loop before answering:
 1. Read all files listed in Required Reading in full.
 2. Request `/files/content?path=index.md` for broad context.
 3. Request `/files/content?path=schema.md` when metadata fields are unclear.
-4. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
-5. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
-6. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
-7. Use `/search`, `/tree`, Markdown links, `/files/{fileId}/related`, or `_graph/by-file/{fileId}.json` as the next discovery action.
-8. Read useful candidates that can close the current evidence gap.
-9. Track visited `fileId` and `path` values to avoid repeated reads.
-10. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
-11. When `/search` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions`, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
-12. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
-13. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
-14. Cite file titles or paths in the final answer.
+4. Inspect `_index/*` or the file tree when the question needs generated index, link, or directory context.
+5. Derive an initial set of concise search phrases from the user question and visible knowledge-base context.
+6. Keep a short evidence plan with the evidence target, initial search phrases, known paths, expansion strategy, and stop condition.
+7. Alternate breadth and depth: discover candidates, read useful files, extract new terms or paths from what was read, then discover again.
+8. Use `/search`, `/tree`, Markdown links, `/files/{fileId}/related`, `/graph/expand`, or a returned `graphRef` as the next discovery action.
+9. Read useful candidates that can close the current evidence gap.
+10. Track visited `fileId` and `path` values to avoid repeated reads.
+11. After each file read, record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap`.
+12. When `/search` returns `no_candidates`, `index_unavailable`, or an empty candidate list, follow `nextActions`, shorten or broaden the phrase, inspect `index.md`, list the tree, or read graph context.
+13. Continue while new leads or remaining gaps can expand scope, add depth, identify comparison targets, find source evidence, surface exceptions, or clarify context.
+14. Stop only when the stop conditions in `references/exploration-workflow.md` are met.
+15. Cite file titles or paths in the final answer.
 
 ## Identifier Rules
 
@@ -155,9 +158,21 @@ Response: `fileId`, `path`, `title`, `content`, `metadata`
 
 ## Graph by file
 
-Command: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path=_graph/by-file/{fileId}.json"`
+Command: `curl -sS -G "$KNOWLEDGE_BASE_URL/files/content" --data-urlencode "path={graphRef}"`
+
+Use the `graphRef` returned by page metadata or search. Do not construct this path from a generated `fileId`.
 
 Response: related file records with `path`, `title`, `relationType`, `direction`, `weight`, and `reason`
+
+## Graph expansion
+
+Command by file: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "fileId={fileId}" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
+
+Command by query: `curl -sS -G "$KNOWLEDGE_BASE_URL/graph/expand" --data-urlencode "query=<agent-generated phrase>" --data-urlencode "depth=1" --data-urlencode "fanout=10"`
+
+Response: seed details, bounded relationship records, file paths, read actions, and `nextCursor`.
+
+Use graph expansion after a useful file, related record, graph record, or search candidate appears. Read returned Markdown files before using them as answer evidence.
 
 ## Related files
 
@@ -208,7 +223,7 @@ Use this loop before answering any substantive question.
 3. Derive initial search phrases when the question contains a concrete concept, title, product, date, status, version, owner, or named entity.
 4. Write the exploration plan.
 5. Start with a broad discovery action unless an exact path is already known.
-6. Use a discovery action to build a candidate set from search, tree, links, related files, or graph records.
+6. Use a discovery action to build a candidate set from search, tree, `_index/*`, links, related files, graph expansion, or graph records.
 7. Read useful candidates that can close the current gap, using logical `path` when present or `fileId` when no path is available.
 8. Extract new leads from the content, including titles, headings, terms, paths, links, graph records, and unresolved gaps.
 9. Record `discovery`, `read`, `new leads`, `evidence`, and `remaining gap` for the round.
@@ -233,9 +248,10 @@ Before writing the final answer, confirm that the loop ended because a stop cond
 
 - Use `index.md` for scope, available groups, and obvious paths.
 - Use `schema.md` when metadata fields or file types are unclear.
+- Use `_index/*` when generated index, link, tree, or manifest hints can narrow the next file read.
 - Use `/search` for concepts, titles, named entities, and terms from already-read files.
 - Use `/tree` when search is weak, unavailable, or folder exploration is useful.
-- Use graph files, related files, and Markdown links when they can close a remaining evidence gap.
+- Use `/graph/expand`, graph files, related files, and Markdown links when they can close a remaining evidence gap.
 
 ## Search and Read
 

@@ -1,5 +1,5 @@
 import type { SourceMetadata, SourceMetadataDefaults, SourceModelSuggestions } from "@focowiki/okf";
-import { applyPresentationSuggestions } from "@focowiki/okf";
+import { applyPresentationSuggestions, isLowInformationSharedGraphTerm } from "@focowiki/okf";
 
 export type SourceContentProfile = {
   summary: string;
@@ -10,6 +10,10 @@ export type SourceContentProfile = {
   entities: string[];
   explicitReferences: string[];
   relationshipHints: string[];
+  definitions: string[];
+  processHints: string[];
+  versionHints: string[];
+  evidencePhrases: string[];
   headingOutline: string[];
   language: "zh" | "en" | "mixed" | "unknown";
   sourceExcerpt: string;
@@ -18,6 +22,8 @@ export type SourceContentProfile = {
 };
 
 export const CONTENT_PROFILE_VERSION = "content-profile-v1";
+export const CONTENT_PROFILE_SOURCE_CHAR_LIMIT = 200_000;
+export const CONTENT_PROFILE_SOURCE_LINE_LIMIT = 5_000;
 
 const GENERATED_SECTION_TITLES = new Set([
   "related",
@@ -79,45 +85,64 @@ export function buildSourceContentProfile(input: {
   metadata: SourceMetadataDefaults;
   suggestions: SourceModelSuggestions | null;
 }): SourceContentProfile {
-  const sourceBody = stripGeneratedSections(input.body);
+  const sourceBody = stripGeneratedSections(limitProfileSourceBody(input.body));
   const plainText = markdownToText(sourceBody);
+  const narrativeText = markdownToText(removeMarkdownHeadings(sourceBody)) || plainText;
   const headingOutline = extractSourceHeadings(sourceBody);
   const titleTerms = extractTitleTerms(input.title);
   const headingTerms = headingOutline.flatMap(extractTitleTerms);
+  const titleConcepts = extractConceptTerms(input.title, true);
+  const headingConcepts = headingOutline.flatMap((heading) => extractConceptTerms(heading, true));
   const metadataTags = readStringArray(input.metadata.tags);
   const suggestionTags = readStringArray(input.suggestions?.tags);
   const suggestionKeywords = readStringArray(input.suggestions?.keywords);
   const effectiveMetadata = applyPresentationSuggestions(
     toResolvedProfileMetadata(input.metadata, input.title),
-    input.suggestions
+    input.suggestions,
+    { body: sourceBody }
   );
+  const sentences = extractSentences(removeMarkdownHeadings(sourceBody));
+  const definitions = extractDefinitionPhrases(sentences);
+  const processHints = extractProcessHints(sentences, headingOutline);
+  const versionHints = extractVersionHints(sentences, headingOutline);
   const metadataDescription = readString(effectiveMetadata.description);
-  const description = metadataDescription || firstSentence(plainText);
-  const quotedPhrases = extractQuotedPhrases(plainText);
+  const contentDescription = selectSubstantiveDescription(sentences, narrativeText);
+  const description = contentDescription || metadataDescription;
+  const quotedPhrases = extractQuotedPhrases(narrativeText);
+  const coreQuotedPhrases = quotedPhrases.filter(
+    (phrase) => !versionHints.some((hint) => normalizeTerm(hint).includes(normalizeTerm(phrase)))
+  );
+  const evidencePhrases = extractEvidencePhrases(sentences);
+  const contentHintPhrases = unique([
+    ...definitions,
+    ...processHints,
+    ...versionHints,
+    ...evidencePhrases
+  ]);
   const keywords = unique([
     ...titleTerms,
     ...headingTerms,
-    ...quotedPhrases.flatMap(extractTitleTerms),
-    ...extractLatinTerms(plainText),
-    ...extractCjkTerms(plainText),
+    ...coreQuotedPhrases.flatMap(extractTitleTerms),
+    ...contentHintPhrases.flatMap(extractTitleTerms),
+    ...extractLatinTerms(narrativeText),
+    ...extractCjkTerms(narrativeText),
     ...headingOutline.flatMap((heading) => [...extractLatinTerms(heading), ...extractTitleTerms(heading)]),
     ...suggestionKeywords.flatMap((keyword) => [...extractLatinTerms(keyword), ...extractCjkTerms(keyword)])
   ])
     .filter(isUsefulTerm)
     .slice(0, 80);
   const subjects = unique([
-    ...titleTerms,
-    ...headingTerms,
-    ...quotedPhrases.flatMap(extractTitleTerms)
+    ...titleConcepts,
+    ...headingConcepts,
+    ...coreQuotedPhrases.flatMap((phrase) => extractConceptTerms(phrase))
   ])
     .filter(isUsefulTerm)
     .slice(0, 24);
   const entities = unique([
-    ...titleTerms,
-    ...headingTerms,
-    ...quotedPhrases,
-    ...extractCapitalizedPhrases(plainText),
-    ...suggestionKeywords.flatMap(extractTitleTerms)
+    ...titleConcepts,
+    ...headingConcepts,
+    ...coreQuotedPhrases,
+    ...extractCapitalizedPhrases(narrativeText)
   ])
     .filter(isUsefulTerm)
     .slice(0, 40);
@@ -130,10 +155,9 @@ export function buildSourceContentProfile(input: {
     .slice(0, 40);
   const relationshipHints = unique([
     ...explicitReferences,
-    ...(input.suggestions?.related_links ?? []).flatMap((link) => [
-      readString(link.path),
-      readString(link.title)
-    ])
+    ...definitions,
+    ...processHints,
+    ...versionHints
   ])
     .filter((value) => value.length > 0)
     .slice(0, 40);
@@ -147,12 +171,30 @@ export function buildSourceContentProfile(input: {
     entities,
     explicitReferences,
     relationshipHints,
+    definitions,
+    processHints,
+    versionHints,
+    evidencePhrases,
     headingOutline,
     language: detectLanguage(plainText),
     sourceExcerpt: plainText.slice(0, 2_000),
     profileVersion: CONTENT_PROFILE_VERSION,
     profileSource: "deterministic"
   };
+}
+
+function limitProfileSourceBody(body: string): string {
+  const boundedChars =
+    body.length > CONTENT_PROFILE_SOURCE_CHAR_LIMIT
+      ? body.slice(0, CONTENT_PROFILE_SOURCE_CHAR_LIMIT)
+      : body;
+  const lines = boundedChars.split(/\r?\n/u);
+
+  if (lines.length <= CONTENT_PROFILE_SOURCE_LINE_LIMIT) {
+    return boundedChars;
+  }
+
+  return lines.slice(0, CONTENT_PROFILE_SOURCE_LINE_LIMIT).join("\n");
 }
 
 function toResolvedProfileMetadata(
@@ -207,9 +249,21 @@ export function extractSourceHeadings(body: string): string[] {
   ).slice(0, 50);
 }
 
+function removeMarkdownHeadings(body: string): string {
+  return body
+    .split(/\r?\n/u)
+    .filter((line) => !parseHeading(line))
+    .join("\n");
+}
+
 export function isUsefulTerm(value: string): boolean {
   const normalized = normalizeTerm(value);
-  return normalized.length >= 2 && !LOW_INFORMATION_TERMS.has(normalized);
+  return (
+    normalized.length >= 2 &&
+    !LOW_INFORMATION_TERMS.has(normalized) &&
+    !isLowInformationSharedGraphTerm(normalized) &&
+    !hasFormattingArtifactShape(normalized)
+  );
 }
 
 export function normalizeTerm(value: string): string {
@@ -245,9 +299,100 @@ function markdownToText(body: string): string {
     .trim();
 }
 
-function firstSentence(value: string): string {
-  const sentence = value.match(/^(.{12,240}?[。！？.!?])(\s|$)/u)?.[1] ?? "";
-  return sentence || value.slice(0, 240);
+function selectSubstantiveDescription(sentences: string[], fallback: string): string {
+  const substantive = sentences.find((sentence) => !isVersionContext(sentence));
+
+  return substantive || sentences[0] || fallback.slice(0, 240);
+}
+
+function extractSentences(value: string): string[] {
+  return unique(
+    value
+      .split(/\r?\n/u)
+      .filter((line) => !parseHeading(line))
+      .flatMap((line) => markdownToText(line).match(/[^。！？.!?]+[。！？.!?]?/gu) ?? [])
+      .map((sentence) => sentence.replace(/^[)\]】）]+\s*/u, "").trim())
+      .filter((sentence) => sentence.length >= 12)
+      .filter((sentence) => !isStructuralOutlineLine(sentence))
+  ).slice(0, 80);
+}
+
+function isStructuralOutlineLine(value: string): boolean {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+
+  if (/^(?:\u76ee\s*\u5f55|\u7b2c[\u4e00-\u9fa5\d]+[\u7ae0\u8282\u7f16\u5377\u7bc7\u90e8])(?:\s|$)/u.test(normalized)) {
+    return true;
+  }
+
+  return /^(?:table of contents|(?:chapter|section)\s+[a-z0-9]+(?:\s+.+)?)$/iu.test(normalized);
+}
+
+function extractDefinitionPhrases(sentences: string[]): string[] {
+  return sentences
+    .filter((sentence) =>
+      /\b(?:means|refers to|is defined as|are defined as|definition of)\b/iu.test(sentence) ||
+      /(?:\u662f\u6307|\u5b9a\u4e49\u4e3a|\u79f0\u4e3a)/u.test(sentence)
+    )
+    .map(truncatePhrase)
+    .slice(0, 12);
+}
+
+function extractProcessHints(sentences: string[], headings: string[]): string[] {
+  return unique([...headings, ...sentences])
+    .filter((value) =>
+      /\b(?:process|procedure|workflow|step|phase|before|after|approval|review|retry|fallback)\b/iu.test(value) ||
+      /(?:\u6d41\u7a0b|\u6b65\u9aa4|\u7a0b\u5e8f|\u9636\u6bb5|\u5ba1\u6279|\u590d\u6838|\u5904\u7406|\u91cd\u8bd5)/u.test(value)
+    )
+    .map(truncatePhrase)
+    .slice(0, 16);
+}
+
+function extractVersionHints(sentences: string[], headings: string[]): string[] {
+  return unique([...headings, ...sentences])
+    .filter(isVersionContext)
+    .map(truncateVersionHint)
+    .slice(0, 12);
+}
+
+function isVersionContext(value: string): boolean {
+  const normalized = value.trim();
+
+  return (
+    /\b(?:version\s*[a-z0-9]|changelog|deprecated|superseded|release\s*[a-z0-9]|updated\s+(?:in|on|at|under|by|from|to)|revised\s+(?:in|on|at|under|by|from|to)|effective\s+(?:from|on)|status\s*:)/iu.test(
+      normalized
+    ) ||
+    /(?:\u7248\u672c\s*[A-Za-z0-9]|\u66f4\u65b0(?:\u4e8e|\u65f6\u95f4|\u65e5\u671f|\u8bb0\u5f55|\u8bf4\u660e)|\u4fee\u8ba2(?:\u4e8e|\u65f6\u95f4|\u65e5\u671f|\u8bb0\u5f55|\u8bf4\u660e)|\u751f\u6548(?:\u4e8e|\u65f6\u95f4|\u65e5\u671f)|\u5931\u6548(?:\u4e8e|\u65f6\u95f4|\u65e5\u671f)|\u53d1\u5e03(?:\u4e8e|\u65f6\u95f4|\u65e5\u671f|\u8bb0\u5f55)|\u66ff\u4ee3(?:\u7248\u672c|\u6587\u4ef6))/u.test(normalized) ||
+    (/^[\s(\uff08\[]*\d{4}\s*\u5e74/u.test(normalized) &&
+      /(?:\u901a\u8fc7|\u6279\u51c6|\u516c\u5e03|\u53d1\u5e03|\u4fee\u8ba2|\u4fee\u6b63|\u751f\u6548)/u.test(normalized))
+  );
+}
+
+function truncateVersionHint(value: string): string {
+  const trimmed = value.trim();
+  const closingIndex = /^[\s(\uff08\[]/u.test(trimmed)
+    ? trimmed.search(/[)\uff09\]]/u)
+    : -1;
+
+  if (closingIndex >= 0) {
+    return trimmed.slice(0, closingIndex + 1).slice(0, 240);
+  }
+
+  return truncatePhrase(trimmed);
+}
+
+function extractEvidencePhrases(sentences: string[]): string[] {
+  return sentences
+    .filter(
+      (sentence) =>
+        !/^(?:related|citations|references)\b/iu.test(sentence) &&
+        !isVersionContext(sentence)
+    )
+    .map(truncatePhrase)
+    .slice(0, 8);
+}
+
+function truncatePhrase(value: string): string {
+  return value.trim().slice(0, 240);
 }
 
 function extractLatinTerms(value: string): string[] {
@@ -301,31 +446,52 @@ function segmentCjkWords(value: string): string[] {
     return value.length >= 3 && value.length <= 18 ? [value] : [];
   }
 
-  return Array.from(segmenter.segment(value), (segment) => segment.segment)
+  const cjkSegments = Array.from(segmenter.segment(value), (segment) => segment.segment)
     .map((segment) => segment.trim())
     .filter((segment) => /^[\p{Script=Han}]+$/u.test(segment))
-    .filter((segment) => segment.length > 0)
+    .filter((segment) => segment.length > 0);
+
+  if (cjkSegments.some((segment) => segment.length === 1)) {
+    return value.length >= 3 && value.length <= 18 ? [value] : [];
+  }
+
+  return cjkSegments
     .filter((segment) => isUsefulTerm(segment));
 }
 
 function extractTitleTerms(value: string): string[] {
-  const terms = [...extractLatinTerms(value), ...extractCjkTerms(value)];
-  const cjkChunks = value.match(/[\p{Script=Han}]{3,32}/gu) ?? [];
+  return [...extractLatinTerms(value), ...extractCjkTerms(value)].map(normalizeTerm);
+}
 
-  for (const chunk of cjkChunks) {
-    const scope = chunk.match(/^(.{2,8}?(?:省|市|县|区|州|盟|旗))/u)?.[1] ?? "";
+function extractConceptTerms(value: string, expandShortTitle = false): string[] {
+  const latinTerms = extractLatinTerms(value);
+  const cjkTerms = (value.match(/[\p{Script=Han}]{2,80}/gu) ?? []).flatMap((chunk) => {
+    const stripped = stripDocumentSuffix(chunk);
+    const expanded = expandShortTitle && chunk.length <= 30
+      ? adjacentConceptPairs(segmentCjkWords(stripped || chunk))
+      : [];
+    return unique([
+      chunk,
+      ...(stripped && stripped !== chunk ? [stripped] : []),
+      ...expanded
+    ]);
+  });
 
-    if (scope) {
-      terms.push(scope);
-      const core = stripDocumentSuffix(chunk.slice(scope.length));
+  return unique([...latinTerms, ...cjkTerms]).map(normalizeTerm).filter(isUsefulTerm);
+}
 
-      if (core.length >= 4 && core.length <= 18) {
-        terms.push(core);
-      }
+function adjacentConceptPairs(words: string[]): string[] {
+  const pairs: string[] = [];
+
+  for (let index = 0; index + 1 < words.length; index += 1) {
+    const pair = `${words[index]}${words[index + 1]}`;
+
+    if (pair.length >= 4 && pair.length <= 16 && isUsefulTerm(pair)) {
+      pairs.push(pair);
     }
   }
 
-  return terms.map(normalizeTerm);
+  return pairs;
 }
 
 function stripDocumentSuffix(value: string): string {
@@ -374,6 +540,10 @@ function extractCapitalizedPhrases(value: string): string[] {
   return Array.from(value.matchAll(/\b[A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,4}\b/gu), (match) =>
     match[0].trim()
   );
+}
+
+function hasFormattingArtifactShape(value: string): boolean {
+  return /^(?:mergeformat|hyperlink|pageref|ref|seq|toc|xe|tc)\d*$/iu.test(value);
 }
 
 function detectLanguage(value: string): SourceContentProfile["language"] {

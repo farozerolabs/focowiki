@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import {
   createBundleTreeCursorScope,
+  createBundleTreeSnapshotCursorScope,
   readTreeEntryTypeFilter
 } from "../tree-entry-filters.js";
 import { readTreePageLimit } from "./pagination.js";
@@ -14,6 +14,10 @@ import {
   writePageResponseCache
 } from "../page-response-cache.js";
 import { toAdminBundleTreeEntry } from "./serializers.js";
+import {
+  resolveReleaseSnapshotPage,
+  writeReleaseSnapshotCursor
+} from "./release-snapshot-pagination.js";
 
 export function registerAdminFileTreeRoutes(
   app: Hono,
@@ -62,20 +66,30 @@ export function registerAdminFileTreeRoutes(
       }
 
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = createBundleTreeCursorScope({
+      const paginationScope = createBundleTreeSnapshotCursorScope({
         knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
         parentPath,
         entryType,
         scopePrefix: "file-tree"
       });
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
+      const snapshot = await resolveReleaseSnapshotPage({
+        redis,
+        scope: paginationScope,
+        cursorToken,
+        activeReleaseId: knowledgeBase.activeReleaseId
+      });
 
-      if (cursorToken && !repositoryCursor) {
+      if (!snapshot) {
         return invalidPagination(context);
       }
+
+      const cacheScope = createBundleTreeCursorScope({
+        knowledgeBaseId: knowledgeBase.id,
+        releaseId: snapshot.releaseId,
+        parentPath,
+        entryType,
+        scopePrefix: "file-tree"
+      });
 
       const cacheId = createPageResponseCacheId({
         cursorToken,
@@ -87,9 +101,9 @@ export function registerAdminFileTreeRoutes(
         nextCursor: string | null;
       }>({
         redis,
-        scope: cursorScope,
+        scope: cacheScope,
         cacheId,
-        invalidationScopes: [`file-tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`]
+        invalidationScopes: [`file-tree:${knowledgeBase.id}:${snapshot.releaseId}`]
       });
 
       if (cachedResponse) {
@@ -98,16 +112,17 @@ export function registerAdminFileTreeRoutes(
 
       const page = await repositories.files.listBundleTreeEntries({
         knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
+        releaseId: snapshot.releaseId,
         parentPath,
         entryType,
         limit,
-        cursor: repositoryCursor
+        cursor: snapshot.repositoryCursor
       });
-      const nextCursor = await writeOpaqueCursor({
+      const nextCursor = await writeReleaseSnapshotCursor({
         redis,
-        scope: cursorScope,
-        cursor: page.nextCursor,
+        scope: paginationScope,
+        releaseId: snapshot.releaseId,
+        repositoryCursor: page.nextCursor,
         ttlSeconds: config.pagination.cursorTtlSeconds
       });
 
@@ -118,7 +133,7 @@ export function registerAdminFileTreeRoutes(
 
       await writePageResponseCache({
         redis,
-        scope: cursorScope,
+        scope: cacheScope,
         cacheId,
         value: responseBody
       });
@@ -126,26 +141,6 @@ export function registerAdminFileTreeRoutes(
       return context.json(responseBody);
     }
   );
-}
-
-async function writeOpaqueCursor(options: {
-  redis: RedisCoordinator;
-  scope: string;
-  cursor: string | null;
-  ttlSeconds: number;
-}): Promise<string | null> {
-  if (!options.cursor) {
-    return null;
-  }
-
-  const cursorId = `cursor-${randomUUID()}`;
-  await options.redis.setPaginationCursor(
-    options.scope,
-    cursorId,
-    options.cursor,
-    options.ttlSeconds
-  );
-  return cursorId;
 }
 
 function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {

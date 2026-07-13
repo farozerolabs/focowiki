@@ -13,6 +13,7 @@ const docsRoot = path.join(repoRoot, "docs");
 const vitePressConfigPath = path.join(docsRoot, ".vitepress", "config.ts");
 const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
+const localeCopyPath = path.join(docsRoot, ".vitepress", "openapi-locales.json");
 const httpMethods = new Set(["get", "post", "put", "patch", "delete"]);
 const locales = [
   {
@@ -76,15 +77,124 @@ async function main() {
   await validateGuideNavigation();
   await validateDeploymentNavigation();
   await validateGeneratedOpenApiContractVersion(openApiDocument);
+  await validateOpenApiLocaleCopy(openApiDocument);
   await validateOperationCoverage(openApiDocument);
   await validateOpenApiContractExamples(openApiDocument);
   await validateGeneratedOperationExamples(openApiDocument);
   await validateGeneratedOperationTables();
+  await validatePublicOpenApiCopy();
   await validateMarkdownLinks(markdownFiles);
   await validateLanguageStyle(markdownFiles);
   await validateSensitiveContent(markdownFiles);
   validateSafeContent("Developer OpenAPI contract", JSON.stringify(openApiDocument));
   console.log("Documentation validation passed.");
+}
+
+async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
+  const copies = readRecord(JSON.parse(await fs.readFile(localeCopyPath, "utf8")));
+  const operationIds = collectOperationIds(document);
+  const tags = new Set(
+    collectOperations(document).flatMap(({ operation }) =>
+      readArray(operation.tags).filter((tag): tag is string => typeof tag === "string")
+    )
+  );
+
+  for (const localeName of ["en-US", "zh-CN"]) {
+    const copy = readRecord(copies[localeName]);
+    const summaries = readRecord(copy.operationSummaries);
+    const descriptions = readRecord(copy.operationDescriptions);
+    const tagLabels = readRecord(copy.tagLabels);
+    const missingSummaries = [...operationIds].filter((operationId) => typeof summaries[operationId] !== "string");
+    const missingDescriptions = [...operationIds].filter((operationId) => typeof descriptions[operationId] !== "string");
+    const staleSummaries = Object.keys(summaries).filter((operationId) => !operationIds.has(operationId));
+    const staleDescriptions = Object.keys(descriptions).filter((operationId) => !operationIds.has(operationId));
+    const missingTags = [...tags].filter((tag) => typeof tagLabels[tag] !== "string");
+
+    if (
+      missingSummaries.length > 0 ||
+      missingDescriptions.length > 0 ||
+      staleSummaries.length > 0 ||
+      staleDescriptions.length > 0 ||
+      missingTags.length > 0
+    ) {
+      throw new Error(
+        [
+          `Incomplete ${localeName} OpenAPI copy.`,
+          missingSummaries.length > 0 ? `Missing summaries: ${missingSummaries.join(", ")}.` : "",
+          missingDescriptions.length > 0 ? `Missing descriptions: ${missingDescriptions.join(", ")}.` : "",
+          staleSummaries.length > 0 ? `Stale summaries: ${staleSummaries.join(", ")}.` : "",
+          staleDescriptions.length > 0 ? `Stale descriptions: ${staleDescriptions.join(", ")}.` : "",
+          missingTags.length > 0 ? `Missing tag labels: ${missingTags.join(", ")}.` : ""
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+    }
+  }
+}
+
+async function validatePublicOpenApiCopy() {
+  const deprecatedOperationIds = [
+    "uploadMarkdownFiles",
+    "deleteKnowledgeBaseSourceFileTasks",
+    "deleteFileById",
+    "deleteFileByPath"
+  ];
+  const forbiddenOpenApiSnippets = [
+    "docs.example.com",
+    "pnpm docs:generate-api",
+    "pages/遵义市城镇燃气安全管理条例.md",
+    "items[0].fileId",
+    "items[0].path"
+  ];
+
+  for (const locale of locales) {
+    const publicPages = [locale.openApiPage, ...locale.agentIntegrationPages];
+    for (const file of publicPages) {
+      const content = await fs.readFile(file, "utf8");
+      for (const operationId of deprecatedOperationIds) {
+        if (content.includes(operationId)) {
+          throw new Error(`Deprecated operationId ${operationId} remains in ${relative(file)}.`);
+        }
+      }
+    }
+
+    const overview = await fs.readFile(locale.openApiPage, "utf8");
+    for (const snippet of forbiddenOpenApiSnippets) {
+      if (overview.includes(snippet)) {
+        throw new Error(`Public OpenAPI overview contains forbidden snippet ${snippet} in ${relative(locale.openApiPage)}.`);
+      }
+    }
+
+    const operationFiles = (await listMarkdownFiles(locale.operationsDir)).filter(
+      (file) => path.basename(file) !== "index.md"
+    );
+    for (const file of operationFiles) {
+      const content = await fs.readFile(file, "utf8");
+      const forbiddenHeadings = locale.name === "Simplified Chinese"
+        ? ["## 错误响应示例", "## 流程连续性"]
+        : ["## Error Response Example", "## Workflow Continuity"];
+      for (const heading of forbiddenHeadings) {
+        if (content.includes(heading)) {
+          throw new Error(`Redundant section ${heading} remains in ${relative(file)}.`);
+        }
+      }
+      const pageHeading = content.match(/^# (.+)$/m)?.[1] ?? "";
+      if (locale.name === "Simplified Chinese" && pageHeading && !/[\u3400-\u9fff]/u.test(pageHeading)) {
+        throw new Error(`English operation heading remains in ${relative(file)}.`);
+      }
+      if (/^\| `[^`]+` .*\|\s*\|$/m.test(content)) {
+        throw new Error(`OpenAPI field description is empty in ${relative(file)}.`);
+      }
+    }
+    const retryPage = await fs.readFile(
+      path.join(locale.operationsDir, "retry-knowledge-base-source-file.md"),
+      "utf8"
+    );
+    if (!retryPage.includes("`QUEUE_BACKPRESSURE`")) {
+      throw new Error(`Retry operation does not document QUEUE_BACKPRESSURE in ${relative(locale.operationsDir)}.`);
+    }
+  }
 }
 
 async function validateGeneratedOpenApiContractVersion(document: OpenApiDocument) {
@@ -99,14 +209,14 @@ async function validateGeneratedOpenApiContractVersion(document: OpenApiDocument
   }
 
   const paths = readRecord(generated.paths);
-  const versionOperation = readRecord(readRecord(paths["/openapi/v1/version"]).get);
+  const versionOperation = readRecord(readRecord(paths["/openapi/v2/version"]).get);
   const versionResponse = readRecord(readRecord(versionOperation.responses)["200"]);
   const versionExample = readRecord(readJsonContentExample(versionResponse));
-  if (versionExample.version !== expectedVersion || versionExample.apiVersion !== "v1") {
+  if (versionExample.version !== expectedVersion || versionExample.apiVersion !== "v2") {
     throw new Error("Generated version response example does not match release metadata.");
   }
 
-  const contractOperation = readRecord(readRecord(paths["/openapi/v1/openapi.json"]).get);
+  const contractOperation = readRecord(readRecord(paths["/openapi/v2/openapi.json"]).get);
   const contractResponse = readRecord(readRecord(contractOperation.responses)["200"]);
   const contractExample = readRecord(readJsonContentExample(contractResponse));
   if (readRecord(contractExample.info).version !== expectedVersion) {
@@ -186,13 +296,19 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
     }
 
     for (const [status, response] of successResponses) {
-      const example = readJsonContentExample(readRecord(response));
-      if (!example) {
+      const responseRecord = readRecord(response);
+      const contentExample = readAnyContentExample(responseRecord);
+      if (contentExample.example === undefined) {
         throw new Error(`Missing ${status} success example for ${method.toUpperCase()} ${apiPath}.`);
       }
-      validateExampleShape(document, method, apiPath, status, readRecord(response), readRecord(example));
-      validateContractExampleContent(method, apiPath, example);
-      validateSafeContent(`${method.toUpperCase()} ${apiPath} ${status} example`, JSON.stringify(example));
+      if (contentExample.contentType === "application/json") {
+        validateExampleShape(document, method, apiPath, status, responseRecord, readRecord(contentExample.example));
+        validateContractExampleContent(method, apiPath, contentExample.example);
+      }
+      validateSafeContent(
+        `${method.toUpperCase()} ${apiPath} ${status} example`,
+        JSON.stringify(contentExample.example)
+      );
     }
 
     for (const status of ["401", "500"]) {
@@ -208,18 +324,20 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
 }
 
 function validateContractExampleContent(method: string, apiPath: string, example: unknown) {
-  if (method !== "get" || apiPath !== "/openapi/v1/openapi.json") {
+  if (method !== "get" || apiPath !== "/openapi/v2/openapi.json") {
     return;
   }
 
   const paths = readRecord(readRecord(example).paths);
-  if (!paths["/openapi/v1/knowledge-bases"]) {
+  if (!paths["/openapi/v2/knowledge-bases"]) {
     throw new Error("OpenAPI contract success example must include a representative non-empty paths object.");
   }
 }
 
 async function validateGeneratedOperationExamples(document: OpenApiDocument) {
-  const expected = new Set(collectOperations(document).map((item) => item.operationId));
+  const operations = collectOperations(document);
+  const expected = new Set(operations.map((item) => item.operationId));
+  const operationById = new Map(operations.map((item) => [item.operationId, item.operation]));
   for (const locale of locales) {
     const files = (await listMarkdownFiles(locale.operationsDir)).filter((file) => path.basename(file) !== "index.md");
     for (const file of files) {
@@ -229,8 +347,8 @@ async function validateGeneratedOperationExamples(document: OpenApiDocument) {
         continue;
       }
       const requiredSnippets = locale.name === "Simplified Chinese"
-        ? ["## 请求示例", "## 成功响应示例", "## 错误响应示例"]
-        : ["## Request Example", "## Success Response Example", "## Error Response Example"];
+        ? ["## 请求示例", "## 成功响应示例"]
+        : ["## Request Example", "## Success Response Example"];
       for (const snippet of requiredSnippets) {
         if (!content.includes(snippet)) {
           throw new Error(`Missing ${snippet} in ${relative(file)}.`);
@@ -239,8 +357,15 @@ async function validateGeneratedOperationExamples(document: OpenApiDocument) {
       if (!content.includes("curl ") || !content.includes("Authorization: Bearer <openapi-key>")) {
         throw new Error(`Missing copyable curl request example in ${relative(file)}.`);
       }
-      if (!content.includes('"requestId": "req_123"')) {
-        throw new Error(`Missing standard error example in ${relative(file)}.`);
+      const operation = readRecord(operationById.get(operationId));
+      for (const parameterValue of readArray(operation.parameters)) {
+        const parameter = readRecord(parameterValue);
+        if (parameter.in !== "header" || parameter.required !== true || typeof parameter.name !== "string") {
+          continue;
+        }
+        if (!content.includes(`-H \"${parameter.name}: `)) {
+          throw new Error(`Missing required ${parameter.name} header in ${relative(file)} curl example.`);
+        }
       }
     }
   }
@@ -490,6 +615,18 @@ function hasAnyContentExample(requestBody: Record<string, unknown>): boolean {
 function readJsonContentExample(response: Record<string, unknown>): unknown {
   const content = readRecord(response.content);
   return readRecord(content["application/json"]).example;
+}
+
+function readAnyContentExample(response: Record<string, unknown>): {
+  contentType: string | null;
+  example: unknown;
+} {
+  const content = readRecord(response.content);
+  for (const [contentType, media] of Object.entries(content)) {
+    const example = readRecord(media).example;
+    if (example !== undefined) return { contentType, example };
+  }
+  return { contentType: null, example: undefined };
 }
 
 function validateExampleShape(

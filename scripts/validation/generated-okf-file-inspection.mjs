@@ -5,11 +5,31 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { selectSingleAndBatchSamplesFromEnvironment } from "./lib/sample-selector.mjs";
 import { redactReportText } from "./lib/redaction.mjs";
+import { matchExistingSourceSamples } from "./lib/existing-source-samples.mjs";
+import { normalizeMarkdownLinkDestinations } from "./lib/markdown-body-comparison.mjs";
+import { uploadMarkdownFilesWithSession } from "./lib/upload-session-client.mjs";
+import {
+  isReservedOkfMarkdownPath,
+  requiresSourceBodyComparison
+} from "./lib/okf-file-contract.mjs";
+import {
+  readAdminSourceFileModelName,
+  readAdminSourceFileId,
+  readUploadSourceFileId
+} from "./lib/source-file-contract.mjs";
 
-const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-legal-llm-okf-e2e";
+const CHANGE_ID =
+  process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
+  "validate-clean-architecture-full-system";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "file-inspection-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "file-inspection-report.md");
+const exportDirectory = process.env.FOCOWIKI_VALIDATION_EXPORT_DIR?.trim()
+  ? path.resolve(process.env.FOCOWIKI_VALIDATION_EXPORT_DIR)
+  : null;
+const keepKnowledgeBase = process.env.FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE === "1";
+const existingKnowledgeBaseId =
+  process.env.FOCOWIKI_VALIDATION_EXISTING_KNOWLEDGE_BASE_ID?.trim() || null;
 const requireFromOkfPackage = createRequire(path.resolve("packages/okf/package.json"));
 const matter = requireFromOkfPackage("gray-matter");
 
@@ -25,29 +45,56 @@ const report = {
   knowledgeBaseId: null,
   sourceFileIds: [],
   releaseId: null,
-  modelName: process.env.MODEL_NAME?.trim() || null,
+  modelName: null,
   files: [],
   checks: [],
   failures: []
 };
 
 let cleanup = null;
+let cleanupPublicKey = null;
 let runError = null;
 
 try {
-  const samples = selectInspectionSamples();
+  let samples = selectInspectionSamples();
   report.sampleCount = samples.length;
   const admin = createJsonClient(readBaseUrl("ADMIN_API_PORT", "43000"));
   const developer = createJsonClient(readBaseUrl("PUBLIC_OPENAPI_PORT", "43200"));
   await loginAdmin(admin);
   const publicKey = await createPublicOpenApiKey(admin);
-  developer.headers.authorization = `Bearer ${publicKey}`;
-  const knowledgeBase = await createKnowledgeBase(admin);
+  developer.headers.authorization = `Bearer ${publicKey.rawKey}`;
+  cleanupPublicKey = () => deletePublicOpenApiKey(admin, publicKey.id);
+  const knowledgeBase = existingKnowledgeBaseId
+    ? { id: existingKnowledgeBaseId }
+    : await createKnowledgeBase(admin);
   report.knowledgeBaseId = knowledgeBase.id;
-  cleanup = () => deleteKnowledgeBase(admin, knowledgeBase.id);
-  const upload = await uploadMarkdownFiles(admin, knowledgeBase.id, samples);
-  report.sourceFileIds = upload.files.map((file) => file.id);
+  if (!existingKnowledgeBaseId) {
+    cleanup = () => deleteKnowledgeBase(admin, knowledgeBase.id);
+    const upload = await uploadMarkdownFiles(admin, knowledgeBase.id, samples);
+    report.sourceFileIds = upload.files.map(readUploadSourceFileId).filter(Boolean);
+  } else {
+    const existingFiles = await listSourceFiles(admin, knowledgeBase.id);
+    samples = matchExistingSourceSamples({
+      sourceDirectory: requiredEnv("FOCOWIKI_VALIDATION_MARKDOWN_DIR"),
+      existingFiles,
+      expectedCount: samples.length
+    }).map((sample) => ({
+      ...sample,
+      title: matter(fs.readFileSync(sample.filePath, "utf8")).data.title
+    }));
+    report.sourceFileIds = existingFiles.map(readAdminSourceFileId).filter(Boolean);
+    report.checks.push(
+      okCheck(
+        "existing-knowledge-base",
+        "A completed validation knowledge base was reused for content inspection."
+      )
+    );
+  }
+  if (report.sourceFileIds.length !== samples.length) {
+    throw new Error(`Expected ${samples.length} source file identities, got ${report.sourceFileIds.length}.`);
+  }
   const sourceFiles = await waitForSourceFilesCompleted(admin, knowledgeBase.id, report.sourceFileIds, readSourceFileTimeoutMs(samples.length));
+  report.modelName = listSourceFileModelNames(sourceFiles).join(", ") || null;
   assertSourceFiles(sourceFiles, samples);
   const bundleFiles = await waitForBundleFiles(admin, knowledgeBase.id, samples, readSourceFileTimeoutMs(samples.length));
   const release = await readLatestRelease(admin, knowledgeBase.id);
@@ -55,8 +102,18 @@ try {
   const contents = await readAllBundleContents(developer, knowledgeBase.id, bundleFiles);
   inspectBundleFiles(bundleFiles, contents, samples);
   await inspectDeveloperTree(developer, knowledgeBase.id, bundleFiles);
-  await cleanup();
-  cleanup = null;
+  if (!keepKnowledgeBase && cleanup) {
+    await cleanup();
+    cleanup = null;
+  } else {
+    cleanup = null;
+    report.checks.push(
+      okCheck(
+        "knowledge-base-retained",
+        "The validation knowledge base was retained for follow-up mutation checks."
+      )
+    );
+  }
   report.ok = true;
 } catch (error) {
   runError = error;
@@ -64,6 +121,9 @@ try {
 } finally {
   if (cleanup) {
     await cleanup().catch(() => undefined);
+  }
+  if (cleanupPublicKey) {
+    await cleanupPublicKey().catch(() => undefined);
   }
   report.finishedAt = new Date().toISOString();
   writeReports(report);
@@ -152,13 +212,23 @@ async function createPublicOpenApiKey(admin) {
     body: JSON.stringify({ name: `file-inspection-${Date.now()}` })
   });
   const rawKey = body?.oneTimeKey?.rawKey;
+  const keyId = body?.key?.id;
 
-  if (!rawKey) {
+  if (!rawKey || !keyId) {
     throw new Error("OpenAPI key creation did not return a one-time raw key.");
   }
 
   report.checks.push(okCheck("openapi-key", "Temporary Developer OpenAPI key was created."));
-  return rawKey;
+  return { id: keyId, rawKey };
+}
+
+async function deletePublicOpenApiKey(admin, keyId) {
+  await admin.json(`/admin/api/openapi-keys/${encodeURIComponent(keyId)}`, {
+    method: "DELETE",
+    headers: {
+      origin: process.env.ADMIN_PUBLIC_ORIGIN || "http://127.0.0.1:43100"
+    }
+  });
 }
 
 async function createKnowledgeBase(admin) {
@@ -193,26 +263,28 @@ async function deleteKnowledgeBase(admin, knowledgeBaseId) {
 }
 
 async function uploadMarkdownFiles(admin, knowledgeBaseId, samples) {
-  const formData = new FormData();
-
-  for (const sample of samples) {
-    const bytes = fs.readFileSync(sample.filePath);
-    formData.append("files", new File([bytes], sample.basename, { type: "text/markdown" }));
-  }
-
-  const body = await admin.json(`/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/uploads`, {
-    method: "POST",
-    headers: {
-      origin: process.env.ADMIN_PUBLIC_ORIGIN || "http://127.0.0.1:43100"
-    },
-    body: formData
+  const body = await uploadMarkdownFilesWithSession({
+    request: (pathname, options) => admin.json(pathname, {
+      method: options.method,
+      headers: {
+        origin: process.env.ADMIN_PUBLIC_ORIGIN || "http://127.0.0.1:43100",
+        ...(options.headers ?? {}),
+        ...(options.body ? { "content-type": "application/json" } : {})
+      },
+      body: options.formData ?? (options.body ? JSON.stringify(options.body) : undefined)
+    }),
+    routeBase: `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`,
+    files: samples.map((sample) => ({
+      relativePath: sample.relativePath ?? sample.basename,
+      bytes: fs.readFileSync(sample.filePath)
+    }))
   });
 
   if (!Array.isArray(body?.files) || body.files.length !== samples.length) {
     throw new Error("Upload response did not include accepted source files.");
   }
 
-  const missingIds = body.files.filter((file) => !file.id);
+  const missingIds = body.files.filter((file) => !readUploadSourceFileId(file));
   if (missingIds.length > 0) {
     throw new Error("Upload response included source files without id.");
   }
@@ -227,7 +299,10 @@ async function waitForSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds
 
   while (Date.now() - startedAt < timeoutMs) {
     const files = await listSourceFiles(admin, knowledgeBaseId);
-    const selected = files.filter((file) => expectedIds.has(file.id));
+    const selected = files.filter((file) => {
+      const sourceFileId = readAdminSourceFileId(file);
+      return sourceFileId ? expectedIds.has(sourceFileId) : false;
+    });
 
     if (
       selected.length === expectedIds.size &&
@@ -239,7 +314,7 @@ async function waitForSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds
 
     const failed = selected.find((file) => file.processingStatus === "failed");
     if (failed) {
-      throw new Error(`Source file processing failed: ${failed.originalName} (${failed.processingErrorCode ?? "unknown"})`);
+      throw new Error(`Source file processing failed: ${failed.relativePath} (${failed.processingErrorCode ?? "unknown"})`);
     }
 
     await sleep(1000);
@@ -268,21 +343,23 @@ async function listSourceFiles(admin, knowledgeBaseId) {
 }
 
 function assertSourceFiles(files, samples) {
-  const expectedNames = new Set(samples.map((sample) => sample.basename));
+  const expectedPaths = new Set(
+    samples.map((sample) => sample.relativePath ?? sample.basename)
+  );
 
-  if (files.length !== expectedNames.size) {
-    throw new Error(`Expected ${expectedNames.size} source files, got ${files.length}.`);
+  if (files.length !== expectedPaths.size) {
+    throw new Error(`Expected ${expectedPaths.size} source files, got ${files.length}.`);
   }
 
   for (const file of files) {
-    if (!expectedNames.has(file.originalName)) {
-      throw new Error(`Unexpected source file name: ${file.originalName}`);
+    if (!expectedPaths.has(file.relativePath)) {
+      throw new Error(`Unexpected source file path: ${file.relativePath}`);
     }
     if (file.processingStatus !== "completed") {
-      throw new Error(`Source file did not finish processing: ${file.originalName}`);
+      throw new Error(`Source file did not finish processing: ${file.relativePath}`);
     }
     if (file.modelInvocationStatus === "running") {
-      throw new Error(`Source file model invocation did not reach a terminal state: ${file.originalName}`);
+      throw new Error(`Source file model invocation did not reach a terminal state: ${file.relativePath}`);
     }
     if (file.modelInvocationStatus === "failed") {
       report.checks.push(
@@ -290,8 +367,9 @@ function assertSourceFiles(files, samples) {
           "source-file-model-fallback",
           "Model invocation failed but source-file processing completed with deterministic fallback.",
           {
-            sourceFileId: file.id,
-            originalName: file.originalName,
+            sourceFileId: readAdminSourceFileId(file),
+            name: file.relativePath,
+            relativePath: file.relativePath,
             modelInvocationErrorCode: file.modelInvocationErrorCode ?? null
           }
         )
@@ -300,6 +378,10 @@ function assertSourceFiles(files, samples) {
   }
 
   report.checks.push(okCheck("source-files", "Every uploaded source file finished processing with preserved original names."));
+}
+
+function listSourceFileModelNames(files) {
+  return [...new Set(files.map(readAdminSourceFileModelName).filter(Boolean))].sort();
 }
 
 async function readLatestRelease(admin, knowledgeBaseId) {
@@ -316,7 +398,7 @@ async function readLatestRelease(admin, knowledgeBaseId) {
 
 async function waitForBundleFiles(admin, knowledgeBaseId, samples, timeoutMs) {
   const startedAt = Date.now();
-  const expectedPaths = new Set(samples.map((sample) => `pages/${sample.basename}`));
+  const expectedPaths = new Set(samples.map(pagePathForSample));
 
   while (Date.now() - startedAt < timeoutMs) {
     const files = await listBundleFiles(admin, knowledgeBaseId, { recordCheck: false });
@@ -357,27 +439,60 @@ async function listBundleFiles(admin, knowledgeBaseId, options = {}) {
 
 async function readAllBundleContents(developer, knowledgeBaseId, bundleFiles) {
   const contents = new Map();
+  const concurrency = readBoundedIntegerEnvironment(
+    "FOCOWIKI_VALIDATION_CONTENT_READ_CONCURRENCY",
+    4,
+    1,
+    8
+  );
+  let nextIndex = 0;
 
-  for (const file of bundleFiles) {
-    const byId = await developer.json(
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(file.id)}/content`
-    );
-    const byPath = await developer.json(
-      `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/content?path=${encodeURIComponent(file.logicalPath)}`
-    );
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, bundleFiles.length) }, async () => {
+      while (nextIndex < bundleFiles.length) {
+        const file = bundleFiles[nextIndex++];
+        const byId = await developer.json(
+          `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(file.id)}/content`
+        );
+        const byPath = await developer.json(
+          `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/content?path=${encodeURIComponent(file.logicalPath)}`
+        );
 
-    if (byId.content !== byPath.content) {
-      throw new Error(`File content mismatch between id and path reads: ${file.logicalPath}`);
-    }
-    if (byId.file?.fileId !== file.id || byPath.file?.fileId !== file.id) {
-      throw new Error(`File identity mismatch between Admin and Developer OpenAPI: ${file.logicalPath}`);
-    }
+        if (byId.content !== byPath.content) {
+          throw new Error(`File content mismatch between id and path reads: ${file.logicalPath}`);
+        }
+        if (byId.file?.fileId !== file.id || byPath.file?.fileId !== file.id) {
+          throw new Error(`File identity mismatch between Admin and Developer OpenAPI: ${file.logicalPath}`);
+        }
 
-    contents.set(file.logicalPath, byId.content);
-  }
+        contents.set(file.logicalPath, byId.content);
+        exportGeneratedContent(file.logicalPath, byId.content);
+      }
+    })
+  );
 
   report.checks.push(okCheck("content-read", "Every generated file was readable by id and logical path."));
   return contents;
+}
+
+function exportGeneratedContent(logicalPath, content) {
+  if (!exportDirectory) return;
+  const target = path.resolve(exportDirectory, logicalPath);
+  if (target !== exportDirectory && !target.startsWith(`${exportDirectory}${path.sep}`)) {
+    throw new Error(`Generated export path escaped its target directory: ${logicalPath}`);
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+}
+
+function readBoundedIntegerEnvironment(name, fallback, minimum, maximum) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
 }
 
 function inspectBundleFiles(bundleFiles, contents, samples) {
@@ -407,7 +522,7 @@ function buildExpectedPaths(samples) {
     "_index/search.json",
     "index.md",
     "log.md",
-    ...samples.map((sample) => `pages/${sample.basename}`).sort((left, right) => left.localeCompare(right)),
+    ...samples.map(pagePathForSample).sort((left, right) => left.localeCompare(right)),
     "schema.md"
   ];
 }
@@ -459,11 +574,20 @@ function inspectJsonlFile(file, content) {
 function inspectMarkdownFile(file, content, samples) {
   const parsed = matter(content);
 
-  if (file.logicalPath === "index.md" || file.logicalPath === "log.md") {
-    if (Object.keys(parsed.data).length > 0) {
-      throw new Error(`Reserved Markdown file must not have frontmatter: ${file.logicalPath}`);
+  if (isReservedOkfMarkdownPath(file.logicalPath)) {
+    const rootIndexKeys = file.logicalPath === "index.md" ? Object.keys(parsed.data) : [];
+    const hasValidRootVersion =
+      rootIndexKeys.length === 1 &&
+      rootIndexKeys[0] === "okf_version" &&
+      parsed.data.okf_version === "0.1";
+
+    if (
+      (file.logicalPath === "index.md" && !hasValidRootVersion) ||
+      (file.logicalPath !== "index.md" && Object.keys(parsed.data).length > 0)
+    ) {
+      throw new Error(`Reserved Markdown file has invalid frontmatter: ${file.logicalPath}`);
     }
-    if (!content.startsWith("# ")) {
+    if (!parsed.content.startsWith("# ")) {
       throw new Error(`Reserved Markdown file must start with a heading: ${file.logicalPath}`);
     }
     return;
@@ -484,7 +608,21 @@ function inspectMarkdownFile(file, content, samples) {
     return;
   }
 
-  const sample = samples.find((candidate) => `pages/${candidate.basename}` === file.logicalPath);
+  if (file.fileKind === "directory_index_page" || file.fileKind === "directory_index_map") {
+    if (!parsed.content.startsWith("# ")) {
+      throw new Error(`Directory navigation file must start with a heading: ${file.logicalPath}`);
+    }
+    return;
+  }
+
+  if (!requiresSourceBodyComparison(file)) {
+    if (!parsed.content.startsWith("# ")) {
+      throw new Error(`Generated Markdown concept must start with a heading: ${file.logicalPath}`);
+    }
+    return;
+  }
+
+  const sample = samples.find((candidate) => pagePathForSample(candidate) === file.logicalPath);
 
   if (!sample) {
     throw new Error(`Generated page path does not match any uploaded original filename: ${file.logicalPath}`);
@@ -507,15 +645,25 @@ function inspectMarkdownFile(file, content, samples) {
   }
 }
 
+function pagePathForSample(sample) {
+  return `pages/${sample.relativePath ?? sample.basename}`;
+}
+
 function assertSourceBodyPreserved(filePath, sourceContent, generatedContent) {
   const prepared = prepareSourceBodyForComparison(sourceContent);
+  const generated = prepareSourceBodyForComparison(generatedContent);
+
+  if (generated !== prepared) {
+    throw new Error(`Generated page body does not exactly match its source Markdown: ${filePath}`);
+  }
+
   const snippets = selectBodySnippets(prepared);
 
   if (snippets.length === 0) {
     throw new Error(`Source body did not provide comparable snippets: ${filePath}`);
   }
 
-  const missing = snippets.filter((snippet) => !generatedContent.includes(snippet));
+  const missing = snippets.filter((snippet) => !generated.includes(snippet));
 
   if (missing.length > 0) {
     throw new Error(`Generated page dropped source body snippets in ${filePath}: ${missing.slice(0, 2).join(" | ")}`);
@@ -536,7 +684,7 @@ function prepareSourceBodyForComparison(sourceContent) {
     lines = lines.slice(0, relatedStart);
   }
 
-  return lines.join("\n").trimEnd();
+  return normalizeMarkdownLinkDestinations(lines.join("\n").trim());
 }
 
 function selectBodySnippets(content) {
@@ -597,6 +745,21 @@ function assertMetadataPreserved(filePath, source, generated) {
 
     const generatedValue = generated[field];
 
+    if (
+      field === "description" &&
+      typeof value === "string" &&
+      isLowInformationDescription(value, source?.title, filePath)
+    ) {
+      if (
+        typeof generatedValue !== "string" ||
+        generatedValue.trim().length === 0 ||
+        isLowInformationDescription(generatedValue, generated?.title, filePath)
+      ) {
+        throw new Error(`Generated metadata kept a low-information description in ${filePath}.`);
+      }
+      continue;
+    }
+
     if (Array.isArray(value)) {
       const generatedItems = Array.isArray(generatedValue) ? generatedValue : [];
       const missingItems = value.filter((item) => !generatedItems.includes(item));
@@ -611,6 +774,21 @@ function assertMetadataPreserved(filePath, source, generated) {
       throw new Error(`Generated metadata changed source ${field} in ${filePath}.`);
     }
   }
+}
+
+function isLowInformationDescription(description, title, filePath) {
+  const normalizedDescription = normalizePresentationText(description);
+  const fileName = filePath.split("/").at(-1)?.replace(/\.md$/iu, "") ?? "";
+  return normalizedDescription.length === 0 || [title, fileName]
+    .map(normalizePresentationText)
+    .filter(Boolean)
+    .includes(normalizedDescription);
+}
+
+function normalizePresentationText(value) {
+  return typeof value === "string"
+    ? value.normalize("NFKC").replace(/\s+/gu, " ").trim().replace(/[.!?。！？]+$/gu, "").trim().toLowerCase()
+    : "";
 }
 
 function isComparableMetadataValue(value) {
@@ -680,7 +858,7 @@ async function inspectDeveloperTree(developer, knowledgeBaseId, bundleFiles) {
       }
 
       const page = await developer.json(
-        `/openapi/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?${params.toString()}`
+        `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?${params.toString()}`
       );
 
       for (const item of page.items ?? []) {

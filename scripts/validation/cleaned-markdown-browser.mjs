@@ -3,9 +3,12 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
 import { selectSingleAndBatchSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
+import { resolveUploadResponseTimeoutMs } from "./lib/browser-timeouts.mjs";
 import { redactReportText } from "./lib/redaction.mjs";
 
-const CHANGE_ID = process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() || "validate-real-legal-full-flow";
+const CHANGE_ID =
+  process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
+  "validate-clean-architecture-full-system";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
@@ -58,11 +61,9 @@ const report = {
   scannedCandidateProfiles: sampleSelection.scannedCandidateProfiles ?? null,
   sampleCoverageWarnings: sampleSelection.coverageWarnings ?? [],
   commandsRun: [
-    readBooleanEnv(process.env.FOCOWIKI_VALIDATION_REQUIRE_MODEL)
-      ? "pnpm validate:legal-llm:browser"
-      : sampleSelection.profile === "large-scale"
-      ? "pnpm validate:real-legal:large:browser"
-      : "pnpm validate:real-legal:browser"
+    `${readBooleanEnv(process.env.FOCOWIKI_VALIDATION_REQUIRE_MODEL) ? "FOCOWIKI_VALIDATION_REQUIRE_MODEL=true " : ""}node scripts/validation/cleaned-markdown-browser.mjs ${
+      sampleSelection.profile === "large-scale" ? "large-browser" : "browser"
+    }`
   ],
   testsRun: [
     "Admin UI browser flow",
@@ -150,9 +151,8 @@ try {
   });
 
   const firstSampleName = singleSample.basename;
-  const secondSampleName = batchSamples[0]?.basename;
 
-  if (!firstSampleName || !secondSampleName) {
+  if (!firstSampleName || batchSamples.length === 0) {
     throw new Error("No selected sample basename was available for browser preview.");
   }
 
@@ -213,7 +213,7 @@ try {
   await deleteFileDialog.getByRole("button", { name: "Delete" }).click();
   await deleteFileDialog.waitFor({ state: "detached", timeout: 30_000 });
   await page.getByText("File processing").first().waitFor({ timeout: 30_000 });
-  await expectButtonDetached(page, secondSampleName, taskTimeoutMs);
+  await expectButtonDetached(page, batchPreview.sample.basename, taskTimeoutMs);
   await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));
 
@@ -321,17 +321,29 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
       (response) =>
         response.request().method() === "POST" &&
         response.url().includes("/admin/api/knowledge-bases/") &&
-        response.url().includes("/uploads") &&
+        response.url().includes("/upload-sessions/") &&
+        response.url().includes("/finalize") &&
         response.status() === 202,
-      { timeout: uploadResponseTimeoutMs }
+      {
+        timeout: resolveUploadResponseTimeoutMs({
+          sampleCount: samples.length,
+          configuredTimeoutMs: uploadResponseTimeoutMs,
+          taskTimeoutMs
+        })
+      }
     ),
     uploadDialog.getByRole("button", { name: /^Upload$/ }).click()
   ]);
-  const uploadBody = await uploadResponse.json();
   const knowledgeBaseId = extractKnowledgeBaseIdFromAdminUrl(uploadResponse.url());
+  const sessionUrl = uploadResponse.url().replace(/\/finalize(?:\?.*)?$/u, "");
+  const sessionResponse = await page.request.get(sessionUrl);
+  if (!sessionResponse.ok()) {
+    throw new Error(`Upload session read failed with HTTP ${sessionResponse.status()}.`);
+  }
+  const uploadBody = await sessionResponse.json();
   await uploadDialog.waitFor({ state: "detached", timeout: 30_000 });
-  const sourceFileIds = Array.isArray(uploadBody?.files)
-    ? uploadBody.files.map((file) => file.id ?? file.fileId).filter(Boolean)
+  const sourceFileIds = Array.isArray(uploadBody?.entries?.items)
+    ? uploadBody.entries.items.map((entry) => entry.sourceFileId).filter(Boolean)
     : [];
 
   if (sourceFileIds.length !== samples.length) {
@@ -461,14 +473,16 @@ async function validateRuntimeSettingsPage(page) {
   await page.getByRole("heading", { name: "Settings" }).waitFor();
   await page.getByRole("tab", { name: "Upload and generation" }).click();
   await page.locator("#upload-generation-maxBytes").waitFor();
-  await page.getByText("Maximum total bytes accepted by one upload request.", { exact: false }).waitFor();
+  await page.getByText("Maximum bytes accepted for one Markdown source file.", { exact: false }).waitFor();
 
   const requiredFields = [
     "upload-generation-maxBytes",
-    "upload-generation-maxFiles",
     "upload-generation-generationBatchSize",
     "upload-generation-fileProcessingConcurrency",
-    "upload-generation-storageConcurrency"
+    "upload-generation-sessionTtlSeconds",
+    "upload-generation-manifestPageSize",
+    "upload-generation-contentBatchMaxFiles",
+    "upload-generation-contentBatchMaxBytes"
   ];
 
   for (const fieldId of requiredFields) {
@@ -529,7 +543,7 @@ async function refreshSourceFilePage(page) {
 }
 
 function extractKnowledgeBaseIdFromAdminUrl(url) {
-  const match = url.match(/\/admin\/api\/knowledge-bases\/([^/]+)\/uploads(?:\?|$)/);
+  const match = url.match(/\/admin\/api\/knowledge-bases\/([^/]+)\/upload-sessions\//);
 
   if (!match?.[1]) {
     throw new Error("Could not read knowledge base id from upload response URL.");
@@ -773,7 +787,7 @@ async function copySelectedFileUrl(page) {
   await copyFileButton.click();
   const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
 
-  if (!clipboardText.includes("/openapi/v1/knowledge-bases/") || clipboardText.includes("S3_")) {
+  if (!clipboardText.includes("/openapi/v2/knowledge-bases/") || clipboardText.includes("S3_")) {
     throw new Error("Copied public URL does not look like a Developer OpenAPI file URL.");
   }
 

@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "./client.js";
 
-export type WorkerJobKind = "source_file_processing" | "publication" | "hard_delete";
+export type WorkerJobKind =
+  | "upload_session_finalization"
+  | "source_file_processing"
+  | "resource_operation"
+  | "publication"
+  | "hard_delete"
+  | "generated_output_reset";
 export type WorkerJobStatus =
   | "queued"
   | "running"
@@ -70,16 +76,30 @@ export type WorkerJobRepository = {
     runAfter: string;
     maxAttempts: number;
   }) => Promise<WorkerJobRecord>;
+  enqueueUploadSessionFinalizationJob?: (input: {
+    knowledgeBaseId: string;
+    sessionId: string;
+    runAfter: string;
+    maxAttempts: number;
+  }) => Promise<WorkerJobRecord>;
   enqueuePublicationJob: (input: {
     knowledgeBaseId: string;
     reason: string;
     runAfter: string;
     maxAttempts: number;
   }) => Promise<WorkerJobRecord>;
+  enqueueResourceOperationJob?: (input: {
+    knowledgeBaseId: string;
+    operationId: string;
+    runAfter: string;
+    maxAttempts: number;
+  }) => Promise<WorkerJobRecord>;
   enqueueHardDeleteJob?: (input: {
     knowledgeBaseId: string;
-    targetKind: "source_file" | "knowledge_base";
+    targetKind: "source_file" | "source_directory" | "knowledge_base";
     sourceFileId?: string | null;
+    sourceDirectoryId?: string | null;
+    deletionIntentId?: string | null;
     reason: string;
     runAfter: string;
     maxAttempts: number;
@@ -114,6 +134,13 @@ export type WorkerJobRepository = {
   cancelQueuedSourceFileJobs?: (input: {
     knowledgeBaseId: string;
     sourceFileIds: string[];
+    cancelledAt: string;
+    errorCode: string;
+    errorMessage: string;
+  }) => Promise<string[]>;
+  cancelQueuedSourceDirectoryJobs?: (input: {
+    knowledgeBaseId: string;
+    deletionIntentId: string;
     cancelledAt: string;
     errorCode: string;
     errorMessage: string;
@@ -266,7 +293,125 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       `;
       return mapWorkerJobRow(requireWorkerJobRow(existing));
     },
+    async enqueueUploadSessionFinalizationJob(input) {
+      const payload = { sessionId: input.sessionId };
+      const rows = await sql<WorkerJobRow[]>`
+        INSERT INTO focowiki.worker_jobs (
+          id, kind, knowledge_base_id, source_file_id, payload_json, run_after, max_attempts
+        )
+        SELECT ${createWorkerJobId()}, 'upload_session_finalization',
+               ${input.knowledgeBaseId}, NULL, ${sql.json(payload as never)},
+               ${input.runAfter}, ${input.maxAttempts}
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM focowiki.worker_jobs
+          WHERE kind = 'upload_session_finalization'
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND payload_json->>'sessionId' = ${input.sessionId}
+            AND status IN ('queued', 'running')
+        )
+        RETURNING *
+      `;
+      if (rows[0]) return mapWorkerJobRow(rows[0]);
+      const existing = await sql<WorkerJobRow[]>`
+        SELECT *
+        FROM focowiki.worker_jobs
+        WHERE kind = 'upload_session_finalization'
+          AND knowledge_base_id = ${input.knowledgeBaseId}
+          AND payload_json->>'sessionId' = ${input.sessionId}
+          AND status IN ('queued', 'running')
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `;
+      return mapWorkerJobRow(requireWorkerJobRow(existing));
+    },
     async enqueuePublicationJob(input) {
+      const requiresEmptyPublication =
+        input.reason === "deletion" || input.reason === "metadata";
+
+      if (requiresEmptyPublication) {
+        const promoted = await sql<WorkerJobRow[]>`
+          UPDATE focowiki.worker_jobs
+          SET payload_json = CASE
+                WHEN payload_json->>'reason' = 'deletion' THEN payload_json
+                ELSE ${sql.json({ reason: input.reason } as never)}
+              END,
+              run_after = LEAST(run_after, ${input.runAfter}),
+              updated_at = now()
+          WHERE kind = 'publication'
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND status = 'queued'
+          RETURNING *
+        `;
+        if (promoted[0]) return mapWorkerJobRow(promoted[0]);
+
+        const runningRequired = await sql<WorkerJobRow[]>`
+          SELECT *
+          FROM focowiki.worker_jobs
+          WHERE kind = 'publication'
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND status = 'running'
+            AND payload_json->>'reason' IN ('deletion', 'metadata')
+          ORDER BY created_at ASC, id ASC
+          LIMIT 1
+        `;
+        if (runningRequired[0]) return mapWorkerJobRow(runningRequired[0]);
+
+        const queuedRequired = await sql<WorkerJobRow[]>`
+          INSERT INTO focowiki.worker_jobs (
+            id,
+            kind,
+            knowledge_base_id,
+            source_file_id,
+            payload_json,
+            run_after,
+            max_attempts
+          )
+          SELECT
+            ${createWorkerJobId()},
+            'publication',
+            ${input.knowledgeBaseId},
+            NULL,
+            ${sql.json({ reason: input.reason } as never)},
+            ${input.runAfter},
+            ${input.maxAttempts}
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM focowiki.worker_jobs
+            WHERE kind = 'publication'
+              AND knowledge_base_id = ${input.knowledgeBaseId}
+              AND status = 'queued'
+          )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.worker_jobs
+              WHERE kind = 'publication'
+                AND knowledge_base_id = ${input.knowledgeBaseId}
+                AND status = 'running'
+                AND payload_json->>'reason' IN ('deletion', 'metadata')
+            )
+          RETURNING *
+        `;
+        if (queuedRequired[0]) return mapWorkerJobRow(queuedRequired[0]);
+
+        const existingRequired = await sql<WorkerJobRow[]>`
+          SELECT *
+          FROM focowiki.worker_jobs
+          WHERE kind = 'publication'
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND (
+              status = 'queued'
+              OR (
+                status = 'running'
+                AND payload_json->>'reason' IN ('deletion', 'metadata')
+              )
+            )
+          ORDER BY status ASC, run_after ASC, created_at ASC, id ASC
+          LIMIT 1
+        `;
+        return mapWorkerJobRow(requireWorkerJobRow(existingRequired));
+      }
+
       const rows = await sql<WorkerJobRow[]>`
         INSERT INTO focowiki.worker_jobs (
           id,
@@ -310,11 +455,45 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       `;
       return mapWorkerJobRow(requireWorkerJobRow(existing));
     },
+    async enqueueResourceOperationJob(input) {
+      const payload = { operationId: input.operationId };
+      const rows = await sql<WorkerJobRow[]>`
+        INSERT INTO focowiki.worker_jobs (
+          id, kind, knowledge_base_id, source_file_id, payload_json, run_after, max_attempts
+        )
+        SELECT
+          ${createWorkerJobId()}, 'resource_operation', ${input.knowledgeBaseId}, NULL,
+          ${sql.json(payload as never)}, ${input.runAfter}, ${input.maxAttempts}
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM focowiki.worker_jobs
+          WHERE kind = 'resource_operation'
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND payload_json->>'operationId' = ${input.operationId}
+            AND status IN ('queued', 'running')
+        )
+        RETURNING *
+      `;
+      if (rows[0]) return mapWorkerJobRow(rows[0]);
+      const existing = await sql<WorkerJobRow[]>`
+        SELECT *
+        FROM focowiki.worker_jobs
+        WHERE kind = 'resource_operation'
+          AND knowledge_base_id = ${input.knowledgeBaseId}
+          AND payload_json->>'operationId' = ${input.operationId}
+          AND status IN ('queued', 'running')
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+      `;
+      return mapWorkerJobRow(requireWorkerJobRow(existing));
+    },
     async enqueueHardDeleteJob(input) {
       const payload = {
         targetKind: input.targetKind,
         reason: input.reason,
-        ...(input.sourceFileId ? { sourceFileId: input.sourceFileId } : {})
+        ...(input.sourceFileId ? { sourceFileId: input.sourceFileId } : {}),
+        ...(input.sourceDirectoryId ? { sourceDirectoryId: input.sourceDirectoryId } : {}),
+        ...(input.deletionIntentId ? { deletionIntentId: input.deletionIntentId } : {})
       };
       const rows = await sql<WorkerJobRow[]>`
         INSERT INTO focowiki.worker_jobs (
@@ -350,6 +529,11 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
                 AND payload_json->>'sourceFileId' = ${input.sourceFileId ?? ""}
                 AND ${input.targetKind} = 'source_file'
               )
+              OR (
+                payload_json->>'targetKind' = 'source_directory'
+                AND payload_json->>'deletionIntentId' = ${input.deletionIntentId ?? ""}
+                AND ${input.targetKind} = 'source_directory'
+              )
             )
         )
         RETURNING *
@@ -374,6 +558,11 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
               payload_json->>'targetKind' = 'source_file'
               AND payload_json->>'sourceFileId' = ${input.sourceFileId ?? ""}
               AND ${input.targetKind} = 'source_file'
+            )
+            OR (
+              payload_json->>'targetKind' = 'source_directory'
+              AND payload_json->>'deletionIntentId' = ${input.deletionIntentId ?? ""}
+              AND ${input.targetKind} = 'source_directory'
             )
           )
         ORDER BY run_after ASC, created_at ASC, id ASC
@@ -507,6 +696,31 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
         .map((row) => row.source_file_id)
         .filter((sourceFileId): sourceFileId is string => Boolean(sourceFileId));
     },
+    async cancelQueuedSourceDirectoryJobs(input) {
+      const rows = await sql<Array<{ source_file_id: string }>>`
+        UPDATE focowiki.worker_jobs job
+        SET status = 'cancelled',
+            locked_by = NULL,
+            locked_at = NULL,
+            heartbeat_at = NULL,
+            completed_at = GREATEST(${input.cancelledAt}, COALESCE(started_at, ${input.cancelledAt})),
+            failed_at = NULL,
+            last_error_code = ${input.errorCode},
+            last_error_message = ${input.errorMessage},
+            updated_at = now()
+        WHERE job.knowledge_base_id = ${input.knowledgeBaseId}
+          AND job.kind = 'source_file_processing'
+          AND job.status = 'queued'
+          AND job.source_file_id IN (
+            SELECT source.id
+            FROM focowiki.source_files source
+            WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+              AND source.deletion_intent_id = ${input.deletionIntentId}
+          )
+        RETURNING job.source_file_id
+      `;
+      return rows.map((row) => row.source_file_id).filter(Boolean);
+    },
     async cancelQueuedKnowledgeBaseJobs(input) {
       const excludedJobIds = input.excludedJobIds ?? [];
       const excludedFilter =
@@ -527,7 +741,7 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
           ${excludedFilter}
           AND status = 'queued'
           AND (
-            kind IN ('source_file_processing', 'publication')
+            kind IN ('upload_session_finalization', 'source_file_processing', 'resource_operation', 'publication', 'generated_output_reset')
             OR (
               kind = 'hard_delete'
               AND COALESCE(payload_json->>'targetKind', '') <> 'knowledge_base'

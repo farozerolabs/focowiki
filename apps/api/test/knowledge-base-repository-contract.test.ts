@@ -22,8 +22,15 @@ describe("knowledge base repository contract", () => {
     expect(section).toContain("like ${containsknowledgebaselikepattern");
     expect(section).toContain("escape ${");
     expect(section).toContain("knowledge_base.deleted_at is null");
-    expect(section).toContain("knowledge_base.created_at < ${cursorvalue.createdat}");
-    expect(section).toContain("knowledge_base.created_at = ${cursorvalue.createdat}");
+    expect(section).toContain(
+      "floor(extract(epoch from knowledge_base.created_at) * 1000000)::bigint::text as cursor_timestamp"
+    );
+    expect(section).toContain(
+      "knowledge_base.created_at < to_timestamp(${cursorvalue.createdat}::double precision / 1000000)"
+    );
+    expect(section).toContain(
+      "knowledge_base.created_at = to_timestamp(${cursorvalue.createdat}::double precision / 1000000)"
+    );
     expect(section).toContain("knowledge_base.id > ${cursorvalue.id}");
     expect(section).toContain("order by knowledge_base.created_at desc, knowledge_base.id asc");
     expect(section).toContain("limit ${limit + 1}");

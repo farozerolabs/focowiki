@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   PlusIcon,
   SettingsIcon,
   Trash2Icon,
@@ -38,6 +39,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import {
@@ -79,6 +81,11 @@ type AdminHomePageProps = {
     description: string;
   }) => Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure>;
   onDelete: (knowledgeBase: KnowledgeBase) => Promise<{ deleted: true } | ApiFailure>;
+  onUpdate: (input: {
+    knowledgeBase: KnowledgeBase;
+    name: string;
+    description: string;
+  }) => Promise<{ knowledgeBase: KnowledgeBase } | ApiFailure>;
   onCreatePublicOpenApiKey: (
     input: { name: string }
   ) => Promise<{ key: PublicOpenApiKey; oneTimeKey: OneTimePublicOpenApiKey } | ApiFailure>;
@@ -106,6 +113,7 @@ export function AdminHomePage({
   publicOpenApiKeysOneTimeKey,
   isLoadingPublicOpenApiKeys,
   onCreate,
+  onUpdate,
   onDelete,
   onCreatePublicOpenApiKey,
   onDeletePublicOpenApiKey,
@@ -122,6 +130,7 @@ export function AdminHomePage({
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState("knowledge-bases");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<KnowledgeBase | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [createError, setCreateError] = useState("");
@@ -151,12 +160,14 @@ export function AdminHomePage({
     return () => window.clearTimeout(timeout);
   }, [knowledgeBaseQuery, knowledgeBaseSearchInput, onSearchKnowledgeBases]);
 
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCreateError("");
     setIsCreating(true);
 
-    const result = await onCreate({ name, description });
+    const result = editTarget
+      ? await onUpdate({ knowledgeBase: editTarget, name, description })
+      : await onCreate({ name, description });
 
     setIsCreating(false);
 
@@ -167,7 +178,24 @@ export function AdminHomePage({
 
     setName("");
     setDescription("");
+    setEditTarget(null);
     setIsDialogOpen(false);
+  }
+
+  function openCreateDialog() {
+    setEditTarget(null);
+    setName("");
+    setDescription("");
+    setCreateError("");
+    setIsDialogOpen(true);
+  }
+
+  function openEditDialog(knowledgeBase: KnowledgeBase) {
+    setEditTarget(knowledgeBase);
+    setName(knowledgeBase.name);
+    setDescription(knowledgeBase.description ?? "");
+    setCreateError("");
+    setIsDialogOpen(true);
   }
 
   async function handleDelete() {
@@ -272,7 +300,7 @@ export function AdminHomePage({
                     ) : null}
                   </div>
                 </div>
-                <Button type="button" onClick={() => setIsDialogOpen(true)}>
+                <Button type="button" onClick={openCreateDialog}>
                   <PlusIcon data-icon="inline-start" />
                   {t("home.createAction")}
                 </Button>
@@ -292,7 +320,7 @@ export function AdminHomePage({
                   <CardDescription>{t("home.emptyDescription")}</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Button type="button" variant="outline" onClick={() => setIsDialogOpen(true)}>
+                  <Button type="button" variant="outline" onClick={openCreateDialog}>
                     <PlusIcon data-icon="inline-start" />
                     {t("home.createAction")}
                   </Button>
@@ -349,6 +377,11 @@ export function AdminHomePage({
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuGroup>
+                              <DropdownMenuItem onSelect={() => openEditDialog(knowledgeBase)}>
+                                <PencilIcon />
+                                {t("common.edit")}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
                               <DropdownMenuItem
                                 variant="destructive"
                                 onSelect={() => {
@@ -469,13 +502,23 @@ export function AdminHomePage({
         </Tabs>
       </section>
 
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <Dialog
+        open={isDialogOpen}
+        onOpenChange={(open) => {
+          setIsDialogOpen(open);
+          if (!open && !isCreating) setEditTarget(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("home.createAction")}</DialogTitle>
-            <DialogDescription>{t("home.createDescription")}</DialogDescription>
+            <DialogTitle>
+              {editTarget ? t("home.editAction") : t("home.createAction")}
+            </DialogTitle>
+            <DialogDescription>
+              {editTarget ? t("home.editDescription") : t("home.createDescription")}
+            </DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleCreate}>
+          <form onSubmit={handleSubmit}>
             <FieldGroup>
               <Field data-invalid={Boolean(createError)}>
                 <FieldLabel htmlFor="knowledge-base-name">{t("home.nameLabel")}</FieldLabel>
@@ -501,7 +544,9 @@ export function AdminHomePage({
                   {t("common.cancel")}
                 </Button>
                 <Button type="submit" disabled={!name.trim() || isCreating}>
-                  {isCreating ? t("home.creating") : t("home.createSubmit")}
+                  {isCreating
+                    ? t(editTarget ? "common.saving" : "home.creating")
+                    : t(editTarget ? "common.save" : "home.createSubmit")}
                 </Button>
               </DialogFooter>
             </FieldGroup>

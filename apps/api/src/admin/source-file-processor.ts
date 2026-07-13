@@ -12,6 +12,7 @@ import type {
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
+import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
 import {
   createKnowledgeBasePublicationService,
   type PublicationRuntimeOptions
@@ -45,6 +46,7 @@ export type SourceFileProcessInput = {
   fileProcessingConcurrency: number;
   okfLog?: Partial<OkfLogLimits> | undefined;
   publication?: Partial<PublicationRuntimeOptions> | undefined;
+  graph?: Partial<RuntimeGraphSettings> | undefined;
   modelAssistance?: ModelAssistanceOptions | null | undefined;
 };
 
@@ -57,7 +59,7 @@ export function createSourceFileQueueProcessor(
   const files = repositories.files;
 
   if (
-    !files?.getSourceFile ||
+    !files?.getSourceFileForProcessing ||
     !files.updateSourceFileProcessingState ||
     !files.updateSourceFileMetadata ||
     !files.updateSourceFileModelSuggestions ||
@@ -67,7 +69,7 @@ export function createSourceFileQueueProcessor(
     return null;
   }
 
-  const getSourceFile = files.getSourceFile;
+  const getSourceFile = files.getSourceFileForProcessing;
   const updateSourceFileMetadata = files.updateSourceFileMetadata;
   const updateSourceFileModelSuggestions = files.updateSourceFileModelSuggestions;
   const createSourceFileEvent = files.createSourceFileEvent;
@@ -203,7 +205,7 @@ export function createSourceFileQueueProcessor(
         });
         const modelSource = {
           id: source.id,
-          fileName: source.originalName,
+          fileName: source.relativePath,
           title: metadataResult.resolved.metadata.title,
           type: metadataResult.resolved.metadata.type,
           tags: Array.isArray(metadataResult.resolved.metadata.tags)
@@ -231,7 +233,7 @@ export function createSourceFileQueueProcessor(
 
         currentStage = "graph_generation";
         await assertSourceFileProcessingEligible();
-        await processSourceFileGraphStage({
+        const graphStageResult = await processSourceFileGraphStage({
           repositories,
           redis,
           knowledgeBaseId: input.knowledgeBaseId,
@@ -240,10 +242,12 @@ export function createSourceFileQueueProcessor(
           body: metadataResult.resolved.body,
           suggestions,
           pageSize: input.batchSize,
-          maxCandidateNodes: input.publication?.graphCandidateLimit,
+          maxCandidateNodes: input.graph?.candidateLimit,
+          acceptedEdgeLimit: input.graph?.acceptedEdgeLimit,
+          genericPhraseThreshold: input.graph?.genericPhraseThreshold,
           ttlSeconds: input.cursorTtlSeconds,
           ownerId,
-          modelAssistance: effectiveModelAssistance,
+          modelAssistance: input.graph?.modelReviewEnabled === false ? null : effectiveModelAssistance,
           progressClock,
           mark,
           recordStage
@@ -264,6 +268,9 @@ export function createSourceFileQueueProcessor(
           knowledgeBaseId: input.knowledgeBaseId,
           knowledgeBaseName: input.knowledgeBaseName,
           sourceFileId: source.id,
+          relatedSourceFileIds: graphStageResult.affectedSourceFileIds.filter(
+            (sourceFileId) => sourceFileId !== source.id
+          ),
           generatedAt: input.generatedAt,
           pageSize: input.batchSize,
           cursorTtlSeconds: input.cursorTtlSeconds,
@@ -349,9 +356,9 @@ function resolvePublicationOptions(input: SourceFileProcessInput): PublicationRu
     indexShardSize: input.publication?.indexShardSize ?? 1_000,
     linkIndexShardSize: input.publication?.linkIndexShardSize ?? 1_000,
     manifestShardSize: input.publication?.manifestShardSize ?? 1_000,
-    graphEdgeShardSize: input.publication?.graphEdgeShardSize ?? 5_000,
-    graphCandidateLimit: input.publication?.graphCandidateLimit ?? 200,
     graphMaintenanceBatchSize: input.publication?.graphMaintenanceBatchSize ?? 500,
-    rootSummaryLimit: input.publication?.rootSummaryLimit ?? 500
+    rootSummaryLimit: input.publication?.rootSummaryLimit ?? 500,
+    directoryIndexMaxEntries: input.publication?.directoryIndexMaxEntries ?? 200,
+    directoryIndexMaxBytes: input.publication?.directoryIndexMaxBytes ?? 65_536
   };
 }
