@@ -114,7 +114,7 @@ export function createPublicOpenApiKeyService(options: {
         return false;
       }
 
-      await redis?.clearPublicOpenApiKeyCache(revoked.keyHash);
+      await redis?.clearPublicOpenApiKeyRuntimeKeys(revoked.id, revoked.keyHash);
       return true;
     },
     async authorize(rawKey: string) {

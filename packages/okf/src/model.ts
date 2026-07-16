@@ -452,6 +452,8 @@ export function buildGraphRelationshipConfirmationRequest(
       "Do not create relationship labels for broad metadata groups, locations, teams, departments, document status, dates, or file type alone.",
       "weight must be between 0 and 1.",
       "reason must be short, factual, and based on visible evidence.",
+      "Write reason as a direction-neutral durable fact that names or structurally identifies both connected subjects or their visible evidence.",
+      "Do not use deictic role phrases such as current file, target file, this document, or related file in reason.",
       "Do not invent target files, target paths, metadata fields, facts, citations, or hidden context."
     ].join(" "),
     input: createUserTextInput(userInput),

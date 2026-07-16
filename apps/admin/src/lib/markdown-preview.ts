@@ -29,7 +29,7 @@ markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, self) 
     if (safeHref) {
       token?.attrSet("href", safeHref);
       token?.attrSet("target", "_blank");
-      token?.attrSet("rel", "noreferrer");
+      token?.attrSet("rel", "noopener noreferrer");
     }
 
     return defaultLinkOpen(tokens, index, options, env, self);
@@ -91,7 +91,9 @@ function findOpeningLinkToken(tokens: unknown[], closeIndex: number) {
 }
 
 function readInternalPreviewPath(href: string, currentLogicalPath: string) {
-  const decoded = decodePreviewPath(href.trim()).split(/[?#]/u, 1)[0] ?? "";
+  const decodedPath = decodePreviewPath(href.trim());
+  if (!decodedPath) return null;
+  const decoded = decodedPath.split(/[?#]/u, 1)[0] ?? "";
   if (!decoded || hasUriScheme(decoded) || decoded.startsWith("//") || decoded.includes("\\")) {
     return null;
   }
@@ -150,7 +152,7 @@ function hasUriScheme(value: string) {
   return /^[a-z][a-z0-9+.-]*:/iu.test(value);
 }
 
-function decodePreviewPath(value: string) {
+function decodePreviewPath(value: string): string | null {
   let current = value.replaceAll("&amp;", "&");
 
   for (let index = 0; index < 3; index += 1) {
@@ -163,9 +165,13 @@ function decodePreviewPath(value: string) {
 
       current = next;
     } catch {
-      return current;
+      return null;
     }
   }
 
-  return current;
+  try {
+    return decodeURIComponent(current) === current ? current : null;
+  } catch {
+    return null;
+  }
 }

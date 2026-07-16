@@ -107,6 +107,11 @@ describeDatabase("hard delete repository integration", () => {
   });
 
   it("tracks and purges obsolete releases for an empty deleted directory", async () => {
+    await expect(repository.hasSourceDirectoryFileReferences({
+      knowledgeBaseId,
+      deletionIntentId
+    })).resolves.toBe(false);
+
     await repository.prepareSourceDirectoryObjectDeletions({
       jobId,
       knowledgeBaseId,

@@ -17,7 +17,7 @@ describe("destructive folder-aware upload contract", () => {
       '"/admin/api/knowledge-bases/:knowledgeBaseId/uploads"'
     );
     expect(developerRoutes).not.toContain(
-      '"/openapi/v1/knowledge-bases/:knowledgeBaseId/uploads"'
+      '"/openapi/v2/knowledge-bases/:knowledgeBaseId/uploads"'
     );
   });
 

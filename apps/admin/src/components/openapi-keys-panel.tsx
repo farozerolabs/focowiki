@@ -120,10 +120,7 @@ export function OpenApiKeysPanel({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-base font-medium">{t("openapiKeys.title")}</h2>
-          <p className="text-sm text-muted-foreground">{t("openapiKeys.description")}</p>
-        </div>
+        <div />
         <Button type="button" onClick={() => setIsCreateOpen(true)}>
           <PlusIcon data-icon="inline-start" />
           {t("openapiKeys.createAction")}

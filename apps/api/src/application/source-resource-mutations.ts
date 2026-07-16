@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { PublicationJobReason } from "../domain/publication-job.js";
 import type { SourceResourceRepository } from "./ports/source-resource-repository.js";
 import type { ApplicationRuntime } from "./ports/runtime.js";
 import { createSourceResourceService } from "./source-resources.js";
@@ -12,9 +13,11 @@ export type ResourceMutationWorkerPort = {
   }) => Promise<unknown>;
   enqueuePublicationJob: (input: {
     knowledgeBaseId: string;
-    reason: string;
+    reason: PublicationJobReason;
+    targetCatalogGeneration: number;
     runAfter: string;
     maxAttempts: number;
+    forceSuccessor?: boolean | undefined;
   }) => Promise<unknown>;
 };
 
@@ -68,8 +71,10 @@ export function createSourceResourceMutationService(input: {
         await input.worker.enqueuePublicationJob({
           knowledgeBaseId: request.knowledgeBaseId,
           reason: "metadata",
+          targetCatalogGeneration: updated.catalogGeneration,
           runAfter: input.runtime.clock.now().toISOString(),
-          maxAttempts
+          maxAttempts,
+          forceSuccessor: true
         });
       }
       return {
@@ -87,10 +92,11 @@ export function createSourceResourceMutationService(input: {
       maxAttempts: number;
     }) {
       const checksumSha256 = createHash("sha256").update(request.bytes).digest("hex");
+      const revisionId = input.runtime.ids.create("source-revision");
       const objectKey = input.storage.sourceRevisionKey(
         request.knowledgeBaseId,
         request.sourceFileId,
-        `sha256-${checksumSha256}`
+        revisionId
       );
       await input.storage.put({
         key: objectKey,
@@ -107,7 +113,7 @@ export function createSourceResourceMutationService(input: {
             targetKind: "source_file",
             targetId: request.sourceFileId,
             payload: {
-              revisionId: input.runtime.ids.create("source-revision"),
+              revisionId,
               objectKey,
               sizeBytes: request.bytes.byteLength,
               checksumSha256,

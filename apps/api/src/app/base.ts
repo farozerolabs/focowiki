@@ -5,9 +5,11 @@ import { createRuntimeLogger } from "../logger.js";
 import { logReadLatency } from "../read-latency-logger.js";
 import { applySecurityHeaders } from "../security/headers.js";
 
-export function createBaseApp(config: RuntimeConfig): Hono {
+export function createBaseApp(
+  config: RuntimeConfig,
+  logger = createRuntimeLogger(config)
+): Hono {
   const app = new Hono();
-  const logger = createRuntimeLogger(config);
 
   app.onError((error, context) => {
     logger.error("Unhandled API error", error);

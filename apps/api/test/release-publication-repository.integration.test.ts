@@ -72,6 +72,89 @@ describeDatabase("release publication repository integration", () => {
     expect(items.some((item) => item.sourceFileId === "release-source-file-deleted")).toBe(false);
   });
 
+  it("keeps an older release snapshot consistent while a newer directory deletion is being prepared", async () => {
+    const raceKnowledgeBaseId = "kb-release-deletion-generation-race";
+    const raceReleaseId = "release-deletion-generation-race";
+    const directoryId = "source-directory-deletion-generation-race";
+    const sourceFileId = "source-file-deletion-generation-race";
+    const sourceRevisionId = "source-revision-deletion-generation-race";
+    const deletionIntentId = "deletion-intent-generation-race";
+    const cleanupRaceFixture = async () => {
+      await sql.begin(async (transaction) => {
+        await transaction`SET CONSTRAINTS ALL DEFERRED`;
+        await transaction`DELETE FROM focowiki.releases WHERE knowledge_base_id = ${raceKnowledgeBaseId}`;
+        await transaction`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${raceKnowledgeBaseId}`;
+        await transaction`DELETE FROM focowiki.source_directories WHERE knowledge_base_id = ${raceKnowledgeBaseId}`;
+        await transaction`DELETE FROM focowiki.deletion_intents WHERE knowledge_base_id = ${raceKnowledgeBaseId}`;
+        await transaction`DELETE FROM focowiki.knowledge_bases WHERE id = ${raceKnowledgeBaseId}`;
+      });
+    };
+
+    await cleanupRaceFixture();
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.knowledge_bases (id, name, catalog_generation)
+        VALUES (${raceKnowledgeBaseId}, 'Deletion generation race', 2)
+      `;
+      await transaction`
+        INSERT INTO focowiki.deletion_intents (
+          id, knowledge_base_id, target_kind, target_id, catalog_generation, state
+        ) VALUES (
+          ${deletionIntentId}, ${raceKnowledgeBaseId}, 'source_directory',
+          ${directoryId}, 2, 'running'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_directories (
+          id, knowledge_base_id, parent_id, name, relative_path, path_key, depth,
+          deletion_intent_id, deleted_at
+        ) VALUES (
+          ${directoryId}, ${raceKnowledgeBaseId}, NULL, 'documents',
+          'documents', 'documents', 1, ${deletionIntentId}, now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_files (
+          id, knowledge_base_id, name, relative_path, path_key, directory_id,
+          object_key, content_type, size_bytes, checksum_sha256, active_revision_id,
+          processing_status
+        ) VALUES (
+          ${sourceFileId}, ${raceKnowledgeBaseId}, 'guide.md', 'documents/guide.md',
+          'documents/guide.md', ${directoryId}, 'objects/guide.md', 'text/markdown',
+          10, 'guide-checksum', ${sourceRevisionId}, 'completed'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          id, knowledge_base_id, source_file_id, revision, object_key,
+          content_type, size_bytes, checksum_sha256, processing_status
+        ) VALUES (
+          ${sourceRevisionId}, ${raceKnowledgeBaseId}, ${sourceFileId}, 1,
+          'objects/guide.md', 'text/markdown', 10, 'guide-checksum', 'completed'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.releases (
+          id, knowledge_base_id, bundle_root_key, generated_at, file_count,
+          manifest_checksum_sha256, catalog_generation
+        ) VALUES (
+          ${raceReleaseId}, ${raceKnowledgeBaseId}, 'bundles/race', now(), 0,
+          'pending', 1
+        )
+      `;
+    });
+
+    try {
+      await expect(repository.materializeSourceSnapshot({
+        knowledgeBaseId: raceKnowledgeBaseId,
+        releaseId: raceReleaseId,
+        publicationSourceFileIds: [sourceFileId]
+      })).resolves.toEqual({ directoryCount: 1, sourceFileCount: 1 });
+    } finally {
+      await cleanupRaceFixture();
+    }
+  });
+
   it("keeps an active generated page readable while a replacement publication is pending", async () => {
     const files = createPostgresAdminRepositories(sql).files;
     if (!files?.markSourceFilesPublicationDirty) {
@@ -212,7 +295,23 @@ describeDatabase("release publication repository integration", () => {
         path: "pages/moved/b.md",
         title: "Moving document",
         direction: "outgoing",
-        relationType: "version_relation"
+        relationType: "version_relation",
+        reason: 'From "A document" to "Moving document": same document'
+      })
+    ]);
+
+    const incoming = await repository.listSourceGraphNeighborhood({
+      knowledgeBaseId,
+      releaseId: candidateReleaseId,
+      sourceFileId: "release-source-file-new",
+      limit: 10
+    });
+    expect(incoming).toEqual([
+      expect.objectContaining({
+        fileId: "release-source-file-moving",
+        path: "pages/moved/b.md",
+        direction: "incoming",
+        reason: 'Incoming from "Moving document" to "New document": shared implementation background'
       })
     ]);
 
@@ -658,6 +757,14 @@ describeDatabase("release publication repository integration", () => {
     const lateOperationId = "resource-operation-late";
     const files = createPostgresAdminRepositories(sql).files;
     if (!files?.activateRelease) throw new Error("Release activation repository is unavailable");
+    const activeRows = await sql<Array<{ relative_path: string }>>`
+      SELECT relative_path
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = 'release-source-file-moving'
+    `;
+    const activeRelativePath = activeRows[0]?.relative_path;
+    if (!activeRelativePath) throw new Error("Active source path is unavailable");
 
     await sql`
       INSERT INTO focowiki.resource_operations (
@@ -702,7 +809,7 @@ describeDatabase("release publication repository integration", () => {
     await repository.materializeSourceSnapshot({
       knowledgeBaseId,
       releaseId: lateReleaseId,
-      publicationSourceFileIds: []
+      publicationSourceFileIds: ["release-source-file-moving"]
     });
     const snapshot = await repository.listSourceFiles({
       knowledgeBaseId,
@@ -711,8 +818,8 @@ describeDatabase("release publication repository integration", () => {
       limit: 20
     });
     expect(snapshot.items.find((item) => item.sourceFileId === "release-source-file-moving")).toMatchObject({
-      generatedPath: "pages/moved/b.md",
-      publicationRequired: false
+      generatedPath: `pages/${activeRelativePath}`,
+      publicationRequired: true
     });
 
     await sql`
@@ -744,21 +851,24 @@ describeDatabase("release publication repository integration", () => {
       relative_path: string;
       candidate_operation_id: string | null;
       candidate_relative_path: string | null;
+      publication_dirty_at: Date | null;
     }>>`
       SELECT operation.state, source.relative_path,
-             source.candidate_operation_id, source.candidate_relative_path
+             source.candidate_operation_id, source.candidate_relative_path,
+             source.publication_dirty_at
       FROM focowiki.resource_operations operation
       JOIN focowiki.source_files source
         ON source.knowledge_base_id = operation.knowledge_base_id
        AND source.id = 'release-source-file-moving'
       WHERE operation.id = ${lateOperationId}
     `;
-    expect(rows[0]).toEqual({
+    expect(rows[0]).toMatchObject({
       state: "publishing",
-      relative_path: "moved/b.md",
+      relative_path: activeRelativePath,
       candidate_operation_id: lateOperationId,
       candidate_relative_path: "docs/b.md"
     });
+    expect(rows[0]?.publication_dirty_at).toBeInstanceOf(Date);
   });
 
   async function seedSourceCatalog(): Promise<void> {
@@ -876,7 +986,8 @@ describeDatabase("release publication repository integration", () => {
         knowledge_base_id, source_file_id, path, title
       ) VALUES
         (${knowledgeBaseId}, 'release-source-file-a', 'pages/a.md', 'A document'),
-        (${knowledgeBaseId}, 'release-source-file-moving', 'pages/old/b.md', 'Moving document')
+        (${knowledgeBaseId}, 'release-source-file-moving', 'pages/old/b.md', 'Moving document'),
+        (${knowledgeBaseId}, 'release-source-file-new', 'pages/new.md', 'New document')
     `;
     await sql`
       INSERT INTO focowiki.source_file_graph_edges (
@@ -891,6 +1002,9 @@ describeDatabase("release publication repository integration", () => {
       ), (
         'release-source-edge-moving-a-version', ${knowledgeBaseId}, 'release-source-file-moving', 'release-source-file-a',
         'version_relation', 0.92, 'same document', 'deterministic', 'accepted', '{"signal":"same_document_title"}'::jsonb
+      ), (
+        'release-source-edge-moving-new', ${knowledgeBaseId}, 'release-source-file-moving', 'release-source-file-new',
+        'background', 0.88, 'shared implementation background', 'deterministic', 'accepted', '{"signal":"shared_definition"}'::jsonb
       )
     `;
   }

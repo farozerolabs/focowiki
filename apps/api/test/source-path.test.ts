@@ -54,6 +54,7 @@ describe("source path policy", () => {
     "root\\file.md",
     "root/%2e%2e/file.md",
     "root/%252e%252e/file.md",
+    "root/%25252525252e%25252525252e/file.md",
     "root/%2fetc/file.md",
     "root/file.txt",
     "root/index.md",
@@ -93,6 +94,7 @@ describe("source path policy", () => {
     "pages/../secret.md",
     "pages/%2e%2e/secret.md",
     "pages/root/%252e%252e/secret.md",
+    "pages/root/%25252525252e%25252525252e/secret.md",
     "pages/root\\secret.md",
     "unknown/file.md"
   ])("rejects unsafe generated logical path %s", (input) => {

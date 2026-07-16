@@ -5,6 +5,13 @@ type RedisRuntimeConfig = Pick<RuntimeConfig, "redis">;
 
 export type RedisConnectionOptions = {
   url: string;
+  socket?: {
+    reconnectStrategy: false;
+  };
+};
+
+export type RedisClientRuntimeOptions = {
+  disableReconnect?: boolean;
 };
 
 export type RedisCommandClient = {
@@ -85,7 +92,7 @@ export type RedisCoordinator = {
     ttlSeconds: number
   ) => Promise<void>;
   getPublicOpenApiKeyCache: (keyHash: string) => Promise<{ id: string } | null>;
-  clearPublicOpenApiKeyCache: (keyHash: string) => Promise<void>;
+  clearPublicOpenApiKeyRuntimeKeys: (keyId: string, keyHash: string) => Promise<void>;
   markPublicOpenApiKeyUsed: (keyId: string, ttlSeconds: number) => Promise<boolean>;
   setRuntimeSettingsVersion: (version: string) => Promise<void>;
   getRuntimeSettingsVersion: () => Promise<string | null>;
@@ -103,15 +110,26 @@ export type RateLimitResult = {
 };
 
 export function createRedisConnectionOptions(
-  config: RedisRuntimeConfig
+  config: RedisRuntimeConfig,
+  options: RedisClientRuntimeOptions = {}
 ): RedisConnectionOptions {
   return {
-    url: config.redis.url
+    url: config.redis.url,
+    ...(options.disableReconnect
+      ? {
+          socket: {
+            reconnectStrategy: false as const
+          }
+        }
+      : {})
   };
 }
 
-export function createRedisClient(config: RedisRuntimeConfig) {
-  return createClient(createRedisConnectionOptions(config));
+export function createRedisClient(
+  config: RedisRuntimeConfig,
+  options: RedisClientRuntimeOptions = {}
+) {
+  return createClient(createRedisConnectionOptions(config, options));
 }
 
 export function createRedisKeyBuilder(keyPrefix = "focowiki") {
@@ -277,8 +295,9 @@ export function createRedisCoordinator(
       const raw = await client.get(buildKey("public-openapi-key-cache", keyHash));
       return raw ? (JSON.parse(raw) as { id: string }) : null;
     },
-    async clearPublicOpenApiKeyCache(keyHash) {
+    async clearPublicOpenApiKeyRuntimeKeys(keyId, keyHash) {
       await client.del(buildKey("public-openapi-key-cache", keyHash));
+      await client.del(buildKey("public-openapi-key-used", keyId));
     },
     async markPublicOpenApiKeyUsed(keyId, ttlSeconds) {
       const result = await client.set(buildKey("public-openapi-key-used", keyId), "1", {

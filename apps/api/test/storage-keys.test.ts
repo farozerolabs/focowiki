@@ -61,6 +61,9 @@ describe("storage key normalization", () => {
     expect(() => createStorageKeyspace("../tenant")).toThrow(/S3_PREFIX/);
     expect(() => createStorageKeyspace("tenant/../demo")).toThrow(/S3_PREFIX/);
     expect(() => createStorageKeyspace("tenant/%2e%2e/demo")).toThrow(/S3_PREFIX/);
+    expect(() => createStorageKeyspace("tenant/%252525252e%252525252e/demo")).toThrow(
+      /S3_PREFIX/
+    );
     expect(() => createStorageKeyspace("tenant\\demo")).toThrow(/S3_PREFIX/);
   });
 
@@ -87,6 +90,13 @@ describe("storage key normalization", () => {
     ).toThrow(/path/);
     expect(() =>
       keys.releaseBundleKey("kb-001", "release-001", "pages/%2e%2e/secret.md")
+    ).toThrow(/path/);
+    expect(() =>
+      keys.releaseBundleKey(
+        "kb-001",
+        "release-001",
+        "pages/%252525252e%252525252e/secret.md"
+      )
     ).toThrow(/path/);
     expect(() => keys.releaseBundleKey("kb-001", "release-001", "sources/source-a.md")).toThrow(
       /path/

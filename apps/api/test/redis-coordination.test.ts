@@ -64,6 +64,18 @@ describe("redis coordination cleanup", () => {
       ])
     );
   });
+
+  it("clears both authorization and usage keys for a revoked OpenAPI key", async () => {
+    const deletedKeys: string[] = [];
+    const redis = createRedisCoordinator(createRedisClient({ keys: [], deletedKeys }));
+
+    await redis.clearPublicOpenApiKeyRuntimeKeys("key-test", "hash-test");
+
+    expect(deletedKeys).toEqual([
+      "focowiki:public-openapi-key-cache:hash-test",
+      "focowiki:public-openapi-key-used:key-test"
+    ]);
+  });
 });
 
 function createRedisClient(input: {

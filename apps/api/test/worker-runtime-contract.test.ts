@@ -71,11 +71,9 @@ describe("worker runtime contract", () => {
     );
     expect(claimSection).toContain("math.min(input.workerconfig.harddeleteconcurrency ?? 1, input.limit)");
     expect(claimSection).toContain("const publicationlimit = input.limit - harddeletejobs.length");
-    expect(claimSection).toContain('kinds: ["generated_output_reset"]');
-    expect(claimSection).toContain("const afterreset = publicationlimit - resetjobs.length");
     expect(claimSection).toContain("math.min(1, afteroperations)");
     expect(claimSection).toContain(
-      "const remaininglimit = input.limit - harddeletejobs.length - resetjobs.length - resourceoperationjobs.length - uploadfinalizationjobs.length - publicationjobs.length"
+      "const remaininglimit = input.limit - harddeletejobs.length - resourceoperationjobs.length - uploadfinalizationjobs.length - publicationjobs.length"
     );
   });
 

@@ -12,6 +12,7 @@ import {
   Trash2Icon,
   XIcon
 } from "lucide-react";
+import { DocumentationLink } from "@/components/documentation-link";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { OpenApiKeysPanel } from "@/components/openapi-keys-panel";
 import {
@@ -226,11 +227,8 @@ export function AdminHomePage({
       <header className="border-b bg-card">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
           <div className="flex min-w-0 items-center gap-3">
-            <img src="/logo.jpg" alt="" className="size-10 rounded-md object-cover" />
-            <div className="min-w-0">
-              <p className="text-sm text-muted-foreground">{t("app.name")}</p>
-              <h1 className="text-xl font-medium">{t("home.title")}</h1>
-            </div>
+            <img src="/logo.svg" alt="" className="size-10 object-contain" />
+            <h1 className="truncate text-xl font-medium">{t("app.name")}</h1>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -242,6 +240,7 @@ export function AdminHomePage({
             >
               <SettingsIcon />
             </Button>
+            <DocumentationLink />
             <LanguageSwitch />
             <Button type="button" variant="outline" onClick={onLogout}>
               {t("auth.logout")}
@@ -264,11 +263,7 @@ export function AdminHomePage({
             <TabsTrigger value="openapi-keys">{t("home.openapiKeysTab")}</TabsTrigger>
           </TabsList>
           <TabsContent value="knowledge-bases" className="flex flex-col gap-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <h2 className="text-base font-medium">{t("home.cardsTitle")}</h2>
-                <p className="text-sm text-muted-foreground">{t("home.cardsDescription")}</p>
-              </div>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-end">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <div className="flex min-w-0 flex-1 flex-col gap-2 sm:w-80">
                   <label htmlFor="knowledge-base-search" className="sr-only">

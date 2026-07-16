@@ -14,6 +14,7 @@ type KnowledgeBaseRecord = {
   name: string;
   description: string | null;
   activeReleaseId: string | null;
+  catalogGeneration: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -113,6 +114,7 @@ function createRepository() {
         name: input.name,
         description: input.description,
         activeReleaseId: null,
+        catalogGeneration: 0,
         createdAt: now,
         updatedAt: now
       };

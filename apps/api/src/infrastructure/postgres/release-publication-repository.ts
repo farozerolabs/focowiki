@@ -3,6 +3,7 @@ import type {
   SourceMetadataDefaults,
   SourceModelSuggestions
 } from "@focowiki/okf";
+import { presentGraphRelationship } from "@focowiki/okf";
 import type {
   ReleaseChangeAction,
   ReleaseChangeRecord,
@@ -66,6 +67,9 @@ type ReusablePageRow = {
 };
 
 type RelationshipRow = {
+  current_source_file_id: string;
+  current_generated_path: string;
+  current_title: string;
   source_file_id: string;
   generated_path: string;
   title: string;
@@ -158,13 +162,21 @@ export function createPostgresReleasePublicationRepository(
                      THEN directory.candidate_depth ELSE directory.depth END,
                    directory.resource_revision + CASE WHEN captured.operation_id IS NULL THEN 0 ELSE 1 END
             FROM focowiki.source_directories directory
+            JOIN focowiki.releases release
+              ON release.id = ${input.releaseId}
+             AND release.knowledge_base_id = directory.knowledge_base_id
+            LEFT JOIN focowiki.deletion_intents deletion
+              ON deletion.id = directory.deletion_intent_id
+             AND deletion.knowledge_base_id = directory.knowledge_base_id
             LEFT JOIN focowiki.release_resource_operations captured
               ON captured.release_id = ${input.releaseId}
              AND captured.knowledge_base_id = directory.knowledge_base_id
              AND captured.operation_id = directory.candidate_operation_id
             WHERE directory.knowledge_base_id = ${input.knowledgeBaseId}
-              AND directory.deleted_at IS NULL
-              AND directory.deletion_intent_id IS NULL
+              AND (
+                (directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL)
+                OR deletion.catalog_generation > release.catalog_generation
+              )
             ON CONFLICT (release_id, source_directory_id) DO NOTHING
             RETURNING source_directory_id
           )
@@ -175,14 +187,22 @@ export function createPostgresReleasePublicationRepository(
             SELECT source.*,
                    captured.operation_id AS publishing_operation_id
             FROM focowiki.source_files source
+            JOIN focowiki.releases release
+              ON release.id = ${input.releaseId}
+             AND release.knowledge_base_id = source.knowledge_base_id
+            LEFT JOIN focowiki.deletion_intents deletion
+              ON deletion.id = source.deletion_intent_id
+             AND deletion.knowledge_base_id = source.knowledge_base_id
             LEFT JOIN focowiki.release_resource_operations captured
               ON captured.release_id = ${input.releaseId}
              AND captured.knowledge_base_id = source.knowledge_base_id
              AND captured.operation_id = source.candidate_operation_id
             WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
               AND source.processing_status = 'completed'
-              AND source.deleted_at IS NULL
-              AND source.deletion_intent_id IS NULL
+              AND (
+                (source.deleted_at IS NULL AND source.deletion_intent_id IS NULL)
+                OR deletion.catalog_generation > release.catalog_generation
+              )
               AND (
                 source.id = ANY(${input.publicationSourceFileIds})
                 OR captured.operation_id IS NOT NULL
@@ -737,7 +757,18 @@ export function createPostgresReleasePublicationRepository(
     },
     async listSourceGraphNeighborhood(input) {
       const rows = await sql<RelationshipRow[]>`
-        WITH raw_relationships AS (
+        WITH current_source AS (
+          SELECT snapshot.source_file_id, snapshot.generated_path,
+                 COALESCE(node.title, snapshot.name) AS title
+          FROM focowiki.release_source_files snapshot
+          LEFT JOIN focowiki.source_file_graph_nodes node
+            ON node.knowledge_base_id = snapshot.knowledge_base_id
+           AND node.source_file_id = snapshot.source_file_id
+          WHERE snapshot.release_id = ${input.releaseId}
+            AND snapshot.knowledge_base_id = ${input.knowledgeBaseId}
+            AND snapshot.source_file_id = ${input.sourceFileId}
+          LIMIT 1
+        ), raw_relationships AS (
           SELECT edge.to_source_file_id AS source_file_id, edge.relation_type,
                  'outgoing'::text AS direction, edge.weight, edge.reason,
                  edge.source, edge.evidence_json
@@ -767,7 +798,10 @@ export function createPostgresReleasePublicationRepository(
           ) ranked
           WHERE relationship_rank = 1
         )
-        SELECT related.source_file_id, snapshot.generated_path,
+        SELECT current.source_file_id AS current_source_file_id,
+               current.generated_path AS current_generated_path,
+               current.title AS current_title,
+               related.source_file_id, snapshot.generated_path,
                COALESCE(node.title, snapshot.name) AS title,
                related.relation_type, related.direction, related.weight,
                related.reason, related.source, related.evidence_json
@@ -779,6 +813,7 @@ export function createPostgresReleasePublicationRepository(
         LEFT JOIN focowiki.source_file_graph_nodes node
           ON node.knowledge_base_id = snapshot.knowledge_base_id
          AND node.source_file_id = snapshot.source_file_id
+        CROSS JOIN current_source current
         ORDER BY related.weight DESC, related.source_file_id
         LIMIT ${input.limit}
       `;
@@ -1161,17 +1196,28 @@ function mapReusablePage(row: ReusablePageRow): ReusableReleasePageRecord {
 }
 
 function mapRelationship(row: RelationshipRow): OkfGraphRelationship {
-  return {
+  const current = {
+    fileId: row.current_source_file_id,
+    path: row.current_generated_path,
+    title: row.current_title
+  };
+  const related = {
     fileId: row.source_file_id,
     path: row.generated_path,
-    title: row.title,
-    relationType: row.relation_type,
-    direction: row.direction,
-    weight: Number(row.weight),
-    reason: row.reason,
-    source: row.source,
-    evidence: record(row.evidence_json)
+    title: row.title
   };
+  return presentGraphRelationship(
+    {
+      from: row.direction === "outgoing" ? current : related,
+      to: row.direction === "outgoing" ? related : current,
+      relationType: row.relation_type,
+      weight: Number(row.weight),
+      reason: row.reason,
+      source: row.source,
+      evidence: record(row.evidence_json)
+    },
+    current.fileId
+  );
 }
 
 function mapReleaseChange(row: ReleaseChangeRow): ReleaseChangeRecord {

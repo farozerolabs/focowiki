@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import {
+  createPublicationJobPayload,
+  mergePublicationJobReason,
+  parsePublicationJobPayload,
+  type PublicationJobReason
+} from "../domain/publication-job.js";
+import {
+  createSourceFileJobPayload,
+  type SourceFileJobReason
+} from "../domain/source-file-job.js";
 import type { DatabaseClient } from "./client.js";
 
 export type WorkerJobKind =
@@ -6,8 +16,7 @@ export type WorkerJobKind =
   | "source_file_processing"
   | "resource_operation"
   | "publication"
-  | "hard_delete"
-  | "generated_output_reset";
+  | "hard_delete";
 export type WorkerJobStatus =
   | "queued"
   | "running"
@@ -72,7 +81,7 @@ export type WorkerJobRepository = {
   enqueueSourceFileJob: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
-    reason: "upload" | "retry";
+    reason: SourceFileJobReason;
     runAfter: string;
     maxAttempts: number;
   }) => Promise<WorkerJobRecord>;
@@ -84,9 +93,11 @@ export type WorkerJobRepository = {
   }) => Promise<WorkerJobRecord>;
   enqueuePublicationJob: (input: {
     knowledgeBaseId: string;
-    reason: string;
+    reason: PublicationJobReason;
+    targetCatalogGeneration: number;
     runAfter: string;
     maxAttempts: number;
+    forceSuccessor?: boolean | undefined;
   }) => Promise<WorkerJobRecord>;
   enqueueResourceOperationJob?: (input: {
     knowledgeBaseId: string;
@@ -265,7 +276,7 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
           'source_file_processing',
           ${input.knowledgeBaseId},
           ${input.sourceFileId},
-          ${sql.json({ reason: input.reason } as never)},
+          ${sql.json(createSourceFileJobPayload(input.reason) as never)},
           ${input.runAfter},
           ${input.maxAttempts}
         WHERE NOT EXISTS (
@@ -326,38 +337,80 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       return mapWorkerJobRow(requireWorkerJobRow(existing));
     },
     async enqueuePublicationJob(input) {
-      const requiresEmptyPublication =
-        input.reason === "deletion" || input.reason === "metadata";
+      const requestedPayload = createPublicationJobPayload(
+        input.reason,
+        input.targetCatalogGeneration
+      );
 
-      if (requiresEmptyPublication) {
-        const promoted = await sql<WorkerJobRow[]>`
-          UPDATE focowiki.worker_jobs
-          SET payload_json = CASE
-                WHEN payload_json->>'reason' = 'deletion' THEN payload_json
-                ELSE ${sql.json({ reason: input.reason } as never)}
-              END,
-              run_after = LEAST(run_after, ${input.runAfter}),
-              updated_at = now()
+      return sql.begin(async (transaction) => {
+        const knowledgeBases = await transaction<Array<{ catalog_generation: number }>>`
+          SELECT catalog_generation
+          FROM focowiki.knowledge_bases
+          WHERE id = ${input.knowledgeBaseId}
+          FOR UPDATE
+        `;
+        const catalogGeneration = knowledgeBases[0]?.catalog_generation;
+        if (catalogGeneration === undefined) {
+          throw new Error("Knowledge base does not exist.");
+        }
+        if (requestedPayload.targetCatalogGeneration > catalogGeneration) {
+          throw new Error("Publication target exceeds the committed catalog generation.");
+        }
+
+        const queued = await transaction<WorkerJobRow[]>`
+          SELECT *
+          FROM focowiki.worker_jobs
           WHERE kind = 'publication'
             AND knowledge_base_id = ${input.knowledgeBaseId}
             AND status = 'queued'
-          RETURNING *
+          ORDER BY run_after ASC, created_at ASC, id ASC
+          LIMIT 1
+          FOR UPDATE
         `;
-        if (promoted[0]) return mapWorkerJobRow(promoted[0]);
+        if (queued[0]) {
+          const existingPayload = parsePublicationJobPayload(queued[0].payload_json);
+          const promotedPayload = createPublicationJobPayload(
+            mergePublicationJobReason(existingPayload.reason, requestedPayload.reason),
+            Math.max(
+              existingPayload.targetCatalogGeneration,
+              requestedPayload.targetCatalogGeneration
+            )
+          );
+          const promoted = await transaction<WorkerJobRow[]>`
+            UPDATE focowiki.worker_jobs
+            SET payload_json = ${transaction.json(promotedPayload as never)},
+                run_after = LEAST(run_after, ${input.runAfter}),
+                max_attempts = GREATEST(max_attempts, ${input.maxAttempts}),
+                updated_at = now()
+            WHERE id = ${queued[0].id}
+              AND status = 'queued'
+            RETURNING *
+          `;
+          return mapWorkerJobRow(requireWorkerJobRow(promoted));
+        }
 
-        const runningRequired = await sql<WorkerJobRow[]>`
+        const running = await transaction<WorkerJobRow[]>`
           SELECT *
           FROM focowiki.worker_jobs
           WHERE kind = 'publication'
             AND knowledge_base_id = ${input.knowledgeBaseId}
             AND status = 'running'
-            AND payload_json->>'reason' IN ('deletion', 'metadata')
           ORDER BY created_at ASC, id ASC
           LIMIT 1
+          FOR UPDATE
         `;
-        if (runningRequired[0]) return mapWorkerJobRow(runningRequired[0]);
+        if (running[0]) {
+          const runningPayload = parsePublicationJobPayload(running[0].payload_json);
+          if (
+            !input.forceSuccessor &&
+            runningPayload.targetCatalogGeneration
+            >= requestedPayload.targetCatalogGeneration
+          ) {
+            return mapWorkerJobRow(running[0]);
+          }
+        }
 
-        const queuedRequired = await sql<WorkerJobRow[]>`
+        const inserted = await transaction<WorkerJobRow[]>`
           INSERT INTO focowiki.worker_jobs (
             id,
             kind,
@@ -372,7 +425,7 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
             'publication',
             ${input.knowledgeBaseId},
             NULL,
-            ${sql.json({ reason: input.reason } as never)},
+            ${transaction.json(requestedPayload as never)},
             ${input.runAfter},
             ${input.maxAttempts}
           WHERE NOT EXISTS (
@@ -380,80 +433,13 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
             FROM focowiki.worker_jobs
             WHERE kind = 'publication'
               AND knowledge_base_id = ${input.knowledgeBaseId}
+              AND status IN ('queued', 'running')
               AND status = 'queued'
           )
-            AND NOT EXISTS (
-              SELECT 1
-              FROM focowiki.worker_jobs
-              WHERE kind = 'publication'
-                AND knowledge_base_id = ${input.knowledgeBaseId}
-                AND status = 'running'
-                AND payload_json->>'reason' IN ('deletion', 'metadata')
-            )
           RETURNING *
         `;
-        if (queuedRequired[0]) return mapWorkerJobRow(queuedRequired[0]);
-
-        const existingRequired = await sql<WorkerJobRow[]>`
-          SELECT *
-          FROM focowiki.worker_jobs
-          WHERE kind = 'publication'
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-            AND (
-              status = 'queued'
-              OR (
-                status = 'running'
-                AND payload_json->>'reason' IN ('deletion', 'metadata')
-              )
-            )
-          ORDER BY status ASC, run_after ASC, created_at ASC, id ASC
-          LIMIT 1
-        `;
-        return mapWorkerJobRow(requireWorkerJobRow(existingRequired));
-      }
-
-      const rows = await sql<WorkerJobRow[]>`
-        INSERT INTO focowiki.worker_jobs (
-          id,
-          kind,
-          knowledge_base_id,
-          source_file_id,
-          payload_json,
-          run_after,
-          max_attempts
-        )
-        SELECT
-          ${createWorkerJobId()},
-          'publication',
-          ${input.knowledgeBaseId},
-          NULL,
-          ${sql.json({ reason: input.reason } as never)},
-          ${input.runAfter},
-          ${input.maxAttempts}
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM focowiki.worker_jobs
-          WHERE kind = 'publication'
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-            AND status IN ('queued', 'running')
-        )
-        RETURNING *
-      `;
-
-      if (rows[0]) {
-        return mapWorkerJobRow(rows[0]);
-      }
-
-      const existing = await sql<WorkerJobRow[]>`
-        SELECT *
-        FROM focowiki.worker_jobs
-        WHERE kind = 'publication'
-          AND knowledge_base_id = ${input.knowledgeBaseId}
-          AND status IN ('queued', 'running')
-        ORDER BY run_after ASC, created_at ASC, id ASC
-        LIMIT 1
-      `;
-      return mapWorkerJobRow(requireWorkerJobRow(existing));
+        return mapWorkerJobRow(requireWorkerJobRow(inserted));
+      });
     },
     async enqueueResourceOperationJob(input) {
       const payload = { operationId: input.operationId };
@@ -578,7 +564,7 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       const rows = await sql<WorkerJobRow[]>`
         WITH candidates AS (
           SELECT id
-          FROM focowiki.worker_jobs
+          FROM focowiki.worker_jobs candidate
           WHERE kind = ANY(${input.kinds})
             AND run_after <= ${input.now}
             AND (
@@ -587,6 +573,17 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
                 status = 'running'
                 AND locked_at IS NOT NULL
                 AND COALESCE(heartbeat_at, locked_at) < ${input.staleBefore}
+              )
+            )
+            AND (
+              kind <> 'publication'
+              OR status = 'running'
+              OR NOT EXISTS (
+                SELECT 1
+                FROM focowiki.worker_jobs running_publication
+                WHERE running_publication.kind = 'publication'
+                  AND running_publication.knowledge_base_id = candidate.knowledge_base_id
+                  AND running_publication.status = 'running'
               )
             )
           ORDER BY run_after ASC, created_at ASC, id ASC
@@ -631,6 +628,21 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
     },
     async failWorkerJob(input) {
       const willRetry = input.retryAfter !== null;
+      if (willRetry) {
+        const transition = await transitionRunningPublicationJob(sql, {
+          id: input.id,
+          workerId: input.workerId,
+          transitionAt: input.failedAt,
+          runAfter: input.retryAfter!,
+          preserveAttempt: false,
+          errorCode: input.errorCode,
+          errorMessage: input.errorMessage,
+          terminalStatus: "failed"
+        });
+        if (transition.handled) {
+          return transition.record;
+        }
+      }
       const rows = await sql<WorkerJobRow[]>`
         UPDATE focowiki.worker_jobs
         SET
@@ -741,7 +753,7 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
           ${excludedFilter}
           AND status = 'queued'
           AND (
-            kind IN ('upload_session_finalization', 'source_file_processing', 'resource_operation', 'publication', 'generated_output_reset')
+            kind IN ('upload_session_finalization', 'source_file_processing', 'resource_operation', 'publication')
             OR (
               kind = 'hard_delete'
               AND COALESCE(payload_json->>'targetKind', '') <> 'knowledge_base'
@@ -752,6 +764,19 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       return rows.map((row) => row.id);
     },
     async releaseWorkerJob(input) {
+      const transition = await transitionRunningPublicationJob(sql, {
+        id: input.id,
+        workerId: input.workerId,
+        transitionAt: input.releasedAt,
+        runAfter: input.runAfter ?? input.releasedAt,
+        preserveAttempt: input.preserveAttempt ?? false,
+        errorCode: null,
+        errorMessage: null,
+        terminalStatus: "cancelled"
+      });
+      if (transition.handled) {
+        return transition.record;
+      }
       const rows = await sql<WorkerJobRow[]>`
         UPDATE focowiki.worker_jobs
         SET
@@ -961,6 +986,139 @@ export function createPostgresWorkerJobRepository(sql: DatabaseClient): WorkerJo
       return Number(rows[0]?.count ?? 0);
     }
   };
+}
+
+async function transitionRunningPublicationJob(
+  sql: DatabaseClient,
+  input: {
+    id: string;
+    workerId: string;
+    transitionAt: string;
+    runAfter: string;
+    preserveAttempt: boolean;
+    errorCode: string | null;
+    errorMessage: string | null;
+    terminalStatus: "failed" | "cancelled";
+  }
+): Promise<{ handled: boolean; record: WorkerJobRecord | null }> {
+  const candidates = await sql<Array<{ kind: WorkerJobKind; knowledge_base_id: string }>>`
+    SELECT kind, knowledge_base_id
+    FROM focowiki.worker_jobs
+    WHERE id = ${input.id}
+      AND locked_by = ${input.workerId}
+      AND status = 'running'
+    LIMIT 1
+  `;
+  const candidate = candidates[0];
+  if (!candidate || candidate.kind !== "publication") {
+    return { handled: false, record: null };
+  }
+
+  return sql.begin(async (transaction) => {
+    await transaction`
+      SELECT id
+      FROM focowiki.knowledge_bases
+      WHERE id = ${candidate.knowledge_base_id}
+      FOR UPDATE
+    `;
+    const running = await transaction<WorkerJobRow[]>`
+      SELECT *
+      FROM focowiki.worker_jobs
+      WHERE id = ${input.id}
+        AND kind = 'publication'
+        AND locked_by = ${input.workerId}
+        AND status = 'running'
+      FOR UPDATE
+    `;
+    if (!running[0]) {
+      return { handled: true, record: null };
+    }
+
+    const queued = await transaction<WorkerJobRow[]>`
+      SELECT *
+      FROM focowiki.worker_jobs
+      WHERE kind = 'publication'
+        AND knowledge_base_id = ${candidate.knowledge_base_id}
+        AND status = 'queued'
+      ORDER BY run_after ASC, created_at ASC, id ASC
+      LIMIT 1
+      FOR UPDATE
+    `;
+
+    if (!queued[0]) {
+      const requeued = await transaction<WorkerJobRow[]>`
+        UPDATE focowiki.worker_jobs
+        SET status = 'queued',
+            run_after = LEAST(run_after, ${input.runAfter}),
+            locked_by = NULL,
+            locked_at = NULL,
+            heartbeat_at = NULL,
+            attempt_count = CASE
+              WHEN ${input.preserveAttempt} THEN GREATEST(attempt_count - 1, 0)
+              ELSE attempt_count
+            END,
+            failed_at = NULL,
+            last_error_code = ${input.errorCode},
+            last_error_message = ${input.errorMessage},
+            updated_at = ${input.transitionAt}
+        WHERE id = ${input.id}
+          AND locked_by = ${input.workerId}
+          AND status = 'running'
+        RETURNING *
+      `;
+      return {
+        handled: true,
+        record: requeued[0] ? mapWorkerJobRow(requeued[0]) : null
+      };
+    }
+
+    const runningPayload = parsePublicationJobPayload(running[0].payload_json);
+    const queuedPayload = parsePublicationJobPayload(queued[0].payload_json);
+    const mergedPayload = createPublicationJobPayload(
+      mergePublicationJobReason(queuedPayload.reason, runningPayload.reason),
+      Math.max(
+        queuedPayload.targetCatalogGeneration,
+        runningPayload.targetCatalogGeneration
+      )
+    );
+    const successor = await transaction<WorkerJobRow[]>`
+      UPDATE focowiki.worker_jobs
+      SET payload_json = ${transaction.json(mergedPayload as never)},
+          run_after = LEAST(run_after, ${input.runAfter}),
+          max_attempts = GREATEST(max_attempts, ${running[0].max_attempts}),
+          updated_at = ${input.transitionAt}
+      WHERE id = ${queued[0].id}
+        AND status = 'queued'
+      RETURNING *
+    `;
+    await transaction`
+      UPDATE focowiki.worker_jobs
+      SET status = ${input.terminalStatus},
+          locked_by = NULL,
+          locked_at = NULL,
+          heartbeat_at = NULL,
+          completed_at = CASE
+            WHEN ${input.terminalStatus === "cancelled"}
+              THEN GREATEST(${input.transitionAt}, COALESCE(started_at, ${input.transitionAt}))
+            ELSE NULL
+          END,
+          failed_at = CASE
+            WHEN ${input.terminalStatus === "failed"}
+              THEN GREATEST(${input.transitionAt}, COALESCE(started_at, ${input.transitionAt}))
+            ELSE NULL
+          END,
+          last_error_code = ${input.errorCode},
+          last_error_message = ${input.errorMessage},
+          updated_at = ${input.transitionAt}
+      WHERE id = ${input.id}
+        AND locked_by = ${input.workerId}
+        AND status = 'running'
+    `;
+    return {
+      handled: true,
+      record: successor[0] ? mapWorkerJobRow(successor[0]) : null
+    };
+  });
 }
 
 function createWorkerJobId(): string {

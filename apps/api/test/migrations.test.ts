@@ -27,16 +27,19 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase("absent");
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
-  });
-
-  it("upgrades the retained-source generation through the destructive generated-output reset", async () => {
-    const database = createGenerationDatabase("admin-resource-editing-v3");
-
-    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
     expect(database.beginCalls).toBe(1);
+  });
+
+  it("rejects the former runtime generation after the destructive schema reset", async () => {
+    const database = createGenerationDatabase("admin-resource-editing-v3");
+
+    await expect(applyMigrations(database.sql)).rejects.toMatchObject({
+      name: "RuntimeSchemaGenerationError",
+      message: expect.stringContaining("empty database")
+    });
+    expect(database.unsafeCalls).toBe(0);
+    expect(database.beginCalls).toBe(0);
   });
 
   it("rejects unmarked and incompatible schemas", async () => {
@@ -51,23 +54,17 @@ describe("runtime schema generation guard", () => {
     }
   });
 
-  it("defines a bounded retained-source reset and durable rebuild contract", () => {
+  it("defines only the final read-model and publication schema", () => {
     const migration = readFileSync(
-      resolve(import.meta.dirname, "../migrations/002_okf_google_v0_1_reset.sql"),
+      resolve(import.meta.dirname, "../migrations/001_production_admin_web.sql"),
       "utf8"
     ).replace(/\s+/g, " ").toLowerCase();
 
-    expect(migration).toContain("create table focowiki.generated_output_resets");
-    expect(migration).toContain("create table focowiki.generated_output_reset_prefixes");
-    expect(migration).toContain("update focowiki.knowledge_bases set active_release_id = null");
-    expect(migration).toContain("delete from focowiki.bundle_files");
-    expect(migration).toContain("delete from focowiki.releases");
-    expect(migration).toContain("generated_output_status = 'pending'");
-    expect(migration).toContain("generated_bundle_file_id = null");
-    expect(migration).toContain("generated_bundle_file_path = null");
-    expect(migration).toContain("'generated_output_reset', reset.knowledge_base_id");
-    expect(migration).not.toContain("delete from focowiki.source_files");
-    expect(migration).not.toContain("delete from focowiki.source_file_revisions");
+    expect(migration).toContain("create table focowiki.bundle_file_search_documents");
+    expect(migration).toContain("create table focowiki.release_read_summaries");
+    expect(migration).toContain("worker_jobs_publication_queued_unique_idx");
+    expect(migration).toContain("relation-search-publication-v1");
+    expect(migration).not.toContain("generated_output_reset");
   });
 });
 
@@ -91,9 +88,7 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
   const sql = tagged as unknown as DatabaseClient;
   sql.unsafe = (async () => {
     unsafeCalls += 1;
-    generation = unsafeCalls === 1 && initialGeneration === "absent"
-      ? "admin-resource-editing-v3"
-      : RUNTIME_SCHEMA_GENERATION;
+    generation = RUNTIME_SCHEMA_GENERATION;
     return [];
   }) as unknown as DatabaseClient["unsafe"];
   sql.begin = (async (callback: (transaction: DatabaseClient) => Promise<unknown>) => {

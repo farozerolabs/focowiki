@@ -422,9 +422,11 @@ function graphExpansionResponseSchema(): SchemaObject {
 function relatedFileSchema(): SchemaObject {
   return objectSchema(
     {
-      fileId: idSchema("Related source file identifier."),
+      fileId: idSchema(
+        "Related generated file identifier accepted by file detail, content, related-file, and graph-expansion operations."
+      ),
       sourceFileId: idSchema("Related source file identifier."),
-      bundleFileId: nullableString("Related generated bundle file identifier when published."),
+      bundleFileId: idSchema("Related generated file identifier. Same value as `fileId`."),
       path: { type: "string" },
       title: { type: "string" },
       relationType: { type: "string" },

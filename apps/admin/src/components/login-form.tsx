@@ -1,13 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -44,10 +38,6 @@ export function LoginForm({ className, onLogin, onAuthenticated, ...props }: Log
   return (
     <div className={cn("flex w-full max-w-sm flex-col gap-6", className)} {...props}>
       <Card>
-        <CardHeader>
-          <CardTitle>{t("auth.title")}</CardTitle>
-          <CardDescription>{t("auth.description")}</CardDescription>
-        </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit}>
             <FieldGroup>

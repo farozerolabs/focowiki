@@ -581,6 +581,7 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
           name: input.name,
           description: input.description,
           activeReleaseId: null,
+          catalogGeneration: 0,
           createdAt: now,
           updatedAt: now
         };
@@ -1022,8 +1023,36 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
           bundleFiles.set(file.id, file);
         }
       },
-      async countBundleFileSearchDocuments({ releaseId }) {
-        return Array.from(bundleFiles.values()).filter((file) => file.releaseId === releaseId).length;
+      async getReleaseReadSummary({ knowledgeBaseId, releaseId }) {
+        const searchableFileCount = Array.from(bundleFiles.values())
+          .filter((file) => file.releaseId === releaseId).length;
+        const graphDocumentCount = Array.from(bundleFiles.values())
+          .some((file) => file.sourceFileId === "source-guide") ? 1 : 0;
+        return {
+          releaseId,
+          knowledgeBaseId,
+          searchableFileCount,
+          treeNodeCount: 0,
+          graphDocumentCount,
+          graphRelationshipCount: graphDocumentCount > 0 ? 1 : 0,
+          graphNodeCount: graphDocumentCount,
+          graphEdgeCount: graphDocumentCount > 0 ? 1 : 0
+        };
+      },
+      async getReleaseGraphInsights({ knowledgeBaseId, releaseId }) {
+        return {
+          knowledgeBaseId,
+          releaseId,
+          generatedAt: now,
+          insights: [
+            {
+              insightId: "insight-seeded",
+              severity: "info",
+              title: "Useful graph cluster",
+              filePaths: ["pages/guide.md"]
+            }
+          ]
+        };
       },
       async createBundleTreeEntries() {
         return undefined;
@@ -1248,14 +1277,6 @@ function createRepositories(options: TestRepositoryOptions = {}): AdminRepositor
           .slice(0, limit);
 
         return { items, nextCursor: null };
-      },
-      async countBundleGraphSearchDocuments() {
-        return Array.from(bundleFiles.values()).some((file) => file.sourceFileId === "source-guide")
-          ? 1
-          : 0;
-      },
-      async countBundleGraphRelationshipSearchDocuments() {
-        return 1;
       },
       async searchBundleGraphFiles({ query, fileKind, graphDepth, graphFanout, limit }) {
         if (fileKind && fileKind !== "page") {
@@ -1979,6 +2000,32 @@ describe("Developer OpenAPI", () => {
     expect(detailBody).toEqual({
       knowledgeBase: expectedKnowledgeBase
     });
+  });
+
+  it("serves bounded first-page reads when Redis is unavailable", async () => {
+    const config = createConfig();
+    const repositories = createRepositories();
+    const app = createPublicOpenApiApp({
+      config,
+      storage: new MemoryStorage(),
+      repositories
+    });
+    const headers = authHeaders();
+    const [list, tree, search, graph] = await Promise.all([
+      app.request("/openapi/v2/knowledge-bases?limit=10", { headers }),
+      app.request("/openapi/v2/knowledge-bases/kb-seeded/tree?parentPath=pages&limit=10", {
+        headers
+      }),
+      app.request("/openapi/v2/knowledge-bases/kb-seeded/files/search?query=guide&limit=10", {
+        headers
+      }),
+      app.request("/openapi/v2/knowledge-bases/kb-seeded/graph/insights", { headers })
+    ]);
+
+    expect([list.status, tree.status, search.status, graph.status]).toEqual([200, 200, 200, 200]);
+    await expect(list.json()).resolves.toMatchObject({ nextCursor: null });
+    await expect(tree.json()).resolves.toMatchObject({ nextCursor: null });
+    await expect(search.json()).resolves.toMatchObject({ searchStatus: "ok", nextCursor: null });
   });
 
   it("hides deleted knowledge bases from Developer OpenAPI read surfaces", async () => {
@@ -2891,11 +2938,11 @@ describe("Developer OpenAPI", () => {
     const { app, repositories } = createApp();
     let searchCount = 0;
 
-    if (!repositories.files?.countBundleFileSearchDocuments || !repositories.files.searchBundleFiles) {
+    if (!repositories.files?.getReleaseReadSummary || !repositories.files.searchBundleFiles) {
       throw new Error("Search repository is missing from the test fixture.");
     }
 
-    repositories.files.countBundleFileSearchDocuments = async () => 0;
+    repositories.files.getReleaseReadSummary = async () => null;
     repositories.files.searchBundleFiles = async () => {
       searchCount += 1;
       return { items: [], nextCursor: null };
@@ -2935,11 +2982,11 @@ describe("Developer OpenAPI", () => {
   it("keeps Developer OpenAPI read routes available when search documents are unavailable", async () => {
     const { app, repositories } = createApp();
 
-    if (!repositories.files?.countBundleFileSearchDocuments) {
+    if (!repositories.files?.getReleaseReadSummary) {
       throw new Error("Search repository is missing from the test fixture.");
     }
 
-    repositories.files.countBundleFileSearchDocuments = async () => 0;
+    repositories.files.getReleaseReadSummary = async () => null;
     const [treeResponse, contentResponse, detailResponse] = await Promise.all([
       app.request("/openapi/v2/knowledge-bases/kb-seeded/tree?parentPath=pages", {
         headers: authHeaders()
@@ -3383,6 +3430,58 @@ describe("Developer OpenAPI", () => {
     });
   });
 
+  it("does not return the seed or duplicate files when a second graph hop loops back", async () => {
+    const { app, repositories } = createApp();
+
+    if (!repositories.graph?.listActiveGraphNeighborhood) {
+      throw new Error("Graph repository is missing from the test fixture.");
+    }
+
+    const originalListGraphNeighborhood = repositories.graph.listActiveGraphNeighborhood;
+    repositories.graph.listActiveGraphNeighborhood = async (input) => {
+      if (input.sourceFileId === "source-reference") {
+        return {
+          items: [
+            {
+              fileId: "source-guide",
+              sourceFileId: "source-guide",
+              bundleFileId: "bundle-guide",
+              path: "pages/guide.md",
+              title: "Guide",
+              relationType: "shared_tag",
+              direction: "incoming" as const,
+              weight: 0.8,
+              reason: "Both files share a topic.",
+              source: "deterministic" as const,
+              contentAvailable: true
+            }
+          ],
+          nextCursor: null
+        };
+      }
+
+      return originalListGraphNeighborhood(input);
+    };
+
+    const response = await app.request(
+      "/openapi/v2/knowledge-bases/kb-seeded/graph/expand?fileId=bundle-guide&depth=2&fanout=2&limit=10",
+      { headers: authHeaders() }
+    );
+    const body = (await response.json()) as {
+      relationships: Array<{ sourceFileId: string; path: string }>;
+      resultSummary: { relationshipCount: number };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.relationships).toEqual([
+      expect.objectContaining({
+        sourceFileId: "source-reference",
+        path: "pages/reference.md"
+      })
+    ]);
+    expect(body.resultSummary.relationshipCount).toBe(1);
+  });
+
   it("returns graph insights with file-first read actions", async () => {
     const { app } = createApp();
     const response = await app.request(
@@ -3441,6 +3540,30 @@ describe("Developer OpenAPI", () => {
     });
 
     expect(contentResponse.status).toBe(200);
+  });
+
+  it("caches graph insight responses for the immutable active release", async () => {
+    const { app, storage } = createApp();
+    const getObjectText = storage.getObjectText.bind(storage);
+    let insightObjectReads = 0;
+    storage.getObjectText = async (key) => {
+      if (key.endsWith("/_graph/insights.json")) {
+        insightObjectReads += 1;
+      }
+      return getObjectText(key);
+    };
+
+    const requestPath = "/openapi/v2/knowledge-bases/kb-seeded/graph/insights";
+    const firstResponse = await app.request(requestPath, { headers: authHeaders() });
+    const secondResponse = await app.request(requestPath, { headers: authHeaders() });
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(await secondResponse.json()).toMatchObject({
+      contentPath: "_graph/insights.json",
+      resultSummary: { insightCount: 1 }
+    });
+    expect(insightObjectReads).toBe(0);
   });
 
   it("caches repeated graph expansion pages for the same file seed", async () => {
@@ -4249,7 +4372,15 @@ describe("Developer OpenAPI", () => {
     const body = (await response.json()) as {
       fileId: string;
       sourceFileId: string;
-      items: Array<Record<string, unknown>>;
+      items: Array<{
+        fileId: string;
+        sourceFileId: string;
+        bundleFileId: string | null;
+        readActions: {
+          fileDetailById: string | null;
+          fileContentById: string | null;
+        };
+      }>;
       nextCursor: string | null;
     };
 
@@ -4259,7 +4390,9 @@ describe("Developer OpenAPI", () => {
       nextCursor: null,
       items: [
         {
-          fileId: "source-reference",
+          fileId: "bundle-reference",
+          sourceFileId: "source-reference",
+          bundleFileId: "bundle-reference",
           path: "pages/reference.md",
           title: "Reference",
           relationType: "shared_tag",
@@ -4269,6 +4402,10 @@ describe("Developer OpenAPI", () => {
           contentAvailable: true
         }
       ]
+    });
+    expect(body.items[0]?.readActions).toMatchObject({
+      fileDetailById: "/openapi/v2/knowledge-bases/kb-seeded/files/bundle-reference",
+      fileContentById: "/openapi/v2/knowledge-bases/kb-seeded/files/bundle-reference/content"
     });
   });
 });

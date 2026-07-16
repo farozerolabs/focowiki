@@ -62,6 +62,11 @@ describe("file graph", () => {
     expect(result.edgeCount).toBe(3);
     expect(storedEdges).toHaveLength(3);
     expect(storedEdges.map((edge) => edge.toFileId)).toEqual(["source-0", "source-1", "source-2"]);
+    expect(storedEdges.every((edge) => edge.reason.trim().length > 0)).toBe(true);
+    expect(storedEdges.every((edge) => !edge.reason.startsWith("Relationship from"))).toBe(true);
+    expect(storedEdges.every((edge) => !/current file|target file|this document/iu.test(edge.reason))).toBe(
+      true
+    );
     expect(nodePageCalls).toBe(2);
   });
 
@@ -395,6 +400,130 @@ describe("file graph", () => {
       },
       body:
         "# Platform Operations Access Guide\n\nPlatform Operations publishes this guide for account access reviews.",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).toHaveLength(0);
+    expect(result.edgeCount).toBe(0);
+  });
+
+  it("does not connect files through one shared organization namespace", async () => {
+    const source = createSourceFile("source-security", "security.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-finance", "finance.md"),
+        title: "示例集团财务",
+        subjects: ["示例集团"],
+        entities: ["示例集团"],
+        keywords: ["示例集团"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "示例集团安全",
+        type: "guide",
+        tags: []
+      },
+      body: "# 示例集团安全\n\n示例集团发布账号安全和访问控制说明。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).toHaveLength(0);
+    expect(result.edgeCount).toBe(0);
+  });
+
+  it("does not connect unrelated files through one long shared title namespace", async () => {
+    const source = createSourceFile("source-oversight", "oversight.md");
+    const candidates = [
+      {
+        ...createGraphNode("source-invention", "invention.md"),
+        title: "中华人民共和国专利法",
+        subjects: [
+          "中华人民共和国专利法",
+          "中华人民共和国行政诉讼法",
+          "中华人民共和国民事诉讼法"
+        ],
+        entities: [
+          "中华人民共和国专利法",
+          "中华人民共和国行政诉讼法",
+          "中华人民共和国民事诉讼法"
+        ],
+        keywords: ["发明创造", "专利申请", "专利权"]
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "中华人民共和国监察法实施条例",
+        type: "reference",
+        tags: []
+      },
+      body:
+        "# 中华人民共和国监察法实施条例\n\n本文规定监督调查、证据审查和履职程序。",
+      suggestions: null,
+      pageSize: 10
+    });
+
+    expect(storedEdges).toHaveLength(0);
+    expect(result.edgeCount).toBe(0);
+  });
+
+  it("does not connect files through phrases that are common across the candidate set", async () => {
+    const source = createSourceFile("source-meeting-rules", "meeting-rules.md");
+    const sharedPhrases = ["市人民代表大会常务委员会", "以下简称常务委员会"];
+    const candidates = [
+      {
+        ...createGraphNode("source-amendment", "amendment.md"),
+        title: "七台河市人民代表大会常务委员会关于修改立法条例的决定",
+        subjects: sharedPhrases,
+        entities: sharedPhrases,
+        keywords: sharedPhrases
+      },
+      {
+        ...createGraphNode("source-budget", "budget.md"),
+        title: "甲市人民代表大会常务委员会预算审查办法",
+        subjects: sharedPhrases,
+        entities: sharedPhrases,
+        keywords: sharedPhrases
+      },
+      {
+        ...createGraphNode("source-appointments", "appointments.md"),
+        title: "乙市人民代表大会常务委员会任免工作规则",
+        subjects: sharedPhrases,
+        entities: sharedPhrases,
+        keywords: sharedPhrases
+      }
+    ];
+    const storedEdges: OkfGraphEdge[] = [];
+    const graph = createMemoryGraphRepository({ candidates, storedEdges });
+
+    const result = await buildSourceFileGraph({
+      graph,
+      knowledgeBaseId: source.knowledgeBaseId,
+      source,
+      metadata: {
+        title: "三沙市人民代表大会常务委员会议事规则",
+        type: "reference",
+        tags: []
+      },
+      body: [
+        "# 三沙市人民代表大会常务委员会议事规则",
+        "",
+        "市人民代表大会常务委员会依照本议事规则召开会议，以下简称常务委员会。"
+      ].join("\n"),
       suggestions: null,
       pageSize: 10
     });
@@ -1268,8 +1397,8 @@ describe("file graph", () => {
       {
         ...createGraphNode("source-previous", "access-policy-previous.md"),
         title: "Access policy",
-        subjects: ["access policy"],
-        keywords: ["access policy"]
+        subjects: ["access policy", "access reviews"],
+        keywords: ["access policy", "access reviews"]
       }
     ];
     const graph = createMemoryGraphRepository({
@@ -1282,7 +1411,8 @@ describe("file graph", () => {
       knowledgeBaseId: source.knowledgeBaseId,
       source,
       metadata: { title: "Access policy", type: "policy", tags: [] },
-      body: "# Access policy\n\nAccess reviews run every quarter.",
+      body:
+        "# Access policy\n\nAccess reviews run every quarter. Read [the previous policy](/pages/access-policy-previous.md).",
       suggestions: null,
       pageSize: 10
     });

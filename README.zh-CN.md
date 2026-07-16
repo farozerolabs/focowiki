@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/public/images/focowiki-og.png" alt="Focowiki Markdown 文件优先企业知识库" width="880" />
+  <img src="./docs/public/images/focowiki-og-zh-cn.png" alt="Focowiki Markdown 文件优先企业知识库" width="880" />
 </p>
 
 <h1 align="center">Focowiki</h1>

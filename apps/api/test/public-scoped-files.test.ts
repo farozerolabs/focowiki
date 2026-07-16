@@ -16,6 +16,7 @@ const knowledgeBase = {
   name: "Developer docs",
   description: null,
   activeReleaseId: "release-001",
+  catalogGeneration: 0,
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
 };

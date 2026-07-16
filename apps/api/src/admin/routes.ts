@@ -61,6 +61,9 @@ import {
   resolveReleaseSnapshotPage,
   writeReleaseSnapshotCursor
 } from "./release-snapshot-pagination.js";
+import type { RuntimeLogger } from "../logger.js";
+import { readGeneratedContentWithMetrics } from "../application/generated-content-read.js";
+import { reportGeneratedContentRead } from "../app/generated-content-read-logger.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -72,6 +75,7 @@ export type AdminApiServices = {
   runtimeSettings: RuntimeSettingsService | null;
   applicationRuntime: ApplicationRuntime;
   uploadSessionStorage: UploadSessionStoragePort;
+  logger?: RuntimeLogger;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -358,34 +362,40 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       if (!logicalPath) {
         return notFound(context);
       }
+      const fileRepository = repositories.files;
 
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
+      const result = await readGeneratedContentWithMetrics({
+        resolve: async () => {
+          const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+            context.req.param("knowledgeBaseId")
+          );
 
-      if (!knowledgeBase?.activeReleaseId) {
-        return notFound(context);
-      }
+          if (!knowledgeBase?.activeReleaseId) {
+            return null;
+          }
 
-      const file = await repositories.files.getBundleFile({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        logicalPath
+          const file = await fileRepository.getBundleFile({
+            knowledgeBaseId: knowledgeBase.id,
+            releaseId: knowledgeBase.activeReleaseId,
+            logicalPath
+          });
+
+          return file ? { knowledgeBase, file } : null;
+        },
+        read: ({ file }) => readGeneratedObjectText(storage, file.objectKey, config),
+        now: () => performance.now(),
+        onComplete: (metrics) => reportGeneratedContentRead(services.logger, "admin", metrics)
       });
-
-      if (!file) {
-        return notFound(context);
-      }
-
-      const content = await readGeneratedObjectText(storage, file.objectKey, config);
+      const content = result.content;
 
       if (content instanceof Response) {
         return content;
       }
 
-      if (content === null) {
+      if (!result.descriptor || content === null) {
         return notFound(context);
       }
+      const { knowledgeBase, file } = result.descriptor;
       const includeRelationships = context.req.query("includeRelationships") === "1";
       const graphSummary =
         includeRelationships && file.sourceFileId && repositories.graph?.getGraphSummary

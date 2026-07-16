@@ -151,6 +151,8 @@ describe("OpenAI Structured Outputs model suggestions", () => {
     expect(request.instructions).toContain("Use only these relationType values");
     expect(request.instructions).toContain("same_specific_subject");
     expect(request.instructions).toContain("avoid ASCII double quote characters");
+    expect(request.instructions).toContain("direction-neutral durable fact");
+    expect(request.instructions).toContain("current file, target file, this document");
     expect(request.instructions).not.toMatch(/OKF-style|knowledge bundle/i);
     expect(readRequestInputText(request)).toContain("\"targetFileId\": \"source-b\"");
     expect(readRequestInputText(request)).not.toContain("source-c");

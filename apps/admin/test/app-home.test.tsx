@@ -171,12 +171,32 @@ describe("Admin knowledge base home", () => {
     });
   }
 
+  it("links the login page attribution to the project homepage", async () => {
+    render(<App />);
+
+    const attribution = await screen.findByRole("link", { name: "Powered by Focowiki" });
+    const documentation = screen.getByRole("link", { name: "Open documentation" });
+    const productName = screen.getByText("Focowiki");
+
+    expect(attribution.getAttribute("href")).toBe("https://github.com/farozerolabs/focowiki");
+    expect(attribution.getAttribute("target")).toBe("_blank");
+    expect(attribution.getAttribute("rel")).toBe("noreferrer");
+    expect(attribution.className).toContain("bottom-4");
+    expect(documentation.getAttribute("href")).toBe("https://docs.focowiki.com");
+    expect(documentation.getAttribute("target")).toBe("_blank");
+    expect(productName.parentElement?.className).toContain("left-6");
+    expect(screen.getAllByText("Focowiki")).toHaveLength(1);
+  });
+
   it("renders the focused empty home with create action and no upload panel", async () => {
     render(<App />);
 
     await login();
 
-    expect(await screen.findByRole("heading", { name: "Knowledge bases", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Focowiki", level: 1 })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open documentation" })).toBeTruthy();
+    expect(screen.getAllByText("Knowledge bases")).toHaveLength(1);
+    expect(screen.queryByText("Create and open Markdown knowledge bases.")).toBeNull();
     expect(screen.getAllByRole("button", { name: "Create knowledge base" }).length).toBeGreaterThan(
       0
     );
@@ -201,7 +221,7 @@ describe("Admin knowledge base home", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Knowledge bases", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Focowiki", level: 1 })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Developer docs" })).toBeTruthy();
     expect(screen.queryByLabelText("Username")).toBeNull();
     expect(loginAdmin).not.toHaveBeenCalled();
@@ -347,7 +367,7 @@ describe("Admin knowledge base home", () => {
     expect(screen.queryByText("No file selected")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByRole("heading", { name: "Knowledge bases", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Focowiki", level: 1 })).toBeTruthy();
     expect(window.location.search).toBe("");
   });
 
@@ -397,7 +417,7 @@ describe("Admin knowledge base home", () => {
     });
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Chinese" }));
 
-    expect(await screen.findByRole("heading", { name: "知识库", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Focowiki", level: 1 })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "创建知识库" }).length).toBeGreaterThan(0);
   });
 
@@ -421,6 +441,10 @@ describe("Admin knowledge base home", () => {
       expect(screen.queryByDisplayValue("fwok_default-secret")).toBeNull();
     });
     expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
+    expect(screen.getAllByText("OpenAPI keys")).toHaveLength(1);
+    expect(
+      screen.queryByText("Manage bearer keys for read-only public OpenAPI access.")
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Create key" }));
     fireEvent.change(screen.getByLabelText("Key name"), {

@@ -31,6 +31,7 @@ import {
 import {
   createPageResponseCacheId,
   readPageResponseCache,
+  readThroughPageResponseCache,
   writePageResponseCache
 } from "../page-response-cache.js";
 import { createWebhookDispatcher } from "../webhooks/dispatcher.js";
@@ -64,6 +65,9 @@ import {
   toDeveloperWebhook,
   toDeveloperWebhookDelivery
 } from "./serializers.js";
+import type { RuntimeLogger } from "../logger.js";
+import { readGeneratedContentWithMetrics } from "../application/generated-content-read.js";
+import { reportGeneratedContentRead } from "../app/generated-content-read-logger.js";
 
 export type DeveloperOpenApiServices = {
   config: RuntimeConfig;
@@ -72,6 +76,7 @@ export type DeveloperOpenApiServices = {
   storage: StorageAdapter;
   modelClient: OpenAIModelClient | null;
   runtimeSettings: RuntimeSettingsService | null;
+  logger?: RuntimeLogger;
 };
 
 type DeveloperFileSearchResponse = {
@@ -210,13 +215,13 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const repo = requireRepositories();
       const page = await repo.knowledgeBases.listKnowledgeBases({
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), "developer-openapi:knowledge-bases", input.cursor)
+        cursor: await readCursor(redis, "developer-openapi:knowledge-bases", input.cursor)
       });
 
       return {
         items: page.items.map(toDeveloperKnowledgeBase),
         nextCursor: await writeCursor(
-          requireRedis(),
+          redis,
           "developer-openapi:knowledge-bases",
           page.nextCursor,
           config.pagination.cursorTtlSeconds
@@ -260,14 +265,14 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId: input.sourceFileId,
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: await readCursor(redis, scope, input.cursor)
       });
 
       return pageResponse(
         page,
         scope,
         config.pagination.cursorTtlSeconds,
-        requireRedis(),
+        redis,
         toDeveloperSourceFileEvent
       );
     },
@@ -378,7 +383,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           query: searchQuery,
           scopePrefix: "developer-openapi:tree-search"
         });
-        const redisCoordinator = requireRedis();
+        const redisCoordinator = redis;
         const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
         const cacheId = createPageResponseCacheId({
           cursorToken: input.cursor,
@@ -431,7 +436,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         entryType: input.entryType,
         scopePrefix: "developer-openapi:tree"
       });
-      const redisCoordinator = requireRedis();
+      const redisCoordinator = redis;
       const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
       const cacheId = createPageResponseCacheId({
         cursorToken: input.cursor,
@@ -491,7 +496,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const repo = requireRepositories();
       const graphSettings = await readGraphSettings();
 
-      if (!repo.files?.searchBundleFiles || !repo.files.countBundleFileSearchDocuments) {
+      if (!repo.files?.searchBundleFiles || !repo.files.getReleaseReadSummary) {
         throw repositoryUnavailable();
       }
 
@@ -506,22 +511,17 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         return createUnavailableSearchResponse(queryContext, nextRequestTemplates, input);
       }
 
-      const indexedCount = await repo.files.countBundleFileSearchDocuments({
+      const releaseSummary = await repo.files.getReleaseReadSummary({
         knowledgeBaseId: knowledgeBase.id,
         releaseId: knowledgeBase.activeReleaseId
       });
+      const indexedCount = releaseSummary?.searchableFileCount ?? 0;
       const graphIndexedCount = input.mode === "file"
         ? 0
-        : (await repo.files.countBundleGraphSearchDocuments?.({
-            knowledgeBaseId: knowledgeBase.id,
-            releaseId: knowledgeBase.activeReleaseId
-          })) ?? 0;
+        : releaseSummary?.graphDocumentCount ?? 0;
       const graphRelationshipCount = input.mode === "file"
         ? 0
-        : (await repo.files.countBundleGraphRelationshipSearchDocuments?.({
-            knowledgeBaseId: knowledgeBase.id,
-            releaseId: knowledgeBase.activeReleaseId
-          })) ?? 0;
+        : releaseSummary?.graphRelationshipCount ?? 0;
 
       if (
         (input.mode === "file" && indexedCount === 0) ||
@@ -544,82 +544,74 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         graphDepth: input.graphDepth,
         graphFanout: input.graphFanout
       });
-      const redisCoordinator = requireRedis();
+      const redisCoordinator = redis;
       const repositoryCursor = await readCursor(redisCoordinator, scope, input.cursor);
       const cacheId = createPageResponseCacheId({
         cursorToken: input.cursor,
         limit: input.limit,
         extra: `file-search-response-v4:${input.mode}:${normalizedQuery}:${input.scope}:${input.fileKind ?? "all"}:${input.graphDepth}:${input.graphFanout}`
       });
-      const cachedResponse = await readPageResponseCache<DeveloperFileSearchResponse>({
+      return readThroughPageResponseCache<DeveloperFileSearchResponse>({
         redis: redisCoordinator,
         scope,
         cacheId,
         invalidationScopes: [
           `developer-openapi:file-search:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`,
           `developer-openapi:graph-search:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`
-        ]
+        ],
+        ttlSeconds: graphSettings.cacheTtlSeconds,
+        negativeTtlSeconds: Math.max(1, Math.min(5, graphSettings.cacheTtlSeconds)),
+        isNegative: (value) => value.searchStatus !== "ok",
+        load: async () => {
+          const page = await searchFilesByMode({
+            repo,
+            knowledgeBaseId: knowledgeBase.id,
+            releaseId: knowledgeBase.activeReleaseId!,
+            query: normalizedQuery,
+            scope: input.scope,
+            fileKind: input.fileKind,
+            mode: input.mode,
+            graphDepth: input.graphDepth,
+            graphFanout: input.graphFanout,
+            graphIndexedCount,
+            limit: input.limit,
+            cursor: repositoryCursor
+          });
+          const response = await pageResponse<
+            BundleFileSearchResultRecord | BundleGraphSearchResultRecord,
+            ReturnType<typeof toDeveloperFileSearchResult>
+          >(
+            page,
+            scope,
+            config.pagination.cursorTtlSeconds,
+            redisCoordinator,
+            toDeveloperFileSearchResult
+          );
+
+          return {
+            query: queryContext,
+            ...response,
+            searchStatus: response.items.length > 0 ? "ok" : "no_candidates",
+            searchMode: input.mode,
+            graphStatus: graphStatusForMode(input.mode, graphIndexedCount),
+            graphSummary: {
+              available: graphIndexedCount > 0,
+              indexedDocumentCount: graphIndexedCount,
+              indexedRelationshipCount: graphRelationshipCount,
+              depth: input.graphDepth,
+              fanout: input.graphFanout
+            },
+            resultSummary: createFileSearchResultSummary(
+              response.items.length,
+              Boolean(response.nextCursor),
+              response.items.length > 0 ? "ok" : "no_candidates",
+              input.mode
+            ),
+            nextRequestTemplates,
+            ...(response.items.length > 0 ? {} : noCandidateSearchHints())
+          } satisfies DeveloperFileSearchResponse;
+        }
       });
-
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      const page = await searchFilesByMode({
-        repo,
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        query: normalizedQuery,
-        scope: input.scope,
-        fileKind: input.fileKind,
-        mode: input.mode,
-        graphDepth: input.graphDepth,
-        graphFanout: input.graphFanout,
-        limit: input.limit,
-        cursor: repositoryCursor
-      });
-      const response = await pageResponse<
-        BundleFileSearchResultRecord | BundleGraphSearchResultRecord,
-        ReturnType<typeof toDeveloperFileSearchResult>
-      >(
-        page,
-        scope,
-        config.pagination.cursorTtlSeconds,
-        redisCoordinator,
-        toDeveloperFileSearchResult
-      );
-      const searchResponse: DeveloperFileSearchResponse = {
-        query: queryContext,
-        ...response,
-        searchStatus: response.items.length > 0 ? "ok" : "no_candidates",
-        searchMode: input.mode,
-        graphStatus: graphStatusForMode(input.mode, graphIndexedCount),
-        graphSummary: {
-          available: graphIndexedCount > 0,
-          indexedDocumentCount: graphIndexedCount,
-          indexedRelationshipCount: graphRelationshipCount,
-          depth: input.graphDepth,
-          fanout: input.graphFanout
-        },
-        resultSummary: createFileSearchResultSummary(
-          response.items.length,
-          Boolean(response.nextCursor),
-          response.items.length > 0 ? "ok" : "no_candidates",
-          input.mode
-        ),
-        nextRequestTemplates,
-        ...(response.items.length > 0 ? {} : noCandidateSearchHints())
-      };
-
-      await writePageResponseCache({
-        redis: redisCoordinator,
-        scope,
-        cacheId,
-        value: searchResponse,
-        ttlSeconds: graphSettings.cacheTtlSeconds
-      });
-
-      return searchResponse;
     },
     async getFileById(input: { knowledgeBaseId: string; fileId: string }) {
       const repo = requireRepositories();
@@ -657,7 +649,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         releaseId: knowledgeBase.activeReleaseId,
         sourceFileId,
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: await readCursor(redis, scope, input.cursor)
       });
 
       return {
@@ -665,7 +657,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         sourceFileId,
         items: page.items.map((item) => toDeveloperRelatedFile(item, input.knowledgeBaseId)),
         nextCursor: await writeCursor(
-          requireRedis(),
+          redis,
           scope,
           page.nextCursor,
           config.pagination.cursorTtlSeconds
@@ -696,7 +688,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             ...input,
             fileId: input.fileId
           },
-          redis: requireRedis()
+          redis
         });
       }
 
@@ -707,7 +699,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             ...input,
             nodeId: input.nodeId
           },
-          redis: requireRedis()
+          redis
         });
       }
 
@@ -718,7 +710,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             ...input,
             edgeId: input.edgeId
           },
-          redis: requireRedis()
+          redis
         });
       }
 
@@ -729,7 +721,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
             ...input,
             query: input.query
           },
-          redis: requireRedis()
+          redis
         });
       }
 
@@ -738,98 +730,129 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     async getGraphInsights(input: { knowledgeBaseId: string }): Promise<DeveloperGraphInsightsResponse> {
       const repo = requireRepositories();
       const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const getBundleFile = repo.files?.getBundleFile;
+      const getReleaseGraphInsights = repo.files?.getReleaseGraphInsights;
 
-      if (!knowledgeBase.activeReleaseId || !repo.files?.getBundleFile) {
+      if (!knowledgeBase.activeReleaseId || !getBundleFile || !getReleaseGraphInsights) {
         throw notFound();
       }
+      const releaseId = knowledgeBase.activeReleaseId;
+      const graphSettings = await readGraphSettings();
+      const scope = `developer-openapi:graph-insights:${knowledgeBase.id}:${releaseId}`;
 
-      const file = await repo.files.getBundleFile({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        logicalPath: "_graph/insights.json"
+      return readThroughPageResponseCache<DeveloperGraphInsightsResponse>({
+        redis,
+        scope,
+        cacheId: createPageResponseCacheId({
+          cursorToken: null,
+          limit: 1,
+          extra: "graph-insights-response-v2"
+        }),
+        ttlSeconds: graphSettings.cacheTtlSeconds,
+        negativeTtlSeconds: Math.max(1, Math.min(5, graphSettings.cacheTtlSeconds)),
+        isNegative: (value) => value.insights.length === 0,
+        load: async () => {
+          const [file, graphInsights] = await Promise.all([
+            getBundleFile({
+              knowledgeBaseId: knowledgeBase.id,
+              releaseId,
+              logicalPath: "_graph/insights.json"
+            }),
+            getReleaseGraphInsights({
+              knowledgeBaseId: knowledgeBase.id,
+              releaseId,
+              limit: 100
+            })
+          ]);
+
+          if (!file || !graphInsights) {
+            throw notFound();
+          }
+          const source = await readSourceForBundle(repo, file);
+          const base = `/openapi/v2/knowledge-bases/${knowledgeBase.id}/files/content?path=`;
+
+          return {
+            file: toDeveloperBundleFile(file, source),
+            contentPath: "_graph/insights.json",
+            insights: graphInsights.insights,
+            generatedAt: graphInsights.generatedAt,
+            resultSummary: {
+              insightCount: graphInsights.insights.length,
+              meaning:
+                graphInsights.insights.length > 0
+                  ? "Graph insights can guide further file and graph exploration."
+                  : "No graph insights are currently published. Continue with file tree, file search, and graph expansion."
+            },
+            readActions: {
+              graphIndex: `${base}_graph%2Findex.md`,
+              graphManifest: `${base}_graph%2Fmanifest.json`,
+              graphInsightsFile: `${base}_graph%2Finsights.json`,
+              graphInsightsContent: `${base}_graph%2Finsights.json`
+            },
+            nextActions: [
+              "Read _graph/index.md to understand available graph files.",
+              "Read _graph/manifest.json for graph shard paths.",
+              "Use graph expansion or file search before answering from insights alone."
+            ]
+          };
+        }
       });
-
-      if (!file) {
-        throw notFound();
-      }
-
-      const content = await readGeneratedObjectText(storage, file.objectKey, config);
-
-      if (content === null) {
-        throw notFound();
-      }
-
-      const parsed = parseGraphInsightsContent(content);
-      const base = `/openapi/v2/knowledge-bases/${knowledgeBase.id}/files/content?path=`;
-
-      return {
-        file: toDeveloperBundleFile(file, await readSourceForBundle(repo, file)),
-        contentPath: "_graph/insights.json",
-        insights: parsed.insights,
-        generatedAt: parsed.generatedAt,
-        resultSummary: {
-          insightCount: parsed.insights.length,
-          meaning:
-            parsed.insights.length > 0
-              ? "Graph insights can guide further file and graph exploration."
-              : "No graph insights are currently published. Continue with file tree, file search, and graph expansion."
-        },
-        readActions: {
-          graphIndex: `${base}_graph%2Findex.md`,
-          graphManifest: `${base}_graph%2Fmanifest.json`,
-          graphInsightsFile: `${base}_graph%2Finsights.json`,
-          graphInsightsContent: `${base}_graph%2Finsights.json`
-        },
-        nextActions: [
-          "Read _graph/index.md to understand available graph files.",
-          "Read _graph/manifest.json for graph shard paths.",
-          "Use graph expansion or file search before answering from insights alone."
-        ]
-      };
     },
     async getFileContentById(input: { knowledgeBaseId: string; fileId: string }) {
-      const resolved = await resolveBundleFileById(requireRepositories(), input);
+      const result = await readGeneratedContentWithMetrics({
+        resolve: () => resolveBundleFileById(requireRepositories(), input),
+        read: (resolved) => readGeneratedObjectText(storage, resolved.file.objectKey, config),
+        now: () => performance.now(),
+        onComplete: (metrics) =>
+          reportGeneratedContentRead(services.logger, "developer_openapi", metrics)
+      });
 
-      const content = await readGeneratedObjectText(storage, resolved.file.objectKey, config);
-
-      if (content === null) {
+      if (!result.descriptor || result.content === null) {
         throw notFound();
       }
 
       return {
-        file: toDeveloperBundleFile(resolved.file, resolved.source),
-        content
+        file: toDeveloperBundleFile(result.descriptor.file, result.descriptor.source),
+        content: result.content
       };
     },
     async getFileContentByPath(input: { knowledgeBaseId: string; path: string }) {
       const repo = requireRepositories();
 
       assertSafeLogicalPath(input.path, false);
-      const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
+      const result = await readGeneratedContentWithMetrics({
+        resolve: async () => {
+          const knowledgeBase = await requireKnowledgeBase(repo, input.knowledgeBaseId);
 
-      if (!knowledgeBase.activeReleaseId || !repo.files?.getBundleFile) {
-        throw notFound();
-      }
+          if (!knowledgeBase.activeReleaseId || !repo.files?.getBundleFile) {
+            return null;
+          }
 
-      const file = await repo.files.getBundleFile({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        logicalPath: input.path
+          const file = await repo.files.getBundleFile({
+            knowledgeBaseId: knowledgeBase.id,
+            releaseId: knowledgeBase.activeReleaseId,
+            logicalPath: input.path
+          });
+
+          if (!file) {
+            return null;
+          }
+
+          return { file, source: await readSourceForBundle(repo, file) };
+        },
+        read: (resolved) => readGeneratedObjectText(storage, resolved.file.objectKey, config),
+        now: () => performance.now(),
+        onComplete: (metrics) =>
+          reportGeneratedContentRead(services.logger, "developer_openapi", metrics)
       });
 
-      if (!file) {
-        throw notFound();
-      }
-
-      const content = await readGeneratedObjectText(storage, file.objectKey, config);
-
-      if (content === null) {
+      if (!result.descriptor || result.content === null) {
         throw notFound();
       }
 
       return {
-        file: toDeveloperBundleFile(file, await readSourceForBundle(repo, file)),
-        content
+        file: toDeveloperBundleFile(result.descriptor.file, result.descriptor.source),
+        content: result.content
       };
     },
     async createWebhook(input: { name: string | null; url: string; events: string[] }) {
@@ -866,10 +889,10 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const scope = "developer-openapi:webhooks";
       const page = await repo.webhooks.listWebhookSubscriptions({
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: await readCursor(redis, scope, input.cursor)
       });
 
-      return pageResponse(page, scope, config.pagination.cursorTtlSeconds, requireRedis(), toDeveloperWebhook);
+      return pageResponse(page, scope, config.pagination.cursorTtlSeconds, redis, toDeveloperWebhook);
     },
     async deleteWebhook(webhookId: string) {
       const repo = requireRepositories();
@@ -899,14 +922,14 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const scope = "developer-openapi:webhook-deliveries";
       const page = await repo.webhooks.listWebhookDeliveries({
         limit: input.limit,
-        cursor: await readCursor(requireRedis(), scope, input.cursor)
+        cursor: await readCursor(redis, scope, input.cursor)
       });
 
       return pageResponse(
         page,
         scope,
         config.pagination.cursorTtlSeconds,
-        requireRedis(),
+        redis,
         toDeveloperWebhookDelivery
       );
     },
@@ -958,7 +981,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
   async function expandGraphFromFile(input: {
     repo: AdminRepositories;
-    redis: RedisCoordinator;
+    redis: RedisCoordinator | null;
     input: {
       knowledgeBaseId: string;
       fileId: string;
@@ -1032,7 +1055,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
     }
 
-    const relationships = uniqueRelatedFiles(related).map((item) =>
+    const relationships = uniqueRelatedFiles(related, new Set([sourceFileId])).map((item) =>
       toDeveloperRelatedFile(item, input.input.knowledgeBaseId)
     );
 
@@ -1083,7 +1106,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
   async function expandGraphFromNode(input: {
     repo: AdminRepositories;
-    redis: RedisCoordinator;
+    redis: RedisCoordinator | null;
     input: {
       knowledgeBaseId: string;
       fileId: string | null;
@@ -1159,7 +1182,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
     }
 
-    const relationships = uniqueRelatedFiles(related).map((item) =>
+    const relationships = uniqueRelatedFiles(related, new Set([input.input.nodeId])).map((item) =>
       toDeveloperRelatedFile(item, input.input.knowledgeBaseId)
     );
     const seedBundleFile = knowledgeBase.activeReleaseId && source.generatedBundleFileId
@@ -1217,7 +1240,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
   async function expandGraphFromEdge(input: {
     repo: AdminRepositories;
-    redis: RedisCoordinator;
+    redis: RedisCoordinator | null;
     input: {
       knowledgeBaseId: string;
       fileId: string | null;
@@ -1347,7 +1370,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
   async function expandGraphFromQuery(input: {
     repo: AdminRepositories;
-    redis: RedisCoordinator;
+    redis: RedisCoordinator | null;
     input: {
       knowledgeBaseId: string;
       fileId: string | null;
@@ -1408,6 +1431,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       mode: "graph",
       graphDepth: input.input.depth,
       graphFanout: input.input.fanout,
+      graphIndexedCount: 1,
       limit: input.input.limit,
       cursor: await readCursor(input.redis, scope, input.input.cursor)
     });
@@ -1613,21 +1637,17 @@ function createUnavailableGraphExpansionResponse(input: {
   };
 }
 
-function uniqueRelatedFiles<T extends { sourceFileId: string; path: string; relationType: string; direction: string }>(
-  relationships: T[]
+function uniqueRelatedFiles<T extends { sourceFileId: string }>(
+  relationships: T[],
+  excludedSourceFileIds: ReadonlySet<string> = new Set()
 ): T[] {
   const seen = new Set<string>();
   const output: T[] = [];
 
   for (const relationship of relationships) {
-    const key = [
-      relationship.sourceFileId,
-      relationship.path,
-      relationship.relationType,
-      relationship.direction
-    ].join(":");
+    const key = relationship.sourceFileId;
 
-    if (seen.has(key)) {
+    if (excludedSourceFileIds.has(key) || seen.has(key)) {
       continue;
     }
 
@@ -1741,6 +1761,7 @@ async function searchFilesByMode(input: {
   mode: GraphSearchMode;
   graphDepth: GraphSearchDepth;
   graphFanout: number;
+  graphIndexedCount: number;
   limit: number;
   cursor: string | null;
 }): Promise<CursorPage<BundleFileSearchResultRecord | BundleGraphSearchResultRecord>> {
@@ -1756,7 +1777,7 @@ async function searchFilesByMode(input: {
     });
   }
 
-  if (input.mode === "graph") {
+  if (input.mode === "graph" || (input.mode === "hybrid" && input.graphIndexedCount > 0)) {
     if (!input.repo.files?.searchBundleGraphFiles) {
       return { items: [], nextCursor: null };
     }
@@ -1774,84 +1795,15 @@ async function searchFilesByMode(input: {
     });
   }
 
-  return mergeHybridFileSearchPages({
-    filePage: await input.repo.files!.searchBundleFiles!({
-      knowledgeBaseId: input.knowledgeBaseId,
-      releaseId: input.releaseId,
-      query: input.query,
-      scope: input.scope,
-      fileKind: input.fileKind,
-      limit: input.limit + 1,
-      cursor: input.cursor
-    }),
-    graphPage: input.repo.files?.searchBundleGraphFiles
-      ? await input.repo.files.searchBundleGraphFiles({
-          knowledgeBaseId: input.knowledgeBaseId,
-          releaseId: input.releaseId,
-          query: input.query,
-          scope: input.scope,
-          fileKind: input.fileKind,
-          graphDepth: input.graphDepth,
-          graphFanout: input.graphFanout,
-          limit: input.limit + 1,
-          cursor: input.cursor
-        })
-      : { items: [], nextCursor: null },
-    limit: input.limit
+  return input.repo.files!.searchBundleFiles!({
+    knowledgeBaseId: input.knowledgeBaseId,
+    releaseId: input.releaseId,
+    query: input.query,
+    scope: input.scope,
+    fileKind: input.fileKind,
+    limit: input.limit,
+    cursor: input.cursor
   });
-}
-
-function mergeHybridFileSearchPages(input: {
-  filePage: CursorPage<BundleFileSearchResultRecord>;
-  graphPage: CursorPage<BundleGraphSearchResultRecord>;
-  limit: number;
-}): CursorPage<BundleFileSearchResultRecord | BundleGraphSearchResultRecord> {
-  const merged = new Map<string, BundleFileSearchResultRecord | BundleGraphSearchResultRecord>();
-
-  for (const item of [...input.filePage.items, ...input.graphPage.items]) {
-    const key = item.sourceFileId ?? item.fileId;
-    const existing = merged.get(key);
-
-    if (!existing || item.score > existing.score || ("graphContext" in item && !("graphContext" in existing))) {
-      merged.set(key, "graphContext" in item && existing
-        ? {
-            ...item,
-            matchType: "hybrid",
-            matchedFields: uniqueSearchFields([...existing.matchedFields, ...item.matchedFields]),
-            score: Math.max(existing.score, item.score) + 1
-          }
-        : item);
-    }
-  }
-
-  const sorted = [...merged.values()].sort((left, right) => {
-    if (right.score !== left.score) {
-      return right.score - left.score;
-    }
-
-    const pathCompare = left.path.localeCompare(right.path);
-    return pathCompare === 0 ? left.fileId.localeCompare(right.fileId) : pathCompare;
-  });
-  const items = sorted.slice(0, input.limit);
-  const last = items.at(-1);
-
-  return {
-    items,
-    nextCursor:
-      sorted.length > input.limit && last
-        ? Buffer.from(JSON.stringify({
-            score: last.score,
-            logicalPath: last.path,
-            fileId: last.fileId
-          })).toString("base64url")
-        : null
-  };
-}
-
-function uniqueSearchFields(fields: string[]): BundleFileSearchResultRecord["matchedFields"] {
-  return [...new Set(fields)].filter((field): field is BundleFileSearchResultRecord["matchedFields"][number] =>
-    field === "path" || field === "title" || field === "description" || field === "metadata"
-  );
 }
 
 function graphStatusForMode(
@@ -1908,12 +1860,18 @@ function createFileSearchResultSummary(
 }
 
 async function readCursor(
-  redis: RedisCoordinator,
+  redis: RedisCoordinator | null,
   scope: string,
   cursor: string | null
 ): Promise<string | null> {
   if (!cursor) {
     return null;
+  }
+
+  if (!redis) {
+    throw validationError("Pagination cursor is unavailable while the cache service is offline.", {
+      field: "cursor"
+    });
   }
 
   const value = await redis.getPaginationCursor<string>(scope, cursor);
@@ -1926,12 +1884,16 @@ async function readCursor(
 }
 
 async function writeCursor(
-  redis: RedisCoordinator,
+  redis: RedisCoordinator | null,
   scope: string,
   cursor: string | null,
   ttlSeconds: number
 ): Promise<string | null> {
   if (!cursor) {
+    return null;
+  }
+
+  if (!redis) {
     return null;
   }
 
@@ -1944,7 +1906,7 @@ async function pageResponse<T, U>(
   page: CursorPage<T>,
   scope: string,
   ttlSeconds: number,
-  redis: RedisCoordinator,
+  redis: RedisCoordinator | null,
   map: (value: T) => U
 ): Promise<{ items: U[]; nextCursor: string | null }> {
   return {
@@ -1997,40 +1959,6 @@ async function readGeneratedObjectText(
 
     throw error;
   }
-}
-
-function parseGraphInsightsContent(content: string): {
-  generatedAt: string | null;
-  insights: Record<string, unknown>[];
-} {
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw validationError("Graph insights content is not valid JSON.");
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      generatedAt: null,
-      insights: []
-    };
-  }
-
-  const record = parsed as Record<string, unknown>;
-  const generatedAt = typeof record.generated_at === "string" ? record.generated_at : null;
-  const insights = Array.isArray(record.insights)
-    ? record.insights.filter(
-        (item): item is Record<string, unknown> =>
-          Boolean(item) && typeof item === "object" && !Array.isArray(item)
-      )
-    : [];
-
-  return {
-    generatedAt,
-    insights
-  };
 }
 
 function normalizeWebhookUrl(value: string): string {

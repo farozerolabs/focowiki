@@ -9,6 +9,45 @@ import { SourceResourceError } from "../src/domain/source-resource.js";
 import { processResourceOperationJob } from "../src/worker/resource-operation-jobs.js";
 
 describe("resource operation worker jobs", () => {
+  it("marks source processing spawned by a resource operation as interactive", async () => {
+    const enqueueSourceFileJob = vi.fn(async () => createWorkerJob("source_file_processing"));
+    const workerJobs = {
+      enqueueSourceFileJob
+    } as unknown as WorkerJobRepository;
+    const operation = createOperation("source_file_replace", "processing");
+    const repositories = {
+      sourceResources: {
+        prepareOperation: vi.fn(async () => ({
+          operation,
+          sourceFileId: "source-file-test",
+          requiresSourceProcessing: true,
+          requiresPublication: false,
+          requiresContinuation: false,
+          directoryDeletion: null
+        }))
+      }
+    } as unknown as AdminRepositories;
+
+    await expect(
+      processResourceOperationJob({
+        job: createResourceOperationJob(),
+        repositories,
+        workerJobs,
+        sourceJobMaxAttempts: 3,
+        publicationJobMaxAttempts: 3,
+        databaseBatchSize: 50
+      })
+    ).resolves.toEqual({ retryAfter: null, cleanupObjectKeys: [] });
+
+    expect(enqueueSourceFileJob).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-test",
+      sourceFileId: "source-file-test",
+      reason: "resource_operation",
+      runAfter: expect.any(String),
+      maxAttempts: 3
+    });
+  });
+
   it("publishes directory deletions with the deletion reason before hard cleanup", async () => {
     const enqueuePublicationJob = vi.fn(async () => createWorkerJob("publication"));
     const enqueueHardDeleteJob = vi.fn(async () => createWorkerJob("hard_delete"));
@@ -50,7 +89,9 @@ describe("resource operation worker jobs", () => {
       knowledgeBaseId: "kb-test",
       reason: "deletion",
       runAfter: expect.any(String),
-      maxAttempts: 3
+      maxAttempts: 3,
+      targetCatalogGeneration: 1,
+      forceSuccessor: true
     });
     expect(cancelQueuedSourceDirectoryJobs).toHaveBeenCalledOnce();
     expect(enqueueHardDeleteJob).toHaveBeenCalledOnce();

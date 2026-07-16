@@ -14,9 +14,11 @@ export const resources = {
         english: "English",
         chinese: "Chinese"
       },
+      documentation: {
+        open: "Open documentation"
+      },
       auth: {
-        title: "Admin access",
-        description: "Enter the deployment admin credentials to manage Markdown bundle generation.",
+        title: "Focowiki",
         usernameLabel: "Username",
         usernamePlaceholder: "Enter username",
         passwordLabel: "Password",
@@ -24,6 +26,7 @@ export const resources = {
         login: "Log in",
         loggingIn: "Logging in",
         logout: "Log out",
+        poweredBy: "Powered by Focowiki",
         sessionReady: "Admin session ready",
         invalidCredentials: "Invalid admin credentials"
       },
@@ -62,11 +65,8 @@ export const resources = {
         directoryAcceptedDescription: "{{count}} source files will be removed after publication."
       },
       home: {
-        title: "Knowledge bases",
         knowledgeBasesTab: "Knowledge bases",
         openapiKeysTab: "OpenAPI keys",
-        cardsTitle: "Knowledge bases",
-        cardsDescription: "Create and open Markdown knowledge bases.",
         createAction: "Create knowledge base",
         createDescription: "Create a knowledge base before uploading Markdown sources.",
         editAction: "Edit knowledge base",
@@ -349,8 +349,6 @@ export const resources = {
         }
       },
       openapiKeys: {
-        title: "OpenAPI keys",
-        description: "Manage bearer keys for public OpenAPI reads.",
         createAction: "Create key",
         createDescription: "Create a bearer key for agents and integrations.",
         createSubmit: "Create",
@@ -405,7 +403,6 @@ export const resources = {
       },
       tasks: {
         title: "File processing",
-        description: "Review uploaded Markdown files and parsing status.",
         empty: "No files are processing yet",
         running: "File processing is running",
         runningShort: "Running",
@@ -667,9 +664,11 @@ export const resources = {
         english: "English",
         chinese: "中文"
       },
+      documentation: {
+        open: "打开文档"
+      },
       auth: {
-        title: "管理端访问",
-        description: "输入部署管理员账号和密码以管理 Markdown 知识包生成。",
+        title: "Focowiki",
         usernameLabel: "账号",
         usernamePlaceholder: "输入账号",
         passwordLabel: "密码",
@@ -677,6 +676,7 @@ export const resources = {
         login: "登录",
         loggingIn: "登录中",
         logout: "退出登录",
+        poweredBy: "Powered by Focowiki",
         sessionReady: "管理端会话已就绪",
         invalidCredentials: "管理员账号或密码无效"
       },
@@ -715,11 +715,8 @@ export const resources = {
         directoryAcceptedDescription: "发布完成后将移除 {{count}} 个来源文件。"
       },
       home: {
-        title: "知识库",
         knowledgeBasesTab: "知识库",
         openapiKeysTab: "OpenAPI keys",
-        cardsTitle: "知识库",
-        cardsDescription: "创建和打开 Markdown 知识库。",
         createAction: "创建知识库",
         createDescription: "创建知识库后再上传 Markdown 来源文件。",
         editAction: "修改知识库",
@@ -1002,8 +999,6 @@ export const resources = {
         }
       },
       openapiKeys: {
-        title: "OpenAPI keys",
-        description: "管理公开 OpenAPI 读取使用的 Bearer key。",
         createAction: "创建 key",
         createDescription: "为 Agent 和集成创建 Bearer key。",
         createSubmit: "创建",
@@ -1058,7 +1053,6 @@ export const resources = {
       },
       tasks: {
         title: "文件处理",
-        description: "查看已上传 Markdown 文件和解析状态。",
         empty: "暂无处理文件",
         running: "文件处理中",
         runningShort: "运行中",

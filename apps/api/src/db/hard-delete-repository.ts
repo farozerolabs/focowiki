@@ -38,6 +38,10 @@ export type HardDeleteRepository = {
     knowledgeBaseId: string;
     deletionIntentId: string;
   }) => Promise<boolean>;
+  hasSourceDirectoryFileReferences: (input: {
+    knowledgeBaseId: string;
+    deletionIntentId: string;
+  }) => Promise<boolean>;
   isSourceFileExcludedFromActiveRelease: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -376,6 +380,21 @@ export function createPostgresHardDeleteRepository(sql: DatabaseClient): HardDel
         ) AS present
       `;
       return !(rows[0]?.present ?? false);
+    },
+    async hasSourceDirectoryFileReferences(input) {
+      const rows = await sql<Array<{ present: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1
+          FROM focowiki.source_files source
+          JOIN focowiki.source_directories directory
+            ON directory.id = source.directory_id
+           AND directory.knowledge_base_id = source.knowledge_base_id
+          WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+            AND directory.deletion_intent_id = ${input.deletionIntentId}
+          LIMIT 1
+        ) AS present
+      `;
+      return rows[0]?.present ?? false;
     },
     async isSourceFileExcludedFromActiveRelease(input) {
       const rows = await sql<Array<{ present: boolean }>>`
