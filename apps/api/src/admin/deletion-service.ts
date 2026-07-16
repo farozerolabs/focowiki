@@ -115,8 +115,10 @@ export function createDeletionService(
         await workerJobs.enqueuePublicationJob({
           knowledgeBaseId: knowledgeBase.id,
           reason: "deletion",
+          targetCatalogGeneration: result.operation.candidateCatalogGeneration,
           runAfter: input.deletedAt,
-          maxAttempts: input.hardDeleteMaxAttempts ?? 3
+          maxAttempts: input.hardDeleteMaxAttempts ?? 3,
+          forceSuccessor: true
         });
         await workerJobs.enqueueHardDeleteJob?.({
           knowledgeBaseId: knowledgeBase.id,

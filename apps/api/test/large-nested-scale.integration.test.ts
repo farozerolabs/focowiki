@@ -8,6 +8,7 @@ import { createPostgresHardDeleteRepository } from "../src/db/hard-delete-reposi
 import { createUploadSessionService } from "../src/application/upload-sessions.js";
 import { normalizeSourceRelativePath } from "../src/domain/source-path.js";
 import { createPostgresReleasePublicationRepository } from "../src/infrastructure/postgres/release-publication-repository.js";
+import { cleanReleaseReadModelGinPendingLists } from "../src/infrastructure/postgres/release-search-index-maintenance.js";
 import { createPostgresUploadSessionRepository } from "../src/infrastructure/postgres/upload-session-repository.js";
 import { createUploadSessionStoragePort } from "../src/infrastructure/storage/upload-session-storage.js";
 import { writeDirectoryNavigationFiles } from "../src/okf/directory-navigation-files.js";
@@ -400,6 +401,7 @@ describeScale("large nested folder scale integration", () => {
     await timed("treeMaterialization", () =>
       publication.materializeTree({ knowledgeBaseId, releaseId })
     );
+    await timed("searchIndexFinalization", () => cleanReleaseReadModelGinPendingLists(sql));
     expect(metrics.phases.treeMaterialization?.durationMs).toBeLessThan(10_000);
     const fileRepository = repositories.files;
     if (!fileRepository?.listBundleTreeEntries || !fileRepository.searchBundleTreeEntries || !fileRepository.searchBundleFiles) {
@@ -528,6 +530,21 @@ describeScale("large nested folder scale integration", () => {
       FROM focowiki.release_source_files snapshot
       WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
         AND snapshot.release_id = ${releaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.bundle_file_search_documents (
+        bundle_file_id, knowledge_base_id, release_id, source_file_id,
+        file_kind, logical_path, path_text, title_text, description_text,
+        metadata_text, search_text
+      )
+      SELECT file.id, file.knowledge_base_id, file.release_id, file.source_file_id,
+             file.file_kind, file.logical_path, lower(file.logical_path),
+             lower(COALESCE(file.title, '')), '', 'type page',
+             lower(file.logical_path || ' ' || COALESCE(file.title, '') || ' type page')
+      FROM focowiki.bundle_files file
+      WHERE file.knowledge_base_id = ${knowledgeBaseId}
+        AND file.release_id = ${releaseId}
+        AND file.navigation_only = false
     `;
   }
 

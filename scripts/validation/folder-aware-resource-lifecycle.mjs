@@ -34,7 +34,7 @@ const keepKnowledgeBase = process.env.FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE ==
 
 try {
   await loginAdmin();
-  originalPublicationSettings = await usePerFilePublication();
+  originalPublicationSettings = await useValidationPublicationPolicy();
   const credential = await createOpenApiKey();
   keyId = credential.id;
   developer.authorization = `Bearer ${credential.rawKey}`;
@@ -69,6 +69,10 @@ try {
   pass("knowledge-base-update", { resourceRevision: knowledgeBaseRevision });
 
   const samples = selectSamples(8);
+  assert(
+    samples.length === 8,
+    `Expected eight Markdown validation samples under ${sampleRoot}, found ${samples.length}.`
+  );
   const initial = await upload(samples);
   assert(initial.files.length === samples.length, "Initial upload did not return every source file.");
   await waitForFiles(initial.files.map((file) => file.sourceFileId));
@@ -90,7 +94,7 @@ try {
   const additionFile = overlap.files.find((file) => file.relativePath === addition.relativePath);
   assert(additionFile?.sourceFileId, "Overlap upload did not expose the new source-file ID.");
   await waitForFiles([additionFile.sourceFileId]);
-  const afterOverlap = await listSourceFiles();
+  let afterOverlap = await listSourceFiles();
   for (const sample of samples) {
     const before = initialByPath.get(sample.relativePath);
     const after = afterOverlap.find((file) => file.relativePath === sample.relativePath);
@@ -98,6 +102,9 @@ try {
     assert(before?.resourceRevision === after?.resourceRevision, `Overlap upload changed revision for ${sample.relativePath}.`);
   }
   pass("overlap-upload", { skippedExisting: samples.length, uploaded: 1 });
+
+  await checkConcurrentMutationBurst(afterOverlap, sourceBodyByPath);
+  afterOverlap = await listSourceFiles();
 
   const replaceTarget = afterOverlap.find((file) => file.relativePath === samples[0].relativePath);
   assert(replaceTarget, "Replacement target was not returned by the source-file list.");
@@ -208,7 +215,6 @@ try {
     }
   );
   await waitUntilMissing(`/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/${encodeURIComponent(deleteTarget.sourceFileId)}`);
-  pass("source-file-delete", { sourceFileId: deleteTarget.sourceFileId, operationId: fileDelete.operationId });
 
   const directoryForDelete = (await listAllDirectories()).find(
     (directory) => directory.directoryId === fileTargetDirectory.directoryId
@@ -223,6 +229,15 @@ try {
     }
   );
   await waitUntilMissing(`/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-directories/${encodeURIComponent(directoryForDelete.directoryId)}`);
+  await Promise.all([
+    waitForOperation(fileDelete.operationId),
+    waitForOperation(directoryDelete.operationId)
+  ]);
+  pass("overlapping-file-and-directory-delete", {
+    sourceFileId: deleteTarget.sourceFileId,
+    fileOperationId: fileDelete.operationId,
+    directoryOperationId: directoryDelete.operationId
+  });
   const recreated = await uploadAfterDeletion([{
     relativePath: movedRelativePath,
     bytes: moveTargetBytes
@@ -361,12 +376,23 @@ async function createOpenApiKey() {
   return { id: data.key.id, rawKey: data.oneTimeKey.rawKey };
 }
 
-async function usePerFilePublication() {
+async function useValidationPublicationPolicy() {
   const current = await admin.json("/admin/api/settings/runtime");
   const publication = current.settings?.publication;
   assert(publication, "Runtime publication settings are unavailable.");
-  await updatePublicationSettings({ ...publication, mode: "per_file" });
-  pass("publication-mode", { previousMode: publication.mode, validationMode: "per_file" });
+  const validationPolicy = {
+    ...publication,
+    mode: "batch",
+    batchSize: 8,
+    intervalSeconds: 300
+  };
+  await updatePublicationSettings(validationPolicy);
+  pass("publication-mode", {
+    previousMode: publication.mode,
+    validationMode: validationPolicy.mode,
+    validationBatchSize: validationPolicy.batchSize,
+    validationIntervalSeconds: validationPolicy.intervalSeconds
+  });
   return publication;
 }
 
@@ -566,6 +592,55 @@ async function checkConnectedReadOperations(sourceFile) {
   await developer.json(`${base}/files/${encodeURIComponent(entry.fileId)}/related?limit=20`);
   await developer.text(`${base}/source-files/${encodeURIComponent(sourceFile.sourceFileId)}/content`);
   pass("connected-read-operations", { generatedFileId: entry.fileId });
+}
+
+async function checkConcurrentMutationBurst(sourceFiles, sourceBodyByPath) {
+  const targets = sourceFiles
+    .filter((file) => sourceBodyByPath.has(file.relativePath))
+    .slice(0, 8);
+  assert(targets.length === 8, "Concurrent mutation validation requires eight source files.");
+
+  const accepted = await Promise.all(targets.map(async (file, index) => {
+    const original = sourceBodyByPath.get(file.relativePath);
+    assert(original, `Concurrent replacement body is missing for ${file.relativePath}.`);
+    const replacement = Buffer.concat([
+      original,
+      Buffer.from(`\n\n## Concurrent validation ${index + 1}\n\nThis revision validates durable publication coalescing.\n`)
+    ]);
+    const route = `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files/${encodeURIComponent(file.sourceFileId)}/content`;
+    const operation = await acceptOperation(route, {
+      method: "PUT",
+      revision: file.resourceRevision,
+      idempotencyKey: `burst-replace-${index}-${randomUUID()}`,
+      headers: { "content-type": "text/markdown; charset=utf-8" },
+      body: replacement
+    });
+    return { file, operation, route, replacement };
+  }));
+
+  await Promise.all(accepted.map(({ operation }) => waitForOperation(operation.operationId)));
+
+  await Promise.all(accepted.map(async ({ file, route, replacement }, index) => {
+    const response = await developer.request(route, {
+      method: "PUT",
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        "idempotency-key": `burst-conflict-${index}-${randomUUID()}`,
+        "if-match": `"${file.resourceRevision}"`
+      },
+      body: replacement
+    });
+    assert(
+      response.status === 409,
+      `Stale replacement returned HTTP ${response.status} for ${file.relativePath}.`
+    );
+  }));
+
+  pass("concurrent-resource-mutation-burst", {
+    accepted: accepted.length,
+    rejectedConflicts: accepted.length,
+    attemptedMutations: accepted.length * 2
+  });
 }
 
 async function checkUploadSessionCancellation() {

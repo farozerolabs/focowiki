@@ -12,6 +12,8 @@ import type { RedisCoordinator } from "../redis/coordination.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 import { createReleaseId } from "./upload-processor-utils.js";
+import { PublicationCatalogStaleError } from "../domain/publication.js";
+import type { SourceFilePublicationEligibility } from "../domain/source-file-job.js";
 
 export type PublicationRuntimeOptions = {
   mode: PublicationJobMode;
@@ -43,7 +45,8 @@ export type KnowledgeBasePublicationService = {
     fileProcessingConcurrency: number;
     okfLog?: Partial<OkfLogLimits> | undefined;
     options: PublicationRuntimeOptions;
-  }) => Promise<{ published: boolean; releaseId: string | null }>;
+    eligibility: SourceFilePublicationEligibility;
+  }) => Promise<{ published: boolean; releaseId: string | null; catalogGeneration: number | null }>;
   publishNow: (input: {
     knowledgeBaseId: string;
     knowledgeBaseName: string;
@@ -54,8 +57,9 @@ export type KnowledgeBasePublicationService = {
     okfLog?: Partial<OkfLogLimits> | undefined;
     options: PublicationRuntimeOptions;
     reason: PublicationJobReason;
+    targetCatalogGeneration: number;
     allowEmptyPublication?: boolean | undefined;
-  }) => Promise<{ published: boolean; releaseId: string | null }>;
+  }) => Promise<{ published: boolean; releaseId: string | null; catalogGeneration: number | null }>;
 };
 
 export function createKnowledgeBasePublicationService(
@@ -79,7 +83,10 @@ export function createKnowledgeBasePublicationService(
     !files.createPublicationJob ||
     !files.startPublicationJob ||
     !files.completePublicationJob ||
-    !files.failPublicationJob
+    !files.failPublicationJob ||
+    !files.rebuildBundleGraphSearchDocuments ||
+    !files.rebuildReleaseGraphProjection ||
+    !files.refreshReleaseReadSummary
   ) {
     return null;
   }
@@ -90,6 +97,7 @@ export function createKnowledgeBasePublicationService(
   const listPublicationLogHistory = files.listPublicationLogHistory;
   const rebuildBundleGraphSearchDocuments = files.rebuildBundleGraphSearchDocuments;
   const rebuildReleaseGraphProjection = files.rebuildReleaseGraphProjection;
+  const refreshReleaseReadSummary = files.refreshReleaseReadSummary;
   const markSourceFilesPublicationDirty = files.markSourceFilesPublicationDirty;
   const countDirtySourceFiles = files.countDirtySourceFiles;
   const listDirtySourceFiles = files.listDirtySourceFiles;
@@ -111,16 +119,30 @@ export function createKnowledgeBasePublicationService(
         dirtyAt: input.generatedAt
       });
 
-      const dirty = await countDirtySourceFiles({
-        knowledgeBaseId: input.knowledgeBaseId
-      });
       const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
         input.knowledgeBaseId
       );
 
       if (!knowledgeBase) {
-        return { published: false, releaseId: null };
+        return { published: false, releaseId: null, catalogGeneration: null };
       }
+      const targetCatalogGeneration = requireCatalogGeneration(knowledgeBase.catalogGeneration);
+
+      if (input.eligibility === "interactive") {
+        await workerJobs?.enqueuePublicationJob({
+          knowledgeBaseId: input.knowledgeBaseId,
+          reason: "manual",
+          targetCatalogGeneration,
+          runAfter: input.generatedAt,
+          maxAttempts: input.options.workerJobMaxAttempts ?? 3,
+          forceSuccessor: true
+        });
+        return { published: false, releaseId: null, catalogGeneration: null };
+      }
+
+      const dirty = await countDirtySourceFiles({
+        knowledgeBaseId: input.knowledgeBaseId
+      });
 
       const reason = resolvePublicationReason({
         mode: input.options.mode,
@@ -139,21 +161,23 @@ export function createKnowledgeBasePublicationService(
           options: input.options,
           dirtyCount: dirty.count,
           oldestDirtyAt: dirty.oldestDirtyAt,
-          generatedAt: input.generatedAt
+          generatedAt: input.generatedAt,
+          targetCatalogGeneration
         });
-        return { published: false, releaseId: null };
+        return { published: false, releaseId: null, catalogGeneration: null };
       }
 
       if (workerJobs) {
         await workerJobs.enqueuePublicationJob({
           knowledgeBaseId: input.knowledgeBaseId,
           reason,
+          targetCatalogGeneration,
           runAfter: input.generatedAt,
           maxAttempts: input.options.workerJobMaxAttempts ?? 3
         });
       }
 
-      return { published: false, releaseId: null };
+      return { published: false, releaseId: null, catalogGeneration: null };
     },
     async publishNow(input) {
       const ownerId = `publication-worker-${randomUUID()}`;
@@ -164,14 +188,19 @@ export function createKnowledgeBasePublicationService(
       );
 
       if (!lockAcquired) {
-        return { published: false, releaseId: null };
+        return { published: false, releaseId: null, catalogGeneration: null };
       }
 
       try {
         let nextReason: PublicationJobReason | null = input.reason;
-        let result: { published: boolean; releaseId: string | null } = {
+        let result: {
+          published: boolean;
+          releaseId: string | null;
+          catalogGeneration: number | null;
+        } = {
           published: false,
-          releaseId: null
+          releaseId: null,
+          catalogGeneration: null
         };
 
         while (nextReason) {
@@ -193,6 +222,13 @@ export function createKnowledgeBasePublicationService(
           if (!knowledgeBase) {
             return result;
           }
+          const committedCatalogGeneration = requireCatalogGeneration(
+            knowledgeBase.catalogGeneration
+          );
+          if (committedCatalogGeneration < input.targetCatalogGeneration) {
+            throw new PublicationCatalogStaleError();
+          }
+          const releaseCatalogGeneration = input.targetCatalogGeneration;
 
           const job = await createPublicationJob({
             id: `publication-job-${randomUUID()}`,
@@ -219,6 +255,7 @@ export function createKnowledgeBasePublicationService(
               id: releaseId,
               knowledgeBaseId: input.knowledgeBaseId,
               bundleRootKey,
+              catalogGeneration: releaseCatalogGeneration,
               generatedAt: input.generatedAt,
               publishedAt: null,
               fileCount: 0,
@@ -327,12 +364,10 @@ export function createKnowledgeBasePublicationService(
                         }))
                       }))
                 : undefined,
-              materializeGraphProjection: rebuildReleaseGraphProjection
-                ? () => rebuildReleaseGraphProjection({
-                    knowledgeBaseId: input.knowledgeBaseId,
-                    releaseId
-                  }).then(() => undefined)
-                : undefined,
+              materializeGraphProjection: () => rebuildReleaseGraphProjection({
+                knowledgeBaseId: input.knowledgeBaseId,
+                releaseId
+              }).then(() => undefined),
               fetchSourcePage: ({ cursor, limit }) =>
                 releasePublication.listSourceFiles({
                   knowledgeBaseId: input.knowledgeBaseId,
@@ -384,7 +419,15 @@ export function createKnowledgeBasePublicationService(
                 releaseId
               })
             });
-            await rebuildBundleGraphSearchDocuments?.({
+            await rebuildBundleGraphSearchDocuments({
+              knowledgeBaseId: input.knowledgeBaseId,
+              releaseId
+            });
+            await refreshReleaseReadSummary({
+              knowledgeBaseId: input.knowledgeBaseId,
+              releaseId
+            });
+            await files.finalizeReleaseSearchIndexes?.({
               knowledgeBaseId: input.knowledgeBaseId,
               releaseId
             });
@@ -392,11 +435,7 @@ export function createKnowledgeBasePublicationService(
               repository: releasePublication,
               knowledgeBaseId: input.knowledgeBaseId,
               releaseId,
-              requireGraph: Boolean(
-                repositories.graph?.listActiveGraphNodes
-                && repositories.graph.listActiveGraphEdges
-                && rebuildReleaseGraphProjection
-              )
+              requireGraph: true
             });
             const endedAt = new Date().toISOString();
             const activeKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
@@ -450,29 +489,31 @@ export function createKnowledgeBasePublicationService(
               ttlSeconds: input.cursorTtlSeconds
             });
 
-            result = { published: true, releaseId };
+            result = {
+              published: true,
+              releaseId,
+              catalogGeneration: releaseCatalogGeneration
+            };
             const dirty = await countDirtySourceFiles({
               knowledgeBaseId: input.knowledgeBaseId
             });
-            nextReason = resolveLockedContinuationReason({
-              mode: input.options.mode,
-              dirtyCount: dirty.count,
-              batchSize: input.options.batchSize,
-              oldestDirtyAt: dirty.oldestDirtyAt,
-              generatedAt: input.generatedAt,
-              intervalSeconds: input.options.intervalSeconds
-            });
-
-            if (!nextReason) {
+            const latestKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
+              input.knowledgeBaseId
+            );
+            if (latestKnowledgeBase) {
               await enqueuePendingPublicationWorkerJob({
                 workerJobs,
                 knowledgeBaseId: input.knowledgeBaseId,
                 options: input.options,
                 dirtyCount: dirty.count,
                 oldestDirtyAt: dirty.oldestDirtyAt,
-                generatedAt: input.generatedAt
+                generatedAt: input.generatedAt,
+                targetCatalogGeneration: requireCatalogGeneration(
+                  latestKnowledgeBase.catalogGeneration
+                )
               });
             }
+            nextReason = null;
           } catch (error) {
             const endedAt = new Date().toISOString();
             const message = error instanceof Error ? error.message : "Publication failed";
@@ -509,6 +550,7 @@ export async function enqueuePendingPublicationWorkerJob(input: {
   dirtyCount: number;
   oldestDirtyAt: string | null;
   generatedAt: string;
+  targetCatalogGeneration: number;
 }): Promise<void> {
   if (!input.workerJobs || input.dirtyCount === 0 || input.options.mode === "manual") {
     return;
@@ -523,9 +565,17 @@ export async function enqueuePendingPublicationWorkerJob(input: {
   await input.workerJobs.enqueuePublicationJob({
     knowledgeBaseId: input.knowledgeBaseId,
     reason: next.reason,
+    targetCatalogGeneration: input.targetCatalogGeneration,
     runAfter: next.runAfter,
     maxAttempts: input.options.workerJobMaxAttempts ?? 3
   });
+}
+
+function requireCatalogGeneration(value: number | undefined): number {
+  if (!Number.isSafeInteger(value) || (value ?? -1) < 0) {
+    throw new Error("Knowledge base catalog generation is invalid.");
+  }
+  return value as number;
 }
 
 function resolvePendingPublicationJob(input: {
@@ -572,33 +622,6 @@ function resolvePublicationReason(input: {
 
   if (!input.hasActiveRelease) {
     return "bootstrap";
-  }
-
-  if (input.dirtyCount >= input.batchSize) {
-    return "batch_threshold";
-  }
-
-  if (input.oldestDirtyAt && isIntervalDue(input.oldestDirtyAt, input.generatedAt, input.intervalSeconds)) {
-    return "batch_interval";
-  }
-
-  return null;
-}
-
-function resolveLockedContinuationReason(input: {
-  mode: PublicationJobMode;
-  dirtyCount: number;
-  batchSize: number;
-  oldestDirtyAt: string | null;
-  generatedAt: string;
-  intervalSeconds: number;
-}): PublicationJobReason | null {
-  if (input.mode === "manual" || input.dirtyCount === 0) {
-    return null;
-  }
-
-  if (input.mode === "per_file") {
-    return "per_file";
   }
 
   if (input.dirtyCount >= input.batchSize) {

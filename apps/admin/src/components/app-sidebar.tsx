@@ -163,7 +163,7 @@ export function AppSidebar({
           <Button type="button" variant="ghost" size="icon-sm" aria-label={labels.back} onClick={onBack}>
             <ArrowLeftIcon />
           </Button>
-          <img src="/logo.jpg" alt="" className="size-7 rounded object-cover" />
+          <img src="/logo.svg" alt="" className="size-7 object-contain" />
           <div className="min-w-0">
             <p className="truncate text-xs text-sidebar-foreground/70">{appName}</p>
             <p className="truncate text-sm font-medium">{knowledgeBaseName}</p>

@@ -10,6 +10,7 @@ import type {
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { SourceFilePublicationEligibility } from "../domain/source-file-job.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
 import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
@@ -48,6 +49,7 @@ export type SourceFileProcessInput = {
   publication?: Partial<PublicationRuntimeOptions> | undefined;
   graph?: Partial<RuntimeGraphSettings> | undefined;
   modelAssistance?: ModelAssistanceOptions | null | undefined;
+  publicationEligibility?: SourceFilePublicationEligibility | undefined;
 };
 
 export function createSourceFileQueueProcessor(
@@ -277,6 +279,7 @@ export function createSourceFileQueueProcessor(
           fileProcessingConcurrency: input.fileProcessingConcurrency,
           okfLog: input.okfLog,
           options: resolvePublicationOptions(input),
+          eligibility: input.publicationEligibility ?? "import",
           progressClock,
           mark,
           recordStage

@@ -7,34 +7,40 @@ export type QueryPlanTargetName =
   | "source-file-list-error-filter"
   | "source-file-list-model-filter"
   | "source-file-list-action-filter"
-	  | "source-resource-list-filter"
-	  | "worker-job-source-cancellation"
-	  | "knowledge-tree-page"
-	  | "knowledge-tree-search-name"
-	  | "knowledge-tree-search-path"
-	  | "knowledge-tree-search-next-page"
-	  | "knowledge-tree-search-ancestors"
-	  | "knowledge-file-content"
-	  | "knowledge-file-search-first-page"
-	  | "knowledge-file-search-next-page"
-	  | "knowledge-file-search-no-result"
-	  | "knowledge-file-search-kind-filter"
-	  | "knowledge-file-search-cache-hit"
-	  | "knowledge-graph-search-first-page"
-	  | "knowledge-graph-search-edge-match"
-	  | "graph-expand-file-neighborhood"
-	  | "graph-expand-edge-seed"
-	  | "graph-expand-query-seed"
-	  | "source-file-graph-summary"
-	  | "hard-delete-source-knowledge-graph-search-documents"
-	  | "hard-delete-source-knowledge-graph-edges"
-	  | "hard-delete-source-knowledge-tree-entries"
-	  | "hard-delete-source-bundle-files"
-	  | "hard-delete-source-worker-jobs"
-	  | "hard-delete-knowledge-base-graph-search-documents"
-	  | "hard-delete-knowledge-base-graph-edges"
-	  | "hard-delete-knowledge-base-tree-entries"
-	  | "hard-delete-knowledge-base-bundle-files"
+  | "source-file-event-page"
+  | "source-resource-list-filter"
+  | "resource-operation-page"
+  | "worker-job-source-cancellation"
+  | "knowledge-tree-page"
+  | "knowledge-tree-search-name"
+  | "knowledge-tree-search-path"
+  | "knowledge-tree-search-next-page"
+  | "knowledge-tree-search-ancestors"
+  | "knowledge-file-content"
+  | "knowledge-file-search-first-page"
+  | "knowledge-file-search-next-page"
+  | "knowledge-file-search-multi-term"
+  | "knowledge-file-search-no-result"
+  | "knowledge-file-search-kind-filter"
+  | "knowledge-file-search-cache-hit"
+  | "release-read-summary"
+  | "knowledge-graph-search-first-page"
+  | "knowledge-graph-search-edge-match"
+  | "knowledge-graph-search-multi-term"
+  | "knowledge-hybrid-search-first-page"
+  | "graph-expand-file-neighborhood"
+  | "graph-expand-edge-seed"
+  | "graph-expand-query-seed"
+  | "source-file-graph-summary"
+  | "hard-delete-source-knowledge-graph-search-documents"
+  | "hard-delete-source-knowledge-graph-edges"
+  | "hard-delete-source-knowledge-tree-entries"
+  | "hard-delete-source-bundle-files"
+  | "hard-delete-source-worker-jobs"
+  | "hard-delete-knowledge-base-graph-search-documents"
+  | "hard-delete-knowledge-base-graph-edges"
+  | "hard-delete-knowledge-base-tree-entries"
+  | "hard-delete-knowledge-base-bundle-files"
   | "hard-delete-knowledge-base-source-files"
   | "hard-delete-knowledge-base-worker-jobs"
   | "release-validation-source-page"
@@ -53,7 +59,11 @@ export type QueryPlanTarget = {
 export type QueryPlanSummary = {
   nodeTypes: string[];
   relationNames: string[];
+  indexNames: string[];
+  sequentialScanRelations: string[];
   hasSequentialScan: boolean;
+  actualRows: number;
+  rowsRemovedByFilter: number;
   planningTimeMs: number | null;
   executionTimeMs: number | null;
   sharedHitBlocks: number;
@@ -63,8 +73,11 @@ export type QueryPlanSummary = {
 type JsonPlanNode = {
   "Node Type"?: unknown;
   "Relation Name"?: unknown;
+  "Index Name"?: unknown;
   "Shared Hit Blocks"?: unknown;
   "Shared Read Blocks"?: unknown;
+  "Actual Rows"?: unknown;
+  "Rows Removed by Filter"?: unknown;
   Plans?: unknown;
 };
 
@@ -92,12 +105,17 @@ export function summarizeQueryPlan(planJson: unknown): QueryPlanSummary {
   const record = readExplainRecord(planJson);
   const nodeTypes = new Set<string>();
   const relationNames = new Set<string>();
+  const indexNames = new Set<string>();
+  const sequentialScanRelations = new Set<string>();
   let sharedHitBlocks = 0;
   let sharedReadBlocks = 0;
+  let actualRows = 0;
+  let rowsRemovedByFilter = 0;
 
   collectPlanNode(record.Plan, (node) => {
     const nodeType = readString(node["Node Type"]);
     const relationName = readString(node["Relation Name"]);
+    const indexName = readString(node["Index Name"]);
 
     if (nodeType) {
       nodeTypes.add(nodeType);
@@ -105,16 +123,29 @@ export function summarizeQueryPlan(planJson: unknown): QueryPlanSummary {
 
     if (relationName) {
       relationNames.add(relationName);
+      if (nodeType === "Seq Scan") {
+        sequentialScanRelations.add(relationName);
+      }
+    }
+
+    if (indexName) {
+      indexNames.add(indexName);
     }
 
     sharedHitBlocks += readNumber(node["Shared Hit Blocks"]) ?? 0;
     sharedReadBlocks += readNumber(node["Shared Read Blocks"]) ?? 0;
+    actualRows += readNumber(node["Actual Rows"]) ?? 0;
+    rowsRemovedByFilter += readNumber(node["Rows Removed by Filter"]) ?? 0;
   });
 
   return {
     nodeTypes: [...nodeTypes],
     relationNames: [...relationNames],
+    indexNames: [...indexNames],
+    sequentialScanRelations: [...sequentialScanRelations],
     hasSequentialScan: nodeTypes.has("Seq Scan"),
+    actualRows,
+    rowsRemovedByFilter,
     planningTimeMs: readNumber(record["Planning Time"]),
     executionTimeMs: readNumber(record["Execution Time"]),
     sharedHitBlocks,
@@ -248,6 +279,21 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       `
     },
     {
+      name: "source-file-event-page",
+      description: "Source-file events must use a resource-scoped keyset cursor.",
+      sql: `
+        SELECT id, knowledge_base_id, source_file_id, stage_key, message_key,
+               started_at, ended_at, severity, created_at
+        FROM focowiki.source_file_events
+        WHERE knowledge_base_id = 'kb-plan'
+          AND source_file_id = 'source-file-plan'
+          AND (created_at > '2026-01-01T00:00:00.000Z'
+            OR (created_at = '2026-01-01T00:00:00.000Z' AND id > 'source-event-plan'))
+        ORDER BY created_at ASC, id ASC
+        LIMIT 51
+      `
+    },
+    {
       name: "source-resource-list-filter",
       description: "Version-two source resources must use indexed path, processing, output, and ID cursor filters.",
       sql: `
@@ -264,6 +310,27 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
           AND generated_output_status = 'visible'
           AND id > 'source-file-plan'
         ORDER BY id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "resource-operation-page",
+      description: "Resource-operation pages must use a knowledge-base scoped keyset cursor and bounded target lookup.",
+      sql: `
+        SELECT operation.id, operation.knowledge_base_id, operation.operation_kind,
+               operation.state, operation.candidate_catalog_generation,
+               target.target_kind, target.target_id
+        FROM focowiki.resource_operations operation
+        LEFT JOIN LATERAL (
+          SELECT candidate.target_kind, candidate.target_id
+          FROM focowiki.resource_operation_targets candidate
+          WHERE candidate.operation_id = operation.id
+          ORDER BY candidate.sequence_number ASC, candidate.target_kind ASC, candidate.target_id ASC
+          LIMIT 1
+        ) target ON TRUE
+        WHERE operation.knowledge_base_id = 'kb-plan'
+          AND operation.id > 'operation-plan'
+        ORDER BY operation.id ASC
         LIMIT 51
       `
     },
@@ -292,6 +359,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.knowledge_file_tree_nodes entry
         LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
           AND entry.parent_id IS NULL
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
@@ -308,7 +376,8 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.knowledge_file_tree_nodes entry
         LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND (entry.name || ' ' || entry.path) ILIKE '%example%' ESCAPE '\\'
+          AND entry.release_id = 'release-plan'
+          AND lower(entry.name || ' ' || entry.path) LIKE '%example%' ESCAPE '\\'
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
@@ -324,7 +393,8 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.knowledge_file_tree_nodes entry
         LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND (entry.name || ' ' || entry.path) ILIKE '%pages/example%' ESCAPE '\\'
+          AND entry.release_id = 'release-plan'
+          AND lower(entry.name || ' ' || entry.path) LIKE '%pages/guides/example%' ESCAPE '\\'
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
       `
@@ -340,7 +410,8 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.knowledge_file_tree_nodes entry
         LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
-          AND (entry.name || ' ' || entry.path) ILIKE '%example%' ESCAPE '\\'
+          AND entry.release_id = 'release-plan'
+          AND lower(entry.name || ' ' || entry.path) LIKE '%example%' ESCAPE '\\'
           AND (entry.sort_key > '1:example.md' OR (entry.sort_key = '1:example.md' AND entry.id > 'tree-entry-plan'))
         ORDER BY entry.sort_key ASC, entry.id ASC
         LIMIT 51
@@ -357,6 +428,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         FROM focowiki.knowledge_file_tree_nodes entry
         LEFT JOIN focowiki.bundle_files file ON file.id = entry.file_id
         WHERE entry.knowledge_base_id = 'kb-plan'
+          AND entry.release_id = 'release-plan'
           AND entry.path = ANY(ARRAY['pages', 'pages/guides'])
         ORDER BY entry.path ASC
       `
@@ -375,59 +447,74 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
     },
     {
       name: "knowledge-file-search-first-page",
-      description: "Developer file search first page must use knowledge files without release joins.",
+      description: "Developer file search first page must use the flat release-scoped search document.",
       sql: `
-        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_files
+        SELECT bundle_file_id, file_kind, logical_path
+        FROM focowiki.bundle_file_search_documents
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
           AND file_kind = 'page'
-          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%example%' ESCAPE '\\'
-        ORDER BY logical_path ASC, id ASC
-        LIMIT 51
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 1000
       `
     },
     {
       name: "knowledge-file-search-next-page",
-      description: "Developer file search next page must use cursor seek over knowledge files.",
+      description: "Developer file search next page must use a keyset cursor over flat search documents.",
       sql: `
-        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_files
+        SELECT bundle_file_id, file_kind, logical_path
+        FROM focowiki.bundle_file_search_documents
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
           AND file_kind = 'page'
-          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%example%' ESCAPE '\\'
-          AND (logical_path > 'pages/example.md' OR (logical_path = 'pages/example.md' AND id > 'bundle-file-plan'))
-        ORDER BY logical_path ASC, id ASC
-        LIMIT 51
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+          AND (logical_path > 'pages/example.md' OR (logical_path = 'pages/example.md' AND bundle_file_id > 'bundle-file-plan'))
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 1000
+      `
+    },
+    {
+      name: "knowledge-file-search-multi-term",
+      description: "Multi-term file search must combine bounded trigram-indexed term predicates.",
+      sql: `
+        SELECT bundle_file_id, file_kind, logical_path
+        FROM focowiki.bundle_file_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND file_kind = 'page'
+          AND search_text ILIKE '%example%' ESCAPE '\\'
+          AND search_text ILIKE '%generic%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 1000
       `
     },
     {
       name: "knowledge-file-search-no-result",
-      description: "Developer file search no-result checks must stay bounded on knowledge files.",
+      description: "Developer file search no-result checks must stay bounded on flat search documents.",
       sql: `
-        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_files
+        SELECT bundle_file_id, file_kind, logical_path
+        FROM focowiki.bundle_file_search_documents
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
           AND file_kind = 'page'
-          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%no-such-file%' ESCAPE '\\'
-        ORDER BY logical_path ASC, id ASC
-        LIMIT 51
+          AND search_text ILIKE '%no-such-file%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 1000
       `
     },
     {
       name: "knowledge-file-search-kind-filter",
-      description: "Developer file search kind filter must use knowledge-base and file-kind scoped indexes.",
+      description: "Developer file search kind filter must use release and file-kind scoped search indexes.",
       sql: `
-        SELECT id, source_file_id, file_kind, logical_path, title, description, tags_json
-        FROM focowiki.bundle_files
+        SELECT bundle_file_id, file_kind, logical_path
+        FROM focowiki.bundle_file_search_documents
         WHERE knowledge_base_id = 'kb-plan'
           AND release_id = 'release-plan'
           AND file_kind = 'schema'
-          AND (logical_path || ' ' || coalesce(title, '') || ' ' || coalesce(description, '') || ' ' || tags_json::text) ILIKE '%schema%' ESCAPE '\\'
-        ORDER BY logical_path ASC, id ASC
-        LIMIT 51
+          AND search_text ILIKE '%schema%' ESCAPE '\\'
+        ORDER BY logical_path ASC, bundle_file_id ASC
+        LIMIT 1000
       `
     },
     {
@@ -441,6 +528,18 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       `
     },
     {
+      name: "release-read-summary",
+      description: "Search availability and counts must resolve from one compact release summary row.",
+      sql: `
+        SELECT searchable_file_count, graph_document_count,
+               graph_relationship_count, graph_node_count, graph_edge_count
+        FROM focowiki.release_read_summaries
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+        LIMIT 1
+      `
+    },
+    {
       name: "knowledge-graph-search-first-page",
       description: "Developer graph search first page must use knowledge graph search documents.",
       sql: `
@@ -448,8 +547,11 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
                relationship_count, top_neighbors_json
         FROM focowiki.knowledge_graph_search_documents
         WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND file_id IS NOT NULL
+          AND path IS NOT NULL
           AND search_text ILIKE '%example%' ESCAPE '\\'
-        ORDER BY path ASC NULLS LAST, id ASC
+        ORDER BY path ASC NULLS LAST, file_id ASC, id ASC
         LIMIT 51
       `
     },
@@ -460,10 +562,48 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         SELECT id, file_id, node_id, edge_id, path, title, summary, matched_field_text
         FROM focowiki.knowledge_graph_search_documents
         WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
           AND anchor_type = 'edge'
+          AND file_id IS NOT NULL
+          AND path IS NOT NULL
           AND search_text ILIKE '%example%' ESCAPE '\\'
-        ORDER BY path ASC NULLS LAST, id ASC
+        ORDER BY path ASC NULLS LAST, file_id ASC, id ASC
         LIMIT 26
+      `
+    },
+    {
+      name: "knowledge-graph-search-multi-term",
+      description: "Multi-term graph search must combine bounded indexed graph-context predicates.",
+      sql: `
+        SELECT id, file_id, path, anchor_type, title, summary
+        FROM focowiki.knowledge_graph_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND file_id IS NOT NULL
+          AND path IS NOT NULL
+          AND (search_text ILIKE '%example%' ESCAPE '\\' OR neighbor_text ILIKE '%example%' ESCAPE '\\')
+          AND (search_text ILIKE '%generic%' ESCAPE '\\' OR neighbor_text ILIKE '%generic%' ESCAPE '\\')
+        ORDER BY path ASC NULLS LAST, file_id ASC, id ASC
+        LIMIT 51
+      `
+    },
+    {
+      name: "knowledge-hybrid-search-first-page",
+      description: "Hybrid search must use the same bounded release graph document candidates as graph search.",
+      sql: `
+        SELECT id, file_id, node_id, edge_id, path, anchor_type, title, summary,
+               relationship_count, top_neighbors_json
+        FROM focowiki.knowledge_graph_search_documents
+        WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND file_id IS NOT NULL
+          AND path IS NOT NULL
+          AND (
+            search_text ILIKE '%example%' ESCAPE '\\'
+            OR neighbor_text ILIKE '%example%' ESCAPE '\\'
+          )
+        ORDER BY path ASC NULLS LAST, file_id ASC, id ASC
+        LIMIT 1000
       `
     },
     {
@@ -556,8 +696,11 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
                relationship_count, top_neighbors_json
         FROM focowiki.knowledge_graph_search_documents
         WHERE knowledge_base_id = 'kb-plan'
+          AND release_id = 'release-plan'
+          AND file_id IS NOT NULL
+          AND path IS NOT NULL
           AND search_text ILIKE '%example%' ESCAPE '\\'
-        ORDER BY path ASC NULLS LAST, id ASC
+        ORDER BY path ASC NULLS LAST, file_id ASC, id ASC
         LIMIT 26
       `
     }

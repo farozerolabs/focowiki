@@ -49,6 +49,7 @@ const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
 const REQUIRE_MODEL_ENV = "FOCOWIKI_VALIDATION_REQUIRE_MODEL";
+const KEEP_KNOWLEDGE_BASE_ENV = "FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE";
 const WHITE_BOX = "white-box";
 const BLACK_BOX = "black-box";
 const EXPECTED_UPLOAD_PHASE_KEYS = new Set([
@@ -107,6 +108,10 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   throw new Error(`Unknown validation command: ${command}`);
+}
+
+export function shouldKeepValidationKnowledgeBase(env) {
+  return readBooleanEnv(env[KEEP_KNOWLEDGE_BASE_ENV]);
 }
 
 function normalizeCommand(rawCommand) {
@@ -446,14 +451,25 @@ export async function runApiValidation() {
       sourceFileId: selectTaskDeletionCandidate(completedBatchFiles, deletionEvidence.sourceFileId),
       report
     });
-    logValidationStep("knowledge-base-deletion");
-    await validateKnowledgeBaseDeletion({
-      admin,
-      publicApi,
-      env,
-      knowledgeBaseId: knowledgeBase.id,
-      report
-    });
+    if (shouldKeepValidationKnowledgeBase(env)) {
+      report.checks.push(
+        okCheck(
+          "knowledge-base-preserved",
+          "The validation knowledge base was explicitly preserved for bounded follow-up inspection.",
+          { knowledgeBaseId: knowledgeBase.id },
+          WHITE_BOX
+        )
+      );
+    } else {
+      logValidationStep("knowledge-base-deletion");
+      await validateKnowledgeBaseDeletion({
+        admin,
+        publicApi,
+        env,
+        knowledgeBaseId: knowledgeBase.id,
+        report
+      });
+    }
     logValidationStep("security-audit");
     await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
     await recordOperationalPerformanceSnapshot(env.DATABASE_URL, knowledgeBase.id, performanceEvidence, report);

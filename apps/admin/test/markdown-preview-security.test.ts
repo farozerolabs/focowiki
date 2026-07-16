@@ -21,7 +21,9 @@ describe("Markdown preview security", () => {
     expect(html).not.toContain("<img");
     expect(html).not.toContain('href="javascript:');
     expect(html).not.toContain('href="data:');
-    expect(html).toContain("https://example.com/docs");
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
     expect(html).toContain("title: Unsafe");
   });
 
@@ -83,6 +85,18 @@ describe("Markdown preview security", () => {
     expect(html).not.toContain("<a");
     expect(html).not.toContain("<button");
     expect(html).not.toContain('href=""');
+    expect(html).toContain("<span");
+  });
+
+  it.each([
+    "%25252525252e%25252525252e/outside.md",
+    "%25252525252f%25252525252fexample.com/outside.md",
+    "%252525256a%2525252561%2525252576%2525252561%2525252573%2525252563%2525252572%2525252569%2525252570%2525252574%252525253aalert(1)"
+  ])("rejects paths that remain encoded after bounded decoding: %s", (href) => {
+    const html = renderMarkdownPreview(`[unsafe](${href})`, "pages/team/guide.md");
+
+    expect(html).not.toContain("<a");
+    expect(html).not.toContain("<button");
     expect(html).toContain("<span");
   });
 });

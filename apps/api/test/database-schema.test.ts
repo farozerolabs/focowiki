@@ -12,12 +12,12 @@ function readNormalized(path: string): string {
 }
 
 describe("resource-editing database baseline", () => {
-  it("creates one clean version-three schema", () => {
+  it("creates one clean relation-search-publication schema", () => {
     const sql = readNormalized(migrationPath);
 
     expect(sql).toContain("create schema focowiki");
     expect(sql).toContain("create extension pg_trgm with schema focowiki");
-    expect(sql).toContain("values (true, 'admin-resource-editing-v3')");
+    expect(sql).toContain("values (true, 'relation-search-publication-v1')");
     for (const table of [
       "knowledge_bases",
       "source_directories",
@@ -36,11 +36,13 @@ describe("resource-editing database baseline", () => {
       "release_resource_operations",
       "release_markdown_links",
       "bundle_files",
+      "bundle_file_search_documents",
       "knowledge_file_tree_nodes",
       "knowledge_graph_nodes",
       "knowledge_graph_edges",
       "knowledge_graph_search_documents",
       "knowledge_graph_insights",
+      "release_read_summaries",
       "source_file_graph_nodes",
       "source_file_graph_edges",
       "worker_jobs",
@@ -178,12 +180,17 @@ describe("resource-editing database baseline", () => {
       "release_resource_operations_operation_idx",
       "release_markdown_links_cursor_idx",
       "release_markdown_links_source_idx",
-      "bundle_files_search_text_trgm_idx",
-      "bundle_files_metadata_search_trgm_idx",
-      "bundle_files_logical_path_trgm_idx",
+      "bundle_file_search_documents_search_text_trgm_idx",
+      "bundle_file_search_documents_metadata_text_trgm_idx",
+      "bundle_file_search_documents_path_text_trgm_idx",
+      "bundle_file_search_documents_release_cursor_idx",
       "knowledge_file_tree_nodes_source_directory_idx",
       "knowledge_file_tree_nodes_search_text_trgm_idx",
-      "knowledge_graph_search_documents_search_text_trgm_idx"
+      "knowledge_file_tree_nodes_search_cursor_idx",
+      "knowledge_graph_search_documents_search_text_trgm_idx",
+      "knowledge_graph_search_documents_neighbor_text_trgm_idx",
+      "knowledge_graph_search_documents_release_cursor_idx",
+      "release_read_summaries_knowledge_base_idx"
     ]) {
       expect(sql).toContain(value);
     }

@@ -1,5 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
@@ -12,6 +13,7 @@ const adminUiHost = readHost("ADMIN_UI_HOST", "::");
 const adminApiPort = readPort("ADMIN_API_PORT", process.env.PORT ?? "43000");
 const adminApiProxyTarget =
   process.env.ADMIN_API_PROXY_TARGET ?? `http://127.0.0.1:${adminApiPort}`;
+const developmentCspNonce = randomBytes(16).toString("base64url");
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -20,12 +22,15 @@ const contentSecurityPolicy = [
   "img-src 'self' data:",
   "font-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'nonce-${developmentCspNonce}'`,
   "connect-src 'self' http: https: ws: wss:",
   "form-action 'self'"
 ].join("; ");
 
 export default defineConfig({
+  html: {
+    cspNonce: developmentCspNonce
+  },
   plugins: [stripProductionDebugOutput(), react(), tailwindcss()],
   resolve: {
     alias: {

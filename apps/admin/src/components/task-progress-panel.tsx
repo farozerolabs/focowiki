@@ -20,7 +20,6 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
@@ -150,7 +149,6 @@ export function SourceFileProgressPanel({
       <Card className="min-h-[calc(100svh-5.5rem)] min-w-0" data-testid="source-file-progress-panel">
         <CardHeader>
           <CardTitle>{t("tasks.title")}</CardTitle>
-          <CardDescription>{t("tasks.description")}</CardDescription>
           <CardAction className="flex gap-2">
             <Button type="button" variant="outline" onClick={onRefresh} disabled={pagination.isLoading}>
               <RefreshCwIcon data-icon="inline-start" />

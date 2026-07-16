@@ -161,8 +161,12 @@ function createDeveloperFileReadActions(input: {
 }
 
 export function toDeveloperRelatedFile(record: FileGraphRelatedRecord, knowledgeBaseId: string) {
+  if (!record.bundleFileId) {
+    throw new Error("Related file is missing its published bundle identity");
+  }
+
   return {
-    fileId: record.fileId,
+    fileId: record.bundleFileId,
     sourceFileId: record.sourceFileId,
     bundleFileId: record.bundleFileId,
     path: record.path,

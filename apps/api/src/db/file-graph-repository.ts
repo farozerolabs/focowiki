@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { OkfGraphEdge, OkfGraphNode } from "@focowiki/okf";
+import {
+  presentGraphRelationship,
+  type OkfGraphEdge,
+  type OkfGraphNode
+} from "@focowiki/okf";
 import type { DatabaseClient } from "./client.js";
 import type {
   FileGraphJobRecord,
@@ -45,6 +49,9 @@ type GraphEdgeRow = {
 };
 
 type RelatedRow = {
+  current_source_file_id: string;
+  current_path: string;
+  current_title: string;
   source_file_id: string;
   bundle_file_id: string | null;
   path: string;
@@ -472,7 +479,18 @@ async function listSourceNeighborhood(
 ) {
   const cursor = parseRelationCursor(input.cursor ?? null);
   const rows = await sql<RelatedRow[]>`
-    WITH raw_relationships AS (
+    WITH current_node AS (
+      SELECT node.source_file_id, node.path, node.title
+      FROM focowiki.source_file_graph_nodes node
+      JOIN focowiki.source_files source
+        ON source.id = node.source_file_id
+       AND source.knowledge_base_id = node.knowledge_base_id
+      WHERE node.knowledge_base_id = ${input.knowledgeBaseId}
+        AND node.source_file_id = ${input.sourceFileId}
+        AND source.deleted_at IS NULL
+        AND source.deletion_intent_id IS NULL
+      LIMIT 1
+    ), raw_relationships AS (
       SELECT edge.to_source_file_id AS source_file_id, edge.relation_type,
              'outgoing'::text AS direction, edge.weight, edge.reason, edge.source, edge.evidence_json
       FROM focowiki.source_file_graph_edges edge
@@ -498,7 +516,9 @@ async function listSourceNeighborhood(
       ) ranked
       WHERE relationship_rank = 1
     )
-    SELECT related.source_file_id, NULL::text AS bundle_file_id, node.path,
+    SELECT current.source_file_id AS current_source_file_id,
+           current.path AS current_path, current.title AS current_title,
+           related.source_file_id, NULL::text AS bundle_file_id, node.path,
            node.title, related.relation_type, related.direction::text AS direction,
            related.weight, related.reason, related.source, related.evidence_json,
            false AS content_available
@@ -507,6 +527,7 @@ async function listSourceNeighborhood(
       ON node.knowledge_base_id = ${input.knowledgeBaseId}
      AND node.source_file_id = related.source_file_id
     JOIN focowiki.source_files source ON source.id = related.source_file_id
+    CROSS JOIN current_node current
     WHERE source.deleted_at IS NULL AND source.deletion_intent_id IS NULL
       ${cursor ? sql`AND (related.weight < ${cursor.weight}
         OR (related.weight = ${cursor.weight} AND related.source_file_id > ${cursor.fileId}))` : sql``}
@@ -587,7 +608,9 @@ async function listReleaseNeighborhood(
   const cursor = parseRelationCursor(input.cursor ?? null);
   const rows = await sql<RelatedRow[]>`
     WITH source_file AS (
-      SELECT id FROM focowiki.bundle_files
+      SELECT id, source_file_id, logical_path,
+             COALESCE(title, logical_path) AS title
+      FROM focowiki.bundle_files
       WHERE knowledge_base_id = ${input.knowledgeBaseId} AND release_id = ${input.releaseId}
         AND source_file_id = ${input.sourceFileId} AND file_kind = 'page'
       LIMIT 1
@@ -617,12 +640,15 @@ async function listReleaseNeighborhood(
       ) ranked
       WHERE relationship_rank = 1
     )
-    SELECT file.source_file_id, file.id AS bundle_file_id, file.logical_path AS path,
+    SELECT current.source_file_id AS current_source_file_id,
+           current.logical_path AS current_path, current.title AS current_title,
+           file.source_file_id, file.id AS bundle_file_id, file.logical_path AS path,
            COALESCE(file.title, file.logical_path) AS title, related.relation_type,
            related.direction::text AS direction, related.weight, related.reason,
            related.source, related.evidence_json, true AS content_available
     FROM relationships related
     JOIN focowiki.bundle_files file ON file.id = related.file_id AND file.release_id = ${input.releaseId}
+    CROSS JOIN source_file current
     WHERE file.source_file_id IS NOT NULL
       ${cursor ? sql`AND (related.weight < ${cursor.weight}
         OR (related.weight = ${cursor.weight} AND file.source_file_id > ${cursor.fileId}))` : sql``}
@@ -687,18 +713,33 @@ function mapEdge(row: GraphEdgeRow): OkfGraphEdge {
 }
 
 function mapRelated(row: RelatedRow): FileGraphRelatedRecord {
-  return {
+  const current = {
+    fileId: row.current_source_file_id,
+    path: row.current_path,
+    title: row.current_title
+  };
+  const related = {
     fileId: row.source_file_id,
+    path: row.path,
+    title: row.title
+  };
+  const relationship = presentGraphRelationship(
+    {
+      from: row.direction === "outgoing" ? current : related,
+      to: row.direction === "outgoing" ? related : current,
+      relationType: row.relation_type,
+      weight: Number(row.weight),
+      reason: row.reason,
+      source: row.source,
+      evidence: evidenceRecord(row.evidence_json)
+    },
+    current.fileId
+  );
+
+  return {
+    ...relationship,
     sourceFileId: row.source_file_id,
     bundleFileId: row.bundle_file_id,
-    path: row.path,
-    title: row.title,
-    relationType: row.relation_type,
-    direction: row.direction,
-    weight: Number(row.weight),
-    reason: row.reason,
-    source: row.source,
-    evidence: evidenceRecord(row.evidence_json),
     contentAvailable: row.content_available
   };
 }

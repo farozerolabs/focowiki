@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { OpenAIModelClient } from "@focowiki/okf";
 import { resolveGraphConfig, resolveWorkerConfig, type RuntimeConfig } from "../config.js";
-import type {
-  AdminRepositories,
-  PublicationJobReason
-} from "../db/admin-repositories.js";
+import type { AdminRepositories } from "../db/admin-repositories.js";
 import type {
   WorkerJobKind,
   WorkerJobRecord,
@@ -18,6 +15,11 @@ import type {
 } from "../runtime-settings/service.js";
 import type { RuntimeSettingsSnapshot } from "../runtime-settings/types.js";
 import { PublicationCatalogStaleError } from "../domain/publication.js";
+import { parsePublicationJobPayload } from "../domain/publication-job.js";
+import {
+  parseSourceFileJobPayload,
+  resolveSourceFilePublicationEligibility
+} from "../domain/source-file-job.js";
 import {
   createKnowledgeBasePublicationService,
   enqueuePendingPublicationWorkerJob
@@ -28,7 +30,6 @@ import {
 } from "../admin/source-file-processor.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { processHardDeleteJob } from "./hard-delete-jobs.js";
-import { processGeneratedOutputResetJob } from "./generated-output-reset-jobs.js";
 import { processResourceOperationJob } from "./resource-operation-jobs.js";
 import {
   processUploadSessionFinalizationJob,
@@ -223,7 +224,6 @@ export function createWorkerRuntime(input: {
     kinds: WorkerJobKind[];
     role:
       | "hard_delete"
-      | "generated_output_reset"
       | "resource_operation"
       | "upload_session_finalization"
       | "publication"
@@ -240,7 +240,7 @@ export function createWorkerRuntime(input: {
             ? 1
             : input.role === "hard_delete"
               ? workerConfig.hardDeleteConcurrency ?? 1
-              : input.role === "generated_output_reset" || input.role === "resource_operation" || input.role === "upload_session_finalization"
+              : input.role === "resource_operation" || input.role === "upload_session_finalization"
                 ? 1
               : workerConfig.claimBatchSize,
         workerConfig,
@@ -249,7 +249,7 @@ export function createWorkerRuntime(input: {
 
       if (claimed.length === 0) {
         await sleep(
-          input.role === "publication" || input.role === "hard_delete" || input.role === "generated_output_reset" || input.role === "resource_operation" || input.role === "upload_session_finalization"
+          input.role === "publication" || input.role === "hard_delete" || input.role === "resource_operation" || input.role === "upload_session_finalization"
             ? Math.min(workerConfig.pollIntervalMs, 1_000)
             : workerConfig.pollIntervalMs,
           input.signal
@@ -295,11 +295,6 @@ export function createWorkerRuntime(input: {
         runLane({
           kinds: ["hard_delete"],
           role: "hard_delete",
-          signal
-        }),
-        runLane({
-          kinds: ["generated_output_reset"],
-          role: "generated_output_reset",
           signal
         }),
         runLane({
@@ -359,28 +354,16 @@ async function claimWorkerJobsForTick(input: {
     return hardDeleteJobs;
   }
 
-  const resetJobs = await input.workerJobs.claimWorkerJobs({
+  const resourceOperationJobs = await input.workerJobs.claimWorkerJobs({
     workerId: input.workerId,
-    kinds: ["generated_output_reset"],
+    kinds: ["resource_operation"],
     limit: Math.min(1, publicationLimit),
     now: input.now,
     staleBefore: input.staleBefore
   });
-  const afterReset = publicationLimit - resetJobs.length;
-  if (afterReset <= 0) {
-    return [...hardDeleteJobs, ...resetJobs];
-  }
-
-  const resourceOperationJobs = await input.workerJobs.claimWorkerJobs({
-    workerId: input.workerId,
-    kinds: ["resource_operation"],
-    limit: Math.min(1, afterReset),
-    now: input.now,
-    staleBefore: input.staleBefore
-  });
-  const afterOperations = afterReset - resourceOperationJobs.length;
+  const afterOperations = publicationLimit - resourceOperationJobs.length;
   if (afterOperations <= 0) {
-    return [...hardDeleteJobs, ...resetJobs, ...resourceOperationJobs];
+    return [...hardDeleteJobs, ...resourceOperationJobs];
   }
 
   const uploadFinalizationJobs = await input.workerJobs.claimWorkerJobs({
@@ -392,7 +375,7 @@ async function claimWorkerJobsForTick(input: {
   });
   const afterFinalization = afterOperations - uploadFinalizationJobs.length;
   if (afterFinalization <= 0) {
-    return [...hardDeleteJobs, ...resetJobs, ...resourceOperationJobs, ...uploadFinalizationJobs];
+    return [...hardDeleteJobs, ...resourceOperationJobs, ...uploadFinalizationJobs];
   }
 
   const publicationJobs = await input.workerJobs.claimWorkerJobs({
@@ -402,13 +385,12 @@ async function claimWorkerJobsForTick(input: {
     now: input.now,
     staleBefore: input.staleBefore
   });
-  const remainingLimit = input.limit - hardDeleteJobs.length - resetJobs.length
+  const remainingLimit = input.limit - hardDeleteJobs.length
     - resourceOperationJobs.length - uploadFinalizationJobs.length - publicationJobs.length;
 
   if (remainingLimit <= 0) {
     return [
       ...hardDeleteJobs,
-      ...resetJobs,
       ...resourceOperationJobs,
       ...uploadFinalizationJobs,
       ...publicationJobs
@@ -425,7 +407,6 @@ async function claimWorkerJobsForTick(input: {
 
   return [
     ...hardDeleteJobs,
-    ...resetJobs,
     ...resourceOperationJobs,
     ...uploadFinalizationJobs,
     ...publicationJobs,
@@ -455,11 +436,6 @@ async function processWorkerJob(input: {
     return;
   }
 
-  if (input.job.kind === "generated_output_reset") {
-    await processInternalGeneratedOutputResetJob(input);
-    return;
-  }
-
   if (input.job.kind === "resource_operation") {
     await processInternalResourceOperationJob(input);
     return;
@@ -471,70 +447,6 @@ async function processWorkerJob(input: {
   }
 
   await processSourceFileJob(input);
-}
-
-async function processInternalGeneratedOutputResetJob(input: {
-  job: WorkerJobRecord;
-  workerId: string;
-  workerJobs: WorkerJobRepository;
-  repositories: AdminRepositories;
-  storage: StorageAdapter;
-  redis: RedisCoordinator;
-  config: RuntimeConfig;
-  runtimeSettings: RuntimeSettingsService | null;
-  logger: WorkerRuntimeLogger;
-}): Promise<void> {
-  const resetRepository = input.repositories.generatedOutputReset;
-  if (!resetRepository) {
-    await failJob(
-      input,
-      "GENERATED_OUTPUT_RESET_UNAVAILABLE",
-      "Generated output reset repository is unavailable."
-    );
-    return;
-  }
-
-  try {
-    const runtimeSettings = input.runtimeSettings
-      ? await input.runtimeSettings.getSnapshot()
-      : null;
-    const workerConfig = runtimeSettings?.worker ?? resolveWorkerConfig(input.config);
-    const result = await processGeneratedOutputResetJob({
-      jobId: input.job.id,
-      knowledgeBaseId: input.job.knowledgeBaseId,
-      repository: resetRepository,
-      storage: input.storage,
-      redis: input.redis,
-      lockTtlSeconds: workerConfig.lockTtlSeconds,
-      objectBatchSize: workerConfig.hardDeleteObjectBatchSize ?? 1_000,
-      versionPurgeEnabled: workerConfig.hardDeleteVersionPurgeEnabled ?? false,
-      publicationJobMaxAttempts: workerConfig.jobMaxAttempts
-    });
-    if (!result.completed && result.retryAfter) {
-      await input.workerJobs.releaseWorkerJob({
-        id: input.job.id,
-        workerId: input.workerId,
-        releasedAt: new Date().toISOString(),
-        runAfter: result.retryAfter,
-        preserveAttempt: true
-      });
-      return;
-    }
-    await input.workerJobs.completeWorkerJob({
-      id: input.job.id,
-      workerId: input.workerId,
-      completedAt: new Date().toISOString()
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Generated output reset failed";
-    await resetRepository.failReset({
-      knowledgeBaseId: input.job.knowledgeBaseId,
-      failedAt: new Date().toISOString(),
-      errorCode: "GENERATED_OUTPUT_RESET_FAILED",
-      errorMessage: message
-    }).catch(() => undefined);
-    await failJob(input, "GENERATED_OUTPUT_RESET_FAILED", message);
-  }
 }
 
 async function processInternalResourceOperationJob(input: {
@@ -769,6 +681,14 @@ async function processSourceFileJob(input: {
   runtimeSettings: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): Promise<void> {
+  let sourceJobPayload;
+  try {
+    sourceJobPayload = parseSourceFileJobPayload(input.job.payload);
+  } catch {
+    await failJob(input, "INVALID_WORKER_JOB", "Source-file job payload is invalid.");
+    return;
+  }
+
   if (!input.job.sourceFileId) {
     await failJob(input, "INVALID_WORKER_JOB", "Source file job is missing sourceFileId.");
     return;
@@ -832,7 +752,8 @@ async function processSourceFileJob(input: {
       graph: graphSettings,
       modelAssistance: runtimeSettings
         ? createModelAssistanceFromRuntimeSettings(runtimeSettings)
-        : undefined
+        : undefined,
+      publicationEligibility: resolveSourceFilePublicationEligibility(sourceJobPayload.reason)
     });
 
     await input.workerJobs.completeWorkerJob({
@@ -909,25 +830,14 @@ async function processPublicationJob(input: {
   runtimeSettings: RuntimeSettingsService | null;
   logger: WorkerRuntimeLogger;
 }): Promise<void> {
-  const reason = readPublicationReason(input.job.payload);
-
-  if (!reason) {
-    await failJob(input, "INVALID_WORKER_JOB", "Publication job is missing a valid reason.");
+  let payload;
+  try {
+    payload = parsePublicationJobPayload(input.job.payload);
+  } catch {
+    await failJob(input, "INVALID_WORKER_JOB", "Publication job payload is invalid.");
     return;
   }
-
-  if (await input.repositories.generatedOutputReset?.isResetPending({
-    knowledgeBaseId: input.job.knowledgeBaseId
-  })) {
-    await input.workerJobs.releaseWorkerJob({
-      id: input.job.id,
-      workerId: input.workerId,
-      releasedAt: new Date().toISOString(),
-      runAfter: new Date(Date.now() + 1_000).toISOString(),
-      preserveAttempt: true
-    });
-    return;
-  }
+  const { reason, targetCatalogGeneration } = payload;
 
   const knowledgeBase = await input.repositories.knowledgeBases.getKnowledgeBase(
     input.job.knowledgeBaseId
@@ -949,6 +859,9 @@ async function processPublicationJob(input: {
     return;
   }
 
+  const publicationStartedAt = Date.now();
+  const queueWaitMs = Math.max(0, publicationStartedAt - Date.parse(input.job.createdAt));
+
   try {
     const runtimeSettings = input.runtimeSettings ? await input.runtimeSettings.getSnapshot() : null;
     const publication = runtimeSettings?.publication ?? {
@@ -964,7 +877,9 @@ async function processPublicationJob(input: {
       jobId: input.job.id,
       kind: input.job.kind,
       knowledgeBaseId: input.job.knowledgeBaseId,
-      attemptCount: input.job.attemptCount
+      attemptCount: input.job.attemptCount,
+      targetCatalogGeneration,
+      queueWaitMs
     });
     const result = await publicationService.publishNow({
       knowledgeBaseId: knowledgeBase.id,
@@ -985,6 +900,7 @@ async function processPublicationJob(input: {
         workerJobMaxAttempts: workerConfig.jobMaxAttempts
       },
       reason,
+      targetCatalogGeneration,
       allowEmptyPublication: reason === "deletion" || reason === "metadata"
     });
 
@@ -1022,13 +938,21 @@ async function processPublicationJob(input: {
       config: input.config,
       runtimeSettings: input.runtimeSettings,
       knowledgeBaseId: knowledgeBase.id,
-      generatedAt: completedAt
+      generatedAt: completedAt,
+      coveredCatalogGeneration: result.catalogGeneration
     });
     input.logger.info("Publication job completed", {
       jobId: input.job.id,
       kind: input.job.kind,
       knowledgeBaseId: input.job.knowledgeBaseId,
-      releaseId: result.releaseId
+      releaseId: result.releaseId,
+      targetCatalogGeneration,
+      activatedCatalogGeneration: result.catalogGeneration,
+      queueWaitMs,
+      publicationDurationMs: Math.max(0, Date.now() - publicationStartedAt),
+      targetCoverageDelta: result.catalogGeneration === null
+        ? null
+        : result.catalogGeneration - targetCatalogGeneration
     });
   } catch (error) {
     if (error instanceof PublicationCatalogStaleError) {
@@ -1044,11 +968,20 @@ async function processPublicationJob(input: {
         jobId: input.job.id,
         kind: input.job.kind,
         knowledgeBaseId: input.job.knowledgeBaseId,
-        retryAfter
+        retryAfter,
+        safeErrorCode: "PUBLICATION_CATALOG_STALE"
       });
       return;
     }
     const message = error instanceof Error ? error.message : "Publication worker job failed";
+    input.logger.warn("Publication job failed", {
+      jobId: input.job.id,
+      kind: input.job.kind,
+      knowledgeBaseId: input.job.knowledgeBaseId,
+      targetCatalogGeneration,
+      attemptCount: input.job.attemptCount,
+      safeErrorCode: "PUBLICATION_JOB_FAILED"
+    });
     await failJob(input, "PUBLICATION_JOB_FAILED", message);
   }
 }
@@ -1059,11 +992,36 @@ async function enqueueRemainingPublicationJob(input: {
   runtimeSettings: RuntimeSettingsService | null;
   knowledgeBaseId: string;
   generatedAt: string;
+  coveredCatalogGeneration: number | null;
 }): Promise<void> {
   const workerJobs = input.repositories.workerJobs ?? null;
   const countDirtySourceFiles = input.repositories.files?.countDirtySourceFiles;
 
   if (!workerJobs || !countDirtySourceFiles) {
+    return;
+  }
+
+  const knowledgeBase = await input.repositories.knowledgeBases.getKnowledgeBase(
+    input.knowledgeBaseId
+  );
+  const targetCatalogGeneration = knowledgeBase?.catalogGeneration;
+  if (!Number.isSafeInteger(targetCatalogGeneration) || (targetCatalogGeneration ?? -1) < 0) {
+    return;
+  }
+
+  if (
+    input.coveredCatalogGeneration !== null
+    && targetCatalogGeneration! > input.coveredCatalogGeneration
+  ) {
+    await workerJobs.enqueuePublicationJob({
+      knowledgeBaseId: input.knowledgeBaseId,
+      reason: "manual",
+      targetCatalogGeneration: targetCatalogGeneration!,
+      runAfter: input.generatedAt,
+      maxAttempts: (input.runtimeSettings
+        ? (await input.runtimeSettings.getSnapshot()).worker.jobMaxAttempts
+        : resolveWorkerConfig(input.config).jobMaxAttempts)
+    });
     return;
   }
 
@@ -1086,7 +1044,8 @@ async function enqueueRemainingPublicationJob(input: {
     },
     dirtyCount: dirty.count,
     oldestDirtyAt: dirty.oldestDirtyAt,
-    generatedAt: input.generatedAt
+    generatedAt: input.generatedAt,
+    targetCatalogGeneration: targetCatalogGeneration!
   });
 }
 
@@ -1166,24 +1125,6 @@ async function failJob(
     attemptCount: input.job.attemptCount,
     errorCode
   });
-}
-
-function readPublicationReason(payload: Record<string, unknown>): PublicationJobReason | null {
-  const value = payload.reason;
-
-  if (
-    value === "bootstrap" ||
-    value === "batch_threshold" ||
-    value === "batch_interval" ||
-    value === "manual" ||
-    value === "per_file" ||
-    value === "metadata" ||
-    value === "deletion"
-  ) {
-    return value;
-  }
-
-  return null;
 }
 
 async function withJobHeartbeat<T>(

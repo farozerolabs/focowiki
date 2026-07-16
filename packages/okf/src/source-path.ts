@@ -186,4 +186,15 @@ function validateSegment(segment: string, path: string): void {
       throw new SourcePathValidationError("control_character", path);
     }
   }
+
+  try {
+    if (decodeURIComponent(decoded) !== decoded) {
+      throw new SourcePathValidationError("segment", path);
+    }
+  } catch (error) {
+    if (error instanceof SourcePathValidationError) {
+      throw error;
+    }
+    throw new SourcePathValidationError("segment", path);
+  }
 }

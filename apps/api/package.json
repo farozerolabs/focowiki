@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/clean-dist.mjs",
     "build": "tsc -p tsconfig.json",
     "build:runtime": "node scripts/build-runtime.mjs",
     "db:migrate": "tsx src/db/migrate.ts",

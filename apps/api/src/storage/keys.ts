@@ -62,7 +62,12 @@ function knowledgeBaseRoot(prefix: string, knowledgeBaseId: string): string {
 }
 
 function normalizePrefix(rawPrefix: string): string {
-  const normalized = decodeForValidation(rawPrefix).replace(/^\/+|\/+$/g, "");
+  let normalized: string;
+  try {
+    normalized = decodeForValidation(rawPrefix).replace(/^\/+|\/+$/g, "");
+  } catch {
+    throw new StorageKeyError("S3_PREFIX must be a non-empty relative prefix");
+  }
   const segments = normalized.split("/");
 
   if (segments.length === 0 || segments.some((segment) => !isSafeIdSegment(segment))) {
@@ -147,6 +152,17 @@ function decodeForValidation(value: string): string {
     } catch {
       throw new StorageKeyError("path contains invalid percent encoding");
     }
+  }
+
+  try {
+    if (decodeURIComponent(decoded) !== decoded) {
+      throw new StorageKeyError("path exceeds the percent-decoding limit");
+    }
+  } catch (error) {
+    if (error instanceof StorageKeyError) {
+      throw error;
+    }
+    throw new StorageKeyError("path contains invalid percent encoding");
   }
 
   return decoded;

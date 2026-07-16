@@ -771,7 +771,8 @@ describe("Admin upload file picker", () => {
     });
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Chinese" }));
 
-    expect(await screen.findByText("管理端访问")).toBeTruthy();
+    expect(await screen.findByText("Focowiki")).toBeTruthy();
+    expect(screen.queryByText("输入部署管理员账号和密码以管理 Markdown 知识包生成。")).toBeNull();
     expect(screen.getByLabelText("账号")).toBeTruthy();
     expect(screen.getByLabelText("密码")).toBeTruthy();
   });

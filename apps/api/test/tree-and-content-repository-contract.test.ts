@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const repositoryPath = resolve(import.meta.dirname, "../src/db/admin-repositories.ts");
 const developerServicePath = resolve(import.meta.dirname, "../src/developer-openapi/services.ts");
+const developerRoutesPath = resolve(import.meta.dirname, "../src/developer-openapi/routes.ts");
 
 function readNormalized(path: string): string {
   return readFileSync(path, "utf8").replace(/\s+/g, " ").toLowerCase();
@@ -39,8 +40,8 @@ describe("tree and generated-content repository contract", () => {
     expect(section).toContain("from focowiki.knowledge_file_tree_nodes entry");
     expect(section).toContain("entry.knowledge_base_id = ${knowledgebaseid}");
     expect(section).toContain("entry.node_type = ${entrytype}");
-    expect(section).toContain("entry.name || ' ' || entry.path");
-    expect(section).toContain("ilike ${searchpattern}");
+    expect(section).toContain("lower(entry.name || ' ' || entry.path)");
+    expect(section).toContain("like ${searchpattern}");
     expect(section).toContain("entry.sort_key > ${cursorvalue.sortkey}");
     expect(section).toContain("order by entry.sort_key asc, entry.id asc");
     expect(section).toContain("limit ${limit + 1}");
@@ -83,6 +84,19 @@ describe("tree and generated-content repository contract", () => {
     expect(section).toContain("getbundlefilebyid");
     expect(section).not.toContain("listbundlefiles");
     expect(section).not.toContain("findbundlefilebyid");
+  });
+
+  it("builds the immutable Developer OpenAPI document once during route registration", () => {
+    const routes = readNormalized(developerRoutesPath);
+    const registration = routes.slice(
+      routes.indexOf("export function registerdeveloperopenapiroutes"),
+      routes.indexOf("app.get(\"/openapi/v2/knowledge-bases\"")
+    );
+
+    expect(registration).toContain("const openapidocument = createdeveloperopenapidocument()");
+    expect(registration).toContain(
+      "app.get(\"/openapi/v2/openapi.json\", (context) => context.json(openapidocument))"
+    );
   });
 
   it("persists generated files and tree entries into release-scoped projections", () => {

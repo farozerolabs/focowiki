@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { createAdminTreeSearchQuery } from "../cleaned-markdown-flow.mjs";
+import {
+  createAdminTreeSearchQuery,
+  shouldKeepValidationKnowledgeBase
+} from "../cleaned-markdown-flow.mjs";
 
 test("validates current upload-session bounds without removed max-files settings", () => {
   const source = fs.readFileSync("scripts/validation/cleaned-markdown-flow.mjs", "utf8");
@@ -19,5 +22,17 @@ test("derives Admin tree search terms from the logical filename", () => {
       title: "Atlas Workspace Overview"
     }),
     "product-overview"
+  );
+});
+
+test("keeps the validation knowledge base only when explicitly requested", () => {
+  assert.equal(shouldKeepValidationKnowledgeBase({}), false);
+  assert.equal(
+    shouldKeepValidationKnowledgeBase({ FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE: "false" }),
+    false
+  );
+  assert.equal(
+    shouldKeepValidationKnowledgeBase({ FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE: "true" }),
+    true
   );
 });

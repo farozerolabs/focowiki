@@ -14,14 +14,16 @@ import type {
   PublicOpenApiKeyStatus
 } from "../public-openapi/keys.js";
 import type { DatabaseClient } from "./client.js";
+import {
+  cleanReleaseReadModelGinPendingLists,
+  type ReleaseSearchIndexMaintenanceResult
+} from "../infrastructure/postgres/release-search-index-maintenance.js";
 import type { UploadSessionRepository } from "../application/ports/upload-session-repository.js";
 import { createPostgresUploadSessionRepository } from "../infrastructure/postgres/upload-session-repository.js";
 import type { SourceResourceRepository } from "../application/ports/source-resource-repository.js";
 import { createPostgresSourceResourceRepository } from "../infrastructure/postgres/source-resource-repository.js";
 import type { ReleasePublicationRepository } from "../application/ports/release-publication-repository.js";
 import { createPostgresReleasePublicationRepository } from "../infrastructure/postgres/release-publication-repository.js";
-import type { GeneratedOutputResetRepository } from "../application/ports/generated-output-reset-repository.js";
-import { createPostgresGeneratedOutputResetRepository } from "../infrastructure/postgres/generated-output-reset-repository.js";
 import { createPostgresFileGraphRepository } from "./file-graph-repository.js";
 import {
   createPostgresHardDeleteRepository,
@@ -32,7 +34,11 @@ import {
   createPostgresWorkerJobRepository,
   type WorkerJobRepository
 } from "./worker-job-repository.js";
-import type { GeneratedFileSearchScope } from "../search/generated-file-search-documents.js";
+import {
+  createGeneratedFileSearchDocument,
+  type GeneratedFileSearchScope
+} from "../search/generated-file-search-documents.js";
+import { createSearchQueryTerms } from "../search/search-query-terms.js";
 import {
   graphRefForSourceFile,
   type GraphSearchContext,
@@ -45,10 +51,37 @@ import {
 } from "../runtime-settings/repository.js";
 import type { ModelApiMode } from "../runtime-settings/types.js";
 import { PublicationCatalogStaleError } from "../domain/publication.js";
+import type {
+  PublicationJobMode,
+  PublicationJobReason
+} from "../domain/publication-job.js";
+
+export type {
+  PublicationJobMode,
+  PublicationJobReason
+} from "../domain/publication-job.js";
 
 export type CursorPage<T> = {
   items: T[];
   nextCursor: string | null;
+};
+
+export type ReleaseReadSummaryRecord = {
+  releaseId: string;
+  knowledgeBaseId: string;
+  searchableFileCount: number;
+  treeNodeCount: number;
+  graphDocumentCount: number;
+  graphRelationshipCount: number;
+  graphNodeCount: number;
+  graphEdgeCount: number;
+};
+
+export type ReleaseGraphInsightsRecord = {
+  releaseId: string;
+  knowledgeBaseId: string;
+  generatedAt: string;
+  insights: Record<string, unknown>[];
 };
 
 export type KnowledgeBaseRecord = {
@@ -57,7 +90,7 @@ export type KnowledgeBaseRecord = {
   description: string | null;
   activeReleaseId: string | null;
   resourceRevision?: number;
-  catalogGeneration?: number;
+  catalogGeneration: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -197,16 +230,6 @@ export type GeneratedOutputStatus = "pending" | "visible" | "unavailable";
 export type SourceFileErrorState = "with_error" | "without_error";
 export type SourceFileActionState = "openable" | "retryable" | "none";
 export type PublicationJobStatus = "queued" | "running" | "completed" | "failed";
-export type PublicationJobMode = "batch" | "manual" | "per_file";
-export type PublicationJobReason =
-  | "bootstrap"
-  | "batch_threshold"
-  | "batch_interval"
-  | "manual"
-  | "per_file"
-  | "metadata"
-  | "deletion";
-
 export type SourceFileProcessingStage =
   | "upload_storage"
   | "metadata_resolution"
@@ -330,6 +353,7 @@ export type ReleaseRecord = {
   id: string;
   knowledgeBaseId: string;
   bundleRootKey: string;
+  catalogGeneration: number;
   generatedAt: string;
   publishedAt: string | null;
   fileCount: number;
@@ -564,10 +588,23 @@ export type BundleFileRepository = {
     limit: number;
     cursor: string | null;
   }) => Promise<CursorPage<BundleFileRecord>>;
-  countBundleFileSearchDocuments?: (request: {
+  getReleaseReadSummary?: (request: {
     knowledgeBaseId: string;
     releaseId: string;
-  }) => Promise<number>;
+  }) => Promise<ReleaseReadSummaryRecord | null>;
+  getReleaseGraphInsights?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+    limit: number;
+  }) => Promise<ReleaseGraphInsightsRecord | null>;
+  refreshReleaseReadSummary?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+  }) => Promise<ReleaseReadSummaryRecord>;
+  finalizeReleaseSearchIndexes?: (request: {
+    knowledgeBaseId: string;
+    releaseId: string;
+  }) => Promise<ReleaseSearchIndexMaintenanceResult>;
   searchBundleFiles?: (request: {
     knowledgeBaseId: string;
     releaseId: string;
@@ -585,14 +622,6 @@ export type BundleFileRepository = {
     knowledgeBaseId: string;
     releaseId: string;
   }) => Promise<{ nodeCount: number; edgeCount: number }>;
-  countBundleGraphSearchDocuments?: (request: {
-    knowledgeBaseId: string;
-    releaseId: string;
-  }) => Promise<number>;
-  countBundleGraphRelationshipSearchDocuments?: (request: {
-    knowledgeBaseId: string;
-    releaseId: string;
-  }) => Promise<number>;
   searchBundleGraphFiles?: (request: {
     knowledgeBaseId: string;
     releaseId: string;
@@ -882,7 +911,6 @@ export type AdminRepositories = {
   uploadSessions?: UploadSessionRepository;
   sourceResources?: SourceResourceRepository;
   releasePublication?: ReleasePublicationRepository;
-  generatedOutputReset?: GeneratedOutputResetRepository;
   files?: BundleFileRepository;
   graph?: FileGraphRepository;
   hardDelete?: HardDeleteRepository;
@@ -984,6 +1012,24 @@ type BundleGraphSearchDocumentRow = BundleFileSearchDocumentRow & {
   match_type: GraphSearchMatchType;
 };
 
+type ReleaseReadSummaryRow = {
+  release_id: string;
+  knowledge_base_id: string;
+  searchable_file_count: number | string;
+  tree_node_count: number | string;
+  graph_document_count: number | string;
+  graph_relationship_count: number | string;
+  graph_node_count: number | string;
+  graph_edge_count: number | string;
+};
+
+type ReleaseGraphInsightsRow = {
+  release_id: string;
+  knowledge_base_id: string;
+  generated_at: Date;
+  insights_json: unknown;
+};
+
 type SourceFileRow = {
   id: string;
   knowledge_base_id: string;
@@ -1031,6 +1077,7 @@ type ReleaseRow = {
   id: string;
   knowledge_base_id: string;
   bundle_root_key: string;
+  catalog_generation: number | string;
   generated_at: Date;
   published_at: Date | null;
   file_count: number;
@@ -1152,7 +1199,6 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
     uploadSessions: createPostgresUploadSessionRepository(sql),
     sourceResources: createPostgresSourceResourceRepository(sql),
     releasePublication: createPostgresReleasePublicationRepository(sql),
-    generatedOutputReset: createPostgresGeneratedOutputResetRepository(sql),
     knowledgeBases: {
       async listKnowledgeBases({ limit, cursor, query }) {
         const cursorValue = cursor ? parseKnowledgeBaseCursor(cursor) : null;
@@ -1242,12 +1288,13 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             ${release.publishedAt},
             ${release.fileCount},
             ${release.manifestChecksumSha256},
-            (SELECT catalog_generation FROM focowiki.knowledge_bases WHERE id = ${release.knowledgeBaseId})
+            ${release.catalogGeneration}
           )
         `;
       },
       async createBundleFiles(files) {
         for (const file of files) {
+          const searchDocument = createGeneratedFileSearchDocument(file);
           const sourceDirectoryPath = sourceDirectoryPathForGeneratedFile(file.logicalPath);
           const sourceDirectoryId = sourceDirectoryPath
             ? sql`(
@@ -1300,17 +1347,167 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             )
             ON CONFLICT (release_id, logical_path) DO NOTHING
           `;
+
+          if (!isNavigationOnlyFileKind(file.fileKind)) {
+            await sql`
+              INSERT INTO focowiki.bundle_file_search_documents (
+                bundle_file_id,
+                knowledge_base_id,
+                release_id,
+                source_file_id,
+                file_kind,
+                logical_path,
+                path_text,
+                title_text,
+                description_text,
+                metadata_text,
+                search_text
+              )
+              SELECT
+                stored.id,
+                stored.knowledge_base_id,
+                stored.release_id,
+                stored.source_file_id,
+                stored.file_kind,
+                stored.logical_path,
+                ${searchDocument.logicalPath.toLocaleLowerCase("en-US")},
+                ${searchDocument.title?.toLocaleLowerCase("en-US") ?? ""},
+                ${searchDocument.description?.toLocaleLowerCase("en-US") ?? ""},
+                ${searchDocument.metadataText},
+                ${searchDocument.searchText}
+              FROM focowiki.bundle_files stored
+              WHERE stored.knowledge_base_id = ${file.knowledgeBaseId}
+                AND stored.release_id = ${file.releaseId}
+                AND stored.logical_path = ${file.logicalPath}
+                AND stored.navigation_only = false
+              ON CONFLICT (bundle_file_id) DO UPDATE SET
+                source_file_id = EXCLUDED.source_file_id,
+                file_kind = EXCLUDED.file_kind,
+                logical_path = EXCLUDED.logical_path,
+                path_text = EXCLUDED.path_text,
+                title_text = EXCLUDED.title_text,
+                description_text = EXCLUDED.description_text,
+                metadata_text = EXCLUDED.metadata_text,
+                search_text = EXCLUDED.search_text,
+                updated_at = now()
+            `;
+          }
         }
       },
-      async countBundleFileSearchDocuments({ knowledgeBaseId, releaseId }) {
-        const rows = await sql<Array<{ count: string }>>`
-          SELECT count(*)::text AS count
-          FROM focowiki.bundle_files
+      async getReleaseReadSummary({ knowledgeBaseId, releaseId }) {
+        const rows = await sql<ReleaseReadSummaryRow[]>`
+          SELECT release_id, knowledge_base_id, searchable_file_count, tree_node_count,
+                 graph_document_count, graph_relationship_count, graph_node_count,
+                 graph_edge_count
+          FROM focowiki.release_read_summaries
           WHERE knowledge_base_id = ${knowledgeBaseId}
             AND release_id = ${releaseId}
-            AND navigation_only = false
+          LIMIT 1
         `;
-        return Number(rows[0]?.count ?? 0);
+        return rows[0] ? mapReleaseReadSummaryRow(rows[0]) : null;
+      },
+      async getReleaseGraphInsights({ knowledgeBaseId, releaseId, limit }) {
+        const rows = await sql<ReleaseGraphInsightsRow[]>`
+          WITH selected_insights AS (
+            SELECT insight.id, insight.insight_type, insight.title, insight.description,
+                   insight.payload_json, insight.severity, insight.created_at
+            FROM focowiki.knowledge_graph_insights insight
+            WHERE insight.knowledge_base_id = ${knowledgeBaseId}
+              AND insight.release_id = ${releaseId}
+            ORDER BY insight.created_at DESC, insight.id ASC
+            LIMIT ${limit}
+          )
+          SELECT
+            release.id AS release_id,
+            release.knowledge_base_id,
+            release.generated_at,
+            COALESCE(
+              jsonb_agg(
+                insight.payload_json || jsonb_build_object(
+                  'insightId', insight.id,
+                  'type', insight.insight_type,
+                  'title', insight.title,
+                  'description', insight.description,
+                  'severity', insight.severity,
+                  'createdAt', insight.created_at
+                )
+                ORDER BY insight.created_at DESC, insight.id ASC
+              ) FILTER (WHERE insight.id IS NOT NULL),
+              '[]'::jsonb
+            ) AS insights_json
+          FROM focowiki.releases release
+          LEFT JOIN selected_insights insight ON true
+          WHERE release.knowledge_base_id = ${knowledgeBaseId}
+            AND release.id = ${releaseId}
+          GROUP BY release.id, release.knowledge_base_id, release.generated_at
+          LIMIT 1
+        `;
+        const row = rows[0];
+        if (!row) return null;
+
+        return {
+          releaseId: row.release_id,
+          knowledgeBaseId: row.knowledge_base_id,
+          generatedAt: row.generated_at.toISOString(),
+          insights: Array.isArray(row.insights_json)
+            ? row.insights_json.filter(
+                (value): value is Record<string, unknown> =>
+                  Boolean(value) && typeof value === "object" && !Array.isArray(value)
+              )
+            : []
+        };
+      },
+      async refreshReleaseReadSummary({ knowledgeBaseId, releaseId }) {
+        const rows = await sql<ReleaseReadSummaryRow[]>`
+          INSERT INTO focowiki.release_read_summaries (
+            release_id,
+            knowledge_base_id,
+            searchable_file_count,
+            tree_node_count,
+            graph_document_count,
+            graph_relationship_count,
+            graph_node_count,
+            graph_edge_count,
+            updated_at
+          )
+          SELECT
+            ${releaseId},
+            ${knowledgeBaseId},
+            (SELECT count(*)::integer FROM focowiki.bundle_file_search_documents
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}),
+            (SELECT count(*)::integer FROM focowiki.knowledge_file_tree_nodes
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}),
+            (SELECT count(*)::integer FROM focowiki.knowledge_graph_search_documents
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}),
+            (SELECT count(DISTINCT edge_id)::integer FROM focowiki.knowledge_graph_search_documents
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}
+                AND anchor_type = 'edge'),
+            (SELECT count(*)::integer FROM focowiki.knowledge_graph_nodes
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}),
+            (SELECT count(*)::integer FROM focowiki.knowledge_graph_edges
+              WHERE knowledge_base_id = ${knowledgeBaseId} AND release_id = ${releaseId}
+                AND quality_status = 'accepted'),
+            now()
+          ON CONFLICT (release_id) DO UPDATE SET
+            searchable_file_count = EXCLUDED.searchable_file_count,
+            tree_node_count = EXCLUDED.tree_node_count,
+            graph_document_count = EXCLUDED.graph_document_count,
+            graph_relationship_count = EXCLUDED.graph_relationship_count,
+            graph_node_count = EXCLUDED.graph_node_count,
+            graph_edge_count = EXCLUDED.graph_edge_count,
+            updated_at = now()
+          RETURNING release_id, knowledge_base_id, searchable_file_count, tree_node_count,
+                    graph_document_count, graph_relationship_count, graph_node_count,
+                    graph_edge_count
+        `;
+        const row = rows[0];
+        if (!row) {
+          throw new Error("Release read summary refresh did not return a row");
+        }
+        return mapReleaseReadSummaryRow(row);
+      },
+      async finalizeReleaseSearchIndexes() {
+        return cleanReleaseReadModelGinPendingLists(sql);
       },
       async createBundleTreeEntries(entries) {
         for (const entry of entries) {
@@ -1456,7 +1653,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               updated_at = now()
             WHERE id = ${input.knowledgeBaseId}
               AND deleted_at IS NULL
-              AND catalog_generation = (
+              AND catalog_generation >= (
                 SELECT release.catalog_generation
                 FROM focowiki.releases release
                 WHERE release.id = ${input.releaseId}
@@ -1554,6 +1751,16 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               AND source.knowledge_base_id = ${input.knowledgeBaseId}
               AND source.deleted_at IS NULL
               AND source.task_deleted_at IS NULL
+              AND (
+                source.candidate_operation_id IS NULL
+                OR EXISTS (
+                  SELECT 1
+                  FROM focowiki.release_resource_operations captured
+                  WHERE captured.release_id = ${input.releaseId}
+                    AND captured.knowledge_base_id = ${input.knowledgeBaseId}
+                    AND captured.operation_id = source.candidate_operation_id
+                )
+              )
           `;
           await transaction`
             UPDATE focowiki.resource_operations operation
@@ -1841,7 +2048,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       },
       async searchBundleTreeEntries({ knowledgeBaseId, releaseId, query, entryType = null, limit, cursor }) {
         const cursorValue = cursor ? parseTreeCursor(cursor) : null;
-        const searchPattern = containsPattern(query);
+        const searchPattern = containsPattern(query.toLocaleLowerCase("en-US"));
         const entryTypeFilter = entryType ? sql`AND entry.node_type = ${entryType}` : sql``;
         const cursorFilter = cursorValue
           ? sql`AND (entry.sort_key > ${cursorValue.sortKey} OR (entry.sort_key = ${cursorValue.sortKey} AND entry.id > ${cursorValue.id}))`
@@ -1855,7 +2062,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           WHERE entry.knowledge_base_id = ${knowledgeBaseId}
             AND entry.release_id = ${releaseId}
             ${entryTypeFilter}
-            AND lower(entry.name || ' ' || entry.path) ILIKE ${searchPattern} ESCAPE ${"\\"}
+            AND lower(entry.name || ' ' || entry.path) LIKE ${searchPattern} ESCAPE ${"\\"}
             ${cursorFilter}
           ORDER BY entry.sort_key ASC, entry.id ASC
           LIMIT ${limit + 1}
@@ -2030,7 +2237,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         const cursorValue = cursor ? parseTimedCursor(cursor) : null;
         const rows = cursorValue
           ? await sql<Array<ReleaseRow & { cursor_timestamp: string }>>`
-              SELECT id, knowledge_base_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at,
+              SELECT id, knowledge_base_id, bundle_root_key, catalog_generation, generated_at, published_at, file_count, manifest_checksum_sha256, created_at,
                      floor(extract(epoch FROM COALESCE(published_at, created_at)) * 1000000)::bigint::text AS cursor_timestamp
               FROM focowiki.releases
               WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -2042,7 +2249,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               LIMIT ${limit + 1}
             `
           : await sql<Array<ReleaseRow & { cursor_timestamp: string }>>`
-              SELECT id, knowledge_base_id, bundle_root_key, generated_at, published_at, file_count, manifest_checksum_sha256, created_at,
+              SELECT id, knowledge_base_id, bundle_root_key, catalog_generation, generated_at, published_at, file_count, manifest_checksum_sha256, created_at,
                      floor(extract(epoch FROM COALESCE(published_at, created_at)) * 1000000)::bigint::text AS cursor_timestamp
               FROM focowiki.releases
               WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -2138,25 +2345,37 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         cursor
       }) {
         const cursorValue = cursor ? parseBundleFileSearchCursor(cursor) : null;
-        const searchPattern = containsPattern(query.toLocaleLowerCase("en-US"));
-        const fileKindFilter = fileKind ? sql`AND file.file_kind = ${fileKind}` : sql``;
+        const normalizedQuery = query.toLocaleLowerCase("en-US");
+        const searchPatterns = createSearchQueryTerms(normalizedQuery).map(containsPattern);
+        const candidateLimit = Math.min(4_000, Math.max(200, (limit + 1) * 20));
+        const fileKindFilter = fileKind ? sql`AND document.file_kind = ${fileKind}` : sql``;
         const searchPredicate =
           scope === "path"
-            ? sql`AND lower(file.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"}`
+            ? sql`AND ${conjunctivePredicate(sql, searchPatterns, (pattern) =>
+                sql`document.path_text ILIKE ${pattern} ESCAPE ${"\\"}`
+              )}`
             : scope === "metadata"
-              ? sql`AND lower(
-                  coalesce(file.title, '') || ' ' ||
-                  coalesce(file.description, '') || ' ' ||
-                  file.frontmatter_json::text || ' ' ||
-                  file.tags_json::text
-                ) ILIKE ${searchPattern} ESCAPE ${"\\"}`
-              : sql`AND lower(
-                  file.logical_path || ' ' ||
-                  coalesce(file.title, '') || ' ' ||
-                  coalesce(file.description, '') || ' ' ||
-                  file.frontmatter_json::text || ' ' ||
-                  file.tags_json::text
-                ) ILIKE ${searchPattern} ESCAPE ${"\\"}`;
+              ? sql`AND ${conjunctivePredicate(sql, searchPatterns, (pattern) =>
+                  sql`document.metadata_text ILIKE ${pattern} ESCAPE ${"\\"}`
+                )}`
+              : sql`AND ${conjunctivePredicate(sql, searchPatterns, (pattern) =>
+                  sql`document.search_text ILIKE ${pattern} ESCAPE ${"\\"}`
+                )}`;
+        const pathMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`path_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const titleMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`title_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const descriptionMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`description_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const metadataMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`metadata_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const searchableTextMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`search_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
         const cursorFilter = cursorValue
           ? sql`AND (
               score < ${cursorValue.score}
@@ -2170,21 +2389,41 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
             )`
           : sql``;
         const rows = await sql<BundleFileSearchDocumentRow[]>`
-          WITH field_matches AS MATERIALIZED (
+          WITH candidates AS MATERIALIZED (
             SELECT
-              file.id AS bundle_file_id,
-              file.logical_path,
-              file.logical_path ILIKE ${searchPattern} ESCAPE ${"\\"} AS path_match,
-              coalesce(file.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS title_match,
-              coalesce(file.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS description_match,
-              file.frontmatter_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} AS metadata_text_match,
-              file.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} AS tags_match
-            FROM focowiki.bundle_files file
-            WHERE file.knowledge_base_id = ${knowledgeBaseId}
-              AND file.release_id = ${releaseId}
-              AND file.navigation_only = false
+              document.bundle_file_id,
+              document.logical_path,
+              document.path_text,
+              document.title_text,
+              document.description_text,
+              document.metadata_text,
+              document.search_text
+            FROM focowiki.bundle_file_search_documents document
+            WHERE document.knowledge_base_id = ${knowledgeBaseId}
+              AND document.release_id = ${releaseId}
               ${fileKindFilter}
               ${searchPredicate}
+            ORDER BY document.logical_path ASC, document.bundle_file_id ASC
+            LIMIT ${candidateLimit}
+          ),
+          field_matches AS MATERIALIZED (
+            SELECT
+              bundle_file_id,
+              logical_path,
+              ${pathMatch} AS path_match,
+              ${titleMatch} AS title_match,
+              ${descriptionMatch} AS description_match,
+              ${metadataMatch} AS metadata_text_match,
+              ${searchableTextMatch} AS searchable_text_match,
+              (
+                path_text = ${normalizedQuery}
+                OR title_text = ${normalizedQuery}
+              ) AS exact_match,
+              (
+                path_text LIKE ${`${escapeLikePattern(normalizedQuery)}%`} ESCAPE ${"\\"}
+                OR title_text LIKE ${`${escapeLikePattern(normalizedQuery)}%`} ESCAPE ${"\\"}
+              ) AS prefix_match
+            FROM candidates
           ),
           ranked AS (
             SELECT
@@ -2193,13 +2432,15 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
               path_match,
               title_match,
               description_match,
-              (metadata_text_match OR tags_match) AS metadata_match,
+              metadata_text_match AS metadata_match,
               (
-                CASE WHEN path_match THEN 5 ELSE 0 END
+                CASE WHEN exact_match THEN 12 ELSE 0 END
+                + CASE WHEN prefix_match THEN 6 ELSE 0 END
+                + CASE WHEN path_match THEN 5 ELSE 0 END
                 + CASE WHEN title_match THEN 4 ELSE 0 END
                 + CASE WHEN description_match THEN 2 ELSE 0 END
                 + CASE WHEN metadata_text_match THEN 1 ELSE 0 END
-                + CASE WHEN tags_match THEN 1 ELSE 0 END
+                + CASE WHEN searchable_text_match THEN 1 ELSE 0 END
               )::integer AS score
             FROM field_matches
           ),
@@ -2378,25 +2619,6 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       async rebuildBundleGraphSearchDocuments(input) {
         return rebuildBundleGraphSearchDocuments(sql, input);
       },
-      async countBundleGraphSearchDocuments({ knowledgeBaseId, releaseId }) {
-        const rows = await sql<Array<{ count: string }>>`
-          SELECT count(*)::text AS count
-          FROM focowiki.knowledge_graph_search_documents
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND release_id = ${releaseId}
-        `;
-        return Number(rows[0]?.count ?? 0);
-      },
-      async countBundleGraphRelationshipSearchDocuments({ knowledgeBaseId, releaseId }) {
-        const rows = await sql<Array<{ count: string }>>`
-          SELECT count(*)::text AS count
-          FROM focowiki.knowledge_graph_search_documents
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND release_id = ${releaseId}
-            AND anchor_type = 'edge'
-        `;
-        return Number(rows[0]?.count ?? 0);
-      },
       async searchBundleGraphFiles({
         knowledgeBaseId,
         releaseId,
@@ -2413,26 +2635,39 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         }
 
         const cursorValue = cursor ? parseBundleFileSearchCursor(cursor) : null;
-        const searchPattern = containsPattern(query.toLocaleLowerCase("en-US"));
+        const normalizedQuery = query.toLocaleLowerCase("en-US");
+        const searchPatterns = createSearchQueryTerms(normalizedQuery).map(containsPattern);
+        const candidateLimit = Math.min(4_000, Math.max(200, (limit + 1) * 20));
+        const pathMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`document.path ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const titleMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`coalesce(document.title, '') ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const descriptionMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`coalesce(document.summary, '') ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const metadataMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`coalesce(document.matched_field_text, '') ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const graphTextMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`document.search_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const neighborMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`document.neighbor_text ILIKE ${pattern} ESCAPE ${"\\"}`
+        );
+        const graphContextMatch = conjunctivePredicate(sql, searchPatterns, (pattern) =>
+          sql`(
+            document.search_text ILIKE ${pattern} ESCAPE ${"\\"}
+            OR document.neighbor_text ILIKE ${pattern} ESCAPE ${"\\"}
+          )`
+        );
         const searchPredicate =
           scope === "path"
-            ? sql`AND COALESCE(document.path, file.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"}`
+            ? sql`AND ${pathMatch}`
             : scope === "metadata"
-              ? sql`AND (
-                  coalesce(document.title, file.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR coalesce(document.summary, file.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR file.frontmatter_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR file.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                )`
-              : sql`AND (
-                  document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR COALESCE(document.path, file.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR coalesce(document.title, file.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR coalesce(document.summary, file.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR file.frontmatter_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR file.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                  OR document.top_neighbors_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                )`;
+              ? sql`AND ${metadataMatch}`
+              : sql`AND ${graphContextMatch}`;
         const cursorFilter = cursorValue
           ? sql`AND (
               score < ${cursorValue.score}
@@ -2447,45 +2682,59 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
           : sql``;
         const depthFactor = graphDepth === 0 ? 0 : graphDepth === 1 ? 1 : 2;
         const rows = await sql<BundleGraphSearchDocumentRow[]>`
-          WITH scored_documents AS MATERIALIZED (
+          WITH candidates AS MATERIALIZED (
+            SELECT
+              document.id,
+              document.file_id,
+              document.path,
+              document.anchor_type,
+              document.title,
+              document.summary,
+              document.search_text,
+              document.matched_field_text,
+              document.neighbor_text
+            FROM focowiki.knowledge_graph_search_documents document
+            WHERE document.knowledge_base_id = ${knowledgeBaseId}
+              AND document.release_id = ${releaseId}
+              AND document.file_id IS NOT NULL
+              AND document.path IS NOT NULL
+              ${searchPredicate}
+            ORDER BY document.path ASC NULLS LAST, document.file_id ASC, document.id ASC
+            LIMIT ${candidateLimit}
+          ),
+          scored_documents AS MATERIALIZED (
             SELECT
               document.id AS document_id,
               file.source_file_id,
               file.id AS bundle_file_id,
               file.logical_path,
-              COALESCE(document.path, file.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"} AS path_match,
-              coalesce(document.title, file.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS title_match,
-              coalesce(document.summary, file.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"} AS description_match,
-              (
-                file.frontmatter_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-                OR file.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"}
-              ) AS metadata_match,
+              ${pathMatch} AS path_match,
+              ${titleMatch} AS title_match,
+              ${descriptionMatch} AS description_match,
+              ${metadataMatch} AS metadata_match,
               document.anchor_type = 'node'
-                AND document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"} AS node_match,
+                AND ${graphContextMatch} AS node_match,
               document.anchor_type = 'edge'
-                AND document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"} AS relationship_match,
-              document.top_neighbors_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} AS neighbor_match,
+                AND ${graphContextMatch} AS relationship_match,
+              ${neighborMatch} AS neighbor_match,
               document.anchor_type = 'edge'
-                AND document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"} AS edge_match,
+                AND ${graphTextMatch} AS edge_match,
               (
-                CASE WHEN COALESCE(document.path, file.logical_path) ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 6 ELSE 0 END
-                + CASE WHEN coalesce(document.title, file.title, '') ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 6 ELSE 0 END
-                + CASE WHEN coalesce(document.summary, file.description, '') ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 3 ELSE 0 END
-                + CASE WHEN document.anchor_type = 'node' AND document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 4 ELSE 0 END
-                + CASE WHEN document.anchor_type = 'edge' AND document.search_text ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 5 ELSE 0 END
-                + CASE WHEN document.top_neighbors_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} THEN ${depthFactor} ELSE 0 END
-                + CASE WHEN file.frontmatter_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 1 ELSE 0 END
-                + CASE WHEN file.tags_json::text ILIKE ${searchPattern} ESCAPE ${"\\"} THEN 1 ELSE 0 END
+                CASE WHEN document.path = ${normalizedQuery} OR coalesce(document.title, '') = ${normalizedQuery} THEN 12 ELSE 0 END
+                + CASE WHEN ${pathMatch} THEN 6 ELSE 0 END
+                + CASE WHEN ${titleMatch} THEN 6 ELSE 0 END
+                + CASE WHEN ${descriptionMatch} THEN 3 ELSE 0 END
+                + CASE WHEN document.anchor_type = 'node' AND ${graphContextMatch} THEN 4 ELSE 0 END
+                + CASE WHEN document.anchor_type = 'edge' AND ${graphContextMatch} THEN 5 ELSE 0 END
+                + CASE WHEN ${neighborMatch} THEN ${depthFactor} ELSE 0 END
+                + CASE WHEN ${metadataMatch} THEN 1 ELSE 0 END
               )::integer AS score
-            FROM focowiki.knowledge_graph_search_documents document
+            FROM candidates document
             JOIN focowiki.bundle_files file
               ON file.id = document.file_id
-             AND file.knowledge_base_id = document.knowledge_base_id
-            WHERE document.knowledge_base_id = ${knowledgeBaseId}
-              AND document.release_id = ${releaseId}
+            WHERE file.knowledge_base_id = ${knowledgeBaseId}
               AND file.release_id = ${releaseId}
               AND file.file_kind = 'page'
-              ${searchPredicate}
           ),
           ranked AS (
             SELECT DISTINCT ON (bundle_file_id)
@@ -3601,6 +3850,19 @@ function mapBundleFileRow(row: BundleFileRow): BundleFileRecord {
   };
 }
 
+function mapReleaseReadSummaryRow(row: ReleaseReadSummaryRow): ReleaseReadSummaryRecord {
+  return {
+    releaseId: row.release_id,
+    knowledgeBaseId: row.knowledge_base_id,
+    searchableFileCount: Number(row.searchable_file_count),
+    treeNodeCount: Number(row.tree_node_count),
+    graphDocumentCount: Number(row.graph_document_count),
+    graphRelationshipCount: Number(row.graph_relationship_count),
+    graphNodeCount: Number(row.graph_node_count),
+    graphEdgeCount: Number(row.graph_edge_count)
+  };
+}
+
 function mapBundleFileSearchDocumentRow(
   row: BundleFileSearchDocumentRow
 ): BundleFileSearchResultRecord {
@@ -3778,6 +4040,7 @@ function mapReleaseRow(row: ReleaseRow): ReleaseRecord {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
     bundleRootKey: row.bundle_root_key,
+    catalogGeneration: Number(row.catalog_generation),
     generatedAt: row.generated_at.toISOString(),
     publishedAt: row.published_at?.toISOString() ?? null,
     fileCount: row.file_count,
@@ -3964,6 +4227,7 @@ async function rebuildBundleGraphSearchDocuments(
           summary,
           search_text,
           matched_field_text,
+          neighbor_text,
           relationship_count,
           top_neighbors_json
         )
@@ -3985,6 +4249,7 @@ async function rebuildBundleGraphSearchDocuments(
             file.frontmatter_json::text
           )), 12000),
           left(lower(concat_ws(' ', file.title, file.description, file.tags_json::text)), 4000),
+          ''::text,
           0,
           '[]'::jsonb
         FROM focowiki.bundle_files file
@@ -3999,6 +4264,7 @@ async function rebuildBundleGraphSearchDocuments(
           summary = EXCLUDED.summary,
           search_text = EXCLUDED.search_text,
           matched_field_text = EXCLUDED.matched_field_text,
+          neighbor_text = EXCLUDED.neighbor_text,
           relationship_count = EXCLUDED.relationship_count,
           top_neighbors_json = EXCLUDED.top_neighbors_json,
           updated_at = now()
@@ -4041,6 +4307,7 @@ async function rebuildBundleGraphSearchDocuments(
           summary,
           search_text,
           matched_field_text,
+          neighbor_text,
           relationship_count,
           top_neighbors_json
         )
@@ -4068,6 +4335,7 @@ async function rebuildBundleGraphSearchDocuments(
             node.profile_text
           )), 12000),
           left(lower(concat_ws(' ', node.title, node.summary, node.subjects_json::text)), 4000),
+          ''::text,
           COALESCE(edge_counts.relationship_count, 0),
           '[]'::jsonb
         FROM focowiki.knowledge_graph_nodes node
@@ -4088,6 +4356,7 @@ async function rebuildBundleGraphSearchDocuments(
           summary = EXCLUDED.summary,
           search_text = EXCLUDED.search_text,
           matched_field_text = EXCLUDED.matched_field_text,
+          neighbor_text = EXCLUDED.neighbor_text,
           relationship_count = EXCLUDED.relationship_count,
           top_neighbors_json = EXCLUDED.top_neighbors_json,
           updated_at = now()
@@ -4098,63 +4367,28 @@ async function rebuildBundleGraphSearchDocuments(
     `;
 
     const relationshipRows = await transaction<Array<{ count: string | number }>>`
-      WITH inserted AS (
-        INSERT INTO focowiki.knowledge_graph_search_documents (
-          id,
-          knowledge_base_id,
-          release_id,
-          edge_id,
-          file_id,
-          path,
-          anchor_type,
-          title,
-          summary,
-          search_text,
-          matched_field_text,
-          relationship_count,
-          top_neighbors_json
-        )
+      WITH edge_endpoints AS MATERIALIZED (
         SELECT
-          'knowledge-graph-search-edge-' || md5(${input.releaseId} || ':' || edge.id),
+          edge.id AS edge_id,
           edge.knowledge_base_id,
-          ${input.releaseId},
-          edge.id,
-          from_file.id,
-          from_file.logical_path,
-          'edge',
-          COALESCE(from_file.title, from_node.title, from_file.logical_path) || ' -> ' || COALESCE(to_file.title, to_node.title, to_file.logical_path),
+          edge.relation_type,
           edge.reason,
-          left(lower(concat_ws(
-            ' ',
-            edge.relation_type,
-            edge.reason,
-            edge.evidence_json::text,
-            edge.signals_json::text,
-            from_file.logical_path,
-            from_file.title,
-            from_node.profile_text,
-            to_file.logical_path,
-            to_file.title,
-            to_node.profile_text
-          )), 12000),
-          left(lower(concat_ws(' ', edge.relation_type, edge.reason)), 4000),
-          1,
-          jsonb_build_array(
-            jsonb_build_object(
-              'fileId', COALESCE(to_file.source_file_id, to_file.id),
-              'sourceFileId', COALESCE(to_file.source_file_id, to_file.id),
-              'bundleFileId', to_file.id,
-              'path', to_file.logical_path,
-              'title', COALESCE(to_file.title, to_node.title, to_file.logical_path),
-              'relationType', edge.relation_type,
-              'direction', 'outgoing',
-              'weight', edge.weight,
-              'reason', edge.reason,
-              'source', edge.created_by,
-              'evidence', edge.evidence_json,
-              'contentAvailable', true
-            )
-          )
+          edge.evidence_json,
+          edge.signals_json,
+          edge.created_by,
+          edge.weight,
+          from_file.id AS current_file_id,
+          from_file.source_file_id AS current_source_file_id,
+          from_file.logical_path AS current_path,
+          COALESCE(from_file.title, from_node.title, from_file.logical_path) AS current_title,
+          from_node.profile_text AS current_profile_text,
+          to_file.id AS related_file_id,
+          to_file.source_file_id AS related_source_file_id,
+          to_file.logical_path AS related_path,
+          COALESCE(to_file.title, to_node.title, to_file.logical_path) AS related_title,
+          to_node.summary AS related_summary,
+          to_node.profile_text AS related_profile_text,
+          'outgoing'::text AS presentation_direction
         FROM focowiki.knowledge_graph_edges edge
         JOIN focowiki.bundle_files from_file
           ON from_file.id = edge.from_file_id
@@ -4173,6 +4407,107 @@ async function rebuildBundleGraphSearchDocuments(
           AND from_file.release_id = ${input.releaseId}
           AND to_file.release_id = ${input.releaseId}
           AND edge.quality_status = 'accepted'
+        UNION ALL
+        SELECT
+          edge.id,
+          edge.knowledge_base_id,
+          edge.relation_type,
+          edge.reason,
+          edge.evidence_json,
+          edge.signals_json,
+          edge.created_by,
+          edge.weight,
+          to_file.id,
+          to_file.source_file_id,
+          to_file.logical_path,
+          COALESCE(to_file.title, to_node.title, to_file.logical_path),
+          to_node.profile_text,
+          from_file.id,
+          from_file.source_file_id,
+          from_file.logical_path,
+          COALESCE(from_file.title, from_node.title, from_file.logical_path),
+          from_node.summary,
+          from_node.profile_text,
+          'incoming'::text
+        FROM focowiki.knowledge_graph_edges edge
+        JOIN focowiki.bundle_files from_file
+          ON from_file.id = edge.from_file_id
+         AND from_file.knowledge_base_id = edge.knowledge_base_id
+        JOIN focowiki.bundle_files to_file
+          ON to_file.id = edge.to_file_id
+         AND to_file.knowledge_base_id = edge.knowledge_base_id
+        JOIN focowiki.knowledge_graph_nodes from_node
+          ON from_node.id = edge.from_node_id
+         AND from_node.knowledge_base_id = edge.knowledge_base_id
+        JOIN focowiki.knowledge_graph_nodes to_node
+          ON to_node.id = edge.to_node_id
+         AND to_node.knowledge_base_id = edge.knowledge_base_id
+        WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
+          AND edge.release_id = ${input.releaseId}
+          AND from_file.release_id = ${input.releaseId}
+          AND to_file.release_id = ${input.releaseId}
+          AND edge.quality_status = 'accepted'
+      ),
+      inserted AS (
+        INSERT INTO focowiki.knowledge_graph_search_documents (
+          id,
+          knowledge_base_id,
+          release_id,
+          edge_id,
+          file_id,
+          path,
+          anchor_type,
+          title,
+          summary,
+          search_text,
+          matched_field_text,
+          neighbor_text,
+          relationship_count,
+          top_neighbors_json
+        )
+        SELECT
+          'knowledge-graph-search-edge-' || md5(${input.releaseId} || ':' || endpoint.edge_id || ':' || endpoint.presentation_direction),
+          endpoint.knowledge_base_id,
+          ${input.releaseId},
+          endpoint.edge_id,
+          endpoint.current_file_id,
+          endpoint.current_path,
+          'edge',
+          endpoint.current_title || CASE WHEN endpoint.presentation_direction = 'outgoing' THEN ' -> ' ELSE ' <- ' END || endpoint.related_title,
+          endpoint.reason,
+          left(lower(concat_ws(
+            ' ',
+            endpoint.relation_type,
+            endpoint.reason,
+            endpoint.evidence_json::text,
+            endpoint.signals_json::text,
+            endpoint.current_path,
+            endpoint.current_title,
+            endpoint.current_profile_text,
+            endpoint.related_path,
+            endpoint.related_title,
+            endpoint.related_profile_text
+          )), 12000),
+          left(lower(concat_ws(' ', endpoint.relation_type, endpoint.reason)), 4000),
+          left(lower(concat_ws(' ', endpoint.related_path, endpoint.related_title, endpoint.related_summary, endpoint.relation_type, endpoint.reason)), 4000),
+          1,
+          jsonb_build_array(
+            jsonb_build_object(
+              'fileId', COALESCE(endpoint.related_source_file_id, endpoint.related_file_id),
+              'sourceFileId', COALESCE(endpoint.related_source_file_id, endpoint.related_file_id),
+              'bundleFileId', endpoint.related_file_id,
+              'path', endpoint.related_path,
+              'title', endpoint.related_title,
+              'relationType', endpoint.relation_type,
+              'direction', endpoint.presentation_direction,
+              'weight', endpoint.weight,
+              'reason', endpoint.reason,
+              'source', endpoint.created_by,
+              'evidence', endpoint.evidence_json,
+              'contentAvailable', true
+            )
+          )
+        FROM edge_endpoints endpoint
         ON CONFLICT (id) DO UPDATE SET
           edge_id = EXCLUDED.edge_id,
           file_id = EXCLUDED.file_id,
@@ -4182,12 +4517,13 @@ async function rebuildBundleGraphSearchDocuments(
           summary = EXCLUDED.summary,
           search_text = EXCLUDED.search_text,
           matched_field_text = EXCLUDED.matched_field_text,
+          neighbor_text = EXCLUDED.neighbor_text,
           relationship_count = EXCLUDED.relationship_count,
           top_neighbors_json = EXCLUDED.top_neighbors_json,
           updated_at = now()
-        RETURNING id
+        RETURNING edge_id
       )
-      SELECT count(*) AS count
+      SELECT count(DISTINCT edge_id) AS count
       FROM inserted
     `;
 
@@ -4260,6 +4596,23 @@ function parseBundleFileSearchCursor(cursor: string): {
     logicalPath: candidate.logicalPath,
     fileId: candidate.fileId
   };
+}
+
+function conjunctivePredicate(
+  sql: DatabaseClient,
+  patterns: string[],
+  createPredicate: (pattern: string) => ReturnType<DatabaseClient>
+): ReturnType<DatabaseClient> {
+  const [first, ...rest] = patterns.map(createPredicate);
+
+  if (!first) {
+    throw new Error("Search query must contain at least one term");
+  }
+
+  return rest.reduce(
+    (combined, predicate) => sql`${combined} AND ${predicate}`,
+    first
+  );
 }
 
 function containsPattern(value: string): string {

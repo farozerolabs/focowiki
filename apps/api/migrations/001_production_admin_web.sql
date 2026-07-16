@@ -180,6 +180,28 @@ CREATE TABLE focowiki.bundle_files (
 
 
 --
+-- Name: bundle_file_search_documents; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.bundle_file_search_documents (
+    bundle_file_id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    release_id text NOT NULL,
+    source_file_id text,
+    file_kind text NOT NULL,
+    logical_path text NOT NULL,
+    path_text text NOT NULL,
+    title_text text NOT NULL,
+    description_text text NOT NULL,
+    metadata_text text NOT NULL,
+    search_text text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT bundle_file_search_documents_file_kind_check CHECK ((file_kind = ANY (ARRAY['page'::text, 'index'::text, 'log'::text, 'history_page'::text, 'schema'::text, 'directory_index'::text, 'directory_index_page'::text, 'directory_index_map'::text, 'index_catalog'::text, 'manifest_index'::text, 'manifest_index_shard'::text, 'search_index'::text, 'search_index_shard'::text, 'link_index'::text, 'link_index_shard'::text, 'change_index'::text, 'change_index_shard'::text, 'graph_index'::text, 'graph_manifest'::text, 'graph_node_index'::text, 'graph_edge_shard'::text, 'graph_file'::text, 'graph_community'::text, 'graph_insight'::text])))
+);
+
+
+--
 -- Name: deletion_intents; Type: TABLE; Schema: focowiki; Owner: -
 --
 
@@ -372,6 +394,7 @@ CREATE TABLE focowiki.knowledge_graph_search_documents (
     summary text,
     search_text text NOT NULL,
     matched_field_text text,
+    neighbor_text text DEFAULT ''::text NOT NULL,
     relationship_count integer DEFAULT 0 NOT NULL,
     top_neighbors_json jsonb DEFAULT '[]'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -497,6 +520,31 @@ CREATE TABLE focowiki.releases (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT releases_catalog_generation_check CHECK ((catalog_generation >= 0)),
     CONSTRAINT releases_file_count_check CHECK ((file_count >= 0))
+);
+
+
+--
+-- Name: release_read_summaries; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.release_read_summaries (
+    release_id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    searchable_file_count integer DEFAULT 0 NOT NULL,
+    tree_node_count integer DEFAULT 0 NOT NULL,
+    graph_document_count integer DEFAULT 0 NOT NULL,
+    graph_relationship_count integer DEFAULT 0 NOT NULL,
+    graph_node_count integer DEFAULT 0 NOT NULL,
+    graph_edge_count integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT release_read_summaries_counts_check CHECK (
+      searchable_file_count >= 0
+      AND tree_node_count >= 0
+      AND graph_document_count >= 0
+      AND graph_relationship_count >= 0
+      AND graph_node_count >= 0
+      AND graph_edge_count >= 0
+    )
 );
 
 
@@ -1083,6 +1131,7 @@ CREATE TABLE focowiki.worker_jobs (
     CONSTRAINT worker_jobs_check1 CHECK (((failed_at IS NULL) OR (started_at IS NULL) OR (failed_at >= started_at))),
     CONSTRAINT worker_jobs_kind_check CHECK ((kind = ANY (ARRAY['upload_session_finalization'::text, 'source_file_processing'::text, 'resource_operation'::text, 'publication'::text, 'hard_delete'::text]))),
     CONSTRAINT worker_jobs_max_attempts_check CHECK ((max_attempts > 0)),
+    CONSTRAINT worker_jobs_publication_payload_check CHECK (((kind <> 'publication'::text) OR ((jsonb_typeof(payload_json) = 'object'::text) AND (payload_json ? 'reason'::text) AND ((payload_json ->> 'reason'::text) = ANY (ARRAY['bootstrap'::text, 'batch_threshold'::text, 'batch_interval'::text, 'manual'::text, 'per_file'::text, 'metadata'::text, 'deletion'::text])) AND (payload_json ? 'targetCatalogGeneration'::text) AND (jsonb_typeof((payload_json -> 'targetCatalogGeneration'::text)) = 'number'::text) AND ((payload_json ->> 'targetCatalogGeneration'::text) ~ '^(0|[1-9][0-9]*)$'::text) AND (((payload_json ->> 'targetCatalogGeneration'::text))::numeric <= 9007199254740991::numeric)))),
     CONSTRAINT worker_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text])))
 );
 
@@ -1117,6 +1166,14 @@ ALTER TABLE ONLY focowiki.admin_audit_events
 
 ALTER TABLE ONLY focowiki.bundle_files
     ADD CONSTRAINT bundle_files_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: bundle_file_search_documents bundle_file_search_documents_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.bundle_file_search_documents
+    ADD CONSTRAINT bundle_file_search_documents_pkey PRIMARY KEY (bundle_file_id);
 
 
 --
@@ -1285,6 +1342,14 @@ ALTER TABLE ONLY focowiki.publication_jobs
 
 ALTER TABLE ONLY focowiki.releases
     ADD CONSTRAINT releases_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: release_read_summaries release_read_summaries_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.release_read_summaries
+    ADD CONSTRAINT release_read_summaries_pkey PRIMARY KEY (release_id);
 
 
 --
@@ -1634,24 +1699,45 @@ CREATE INDEX bundle_files_release_logical_cursor_idx ON focowiki.bundle_files US
 
 
 --
--- Name: bundle_files_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: bundle_file_search_documents_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX bundle_files_search_text_trgm_idx ON focowiki.bundle_files USING gin (lower(((((((((logical_path || ' '::text) || COALESCE(title, ''::text)) || ' '::text) || COALESCE(description, ''::text)) || ' '::text) || (frontmatter_json)::text) || ' '::text) || (tags_json)::text)) focowiki.gin_trgm_ops) WHERE (navigation_only = false);
-
-
---
--- Name: bundle_files_metadata_search_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_files_metadata_search_trgm_idx ON focowiki.bundle_files USING gin (lower(((((((COALESCE(title, ''::text) || ' '::text) || COALESCE(description, ''::text)) || ' '::text) || (frontmatter_json)::text) || ' '::text) || (tags_json)::text)) focowiki.gin_trgm_ops) WHERE (navigation_only = false);
+CREATE INDEX bundle_file_search_documents_search_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (search_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
 
 
 --
--- Name: bundle_files_logical_path_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: bundle_file_search_documents_metadata_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX bundle_files_logical_path_trgm_idx ON focowiki.bundle_files USING gin (lower(logical_path) focowiki.gin_trgm_ops) WHERE (navigation_only = false);
+CREATE INDEX bundle_file_search_documents_metadata_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (metadata_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
+
+
+--
+-- Name: bundle_file_search_documents_path_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX bundle_file_search_documents_path_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (path_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
+
+
+--
+-- Name: bundle_file_search_documents_release_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX bundle_file_search_documents_release_cursor_idx ON focowiki.bundle_file_search_documents USING btree (knowledge_base_id, release_id, logical_path, bundle_file_id);
+
+
+--
+-- Name: bundle_file_search_documents_release_kind_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX bundle_file_search_documents_release_kind_cursor_idx ON focowiki.bundle_file_search_documents USING btree (knowledge_base_id, release_id, file_kind, logical_path, bundle_file_id);
+
+
+--
+-- Name: bundle_file_search_documents_path_prefix_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX bundle_file_search_documents_path_prefix_idx ON focowiki.bundle_file_search_documents (knowledge_base_id, release_id, path_text text_pattern_ops, bundle_file_id);
 
 
 --
@@ -1728,7 +1814,7 @@ CREATE INDEX knowledge_file_tree_nodes_kb_path_idx ON focowiki.knowledge_file_tr
 -- Name: knowledge_file_tree_nodes_name_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_file_tree_nodes_name_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (name focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_file_tree_nodes_name_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (name focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
 
 
 --
@@ -1742,14 +1828,21 @@ CREATE INDEX knowledge_file_tree_nodes_parent_cursor_idx ON focowiki.knowledge_f
 -- Name: knowledge_file_tree_nodes_path_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_file_tree_nodes_path_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (path focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_file_tree_nodes_path_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (path focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
 
 
 --
 -- Name: knowledge_file_tree_nodes_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_file_tree_nodes_search_text_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (lower(((name || ' '::text) || path)) focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_file_tree_nodes_search_text_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (lower(((name || ' '::text) || path)) focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
+
+
+--
+-- Name: knowledge_file_tree_nodes_search_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX knowledge_file_tree_nodes_search_cursor_idx ON focowiki.knowledge_file_tree_nodes USING btree (knowledge_base_id, release_id, sort_key, id);
 
 
 --
@@ -1784,7 +1877,7 @@ CREATE INDEX knowledge_graph_edges_quality_weight_idx ON focowiki.knowledge_grap
 -- Name: knowledge_graph_edges_reason_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_edges_reason_trgm_idx ON focowiki.knowledge_graph_edges USING gin (reason focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_graph_edges_reason_trgm_idx ON focowiki.knowledge_graph_edges USING gin (reason focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
 
 
 --
@@ -1823,6 +1916,13 @@ CREATE INDEX knowledge_graph_insights_kb_type_created_idx ON focowiki.knowledge_
 
 
 --
+-- Name: knowledge_graph_insights_release_created_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX knowledge_graph_insights_release_created_idx ON focowiki.knowledge_graph_insights USING btree (knowledge_base_id, release_id, created_at DESC, id);
+
+
+--
 -- Name: knowledge_graph_nodes_kb_file_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -1840,42 +1940,70 @@ CREATE INDEX knowledge_graph_nodes_kb_source_idx ON focowiki.knowledge_graph_nod
 -- Name: knowledge_graph_nodes_profile_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_nodes_profile_text_trgm_idx ON focowiki.knowledge_graph_nodes USING gin (profile_text focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_graph_nodes_profile_text_trgm_idx ON focowiki.knowledge_graph_nodes USING gin (profile_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
 
 
 --
 -- Name: knowledge_graph_search_documents_anchor_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_search_documents_anchor_cursor_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, anchor_type, id);
+CREATE INDEX knowledge_graph_search_documents_anchor_cursor_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, anchor_type, id);
 
 
 --
 -- Name: knowledge_graph_search_documents_kb_edge_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_search_documents_kb_edge_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, edge_id) WHERE (edge_id IS NOT NULL);
+CREATE INDEX knowledge_graph_search_documents_kb_edge_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, edge_id, file_id) WHERE (edge_id IS NOT NULL);
 
 
 --
 -- Name: knowledge_graph_search_documents_kb_file_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_search_documents_kb_file_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, file_id) WHERE (file_id IS NOT NULL);
+CREATE INDEX knowledge_graph_search_documents_kb_file_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, file_id, anchor_type, id) WHERE (file_id IS NOT NULL);
 
 
 --
 -- Name: knowledge_graph_search_documents_kb_node_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_search_documents_kb_node_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, node_id) WHERE (node_id IS NOT NULL);
+CREATE INDEX knowledge_graph_search_documents_kb_node_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, node_id, file_id) WHERE (node_id IS NOT NULL);
+
+
+--
+-- Name: knowledge_graph_search_documents_release_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX knowledge_graph_search_documents_release_cursor_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, path, file_id, id) WHERE ((path IS NOT NULL) AND (file_id IS NOT NULL));
 
 
 --
 -- Name: knowledge_graph_search_documents_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX knowledge_graph_search_documents_search_text_trgm_idx ON focowiki.knowledge_graph_search_documents USING gin (search_text focowiki.gin_trgm_ops);
+CREATE INDEX knowledge_graph_search_documents_search_text_trgm_idx ON focowiki.knowledge_graph_search_documents USING gin (search_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
+
+
+--
+-- Name: knowledge_graph_search_documents_neighbor_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX knowledge_graph_search_documents_neighbor_text_trgm_idx ON focowiki.knowledge_graph_search_documents USING gin (neighbor_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
+
+
+--
+-- Name: knowledge_graph_search_documents_path_prefix_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX knowledge_graph_search_documents_path_prefix_idx ON focowiki.knowledge_graph_search_documents (knowledge_base_id, release_id, path text_pattern_ops, file_id, id) WHERE (path IS NOT NULL);
+
+
+--
+-- Name: release_read_summaries_knowledge_base_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX release_read_summaries_knowledge_base_idx ON focowiki.release_read_summaries (knowledge_base_id, release_id);
 
 
 --
@@ -2439,6 +2567,10 @@ CREATE INDEX worker_jobs_upload_finalization_active_idx ON focowiki.worker_jobs 
 
 CREATE INDEX worker_jobs_publication_active_idx ON focowiki.worker_jobs USING btree (kind, knowledge_base_id, status, run_after) WHERE ((kind = 'publication'::text) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
 
+CREATE UNIQUE INDEX worker_jobs_publication_queued_unique_idx ON focowiki.worker_jobs USING btree (knowledge_base_id) WHERE ((kind = 'publication'::text) AND (status = 'queued'::text));
+
+CREATE UNIQUE INDEX worker_jobs_publication_running_unique_idx ON focowiki.worker_jobs USING btree (knowledge_base_id) WHERE ((kind = 'publication'::text) AND (status = 'running'::text));
+
 
 --
 -- Name: worker_jobs_queued_oldest_idx; Type: INDEX; Schema: focowiki; Owner: -
@@ -2495,6 +2627,30 @@ CREATE TRIGGER worker_jobs_summary_sync_trigger AFTER INSERT OR DELETE OR UPDATE
 
 ALTER TABLE ONLY focowiki.bundle_files
     ADD CONSTRAINT bundle_files_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+
+
+--
+-- Name: bundle_file_search_documents bundle_file_search_documents_bundle_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.bundle_file_search_documents
+    ADD CONSTRAINT bundle_file_search_documents_bundle_file_id_fkey FOREIGN KEY (bundle_file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
+
+
+--
+-- Name: bundle_file_search_documents bundle_file_search_documents_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.bundle_file_search_documents
+    ADD CONSTRAINT bundle_file_search_documents_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: bundle_file_search_documents bundle_file_search_documents_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.bundle_file_search_documents
+    ADD CONSTRAINT bundle_file_search_documents_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
 
 
 --
@@ -2727,6 +2883,22 @@ ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
 
 ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
     ADD CONSTRAINT knowledge_graph_search_documents_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: release_read_summaries release_read_summaries_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.release_read_summaries
+    ADD CONSTRAINT release_read_summaries_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: release_read_summaries release_read_summaries_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.release_read_summaries
+    ADD CONSTRAINT release_read_summaries_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
 
 
 --
@@ -3203,4 +3375,4 @@ ALTER TABLE ONLY focowiki.worker_queue_summaries
 
 
 INSERT INTO focowiki.runtime_generation (singleton, generation)
-VALUES (true, 'admin-resource-editing-v3');
+VALUES (true, 'relation-search-publication-v1');

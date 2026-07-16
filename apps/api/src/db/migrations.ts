@@ -2,12 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DatabaseClient } from "./client.js";
 
-export const MIGRATION_FILES = [
-  "001_production_admin_web.sql",
-  "002_okf_google_v0_1_reset.sql"
-] as const;
-export const RUNTIME_SCHEMA_GENERATION = "okf-google-v0-1-v4";
-const SUPPORTED_UPGRADE_GENERATIONS = new Set(["admin-resource-editing-v3"]);
+export const MIGRATION_FILES = ["001_production_admin_web.sql"] as const;
+export const RUNTIME_SCHEMA_GENERATION = "relation-search-publication-v1";
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {
@@ -42,15 +38,11 @@ export async function applyMigrations(sql: DatabaseClient): Promise<void> {
     return;
   }
 
-  if (state !== "absent" && !SUPPORTED_UPGRADE_GENERATIONS.has(state ?? "")) {
+  if (state !== "absent") {
     throw new RuntimeSchemaGenerationError(state);
   }
 
-  const migrationFiles = state === "absent"
-    ? MIGRATION_FILES
-    : MIGRATION_FILES.slice(1);
-
-  for (const fileName of migrationFiles) {
+  for (const fileName of MIGRATION_FILES) {
     await sql.begin(async (transaction) => {
       await transaction.unsafe(readMigrationSql(fileName));
     });

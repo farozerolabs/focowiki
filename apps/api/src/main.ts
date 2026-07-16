@@ -8,7 +8,7 @@ import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createAdminApiApp, createPublicOpenApiApp } from "./server.js";
-import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
+import { connectApiRedis } from "./redis/api-runtime.js";
 import { createRuntimeLogger } from "./logger.js";
 
 loadLocalEnvFile();
@@ -19,17 +19,22 @@ const storage = createS3StorageAdapter(config.storage);
 const sql = createDatabaseClient(config);
 await assertRuntimeSchemaGeneration(sql);
 const repositories = createPostgresAdminRepositories(sql);
-const redisClient = createRedisClient(config);
-await redisClient.connect();
-const redis = createRedisCoordinator(redisClient);
+const redis = await connectApiRedis({ config, logger });
+const sharedServices = {
+  config,
+  storage,
+  repositories,
+  logger,
+  ...(redis ? { redis } : {})
+};
 
 serve({
-  fetch: createAdminApiApp({ config, storage, redis, repositories }).fetch,
+  fetch: createAdminApiApp(sharedServices).fetch,
   port: config.ports.adminApi
 });
 
 serve({
-  fetch: createPublicOpenApiApp({ config, storage, redis, repositories }).fetch,
+  fetch: createPublicOpenApiApp(sharedServices).fetch,
   port: config.ports.publicOpenApi
 });
 

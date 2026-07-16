@@ -206,6 +206,34 @@ describe("hard delete worker job contract", () => {
     expect(completeSourceDirectoryDeletion).not.toHaveBeenCalled();
   });
 
+  it("defers directory completion while another delete still owns a file reference", async () => {
+    const completeSourceDirectoryDeletion = vi.fn(async () => 1);
+    const repositories = createRepositories({
+      markObjectKeysDeleted: vi.fn(async () => 0),
+      purgeSourceFileData: vi.fn(async () => 0),
+      completeSourceDirectoryDeletion,
+      hasSourceDirectoryFileReferences: true,
+      hasPendingObjectKeysResults: [false]
+    });
+
+    await expect(
+      processHardDeleteJob({
+        job: createSourceDirectoryHardDeleteJob(),
+        repositories,
+        storage: createStorage(),
+        redis: createRedis(),
+        cursorTtlSeconds: 900,
+        settings: {
+          databaseBatchSize: 50,
+          objectBatchSize: 2,
+          versionPurgeEnabled: false
+        }
+      })
+    ).resolves.toEqual({ workerJobDeleted: false, retryAfter: expect.any(String) });
+
+    expect(completeSourceDirectoryDeletion).not.toHaveBeenCalled();
+  });
+
   it("keeps source-file hard delete idempotent when object cursors are already cleared", async () => {
     const markObjectKeysDeleted = vi.fn();
     const purgeSourceFileData = vi.fn(async () => 0);
@@ -601,6 +629,7 @@ function createRepositories(input: {
   activePublicationCount?: number;
   knowledgeBaseSourceFilePages?: string[][];
   sourceDirectorySourceFilePages?: string[][];
+  hasSourceDirectoryFileReferences?: boolean;
   completeSourceDirectoryDeletion?: ReturnType<typeof vi.fn>;
   hasPendingObjectKeysResults?: boolean[];
 }): AdminRepositories {
@@ -640,6 +669,9 @@ function createRepositories(input: {
         }
       ),
       isSourceDirectoryExcludedFromActiveRelease: vi.fn(async () => true),
+      hasSourceDirectoryFileReferences: vi.fn(
+        async () => input.hasSourceDirectoryFileReferences ?? false
+      ),
       isSourceFileExcludedFromActiveRelease: vi.fn(async () => true),
       isDeletionIntentRunnable: vi.fn(async () => true),
       completeSourceFileDeletion: vi.fn(async () => undefined),

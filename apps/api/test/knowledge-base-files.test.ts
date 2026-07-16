@@ -19,6 +19,7 @@ const knowledgeBase = {
   name: "Developer docs",
   description: null,
   activeReleaseId: "release-001",
+  catalogGeneration: 0,
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
 };
@@ -380,6 +381,7 @@ function createRepositories() {
                 generatedAt: "2026-06-14T00:00:00.000Z",
                 publishedAt: "2026-06-14T00:00:00.000Z",
                 fileCount: 7,
+                catalogGeneration: 3,
                 manifestChecksumSha256: "checksum",
                 createdAt: "2026-06-14T00:00:00.000Z"
               }

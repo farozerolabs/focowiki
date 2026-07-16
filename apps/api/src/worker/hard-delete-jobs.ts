@@ -43,8 +43,7 @@ export async function processHardDeleteJob(input: {
         "upload_session_finalization",
         "source_file_processing",
         "resource_operation",
-        "publication",
-        "generated_output_reset"
+        "publication"
       ],
       knowledgeBaseId: input.job.knowledgeBaseId
     });
@@ -156,6 +155,13 @@ export async function processHardDeleteJob(input: {
       jobId: input.job.id,
       batchSize: input.settings.databaseBatchSize
     });
+    const hasFileReferences = await hardDelete.hasSourceDirectoryFileReferences({
+      knowledgeBaseId: input.job.knowledgeBaseId,
+      deletionIntentId: target.deletionIntentId
+    });
+    if (hasFileReferences) {
+      return { workerJobDeleted: false, retryAfter: retryAfterShortDelay() };
+    }
     await hardDelete.completeSourceDirectoryDeletion({
       knowledgeBaseId: input.job.knowledgeBaseId,
       deletionIntentId: target.deletionIntentId,

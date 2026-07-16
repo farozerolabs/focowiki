@@ -80,6 +80,7 @@ function createRepositories() {
     name: "Knowledge Base",
     description: null,
     activeReleaseId: null as string | null,
+    catalogGeneration: 0,
     createdAt: now,
     updatedAt: now
   };
@@ -93,6 +94,7 @@ function createRepositories() {
   const workerJobs: WorkerJobRecord[] = [];
   const releaseSources = new Map<string, ReleaseSourceFileRecord[]>();
   const releaseMarkdownLinks = new Map<string, ReleaseMarkdownLinkRecord[]>();
+  const releaseSearchIndexFinalizations: string[] = [];
   const workerJobRepository: WorkerJobRepository = {
     async enqueueWorkerJob(input) {
       const record = createWorkerJob(input);
@@ -127,7 +129,10 @@ function createRepositories() {
         kind: "publication",
         knowledgeBaseId: input.knowledgeBaseId,
         sourceFileId: null,
-        payload: { reason: input.reason },
+        payload: {
+          reason: input.reason,
+          targetCatalogGeneration: input.targetCatalogGeneration
+        },
         runAfter: input.runAfter,
         maxAttempts: input.maxAttempts
       });
@@ -638,6 +643,49 @@ function createRepositories() {
       async listReusableBundleFiles() {
         return { items: bundleFiles, nextCursor: null };
       },
+      async getReleaseReadSummary(input) {
+        return {
+          releaseId: input.releaseId,
+          knowledgeBaseId: input.knowledgeBaseId,
+          searchableFileCount: bundleFiles.filter((file) => file.releaseId === input.releaseId).length,
+          treeNodeCount: 0,
+          graphDocumentCount: graphNodes.size,
+          graphRelationshipCount: graphEdges.length,
+          graphNodeCount: graphNodes.size,
+          graphEdgeCount: graphEdges.length
+        };
+      },
+      async refreshReleaseReadSummary(input) {
+        return {
+          releaseId: input.releaseId,
+          knowledgeBaseId: input.knowledgeBaseId,
+          searchableFileCount: bundleFiles.filter((file) => file.releaseId === input.releaseId).length,
+          treeNodeCount: 0,
+          graphDocumentCount: graphNodes.size,
+          graphRelationshipCount: graphEdges.length,
+          graphNodeCount: graphNodes.size,
+          graphEdgeCount: graphEdges.length
+        };
+      },
+      async finalizeReleaseSearchIndexes(input) {
+        releaseSearchIndexFinalizations.push(input.releaseId);
+        return { indexCount: 10, pagesCleaned: 0 };
+      },
+      async searchBundleFiles() {
+        return { items: [], nextCursor: null };
+      },
+      async rebuildBundleGraphSearchDocuments() {
+        return {
+          documentCount: graphNodes.size,
+          relationshipCount: graphEdges.length
+        };
+      },
+      async rebuildReleaseGraphProjection() {
+        return { nodeCount: graphNodes.size, edgeCount: graphEdges.length };
+      },
+      async searchBundleGraphFiles() {
+        return { items: [], nextCursor: null };
+      },
       async listPublicationLogHistory() {
         return { entries: [], summaries: [] };
       },
@@ -838,6 +886,7 @@ function createRepositories() {
     graphNodes,
     graphEdges,
     workerJobs,
+    releaseSearchIndexFinalizations,
     persistSourceFileFixtures
   };
 }
@@ -1051,15 +1100,20 @@ describe("source file queue", () => {
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500
       },
-      reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
     });
 
     expect(records.sources.get(sourceFileId)?.processingStage).toBe("release_activation");
     expect(records.sources.get(sourceFileId)?.generatedOutputStatus).toBe("visible");
     expect(records.knowledgeBase.activeReleaseId).toMatch(/^release-/u);
+    expect(Array.from(records.releases.values()).at(-1)?.catalogGeneration).toBe(0);
     expect(records.bundleFiles.some((file) => file.logicalPath === "pages/guide.md")).toBe(true);
     expect(records.bundleFiles.some((file) => file.logicalPath === "_graph/manifest.json")).toBe(true);
     expect(records.events.some((event) => event.stageKey === "release_activation")).toBe(true);
+    expect(records.releaseSearchIndexFinalizations).toEqual([
+      records.knowledgeBase.activeReleaseId
+    ]);
   });
 
   it("uses persisted model descriptions when source descriptions repeat titles", async () => {
@@ -1147,7 +1201,8 @@ describe("source file queue", () => {
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500
       },
-      reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
     });
 
     const page = records.bundleFiles.find((file) => file.logicalPath === "pages/guide.md");
@@ -1465,7 +1520,8 @@ describe("source file queue", () => {
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500
       },
-      reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
     });
 
     expect(records.sources.get(secondSourceFileId)?.processingStage).toBe("release_activation");
@@ -1525,6 +1581,7 @@ describe("source file queue", () => {
       pageSize: 100,
       cursorTtlSeconds: 900,
       fileProcessingConcurrency: 1,
+      eligibility: "import",
       options: {
         mode: "batch",
         batchSize: 20,
@@ -1542,6 +1599,73 @@ describe("source file queue", () => {
     expect(records.sources.get(currentSourceFileId)?.publicationDirtyAt).toBe(now);
     expect(records.sources.get(relatedSourceFileId)?.publicationDirtyAt).toBe(now);
     expect(records.sources.get(relatedSourceFileId)?.generatedOutputStatus).toBe("pending");
+  });
+
+  it("schedules interactive source completion immediately under batch publication policy", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "interactive.md",
+          bytes: new TextEncoder().encode("---\ntitle: Interactive\ntype: page\n---\n# Interactive"),
+          content: "---\ntitle: Interactive\ntype: page\n---\n# Interactive"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const sourceFileId = sourceFileIds[0];
+
+    if (!sourceFileId) {
+      throw new Error("Interactive source file was not created");
+    }
+
+    const source = records.sources.get(sourceFileId);
+    if (source) {
+      source.processingStatus = "completed";
+      source.processingStage = "index_publication";
+      source.generatedOutputStatus = "pending";
+    }
+    records.knowledgeBase.catalogGeneration = 1;
+
+    const publicationService = createKnowledgeBasePublicationService(
+      records.repositories,
+      storage,
+      redis
+    );
+    await publicationService?.markSourceFileReady({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      sourceFileId,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      eligibility: "interactive",
+      options: {
+        mode: "batch",
+        batchSize: 20,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      }
+    });
+
+    const publicationJob = records.workerJobs.find((job) => job.kind === "publication");
+    expect(publicationJob?.payload).toEqual({
+      reason: "manual",
+      targetCatalogGeneration: 1
+    });
+    expect(publicationJob?.runAfter).toBe(now);
   });
 
   it("limits each publication job to the configured dirty source batch size", async () => {
@@ -1591,7 +1715,8 @@ describe("source file queue", () => {
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500
       },
-      reason: "batch_threshold"
+      reason: "batch_threshold",
+      targetCatalogGeneration: 0
     });
 
     const visibleSources = sourceFileIds.filter(
@@ -1690,13 +1815,105 @@ describe("source file queue", () => {
         graphMaintenanceBatchSize: 500,
         rootSummaryLimit: 500
       },
-      reason: "batch_threshold"
+      reason: "batch_threshold",
+      targetCatalogGeneration: 0
     });
 
     expect(records.sources.get(secondSourceFileId)?.generatedOutputStatus).toBe("pending");
     expect(records.workerJobs.some((job) => job.kind === "publication")).toBe(true);
     expect(records.workerJobs.at(-1)?.payload.reason).toBe("batch_interval");
     expect(records.releases.size).toBe(1);
+  });
+
+  it("keeps a claimed publication bounded to its target catalog generation", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: ["head", "successor"].map((name) => ({
+        fileName: `${name}.md`,
+        bytes: new TextEncoder().encode(`---\ntitle: ${name}\ntype: page\n---\n# ${name}`),
+        content: `---\ntitle: ${name}\ntype: page\n---\n# ${name}`
+      })),
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const [headSourceFileId, successorSourceFileId] = sourceFileIds;
+
+    if (!headSourceFileId || !successorSourceFileId) {
+      throw new Error("Publication generation fixtures were not created");
+    }
+
+    for (const sourceFileId of sourceFileIds) {
+      const source = records.sources.get(sourceFileId);
+      if (source) {
+        source.processingStatus = "completed";
+        source.processingStage = "index_publication";
+        source.generatedOutputStatus = "pending";
+        source.publicationDirtyAt = null;
+      }
+    }
+    const headSource = records.sources.get(headSourceFileId);
+    if (!headSource) {
+      throw new Error("Head publication fixture was not created");
+    }
+    headSource.publicationDirtyAt = now;
+
+    const originalCreateBundleFiles = records.repositories.files!.createBundleFiles!;
+    let successorInjected = false;
+    records.repositories.files!.createBundleFiles = async (files) => {
+      if (!successorInjected) {
+        successorInjected = true;
+        records.knowledgeBase.catalogGeneration = 1;
+        const successorSource = records.sources.get(successorSourceFileId);
+        if (successorSource) {
+          successorSource.publicationDirtyAt = now;
+        }
+      }
+      await originalCreateBundleFiles(files);
+    };
+
+    const publicationService = createKnowledgeBasePublicationService(
+      records.repositories,
+      storage,
+      redis
+    );
+    await publicationService?.publishNow({
+      knowledgeBaseId: records.knowledgeBase.id,
+      knowledgeBaseName: records.knowledgeBase.name,
+      generatedAt: now,
+      pageSize: 100,
+      cursorTtlSeconds: 900,
+      fileProcessingConcurrency: 1,
+      options: {
+        mode: "batch",
+        batchSize: 1,
+        intervalSeconds: 300,
+        indexShardSize: 1_000,
+        linkIndexShardSize: 1_000,
+        manifestShardSize: 1_000,
+        graphEdgeShardSize: 5_000,
+        graphCandidateLimit: 200,
+        graphMaintenanceBatchSize: 500,
+        rootSummaryLimit: 500
+      },
+      reason: "batch_threshold",
+      targetCatalogGeneration: 0
+    });
+
+    expect(records.releases.size).toBe(1);
+    expect(records.sources.get(headSourceFileId)?.generatedOutputStatus).toBe("visible");
+    expect(records.sources.get(successorSourceFileId)?.generatedOutputStatus).toBe("pending");
+    expect(records.workerJobs.at(-1)).toMatchObject({
+      kind: "publication",
+      status: "queued",
+      payload: {
+        reason: "batch_threshold",
+        targetCatalogGeneration: 1
+      }
+    });
   });
 
   it("keeps manual publication mode pending without enqueueing publication work", async () => {
@@ -1814,7 +2031,8 @@ describe("source file queue", () => {
           graphMaintenanceBatchSize: 500,
           rootSummaryLimit: 500
         },
-        reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
       })
     ).rejects.toThrow("Bundle persistence failed");
 
@@ -1894,7 +2112,8 @@ describe("source file queue", () => {
           graphMaintenanceBatchSize: 500,
           rootSummaryLimit: 500
         },
-        reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
       })
     ).rejects.toThrow(
       "Release validation failed: OKF-0.1-CONCEPT-TYPE pages/conformance-rejection.md"
@@ -1966,7 +2185,8 @@ describe("source file queue", () => {
           graphMaintenanceBatchSize: 500,
           rootSummaryLimit: 500
         },
-        reason: "bootstrap"
+      reason: "bootstrap",
+      targetCatalogGeneration: 0
       })
     ).rejects.toThrow("Graph search publication failed");
 
@@ -2021,7 +2241,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "bootstrap" },
+        payload: { reason: "bootstrap", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       })
@@ -2081,7 +2301,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "bootstrap" },
+        payload: { reason: "bootstrap", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       })
@@ -2160,7 +2380,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "batch_threshold" },
+        payload: { reason: "batch_threshold", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       })
@@ -2266,7 +2486,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "batch_interval" },
+        payload: { reason: "batch_interval", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       })
@@ -2304,6 +2524,64 @@ describe("source file queue", () => {
     delete (files as Partial<NonNullable<AdminRepositories["files"]>>).createPublicationJob;
 
     expect(createSourceFileQueueProcessor(records.repositories, storage, redis, null)).toBeNull();
+  });
+
+  it("propagates interactive publication eligibility from a resource-operation worker job", async () => {
+    const storage = new MemoryStorage();
+    const redis = createRedisCoordinator(new MemoryRedisCommandClient());
+    const records = createRepositories();
+    const sourceFileIds = await seedSourceFileFixtures({
+      files: [
+        {
+          fileName: "resource-operation.md",
+          bytes: new TextEncoder().encode(
+            "---\ntitle: Resource operation\ntype: page\n---\n# Resource operation"
+          ),
+          content: "---\ntitle: Resource operation\ntype: page\n---\n# Resource operation"
+        }
+      ],
+      storageConcurrency: 1,
+      knowledgeBaseId: records.knowledgeBase.id,
+      storage,
+      persist: records.persistSourceFileFixtures
+    });
+    const sourceFileId = sourceFileIds[0];
+    if (!sourceFileId) {
+      throw new Error("Resource-operation source file was not created");
+    }
+
+    records.knowledgeBase.catalogGeneration = 3;
+    records.workerJobs.push(
+      createWorkerJob({
+        kind: "source_file_processing",
+        knowledgeBaseId: records.knowledgeBase.id,
+        sourceFileId,
+        payload: { reason: "resource_operation" },
+        runAfter: now,
+        maxAttempts: 2
+      })
+    );
+    const runtime = createWorkerRuntime({
+      config: createMinimalWorkerConfig(),
+      repositories: records.repositories,
+      storage,
+      redis,
+      modelClient: null,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      }
+    });
+
+    await expect(runtime.tick()).resolves.toBeGreaterThan(0);
+
+    const publicationJob = records.workerJobs.find((job) => job.kind === "publication");
+    expect(publicationJob?.payload).toEqual({
+      reason: "manual",
+      targetCatalogGeneration: 3
+    });
+    expect(publicationJob?.status).toBe("queued");
   });
 
   it("marks only the missing stored source file as failed", async () => {
@@ -2595,7 +2873,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "batch_threshold" },
+        payload: { reason: "batch_threshold", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       })
@@ -2698,7 +2976,7 @@ describe("source file queue", () => {
         kind: "publication",
         knowledgeBaseId: records.knowledgeBase.id,
         sourceFileId: null,
-        payload: { reason: "deletion" },
+        payload: { reason: "deletion", targetCatalogGeneration: 0 },
         runAfter: now,
         maxAttempts: 2
       }),

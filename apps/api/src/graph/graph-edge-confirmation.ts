@@ -1,4 +1,6 @@
 import {
+  boundGraphEvidence,
+  normalizeDurableGraphReason,
   requestGraphRelationshipConfirmations,
   type OkfGraphEdge,
   type OkfGraphNode
@@ -109,13 +111,16 @@ export async function confirmGraphEdges(input: {
       ...edge,
       relationType: edge.relationType,
       weight: Math.max(edge.weight, confirmation.weight),
-      reason: confirmation.reason.trim() || edge.reason,
+      reason: normalizeDurableGraphReason({
+        reason: confirmation.reason,
+        fallbackReason: edge.reason
+      }),
       source: "model_confirmed",
-      evidence: {
+      evidence: boundGraphEvidence({
         ...(edge.evidence ?? {}),
         deterministicSource: edge.source,
         deterministicRelationType: edge.relationType
-      }
+      })
     });
   }
 

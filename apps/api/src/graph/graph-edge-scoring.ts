@@ -1,9 +1,16 @@
-import { isLowInformationSharedGraphTerm, type OkfGraphEdge, type OkfGraphNode } from "@focowiki/okf";
+import {
+  boundGraphEvidence,
+  isLowInformationSharedGraphTerm,
+  normalizeDurableGraphReason,
+  type OkfGraphEdge,
+  type OkfGraphNode
+} from "@focowiki/okf";
 import { stripGeneratedSections } from "./content-profile.js";
 import {
   findSharedSpecificPhrases,
   isSpecificSharedSignal,
-  isStrongContentSignal
+  isStrongContentSignal,
+  listStrongGraphNodeTerms
 } from "./relationship-signals.js";
 import {
   intersectUseful,
@@ -25,6 +32,9 @@ export function buildGraphEdges(input: {
   acceptedEdgeLimit: number;
   genericPhraseThreshold: number;
 }): OkfGraphEdge[] {
+  const candidateDocumentTerms = [input.source, ...input.candidates].map(
+    (node) => new Set(listStrongGraphNodeTerms(node).map(normalizeCompactTerm).filter(Boolean))
+  );
   const suggestedPaths = new Set(
     (input.suggestions?.related_links ?? []).map((link) => normalizePublicPath(link.path))
   );
@@ -36,6 +46,7 @@ export function buildGraphEdges(input: {
         body: input.body,
         suggestedPaths,
         candidate,
+        candidateDocumentTerms,
         genericPhraseThreshold: input.genericPhraseThreshold
       })
     )
@@ -141,9 +152,10 @@ function bestEdgeForCandidate(input: {
   body: string;
   suggestedPaths: Set<string>;
   candidate: OkfGraphNode;
+  candidateDocumentTerms: Array<Set<string>>;
   genericPhraseThreshold: number;
 }): OkfGraphEdge | null {
-  const { source, body, suggestedPaths, candidate } = input;
+  const { source, body, suggestedPaths, candidate, candidateDocumentTerms } = input;
   const signals: OkfGraphEdge[] = [];
   const normalizedBody = normalizeSearchText(stripGeneratedSections(body));
   const sourceVersionHints = readContentProfileStringArray(source, "versionHints");
@@ -179,12 +191,14 @@ function bestEdgeForCandidate(input: {
   const sharedVersionHints = intersectUseful(sourceVersionHints, candidateVersionHints).filter(
     isSpecificSharedSignal
   );
-  const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal);
-  const strongSharedEntities = sharedEntities.filter(isStrongContentSignal);
-  const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal);
-  const strongSharedDefinitions = sharedDefinitions.filter(isStrongContentSignal);
-  const strongSharedProcessHints = sharedProcessHints.filter(isStrongContentSignal);
-  const strongSharedVersionHints = sharedVersionHints.filter(isStrongContentSignal);
+  const isCorpusSpecific = (term: string) =>
+    !isFrequentCandidateTerm(term, candidateDocumentTerms);
+  const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedEntities = sharedEntities.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedDefinitions = sharedDefinitions.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedProcessHints = sharedProcessHints.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedVersionHints = sharedVersionHints.filter(isStrongContentSignal).filter(isCorpusSpecific);
   const titleSupportedSharedSubjects = strongSharedSubjects.filter((term) =>
     isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
   );
@@ -198,13 +212,25 @@ function bestEdgeForCandidate(input: {
     sharedKeyPhrases.filter(
       (term) =>
         !isSharedVersionContextTerm(term, sourceVersionHints, candidateVersionHints) &&
-        isStrongSharedKeyPhrase(term, source, candidate, input.genericPhraseThreshold)
+        isStrongSharedKeyPhrase(
+          term,
+          source,
+          candidate,
+          candidateDocumentTerms,
+          input.genericPhraseThreshold
+        )
     )
   );
   const titleSupportedSharedKeyPhrases = strongSharedKeyPhrases.filter((term) =>
     isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
   );
   const hasTitleSupportedSharedKeyPhrase = titleSupportedSharedKeyPhrases.length > 0;
+  const distinctSharedContentSignalCount = countDistinctSignals([
+    ...strongSharedSubjects,
+    ...strongSharedEntities,
+    ...strongSharedKeywords,
+    ...strongSharedKeyPhrases
+  ]);
   const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
   const hasExplicitReference = matchesExplicitReference(source, candidate);
   const hasTitleMention =
@@ -273,6 +299,7 @@ function bestEdgeForCandidate(input: {
 
   if (
     titleSupportedSharedEntities.length > 0 &&
+    distinctSharedContentSignalCount >= 2 &&
     (strongSharedSubjects.length > 0 || strongSharedKeywords.length >= 2)
   ) {
     signals.push(
@@ -288,6 +315,7 @@ function bestEdgeForCandidate(input: {
 
   if (
     titleSupportedSharedSubjects.length > 0 &&
+    distinctSharedContentSignalCount >= 2 &&
     (strongSharedSubjects.length >= 2 || strongSharedKeywords.length >= 2)
   ) {
     signals.push(
@@ -300,7 +328,10 @@ function bestEdgeForCandidate(input: {
     );
   }
 
-  if (hasTitleSupportedSharedKeyPhrase || strongSharedKeyPhrases.length >= 2) {
+  if (
+    strongSharedKeyPhrases.length >= 2 ||
+    (hasTitleSupportedSharedKeyPhrase && distinctSharedContentSignalCount >= 2)
+  ) {
     signals.push(
       createEdge(
         source,
@@ -423,9 +454,12 @@ function createEdge(
     toFileId: candidate.fileId,
     relationType,
     weight,
-    reason,
+    reason: normalizeDurableGraphReason({
+      reason,
+      fallbackReason: reason
+    }),
     source: sourceKind,
-    evidence
+    evidence: boundGraphEvidence(evidence)
   };
 }
 
@@ -433,6 +467,7 @@ function isStrongSharedKeyPhrase(
   term: string,
   source: OkfGraphNode,
   candidate: OkfGraphNode,
+  candidateDocumentTerms: Array<Set<string>>,
   genericPhraseThreshold: number
 ): boolean {
   const normalized = normalizeSearchText(term).replace(/\s+/gu, "");
@@ -442,6 +477,10 @@ function isStrongSharedKeyPhrase(
     isLowInformationSharedGraphTerm(normalized) ||
     normalized.length < genericPhraseThreshold
   ) {
+    return false;
+  }
+
+  if (isFrequentCandidateTerm(normalized, candidateDocumentTerms)) {
     return false;
   }
 
@@ -456,6 +495,39 @@ function isStrongSharedKeyPhrase(
   const candidateTerms = normalizedStrongNodeTerms(candidate);
 
   return normalized.length > genericPhraseThreshold && sourceTerms.has(normalized) && candidateTerms.has(normalized);
+}
+
+function isFrequentCandidateTerm(
+  value: string,
+  candidateDocumentTerms: Array<Set<string>>
+): boolean {
+  if (candidateDocumentTerms.length < 3) {
+    return false;
+  }
+
+  const normalized = normalizeCompactTerm(value);
+
+  if (!normalized) {
+    return false;
+  }
+
+  let documentFrequency = 0;
+
+  for (const terms of candidateDocumentTerms) {
+    if ([...terms].some((term) => term === normalized || term.includes(normalized))) {
+      documentFrequency += 1;
+    }
+  }
+
+  const maximumCommonDocuments = Math.max(
+    2,
+    Math.ceil(candidateDocumentTerms.length * 0.15)
+  );
+  return documentFrequency > maximumCommonDocuments;
+}
+
+function normalizeCompactTerm(value: string): string {
+  return normalizeSearchText(value).replace(/\s+/gu, "");
 }
 
 function isDiscriminativeSharedTitlePhrase(
@@ -583,4 +655,12 @@ function isSharedVersionContextTerm(
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function countDistinctSignals(values: string[]): number {
+  return new Set(
+    values
+      .map((value) => normalizeSearchText(value).replace(/\s+/gu, ""))
+      .filter(Boolean)
+  ).size;
 }

@@ -12,6 +12,7 @@ export * from "./public-bundle-path.js";
 export * from "./generated-content.js";
 export * from "./generated-citations.js";
 export * from "./graph.js";
+export * from "./graph-presentation.js";
 export * from "./index-metadata.js";
 export * from "./indexes.js";
 export * from "./markdown-appendix.js";

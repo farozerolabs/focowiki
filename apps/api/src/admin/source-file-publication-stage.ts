@@ -1,4 +1,5 @@
 import type { OkfLogLimits } from "@focowiki/okf";
+import type { SourceFilePublicationEligibility } from "../domain/source-file-job.js";
 import type { KnowledgeBasePublicationService, PublicationRuntimeOptions } from "./publication-scheduler.js";
 import type { SourceFileStageMarker, SourceFileStageRecorder } from "./source-file-stage-types.js";
 
@@ -14,6 +15,7 @@ export async function processSourceFilePublicationStage(input: {
   fileProcessingConcurrency: number;
   okfLog?: Partial<OkfLogLimits> | undefined;
   options: PublicationRuntimeOptions;
+  eligibility: SourceFilePublicationEligibility;
   progressClock: () => string;
   mark: SourceFileStageMarker;
   recordStage: SourceFileStageRecorder;
@@ -34,7 +36,8 @@ export async function processSourceFilePublicationStage(input: {
     cursorTtlSeconds: input.cursorTtlSeconds,
     fileProcessingConcurrency: input.fileProcessingConcurrency,
     okfLog: input.okfLog,
-    options: input.options
+    options: input.options,
+    eligibility: input.eligibility
   });
   const publicationEndedAt = input.progressClock();
 

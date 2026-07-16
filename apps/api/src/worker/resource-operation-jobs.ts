@@ -30,7 +30,7 @@ export async function processResourceOperationJob(input: {
       await input.workerJobs.enqueueSourceFileJob({
         knowledgeBaseId: input.job.knowledgeBaseId,
         sourceFileId: prepared.sourceFileId,
-        reason: "retry",
+        reason: "resource_operation",
         runAfter: new Date().toISOString(),
         maxAttempts: input.sourceJobMaxAttempts
       });
@@ -39,8 +39,10 @@ export async function processResourceOperationJob(input: {
       await input.workerJobs.enqueuePublicationJob({
         knowledgeBaseId: input.job.knowledgeBaseId,
         reason: prepared.operation.kind === "source_directory_delete" ? "deletion" : "manual",
+        targetCatalogGeneration: prepared.operation.candidateCatalogGeneration,
         runAfter: new Date().toISOString(),
-        maxAttempts: input.publicationJobMaxAttempts
+        maxAttempts: input.publicationJobMaxAttempts,
+        forceSuccessor: true
       });
     }
     if (prepared.directoryDeletion) {

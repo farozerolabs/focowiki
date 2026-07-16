@@ -49,6 +49,7 @@ export function registerDeveloperOpenApiRoutes(
   const keyService = createDeveloperOpenApiKeyService(services);
   const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
   const api = createDeveloperOpenApiService(services);
+  const openApiDocument = createDeveloperOpenApiDocument();
 
   app.use("/openapi/v2/*", requireAuth);
 
@@ -66,7 +67,7 @@ export function registerDeveloperOpenApiRoutes(
     })
   );
 
-  app.get("/openapi/v2/openapi.json", (context) => context.json(createDeveloperOpenApiDocument()));
+  app.get("/openapi/v2/openapi.json", (context) => context.json(openApiDocument));
 
   app.get("/openapi/v2/knowledge-bases", async (context) =>
     safe(context, () =>

@@ -476,7 +476,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
             <Button type="button" variant="ghost" size="icon-sm" onClick={onBack}>
               <ArrowLeftIcon />
             </Button>
-            <img src="/logo.jpg" alt="" className="size-10 rounded-md object-cover" />
+            <img src="/logo.svg" alt="" className="size-10 object-contain" />
             <div className="min-w-0">
               <p className="text-sm text-muted-foreground">{t("app.name")}</p>
               <h1 className="text-xl font-medium">{t("settings.title")}</h1>

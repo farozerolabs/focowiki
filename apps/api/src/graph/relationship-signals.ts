@@ -2,8 +2,8 @@ import { isLowInformationSharedGraphTerm, type OkfGraphNode } from "@focowiki/ok
 import { isUsefulTerm, normalizeTerm } from "./content-profile.js";
 
 export function findSharedSpecificPhrases(source: OkfGraphNode, candidate: OkfGraphNode): string[] {
-  const sourceTerms = graphNodeTerms(source);
-  const candidateTerms = graphNodeTerms(candidate);
+  const sourceTerms = listStrongGraphNodeTerms(source);
+  const candidateTerms = listStrongGraphNodeTerms(candidate);
   const matches: string[] = [];
 
   for (const sourceTerm of sourceTerms) {
@@ -17,6 +17,19 @@ export function findSharedSpecificPhrases(source: OkfGraphNode, candidate: OkfGr
   }
 
   return unique(matches).sort((left, right) => right.length - left.length || left.localeCompare(right)).slice(0, 16);
+}
+
+export function listStrongGraphNodeTerms(node: OkfGraphNode): string[] {
+  return unique([
+    node.title,
+    ...(node.subjects ?? []),
+    ...(node.entities ?? []),
+    ...(node.keywords ?? []),
+    ...(node.headings ?? []),
+    ...(node.relationshipHints ?? [])
+  ])
+    .map(normalizeTerm)
+    .filter(isStrongContentSignal);
 }
 
 export function isSpecificSharedSignal(value: string): boolean {
@@ -65,19 +78,6 @@ export function isStrongContentSignal(value: string): boolean {
   }
 
   return true;
-}
-
-function graphNodeTerms(node: OkfGraphNode): string[] {
-  return unique([
-    node.title,
-    ...(node.subjects ?? []),
-    ...(node.entities ?? []),
-    ...(node.keywords ?? []),
-    ...(node.headings ?? []),
-    ...(node.relationshipHints ?? [])
-  ])
-    .map(normalizeTerm)
-    .filter(isStrongContentSignal);
 }
 
 function matchSpecificPhrase(left: string, right: string): string | null {

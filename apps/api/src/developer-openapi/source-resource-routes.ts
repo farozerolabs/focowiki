@@ -342,8 +342,10 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           await workerJobs.enqueuePublicationJob({
             knowledgeBaseId,
             reason: "deletion",
+            targetCatalogGeneration: result.operation.candidateCatalogGeneration,
             runAfter: now,
-            maxAttempts: 3
+            maxAttempts: 3,
+            forceSuccessor: true
           });
           await workerJobs.enqueueHardDeleteJob({
             knowledgeBaseId,

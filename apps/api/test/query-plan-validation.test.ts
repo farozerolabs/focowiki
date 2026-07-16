@@ -23,12 +23,16 @@ describe("query plan validation helpers", () => {
         "knowledge-file-search-no-result",
         "knowledge-file-search-kind-filter",
         "knowledge-file-search-cache-hit",
+        "release-read-summary",
         "knowledge-graph-search-first-page",
         "knowledge-graph-search-edge-match",
+        "knowledge-hybrid-search-first-page",
         "graph-expand-file-neighborhood",
         "graph-expand-edge-seed",
         "graph-expand-query-seed",
         "source-resource-list-filter",
+        "source-file-event-page",
+        "resource-operation-page",
         "worker-job-source-cancellation"
       ])
     );
@@ -155,6 +159,21 @@ describe("query plan validation helpers", () => {
     );
   });
 
+  it("keeps request-time search plans on flat release read models", () => {
+    const targets = createLargeScaleReadPlanTargets().filter((target) =>
+      target.name.includes("search") || target.name === "release-read-summary"
+    );
+    const sql = targets.map((target) => target.sql).join("\n").toLowerCase();
+
+    expect(sql).toContain("focowiki.bundle_file_search_documents");
+    expect(sql).toContain("focowiki.knowledge_graph_search_documents");
+    expect(sql).toContain("focowiki.release_read_summaries");
+    expect(sql).not.toContain("tags_json::text");
+    expect(sql).not.toContain("frontmatter_json::text");
+    expect(sql).not.toContain("top_neighbors_json::text");
+    expect(sql).not.toContain(" offset ");
+  });
+
   it("rejects empty and multi-statement query plan inputs", () => {
     expect(() => buildExplainAnalyzeSql("")).toThrow("must not be empty");
     expect(() => buildExplainAnalyzeSql("SELECT 1; SELECT 2")).toThrow("one statement");
@@ -171,12 +190,16 @@ describe("query plan validation helpers", () => {
             {
               "Node Type": "Index Scan",
               "Relation Name": "source_files",
+              "Index Name": "source_files_pkey",
+              "Actual Rows": 5,
               "Shared Hit Blocks": 3,
               "Shared Read Blocks": 0
             },
             {
               "Node Type": "Seq Scan",
               "Relation Name": "bundle_files",
+              "Actual Rows": 7,
+              "Rows Removed by Filter": 11,
               "Shared Hit Blocks": 7,
               "Shared Read Blocks": 2
             }
@@ -190,7 +213,11 @@ describe("query plan validation helpers", () => {
     expect(summary).toEqual({
       nodeTypes: ["Nested Loop", "Index Scan", "Seq Scan"],
       relationNames: ["source_files", "bundle_files"],
+      indexNames: ["source_files_pkey"],
+      sequentialScanRelations: ["bundle_files"],
       hasSequentialScan: true,
+      actualRows: 12,
+      rowsRemovedByFilter: 11,
       planningTimeMs: 1.5,
       executionTimeMs: 12.3,
       sharedHitBlocks: 20,

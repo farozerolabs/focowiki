@@ -22,6 +22,7 @@ import type { ApplicationRuntime } from "./application/ports/runtime.js";
 import type { UploadSessionStoragePort } from "./application/ports/upload-session-storage.js";
 import { systemApplicationRuntime } from "./infrastructure/runtime/system-runtime.js";
 import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
+import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -30,6 +31,7 @@ export type ApiAppOptions = {
   redis?: RedisCoordinator;
   repositories?: AdminRepositories;
   runtimeSettings?: RuntimeSettingsService;
+  logger?: RuntimeLogger;
 };
 
 type ApiAppServices = {
@@ -42,11 +44,12 @@ type ApiAppServices = {
   runtimeSettings: RuntimeSettingsService | null;
   applicationRuntime: ApplicationRuntime;
   uploadSessionStorage: UploadSessionStoragePort;
+  logger: RuntimeLogger;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp(services.config);
+  const app = createBaseApp(services.config, services.logger);
 
   registerAdminApiRoutes(app, services);
 
@@ -55,7 +58,7 @@ export function createAdminApiApp(options: ApiAppOptions): Hono {
 
 export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp(services.config);
+  const app = createBaseApp(services.config, services.logger);
 
   registerDeveloperOpenApiRoutes(app, services);
 
@@ -64,7 +67,7 @@ export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
 
 export function createApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
-  const app = createBaseApp(services.config);
+  const app = createBaseApp(services.config, services.logger);
 
   registerAdminApiRoutes(app, services);
   registerDeveloperOpenApiRoutes(app, services);
@@ -109,6 +112,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     repositories,
     runtimeSettings,
     applicationRuntime: systemApplicationRuntime,
-    uploadSessionStorage: createUploadSessionStoragePort(storage)
+    uploadSessionStorage: createUploadSessionStoragePort(storage),
+    logger: options.logger ?? createRuntimeLogger(options.config)
   };
 }
