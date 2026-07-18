@@ -29,7 +29,7 @@ vi.mock("../src/lib/admin-api", () => ({
           id: "kb-docs",
           name: "Updated docs",
           description: "Updated description",
-          activeReleaseId: "release-001",
+          activeGenerationId: "generation-001",
           resourceRevision: 4,
           catalogGeneration: 3
         },
@@ -44,7 +44,7 @@ vi.mock("../src/lib/admin-api", () => ({
       id: "kb-created",
       name: "Created docs",
       description: "Created from the home page",
-      activeReleaseId: null
+      activeGenerationId: null
     }
   })),
   createPublicOpenApiKey: vi.fn(async () => ({
@@ -71,6 +71,13 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
+    activeGenerationId: null,
+    pendingDispatch: {
+      pendingCount: 0,
+      oldestPendingAt: null,
+      paused: false,
+      pausedReason: null
+    },
     sourceFileJobs: {
       queuedCount: 0,
       runningCount: 0,
@@ -88,6 +95,12 @@ vi.mock("../src/lib/admin-api", () => ({
       deadLetterCount: 0,
       oldestQueuedAt: null,
       oldestQueuedAgeSeconds: null
+    },
+    publicationProgress: {
+      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
+      touchedShardCount: 0, oldestDirtyAt: null, queuedAt: null, startedAt: null,
+      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
+      safeErrorCode: null, safeErrorMessage: null
     },
     dirtySourceFiles: {
       count: 0,
@@ -120,14 +133,6 @@ vi.mock("../src/lib/admin-api", () => ({
     }
   })),
   listSourceFiles: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listBundleFiles: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listReleases: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -213,7 +218,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: null
+          activeGenerationId: null
         }
       ],
       nextCursor: null
@@ -232,7 +237,7 @@ describe("Admin knowledge base home", () => {
       id: "kb-docs",
       name: "Developer docs",
       description: "Markdown product knowledge",
-      activeReleaseId: null
+      activeGenerationId: null
     };
     window.history.replaceState(
       null,
@@ -257,7 +262,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: null
+          activeGenerationId: null
         }
       ],
       nextCursor: null
@@ -313,7 +318,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: "release-001",
+          activeGenerationId: "generation-001",
           resourceRevision: 3,
           catalogGeneration: 2
         }
@@ -345,7 +350,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: null
+          activeGenerationId: null
         }
       ],
       nextCursor: null
@@ -378,7 +383,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: null
+          activeGenerationId: null
         }
       ],
       nextCursor: null
@@ -485,7 +490,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-one",
             name: "One docs",
             description: null,
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: "cursor-one"
@@ -496,7 +501,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-two",
             name: "Two docs",
             description: null,
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -507,7 +512,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-one",
             name: "One docs",
             description: null,
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: "cursor-one"
@@ -548,7 +553,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -559,7 +564,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-legal-one",
             name: "Legal library",
             description: "Law metadata",
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: "cursor-legal"
@@ -570,7 +575,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-legal-two",
             name: "Legal references",
             description: null,
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -581,7 +586,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -592,7 +597,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -655,7 +660,7 @@ describe("Admin knowledge base home", () => {
             id: "kb-docs",
             name: "Developer docs",
             description: "Markdown product knowledge",
-            activeReleaseId: null
+            activeGenerationId: null
           }
         ],
         nextCursor: null
@@ -688,7 +693,7 @@ describe("Admin knowledge base home", () => {
           id: "kb-docs",
           name: "Developer docs",
           description: "Markdown product knowledge",
-          activeReleaseId: null
+          activeGenerationId: null
         }
       ],
       nextCursor: null

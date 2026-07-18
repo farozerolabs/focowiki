@@ -40,17 +40,58 @@ describe("API Redis runtime", () => {
       "API Redis unavailable; continuing with bounded database reads"
     );
   });
+
+  it("falls back to bounded reads while an established Redis connection is interrupted", async () => {
+    const client = createClient();
+    const result = await connectApiRedis({
+      config,
+      logger: createLogger(),
+      createClient: () => client
+    });
+
+    client.isReady = false;
+
+    await expect(result?.getPaginationCursor("files", "cursor-1")).resolves.toBeNull();
+    await expect(result?.getPublicOpenApiKeyCache("hash-1")).resolves.toBeNull();
+    await expect(result?.getSession("session-1")).resolves.toBeNull();
+    await expect(result?.acquireLock("scope", "id", "owner", 30)).resolves.toBe(false);
+    await expect(
+      result?.hitRateLimit("scope", "id", { max: 10, windowSeconds: 60 })
+    ).resolves.toMatchObject({ allowed: true, remaining: 10 });
+  });
+
+  it("recovers Redis-backed behavior after the connection becomes ready again", async () => {
+    const client = createClient();
+    const result = await connectApiRedis({
+      config,
+      logger: createLogger(),
+      createClient: () => client
+    });
+
+    client.isReady = false;
+    await expect(result?.getPaginationCursor("files", "cursor-1")).resolves.toBeNull();
+
+    client.isReady = true;
+    client.emit("ready");
+    client.get.mockResolvedValueOnce(JSON.stringify({ offset: 20 }) as never);
+
+    await expect(result?.getPaginationCursor("files", "cursor-1")).resolves.toEqual({ offset: 20 });
+  });
 });
 
 function createClient(options: { connectError?: Error; destroyError?: Error } = {}) {
-  const listeners = new Map<string, (error: Error) => void>();
-  return {
+  const listeners = new Map<string, (...arguments_: never[]) => void>();
+  const client = {
+    isReady: true,
     on: vi.fn((event: string, listener: (error: Error) => void) => {
-      listeners.set(event, listener);
+      listeners.set(event, listener as (...arguments_: never[]) => void);
     }),
+    emit(event: string) {
+      listeners.get(event)?.();
+    },
     connect: vi.fn(async () => {
       if (options.connectError) {
-        listeners.get("error")?.(options.connectError);
+        (listeners.get("error") as ((error: Error) => void) | undefined)?.(options.connectError);
         throw options.connectError;
       }
     }),
@@ -62,8 +103,15 @@ function createClient(options: { connectError?: Error; destroyError?: Error } = 
     del: vi.fn(async () => 0),
     incr: vi.fn(async () => 1),
     expire: vi.fn(async () => 1),
-    ttl: vi.fn(async () => 60)
+    ttl: vi.fn(async () => 60),
+    sAdd: vi.fn(async () => 1),
+    sRem: vi.fn(async () => 1),
+    sScanIterator: async function* () {
+      yield [];
+    }
   };
+
+  return client;
 }
 
 function createLogger(): RuntimeLogger {

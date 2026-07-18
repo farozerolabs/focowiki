@@ -1,28 +1,28 @@
 import { randomUUID } from "node:crypto";
-import {
-  MetadataValidationError,
-  type OkfLogLimits,
-  type SourceModelSuggestions
-} from "@focowiki/okf";
+import { type SourceModelSuggestions } from "@focowiki/okf";
 import type {
   AdminRepositories,
   SourceFileProcessingStage,
   SourceFileRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import type { SourceFilePublicationEligibility } from "../domain/source-file-job.js";
+import {
+  createSourceProcessingFailure,
+  SourceFileAttemptError
+} from "../application/source-file-failure.js";
+import type { SourceFileTerminalFailure } from "../domain/source-file-lifecycle.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
-import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
 import {
-  createKnowledgeBasePublicationService,
-  type PublicationRuntimeOptions
-} from "./publication-scheduler.js";
-import { processSourceFileBundleStage } from "./source-file-bundle-stage.js";
+  SourceRevisionSupersededError,
+  type SourceProcessingCompletion
+} from "../application/source-processing-completion.js";
+import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
+import type { SerializableJson } from "../application/ports/source-dispatch-repository.js";
 import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
 import { processSourceFileMetadataStage } from "./source-file-metadata-stage.js";
 import { processSourceFileModelStage } from "./source-file-model-stage.js";
-import { processSourceFilePublicationStage } from "./source-file-publication-stage.js";
+import { readSourceFileContent } from "./source-file-storage-stage.js";
 import { sourceFileStageMessageKey } from "./source-file-processor-support.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
 
@@ -39,23 +39,24 @@ export class SourceFileProcessingCancelledError extends Error {
 
 export type SourceFileProcessInput = {
   knowledgeBaseId: string;
-  knowledgeBaseName: string;
   sourceFileId: string;
   generatedAt: string;
   batchSize: number;
   cursorTtlSeconds: number;
-  fileProcessingConcurrency: number;
-  okfLog?: Partial<OkfLogLimits> | undefined;
-  publication?: Partial<PublicationRuntimeOptions> | undefined;
   graph?: Partial<RuntimeGraphSettings> | undefined;
   modelAssistance?: ModelAssistanceOptions | null | undefined;
-  publicationEligibility?: SourceFilePublicationEligibility | undefined;
+  attemptCount?: number | undefined;
+  maxAttempts?: number | undefined;
+  sourceRevisionId?: string | undefined;
+  publicationSettingsSnapshot?: SerializableJson | undefined;
+  publicationMaxAttempts?: number | undefined;
 };
 
 export function createSourceFileQueueProcessor(
   repositories: AdminRepositories,
   storage: StorageAdapter,
   redis: RedisCoordinator,
+  completion: SourceProcessingCompletion,
   modelAssistance: ModelAssistanceOptions | null = null
 ): SourceFileQueueProcessor | null {
   const files = repositories.files;
@@ -65,8 +66,7 @@ export function createSourceFileQueueProcessor(
     !files.updateSourceFileProcessingState ||
     !files.updateSourceFileMetadata ||
     !files.updateSourceFileModelSuggestions ||
-    !files.createSourceFileEvent ||
-    !repositories.workerJobs
+    !files.createSourceFileEvent
   ) {
     return null;
   }
@@ -75,12 +75,6 @@ export function createSourceFileQueueProcessor(
   const updateSourceFileMetadata = files.updateSourceFileMetadata;
   const updateSourceFileModelSuggestions = files.updateSourceFileModelSuggestions;
   const createSourceFileEvent = files.createSourceFileEvent;
-  const publicationService = createKnowledgeBasePublicationService(repositories, storage, redis);
-
-  if (!publicationService) {
-    return null;
-  }
-
   return {
     async processFile(input) {
       const ownerId = `source-worker-${randomUUID()}`;
@@ -99,8 +93,7 @@ export function createSourceFileQueueProcessor(
         stage: SourceFileProcessingStage;
         startedAt?: string | null;
         endedAt?: string | null;
-        errorCode?: string | null;
-        errorMessage?: string | null;
+        terminalFailure?: SourceFileTerminalFailure | null;
       }) => {
         await progress.markFile({
           sourceFileId: input.sourceFileId,
@@ -108,8 +101,7 @@ export function createSourceFileQueueProcessor(
           stage: update.stage,
           startedAt: update.startedAt ?? null,
           endedAt: update.endedAt ?? null,
-          errorCode: update.errorCode ?? null,
-          errorMessage: update.errorMessage ?? null
+          terminalFailure: update.terminalFailure ?? null
         });
       };
 
@@ -128,7 +120,10 @@ export function createSourceFileQueueProcessor(
           severity: event.severity
         });
         await redis.recordSourceFileEvent(
-          input.sourceFileId,
+          {
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceFileId: input.sourceFileId
+          },
           {
             knowledgeBaseId: input.knowledgeBaseId,
             stage,
@@ -164,31 +159,32 @@ export function createSourceFileQueueProcessor(
 
         currentStage = "upload_storage";
         await assertSourceFileProcessingEligible();
+        const uploadStartedAt = progressClock();
         await mark({
           status: "running",
           stage: currentStage,
-          startedAt: progressClock(),
-          endedAt: null,
-          errorCode: null
+          startedAt: uploadStartedAt,
+          endedAt: null
         });
+        const content = await readSourceFileContent({ storage, source });
         await recordStage(currentStage, {
-          startedAt: progressClock(),
+          startedAt: uploadStartedAt,
           endedAt: progressClock(),
           severity: "info"
         });
 
         currentStage = "metadata_resolution";
         await assertSourceFileProcessingEligible();
-        await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
+        await mark({ status: "running", stage: currentStage, endedAt: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
           endedAt: null,
           severity: "info"
         });
         const metadataResult = await processSourceFileMetadataStage({
-          storage,
           knowledgeBaseId: input.knowledgeBaseId,
           source,
+          content,
           updateSourceFileMetadata
         });
         await recordStage(currentStage, {
@@ -199,7 +195,7 @@ export function createSourceFileQueueProcessor(
 
         currentStage = "llm_suggestion";
         await assertSourceFileProcessingEligible();
-        await mark({ status: "running", stage: currentStage, endedAt: null, errorCode: null });
+        await mark({ status: "running", stage: currentStage, endedAt: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
           endedAt: null,
@@ -255,35 +251,45 @@ export function createSourceFileQueueProcessor(
           recordStage
         });
 
-        currentStage = "bundle_generation";
+        if (!input.sourceRevisionId) {
+          throw new Error("Source revision ID is required");
+        }
+        currentStage = "projection_generation";
         await assertSourceFileProcessingEligible();
-        await processSourceFileBundleStage({
-          progressClock,
-          mark,
-          recordStage
+        const completionStartedAt = progressClock();
+        await mark({ status: "running", stage: currentStage, endedAt: null });
+        await recordStage(currentStage, {
+          startedAt: completionStartedAt,
+          endedAt: null,
+          severity: "info"
         });
-
-        currentStage = "index_publication";
-        await assertSourceFileProcessingEligible();
-        await processSourceFilePublicationStage({
-          publicationService,
-          knowledgeBaseId: input.knowledgeBaseId,
-          knowledgeBaseName: input.knowledgeBaseName,
-          sourceFileId: source.id,
-          relatedSourceFileIds: graphStageResult.affectedSourceFileIds.filter(
-            (sourceFileId) => sourceFileId !== source.id
-          ),
-          generatedAt: input.generatedAt,
-          pageSize: input.batchSize,
-          cursorTtlSeconds: input.cursorTtlSeconds,
-          fileProcessingConcurrency: input.fileProcessingConcurrency,
-          okfLog: input.okfLog,
-          options: resolvePublicationOptions(input),
-          eligibility: input.publicationEligibility ?? "import",
-          progressClock,
-          mark,
-          recordStage
+        try {
+          await completion.complete({
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceFileId: source.id,
+            sourceRevisionId: input.sourceRevisionId,
+            graphNeighborSourceFileIds: graphStageResult.affectedSourceFileIds.filter(
+              (sourceFileId) => sourceFileId !== source.id
+            ),
+            graphEdgeIds: graphStageResult.edgeIds,
+            removedGraphEdgeIds: graphStageResult.removedEdgeIds,
+            publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+            publicationMaxAttempts: input.publicationMaxAttempts,
+            completedAt: progressClock()
+          });
+        } catch (error) {
+          if (error instanceof SourceRevisionSupersededError) {
+            throw new SourceFileProcessingCancelledError();
+          }
+          throw error;
+        }
+        const completedAt = progressClock();
+        await recordStage(currentStage, {
+          startedAt: null,
+          endedAt: completedAt,
+          severity: "info"
         });
+        await mark({ status: "completed", stage: currentStage, endedAt: completedAt });
 
         const completedSource = await getSourceFile({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -301,28 +307,29 @@ export function createSourceFileQueueProcessor(
         }
 
         const failedAt = progressClock();
-        const errorCode =
-          error instanceof MetadataValidationError
-            ? "METADATA_VALIDATION_FAILED"
-            : currentStage === "llm_suggestion"
-              ? "MODEL_SUGGESTION_FAILED"
-              : currentStage === "graph_generation"
-                ? "GRAPH_GENERATION_FAILED"
-              : "SOURCE_FILE_PROCESSING_FAILED";
-        const message = error instanceof Error ? error.message : "Source file processing failed";
+        const terminalFailure = createSourceProcessingFailure({
+          stage: currentStage,
+          error,
+          occurredAt: failedAt,
+          correlationId: ownerId
+        });
+        const automaticRetryAllowed = terminalFailure.retryKind === "source_processing";
+        const terminal = !automaticRetryAllowed
+          || (input.attemptCount ?? 1) >= (input.maxAttempts ?? 1);
         await mark({
-          status: "failed",
+          status: terminal ? "failed" : "queued",
           stage: currentStage,
           endedAt: failedAt,
-          errorCode,
-          errorMessage: message
+          terminalFailure: terminal ? terminalFailure : null
         }).catch(() => undefined);
         await recordStage(currentStage, {
           startedAt: null,
           endedAt: failedAt,
-          severity: "error"
+          severity: terminal ? "error" : "warning"
         }).catch(() => undefined);
-        throw error;
+        throw new SourceFileAttemptError(terminalFailure, automaticRetryAllowed, {
+          cause: error
+        });
       } finally {
         if (sourceLockAcquired) {
           await redis.releaseSourceFileLock(input.sourceFileId, ownerId);
@@ -330,6 +337,21 @@ export function createSourceFileQueueProcessor(
       }
 
       async function assertSourceFileProcessingEligible(): Promise<void> {
+        if (!input.sourceRevisionId) {
+          throw new Error("Source revision ID is required");
+        }
+        try {
+          await completion.assertCurrent({
+            knowledgeBaseId: input.knowledgeBaseId,
+            sourceFileId: input.sourceFileId,
+            sourceRevisionId: input.sourceRevisionId
+          });
+        } catch (error) {
+          if (error instanceof SourceRevisionSupersededError) {
+            throw new SourceFileProcessingCancelledError();
+          }
+          throw error;
+        }
         const currentKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
           input.knowledgeBaseId
         );
@@ -348,20 +370,5 @@ export function createSourceFileQueueProcessor(
         }
       }
     }
-  };
-}
-
-function resolvePublicationOptions(input: SourceFileProcessInput): PublicationRuntimeOptions {
-  return {
-    mode: input.publication?.mode ?? "batch",
-    batchSize: input.publication?.batchSize ?? input.batchSize,
-    intervalSeconds: input.publication?.intervalSeconds ?? 300,
-    indexShardSize: input.publication?.indexShardSize ?? 1_000,
-    linkIndexShardSize: input.publication?.linkIndexShardSize ?? 1_000,
-    manifestShardSize: input.publication?.manifestShardSize ?? 1_000,
-    graphMaintenanceBatchSize: input.publication?.graphMaintenanceBatchSize ?? 500,
-    rootSummaryLimit: input.publication?.rootSummaryLimit ?? 500,
-    directoryIndexMaxEntries: input.publication?.directoryIndexMaxEntries ?? 200,
-    directoryIndexMaxBytes: input.publication?.directoryIndexMaxBytes ?? 65_536
   };
 }

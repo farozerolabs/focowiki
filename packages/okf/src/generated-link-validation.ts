@@ -4,6 +4,10 @@ import type { OkfBundleFile } from "./bundle-file.js";
 import { OKF_RESERVED_MARKDOWN_FILES } from "./conformance-baseline.js";
 import type { OkfConformanceIssue, OkfValidationProfile } from "./conformance-types.js";
 import { createConformanceIssue } from "./conformance-types.js";
+import {
+  canonicalizeOptionalGeneratedTextIdentity,
+  decodeMarkdownIdentityLabel
+} from "./text-identity.js";
 
 const RESERVED = new Set<string>(OKF_RESERVED_MARKDOWN_FILES);
 
@@ -65,7 +69,7 @@ export function validateBundleNavigation(
       }
       if (!targetPath.endsWith(".md") || RESERVED.has(posix.basename(targetPath))) continue;
       const parsed = matter(target.content);
-      const title = typeof parsed.data.title === "string" ? parsed.data.title.trim() : "";
+      const title = canonicalizeOptionalGeneratedTextIdentity(parsed.data.title) ?? "";
       const description = typeof parsed.data.description === "string"
         ? parsed.data.description.trim()
         : "";
@@ -97,10 +101,10 @@ export function readMarkdownLinks(content: string): Array<{
 }> {
   const links: Array<{ label: string; href: string; hasDescription: boolean }> = [];
   for (const line of content.split("\n")) {
-    const match = line.match(/^[-*] \[([^\]]+)\]\(([^)]+)\)(.*)$/u);
+    const match = line.match(/^[-*] \[((?:\\.|[^\]])+)\]\(([^)]+)\)(.*)$/u);
     if (!match) continue;
     links.push({
-      label: match[1] ?? "",
+      label: decodeMarkdownIdentityLabel(match[1] ?? ""),
       href: match[2] ?? "",
       hasDescription: /^\s+-\s+\S/u.test(match[3] ?? "")
     });

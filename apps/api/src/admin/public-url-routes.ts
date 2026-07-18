@@ -27,7 +27,7 @@ export function registerAdminPublicUrlRoutes(
         context.req.param("knowledgeBaseId")
       );
 
-      if (!knowledgeBase?.activeReleaseId) {
+      if (!knowledgeBase?.activeGenerationId) {
         return notFound(context);
       }
 

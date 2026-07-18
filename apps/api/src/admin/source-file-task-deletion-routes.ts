@@ -3,7 +3,7 @@ import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
+import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
 import { readSourceFileTaskDeletionRequest } from "./source-file-task-deletion-request.js";
 import { createSourceFileTaskDeletionService } from "./source-file-task-deletion-service.js";
 
@@ -11,9 +11,9 @@ export function registerAdminSourceFileTaskDeletionRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    storage: StorageAdapter;
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
+    sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
     runtimeSettings?: RuntimeSettingsService | null | undefined;
   },
   middlewares: {
@@ -21,7 +21,7 @@ export function registerAdminSourceFileTaskDeletionRoutes(
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, storage, redis, repositories, runtimeSettings } = services;
+  const { config, redis, repositories, runtimeSettings, sourceFileTaskDeletions } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/task-deletions",
@@ -56,18 +56,28 @@ export function registerAdminSourceFileTaskDeletionRoutes(
         );
       }
 
-      const service = createSourceFileTaskDeletionService(repositories, storage, redis);
+      const service = createSourceFileTaskDeletionService(
+        repositories,
+        sourceFileTaskDeletions,
+        redis
+      );
 
       if (!service) {
         return missingRepositoryBackend(context);
       }
 
+      const runtimeSnapshot = await runtimeSettings?.getSnapshot();
       const result = await service.deleteTasks({
         knowledgeBaseId: knowledgeBase.id,
         sourceFileIds: request.sourceFileIds,
         deletedAt: new Date().toISOString(),
         cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-        hardDeleteMaxAttempts: (await runtimeSettings?.getSnapshot())?.worker.hardDeleteMaxAttempts
+        hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts,
+        publicationSettingsSnapshot: {
+          publication: runtimeSnapshot?.publication ?? {},
+          graph: runtimeSnapshot?.graph ?? {},
+          worker: runtimeSnapshot?.worker ?? {}
+        }
       });
 
       if (!result) {

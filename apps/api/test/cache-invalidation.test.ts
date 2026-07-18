@@ -3,7 +3,7 @@ import { invalidateKnowledgeBaseCaches } from "../src/admin/cache-invalidation.j
 import type { RedisCoordinator } from "../src/redis/coordination.js";
 
 describe("knowledge base cache invalidation", () => {
-  it("marks source-file and active root tree scopes stale after a file release changes", async () => {
+  it("marks source-file scopes stale after source state changes", async () => {
     const invalidatedScopes: string[] = [];
     const redis = {
       async markPaginationInvalid(scope: string) {
@@ -14,7 +14,6 @@ describe("knowledge base cache invalidation", () => {
     await invalidateKnowledgeBaseCaches({
       redis,
       knowledgeBaseId: "kb-001",
-      releaseId: "release-002",
       sourceFileId: "source-001",
       ttlSeconds: 900
     });
@@ -25,12 +24,7 @@ describe("knowledge base cache invalidation", () => {
         "developer-openapi:source-files:kb-001",
         "source-file-events:kb-001:source-001",
         "developer-openapi:source-file-events:kb-001:source-001",
-        "developer-openapi:related:kb-001:source-001",
-        "file-tree:kb-001:release-002",
-        "developer-openapi:tree:kb-001:release-002",
-        "bundle-files:kb-001:release-002",
-        "public-files:kb-001:release-002",
-        "developer-openapi:file-search:kb-001:release-002"
+        "developer-openapi:related:kb-001:source-001"
       ])
     );
   });

@@ -6,9 +6,18 @@ import {
   createRuntimeModel,
   deleteRuntimeModel,
   fetchRuntimeSettings,
+  updatePublicationSettings,
   updateRateLimitSettings,
-  updateUploadGenerationSettings
+  updateWorkerSettings
 } from "@/lib/admin-api";
+
+class TestResizeObserver implements ResizeObserver {
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+}
+
+globalThis.ResizeObserver = TestResizeObserver;
 
 vi.mock("@/lib/admin-api", () => ({
   activateRuntimeModel: vi.fn(),
@@ -39,31 +48,49 @@ vi.mock("@/lib/admin-api", () => ({
       rateLimits: {
         adminLogin: { max: 8, windowSeconds: 900 },
         adminApi: { max: 600, windowSeconds: 60 },
-        upload: { max: 20, windowSeconds: 3600 },
         publicOpenApi: { max: 1200, windowSeconds: 60 }
       },
       worker: {
         sourceFileConcurrency: 2,
         claimBatchSize: 10,
+        generationBatchSize: 50,
         pollIntervalMs: 1000,
         lockTtlSeconds: 900,
         heartbeatIntervalMs: 15000,
         jobMaxAttempts: 3,
         jobRetryDelayMs: 30000,
-        queueBackpressureLimit: 5000,
-        queueBackpressureKnowledgeBaseLimit: 2000,
-        queueBackpressureMaxAgeSeconds: 3600,
-        queueBackpressureRetryAfterSeconds: 60,
+        sourceQueueHardDepth: 5000,
+        sourceQueueResumeDepth: 3000,
+        sourceQueueHardAgeSeconds: 3600,
+        sourceQueueResumeAgeSeconds: 1800,
         shutdownGraceMs: 30000,
         completedJobRetentionDays: 7,
         failedJobRetentionDays: 30,
         deadLetterJobRetentionDays: 90,
-        retentionCleanupBatchSize: 1000
+        retentionCleanupBatchSize: 1000,
+        hardDeleteConcurrency: 1,
+        hardDeleteDatabaseBatchSize: 1000,
+        hardDeleteObjectBatchSize: 1000,
+        hardDeleteMaxAttempts: 3,
+        hardDeleteRetryDelayMs: 60000,
+        hardDeleteFailedRetentionDays: 30,
+        hardDeleteVersionPurgeEnabled: false
       },
       publication: {
         mode: "batch",
         batchSize: 300,
         intervalSeconds: 300,
+        roleConcurrency: 1,
+        claimBatchSize: 1,
+        impactBatchSize: 100,
+        impactConcurrency: 8,
+        dirtyFileHardCount: 2000,
+        dirtyFileResumeCount: 1000,
+        dirtyAgeHardSeconds: 900,
+        dirtyAgeResumeSeconds: 300,
+        pendingImpactHardCount: 20000,
+        pendingImpactResumeCount: 10000,
+        generationRetentionDays: 7,
         indexShardSize: 1000,
         linkIndexShardSize: 1000,
         manifestShardSize: 1000,
@@ -75,15 +102,6 @@ vi.mock("@/lib/admin-api", () => ({
         directoryIndexMaxBytes: 65536,
         okfLogMaxEntries: 100,
         okfLogMaxBytes: 65536
-      },
-      uploadGeneration: {
-        maxBytes: 1048576,
-        sessionTtlSeconds: 86400,
-        manifestPageSize: 500,
-        contentBatchMaxFiles: 24,
-        contentBatchMaxBytes: 16777216,
-        generationBatchSize: 50,
-        fileProcessingConcurrency: 1
       },
       activeModel: {
         id: "model-001"
@@ -113,59 +131,15 @@ vi.mock("@/lib/admin-api", () => ({
   })),
   pauseRuntimeModel: vi.fn(),
   resumeRuntimeModel: vi.fn(),
-  updatePublicationSettings: vi.fn(),
+  updatePublicationSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    publication: value
+  } })),
   updateRateLimitSettings: vi.fn(),
-  updateUploadGenerationSettings: vi.fn(async () => ({
-    settings: {
-      rateLimits: {
-        adminLogin: { max: 8, windowSeconds: 900 },
-        adminApi: { max: 600, windowSeconds: 60 },
-        upload: { max: 20, windowSeconds: 3600 },
-        publicOpenApi: { max: 1200, windowSeconds: 60 }
-      },
-      worker: {
-        sourceFileConcurrency: 2,
-        claimBatchSize: 10,
-        pollIntervalMs: 1000,
-        lockTtlSeconds: 900,
-        heartbeatIntervalMs: 15000,
-        jobMaxAttempts: 3,
-        jobRetryDelayMs: 30000,
-        queueBackpressureLimit: 5000,
-        queueBackpressureKnowledgeBaseLimit: 2000,
-        queueBackpressureMaxAgeSeconds: 3600,
-        queueBackpressureRetryAfterSeconds: 60,
-        shutdownGraceMs: 30000,
-        completedJobRetentionDays: 7,
-        failedJobRetentionDays: 30,
-        deadLetterJobRetentionDays: 90,
-        retentionCleanupBatchSize: 1000
-      },
-      publication: {
-        mode: "batch",
-        batchSize: 300,
-        intervalSeconds: 300,
-        indexShardSize: 1000,
-        linkIndexShardSize: 1000,
-        manifestShardSize: 1000,
-        graphEdgeShardSize: 5000,
-        graphCandidateLimit: 200,
-        graphMaintenanceBatchSize: 500,
-        rootSummaryLimit: 500,
-        okfLogMaxEntries: 100,
-        okfLogMaxBytes: 65536
-      },
-      uploadGeneration: {
-        maxBytes: 2097152,
-        generationBatchSize: 80,
-        fileProcessingConcurrency: 1
-      },
-      activeModel: {
-        id: "model-001"
-      }
-    }
-  })),
-  updateWorkerSettings: vi.fn()
+  updateWorkerSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    worker: value
+  } }))
 }));
 
 describe("SettingsPage", () => {
@@ -242,56 +216,73 @@ describe("SettingsPage", () => {
     expect(createRuntimeModel).not.toHaveBeenCalled();
   });
 
-  it("edits upload-generation settings and blocks empty required fields", async () => {
+  it("removes upload admission controls from the settings surface", async () => {
     render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
-    const uploadTab = screen.getByRole("tab", { name: "Upload and generation" });
-    fireEvent.pointerDown(uploadTab);
-    fireEvent.mouseDown(uploadTab);
-    fireEvent.pointerUp(uploadTab);
-    fireEvent.click(uploadTab);
+    expect(screen.queryByRole("tab", { name: "Upload and generation" })).toBeNull();
+    expect(document.getElementById("upload-generation-maxBytes")).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
+  });
 
-    await waitFor(() => {
-      expect(screen.getAllByText("Upload and generation").length).toBeGreaterThan(0);
+  it("saves source worker generation and hysteresis settings", async () => {
+    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Worker" }));
+
+    const generationBatchSize = await waitFor(() => {
+      const input = document.getElementById("worker-generationBatchSize") as HTMLInputElement | null;
+      if (!input) {
+        throw new Error("Expected worker generation batch input.");
+      }
+      return input;
     });
-    expect(
-      screen.getByText("Maximum bytes accepted for one Markdown source file. Recommended: 10485760 for 10 MB, or lower for small deployments.")
-    ).toBeTruthy();
-
-    const maxBytes = document.getElementById(
-      "upload-generation-maxBytes"
-    ) as HTMLInputElement | null;
-    const batchSize = document.getElementById(
-      "upload-generation-generationBatchSize"
-    ) as HTMLInputElement | null;
-
-    if (!maxBytes || !batchSize) {
-      throw new Error("Expected upload-generation inputs.");
-    }
-
-    fireEvent.change(maxBytes, { target: { value: "" } });
-    expect(maxBytes.value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(updateUploadGenerationSettings).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText("Required numeric fields must be positive integers.")
-    ).toBeTruthy();
-
-    fireEvent.change(maxBytes, { target: { value: "2097152" } });
-    fireEvent.change(batchSize, { target: { value: "80" } });
+    const resumeDepth = document.getElementById("worker-sourceQueueResumeDepth") as HTMLInputElement;
+    fireEvent.change(generationBatchSize, { target: { value: "80" } });
+    fireEvent.change(resumeDepth, { target: { value: "2500" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(updateUploadGenerationSettings).toHaveBeenCalledWith({
-        maxBytes: 2_097_152,
-        sessionTtlSeconds: 86_400,
-        manifestPageSize: 500,
-        contentBatchMaxFiles: 24,
-        contentBatchMaxBytes: 16_777_216,
+      expect(updateWorkerSettings).toHaveBeenCalledWith(expect.objectContaining({
         generationBatchSize: 80,
-        fileProcessingConcurrency: 1
-      });
+        sourceQueueHardDepth: 5000,
+        sourceQueueResumeDepth: 2500
+      }));
+    });
+  });
+
+  it("saves publication pressure and bounded work settings", async () => {
+    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Publication" }));
+
+    const impactBatchSize = await waitFor(() => {
+      const input = document.getElementById("publication-impactBatchSize") as HTMLInputElement | null;
+      if (!input) {
+        throw new Error("Expected publication impact batch input.");
+      }
+      return input;
+    });
+    fireEvent.change(impactBatchSize, { target: { value: "120" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updatePublicationSettings).toHaveBeenCalledWith(expect.objectContaining({
+        roleConcurrency: 1,
+        impactBatchSize: 120,
+        impactConcurrency: 8,
+        dirtyFileHardCount: 2000,
+        dirtyFileResumeCount: 1000,
+        pendingImpactHardCount: 20000,
+        pendingImpactResumeCount: 10000
+      }));
     });
   });
 });
+
+function activateTab(tab: HTMLElement) {
+  fireEvent.pointerDown(tab);
+  fireEvent.mouseDown(tab);
+  fireEvent.pointerUp(tab);
+  fireEvent.click(tab);
+}

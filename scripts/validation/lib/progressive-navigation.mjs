@@ -28,6 +28,30 @@ export function collectReachableMarkdownPaths(bodies, startPath) {
   return reachable;
 }
 
+export async function hydrateReachableMarkdownBodies({ bodies, startPath, read }) {
+  const visited = new Set();
+  const queued = [startPath];
+
+  while (queued.length > 0) {
+    const currentPath = queued.shift();
+    if (!currentPath || visited.has(currentPath)) continue;
+    visited.add(currentPath);
+
+    let body = bodies.get(currentPath);
+    if (body === undefined) {
+      body = await read(currentPath);
+      if (body === null || body === undefined) continue;
+      bodies.set(currentPath, body);
+    }
+
+    for (const target of readLocalMarkdownTargets(body, currentPath)) {
+      if (!visited.has(target)) queued.push(target);
+    }
+  }
+
+  return visited;
+}
+
 function readLocalMarkdownTargets(markdown, currentPath) {
   const targets = [];
   for (const match of markdown.matchAll(INLINE_LINK_PATTERN)) {

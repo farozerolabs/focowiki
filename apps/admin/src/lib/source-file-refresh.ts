@@ -1,8 +1,8 @@
 import type { SourceFileRecord } from "@/lib/admin-api";
 
 export type SourceFileRefreshSnapshot = {
-  processingStatus: SourceFileRecord["processingStatus"] | null;
-  processingStage: SourceFileRecord["processingStage"] | null;
+  state: SourceFileRecord["state"];
+  currentStage: SourceFileRecord["currentStage"];
   generatedOutputStatus: SourceFileRecord["generatedOutputStatus"] | null;
   generatedFileAvailable: boolean;
   generatedFileId: string | null;
@@ -17,8 +17,8 @@ export type SourceFileRefreshScheduleInput = {
 
 export function createSourceFileRefreshSnapshot(file: SourceFileRecord): SourceFileRefreshSnapshot {
   return {
-    processingStatus: file.processingStatus ?? null,
-    processingStage: file.processingStage ?? null,
+    state: file.state,
+    currentStage: file.currentStage,
     generatedOutputStatus: file.generatedOutputStatus ?? null,
     generatedFileAvailable: Boolean(file.generatedFileAvailable),
     generatedFileId: file.generatedFileId ?? null,
@@ -63,7 +63,7 @@ export function shouldRefreshGeneratedFiles(
     }
 
     return (
-      before.processingStatus !== current.processingStatus ||
+      before.state !== current.state ||
       before.generatedOutputStatus !== current.generatedOutputStatus ||
       before.generatedFileAvailable !== current.generatedFileAvailable ||
       before.generatedFileId !== current.generatedFileId ||
@@ -86,8 +86,8 @@ export function rememberSourceFileRefreshSnapshots(
 
 function isActiveSourceFile(file: SourceFileRecord): boolean {
   return (
-    file.processingStatus === "queued" ||
-    file.processingStatus === "running" ||
-    file.generatedOutputStatus === "pending"
+    file.state === "queued" ||
+    file.state === "running" ||
+    file.state === "pending_publication"
   );
 }

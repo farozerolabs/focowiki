@@ -1,4 +1,5 @@
 import { bundleSchemaTitle, knowledgeBaseTitle } from "./titles.js";
+import { canonicalizeGeneratedTextIdentity } from "./text-identity.js";
 
 export type GeneratedConceptDescriptor = {
   path: string;
@@ -25,11 +26,14 @@ export function createGeneratedConceptDescriptor(
 ): GeneratedConceptDescriptor {
   return {
     path: input.path,
-    type: input.type,
-    title: input.title,
-    description: input.description,
-    navigationLabel: input.navigationLabel ?? input.title,
-    heading: input.heading ?? input.title,
+    type: canonicalizeGeneratedTextIdentity(input.type, "concept type"),
+    title: canonicalizeGeneratedTextIdentity(input.title, "concept title"),
+    description: canonicalizeGeneratedTextIdentity(input.description, "concept description"),
+    navigationLabel: canonicalizeGeneratedTextIdentity(
+      input.navigationLabel ?? input.title,
+      "concept navigation label"
+    ),
+    heading: canonicalizeGeneratedTextIdentity(input.heading ?? input.title, "concept heading"),
     manifestIdentity: input.manifestIdentity ?? input.path
   };
 }
@@ -70,7 +74,6 @@ export function directoryIndexPageDescriptor(input: {
     type: "Directory Index Page",
     title: `${input.directoryTitle} index page ${input.page}`,
     description: `Entries ${input.start} through ${input.end} for ${input.directoryPath}.`,
-    navigationLabel: `Entries ${input.start}-${input.end}`,
     manifestIdentity: `directory-index:${input.directoryPath}:${input.page}`
   });
 }
@@ -87,7 +90,6 @@ export function directoryIndexMapDescriptor(input: {
     type: "Directory Index Map",
     title: `${input.directoryTitle} index map ${input.page}`,
     description: `Index shard catalog page ${input.page} of ${input.pageCount} for ${input.directoryPath}.`,
-    navigationLabel: `Index map ${input.page}`,
     manifestIdentity: `directory-index-map:${input.directoryPath}:${input.page}`
   });
 }

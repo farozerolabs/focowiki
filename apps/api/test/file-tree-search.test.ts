@@ -32,25 +32,25 @@ describe("file tree search filters", () => {
   it("creates stable cursor scopes from normalized query values", () => {
     const first = createFileTreeSearchCursorScope({
       knowledgeBaseId: "kb-001",
-      releaseId: "release-001",
+      generationId: "generation-001",
       query: "Intro",
       limit: 50
     });
     const second = createFileTreeSearchCursorScope({
       knowledgeBaseId: "kb-001",
-      releaseId: "release-001",
+      generationId: "generation-001",
       query: " intro ",
       limit: 50
     });
     const third = createFileTreeSearchCursorScope({
       knowledgeBaseId: "kb-001",
-      releaseId: "release-001",
+      generationId: "generation-001",
       query: "Setup",
       limit: 50
     });
 
     expect(first).toBe(second);
     expect(first).not.toBe(third);
-    expect(first).toContain("file-tree-search:kb-001:release-001:query=");
+    expect(first).toContain("file-tree-search:kb-001:generation-001:query=");
   });
 });

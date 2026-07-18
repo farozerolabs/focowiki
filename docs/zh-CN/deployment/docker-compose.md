@@ -12,9 +12,9 @@ title: Docker Compose 部署
 
 | 服务 | 用途 |
 | --- | --- |
-| PostgreSQL | 保存产品记录、来源文件处理记录、graph nodes、graph edges、发布、生成文件记录、OpenAPI key records 和 audit evidence。 |
-| Redis | 保存 sessions、rate limits、cursors、coordination、locks 和 short-lived source-file refresh state。 |
-| S3 兼容存储 | 保存上传源文件和生成后的 public bundles，包括 `_graph/` 文件。 |
+| PostgreSQL | 保存来源修订、持久化角色任务、发布 generation、投影记录、OpenAPI key、运行配置和审计证据。 |
+| Redis | 保存 session、限流计数、cursor、短期缓存、通知和范围协调状态。 |
+| S3 兼容存储 | 保存上传来源修订和内容寻址的生成 Markdown 与投影对象。 |
 | 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS public origins。 |
 
 Compose 模板会启动 PostgreSQL 和 Redis。外部 S3 兼容服务需要在 `.env` 中配置。
@@ -70,7 +70,7 @@ backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis 
 
 外部 S3 兼容 bucket 或 prefix 需要通过存储服务的 snapshot、replication、export 或 S3 兼容复制工具备份。PostgreSQL 备份和 S3 备份应来自同一个部署时间点。
 
-更换知识库生成结构的升级会基于保留的来源文件重新生成已发布 Markdown。升级后的知识库检查完成前，应保留旧应用镜像及同一部署时间点的 PostgreSQL 和 S3 备份。回滚时需要成套恢复这三项数据；只启动旧应用镜像无法恢复升级时删除的生成版本。
+新部署验证完成前，应保留旧应用镜像和同一部署时间点的 PostgreSQL、Redis、runtime secrets 与 S3 备份。回滚时需要成套恢复这些数据。
 
 继续升级前，先检查备份文件。
 
@@ -90,18 +90,21 @@ docker compose -f docker-compose.yml exec -T postgres \
 
 数据库单独备份需要在启动 PostgreSQL 后使用 `pg_restore` 还原。
 
-## 升级顺序
+## 部署当前数据代际
 
-已有部署使用这个顺序升级：
+当前版本使用新的数据代际，不会对旧数据库结构执行原地升级。启动前保留完整协调备份，清理本地数据目录，并使用一个空的专用 S3 prefix。
 
 ```bash
 docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml down
+mv data "data-before-incremental-publication-$(date +%Y%m%d-%H%M%S)"
+mkdir -p data/postgres data/redis
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml ps
 ```
 
-启动后打开 Admin UI，检查知识库列表、文件预览、Worker 状态和 Developer OpenAPI health。
+迁移前通过存储服务清空专用测试 prefix，或者设置新的 `S3_PREFIX`。随后通过 Admin UI 或 Developer OpenAPI 重新上传保留的来源 Markdown。启动后检查知识库列表、文件预览、来源队列、发布进度、活动文件树、搜索、图关系和 Developer OpenAPI health。
 
 ## 执行迁移检查
 
@@ -109,9 +112,15 @@ docker compose -f docker-compose.yml ps
 docker compose -f docker-compose.yml run --rm migrate
 ```
 
-迁移容器使用 API 镜像，数据库迁移完成后退出。这个命令适合在启动前显式检查迁移。生产 Compose 模板也会让 `api` service 依赖 `migrate` service，所以 `docker compose -f docker-compose.yml up -d` 会在 API 启动前执行迁移。
+迁移容器与 HTTP 和 Worker 角色使用同一个 API 镜像，数据库初始化完成后退出。生产 Compose 模板会在迁移完成后再启动 API 和三个 Worker 角色。
 
 迁移命令会初始化当前应用需要的数据库结构和默认 Admin 配置。
+
+### 数据结构代际不兼容
+
+当前版本要求使用迁移镜像中提供的数据结构代际。迁移命令提示数据结构代际不兼容时，保持原部署停止，并保留同一时间点的 PostgreSQL 与 S3 备份。使用空的部署数据目录和空的 S3 前缀启动当前版本，随后通过 Admin 或 Developer OpenAPI 支持的上传流程重新导入保留的来源 Markdown。
+
+不要让新运行时连接不兼容的数据库。在生成文件、来源文件列表、搜索、图探索和文件读取完成验证前，继续保留原备份。
 
 ## 启动服务
 
@@ -156,6 +165,14 @@ pnpm compose:clean
 
 继续阅读 [Developer OpenAPI](../openapi/index.md)。
 
+## 发布失败诊断
+
+来源文件列表会返回统一的生命周期状态、当前阶段、安全失败详情和允许执行的操作。`state=failed` 的行会标明终止阶段，并提供可以与产品日志对应的关联 ID。
+
+来源文件处理失败时使用“重试处理”。必要投影校验或 generation 激活失败时使用“重试发布”。发布重试会保留已完成的来源事实并继续合并后的 generation。确定性的校验失败需要在修正原因后显式重试。
+
+文件只有在 `state=visible` 后才能读取生成内容。候选 generation 通过变更投影校验并成功激活前不会进入正常读取。候选 generation 失败时，之前的活动 generation 继续保持可读。
+
 ## 从备份还原
 
 只在目标部署目录中执行还原。继续前先给当前状态再做一次备份。
@@ -187,8 +204,8 @@ pnpm compose:clean
 
 ## 图关系处理说明
 
-Focowiki 将 file graph nodes、graph edges 和 graph job records 保存在 PostgreSQL。Redis 在处理过程中协调 locks 和 pagination state。生成后的图关系文件会随 active bundle 一起发布到 S3 兼容存储。
+Focowiki 将基于正文的图关系事实和活动图投影保存在 PostgreSQL。Redis 提供短期协调和查询缓存。生成后的图关系 Markdown 与机器分片以不可变 S3 对象保存，并由活动 generation 引用。
 
 图关系处理应受 Admin UI 运行时设置控制。避免使用自定义脚本把完整 source corpus 或完整 graph 加载到进程内存。
 
-Worker、发布、上传生成、限流和模型配置见 [Admin 配置](./admin-settings.md)。
+API 限流、Worker、发布、图关系和模型配置见 [Admin 配置](./admin-settings.md)。

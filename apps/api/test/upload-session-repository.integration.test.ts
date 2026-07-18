@@ -3,6 +3,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { normalizeSourceRelativePath } from "../src/domain/source-path.js";
 import { createPostgresUploadSessionRepository } from "../src/infrastructure/postgres/upload-session-repository.js";
+import { createPostgresSourceFileRepository } from "../src/infrastructure/postgres/source-file-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -10,6 +11,7 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describeDatabase("upload session repository integration", () => {
   const sql = postgres(databaseUrl!, { max: 4 });
   const repository = createPostgresUploadSessionRepository(sql);
+  const sourceFiles = createPostgresSourceFileRepository(sql);
   const knowledgeBaseId = "kb-upload-session-integration";
 
   beforeAll(async () => {
@@ -36,23 +38,18 @@ describeDatabase("upload session repository integration", () => {
     });
     expect(first.counts).toMatchObject({ uploadRequired: 2, skippedExisting: 0 });
     await uploadRequiredEntries(first.id);
-    const finalizedFirst = await finalizeAllBatches(first.id, 1);
-    expect(finalizedFirst.processedCount).toBe(2);
+    const finalizedFirst = await repository.finalizeSession({
+      knowledgeBaseId,
+      sessionId: first.id,
+      now: new Date().toISOString()
+    });
+    expect(finalizedFirst).toMatchObject({ state: "completed", counts: { finalized: 2 } });
     const replayedFinalization = await repository.finalizeSession({
       knowledgeBaseId,
       sessionId: first.id,
       now: new Date().toISOString()
     });
-    const replayedBatch = await repository.finalizeEntryBatch({
-      knowledgeBaseId,
-      sessionId: first.id,
-      now: new Date().toISOString(),
-      runAfter: new Date().toISOString(),
-      limit: 1,
-      jobMaxAttempts: 3
-    });
     expect(replayedFinalization.state).toBe("completed");
-    expect(replayedBatch).toMatchObject({ processedCount: 0, completed: true });
 
     const activeRows = await sql<Array<{
       id: string;
@@ -72,6 +69,26 @@ describeDatabase("upload session repository integration", () => {
       expect.objectContaining({ relative_path: "team/guides/a.md", revision_count: 1 }),
       expect.objectContaining({ relative_path: "team/guides/deep/b.md", revision_count: 1 })
     ]);
+    const dispatch = await sql<Array<{ markers: number }>>`
+      SELECT count(*)::int AS markers
+      FROM focowiki.source_dispatch_markers
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    expect(dispatch[0]).toEqual({ markers: 2 });
+
+    await sourceFiles.updateSourceFileMetadata({
+      knowledgeBaseId,
+      sourceFileId: "source-file-a",
+      metadata: { type: "guide", title: "A" }
+    });
+    const revisionMetadata = await sql<Array<{ metadata_json: Record<string, unknown> }>>`
+      SELECT revision.metadata_json
+      FROM focowiki.source_revisions revision
+      JOIN focowiki.source_files source ON source.active_revision_id = revision.id
+      WHERE source.knowledge_base_id = ${knowledgeBaseId}
+        AND source.id = 'source-file-a'
+    `;
+    expect(revisionMetadata[0]?.metadata_json).toEqual({ type: "guide", title: "A" });
 
     const repeated = await createSealedSession({
       sessionId: "upload-session-repeated",
@@ -94,8 +111,12 @@ describeDatabase("upload session repository integration", () => {
       existingResourceRevision: 1
     });
     await uploadRequiredEntries(repeated.id);
-    const finalizedRepeated = await finalizeAllBatches(repeated.id, 1);
-    expect(finalizedRepeated.processedCount).toBe(1);
+    const finalizedRepeated = await repository.finalizeSession({
+      knowledgeBaseId,
+      sessionId: repeated.id,
+      now: new Date().toISOString()
+    });
+    expect(finalizedRepeated).toMatchObject({ state: "completed", counts: { finalized: 1 } });
   });
 
   it("rejects an existing path while an ancestor directory deletion is active", async () => {
@@ -167,15 +188,23 @@ describeDatabase("upload session repository integration", () => {
     expect(right.counts.waitingReservation).toBe(1);
 
     await uploadRequiredEntries(left.id);
-    await finalizeAllBatches(left.id, 1);
+    await repository.finalizeSession({
+      knowledgeBaseId,
+      sessionId: left.id,
+      now: new Date().toISOString()
+    });
 
     const reconciled = await repository.reconcileReservations({
       knowledgeBaseId,
       sessionId: right.id
     });
     expect(reconciled.counts).toMatchObject({ skippedExisting: 1, waitingReservation: 0 });
-    const noOp = await finalizeAllBatches(right.id, 1);
-    expect(noOp.processedCount).toBe(0);
+    const noOp = await repository.finalizeSession({
+      knowledgeBaseId,
+      sessionId: right.id,
+      now: new Date().toISOString()
+    });
+    expect(noOp).toMatchObject({ state: "completed", counts: { finalized: 0 } });
 
     const duplicates = await sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count
@@ -186,7 +215,7 @@ describeDatabase("upload session repository integration", () => {
     expect(duplicates[0]?.count).toBe(1);
   });
 
-  it("stops a finalization batch after its source directory enters deletion", async () => {
+  it("rejects source registration after its source directory enters deletion", async () => {
     const session = await createSealedSession({
       sessionId: "upload-session-delete-conflict",
       idempotencyKey: "delete-conflict",
@@ -198,12 +227,6 @@ describeDatabase("upload session repository integration", () => {
           "conflict"
         )
       ]
-    });
-    await uploadRequiredEntries(session.id);
-    await repository.finalizeSession({
-      knowledgeBaseId,
-      sessionId: session.id,
-      now: new Date().toISOString()
     });
     const directories = await sql<Array<{ id: string }>>`
       SELECT id
@@ -227,19 +250,14 @@ describeDatabase("upload session repository integration", () => {
       WHERE id = ${directoryId}
     `;
 
-    const result = await repository.finalizeEntryBatch({
+    await expect(repository.markEntryUploaded({
       knowledgeBaseId,
       sessionId: session.id,
-      now: new Date().toISOString(),
-      runAfter: new Date().toISOString(),
-      limit: 10,
-      jobMaxAttempts: 3
-    });
-    expect(result).toMatchObject({ cancelled: true, completed: false, processedCount: 0 });
-    expect(result.session).toMatchObject({
-      state: "failed",
-      errorCode: "UPLOAD_FINALIZATION_CONFLICT"
-    });
+      entryId: "upload-entry-delete-conflict",
+      stagingObjectKey: "test/upload-entry-delete-conflict.md",
+      receivedSize: 8,
+      receivedChecksumSha256: checksum("conflict")
+    })).rejects.toMatchObject({ code: "UPLOAD_SESSION_STATE_CONFLICT" });
     const sources = await sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count
       FROM focowiki.source_files
@@ -317,43 +335,16 @@ describeDatabase("upload session repository integration", () => {
         entryId: entry.id,
         stagingObjectKey: `test/${entry.id}.md`,
         receivedSize: entry.declaredSize,
-        receivedChecksumSha256: entry.checksumSha256
+        receivedChecksumSha256: entry.checksumSha256 ?? checksum(entry.relativePath)
       });
     }
-  }
-
-  async function finalizeAllBatches(sessionId: string, limit: number) {
-    await repository.finalizeSession({
-      knowledgeBaseId,
-      sessionId,
-      now: new Date().toISOString()
-    });
-    let processedCount = 0;
-    let completed = false;
-    while (!completed) {
-      const result = await repository.finalizeEntryBatch({
-        knowledgeBaseId,
-        sessionId,
-        now: new Date().toISOString(),
-        runAfter: new Date().toISOString(),
-        limit,
-        jobMaxAttempts: 3
-      });
-      processedCount += result.processedCount;
-      completed = result.completed;
-    }
-    const session = await repository.completeSession({
-      knowledgeBaseId,
-      sessionId,
-      now: new Date().toISOString()
-    });
-    return { session, processedCount };
   }
 
   async function cleanup() {
     await sql.begin(async (transaction) => {
       await transaction`DELETE FROM focowiki.upload_sessions WHERE knowledge_base_id = ${knowledgeBaseId}`;
-      await transaction`DELETE FROM focowiki.worker_jobs WHERE knowledge_base_id = ${knowledgeBaseId}`;
+      await transaction`DELETE FROM focowiki.source_dispatch_markers WHERE knowledge_base_id = ${knowledgeBaseId}`;
+      await transaction`DELETE FROM focowiki.role_jobs WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.source_directories WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.deletion_intents WHERE knowledge_base_id = ${knowledgeBaseId}`;

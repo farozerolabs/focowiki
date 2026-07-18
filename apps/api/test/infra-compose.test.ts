@@ -19,24 +19,39 @@ const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
 const apiConfigSourcePath = resolve(rootDir, "apps/api/src/config.ts");
 
 describe("Docker Compose infrastructure", () => {
-  it("defines PostgreSQL and Redis services for local development in the local template", () => {
+  it("defines the complete locally built runtime topology in the local template", () => {
     const compose = readFileSync(localComposeTemplatePath, "utf8");
 
-    expect(compose).toContain("postgres:");
-    expect(compose).toContain("image: postgres:18-alpine");
-    expect(compose).toContain("pg_isready");
-    expect(compose).toContain("postgres-data:");
-    expect(compose).toContain("redis:");
-    expect(compose).toContain("image: redis:8-alpine");
-    expect(compose).toContain("redis-cli");
-    expect(compose).toContain("redis-data:");
+    for (const service of [
+      "admin:",
+      "api:",
+      "source-worker:",
+      "publication-worker:",
+      "maintenance-worker:",
+      "migrate:",
+      "postgres:",
+      "redis:"
+    ]) {
+      expect(compose).toContain(service);
+    }
+
+    expect(compose).toContain("image: focowiki-api:dev");
+    expect(compose).toContain("image: focowiki-admin:dev");
+    expect(compose).toContain("apps/api/runtime/source-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
+    expect(compose).toContain("DATABASE_URL: postgres://${POSTGRES_USER:");
+    expect(compose).toContain("@postgres:5432/");
+    expect(compose).toContain("REDIS_URL: redis://redis:6379/0");
+    expect(compose).toContain("ADMIN_API_PROXY_TARGET: http://api:");
+    expect(compose).toContain("${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432");
+    expect(compose).toContain("${REDIS_PORT:?Set REDIS_PORT in .env}:6379");
+    expect(compose).toContain("./data/postgres:/var/lib/postgresql");
+    expect(compose).toContain("./data/redis:/data");
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(2);
-    expect(compose).not.toContain("api:");
-    expect(compose).not.toContain("admin:");
-    expect(compose).not.toContain("migrate:");
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(8);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
@@ -49,7 +64,16 @@ describe("Docker Compose infrastructure", () => {
   it("defines the Docker development stack with local build targets", () => {
     const compose = readFileSync(devComposeTemplatePath, "utf8");
 
-    for (const service of ["admin:", "api:", "worker:", "migrate:", "postgres:", "redis:"]) {
+    for (const service of [
+      "admin:",
+      "api:",
+      "source-worker:",
+      "publication-worker:",
+      "maintenance-worker:",
+      "migrate:",
+      "postgres:",
+      "redis:"
+    ]) {
       expect(compose).toContain(service);
     }
 
@@ -58,7 +82,9 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("target: api");
     expect(compose).toContain("target: admin");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
-    expect(compose).toContain("apps/api/runtime/worker.mjs");
+    expect(compose).toContain("apps/api/runtime/source-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
     expect(compose).toContain("x-docker-logging: &docker-logging");
@@ -70,14 +96,23 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/redis:/data");
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(8);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
   it("defines the deployment stack as a committed GHCR Compose template", () => {
     const compose = readFileSync(deploymentComposeTemplatePath, "utf8");
 
-    for (const service of ["admin:", "api:", "worker:", "migrate:", "postgres:", "redis:"]) {
+    for (const service of [
+      "admin:",
+      "api:",
+      "source-worker:",
+      "publication-worker:",
+      "maintenance-worker:",
+      "migrate:",
+      "postgres:",
+      "redis:"
+    ]) {
       expect(compose).toContain(service);
     }
 
@@ -87,7 +122,9 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).not.toContain("target: admin");
     expect(compose).not.toContain("build:");
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
-    expect(compose).toContain("apps/api/runtime/worker.mjs");
+    expect(compose).toContain("apps/api/runtime/source-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
     expect(compose).toContain("${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
@@ -110,7 +147,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(6);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(8);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -123,7 +160,9 @@ describe("Docker Compose infrastructure", () => {
 
     for (const compose of [deploymentCompose, devCompose]) {
       expect(compose).toContain("http://127.0.0.1:8080/healthz");
-      expect(compose).toContain("apps/api/runtime/worker.mjs\", \"--healthcheck");
+      expect(compose).toContain("apps/api/runtime/source-worker.mjs\", \"--healthcheck");
+      expect(compose).toContain("apps/api/runtime/publication-worker.mjs\", \"--healthcheck");
+      expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("'/healthz'");
       expect(compose).toContain("body?.status==='ok'");
       expect(compose).not.toContain("/admin/api/session");
@@ -148,7 +187,9 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("deploy/docker/api-entrypoint.sh");
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]');
     expect(dockerfile).toContain("apps/api/runtime/main.mjs");
-    expect(dockerfile).toContain("apps/api/runtime/worker.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
     expect(dockerfile).not.toMatch(/pnpm\s+--filter\s+@focowiki\/admin\s+dev|vite\s+--host|pnpm\s+dev/);
   });
@@ -157,9 +198,40 @@ describe("Docker Compose infrastructure", () => {
     const workflow = readFileSync(ciWorkflowPath, "utf8");
 
     expect(workflow).toContain("Validate API Docker worker runtime");
-    expect(workflow).toContain("apps/api/runtime/worker.mjs");
+    expect(workflow).toContain("apps/api/runtime/source-worker.mjs");
+    expect(workflow).toContain("apps/api/runtime/publication-worker.mjs");
+    expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
     expect(workflow).toContain("apps/api/runtime/main.mjs");
+  });
+
+  it("proves migrations, role health, and source-to-activation flow in CI", () => {
+    const workflow = readFileSync(ciWorkflowPath, "utf8");
+
+    expect(workflow).toContain("services:");
+    expect(workflow).toContain("postgres:18-alpine");
+    expect(workflow).toContain("redis:8-alpine");
+    expect(workflow).toContain("FOCOWIKI_TEST_DATABASE_URL");
+    expect(workflow).toContain("Migrate CI database with API image");
+    expect(workflow).toContain("Start S3 health fixture");
+    expect(workflow).toContain("Validate API image role health");
+    expect(workflow).toContain("source-worker.mjs --healthcheck");
+    expect(workflow).toContain("publication-worker.mjs --healthcheck");
+    expect(workflow).toContain("maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("Validate source-to-activation smoke flow");
+  });
+
+  it("proves the published API image supports every runtime role", () => {
+    const workflow = readFileSync(dockerPublishWorkflowPath, "utf8");
+
+    expect(workflow).toContain("Validate published API image roles");
+    expect(workflow).toContain("Start S3 health fixture");
+    expect(workflow).toContain("apps/api/runtime/migrate.mjs");
+    expect(workflow).toContain("apps/api/runtime/source-worker.mjs --healthcheck");
+    expect(workflow).toContain("apps/api/runtime/publication-worker.mjs --healthcheck");
+    expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("http://127.0.0.1:43000/healthz");
+    expect(workflow).toContain("http://127.0.0.1:43200/healthz");
   });
 
   it("keeps startup config from requiring Admin UI managed upload-generation env fields", () => {
@@ -286,6 +358,16 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
     expect(deploymentEnv).toContain("FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:latest");
     expect(deploymentEnv).toContain("FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:latest");
+    for (const key of [
+      "SOURCE_WORKER_DATABASE_POOL_MAX",
+      "PUBLICATION_WORKER_DATABASE_POOL_MAX",
+      "MAINTENANCE_WORKER_DATABASE_POOL_MAX"
+    ]) {
+      expect(devEnv).toContain(`${key}=`);
+      expect(deploymentEnv).toContain(`${key}=`);
+    }
+    expect(devEnv).not.toMatch(/^WORKER_DATABASE_POOL_MAX=/m);
+    expect(deploymentEnv).not.toMatch(/^WORKER_DATABASE_POOL_MAX=/m);
     expect(deploymentEnv).not.toContain("ADMIN_PASSWORD=change-me");
     expect(devEnv).not.toContain("PUBLIC_API_KEY");
     expect(devEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");

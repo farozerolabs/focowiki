@@ -1,4 +1,4 @@
-import type { BundleFileKind } from "../db/admin-repositories.js";
+import type { GeneratedFileKind } from "../okf/publication-files.js";
 import type { GeneratedFileSearchScope } from "../search/generated-file-search-documents.js";
 import {
   GRAPH_SEARCH_DEFAULT_DEPTH,
@@ -26,7 +26,7 @@ export type DeveloperFileSearchFilterResult =
       ok: true;
       query: string;
       scope: GeneratedFileSearchScope;
-      fileKind: BundleFileKind | null;
+      fileKind: GeneratedFileKind | null;
       mode: GraphSearchMode;
       graphDepth: GraphSearchDepth;
       graphFanout: number;
@@ -37,7 +37,7 @@ const SEARCH_QUERY_MIN_LENGTH = 2;
 const SEARCH_QUERY_MAX_LENGTH = 160;
 const SEARCH_SCOPES = new Set<GeneratedFileSearchScope>(["all", "path", "metadata"]);
 const SEARCH_MODES = new Set<GraphSearchMode>(["file", "graph", "hybrid"]);
-const SEARCH_FILE_KINDS = new Set<BundleFileKind | "all">([
+const SEARCH_FILE_KINDS = new Set<GeneratedFileKind | "all">([
   "all",
   "page",
   "index",
@@ -96,7 +96,7 @@ export function readDeveloperFileSearchFilters(input: {
 
   const fileKind = input.fileKind?.trim() || "page";
 
-  if (!SEARCH_FILE_KINDS.has(fileKind as BundleFileKind | "all")) {
+  if (!SEARCH_FILE_KINDS.has(fileKind as GeneratedFileKind | "all")) {
     return { ok: false, code: "INVALID_FILE_SEARCH_KIND" };
   }
 
@@ -122,7 +122,7 @@ export function readDeveloperFileSearchFilters(input: {
     ok: true,
     query,
     scope: scope as GeneratedFileSearchScope,
-    fileKind: fileKind === "all" ? null : (fileKind as BundleFileKind),
+    fileKind: fileKind === "all" ? null : (fileKind as GeneratedFileKind),
     mode: mode as GraphSearchMode,
     graphDepth,
     graphFanout

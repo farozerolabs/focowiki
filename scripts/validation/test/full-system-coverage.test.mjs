@@ -44,14 +44,22 @@ test("keeps explicit complete inventories for non-OpenAPI surfaces", () => {
   assert.ok(ADMIN_UI_FLOWS.length >= 20);
   assert.ok(ADMIN_API_ROUTE_FAMILIES.length >= 10);
   assert.deepEqual(WORKER_JOB_KINDS.sort(), [
+    "garbage_collection",
+    "generation_publication",
     "hard_delete",
-    "publication",
+    "projection_audit",
     "resource_operation",
-    "source_file_processing",
-    "upload_session_finalization"
+    "source_processing"
   ]);
-  assert.ok(RUNTIME_SETTINGS_GROUPS.includes("models"));
-  assert.ok(RUNTIME_SETTINGS_GROUPS.includes("graph"));
+  assert.deepEqual(RUNTIME_SETTINGS_GROUPS.sort(), [
+    "graph",
+    "models",
+    "publication",
+    "rate-limits",
+    "worker"
+  ]);
   assert.ok(GENERATED_OUTPUT_FAMILIES.includes("nested-navigation"));
   assert.ok(GENERATED_OUTPUT_FAMILIES.includes("graph-shards"));
+  assert.ok(GENERATED_OUTPUT_FAMILIES.includes("active-generation-manifest"));
+  assert.ok(!GENERATED_OUTPUT_FAMILIES.includes("release-history"));
 });

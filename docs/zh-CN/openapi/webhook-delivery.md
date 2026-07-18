@@ -17,7 +17,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
   --data '{
   "name": "Source file updates",
   "url": "https://hooks.example.com/focowiki",
-  "events": ["source_file.completed", "source_file.failed", "release.published"]
+  "events": ["source_file.completed", "source_file.failed", "generation.activated"]
 }'
 ```
 
@@ -102,8 +102,8 @@ export function verifyFocowikiWebhook({ rawBody, timestamp, signatureHeader, sig
 | `source_file.progress` | 来源文件开始处理或继续处理。 | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.completed` | 来源文件处理完成。 | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.failed` | 来源文件处理失败。 | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `release.published` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `releaseId` |
-| `file.deleted` | 来源文件及其可读取页面已经删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
+| `generation.activated` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `generationId` |
+| `file.deleted` | 来源文件及其可读取页面已经删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `generationId` |
 | `knowledge_base.deleted` | 知识库被删除。 | `knowledgeBaseId` |
 
 ## 投递记录和重投递

@@ -20,7 +20,7 @@ The target file has three parts:
 | Markdown body | Stores the full readable document with headings, paragraphs, tables, lists, citations, and links. |
 | Source notes | Stores source evidence, conversion notes, unresolved issues, and update history when useful. |
 
-Focowiki parses safe frontmatter fields, preserves domain metadata, reads headings and links, and generates an OKF-style bundle with `index.md`, `schema.md`, `_index/`, `pages/`, and `_graph/` files.
+Focowiki parses safe frontmatter fields, preserves domain metadata, reads headings and links, and generates an OKF-style file knowledge base with `index.md`, `schema.md`, `_index/`, `pages/`, and `_graph/` files.
 
 ## Folder Paths And Generated Paths
 

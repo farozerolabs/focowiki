@@ -1,4 +1,5 @@
 import type { JsonValue } from "./metadata.js";
+import { canonicalizeOptionalGeneratedTextIdentity } from "./text-identity.js";
 
 export type IndexMetadata = Record<string, JsonValue>;
 
@@ -67,12 +68,12 @@ export function buildIndexMetadataFields(input: unknown): IndexMetadataFields {
   }
 
   const fields: IndexMetadataFields = { metadata };
-  const type = readString(metadata.type);
-  const title = readString(metadata.title);
-  const description = readString(metadata.description);
+  const type = readIdentity(metadata.type, "type");
+  const title = readIdentity(metadata.title, "title");
+  const description = readIdentity(metadata.description, "description");
   const resource = readString(metadata.resource);
-  const timestamp = readString(metadata.timestamp);
-  const tags = readStringArray(metadata.tags);
+  const timestamp = readIdentity(metadata.timestamp, "timestamp");
+  const tags = readIdentityArray(metadata.tags, "tag");
 
   if (type) {
     fields.type = type;
@@ -162,14 +163,19 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function readStringArray(value: unknown): string[] | undefined {
+function readIdentity(value: unknown, field: string): string | undefined {
+  return canonicalizeOptionalGeneratedTextIdentity(value, field) ?? undefined;
+}
+
+function readIdentityArray(value: unknown, field: string): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
 
-  const strings = value
-    .map((item) => (typeof item === "string" ? item.trim() : ""))
-    .filter(Boolean);
+  const strings = value.flatMap((item) => {
+    const canonical = canonicalizeOptionalGeneratedTextIdentity(item, field);
+    return canonical ? [canonical] : [];
+  });
 
   return strings.length > 0 ? strings : undefined;
 }

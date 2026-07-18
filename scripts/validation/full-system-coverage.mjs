@@ -10,7 +10,7 @@ const manifest = buildFullSystemCoverageManifest({ openApiDocument: document });
 const reportDir = path.resolve(
   process.env.FOCOWIKI_FULL_SYSTEM_REPORT_DIR ||
     process.env.FOCOWIKI_VALIDATION_REPORT_DIR ||
-    "ReferenceDocs/validate-focowiki-full-system-e2e"
+    "ReferenceDocs/implement-incremental-sharded-publication"
 );
 
 fs.mkdirSync(reportDir, { recursive: true });

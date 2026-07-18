@@ -17,8 +17,18 @@ test("full-system plan separates baseline from external runtime stages", () => {
   assert.ok(plan.some((step) => step.id === "workspace-tests"));
   assert.ok(plan.some((step) => step.id === "openapi-contract"));
   assert.ok(plan.some((step) => step.id === "admin-ui-browser"));
-  assert.ok(plan.some((step) => step.id === "large-nested-database"));
+  const databaseStep = plan.find((step) => step.id === "incremental-database");
+  assert.ok(databaseStep);
+  assert.match(databaseStep.safeCommand, /publication-generation-repository\.integration\.test\.ts/);
+  assert.doesNotMatch(databaseStep.safeCommand, /large-nested-scale|release/i);
   assert.ok(plan.filter((step) => step.touchesConfiguredExternals).length >= 3);
+});
+
+test("defaults validation evidence to the current incremental publication change", () => {
+  const config = readFullSystemConfig("plan", {});
+
+  assert.equal(config.changeId, "implement-incremental-sharded-publication");
+  assert.match(config.reportDir, /implement-incremental-sharded-publication$/);
 });
 
 test("baseline command excludes configured external stages", () => {

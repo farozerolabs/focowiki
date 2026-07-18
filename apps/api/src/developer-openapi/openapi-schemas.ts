@@ -10,13 +10,13 @@ import {
 } from "./openapi-shared.js";
 
 const SOURCE_FILE_PROCESSING_STATE_DESCRIPTION =
-  "`queued` means the file is waiting for processing. `running` means processing is in progress. `completed` means processing finished. `failed` means processing stopped and the file can be retried.";
+  "Backend-derived lifecycle state. `pending_publication` has completed source processing and is waiting for activation. `visible` has readable generated content. `failed` includes a canonical failure and server-authorized actions.";
 
 const SOURCE_FILE_CURRENT_STAGE_DESCRIPTION =
-  "Current source-file stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `bundle_generation`, `okf_validation`, `index_publication`, and `release_activation`.";
+  "Current source-file stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `projection_generation`, `generation_validation`, and `generation_activation`.";
 
 const GENERATED_OUTPUT_STATUS_DESCRIPTION =
-  "`pending` means generated output is not readable yet. `visible` means the generated page can be read through file APIs. `unavailable` means no generated output is currently available. A file is ready when `processingState` is `completed` and `generatedOutputStatus` is `visible`.";
+  "`pending` means generated output is not readable yet. `visible` means the generated page can be read through file APIs. `unavailable` means no generated output is currently available. A file is ready when `state` is `visible`.";
 
 export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
   return {
@@ -34,7 +34,6 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
                 "PAYLOAD_TOO_LARGE",
                 "VALIDATION_ERROR",
                 "RATE_LIMITED",
-                "QUEUE_BACKPRESSURE",
                 "UNSUPPORTED_ROUTE",
                 "INTERNAL_ERROR",
                 "DATABASE_REPOSITORY_UNAVAILABLE"
@@ -81,13 +80,13 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
         knowledgeBaseId: idSchema("Knowledge-base identifier used by scoped routes."),
         name: { type: "string" },
         description: nullableString("Optional knowledge-base description."),
-        activeReleaseId: nullableString("Identifier of the currently published knowledge-base content."),
+        activeGenerationId: nullableString("Identifier of the currently active knowledge-base generation."),
         resourceRevision: { type: "integer", minimum: 1 },
         catalogGeneration: { type: "integer", minimum: 0 },
         createdAt: timestampSchema(),
         updatedAt: timestampSchema()
       },
-      ["knowledgeBaseId", "name", "description", "activeReleaseId", "resourceRevision", "catalogGeneration", "createdAt", "updatedAt"]
+      ["knowledgeBaseId", "name", "description", "activeGenerationId", "resourceRevision", "catalogGeneration", "createdAt", "updatedAt"]
     ),
     KnowledgeBaseListResponse: pageSchema(ref("KnowledgeBase")),
     KnowledgeBaseResponse: objectSchema({ knowledgeBase: ref("KnowledgeBase") }, ["knowledgeBase"]),
@@ -119,19 +118,16 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     UploadSessionCounts: uploadSessionCountsSchema(),
     UploadSession: uploadSessionSchema(),
     UploadSessionEntry: uploadSessionEntrySchema(),
-    UploadSessionLimits: objectSchema(
+    UploadSessionTransport: objectSchema(
       {
-        manifestPageSize: { type: "integer", minimum: 1 },
-        contentBatchMaxFiles: { type: "integer", minimum: 1 },
-        contentBatchMaxBytes: { type: "integer", minimum: 1 },
-        maxFileBytes: { type: "integer", minimum: 1 }
+        manifestPageSize: { type: "integer", minimum: 1 }
       },
-      ["manifestPageSize", "contentBatchMaxFiles", "contentBatchMaxBytes", "maxFileBytes"]
+      ["manifestPageSize"]
     ),
     UploadSessionResponse: objectSchema(
       {
         session: ref("UploadSession"),
-        limits: ref("UploadSessionLimits")
+        transport: ref("UploadSessionTransport")
       },
       ["session"]
     ),
@@ -142,11 +138,11 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       },
       ["session", "entries"]
     ),
-    UploadEntryBatchResponse: objectSchema(
+    UploadEntryResponse: objectSchema(
       {
-        entries: { type: "array", items: ref("UploadSessionEntry") }
+        entry: ref("UploadSessionEntry")
       },
-      ["entries"]
+      ["entry"]
     ),
     SourceDirectory: sourceDirectorySchema(),
     SourceDirectoryResponse: objectSchema(
@@ -206,9 +202,9 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     ),
     SourceFileEvent: sourceFileEventSchema(),
     SourceFileEventListResponse: pageSchema(ref("SourceFileEvent")),
-    BundleTreeEntry: bundleTreeEntrySchema(),
-    TreeResponse: pageSchema(ref("BundleTreeEntry")),
-    BundleFile: bundleFileSchema(),
+    GeneratedTreeEntry: generatedTreeEntrySchema(),
+    TreeResponse: generationPageSchema(ref("GeneratedTreeEntry")),
+    GeneratedFile: generatedFileSchema(),
     FileSearchResult: fileSearchResultSchema(),
     FileSearchQueryContext: fileSearchQueryContextSchema(),
     FileSearchResultSummary: fileSearchResultSummarySchema(),
@@ -216,13 +212,13 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     FileSearchResponse: fileSearchResponseSchema(),
     FileDetailResponse: objectSchema(
       {
-        file: ref("BundleFile")
+        file: ref("GeneratedFile")
       },
       ["file"]
     ),
     FileContentResponse: objectSchema(
       {
-        file: ref("BundleFile"),
+        file: ref("GeneratedFile"),
         content: { type: "string" }
       },
       ["file", "content"]
@@ -230,12 +226,15 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     RelatedFile: relatedFileSchema(),
     RelatedFileListResponse: objectSchema(
       {
+        generationId: idSchema("Active generation used for every item in this response."),
         fileId: idSchema("Requested file identifier."),
         sourceFileId: idSchema("Source file identifier used for graph lookup."),
         items: { type: "array", items: ref("RelatedFile") },
-        nextCursor: nullableString("Opaque cursor accepted by this related-file endpoint.")
+        nextCursor: nullableString("Opaque cursor accepted by this related-file endpoint."),
+        message: nullableString("Safe guidance when no relationship matches are available."),
+        nextActions: { type: "array", items: { type: "string" } }
       },
-      ["fileId", "sourceFileId", "items", "nextCursor"]
+      ["generationId", "fileId", "sourceFileId", "items", "nextCursor"]
     ),
     GraphExpansionResponse: graphExpansionResponseSchema(),
     GraphInsightsResponse: graphInsightsResponseSchema(),
@@ -312,7 +311,11 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
 function graphInsightsResponseSchema(): SchemaObject {
   return objectSchema(
     {
-      file: ref("BundleFile"),
+      generationId: idSchema("Active generation used for this graph insight response."),
+      file: {
+        oneOf: [ref("GeneratedFile"), { type: "null" }],
+        description: "Optional generated graph insight file. It is null when insights are not available."
+      },
       contentPath: {
         type: "string",
         const: "_graph/insights.json",
@@ -348,13 +351,14 @@ function graphInsightsResponseSchema(): SchemaObject {
         items: { type: "string" }
       }
     },
-    ["file", "contentPath", "insights", "generatedAt", "resultSummary", "readActions", "nextActions"]
+    ["generationId", "file", "contentPath", "insights", "generatedAt", "resultSummary", "readActions", "nextActions"]
   );
 }
 
 function graphExpansionResponseSchema(): SchemaObject {
   return objectSchema(
     {
+      generationId: idSchema("Active generation used for graph expansion."),
       query: objectSchema(
         {
           fileId: nullableString("Seed file identifier when expansion starts from a known file."),
@@ -370,7 +374,7 @@ function graphExpansionResponseSchema(): SchemaObject {
         ["fileId", "nodeId", "edgeId", "query", "normalizedQuery", "depth", "fanout", "limit", "cursorProvided"]
       ),
       seedFile: {
-        oneOf: [ref("BundleFile"), { type: "null" }],
+        oneOf: [ref("GeneratedFile"), { type: "null" }],
         description: "Resolved seed file when expansion starts from `fileId`."
       },
       seedResults: {
@@ -409,6 +413,7 @@ function graphExpansionResponseSchema(): SchemaObject {
     },
     [
       "query",
+      "generationId",
       "seedFile",
       "seedResults",
       "relationships",
@@ -422,11 +427,11 @@ function graphExpansionResponseSchema(): SchemaObject {
 function relatedFileSchema(): SchemaObject {
   return objectSchema(
     {
+      generationId: idSchema("Active generation containing this relationship."),
       fileId: idSchema(
         "Related generated file identifier accepted by file detail, content, related-file, and graph-expansion operations."
       ),
       sourceFileId: idSchema("Related source file identifier."),
-      bundleFileId: idSchema("Related generated file identifier. Same value as `fileId`."),
       path: { type: "string" },
       title: { type: "string" },
       relationType: { type: "string" },
@@ -440,8 +445,8 @@ function relatedFileSchema(): SchemaObject {
     },
     [
       "fileId",
+      "generationId",
       "sourceFileId",
-      "bundleFileId",
       "path",
       "title",
       "relationType",
@@ -512,13 +517,17 @@ function sourceResourceFileSchema(): SchemaObject {
       resourceRevision: { type: "integer", minimum: 1 },
       contentRevision: { type: "integer", minimum: 1 },
       activeRevisionId: idSchema("Identifier of the source content version currently in use."),
-      processingState: {
+      state: {
         type: "string",
-        enum: ["queued", "running", "completed", "failed"],
+        enum: ["queued", "running", "pending_publication", "visible", "failed"],
         description: SOURCE_FILE_PROCESSING_STATE_DESCRIPTION
       },
       currentStage: { type: "string", description: SOURCE_FILE_CURRENT_STAGE_DESCRIPTION },
-      processingErrorCode: nullableString("Safe processing error code when the source failed."),
+      failure: {
+        ...sourceFileFailureSchema(),
+        type: ["object", "null"],
+        description: "Canonical terminal failure when lifecycle progress stopped."
+      },
       generatedOutputStatus: {
         type: "string",
         enum: ["pending", "visible", "unavailable"],
@@ -527,7 +536,12 @@ function sourceResourceFileSchema(): SchemaObject {
       mutable: { type: "boolean" },
       deletable: { type: "boolean" },
       deleting: { type: "boolean" },
-      actions: { type: "object", additionalProperties: { type: ["string", "null"] } },
+      actions: {
+        type: "array",
+        items: sourceFileLifecycleActionSchema(),
+        description: "Server-authorized lifecycle actions for the current state."
+      },
+      links: { type: "object", additionalProperties: { type: ["string", "null"] } },
       createdAt: timestampSchema()
     },
     [
@@ -543,16 +557,68 @@ function sourceResourceFileSchema(): SchemaObject {
       "resourceRevision",
       "contentRevision",
       "activeRevisionId",
-      "processingState",
+      "state",
       "currentStage",
-      "processingErrorCode",
+      "failure",
       "generatedOutputStatus",
       "mutable",
       "deletable",
       "deleting",
       "actions",
+      "links",
       "createdAt"
     ]
+  );
+}
+
+function sourceFileFailureSchema(): SchemaObject {
+  return objectSchema(
+    {
+      stage: {
+        type: "string",
+        enum: [
+          "upload_storage",
+          "metadata_resolution",
+          "llm_suggestion",
+          "graph_generation",
+          "projection_generation",
+          "generation_validation",
+          "generation_activation"
+        ]
+      },
+      code: { type: "string", maxLength: 64 },
+      message: { type: "string", maxLength: 500 },
+      occurredAt: timestampSchema(),
+      retryKind: {
+        type: "string",
+        enum: ["source_processing", "publication", "none"]
+      },
+      correlationId: { type: "string", maxLength: 128 }
+    },
+    ["stage", "code", "message", "occurredAt", "retryKind", "correlationId"]
+  );
+}
+
+function sourceFileLifecycleActionSchema(): SchemaObject {
+  return objectSchema(
+    {
+      kind: {
+        type: "string",
+        enum: [
+          "open_generated_file",
+          "view_failure_details",
+          "retry_source_processing",
+          "retry_publication"
+        ]
+      },
+      method: { type: "string", enum: ["GET", "POST"] },
+      href: { type: "string" },
+      scope: {
+        type: "string",
+        enum: ["source_file", "knowledge_base_publication"]
+      }
+    },
+    ["kind", "method", "href", "scope"]
   );
 }
 
@@ -639,12 +705,14 @@ function sourceFileEventSchema(): SchemaObject {
   );
 }
 
-function bundleTreeEntrySchema(): SchemaObject {
+function generatedTreeEntrySchema(): SchemaObject {
   return objectSchema(
     {
+      generationId: idSchema("Active generation containing this tree entry."),
       id: idSchema("Tree entry identifier."),
-      fileId: nullableString("Bundle file identifier when this entry is a persisted file."),
+      fileId: nullableString("Generated file identifier when this entry is a persisted file."),
       sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      directoryId: nullableString("Stable source-directory identifier for directory entries."),
       parentPath: { type: "string" },
       name: { type: "string" },
       path: {
@@ -662,6 +730,12 @@ function bundleTreeEntrySchema(): SchemaObject {
         minimum: 0,
         description: "Direct child count for directory entries. File entries return 0."
       },
+      directFileCount: { type: "integer", minimum: 0 },
+      descendantFileCount: { type: "integer", minimum: 0 },
+      resourceRevision: {
+        anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
+        description: "Source resource revision when available."
+      },
       deletable: { type: "boolean" },
       contentAvailable: {
         type: "boolean",
@@ -673,14 +747,16 @@ function bundleTreeEntrySchema(): SchemaObject {
       },
       ancestors: {
         type: "array",
-        items: ref("BundleTreeEntry"),
+        items: ref("GeneratedTreeEntry"),
         description: "Ancestor chain returned by tree search results."
       }
     },
     [
+      "generationId",
       "id",
       "fileId",
       "sourceFileId",
+      "directoryId",
       "parentPath",
       "name",
       "path",
@@ -688,6 +764,9 @@ function bundleTreeEntrySchema(): SchemaObject {
       "entryType",
       "fileKind",
       "childCount",
+      "directFileCount",
+      "descendantFileCount",
+      "resourceRevision",
       "deletable",
       "contentAvailable",
       "readActions"
@@ -695,20 +774,17 @@ function bundleTreeEntrySchema(): SchemaObject {
   );
 }
 
-function bundleFileSchema(): SchemaObject {
+function generatedFileSchema(): SchemaObject {
   return objectSchema(
     {
-      fileId: idSchema("Bundle file identifier."),
+      generationId: idSchema("Active generation containing this file."),
+      fileId: idSchema("Generated file identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
       sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
       path: {
         type: "string",
         description: "Logical generated file path accepted by path-based reads."
       },
-      sourceName: nullableString("Source basename when this generated file is source-backed."),
-      sourceRelativePath: nullableString(
-        "Canonical source-relative Markdown path when this generated file is source-backed."
-      ),
       fileKind: { type: "string" },
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
@@ -719,15 +795,15 @@ function bundleFileSchema(): SchemaObject {
       tags: { type: "array", items: { type: "string" } },
       frontmatter: { type: "object", additionalProperties: true },
       deletable: { type: "boolean" },
-      contentAvailable: { type: "boolean" }
+      contentAvailable: { type: "boolean" },
+      readActions: fileReadActionsSchema()
     },
     [
+      "generationId",
       "fileId",
       "knowledgeBaseId",
       "sourceFileId",
       "path",
-      "sourceName",
-      "sourceRelativePath",
       "fileKind",
       "contentType",
       "sizeBytes",
@@ -738,7 +814,8 @@ function bundleFileSchema(): SchemaObject {
       "tags",
       "frontmatter",
       "deletable",
-      "contentAvailable"
+      "contentAvailable",
+      "readActions"
     ]
   );
 }
@@ -746,12 +823,12 @@ function bundleFileSchema(): SchemaObject {
 function fileSearchResultSchema(): SchemaObject {
   return objectSchema(
     {
-      fileId: idSchema("Bundle file identifier accepted by file detail, content, and related-file APIs."),
+      generationId: idSchema("Active generation searched for this result."),
+      fileId: idSchema("Generated file identifier accepted by file detail, content, and related-file APIs."),
       generatedFileId: idSchema(
         "Generated file identifier. Same value as `fileId`; included to align with source-file list responses."
       ),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      releaseId: idSchema("Active release identifier searched by this response."),
       sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
       path: {
         type: "string",
@@ -785,10 +862,10 @@ function fileSearchResultSchema(): SchemaObject {
       graphContext: graphSearchContextSchema()
     },
     [
+      "generationId",
       "fileId",
       "generatedFileId",
       "knowledgeBaseId",
-      "releaseId",
       "sourceFileId",
       "path",
       "generatedFilePath",
@@ -834,6 +911,7 @@ function fileReadActionsSchema(): SchemaObject {
 function fileSearchResponseSchema(): SchemaObject {
   return objectSchema(
     {
+      generationId: nullableString("Active generation searched by this response. It is null before the first activation."),
       query: ref("FileSearchQueryContext"),
       items: { type: "array", items: ref("FileSearchResult") },
       nextCursor: nullableString("Opaque cursor accepted by this search endpoint with the same query and filters."),
@@ -864,6 +942,7 @@ function fileSearchResponseSchema(): SchemaObject {
       }
     },
     [
+      "generationId",
       "query",
       "items",
       "nextCursor",
@@ -1020,6 +1099,17 @@ function fileSearchNextRequestTemplatesSchema(): SchemaObject {
       "sourceFileStatusById",
       "sourceFileEventsById"
     ]
+  );
+}
+
+function generationPageSchema(itemSchema: SchemaObject): SchemaObject {
+  return objectSchema(
+    {
+      generationId: nullableString("Active generation used for this page. It is null before the first activation."),
+      items: { type: "array", items: itemSchema },
+      nextCursor: nullableString("Opaque cursor accepted only by the same list family and active generation.")
+    },
+    ["generationId", "items", "nextCursor"]
   );
 }
 

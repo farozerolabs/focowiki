@@ -28,6 +28,14 @@ describe("admin appearance defaults", () => {
     expect(docsConfig).toContain('logo: "/logo.svg"');
   });
 
+  it("renders the login form without a card frame", () => {
+    const loginForm = readFileSync(join(process.cwd(), "src/components/login-form.tsx"), "utf8");
+
+    expect(loginForm).not.toContain('from "@/components/ui/card"');
+    expect(loginForm).not.toContain("<Card>");
+    expect(loginForm).not.toContain("<CardContent>");
+  });
+
   it("does not allow inline or evaluated scripts in development and production CSP", () => {
     const viteConfig = readFileSync(join(process.cwd(), "vite.config.ts"), "utf8");
     const nginxConfig = readFileSync(

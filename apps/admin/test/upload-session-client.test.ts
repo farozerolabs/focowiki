@@ -26,7 +26,7 @@ describe("folder upload session client", () => {
     vi.clearAllMocks();
     vi.mocked(createUploadSession).mockResolvedValue({
       session: uploadSession("draft", { selected: 0 }),
-      limits: uploadLimits
+      transport: uploadTransport
     });
     vi.mocked(addUploadManifestEntries).mockResolvedValue({
       session: uploadSession("manifest_building", { selected: 2 })
@@ -91,7 +91,7 @@ describe("folder upload session client", () => {
       }
     });
     vi.mocked(uploadSessionContent).mockResolvedValue({
-      entries: [uploadEntry("upload-entry-new", "handbook/new.md", "uploaded")]
+      entry: uploadEntry("upload-entry-new", "handbook/new.md", "uploaded")
     });
 
     const existing = nestedFile("Existing", "handbook/existing.md");
@@ -107,7 +107,8 @@ describe("folder upload session client", () => {
     expect(uploadSessionContent).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-docs",
       sessionId: "upload-session-test",
-      entries: [{ entryId: "upload-entry-new", file: added }]
+      entryId: "upload-entry-new",
+      file: added
     });
   });
 
@@ -148,12 +149,7 @@ describe("folder upload session client", () => {
   });
 });
 
-const uploadLimits = {
-  manifestPageSize: 500,
-  contentBatchMaxFiles: 24,
-  contentBatchMaxBytes: 16_777_216,
-  maxFileBytes: 1_048_576
-};
+const uploadTransport = { manifestPageSize: 500 };
 
 function uploadSession(
   state: "draft" | "manifest_building" | "manifest_sealed" | "uploading" | "completed",

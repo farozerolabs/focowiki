@@ -40,54 +40,30 @@ describe("runtime settings service", () => {
     expect(snapshot.worker.hardDeleteVersionPurgeEnabled).toBe(false);
     expect(snapshot.worker).not.toHaveProperty("databasePoolMax");
     expect(snapshot.rateLimits.publicOpenApi.max).toBe(1_200);
-    expect(snapshot.uploadGeneration).toEqual({
-      maxBytes: 1_048_576,
-      sessionTtlSeconds: 86_400,
-      manifestPageSize: 500,
-      contentBatchMaxFiles: 24,
-      contentBatchMaxBytes: 16_777_216,
+    expect(snapshot.rateLimits).not.toHaveProperty("upload");
+    expect(snapshot).not.toHaveProperty("uploadGeneration");
+    expect(snapshot.worker).toMatchObject({
+      sourceFileConcurrency: 2,
       generationBatchSize: 50,
-      fileProcessingConcurrency: 1
+      sourceQueueHardDepth: 5_000,
+      sourceQueueResumeDepth: 3_000,
+      sourceQueueHardAgeSeconds: 3_600,
+      sourceQueueResumeAgeSeconds: 1_800
+    });
+    expect(snapshot.publication).toMatchObject({
+      roleConcurrency: 1,
+      claimBatchSize: 1,
+      impactBatchSize: 100,
+      impactConcurrency: 8,
+      dirtyFileHardCount: 2_000,
+      dirtyFileResumeCount: 1_000,
+      dirtyAgeHardSeconds: 900,
+      dirtyAgeResumeSeconds: 300,
+      pendingImpactHardCount: 20_000,
+      pendingImpactResumeCount: 10_000,
+      generationRetentionDays: 7
     });
     expect(snapshot.activeModel).toBeNull();
-  });
-
-  it("keeps saved upload-generation settings ahead of stale env defaults", async () => {
-    const repository = new MemoryRuntimeSettingsRepository();
-    await repository.upsertSetting({
-      key: "upload_generation",
-      value: {
-        maxBytes: 512,
-        generationBatchSize: 3,
-        fileProcessingConcurrency: 1
-      },
-      source: "admin"
-    });
-    const service = createRuntimeSettingsService({
-      config: createConfig({
-        modelEnabled: false,
-        upload: {
-          maxBytes: 9_999,
-          generationBatchSize: 88,
-          fileProcessingConcurrency: 7
-        }
-      }),
-      repository,
-      redis: createTestRedisCoordinator(),
-      deploymentSecretDirectory: createRuntimeSecretDirectory()
-    });
-
-    const snapshot = await service.getSnapshot();
-
-    expect(snapshot.uploadGeneration).toEqual({
-      maxBytes: 512,
-      sessionTtlSeconds: 86_400,
-      manifestPageSize: 500,
-      contentBatchMaxFiles: 24,
-      contentBatchMaxBytes: 16_777_216,
-      generationBatchSize: 3,
-      fileProcessingConcurrency: 1
-    });
   });
 
   it("creates a model without exposing the raw key and blocks deleting a running model", async () => {
@@ -271,17 +247,9 @@ describe("runtime settings service", () => {
       settings: RuntimeSettingsSnapshot;
       models: unknown[];
     };
-    expect(initialBody).toMatchObject({
-      settings: {
-        activeModel: null,
-        uploadGeneration: {
-          maxBytes: 1_048_576,
-          generationBatchSize: 50,
-          fileProcessingConcurrency: 1
-        }
-      },
-      models: []
-    });
+    expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
+    expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
+    expect(initialBody.settings.rateLimits).not.toHaveProperty("upload");
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({
       error: {
@@ -299,15 +267,16 @@ describe("runtime settings service", () => {
       body: JSON.stringify({
         sourceFileConcurrency: 2,
         claimBatchSize: 10,
+        generationBatchSize: 50,
         pollIntervalMs: 1_000,
         lockTtlSeconds: 900,
         heartbeatIntervalMs: 15_000,
         jobMaxAttempts: 3,
         jobRetryDelayMs: 30_000,
-        queueBackpressureLimit: 5_000,
-        queueBackpressureKnowledgeBaseLimit: 2_000,
-        queueBackpressureMaxAgeSeconds: 3_600,
-        queueBackpressureRetryAfterSeconds: 60,
+        sourceQueueHardDepth: 5_000,
+        sourceQueueResumeDepth: 3_000,
+        sourceQueueHardAgeSeconds: 3_600,
+        sourceQueueResumeAgeSeconds: 1_800,
         shutdownGraceMs: 30_000,
         completedJobRetentionDays: 7,
         failedJobRetentionDays: 30,
@@ -330,60 +299,34 @@ describe("runtime settings service", () => {
       }
     });
 
-    const invalidUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
+    const invalidImpactConcurrency = await app.request("/admin/api/settings/publication", {
       method: "PUT",
       headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
       }),
       body: JSON.stringify({
-        maxBytes: 0,
-        sessionTtlSeconds: 86_400,
-        manifestPageSize: 500,
-        contentBatchMaxFiles: 24,
-        contentBatchMaxBytes: 16_777_216,
-        generationBatchSize: 3,
-        fileProcessingConcurrency: 1
+        ...initialBody.settings.publication,
+        impactConcurrency: 33
       })
     });
-    expect(invalidUploadGeneration.status).toBe(400);
-    await expect(invalidUploadGeneration.json()).resolves.toMatchObject({
+    expect(invalidImpactConcurrency.status).toBe(400);
+    await expect(invalidImpactConcurrency.json()).resolves.toMatchObject({
       error: {
         code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
         messageKey: "errors.runtimeSettingsValidationFailed"
       }
     });
 
-    const validUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
+    const removedUploadGeneration = await app.request("/admin/api/settings/upload-generation", {
       method: "PUT",
       headers: withTrustedAdminOrigin({
         cookie,
         "content-type": "application/json"
       }),
-      body: JSON.stringify({
-        maxBytes: 2_097_152,
-        sessionTtlSeconds: 86_400,
-        manifestPageSize: 500,
-        contentBatchMaxFiles: 12,
-        contentBatchMaxBytes: 16_777_216,
-        generationBatchSize: 80,
-        fileProcessingConcurrency: 1
-      })
+      body: JSON.stringify({ maxBytes: 2_097_152 })
     });
-    expect(validUploadGeneration.status).toBe(200);
-    await expect(validUploadGeneration.json()).resolves.toMatchObject({
-      settings: {
-        uploadGeneration: {
-          maxBytes: 2_097_152,
-          sessionTtlSeconds: 86_400,
-          manifestPageSize: 500,
-          contentBatchMaxFiles: 12,
-          contentBatchMaxBytes: 16_777_216,
-          generationBatchSize: 80,
-          fileProcessingConcurrency: 1
-        }
-      }
-    });
+    expect(removedUploadGeneration.status).toBe(404);
 
     const validGraph = await app.request("/admin/api/settings/graph", {
       method: "PUT",
@@ -403,10 +346,7 @@ describe("runtime settings service", () => {
   });
 });
 
-function createConfig(input: {
-  modelEnabled: boolean;
-  upload?: RuntimeConfig["upload"];
-}): RuntimeConfig {
+function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
   return {
     admin: {
       username: "admin",
@@ -435,11 +375,6 @@ function createConfig(input: {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    upload: input.upload ?? {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1
-    },
     publication: {
       mode: "batch",
       batchSize: 300,
@@ -467,7 +402,11 @@ function createConfig(input: {
       lockTtlSeconds: 900,
       jobMaxAttempts: 3,
       jobRetryDelayMs: 30_000,
-      queueBackpressureLimit: 5_000,
+      generationBatchSize: 50,
+      sourceQueueHardDepth: 5_000,
+      sourceQueueResumeDepth: 3_000,
+      sourceQueueHardAgeSeconds: 3_600,
+      sourceQueueResumeAgeSeconds: 1_800,
       shutdownGraceMs: 30_000,
       hardDeleteConcurrency: 1,
       hardDeleteDatabaseBatchSize: 1_000,

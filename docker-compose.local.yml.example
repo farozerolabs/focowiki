@@ -4,7 +4,175 @@ x-docker-logging: &docker-logging
     max-size: "50m"
     max-file: "3"
 
+x-runtime-environment: &runtime-environment
+  DATABASE_URL: postgres://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
+  REDIS_URL: redis://redis:6379/0
+
 services:
+  admin:
+    image: focowiki-admin:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: admin
+    environment:
+      ADMIN_API_PROXY_TARGET: http://api:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}
+    ports:
+      - "${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$(wget -qO- http://127.0.0.1:8080/healthz)\" = \"ok\" ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  api:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    env_file:
+      - .env
+    environment: *runtime-environment
+    ports:
+      - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
+      - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const check=(port)=>fetch('http://127.0.0.1:'+port+'/healthz').then(async(r)=>{const body=await r.json().catch(()=>null);return r.ok&&body?.status==='ok';});const adminPort=process.env.ADMIN_API_PORT||'43000';const publicPort=process.env.PUBLIC_OPENAPI_PORT||'43200';Promise.all([check(adminPort),check(publicPort)]).then((checks)=>process.exit(checks.every(Boolean)?0:1)).catch(()=>process.exit(1));\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  source-worker:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    command: ["node", "apps/api/runtime/source-worker.mjs"]
+    env_file:
+      - .env
+    environment: *runtime-environment
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "apps/api/runtime/source-worker.mjs", "--healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  publication-worker:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    command: ["node", "apps/api/runtime/publication-worker.mjs"]
+    env_file:
+      - .env
+    environment: *runtime-environment
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "apps/api/runtime/publication-worker.mjs", "--healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  maintenance-worker:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    command: ["node", "apps/api/runtime/maintenance-worker.mjs"]
+    env_file:
+      - .env
+    environment: *runtime-environment
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "apps/api/runtime/maintenance-worker.mjs", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 8
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  migrate:
+    image: focowiki-api:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    command: ["node", "apps/api/runtime/migrate.mjs"]
+    env_file:
+      - .env
+    environment: *runtime-environment
+    volumes:
+      - ./logs:/app/logs
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *docker-logging
+    restart: "no"
+
   postgres:
     image: postgres:18-alpine
     environment:
@@ -14,7 +182,7 @@ services:
     ports:
       - "${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql
+      - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?Set POSTGRES_USER in .env} -d ${POSTGRES_DB:?Set POSTGRES_DB in .env}"]
       interval: 5s
@@ -29,7 +197,7 @@ services:
     ports:
       - "${REDIS_PORT:?Set REDIS_PORT in .env}:6379"
     volumes:
-      - redis-data:/data
+      - ./data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,7 +205,3 @@ services:
       retries: 10
       start_period: 5s
     logging: *docker-logging
-
-volumes:
-  postgres-data:
-  redis-data:

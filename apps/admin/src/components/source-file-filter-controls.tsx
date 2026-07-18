@@ -20,8 +20,8 @@ import {
   SOURCE_FILE_ERROR_STATES,
   SOURCE_FILE_GENERATED_OUTPUT_STATUSES,
   SOURCE_FILE_MODEL_INVOCATION_STATUSES,
-  SOURCE_FILE_PROCESSING_STAGES,
-  SOURCE_FILE_PROCESSING_STATUSES,
+  SOURCE_FILE_CURRENT_STAGES,
+  SOURCE_FILE_LIFECYCLE_STATES,
   sourceFileFilterCount,
   toDatetimeLocalValue,
   type SourceFileActionState,
@@ -29,8 +29,8 @@ import {
   type SourceFileGeneratedOutputStatus,
   type SourceFileListFilters,
   type SourceFileModelInvocationStatus,
-  type SourceFileProcessingStage,
-  type SourceFileProcessingStatus
+  type SourceFileCurrentStage,
+  type SourceFileLifecycleState
 } from "@/lib/source-file-list-filters";
 
 type SourceFileFilterControlsProps = {
@@ -92,14 +92,14 @@ export function SourceFileStatusFilterHeader({
   const { t } = useTranslation();
 
   return (
-    <EnumFilterHeader<SourceFileProcessingStatus>
+    <EnumFilterHeader<SourceFileLifecycleState>
       label={t("tasks.filesTable.status")}
-      value={filters.processingStatus}
-      options={SOURCE_FILE_PROCESSING_STATUSES.map((status) => ({
+      value={filters.state}
+      options={SOURCE_FILE_LIFECYCLE_STATES.map((status) => ({
         value: status,
         label: t(`tasks.fileStatus.${status}`)
       }))}
-      onChange={(processingStatus) => onFiltersChange({ ...filters, processingStatus })}
+      onChange={(state) => onFiltersChange({ ...filters, state })}
     />
   );
 }
@@ -141,14 +141,14 @@ export function SourceFileStageFilterHeader({
   const { t } = useTranslation();
 
   return (
-    <EnumFilterHeader<SourceFileProcessingStage>
+    <EnumFilterHeader<SourceFileCurrentStage>
       label={t("tasks.filesTable.stage")}
-      value={filters.processingStage}
-      options={SOURCE_FILE_PROCESSING_STAGES.map((stage) => ({
+      value={filters.currentStage}
+      options={SOURCE_FILE_CURRENT_STAGES.map((stage) => ({
         value: stage,
         label: t(`tasks.phase.${toCamelCase(stage)}`)
       }))}
-      onChange={(processingStage) => onFiltersChange({ ...filters, processingStage })}
+      onChange={(currentStage) => onFiltersChange({ ...filters, currentStage })}
     />
   );
 }

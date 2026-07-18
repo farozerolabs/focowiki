@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createApiApp } from "../src/server.js";
 import type { RuntimeConfig } from "../src/config.js";
+import type { AdminRepositories } from "../src/db/admin-repositories.js";
 import type {
-  WorkerJobKind,
-  WorkerJobRepository
-} from "../src/db/worker-job-repository.js";
+  ActiveGenerationFile,
+  ActiveGenerationProjection,
+  ActiveGenerationReadRepository
+} from "../src/application/ports/active-generation-read-repository.js";
 import { createRedisCoordinator } from "../src/redis/coordination.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter, StoredObject } from "../src/storage/s3.js";
@@ -18,7 +20,7 @@ const knowledgeBase = {
   id: "kb-001",
   name: "Developer docs",
   description: null,
-  activeReleaseId: "release-001",
+  activeGenerationId: "generation-001",
   catalogGeneration: 0,
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
@@ -53,11 +55,6 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    upload: {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-    },
     publication: {
       mode: "batch",
       batchSize: 300,
@@ -89,7 +86,7 @@ class MemoryStorage implements StorageAdapter {
   public readonly keyspace = createStorageKeyspace("tenant/demo");
   public readonly objects = new Map<string, string>([
     [
-      "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
+      "tenant/demo/knowledge-bases/kb-001/generated/objects/v1/checksum",
       "---\ntype: page\ntitle: Intro\n---\n# Intro"
     ]
   ]);
@@ -123,8 +120,8 @@ function createRepositories() {
     knowledgeBaseId?: string;
     limit: number;
     cursor: string | null;
-    processingStatus?: string | null;
-    processingStage?: string | null;
+    state?: string | null;
+    currentStage?: string | null;
     modelInvocationStatus?: string | null;
     generatedOutputStatus?: string | null;
     fileNameQuery?: string | null;
@@ -137,27 +134,20 @@ function createRepositories() {
     errorCodeQuery?: string | null;
     actionState?: string | null;
   }> = [];
-  const releaseCalls: Array<{ limit: number; cursor: string | null }> = [];
-  const bundleCalls: Array<{ limit: number; cursor: string | null }> = [];
   const generatedOutputCalls: Array<{
-    knowledgeBaseId: string;
-    releaseId: string;
     sourceFileIds: string[];
   }> = [];
   const graphSummaryCalls: Array<{ knowledgeBaseId: string; sourceFileId: string; limit: number }> = [];
-  const queueSummaryCalls: Array<{
-    knowledgeBaseId?: string | null;
-    kinds?: WorkerJobKind[];
-  }> = [];
-  const dirtySourceFileCountCalls: Array<{ knowledgeBaseId: string }> = [];
-  const bundleFile = {
+  const queueSummaryCalls: Array<{ knowledgeBaseId: string; role: string }> = [];
+  const dispatchSummaryCalls: Array<{ knowledgeBaseId: string }> = [];
+  const publicationProgressCalls: Array<{ knowledgeBaseId: string }> = [];
+  const generatedFile = {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
-    releaseId: "release-001",
     sourceFileId: "source-001",
     fileKind: "page" as const,
     logicalPath: "pages/intro.md",
-    objectKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/pages/intro.md",
+    objectKey: "tenant/demo/knowledge-bases/kb-001/generated/objects/v1/checksum",
     contentType: "text/markdown; charset=utf-8",
     sizeBytes: 42,
     checksumSha256: "checksum",
@@ -173,16 +163,15 @@ function createRepositories() {
 
   return {
     records: {
-      bundleFile,
+      generatedFile,
       treeCalls,
       treeSearchCalls,
       sourceCalls,
-      releaseCalls,
-      bundleCalls,
       generatedOutputCalls,
       graphSummaryCalls,
       queueSummaryCalls,
-      dirtySourceFileCountCalls
+      dispatchSummaryCalls,
+      publicationProgressCalls
     },
     repositories: {
       knowledgeBases: {
@@ -197,137 +186,12 @@ function createRepositories() {
         }
       },
       files: {
-        async listBundleTreeEntries(request: {
-          releaseId: string;
-          limit: number;
-          cursor: string | null;
-          parentPath: string;
-          entryType?: string | null;
-        }) {
-          treeCalls.push(request);
-          const entries = [
-            {
-              id: "tree-pages",
-              knowledgeBaseId: "kb-001",
-              releaseId: "release-001",
-              parentPath: "",
-              name: "pages",
-              logicalPath: "pages",
-              sortKey: "0:pages",
-              entryType: "directory" as const,
-              bundleFileId: null,
-              sourceFileId: null,
-              fileKind: null,
-              childCount: 1
-            },
-            {
-              id: "tree-index",
-              knowledgeBaseId: "kb-001",
-              releaseId: "release-001",
-              parentPath: "",
-              name: "index.md",
-              logicalPath: "index.md",
-              sortKey: "1:index.md",
-              entryType: "file" as const,
-              bundleFileId: "bundle-file-index",
-              sourceFileId: null,
-              fileKind: "index" as const,
-              childCount: 0
-            }
-          ];
-          const start = request.cursor ? Number(request.cursor) : 0;
-
-          return {
-            items: entries.slice(start, start + request.limit),
-            nextCursor: start + request.limit < entries.length ? String(start + request.limit) : null
-          };
-        },
-        async searchBundleTreeEntries(request: {
-          limit: number;
-          cursor: string | null;
-          query: string;
-        }) {
-          treeSearchCalls.push(request);
-          const pagesEntry = {
-            id: "tree-pages",
-            knowledgeBaseId: "kb-001",
-            releaseId: "release-001",
-            parentPath: "",
-            name: "pages",
-            logicalPath: "pages",
-            sortKey: "0:pages",
-            entryType: "directory" as const,
-            bundleFileId: null,
-            sourceFileId: null,
-            fileKind: null,
-            childCount: 1
-          };
-          const introEntry = {
-            id: "tree-intro",
-            knowledgeBaseId: "kb-001",
-            releaseId: "release-001",
-            parentPath: "pages",
-            name: "intro.md",
-            logicalPath: "pages/intro.md",
-            sortKey: "1:intro.md",
-            entryType: "file" as const,
-            bundleFileId: "bundle-file-001",
-            sourceFileId: "source-001",
-            fileKind: "page" as const,
-            childCount: 0
-          };
-          const matches = request.query.toLocaleLowerCase("en-US").includes("intro")
-            ? [
-                {
-                  entry: introEntry,
-                  ancestors: [pagesEntry]
-                }
-              ]
-            : request.query.toLocaleLowerCase("en-US").includes("pages")
-              ? [
-                  {
-                    entry: pagesEntry,
-                    ancestors: []
-                  }
-                ]
-              : [];
-
-          return {
-            items: matches,
-            nextCursor: null
-          };
-        },
-        async getBundleFile(input: { knowledgeBaseId: string; releaseId: string; logicalPath: string }) {
-          return input.knowledgeBaseId === "kb-001" &&
-            input.releaseId === "release-001" &&
-            input.logicalPath === "pages/intro.md"
-            ? bundleFile
-            : null;
-        },
-        async listGeneratedOutputsForSourceFiles(input: {
-          knowledgeBaseId: string;
-          releaseId: string;
-          sourceFileIds: string[];
-        }) {
-          generatedOutputCalls.push(input);
-          return input.knowledgeBaseId === "kb-001" &&
-            input.releaseId === "release-001" &&
-            input.sourceFileIds.includes("source-001")
-            ? [
-                {
-                  sourceFileId: "source-001",
-                  bundleFileId: bundleFile.id,
-                  logicalPath: bundleFile.logicalPath
-                }
-              ]
-            : [];
-        },
         async listSourceFiles(request: {
           knowledgeBaseId?: string;
           limit: number;
           cursor: string | null;
-          processingStatus?: string | null;
-          processingStage?: string | null;
+          state?: string | null;
+          currentStage?: string | null;
           modelInvocationStatus?: string | null;
           generatedOutputStatus?: string | null;
           fileNameQuery?: string | null;
@@ -354,49 +218,10 @@ function createRepositories() {
                 checksumSha256: "checksum",
                 metadata: { type: "page", title: "Intro" },
                 generatedOutputStatus: "visible" as const,
-                generatedBundleFileId: "stale-bundle-file-001",
-                generatedBundleFilePath: "pages/intro.md",
                 createdAt: "2026-06-14T00:00:00.000Z",
                 deletedAt: null
               }
             ].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
-            nextCursor: null
-          };
-        },
-        async countDirtySourceFiles(input: { knowledgeBaseId: string }) {
-          dirtySourceFileCountCalls.push(input);
-          return {
-            count: 2,
-            oldestDirtyAt: "2026-06-14T00:00:00.000Z"
-          };
-        },
-        async listReleases(request: { limit: number; cursor: string | null }) {
-          releaseCalls.push(request);
-          return {
-            items: [
-              {
-                id: "release-001",
-                knowledgeBaseId: "kb-001",
-                bundleRootKey: "tenant/demo/knowledge-bases/kb-001/releases/release-001/bundle/",
-                generatedAt: "2026-06-14T00:00:00.000Z",
-                publishedAt: "2026-06-14T00:00:00.000Z",
-                fileCount: 7,
-                catalogGeneration: 3,
-                manifestChecksumSha256: "checksum",
-                createdAt: "2026-06-14T00:00:00.000Z"
-              }
-            ].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
-            nextCursor: null
-          };
-        },
-        async listBundleFiles(request: {
-          releaseId: string;
-          limit: number;
-          cursor: string | null;
-        }): Promise<{ items: typeof bundleFile[]; nextCursor: string | null }> {
-          bundleCalls.push(request);
-          return {
-            items: [bundleFile].slice(request.cursor ? Number(request.cursor) : 0, (request.cursor ? Number(request.cursor) : 0) + request.limit),
             nextCursor: null
           };
         }
@@ -426,7 +251,7 @@ function createRepositories() {
               {
                 fileId: "source-related",
                 sourceFileId: "source-related",
-                bundleFileId: "bundle-related",
+                generatedFileId: "bundle-related",
                 path: "pages/related.md",
                 title: "Related",
                 relationType: "shared_tag",
@@ -442,95 +267,262 @@ function createRepositories() {
         async deleteGraphForSourceFile() {
           return undefined;
         }
-      },
-      workerJobs: {
-        async enqueueWorkerJob() {
-          throw new Error("Not used by knowledge base file tests");
-        },
-        async enqueueSourceFileJob() {
-          throw new Error("Not used by knowledge base file tests");
-        },
-        async enqueuePublicationJob() {
-          throw new Error("Not used by knowledge base file tests");
-        },
-        async claimWorkerJobs() {
-          return [];
-        },
-        async releaseWorkerJob() {
-          return null;
-        },
-        async completeWorkerJob() {
-          return null;
-        },
-        async failWorkerJob() {
-          return null;
-        },
-        async deadLetterWorkerJob() {
-          return null;
-        },
-        async heartbeatWorkerJob() {
-          return null;
-        },
-        async recordWorkerHeartbeat(
-          input: Parameters<WorkerJobRepository["recordWorkerHeartbeat"]>[0]
-        ) {
-          return {
-            workerId: input.workerId,
-            lastSeenAt: input.lastSeenAt,
-            activeJobCount: input.activeJobCount,
-            metadata: input.metadata ?? {},
-            createdAt: input.lastSeenAt,
-            updatedAt: input.lastSeenAt
-          };
-        },
-        async listWorkerHeartbeats() {
-          return [];
-        },
-        async getWorkerQueueSummary(
-          input: Parameters<WorkerJobRepository["getWorkerQueueSummary"]>[0]
-        ) {
-          queueSummaryCalls.push(input);
-          return input.kinds?.includes("publication")
-            ? {
-                queuedCount: 1,
-                runningCount: 0,
-                completedCount: 0,
-                failedCount: 0,
-                deadLetterCount: 0,
-                oldestQueuedAt: "2026-06-14T00:00:00.000Z",
-                oldestQueuedAgeSeconds: 30
-              }
-            : {
-                queuedCount: 3,
-                runningCount: 2,
-                completedCount: 0,
-                failedCount: 1,
-                deadLetterCount: 0,
-                oldestQueuedAt: "2026-06-14T00:00:00.000Z",
-                oldestQueuedAgeSeconds: 45
-              };
-        },
-        async cleanupWorkerJobs() {
-          return 0;
-        },
-        async countActiveWorkerJobs() {
-          return 0;
-        }
+      }
+    } as unknown as AdminRepositories,
+    activeGenerationReads: createActiveGenerationReads({
+      generatedFile,
+      generatedOutputCalls,
+      treeCalls,
+      treeSearchCalls
+    }),
+    roleJobs: {
+      async getQueueSummary(input: { knowledgeBaseId: string; role: string }) {
+        queueSummaryCalls.push(input);
+        return input.role === "publication"
+          ? queueSummary(1, 0, 0, 30)
+          : queueSummary(3, 2, 1, 45);
+      }
+    },
+    sourceDispatch: {
+      async getSummary(input: { knowledgeBaseId: string }) {
+        dispatchSummaryCalls.push(input);
+        return {
+          pendingCount: 2,
+          oldestPendingAt: "2026-06-14T00:00:00.000Z",
+          paused: false,
+          pausedReason: null
+        };
+      }
+    },
+    publicationGenerations: {
+      async getProgressSummary(input: { knowledgeBaseId: string }) {
+        publicationProgressCalls.push(input);
+        return {
+          generationId: "generation-001",
+          stage: "building",
+          processedImpactCount: 3,
+          totalImpactCount: 5,
+          touchedShardCount: 2,
+          oldestDirtyAt: "2026-06-14T00:00:00.000Z",
+          queuedAt: "2026-06-14T00:00:00.000Z",
+          startedAt: "2026-06-14T00:00:01.000Z",
+          heartbeatAt: "2026-06-14T00:00:02.000Z",
+          completedAt: null,
+          lastSuccessAt: null,
+          safeErrorCode: null,
+          safeErrorMessage: null
+        };
       }
     }
   };
 }
 
-async function createAuthenticatedFileApp() {
-  const { repositories, records } = createRepositories();
-  const app = createApiApp({
+function queueSummary(
+  queuedCount: number,
+  runningCount: number,
+  failedCount: number,
+  oldestQueuedAgeSeconds: number
+) {
+  return {
+    queuedCount,
+    runningCount,
+    completedCount: 0,
+    failedCount,
+    deadLetterCount: 0,
+    oldestQueuedAt: "2026-06-14T00:00:00.000Z",
+    oldestQueuedAgeSeconds
+  };
+}
+
+function createActiveGenerationReads(input: {
+  generatedFile: {
+    id: string;
+    sourceFileId: string;
+    logicalPath: string;
+    objectKey: string;
+    contentType: string;
+    sizeBytes: number;
+    checksumSha256: string;
+    title: string;
+    description: string | null;
+    tags: string[];
+    frontmatter: Record<string, unknown>;
+  };
+  generatedOutputCalls: Array<{ sourceFileIds: string[] }>;
+  treeCalls: Array<{
+    limit: number;
+    cursor: string | null;
+    parentPath: string;
+    entryType?: string | null;
+  }>;
+  treeSearchCalls: Array<{ limit: number; cursor: string | null; query: string }>;
+}): ActiveGenerationReadRepository {
+  const pages = treeProjection({
+    recordId: "tree-pages",
+    path: "pages",
+    parentPath: "",
+    sortKey: "0:pages",
+    title: "pages",
+    payload: { kind: "directory", name: "pages", childCount: 1 }
+  });
+  const index = treeProjection({
+    recordId: "tree-index",
+    path: "index.md",
+    parentPath: "",
+    sortKey: "1:index.md",
+    title: "index.md",
+    payload: { kind: "file", name: "index.md", fileId: "bundle-file-index" }
+  });
+  const intro = treeProjection({
+    recordId: "tree-intro",
+    sourceFileId: "source-001",
+    path: "pages/intro.md",
+    parentPath: "pages",
+    sortKey: "1:intro.md",
+    title: "Intro",
+    payload: { kind: "file", name: "intro.md", fileId: input.generatedFile.id }
+  });
+  const activeFile: ActiveGenerationFile = {
+    generationId: "generation-001",
+    fileId: input.generatedFile.id,
+    refKind: "page",
+    refKey: input.generatedFile.sourceFileId,
+    lastChangedGenerationId: "generation-001",
+    path: input.generatedFile.logicalPath,
+    sourceFileId: input.generatedFile.sourceFileId,
+    objectKey: input.generatedFile.objectKey,
+    contentType: input.generatedFile.contentType,
+    sizeBytes: input.generatedFile.sizeBytes,
+    checksumSha256: input.generatedFile.checksumSha256,
+    title: input.generatedFile.title,
+    summary: input.generatedFile.description,
+    payload: {
+      type: "page",
+      tags: input.generatedFile.tags,
+      metadata: {
+        type: "page",
+        title: input.generatedFile.title ?? "Intro"
+      }
+    }
+  };
+  return {
+    async withActiveGeneration(knowledgeBaseId, reader) {
+      if (knowledgeBaseId !== "kb-001") return null;
+      return reader({
+        knowledgeBaseId,
+        generationId: "generation-001",
+        async findFileById(fileId) {
+          return fileId === activeFile.fileId ? activeFile : null;
+        },
+        async findFileByPath(path) {
+          return path === activeFile.path ? activeFile : null;
+        },
+        async findFilesBySourceIds(sourceFileIds) {
+          input.generatedOutputCalls.push({ sourceFileIds });
+          return sourceFileIds.includes(activeFile.sourceFileId!) ? [activeFile] : [];
+        },
+        async findProjection() {
+          return null;
+        },
+        async listTree(request) {
+          const cursor = request.cursor ? "1" : null;
+          if (request.query) {
+            input.treeSearchCalls.push({
+              limit: request.limit,
+              cursor,
+              query: request.query
+            });
+          } else {
+            input.treeCalls.push({
+              limit: request.limit,
+              cursor,
+              parentPath: request.parentPath,
+              entryType: request.entryType
+            });
+          }
+          const entries = request.query
+            ? request.query.toLocaleLowerCase("en-US").includes("intro") ? [intro] : []
+            : [pages, index].filter((entry) => {
+                if (!request.entryType) return true;
+                return request.entryType === "directory"
+                  ? readProjectionKind(entry) === "directory"
+                  : readProjectionKind(entry) === "file";
+              });
+          const start = request.cursor ? 1 : 0;
+          const items = entries.slice(start, start + request.limit);
+          return {
+            items,
+            nextCursor: start + request.limit < entries.length
+              ? { sortKey: items.at(-1)!.sortKey, recordId: items.at(-1)!.recordId }
+              : null
+          };
+        },
+        async listTreeAncestors(paths) {
+          return new Map(paths.map((path) => [path, path === intro.path ? [pages] : []]));
+        },
+        async search() {
+          return { items: [], nextCursor: null };
+        },
+        async listRelated() {
+          return { items: [], nextCursor: null };
+        },
+        async listRelatedForSources(input) {
+          return new Map(input.sourceFileIds.map((sourceFileId) => [sourceFileId, []]));
+        }
+      });
+    }
+  };
+}
+
+function readProjectionKind(entry: ActiveGenerationProjection): string | null {
+  const payload = entry.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload instanceof Date) {
+    return null;
+  }
+  const kind = (payload as { readonly [key: string]: unknown }).kind;
+  return typeof kind === "string" ? kind : null;
+}
+
+function treeProjection(
+  input: Partial<ActiveGenerationProjection> & Pick<ActiveGenerationProjection, "recordId">
+): ActiveGenerationProjection {
+  return {
+    generationId: "generation-001",
+    projectionKind: "tree",
+    recordId: input.recordId,
+    sourceFileId: input.sourceFileId ?? null,
+    relatedSourceFileId: null,
+    path: input.path ?? null,
+    parentPath: input.parentPath ?? null,
+    sortKey: input.sortKey ?? input.recordId,
+    title: input.title ?? null,
+    summary: null,
+    score: null,
+    payload: input.payload ?? {}
+  };
+}
+
+function createFileTestApp(
+  fixture: ReturnType<typeof createRepositories>,
+  redis = createTestRedisCoordinator()
+) {
+  return createApiApp({
     config: createConfig(),
     storage: new MemoryStorage(),
-    redis: createTestRedisCoordinator(),
-    repositories
+    redis,
+    repositories: fixture.repositories,
+    activeGenerationReads: fixture.activeGenerationReads,
+    roleJobs: fixture.roleJobs as never,
+    sourceDispatch: fixture.sourceDispatch as never,
+    publicationGenerations: fixture.publicationGenerations as never
   });
+}
+
+async function createAuthenticatedFileApp() {
+  const fixture = createRepositories();
+  const app = createFileTestApp(fixture);
   const cookie = await loginAndReadSessionCookie(app);
-  return { app, cookie, records };
+  return { app, cookie, records: fixture.records, repositories: fixture.repositories };
 }
 
 describe("Knowledge base file Admin API", () => {
@@ -551,13 +543,14 @@ describe("Knowledge base file Admin API", () => {
           logicalPath: "pages",
           sortKey: "0:pages",
           entryType: "directory",
-          bundleFileId: null,
+          generatedFileId: null,
           sourceFileId: null,
           fileKind: null,
           childCount: 1,
           directFileCount: 0,
           descendantFileCount: 0,
           resourceRevision: null,
+          sourceDirectoryId: null,
           deletable: false
         },
         {
@@ -567,13 +560,14 @@ describe("Knowledge base file Admin API", () => {
           logicalPath: "index.md",
           sortKey: "1:index.md",
           entryType: "file",
-          bundleFileId: "bundle-file-index",
+          generatedFileId: "bundle-file-index",
           sourceFileId: null,
           fileKind: "index",
           childCount: 0,
           directFileCount: 0,
           descendantFileCount: 0,
           resourceRevision: null,
+          sourceDirectoryId: null,
           deletable: false
         }
       ],
@@ -612,7 +606,7 @@ describe("Knowledge base file Admin API", () => {
       readOnly: true
     });
     expect(body.file).not.toHaveProperty("objectKey");
-    expect(records.bundleFile).not.toHaveProperty("content");
+    expect(records.generatedFile).not.toHaveProperty("content");
   });
 
   it("returns not found when the knowledge base or file record is missing", async () => {
@@ -639,14 +633,13 @@ describe("Knowledge base file Admin API", () => {
   });
 
   it("paginates file tree directories with Redis cursor and page cache state", async () => {
-    const { repositories, records } = createRepositories();
+    const fixture = createRepositories();
+    const { records } = fixture;
     const redisClient = new MemoryRedisCommandClient();
-    const app = createApiApp({
-      config: createConfig(),
-      storage: new MemoryStorage(),
-      redis: createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" }),
-      repositories
-    });
+    const app = createFileTestApp(
+      fixture,
+      createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" })
+    );
     const cookie = await loginAndReadSessionCookie(app);
     const first = await app.request("/admin/api/knowledge-bases/kb-001/files/tree?limit=1", {
       headers: {
@@ -659,7 +652,7 @@ describe("Knowledge base file Admin API", () => {
     expect(firstBody.nextCursor).toEqual(expect.stringMatching(/^cursor-/));
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
-        key.startsWith("focowiki-test:pagination-cursors:file-tree:kb-001:root:")
+        key.startsWith("focowiki-test:pagination-cursors:file-tree:kb-001:active:root:")
       )
     ).toBe(true);
 
@@ -676,76 +669,6 @@ describe("Knowledge base file Admin API", () => {
     expect(records.treeCalls).toEqual([
       expect.objectContaining({ limit: 1, cursor: null, parentPath: "" }),
       expect.objectContaining({ limit: 1, cursor: "1", parentPath: "" })
-    ]);
-  });
-
-  it("continues file-tree pagination on the original release after activation changes", async () => {
-    const fixture = createRepositories();
-    let activeReleaseId = "release-001";
-    const treeCalls: Array<{ releaseId: string; cursor: string | null }> = [];
-    fixture.repositories.knowledgeBases.getKnowledgeBase = async (id: string) =>
-      id === "kb-001" ? { ...knowledgeBase, activeReleaseId } : null;
-    fixture.repositories.files!.listBundleTreeEntries = async (request) => {
-      treeCalls.push({ releaseId: request.releaseId, cursor: request.cursor });
-      const entries = [
-        {
-          id: "tree-pages",
-          knowledgeBaseId: "kb-001",
-          releaseId: request.releaseId,
-          parentPath: "",
-          name: "pages",
-          logicalPath: "pages",
-          sortKey: "0:pages",
-          entryType: "directory" as const,
-          bundleFileId: null,
-          sourceFileId: null,
-          fileKind: null,
-          childCount: 1
-        },
-        {
-          id: "tree-index",
-          knowledgeBaseId: "kb-001",
-          releaseId: request.releaseId,
-          parentPath: "",
-          name: "index.md",
-          logicalPath: "index.md",
-          sortKey: "1:index.md",
-          entryType: "file" as const,
-          bundleFileId: "bundle-file-index",
-          sourceFileId: null,
-          fileKind: "index" as const,
-          childCount: 0
-        }
-      ];
-      const start = request.cursor ? Number(request.cursor) : 0;
-      return {
-        items: entries.slice(start, start + request.limit),
-        nextCursor: start + request.limit < entries.length ? String(start + request.limit) : null
-      };
-    };
-    const app = createApiApp({
-      config: createConfig(),
-      storage: new MemoryStorage(),
-      redis: createTestRedisCoordinator(),
-      repositories: fixture.repositories
-    });
-    const cookie = await loginAndReadSessionCookie(app);
-    const first = await app.request("/admin/api/knowledge-bases/kb-001/files/tree?limit=1", {
-      headers: { cookie }
-    });
-    const firstBody = (await first.json()) as { nextCursor: string | null };
-
-    activeReleaseId = "release-002";
-    const second = await app.request(
-      `/admin/api/knowledge-bases/kb-001/files/tree?limit=1&cursor=${firstBody.nextCursor}`,
-      { headers: { cookie } }
-    );
-
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(treeCalls).toEqual([
-      { releaseId: "release-001", cursor: null },
-      { releaseId: "release-001", cursor: "1" }
     ]);
   });
 
@@ -792,13 +715,14 @@ describe("Knowledge base file Admin API", () => {
             logicalPath: "pages/intro.md",
             sortKey: "1:intro.md",
             entryType: "file",
-            bundleFileId: "bundle-file-001",
+            generatedFileId: "bundle-file-001",
             sourceFileId: "source-001",
             fileKind: "page",
             childCount: 0,
             directFileCount: 0,
             descendantFileCount: 0,
             resourceRevision: null,
+            sourceDirectoryId: null,
             deletable: true
           },
           ancestors: [
@@ -809,13 +733,14 @@ describe("Knowledge base file Admin API", () => {
               logicalPath: "pages",
               sortKey: "0:pages",
               entryType: "directory",
-              bundleFileId: null,
+              generatedFileId: null,
               sourceFileId: null,
               fileKind: null,
               childCount: 1,
               directFileCount: 0,
               descendantFileCount: 0,
               resourceRevision: null,
+              sourceDirectoryId: null,
               deletable: false
             }
           ]
@@ -830,14 +755,13 @@ describe("Knowledge base file Admin API", () => {
   });
 
   it("caches repeated file tree search pages in Redis", async () => {
-    const { repositories, records } = createRepositories();
+    const fixture = createRepositories();
+    const { records } = fixture;
     const redisClient = new MemoryRedisCommandClient();
-    const app = createApiApp({
-      config: createConfig(),
-      storage: new MemoryStorage(),
-      redis: createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" }),
-      repositories
-    });
+    const app = createFileTestApp(
+      fixture,
+      createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" })
+    );
     const cookie = await loginAndReadSessionCookie(app);
     const path = "/admin/api/knowledge-bases/kb-001/files/tree/search?query=missing";
     const first = await app.request(path, {
@@ -858,7 +782,7 @@ describe("Knowledge base file Admin API", () => {
     expect(records.treeSearchCalls).toHaveLength(1);
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
-        key.startsWith("focowiki-test:page-cache:file-tree-search:kb-001:release-001:")
+        key.startsWith("focowiki-test:page-cache:file-tree-search:kb-001:generation-001:")
       )
     ).toBe(true);
   });
@@ -883,33 +807,19 @@ describe("Knowledge base file Admin API", () => {
     expect(records.treeSearchCalls).toEqual([]);
   });
 
-  it("returns source file, release, and bundle file lists without storage keys", async () => {
+  it("returns source file lists with active generation outputs and without storage keys", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const sourceFiles = await app.request("/admin/api/knowledge-bases/kb-001/source-files?limit=1", {
       headers: {
         cookie
       }
     });
-    const releases = await app.request("/admin/api/knowledge-bases/kb-001/releases?limit=1", {
-      headers: {
-        cookie
-      }
-    });
-    const bundleFiles = await app.request("/admin/api/knowledge-bases/kb-001/bundle-files?limit=1", {
-      headers: {
-        cookie
-      }
-    });
-    const releaseBody = (await releases.json()) as { items: Array<Record<string, unknown>> };
-    const bundleBody = (await bundleFiles.json()) as { items: Array<Record<string, unknown>> };
     const sourceBody = (await sourceFiles.json()) as {
       items: Array<Record<string, unknown>>;
       refreshAfterMs: number;
     };
 
     expect(sourceFiles.status).toBe(200);
-    expect(releases.status).toBe(200);
-    expect(bundleFiles.status).toBe(200);
     expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
     expect(sourceBody.refreshAfterMs).toBe(30_000);
     expect(sourceBody.items[0]).toMatchObject({
@@ -920,76 +830,79 @@ describe("Knowledge base file Admin API", () => {
     expect(sourceBody.items[0]).not.toHaveProperty("releaseId");
     expect(sourceBody.items[0]).not.toHaveProperty("bundleRootKey");
     expect(sourceBody.items[0]?.graphSummary).toBeNull();
-    expect(releaseBody.items[0]).not.toHaveProperty("bundleRootKey");
-    expect(bundleBody.items[0]).not.toHaveProperty("objectKey");
     expect(records.sourceCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
     expect(records.generatedOutputCalls).toEqual([
       {
-        knowledgeBaseId: "kb-001",
-        releaseId: "release-001",
         sourceFileIds: ["source-001"]
       }
     ]);
     expect(records.graphSummaryCalls).toEqual([]);
-    expect(records.releaseCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
-    expect(records.bundleCalls).toEqual([expect.objectContaining({ limit: 1, cursor: null })]);
   });
 
-  it("continues bundle-file pagination on the original release after activation changes", async () => {
-    const fixture = createRepositories();
-    let activeReleaseId = "release-001";
-    const bundleCalls: Array<{ releaseId: string; cursor: string | null }> = [];
-    fixture.repositories.knowledgeBases.getKnowledgeBase = async (id: string) =>
-      id === "kb-001" ? { ...knowledgeBase, activeReleaseId } : null;
-    fixture.repositories.files!.listBundleFiles = async (request) => {
-      bundleCalls.push({ releaseId: request.releaseId, cursor: request.cursor });
-      const files = [
-        fixture.records.bundleFile,
+  it("returns publication terminal failure and authorized actions from the Admin route", async () => {
+    const { app, cookie, repositories } = await createAuthenticatedFileApp();
+    repositories.files!.listSourceFiles = async () => ({
+      items: [
         {
-          ...fixture.records.bundleFile,
-          id: "bundle-file-002",
-          logicalPath: "pages/setup.md",
-          title: "Setup"
+          id: "source-001",
+          knowledgeBaseId: "kb-001",
+          name: "intro.md",
+          relativePath: "intro.md",
+          resourceRevision: 1,
+          objectKey: "tenant/demo/source/intro.md",
+          contentType: "text/markdown; charset=utf-8",
+          sizeBytes: 42,
+          checksumSha256: "checksum",
+          metadata: { type: "page", title: "Intro" },
+          processingStatus: "completed",
+          processingStage: "projection_generation",
+          generatedOutputStatus: "unavailable",
+          terminalFailure: {
+            stage: "projection_generation",
+            code: "GENERATION_VALIDATION_FAILED",
+            message: "Generated navigation could not be validated.",
+            occurredAt: "2026-07-16T14:00:00.000Z",
+            retryKind: "publication",
+            correlationId: "publication-job-1"
+          },
+          createdAt: "2026-07-16T13:59:00.000Z",
+          deletedAt: null
         }
-      ];
-      const start = request.cursor ? Number(request.cursor) : 0;
-      return {
-        items: files.slice(start, start + request.limit),
-        nextCursor: start + request.limit < files.length ? String(start + request.limit) : null
-      };
-    };
-    const app = createApiApp({
-      config: createConfig(),
-      storage: new MemoryStorage(),
-      redis: createTestRedisCoordinator(),
-      repositories: fixture.repositories
+      ],
+      nextCursor: null
     });
-    const cookie = await loginAndReadSessionCookie(app);
-    const first = await app.request("/admin/api/knowledge-bases/kb-001/bundle-files?limit=1", {
-      headers: { cookie }
-    });
-    const firstBody = (await first.json()) as { nextCursor: string | null };
-
-    activeReleaseId = "release-002";
-    const second = await app.request(
-      `/admin/api/knowledge-bases/kb-001/bundle-files?limit=1&cursor=${firstBody.nextCursor}`,
+    const response = await app.request(
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&state=failed",
       { headers: { cookie } }
     );
-    const secondBody = (await second.json()) as { items: Array<{ id: string }> };
+    const body = await response.json() as { items: Array<Record<string, unknown>> };
 
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(secondBody.items.map((file) => file.id)).toEqual(["bundle-file-002"]);
-    expect(bundleCalls).toEqual([
-      { releaseId: "release-001", cursor: null },
-      { releaseId: "release-001", cursor: "1" }
-    ]);
+    expect(response.status).toBe(200);
+    expect(body.items[0]).toMatchObject({
+      state: "failed",
+      currentStage: "projection_generation",
+      generatedFileAvailable: false,
+      failure: {
+        code: "GENERATION_VALIDATION_FAILED",
+        retryKind: "publication",
+        correlationId: "publication-job-1"
+      },
+      actions: expect.arrayContaining([
+        expect.objectContaining({ kind: "view_failure_details" }),
+        expect.objectContaining({
+          kind: "retry_publication",
+          scope: "knowledge_base_publication"
+        })
+      ])
+    });
+    expect(body.items[0]).not.toHaveProperty("processingErrorCode");
+    expect(body.items[0]).not.toHaveProperty("publicationErrorCode");
   });
 
   it("passes source file lifecycle filters to the repository", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const response = await app.request(
-      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&processingStatus=failed&processingStage=llm_suggestion&generatedOutputStatus=unavailable&errorState=with_error",
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&state=failed&currentStage=llm_suggestion&generatedOutputStatus=unavailable&errorState=with_error",
       {
         headers: {
           cookie
@@ -1003,8 +916,8 @@ describe("Knowledge base file Admin API", () => {
         knowledgeBaseId: "kb-001",
         limit: 1,
         cursor: null,
-        processingStatus: "failed",
-        processingStage: "llm_suggestion",
+        state: "failed",
+        currentStage: "llm_suggestion",
         generatedOutputStatus: "unavailable",
         errorState: "with_error"
       })
@@ -1014,7 +927,7 @@ describe("Knowledge base file Admin API", () => {
   it("passes source file column filters to the repository with normalized timestamps", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const response = await app.request(
-      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&fileNameQuery=intro&fileIdQuery=source-file-001&processingStatus=completed&processingStage=release_activation&modelInvocationStatus=not_recorded&generatedOutputStatus=visible&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
+      "/admin/api/knowledge-bases/kb-001/source-files?limit=1&fileNameQuery=intro&fileIdQuery=source-file-001&state=visible&currentStage=generation_activation&modelInvocationStatus=not_recorded&generatedOutputStatus=visible&startedFrom=2026-06-14T00%3A00%3A00.000Z&startedTo=2026-06-15T00%3A00%3A00.000Z&endedFrom=2026-06-14T00%3A00%3A00.000Z&endedTo=2026-06-15T00%3A00%3A00.000Z&errorState=without_error&errorCodeQuery=TIMEOUT&actionState=openable",
       {
         headers: {
           cookie
@@ -1030,8 +943,8 @@ describe("Knowledge base file Admin API", () => {
         cursor: null,
         fileNameQuery: "intro",
         fileIdQuery: "source-file-001",
-        processingStatus: "completed",
-        processingStage: "release_activation",
+        state: "visible",
+        currentStage: "generation_activation",
         modelInvocationStatus: "not_recorded",
         generatedOutputStatus: "visible",
         startedFrom: "2026-06-14T00:00:00.000Z",
@@ -1048,7 +961,7 @@ describe("Knowledge base file Admin API", () => {
   it("rejects invalid source file lifecycle filters before reading the repository", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const response = await app.request(
-      "/admin/api/knowledge-bases/kb-001/source-files?processingStatus=archived",
+      "/admin/api/knowledge-bases/kb-001/source-files?state=archived",
       {
         headers: {
           cookie
@@ -1099,7 +1012,7 @@ describe("Knowledge base file Admin API", () => {
     expect(records.sourceCalls).toEqual([]);
   });
 
-  it("returns bounded processing summary from durable queue and dirty publication state", async () => {
+  it("returns bounded processing summary from role queues, dispatch, and generation progress", async () => {
     const { app, cookie, records } = await createAuthenticatedFileApp();
     const response = await app.request("/admin/api/knowledge-bases/kb-001/processing-summary", {
       headers: {
@@ -1119,6 +1032,18 @@ describe("Knowledge base file Admin API", () => {
         runningCount: 0,
         oldestQueuedAgeSeconds: 30
       },
+      pendingDispatch: {
+        pendingCount: 2,
+        paused: false,
+        pausedReason: null
+      },
+      publicationProgress: {
+        generationId: "generation-001",
+        stage: "building",
+        processedImpactCount: 3,
+        totalImpactCount: 5,
+        touchedShardCount: 2
+      },
       dirtySourceFiles: {
         count: 2,
         oldestDirtyAt: "2026-06-14T00:00:00.000Z"
@@ -1126,10 +1051,11 @@ describe("Knowledge base file Admin API", () => {
     });
     expect(response.status).toBe(200);
     expect(records.queueSummaryCalls).toEqual([
-      expect.objectContaining({ knowledgeBaseId: "kb-001", kinds: ["source_file_processing"] }),
-      expect.objectContaining({ knowledgeBaseId: "kb-001", kinds: ["publication"] })
+      expect.objectContaining({ knowledgeBaseId: "kb-001", role: "source" }),
+      expect.objectContaining({ knowledgeBaseId: "kb-001", role: "publication" })
     ]);
-    expect(records.dirtySourceFileCountCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
+    expect(records.dispatchSummaryCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
+    expect(records.publicationProgressCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
   });
 
   it("keeps high Admin read traffic from enqueueing worker jobs", async () => {

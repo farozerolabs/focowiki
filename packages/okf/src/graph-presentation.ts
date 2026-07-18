@@ -1,4 +1,5 @@
 import type { OkfGraphEdgeSource, OkfGraphRelationship } from "./graph.js";
+import { canonicalizeOptionalGeneratedTextIdentity } from "./text-identity.js";
 
 const MAX_EVIDENCE_KEYS = 16;
 const MAX_EVIDENCE_ITEMS = 16;
@@ -68,7 +69,8 @@ function formatDirectionAwareReason(
   const fallback = fact || "The connected Markdown content contains accepted relationship evidence.";
   const prefix = direction === "incoming" ? "Incoming from" : "From";
 
-  return `${prefix} "${fromTitle}" to "${toTitle}": ${fallback}`.slice(0, 1_000);
+  return `${prefix} ${JSON.stringify(fromTitle)} to ${JSON.stringify(toTitle)}: ${fallback}`
+    .slice(0, 1_000);
 }
 
 export function normalizeDurableGraphReason(input: {
@@ -121,6 +123,6 @@ function boundEvidenceValue(value: unknown, depth: number): unknown {
 }
 
 function normalizeEndpointTitle(value: string): string {
-  const title = value.trim().replaceAll('"', "'").slice(0, MAX_ENDPOINT_TITLE_LENGTH);
-  return title || "Untitled Markdown file";
+  return (canonicalizeOptionalGeneratedTextIdentity(value) ?? "Untitled Markdown file")
+    .slice(0, MAX_ENDPOINT_TITLE_LENGTH);
 }

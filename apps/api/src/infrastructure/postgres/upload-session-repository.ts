@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type postgres from "postgres";
 import type { UploadSessionRepository } from "../../application/ports/upload-session-repository.js";
 import {
@@ -40,7 +41,7 @@ type UploadEntryRow = {
   name: string;
   declared_size: string | number;
   received_size: string | number | null;
-  checksum_sha256: string;
+  checksum_sha256: string | null;
   received_checksum_sha256: string | null;
   disposition: UploadSessionEntryRecord["disposition"];
   transfer_state: UploadSessionEntryRecord["transferState"];
@@ -331,32 +332,105 @@ export function createPostgresUploadSessionRepository(
     async markEntryUploaded(input) {
       return sql.begin(async (transaction) => {
         const rows = await transaction<UploadEntryRow[]>`
+          SELECT ${transaction.unsafe(ENTRY_COLUMNS)}
+          FROM focowiki.upload_session_entries
+          WHERE id = ${input.entryId}
+            AND session_id = ${input.sessionId}
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND disposition = 'upload_required'
+          FOR UPDATE
+        `;
+        const entry = rows[0];
+        if (!entry) {
+          throw new UploadSessionError("UPLOAD_ENTRY_NOT_REQUIRED");
+        }
+        if (entry.transfer_state === "uploaded") {
+          if (
+            Number(entry.received_size) !== input.receivedSize ||
+            entry.received_checksum_sha256 !== input.receivedChecksumSha256
+          ) {
+            throw new UploadSessionError("UPLOAD_ENTRY_CHECKSUM_MISMATCH");
+          }
+          return mapEntry(entry);
+        }
+        if (!entry.source_file_id) {
+          throw new UploadSessionError("UPLOAD_ENTRY_NOT_REQUIRED");
+        }
+        const conflicts = await transaction<Array<{ blocked: boolean }>>`
+          SELECT (
+            knowledge_base.deleted_at IS NOT NULL
+            OR EXISTS (
+              SELECT 1
+              FROM focowiki.source_directories directory
+              WHERE directory.id = ${entry.source_directory_id}
+                AND directory.knowledge_base_id = knowledge_base.id
+                AND (directory.deletion_intent_id IS NOT NULL OR directory.deleted_at IS NOT NULL)
+            )
+          ) AS blocked
+          FROM focowiki.knowledge_bases knowledge_base
+          WHERE knowledge_base.id = ${input.knowledgeBaseId}
+        `;
+        if (conflicts[0]?.blocked ?? true) {
+          throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
+        }
+        const sourceRevisionId = `source-revision-${createMd5(`${entry.source_file_id}:1`)}`;
+        await transaction`
+          INSERT INTO focowiki.source_files (
+            id, knowledge_base_id, name, relative_path, path_key,
+            directory_id, object_key, content_type, size_bytes, checksum_sha256,
+            metadata_json, processing_status, processing_stage,
+            generated_output_status, retry_count, resource_revision,
+            content_revision, active_revision_id
+          ) VALUES (
+            ${entry.source_file_id}, ${input.knowledgeBaseId}, ${entry.name},
+            ${entry.relative_path}, ${entry.path_key}, ${entry.source_directory_id},
+            ${input.stagingObjectKey}, 'text/markdown; charset=utf-8',
+            ${input.receivedSize}, ${input.receivedChecksumSha256}, '{}'::jsonb,
+            'queued', 'upload_storage', 'pending', 0, 1, 1, ${sourceRevisionId}
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+        await transaction`
+          INSERT INTO focowiki.source_revisions (
+            id, knowledge_base_id, source_file_id, revision, object_key,
+            content_type, size_bytes, checksum_sha256, metadata_json,
+            processing_status
+          ) VALUES (
+            ${sourceRevisionId}, ${input.knowledgeBaseId}, ${entry.source_file_id}, 1,
+            ${input.stagingObjectKey}, 'text/markdown; charset=utf-8',
+            ${input.receivedSize}, ${input.receivedChecksumSha256}, '{}'::jsonb, 'queued'
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+        await transaction`
+          INSERT INTO focowiki.source_dispatch_markers (
+            id, knowledge_base_id, source_file_id, source_revision_id
+          ) VALUES (
+            ${`dispatch-marker-${createMd5(sourceRevisionId)}`}, ${input.knowledgeBaseId},
+            ${entry.source_file_id}, ${sourceRevisionId}
+          )
+          ON CONFLICT (source_revision_id) DO NOTHING
+        `;
+        const uploadedRows = await transaction<UploadEntryRow[]>`
           UPDATE focowiki.upload_session_entries
           SET transfer_state = 'uploaded',
               received_size = ${input.receivedSize},
               received_checksum_sha256 = ${input.receivedChecksumSha256},
               staging_object_key = ${input.stagingObjectKey},
               error_code = NULL,
+              finalized_at = now(),
               updated_at = now()
           WHERE id = ${input.entryId}
-            AND session_id = ${input.sessionId}
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-            AND disposition = 'upload_required'
-            AND transfer_state IN ('missing', 'failed', 'uploaded')
           RETURNING ${transaction.unsafe(ENTRY_COLUMNS)}
         `;
-        const entry = rows[0];
-        if (!entry) {
-          throw new UploadSessionError("UPLOAD_ENTRY_NOT_REQUIRED");
-        }
         await refreshSessionCounts(transaction, input.sessionId);
         await transaction`
           UPDATE focowiki.upload_sessions
-          SET state = 'uploading', updated_at = now()
+          SET state = CASE WHEN state = 'manifest_sealed' THEN 'uploading' ELSE state END,
+              updated_at = now()
           WHERE id = ${input.sessionId}
-            AND state = 'manifest_sealed'
         `;
-        return mapEntry(entry);
+        return mapEntry(requireEntryRow(uploadedRows[0]));
       });
     },
 
@@ -534,192 +608,19 @@ export function createPostgresUploadSessionRepository(
         }
         const updated = await transaction<UploadSessionRow[]>`
           UPDATE focowiki.upload_sessions
-          SET state = 'finalizing',
+          SET state = 'completed',
+              finalized_count = upload_required_count,
+              completed_at = ${input.now},
               updated_at = ${input.now}
           WHERE id = ${input.sessionId}
           RETURNING ${transaction.unsafe(SESSION_COLUMNS)}
         `;
-        return requireSessionRow(updated[0]);
-      });
-    },
-
-    async finalizeEntryBatch(input) {
-      if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
-        throw new Error("Upload finalization batch size must be positive");
-      }
-      return sql.begin(async (transaction) => {
-        const sessions = await transaction<UploadSessionRow[]>`
-          SELECT ${transaction.unsafe(SESSION_COLUMNS)}
-          FROM focowiki.upload_sessions
-          WHERE id = ${input.sessionId}
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-          FOR UPDATE
-        `;
-        const session = requireSessionRow(sessions[0]);
-        if (session.state === "completed") {
-          return { session, processedCount: 0, completed: true, cancelled: false };
-        }
-        if (session.state !== "finalizing") {
-          throw new UploadSessionError("UPLOAD_SESSION_STATE_CONFLICT");
-        }
-        const conflicts = await transaction<Array<{ blocked: boolean }>>`
-          SELECT (
-            knowledge_base.deleted_at IS NOT NULL
-            OR EXISTS (
-              SELECT 1
-              FROM focowiki.upload_session_entries entry
-              JOIN focowiki.source_directories directory
-                ON directory.id = entry.source_directory_id
-              WHERE entry.session_id = ${input.sessionId}
-                AND entry.disposition = 'upload_required'
-                AND entry.finalized_at IS NULL
-                AND (directory.deletion_intent_id IS NOT NULL OR directory.deleted_at IS NOT NULL)
-            )
-          ) AS blocked
-          FROM focowiki.knowledge_bases knowledge_base
-          WHERE knowledge_base.id = ${input.knowledgeBaseId}
-        `;
-        if (conflicts[0]?.blocked ?? true) {
-          const failed = await transaction<UploadSessionRow[]>`
-            UPDATE focowiki.upload_sessions
-            SET state = 'failed', error_code = 'UPLOAD_FINALIZATION_CONFLICT',
-                updated_at = ${input.now}
-            WHERE id = ${input.sessionId}
-            RETURNING ${transaction.unsafe(SESSION_COLUMNS)}
-          `;
-          return {
-            session: requireSessionRow(failed[0]),
-            processedCount: 0,
-            completed: false,
-            cancelled: true
-          };
-        }
-        const processed = await transaction<Array<{ count: number }>>`
-          WITH batch AS (
-            SELECT entry.*
-            FROM focowiki.upload_session_entries entry
-            WHERE entry.session_id = ${input.sessionId}
-              AND entry.knowledge_base_id = ${input.knowledgeBaseId}
-              AND entry.disposition = 'upload_required'
-              AND entry.transfer_state = 'uploaded'
-              AND entry.finalized_at IS NULL
-            ORDER BY entry.sequence_number ASC, entry.id ASC
-            LIMIT ${input.limit}
-            FOR UPDATE SKIP LOCKED
-          ), inserted_sources AS (
-            INSERT INTO focowiki.source_files (
-              id, knowledge_base_id, name, relative_path, path_key,
-              directory_id, object_key, content_type, size_bytes, checksum_sha256,
-              metadata_json, processing_status, processing_stage,
-              generated_output_status, retry_count, resource_revision,
-              content_revision, active_revision_id
-            )
-            SELECT batch.source_file_id, batch.knowledge_base_id, batch.name,
-                   batch.relative_path, batch.path_key, batch.source_directory_id,
-                   batch.staging_object_key, 'text/markdown; charset=utf-8',
-                   batch.declared_size, batch.checksum_sha256, '{}'::jsonb,
-                   'queued', 'upload_storage', 'pending', 0, 1, 1,
-                   'source-revision-' || md5(batch.source_file_id || ':1')
-            FROM batch
-            WHERE batch.source_file_id IS NOT NULL
-              AND batch.staging_object_key IS NOT NULL
-            ON CONFLICT (id) DO NOTHING
-            RETURNING id
-          ), inserted_revisions AS (
-            INSERT INTO focowiki.source_revisions (
-              id, knowledge_base_id, source_file_id, revision, object_key,
-              content_type, size_bytes, checksum_sha256, metadata_json,
-              processing_status
-            )
-            SELECT 'source-revision-' || md5(batch.source_file_id || ':1'),
-                   batch.knowledge_base_id, batch.source_file_id, 1,
-                   batch.staging_object_key, 'text/markdown; charset=utf-8',
-                   batch.declared_size, batch.checksum_sha256, '{}'::jsonb, 'queued'
-            FROM batch
-            JOIN inserted_sources source ON source.id = batch.source_file_id
-            ON CONFLICT (id) DO NOTHING
-            RETURNING source_file_id
-          ), inserted_jobs AS (
-            INSERT INTO focowiki.worker_jobs (
-              id, kind, knowledge_base_id, source_file_id, payload_json,
-              run_after, max_attempts
-            )
-            SELECT 'worker-job-' || md5('upload:' || ${input.sessionId} || ':' || batch.source_file_id),
-                   'source_file_processing', batch.knowledge_base_id,
-                   batch.source_file_id, '{"reason":"upload"}'::jsonb,
-                   ${input.runAfter}, ${input.jobMaxAttempts}
-            FROM batch
-            JOIN inserted_revisions revision ON revision.source_file_id = batch.source_file_id
-            ON CONFLICT (id) DO NOTHING
-            RETURNING source_file_id
-          ), marked AS (
-            UPDATE focowiki.upload_session_entries entry
-            SET finalized_at = ${input.now}, updated_at = ${input.now}
-            FROM inserted_jobs job
-            WHERE entry.session_id = ${input.sessionId}
-              AND entry.source_file_id = job.source_file_id
-              AND entry.finalized_at IS NULL
-            RETURNING entry.id
-          )
-          SELECT count(*)::int AS count FROM marked
-        `;
-        await transaction`
-          UPDATE focowiki.upload_sessions session
-          SET finalized_count = counts.finalized_count,
-              updated_at = ${input.now}
-          FROM (
-            SELECT count(*) FILTER (WHERE finalized_at IS NOT NULL)::int AS finalized_count
-            FROM focowiki.upload_session_entries
-            WHERE session_id = ${input.sessionId}
-              AND disposition = 'upload_required'
-          ) counts
-          WHERE session.id = ${input.sessionId}
-        `;
-        const updated = await transaction<UploadSessionRow[]>`
-          SELECT ${transaction.unsafe(SESSION_COLUMNS)}
-          FROM focowiki.upload_sessions
-          WHERE id = ${input.sessionId}
-        `;
-        const next = requireSessionRow(updated[0]);
-        return {
-          session: next,
-          processedCount: processed[0]?.count ?? 0,
-          completed: next.counts.finalized >= next.counts.uploadRequired,
-          cancelled: false
-        };
-      });
-    },
-
-    async completeSession(input) {
-      return sql.begin(async (transaction) => {
-        const rows = await transaction<UploadSessionRow[]>`
-          UPDATE focowiki.upload_sessions
-          SET state = 'completed', completed_at = ${input.now}, updated_at = ${input.now}
-          WHERE id = ${input.sessionId}
-            AND knowledge_base_id = ${input.knowledgeBaseId}
-            AND state IN ('finalizing', 'completed')
-            AND finalized_count >= upload_required_count
-          RETURNING ${transaction.unsafe(SESSION_COLUMNS)}
-        `;
-        const session = requireSessionRow(rows[0]);
         await transaction`
           DELETE FROM focowiki.source_path_reservations
           WHERE session_id = ${input.sessionId}
         `;
-        return session;
+        return requireSessionRow(updated[0]);
       });
-    },
-
-    async failFinalization(input) {
-      const rows = await sql<UploadSessionRow[]>`
-        UPDATE focowiki.upload_sessions
-        SET state = 'failed', error_code = ${input.errorCode}, updated_at = ${input.now}
-        WHERE id = ${input.sessionId}
-          AND knowledge_base_id = ${input.knowledgeBaseId}
-          AND state = 'finalizing'
-        RETURNING ${sql.unsafe(SESSION_COLUMNS)}
-      `;
-      return requireSessionRow(rows[0]);
     },
 
     async cancelSession(input) {
@@ -730,6 +631,7 @@ export function createPostgresUploadSessionRepository(
           WHERE session_id = ${input.sessionId}
             AND knowledge_base_id = ${input.knowledgeBaseId}
             AND staging_object_key IS NOT NULL
+            AND finalized_at IS NULL
         `;
         await transaction`
           DELETE FROM focowiki.source_path_reservations
@@ -878,6 +780,7 @@ async function refreshSessionCounts(
         rejected_deleting_count = counts.rejected_deleting,
         uploaded_count = counts.uploaded,
         failed_count = counts.failed,
+        finalized_count = counts.finalized,
         updated_at = now()
     FROM (
       SELECT
@@ -886,7 +789,10 @@ async function refreshSessionCounts(
         count(*) FILTER (WHERE disposition = 'waiting_reservation')::int AS waiting_reservation,
         count(*) FILTER (WHERE disposition = 'rejected_deleting')::int AS rejected_deleting,
         count(*) FILTER (WHERE transfer_state = 'uploaded')::int AS uploaded,
-        count(*) FILTER (WHERE transfer_state = 'failed')::int AS failed
+        count(*) FILTER (WHERE transfer_state = 'failed')::int AS failed,
+        count(*) FILTER (
+          WHERE disposition = 'upload_required' AND finalized_at IS NOT NULL
+        )::int AS finalized
       FROM focowiki.upload_session_entries
       WHERE session_id = ${sessionId}
     ) counts
@@ -899,6 +805,17 @@ function requireSessionRow(row: UploadSessionRow | undefined): UploadSessionReco
     throw new UploadSessionError("UPLOAD_SESSION_NOT_FOUND");
   }
   return mapSession(row);
+}
+
+function requireEntryRow(row: UploadEntryRow | undefined): UploadEntryRow {
+  if (!row) {
+    throw new UploadSessionError("UPLOAD_ENTRY_NOT_FOUND");
+  }
+  return row;
+}
+
+function createMd5(value: string): string {
+  return createHash("md5").update(value).digest("hex");
 }
 
 function mapSession(row: UploadSessionRow): UploadSessionRecord {

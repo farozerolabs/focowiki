@@ -6,8 +6,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
-  type RuntimeSettingsSnapshot,
-  type RuntimeUploadGenerationSettings
+  type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 
@@ -69,19 +68,6 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) =>
         service.updatePublication({
           value: body as RuntimePublicationSettings,
-          actor: "admin"
-        })
-      )
-  );
-
-  app.put(
-    "/admin/api/settings/upload-generation",
-    middlewares.requireAuth,
-    middlewares.requireWriteProtection,
-    async (context) =>
-      writeSettingsResponse(context, async (service, body) =>
-        service.updateUploadGeneration({
-          value: body as RuntimeUploadGenerationSettings,
           actor: "admin"
         })
       )
@@ -207,7 +193,6 @@ export function registerAdminRuntimeSettingsRoutes(
           rateLimits: snapshot.rateLimits,
           worker: snapshot.worker,
           publication: snapshot.publication,
-          uploadGeneration: snapshot.uploadGeneration,
           graph: snapshot.graph,
           activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
         }

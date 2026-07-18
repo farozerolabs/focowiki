@@ -11,12 +11,12 @@ test("recognizes reserved OKF index and log files at every directory depth", () 
   assert.equal(isReservedOkfMarkdownPath("log.md"), true);
   assert.equal(isReservedOkfMarkdownPath("_graph/index.md"), true);
   assert.equal(isReservedOkfMarkdownPath("_index/index.md"), true);
-  assert.equal(isReservedOkfMarkdownPath("pages/team/index.md"), true);
-  assert.equal(isReservedOkfMarkdownPath("pages/team/log.md"), true);
+  assert.equal(isReservedOkfMarkdownPath("schema.md"), true);
+  assert.equal(isReservedOkfMarkdownPath("pages/team/index.md"), false);
+  assert.equal(isReservedOkfMarkdownPath("pages/team/log.md"), false);
 });
 
 test("does not classify concept and numbered navigation files as reserved", () => {
-  assert.equal(isReservedOkfMarkdownPath("schema.md"), false);
   assert.equal(isReservedOkfMarkdownPath("pages/team/guide.md"), false);
   assert.equal(isReservedOkfMarkdownPath("pages/team/index-000001.md"), false);
   assert.equal(isReservedOkfMarkdownPath("_graph/insights.md"), false);
@@ -30,7 +30,8 @@ test("limits source body comparison to source-backed page concepts", () => {
 });
 
 test("recognizes manifest-owned root and shard paths excluded from recursive checksums", () => {
-  assert.equal(isManifestOwnedPath("_index/manifest.json"), true);
-  assert.equal(isManifestOwnedPath("_index/manifest/000001.json"), true);
+  assert.equal(isManifestOwnedPath("_index/catalog.json"), true);
+  assert.equal(isManifestOwnedPath("_index/manifest/v1/0001.json"), true);
+  assert.equal(isManifestOwnedPath("_index/manifest.json"), false);
   assert.equal(isManifestOwnedPath("_index/search.json"), false);
 });

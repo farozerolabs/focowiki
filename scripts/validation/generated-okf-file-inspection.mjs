@@ -20,7 +20,7 @@ import {
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
-  "validate-clean-architecture-full-system";
+  "implement-incremental-sharded-publication";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "file-inspection-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "file-inspection-report.md");
@@ -44,7 +44,7 @@ const report = {
   sampleCount: 0,
   knowledgeBaseId: null,
   sourceFileIds: [],
-  releaseId: null,
+  generationId: null,
   modelName: null,
   files: [],
   checks: [],
@@ -96,12 +96,16 @@ try {
   const sourceFiles = await waitForSourceFilesCompleted(admin, knowledgeBase.id, report.sourceFileIds, readSourceFileTimeoutMs(samples.length));
   report.modelName = listSourceFileModelNames(sourceFiles).join(", ") || null;
   assertSourceFiles(sourceFiles, samples);
-  const bundleFiles = await waitForBundleFiles(admin, knowledgeBase.id, samples, readSourceFileTimeoutMs(samples.length));
-  const release = await readLatestRelease(admin, knowledgeBase.id);
-  report.releaseId = release.id;
-  const contents = await readAllBundleContents(developer, knowledgeBase.id, bundleFiles);
-  inspectBundleFiles(bundleFiles, contents, samples);
-  await inspectDeveloperTree(developer, knowledgeBase.id, bundleFiles);
+  const generatedFiles = await waitForGeneratedFiles(
+    requiredEnv("DATABASE_URL"),
+    knowledgeBase.id,
+    samples,
+    readSourceFileTimeoutMs(samples.length)
+  );
+  report.generationId = await readActiveGeneration(admin, knowledgeBase.id);
+  const contents = await readAllGeneratedContents(developer, knowledgeBase.id, generatedFiles);
+  inspectGeneratedFiles(generatedFiles, contents, samples);
+  await inspectDeveloperTree(developer, knowledgeBase.id, generatedFiles);
   if (!keepKnowledgeBase && cleanup) {
     await cleanup();
     cleanup = null;
@@ -271,7 +275,7 @@ async function uploadMarkdownFiles(admin, knowledgeBaseId, samples) {
         ...(options.headers ?? {}),
         ...(options.body ? { "content-type": "application/json" } : {})
       },
-      body: options.formData ?? (options.body ? JSON.stringify(options.body) : undefined)
+      body: options.rawBody ?? (options.body ? JSON.stringify(options.body) : undefined)
     }),
     routeBase: `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`,
     files: samples.map((sample) => ({
@@ -306,15 +310,15 @@ async function waitForSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds
 
     if (
       selected.length === expectedIds.size &&
-      selected.every((file) => file.processingStatus === "completed")
+      selected.every((file) => file.state === "visible")
     ) {
       report.checks.push(okCheck("source-files-completed", "Uploaded source files reached completed processing state."));
       return selected;
     }
 
-    const failed = selected.find((file) => file.processingStatus === "failed");
+    const failed = selected.find((file) => file.state === "failed");
     if (failed) {
-      throw new Error(`Source file processing failed: ${failed.relativePath} (${failed.processingErrorCode ?? "unknown"})`);
+      throw new Error(`Source file processing failed: ${failed.relativePath} (${failed.failure?.code ?? "unknown"})`);
     }
 
     await sleep(1000);
@@ -355,7 +359,7 @@ function assertSourceFiles(files, samples) {
     if (!expectedPaths.has(file.relativePath)) {
       throw new Error(`Unexpected source file path: ${file.relativePath}`);
     }
-    if (file.processingStatus !== "completed") {
+    if (file.state !== "visible") {
       throw new Error(`Source file did not finish processing: ${file.relativePath}`);
     }
     if (file.modelInvocationStatus === "running") {
@@ -384,60 +388,90 @@ function listSourceFileModelNames(files) {
   return [...new Set(files.map(readAdminSourceFileModelName).filter(Boolean))].sort();
 }
 
-async function readLatestRelease(admin, knowledgeBaseId) {
-  const body = await admin.json(`/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/releases?limit=1`);
-  const release = body.items?.[0];
-
-  if (!release?.id) {
-    throw new Error("No active release was published after upload.");
+async function readActiveGeneration(admin, knowledgeBaseId) {
+  const body = await admin.json(
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+  );
+  const generationId = body.knowledgeBase?.activeGenerationId;
+  if (!generationId) {
+    throw new Error("No active generation was published after upload.");
   }
-
-  report.checks.push(okCheck("release", "A release was published after upload."));
-  return release;
+  report.checks.push(okCheck("generation", "An active generation was published after upload."));
+  return generationId;
 }
 
-async function waitForBundleFiles(admin, knowledgeBaseId, samples, timeoutMs) {
+async function waitForGeneratedFiles(databaseUrl, knowledgeBaseId, samples, timeoutMs) {
   const startedAt = Date.now();
   const expectedPaths = new Set(samples.map(pagePathForSample));
 
   while (Date.now() - startedAt < timeoutMs) {
-    const files = await listBundleFiles(admin, knowledgeBaseId, { recordCheck: false });
+    const files = await listActiveGeneratedFiles(databaseUrl, knowledgeBaseId);
     const availablePaths = new Set(files.map((file) => file.logicalPath));
     const missing = [...expectedPaths].filter((logicalPath) => !availablePaths.has(logicalPath));
 
     if (missing.length === 0) {
-      report.checks.push(okCheck("bundle-file-list", `Listed ${files.length} generated bundle files.`));
+      report.checks.push(okCheck("active-file-list", `Listed ${files.length} active generated files.`));
       return files;
     }
 
     await sleep(1000);
   }
 
-  throw new Error(`Generated bundle did not include every uploaded page within ${timeoutMs}ms.`);
+  throw new Error(`Active generation did not include every uploaded page within ${timeoutMs}ms.`);
 }
 
-async function listBundleFiles(admin, knowledgeBaseId, options = {}) {
-  const files = [];
-  let cursor = null;
-
-  do {
-    const query = cursor ? `?limit=100&cursor=${encodeURIComponent(cursor)}` : "?limit=100";
-    const page = await admin.json(`/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files${query}`);
-    files.push(...(page.items ?? []));
-    cursor = page.nextCursor;
-  } while (cursor);
-
-  if (files.length === 0) {
-    throw new Error("No generated bundle files were returned.");
+async function listActiveGeneratedFiles(databaseUrl, knowledgeBaseId) {
+  const requireFromApi = createRequire(path.resolve("apps/api/package.json"));
+  const postgresModule = requireFromApi("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    const rows = await sql`
+      SELECT reference.file_id AS id,
+             reference.ref_kind,
+             reference.logical_path,
+             reference.source_file_id,
+             object.object_key,
+             object.content_type,
+             object.size_bytes,
+             object.checksum_sha256
+      FROM focowiki.active_object_refs reference
+      JOIN focowiki.immutable_objects object
+        ON object.checksum_sha256 = reference.checksum_sha256
+       AND object.format_version = reference.format_version
+      WHERE reference.knowledge_base_id = ${knowledgeBaseId}
+        AND reference.logical_path IS NOT NULL
+        AND object.lifecycle_state = 'active'
+      ORDER BY reference.logical_path
+    `;
+    if (rows.length === 0) throw new Error("No active generated files were returned.");
+    return rows.map((row) => ({
+      id: row.id,
+      logicalPath: row.logical_path,
+      sourceFileId: row.source_file_id,
+      fileKind: generatedFileKind(row.ref_kind, row.logical_path),
+      objectKey: row.object_key,
+      contentType: row.content_type,
+      sizeBytes: Number(row.size_bytes),
+      checksumSha256: row.checksum_sha256,
+      title: null,
+      deletable: row.ref_kind === "page" && Boolean(row.source_file_id)
+    }));
+  } finally {
+    await sql.end({ timeout: 5 });
   }
-
-  if (options.recordCheck !== false) {
-    report.checks.push(okCheck("bundle-file-list", `Listed ${files.length} generated bundle files.`));
-  }
-  return files.sort((left, right) => left.logicalPath.localeCompare(right.logicalPath));
 }
 
-async function readAllBundleContents(developer, knowledgeBaseId, bundleFiles) {
+function generatedFileKind(refKind, logicalPath) {
+  if (refKind === "page") return "page";
+  if (refKind === "directory_root") return "directory_index";
+  if (refKind === "directory_leaf") return "directory_index_page";
+  if (logicalPath.startsWith("_graph/")) return "graph_index";
+  if (logicalPath.startsWith("_index/")) return "search_index";
+  return "index";
+}
+
+async function readAllGeneratedContents(developer, knowledgeBaseId, generatedFiles) {
   const contents = new Map();
   const concurrency = readBoundedIntegerEnvironment(
     "FOCOWIKI_VALIDATION_CONTENT_READ_CONCURRENCY",
@@ -448,9 +482,9 @@ async function readAllBundleContents(developer, knowledgeBaseId, bundleFiles) {
   let nextIndex = 0;
 
   await Promise.all(
-    Array.from({ length: Math.min(concurrency, bundleFiles.length) }, async () => {
-      while (nextIndex < bundleFiles.length) {
-        const file = bundleFiles[nextIndex++];
+    Array.from({ length: Math.min(concurrency, generatedFiles.length) }, async () => {
+      while (nextIndex < generatedFiles.length) {
+        const file = generatedFiles[nextIndex++];
         const byId = await developer.json(
           `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(file.id)}/content`
         );
@@ -495,33 +529,34 @@ function readBoundedIntegerEnvironment(name, fallback, minimum, maximum) {
   return value;
 }
 
-function inspectBundleFiles(bundleFiles, contents, samples) {
-  const byPath = new Map(bundleFiles.map((file) => [file.logicalPath, file]));
+function inspectGeneratedFiles(generatedFiles, contents, samples) {
+  const byPath = new Map(generatedFiles.map((file) => [file.logicalPath, file]));
   const paths = new Set(byPath.keys());
   const expectedPaths = buildExpectedPaths(samples);
   const missing = expectedPaths.filter((pathName) => !paths.has(pathName));
 
   if (missing.length > 0) {
-    throw new Error(`Generated bundle is missing expected paths: ${missing.join(", ")}`);
+    throw new Error(`Active generation is missing expected paths: ${missing.join(", ")}`);
   }
 
-  for (const file of bundleFiles) {
+  for (const file of generatedFiles) {
     const content = contents.get(file.logicalPath);
 
     inspectSingleFile(file, content, paths, samples);
   }
 
-  inspectIndexes(contents, paths, expectedPaths);
+  inspectIndexes(contents, paths);
   report.checks.push(okCheck("all-generated-files", "Every generated Markdown and JSON file passed structural inspection."));
 }
 
 function buildExpectedPaths(samples) {
   return [
-    "_index/links.json",
-    "_index/manifest.json",
-    "_index/search.json",
+    "_graph/index.md",
+    "_index/catalog.json",
+    "_index/index.md",
     "index.md",
     "log.md",
+    "pages/index.md",
     ...samples.map(pagePathForSample).sort((left, right) => left.localeCompare(right)),
     "schema.md"
   ];
@@ -577,9 +612,10 @@ function inspectMarkdownFile(file, content, samples) {
   if (isReservedOkfMarkdownPath(file.logicalPath)) {
     const rootIndexKeys = file.logicalPath === "index.md" ? Object.keys(parsed.data) : [];
     const hasValidRootVersion =
-      rootIndexKeys.length === 1 &&
-      rootIndexKeys[0] === "okf_version" &&
-      parsed.data.okf_version === "0.1";
+      rootIndexKeys.every((key) => ["okf_version", "knowledge_base_id", "generation_id"].includes(key)) &&
+      parsed.data.okf_version === "0.1" &&
+      typeof parsed.data.knowledge_base_id === "string" &&
+      typeof parsed.data.generation_id === "string";
 
     if (
       (file.logicalPath === "index.md" && !hasValidRootVersion) ||
@@ -801,47 +837,42 @@ function isComparableMetadataValue(value) {
   );
 }
 
-function inspectIndexes(contents, paths, expectedPaths) {
-  const manifest = JSON.parse(contents.get("_index/manifest.json"));
-  const search = JSON.parse(contents.get("_index/search.json"));
-  const links = JSON.parse(contents.get("_index/links.json"));
-  const manifestPaths = new Set((manifest.files ?? []).map((entry) => entry.path));
-  const manifestContentPaths = expectedPaths.filter((pathName) => !pathName.startsWith("_index/"));
-
-  for (const pathName of manifestContentPaths) {
-    if (!manifestPaths.has(pathName)) {
-      throw new Error(`Manifest does not include generated path: ${pathName}`);
+function inspectIndexes(contents, paths) {
+  const catalog = JSON.parse(contents.get("_index/catalog.json"));
+  if (catalog.formatVersion !== 1 || !catalog.generationId || !catalog.projections) {
+    throw new Error("Projection catalog is missing generation or format identity.");
+  }
+  const requiredProjectionKeys = [
+    "search",
+    "links",
+    "manifest",
+    "tree",
+    "graphNodes",
+    "graphEdges",
+    "relatedFiles"
+  ];
+  for (const key of requiredProjectionKeys) {
+    if (typeof catalog.projections[key] !== "string") {
+      throw new Error(`Projection catalog is missing ${key}.`);
     }
   }
-
-  for (const entry of manifest.files ?? []) {
-    if (!paths.has(entry.path)) {
-      throw new Error(`Manifest references missing generated path: ${entry.path}`);
-    }
+  const machineFiles = [...paths].filter((logicalPath) => logicalPath.endsWith(".json"));
+  for (const logicalPath of machineFiles) {
+    JSON.parse(contents.get(logicalPath));
   }
-
-  for (const item of search.items ?? []) {
-    if (!paths.has(item.path)) {
-      throw new Error(`Search index references missing generated path: ${item.path}`);
-    }
-    if (!item.title) {
-      throw new Error(`Search index item is missing title: ${item.path}`);
-    }
-  }
-
-  for (const link of links.links ?? []) {
-    if (!paths.has(link.from) || !paths.has(link.to)) {
-      throw new Error(`Links index references missing generated path: ${link.from} -> ${link.to}`);
-    }
-  }
-
-  report.checks.push(okCheck("json-indexes", "manifest.json, search.json, and links.json reference existing generated files."));
+  report.checks.push(okCheck(
+    "json-indexes",
+    "The projection catalog and active machine-readable shards are valid JSON.",
+    { machineFileCount: machineFiles.length }
+  ));
 }
 
-async function inspectDeveloperTree(developer, knowledgeBaseId, bundleFiles) {
-  const expectedFilePaths = new Set(bundleFiles.map((file) => file.logicalPath));
+async function inspectDeveloperTree(developer, knowledgeBaseId, generatedFiles) {
+  const expectedFilePaths = new Set(generatedFiles
+    .filter((file) => file.fileKind === "page")
+    .map((file) => file.logicalPath));
   const observedFilePaths = new Set();
-  const queue = [""];
+  const queue = ["pages"];
 
   while (queue.length > 0) {
     const parentPath = queue.shift();
@@ -960,7 +991,7 @@ function renderMarkdownReport(value) {
     `- Sample count: ${value.sampleCount}`,
     `- Knowledge base ID: ${value.knowledgeBaseId ?? "none"}`,
     `- Source file IDs: ${value.sourceFileIds.join(", ") || "none"}`,
-    `- Release ID: ${value.releaseId ?? "none"}`,
+    `- Generation ID: ${value.generationId ?? "none"}`,
     `- Model: ${value.modelName ?? "none"}`,
     "",
     "## Checks",

@@ -1,220 +1,140 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExplainAnalyzeSql,
-  createHardDeletePlanTargets,
+  createCleanupPlanTargets,
+  createGenerationValidationPlanTargets,
   createLargeScaleReadPlanTargets,
-  createReleaseValidationPlanTargets,
+  createRoleQueuePlanTargets,
   summarizeQueryPlan
 } from "../src/db/query-plan-validation.js";
 
 describe("query plan validation helpers", () => {
-  it("builds one EXPLAIN ANALYZE statement for critical read targets", () => {
+  it("defines generation-scoped read targets with bounded keyset pages", () => {
     const targets = createLargeScaleReadPlanTargets();
-
-    expect(targets.map((target) => target.name)).toEqual(
-      expect.arrayContaining([
-        "knowledge-base-card-search",
-        "knowledge-tree-search-name",
-        "knowledge-tree-search-path",
-        "knowledge-tree-search-next-page",
-        "knowledge-tree-search-ancestors",
-        "knowledge-file-search-first-page",
-        "knowledge-file-search-next-page",
-        "knowledge-file-search-no-result",
-        "knowledge-file-search-kind-filter",
-        "knowledge-file-search-cache-hit",
-        "release-read-summary",
-        "knowledge-graph-search-first-page",
-        "knowledge-graph-search-edge-match",
-        "knowledge-hybrid-search-first-page",
-        "graph-expand-file-neighborhood",
-        "graph-expand-edge-seed",
-        "graph-expand-query-seed",
-        "source-resource-list-filter",
-        "source-file-event-page",
-        "resource-operation-page",
-        "worker-job-source-cancellation"
-      ])
-    );
-
+    expect(targets.map((target) => target.name)).toEqual(expect.arrayContaining([
+      "active-generation-resolve",
+      "active-file-by-path",
+      "active-tree-page",
+      "active-tree-search",
+      "active-file-search",
+      "active-graph-search",
+      "active-related-page"
+    ]));
     for (const target of targets) {
-      const explainSql = buildExplainAnalyzeSql(target.sql);
-
-      expect(explainSql).toContain("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)");
-      expect(explainSql).toContain("focowiki.");
+      const sql = normalize(target.sql);
+      expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)");
+      expect(sql).toContain("focowiki.");
+      expect(sql).not.toContain(" offset ");
+      expect(sql).not.toContain("release_id");
+      expect(sql).not.toContain("bundle_files");
     }
   });
 
-  it("keeps version-two source-resource filters bounded and independent from task visibility", () => {
+  it("keeps source-resource filters independent from task-list visibility", () => {
     const target = createLargeScaleReadPlanTargets().find((item) =>
       item.name === "source-resource-list-filter"
     );
     expect(target).toBeDefined();
-    const normalizedSql = target!.sql.replace(/\s+/g, " ").toLowerCase();
-    expect(normalizedSql).toContain("deletion_intent_id is null");
-    expect(normalizedSql).toContain("order by id asc");
-    expect(normalizedSql).toContain("limit 51");
-    expect(normalizedSql).not.toContain("task_deleted_at");
-    expect(normalizedSql).not.toContain(" offset ");
+    const sql = normalize(target!.sql);
+    expect(sql).toContain("deletion_intent_id is null");
+    expect(sql).toContain("order by id");
+    expect(sql).toContain("limit 51");
+    expect(sql).not.toContain("task_deleted_at");
   });
 
-  it("keeps source-file task list plans task-hidden aware", () => {
-    const targets = createLargeScaleReadPlanTargets().filter((target) =>
-      target.name.startsWith("source-file-list")
+  it("keeps task-list targets aware of task-hidden records", () => {
+    const target = createLargeScaleReadPlanTargets().find((item) =>
+      item.name === "source-file-list"
     );
-
-    expect(targets.length).toBeGreaterThan(0);
-    for (const target of targets) {
-      expect(target.sql).toContain("task_deleted_at IS NULL");
-    }
+    expect(normalize(target!.sql)).toContain("task_deleted_at is null");
   });
 
-  it("builds bounded hard-delete cleanup plan targets", () => {
-    const targets = createHardDeletePlanTargets();
-
-    expect(targets.map((target) => target.name)).toEqual(
-      expect.arrayContaining([
-        "hard-delete-source-knowledge-graph-search-documents",
-        "hard-delete-source-knowledge-graph-edges",
-        "hard-delete-source-knowledge-tree-entries",
-        "hard-delete-source-bundle-files",
-        "hard-delete-source-worker-jobs",
-        "hard-delete-knowledge-base-graph-search-documents",
-        "hard-delete-knowledge-base-graph-edges",
-        "hard-delete-knowledge-base-tree-entries",
-        "hard-delete-knowledge-base-bundle-files",
-        "hard-delete-knowledge-base-source-files",
-        "hard-delete-knowledge-base-worker-jobs"
-      ])
-    );
-
-    for (const target of targets) {
-      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
-
-      expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
-      expect(normalizedSql).toContain("knowledge_base_id = 'kb-plan'");
-      expect(normalizedSql).toContain("limit 100");
-      expect(normalizedSql).not.toContain(" offset ");
-    }
-  });
-
-  it("builds bounded release validation plan targets", () => {
-    const targets = createReleaseValidationPlanTargets();
-
+  it("defines role-isolated bounded claim targets", () => {
+    const targets = createRoleQueuePlanTargets();
     expect(targets.map((target) => target.name)).toEqual([
-      "release-validation-source-page",
-      "release-validation-tree-reachability",
-      "release-validation-concept-type",
-      "release-validation-generated-target",
-      "release-validation-continuation-chain",
-      "release-validation-index-coverage"
+      "role-job-source-cancellation",
+      "role-job-claim",
+      "source-dispatch-claim",
+      "publication-impact-claim",
+      "publication-progress-summary",
+      "generation-freeze"
     ]);
-
     for (const target of targets) {
-      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
-
+      const sql = normalize(target.sql);
       expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
-      expect(normalizedSql).toContain("knowledge_base_id = 'kb-okf-scale'");
-      expect(normalizedSql).toContain("release_id = 'release-okf-scale'");
-      expect(normalizedSql).toContain("limit 101");
-      expect(normalizedSql).not.toContain(" offset ");
+      expect(sql).not.toContain("worker_jobs");
+      expect(sql).not.toContain(" offset ");
     }
   });
 
-  it("keeps normal read plan targets decoupled from hard-delete tables", () => {
-    const targets = createLargeScaleReadPlanTargets();
-
-    for (const target of targets) {
-      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
-
-      expect(normalizedSql).not.toContain("hard_delete_object_deletions");
-      expect(normalizedSql).not.toContain("kind = 'hard_delete'");
-    }
-  });
-
-  it("keeps graph expansion plan targets bounded and graph-index scoped", () => {
-    const targets = createLargeScaleReadPlanTargets().filter((target) =>
-      target.name.startsWith("graph-expand")
-    );
-
+  it("validates only generation-local references and projections", () => {
+    const targets = createGenerationValidationPlanTargets();
     expect(targets.map((target) => target.name)).toEqual([
-      "graph-expand-file-neighborhood",
-      "graph-expand-edge-seed",
-      "graph-expand-query-seed"
+      "generation-validation-ref-page",
+      "generation-validation-projection-page"
     ]);
-
     for (const target of targets) {
-      const normalizedSql = target.sql.replace(/\s+/g, " ").toLowerCase();
-
-      expect(normalizedSql).toContain("knowledge_base_id = 'kb-plan'");
-      expect(normalizedSql).toContain("limit ");
-      expect(normalizedSql).not.toContain(" offset ");
+      const sql = normalize(target.sql);
+      expect(sql).toContain("generation_id = 'generation-plan'");
+      expect(sql).toContain("limit 101");
+      expect(sql).not.toContain("source_files");
+      expect(sql).not.toContain(" offset ");
     }
-
-    expect(targets.find((target) => target.name === "graph-expand-file-neighborhood")?.sql).toContain(
-      "knowledge_graph_edges"
-    );
-    expect(targets.find((target) => target.name === "graph-expand-query-seed")?.sql).toContain(
-      "knowledge_graph_search_documents"
-    );
   });
 
-  it("keeps request-time search plans on flat release read models", () => {
-    const targets = createLargeScaleReadPlanTargets().filter((target) =>
-      target.name.includes("search") || target.name === "release-read-summary"
-    );
-    const sql = targets.map((target) => target.sql).join("\n").toLowerCase();
-
-    expect(sql).toContain("focowiki.bundle_file_search_documents");
-    expect(sql).toContain("focowiki.knowledge_graph_search_documents");
-    expect(sql).toContain("focowiki.release_read_summaries");
-    expect(sql).not.toContain("tags_json::text");
-    expect(sql).not.toContain("frontmatter_json::text");
-    expect(sql).not.toContain("top_neighbors_json::text");
-    expect(sql).not.toContain(" offset ");
+  it("keeps cleanup and immutable object collection bounded", () => {
+    const targets = createCleanupPlanTargets();
+    expect(targets.map((target) => target.name)).toEqual([
+      "cleanup-object-page",
+      "immutable-object-gc-claim"
+    ]);
+    for (const target of targets) {
+      const sql = normalize(target.sql);
+      expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
+      expect(sql).toMatch(/limit 100/);
+      expect(sql).not.toContain(" offset ");
+    }
   });
 
-  it("rejects empty and multi-statement query plan inputs", () => {
+  it("rejects empty and multi-statement inputs", () => {
     expect(() => buildExplainAnalyzeSql("")).toThrow("must not be empty");
     expect(() => buildExplainAnalyzeSql("SELECT 1; SELECT 2")).toThrow("one statement");
   });
 
   it("summarizes JSON plans into bounded evidence", () => {
-    const summary = summarizeQueryPlan([
-      {
-        Plan: {
-          "Node Type": "Nested Loop",
-          "Shared Hit Blocks": 10,
-          "Shared Read Blocks": 2,
-          Plans: [
-            {
-              "Node Type": "Index Scan",
-              "Relation Name": "source_files",
-              "Index Name": "source_files_pkey",
-              "Actual Rows": 5,
-              "Shared Hit Blocks": 3,
-              "Shared Read Blocks": 0
-            },
-            {
-              "Node Type": "Seq Scan",
-              "Relation Name": "bundle_files",
-              "Actual Rows": 7,
-              "Rows Removed by Filter": 11,
-              "Shared Hit Blocks": 7,
-              "Shared Read Blocks": 2
-            }
-          ]
-        },
-        "Planning Time": 1.5,
-        "Execution Time": 12.3
-      }
-    ]);
+    const summary = summarizeQueryPlan([{
+      Plan: {
+        "Node Type": "Nested Loop",
+        "Shared Hit Blocks": 10,
+        "Shared Read Blocks": 2,
+        Plans: [
+          {
+            "Node Type": "Index Scan",
+            "Relation Name": "active_projection_records",
+            "Index Name": "active_projection_records_pkey",
+            "Actual Rows": 5,
+            "Shared Hit Blocks": 3,
+            "Shared Read Blocks": 0
+          },
+          {
+            "Node Type": "Seq Scan",
+            "Relation Name": "projection_shards",
+            "Actual Rows": 7,
+            "Rows Removed by Filter": 11,
+            "Shared Hit Blocks": 7,
+            "Shared Read Blocks": 2
+          }
+        ]
+      },
+      "Planning Time": 1.5,
+      "Execution Time": 12.3
+    }]);
 
     expect(summary).toEqual({
       nodeTypes: ["Nested Loop", "Index Scan", "Seq Scan"],
-      relationNames: ["source_files", "bundle_files"],
-      indexNames: ["source_files_pkey"],
-      sequentialScanRelations: ["bundle_files"],
+      relationNames: ["active_projection_records", "projection_shards"],
+      indexNames: ["active_projection_records_pkey"],
+      sequentialScanRelations: ["projection_shards"],
       hasSequentialScan: true,
       actualRows: 12,
       rowsRemovedByFilter: 11,
@@ -225,3 +145,7 @@ describe("query plan validation helpers", () => {
     });
   });
 });
+
+function normalize(sql: string): string {
+  return ` ${sql.replace(/\s+/g, " ").trim().toLowerCase()} `;
+}

@@ -11,7 +11,7 @@ export type WebhookEventType =
   | "source_file.progress"
   | "source_file.completed"
   | "source_file.failed"
-  | "release.published"
+  | "generation.activated"
   | "file.deleted"
   | "knowledge_base.deleted";
 

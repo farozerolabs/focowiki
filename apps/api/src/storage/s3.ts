@@ -11,6 +11,7 @@ import {
   S3Client,
   type S3ClientConfig
 } from "@aws-sdk/client-s3";
+import type { Readable } from "node:stream";
 import type { RuntimeConfig } from "../config.js";
 import {
   createStorageKeyspace,
@@ -40,7 +41,14 @@ export class StorageObjectTooLargeError extends Error {
 
 export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
+  checkHealth?: () => Promise<void>;
   putObject: (object: StoredObject) => Promise<void>;
+  putStreamObject?: (object: {
+    key: string;
+    body: Readable;
+    contentLength: number;
+    contentType?: string;
+  }) => Promise<void>;
   copyObject?: (input: { sourceKey: string; destinationKey: string }) => Promise<void>;
   listObjectKeys?: (input: {
     prefix: string;
@@ -99,6 +107,16 @@ export class S3StorageAdapter implements StorageAdapter {
     this.keyspace = options.keyspace;
   }
 
+  public async checkHealth(): Promise<void> {
+    await this.client.send(
+      new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: `${this.keyspace.prefix}/`,
+        MaxKeys: 1
+      })
+    );
+  }
+
   public async putObject(object: StoredObject): Promise<void> {
     await this.client.send(
       new PutObjectCommand({
@@ -107,6 +125,23 @@ export class S3StorageAdapter implements StorageAdapter {
         Body: object.body,
         ...(object.contentType ? { ContentType: object.contentType } : {}),
         ...(object.cacheControl ? { CacheControl: object.cacheControl } : {})
+      })
+    );
+  }
+
+  public async putStreamObject(object: {
+    key: string;
+    body: Readable;
+    contentLength: number;
+    contentType?: string;
+  }): Promise<void> {
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: object.key,
+        Body: object.body,
+        ContentLength: object.contentLength,
+        ...(object.contentType ? { ContentType: object.contentType } : {})
       })
     );
   }

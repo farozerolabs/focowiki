@@ -6,30 +6,25 @@ import type {
   WorkerRuntimeConfig
 } from "../config.js";
 
-export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "upload_generation" | "graph";
+export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "graph";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
-export type RuntimeWorkerSettings = Required<Omit<WorkerRuntimeConfig, "databasePoolMax">>;
+export type RuntimeWorkerSettings = Required<WorkerRuntimeConfig>;
 
-export type RuntimePublicationSettings = Omit<
-  RuntimeConfig["publication"],
-  "directoryIndexMaxEntries" | "directoryIndexMaxBytes"
-> & {
+export type RuntimePublicationSettings = Required<RuntimeConfig["publication"]> & {
   directoryIndexMaxEntries: number;
   directoryIndexMaxBytes: number;
   okfLogMaxEntries: number;
   okfLogMaxBytes: number;
 };
-export type RuntimeUploadGenerationSettings = Required<RuntimeConfig["upload"]>;
 export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
 
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
-  uploadGeneration: RuntimeUploadGenerationSettings;
   graph: RuntimeGraphSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
@@ -103,7 +98,6 @@ export type RuntimeSettingsDefaults = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
-  uploadGeneration: RuntimeUploadGenerationSettings;
   graph: RuntimeGraphSettings;
   model: RuntimeModelConfigDraft | null;
 };
@@ -157,7 +151,7 @@ export function publicationModeValues(): PublicationMode[] {
 }
 
 export function rateLimitKeys(): Array<keyof RuntimeRateLimitSettings> {
-  return ["adminLogin", "adminApi", "upload", "publicOpenApi"];
+  return ["adminLogin", "adminApi", "publicOpenApi"];
 }
 
 export function normalizeRateLimit(input: RateLimitConfig): RateLimitConfig {

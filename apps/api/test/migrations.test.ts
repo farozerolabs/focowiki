@@ -32,7 +32,7 @@ describe("runtime schema generation guard", () => {
   });
 
   it("rejects the former runtime generation after the destructive schema reset", async () => {
-    const database = createGenerationDatabase("admin-resource-editing-v3");
+    const database = createGenerationDatabase("relation-search-publication-v1");
 
     await expect(applyMigrations(database.sql)).rejects.toMatchObject({
       name: "RuntimeSchemaGenerationError",
@@ -54,17 +54,35 @@ describe("runtime schema generation guard", () => {
     }
   });
 
-  it("defines only the final read-model and publication schema", () => {
+  it("defines only the incremental generation and active-projection schema", () => {
     const migration = readFileSync(
       resolve(import.meta.dirname, "../migrations/001_production_admin_web.sql"),
       "utf8"
     ).replace(/\s+/g, " ").toLowerCase();
 
-    expect(migration).toContain("create table focowiki.bundle_file_search_documents");
-    expect(migration).toContain("create table focowiki.release_read_summaries");
-    expect(migration).toContain("worker_jobs_publication_queued_unique_idx");
-    expect(migration).toContain("relation-search-publication-v1");
-    expect(migration).not.toContain("generated_output_reset");
+    for (const table of [
+      "source_revisions",
+      "source_dispatch_markers",
+      "publication_change_facts",
+      "publication_generations",
+      "publication_impacts",
+      "projection_shards",
+      "generation_object_refs",
+      "generation_projection_records",
+      "active_object_refs",
+      "active_projection_records",
+      "publication_progress",
+      "role_jobs",
+      "cleanup_checkpoints"
+    ]) {
+      expect(migration).toContain(`create table focowiki.${table}`);
+    }
+    for (const legacyTable of ["releases", "bundle_files", "worker_jobs", "publication_jobs"]) {
+      expect(migration).not.toContain(`create table focowiki.${legacyTable} `);
+    }
+    expect(migration).toContain("incremental-sharded-publication-v1");
+    expect(migration).not.toContain("generated_bundle_file_id");
+    expect(migration).not.toContain("publication_dirty_at");
   });
 });
 

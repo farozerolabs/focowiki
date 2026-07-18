@@ -10,6 +10,12 @@ import { createS3StorageAdapter } from "./storage/s3.js";
 import { createAdminApiApp, createPublicOpenApiApp } from "./server.js";
 import { connectApiRedis } from "./redis/api-runtime.js";
 import { createRuntimeLogger } from "./logger.js";
+import { createPostgresActiveGenerationReadRepository } from "./infrastructure/postgres/active-generation-read-repository.js";
+import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresSourceDispatchRepository } from "./infrastructure/postgres/source-dispatch-repository.js";
+import { createPostgresSourceFileRetryRepository } from "./infrastructure/postgres/source-file-retry-repository.js";
+import { createPostgresSourceFileTaskDeletionRepository } from "./infrastructure/postgres/source-file-task-deletion-repository.js";
 
 loadLocalEnvFile();
 
@@ -19,11 +25,23 @@ const storage = createS3StorageAdapter(config.storage);
 const sql = createDatabaseClient(config);
 await assertRuntimeSchemaGeneration(sql);
 const repositories = createPostgresAdminRepositories(sql);
+const activeGenerationReads = createPostgresActiveGenerationReadRepository(sql);
+const roleJobs = createPostgresRoleJobRepository(sql);
+const publicationGenerations = createPostgresPublicationGenerationRepository(sql);
+const sourceDispatch = createPostgresSourceDispatchRepository(sql);
+const sourceFileRetries = createPostgresSourceFileRetryRepository(sql);
+const sourceFileTaskDeletions = createPostgresSourceFileTaskDeletionRepository(sql);
 const redis = await connectApiRedis({ config, logger });
 const sharedServices = {
   config,
   storage,
   repositories,
+  activeGenerationReads,
+  roleJobs,
+  publicationGenerations,
+  sourceDispatch,
+  sourceFileRetries,
+  sourceFileTaskDeletions,
   logger,
   ...(redis ? { redis } : {})
 };

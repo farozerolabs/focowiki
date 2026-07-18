@@ -75,9 +75,9 @@ GET /openapi/v2/openapi.json
 4. 确认上传清单。
 5. 上传状态为 `upload_required` 的文件正文。
 6. 完成上传会话。
-7. 查看返回的 `sourceFileId`，直到文件可以读取。
+7. 查看已上传 entry 返回的 `sourceFileId`，直到文件可以读取。
 
-上传会话响应会给出本次上传可使用的限制。大型文件夹应在这些限制内分批发送清单和正文。再次使用已有文件夹路径上传时，会添加新文件，并跳过相对路径相同的已有文件。已有路径需要更新正文时，使用来源文件替换接口。
+上传登记不设置产品级文件数量或字节配额。上传会话响应会提供有界的清单分页大小。每个待上传 Markdown 正文通过服务端分配的 entry ID 单独提交。再次使用已有文件夹路径上传时，会添加新文件，并跳过相对路径相同的已有文件。已有路径需要更新正文时，使用来源文件替换接口。
 
 ### 最小示例
 
@@ -121,10 +121,11 @@ status=$(curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_
   -H "Authorization: Bearer $OPENAPI_KEY")
 UPLOAD_ENTRY_ID=$(printf '%s' "$status" | jq -r '.entries.items[] | select(.disposition == "upload_required") | .id' | head -n 1)
 
-uploaded=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/content" \
+uploaded=$(curl -sS -X PUT "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/entries/$UPLOAD_ENTRY_ID/content" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  -F "$UPLOAD_ENTRY_ID=@$FILE_PATH;type=text/markdown")
-SOURCE_FILE_ID=$(printf '%s' "$uploaded" | jq -r '.entries[0].sourceFileId')
+  -H "Content-Type: text/markdown" \
+  --data-binary "@$FILE_PATH")
+SOURCE_FILE_ID=$(printf '%s' "$uploaded" | jq -r '.entry.sourceFileId')
 
 curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/finalize" \
   -H "Authorization: Bearer $OPENAPI_KEY"
@@ -136,10 +137,13 @@ curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_I
 
 | 字段 | 取值 | 含义 |
 | --- | --- | --- |
-| `processingState` | `queued`、`running`、`completed`、`failed` | 文件处理进度。 |
+| `state` | `queued`、`running`、`pending_publication`、`visible`、`failed` | 后端判定的来源文件生命周期。 |
+| `currentStage` | 从 `upload_storage` 到 `generation_activation` | 当前阶段或终止阶段。 |
+| `failure` | 对象或 `null` | 安全的终态失败详情和重试类型。 |
 | `generatedOutputStatus` | `pending`、`visible`、`unavailable` | 生成文件接口中的可用状态。 |
+| `actions` | 数组 | 当前生命周期允许继续调用的操作。 |
 
-当 `processingState` 为 `completed`，并且 `generatedOutputStatus` 为 `visible` 时，文件已经可以读取。`failed` 文件可以通过事件列表检查原因，再提交重试。
+当 `state` 为 `visible` 时，文件已经可以读取。当 `state` 为 `failed` 时，读取 `failure` 并继续调用 `actions` 中的操作。发布重试作用于知识库发布范围，并保留已经完成的来源文件处理结果。
 
 ```bash
 curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$SOURCE_FILE_ID" \

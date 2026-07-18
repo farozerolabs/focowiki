@@ -16,8 +16,8 @@ export function createSourceFileFilterSignature(filters: SourceFileListFilters):
   const payload = JSON.stringify({
     fileNameQuery: filters.fileNameQuery ?? null,
     fileIdQuery: filters.fileIdQuery ?? null,
-    processingStatus: filters.processingStatus ?? null,
-    processingStage: filters.processingStage ?? null,
+    state: filters.state ?? null,
+    currentStage: filters.currentStage ?? null,
     modelInvocationStatus: filters.modelInvocationStatus ?? null,
     generatedOutputStatus: filters.generatedOutputStatus ?? null,
     startedFrom: filters.startedFrom ?? null,

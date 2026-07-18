@@ -1,4 +1,5 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { createSourceFileLifecycleStatePredicate } from "../../db/source-file-list-predicates.js";
 import type {
   ResourceOperationFailureResult,
   SourceResourceRepository
@@ -9,7 +10,12 @@ import type {
   SourceResourceFileRecord
 } from "../../domain/source-resource.js";
 import { SourceResourceError } from "../../domain/source-resource.js";
+import type {
+  SourceFileFailureStage,
+  SourceFileTerminalFailure
+} from "../../domain/source-file-lifecycle.js";
 import {
+  generatedPagePath,
   normalizeSourceDirectoryPath,
   normalizeSourceRelativePath
 } from "../../domain/source-path.js";
@@ -41,11 +47,15 @@ type SourceFileRow = {
   resource_revision: number;
   content_revision: number;
   active_revision_id: string;
-  processing_status: SourceResourceFileRecord["processingState"];
-  processing_stage: string;
-  processing_error_code: string | null;
+  processing_status: SourceResourceFileRecord["processingStatus"];
+  processing_stage: SourceFileFailureStage;
+  terminal_failure_stage: SourceFileFailureStage | null;
+  terminal_failure_code: string | null;
+  terminal_failure_message: string | null;
+  terminal_failure_at: Date | null;
+  terminal_failure_retry_kind: SourceFileTerminalFailure["retryKind"] | null;
+  terminal_failure_correlation_id: string | null;
   generated_output_status: SourceResourceFileRecord["generatedOutputStatus"];
-  generated_bundle_file_path: string | null;
   deletion_intent_id: string | null;
   created_at: Date;
 };
@@ -90,7 +100,7 @@ export function createPostgresSourceResourceRepository(
         id: string;
         name: string;
         description: string | null;
-        active_release_id: string | null;
+        active_generation_id: string | null;
         resource_revision: number;
         catalog_generation: number | string;
         created_at: Date;
@@ -108,7 +118,7 @@ export function createPostgresSourceResourceRepository(
         WHERE id = ${input.knowledgeBaseId}
           AND resource_revision = ${input.expectedResourceRevision}
           AND deleted_at IS NULL
-        RETURNING id, name, description, active_release_id, resource_revision,
+        RETURNING id, name, description, active_generation_id, resource_revision,
                   catalog_generation, created_at, updated_at
       `;
       const row = rows[0];
@@ -117,7 +127,7 @@ export function createPostgresSourceResourceRepository(
             id: row.id,
             name: row.name,
             description: row.description,
-            activeReleaseId: row.active_release_id,
+            activeGenerationId: row.active_generation_id,
             resourceRevision: row.resource_revision,
             catalogGeneration: Number(row.catalog_generation),
             createdAt: row.created_at.toISOString(),
@@ -223,11 +233,13 @@ export function createPostgresSourceResourceRepository(
       const sourceFileIdPredicate = input.filters.sourceFileIdPrefix
         ? sql`AND source.id LIKE ${prefixLike(input.filters.sourceFileIdPrefix)} ESCAPE ${"\\"}`
         : sql``;
-      const processingStatePredicate = input.filters.processingState
-        ? sql`AND source.processing_status = ${input.filters.processingState}`
-        : sql``;
+      const lifecycleStatePredicate = createSourceFileLifecycleStatePredicate(
+        sql,
+        input.filters.state
+      );
       const currentStagePredicate = input.filters.currentStage
-        ? sql`AND source.processing_stage = ${input.filters.currentStage}`
+        ? sql`AND COALESCE(source.terminal_failure_stage, source.processing_stage)
+            = ${input.filters.currentStage}`
         : sql``;
       const generatedOutputPredicate = input.filters.generatedOutputStatus
         ? sql`AND source.generated_output_status = ${input.filters.generatedOutputStatus}`
@@ -237,8 +249,11 @@ export function createPostgresSourceResourceRepository(
                source.relative_path, source.content_type, source.size_bytes,
                source.checksum_sha256, source.resource_revision, source.content_revision,
                source.active_revision_id, source.processing_status, source.processing_stage,
-               source.processing_error_code, source.generated_output_status,
-               source.generated_bundle_file_path, source.deletion_intent_id, source.created_at
+               source.terminal_failure_stage, source.terminal_failure_code,
+               source.terminal_failure_message, source.terminal_failure_at,
+               source.terminal_failure_retry_kind, source.terminal_failure_correlation_id,
+               source.generated_output_status,
+               source.deletion_intent_id, source.created_at
         FROM focowiki.source_files source
         WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
           AND source.deleted_at IS NULL
@@ -246,7 +261,7 @@ export function createPostgresSourceResourceRepository(
           ${directoryPredicate}
           ${pathPredicate}
           ${sourceFileIdPredicate}
-          ${processingStatePredicate}
+          ${lifecycleStatePredicate}
           ${currentStagePredicate}
           ${generatedOutputPredicate}
           AND (${input.cursor}::text IS NULL OR source.id > ${input.cursor})
@@ -262,8 +277,11 @@ export function createPostgresSourceResourceRepository(
                source.relative_path, source.content_type, source.size_bytes,
                source.checksum_sha256, source.resource_revision, source.content_revision,
                source.active_revision_id, source.processing_status, source.processing_stage,
-               source.processing_error_code, source.generated_output_status,
-               source.generated_bundle_file_path, source.deletion_intent_id, source.created_at
+               source.terminal_failure_stage, source.terminal_failure_code,
+               source.terminal_failure_message, source.terminal_failure_at,
+               source.terminal_failure_retry_kind, source.terminal_failure_correlation_id,
+               source.generated_output_status,
+               source.deletion_intent_id, source.created_at
         FROM focowiki.source_files source
         WHERE source.id = ${input.sourceFileId}
           AND source.knowledge_base_id = ${input.knowledgeBaseId}
@@ -437,6 +455,78 @@ export function createPostgresSourceResourceRepository(
       }
     },
 
+    async listPendingOperationSourceMutations(input) {
+      const limit = Math.min(Math.max(Math.floor(input.limit), 1), 1_000);
+      const rows = input.deletionIntentId
+        ? await sql<Array<{
+            source_file_id: string;
+            source_revision_id: string;
+            previous_path: string;
+            path: string | null;
+            resource_revision: number;
+          }>>`
+            SELECT source.id AS source_file_id,
+                   source.active_revision_id AS source_revision_id,
+                   source.relative_path AS previous_path,
+                   NULL::text AS path,
+                   source.resource_revision
+            FROM focowiki.source_files source
+            WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+              AND source.deletion_intent_id = ${input.deletionIntentId}
+              AND source.active_revision_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM focowiki.publication_change_facts fact
+                WHERE fact.knowledge_base_id = source.knowledge_base_id
+                  AND fact.source_file_id = source.id
+                  AND fact.deletion_intent_id = ${input.deletionIntentId}
+                  AND fact.kind = 'source_deleted'
+              )
+            ORDER BY source.path_key COLLATE "C", source.id
+            LIMIT ${limit + 1}
+          `
+        : await sql<Array<{
+            source_file_id: string;
+            source_revision_id: string;
+            previous_path: string;
+            path: string | null;
+            resource_revision: number;
+          }>>`
+            SELECT source.id AS source_file_id,
+                   source.active_revision_id AS source_revision_id,
+                   source.relative_path AS previous_path,
+                   source.candidate_relative_path AS path,
+                   source.resource_revision + 1 AS resource_revision
+            FROM focowiki.source_files source
+            WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+              AND source.candidate_operation_id = ${input.operationId}
+              AND source.active_revision_id IS NOT NULL
+              AND source.deleted_at IS NULL
+              AND source.candidate_relative_path IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM focowiki.publication_change_facts fact
+                WHERE fact.knowledge_base_id = source.knowledge_base_id
+                  AND fact.source_file_id = source.id
+                  AND fact.operation_id = ${input.operationId}
+                  AND fact.kind = 'source_moved'
+              )
+            ORDER BY source.path_key COLLATE "C", source.id
+            LIMIT ${limit + 1}
+          `;
+      return {
+        items: rows.slice(0, limit).map((row) => ({
+          sourceFileId: row.source_file_id,
+          sourceRevisionId: row.source_revision_id,
+          kind: input.deletionIntentId ? "source_deleted" as const : "source_moved" as const,
+          previousPath: row.previous_path,
+          path: row.path,
+          resourceRevision: row.resource_revision
+        })),
+        hasMore: rows.length > limit
+      };
+    },
+
     async failOperation(input) {
       return sql.begin((transaction) => failCandidateOperation(transaction, input));
     },
@@ -568,22 +658,32 @@ export function createPostgresSourceResourceRepository(
           directory_count: number;
           file_count: number;
         }>>`
-          SELECT
-            1 AS directory_count,
-            COALESCE(tree.descendant_file_count, 0)::int AS file_count
-          FROM (SELECT 1) seed
-          LEFT JOIN focowiki.knowledge_bases knowledge_base
-            ON knowledge_base.id = ${input.knowledgeBaseId}
-          LEFT JOIN focowiki.knowledge_file_tree_nodes tree
-            ON tree.release_id = knowledge_base.active_release_id
-           AND tree.source_directory_id = ${input.directoryId}
-           AND tree.node_type = 'directory'
-          LIMIT 1
+          WITH RECURSIVE descendants AS (
+            SELECT id FROM focowiki.source_directories
+            WHERE id = ${input.directoryId} AND knowledge_base_id = ${input.knowledgeBaseId}
+            UNION ALL
+            SELECT child.id
+            FROM descendants parent
+            JOIN focowiki.source_directories child ON child.parent_id = parent.id
+            WHERE child.knowledge_base_id = ${input.knowledgeBaseId}
+              AND child.deleted_at IS NULL
+          )
+          SELECT count(DISTINCT descendants.id)::int AS directory_count,
+                 count(source.id)::int AS file_count
+          FROM descendants
+          LEFT JOIN focowiki.source_files source
+            ON source.directory_id = descendants.id
+           AND source.knowledge_base_id = ${input.knowledgeBaseId}
+           AND source.deleted_at IS NULL
+           AND source.task_deleted_at IS NULL
         `;
         const counts = affected[0] ?? { directory_count: 0, file_count: 0 };
         const result = {
           deletionIntentId: input.deletionIntentId,
           effectiveDirectoryId: input.directoryId,
+          activeRelativePath: target.relative_path,
+          candidateRelativePath: null,
+          candidateResourceRevision: target.resource_revision + 1,
           affectedDirectoryCount: counts.directory_count,
           affectedFileCount: counts.file_count
         };
@@ -636,7 +736,8 @@ export function createPostgresSourceResourceRepository(
             operation: mapOperation(replay),
             replayed: true,
             deletionIntentId: readString(result.deletionIntentId) ?? "",
-            sourceFileId: readString(result.sourceFileId) ?? input.sourceFileId
+            sourceFileId: readString(result.sourceFileId) ?? input.sourceFileId,
+            sourceMutation: readPendingSourceMutation(result)
           };
         }
         const sources = await transaction<Array<{
@@ -645,10 +746,13 @@ export function createPostgresSourceResourceRepository(
           resource_revision: number;
           deletion_intent_id: string | null;
           candidate_operation_id: string | null;
+          relative_path: string;
+          active_revision_id: string | null;
           deleted_at: Date | null;
         }>>`
           SELECT source.id, source.path_key, source.resource_revision,
-                 source.deletion_intent_id, source.candidate_operation_id, source.deleted_at
+                 source.deletion_intent_id, source.candidate_operation_id,
+                 source.relative_path, source.active_revision_id, source.deleted_at
           FROM focowiki.source_files source
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.id = source.knowledge_base_id
@@ -670,7 +774,10 @@ export function createPostgresSourceResourceRepository(
             operation: mapOperation(effectiveDeletion.operation),
             replayed: true,
             deletionIntentId: effectiveDeletion.deletionIntentId,
-            sourceFileId: source.id
+            sourceFileId: source.id,
+            sourceMutation: readPendingSourceMutation(
+              requireRecord(effectiveDeletion.operation.result_json)
+            )
           };
         }
         if (source.deleted_at) throw new SourceResourceError("RESOURCE_NOT_FOUND");
@@ -684,7 +791,17 @@ export function createPostgresSourceResourceRepository(
         const result = {
           deletionIntentId: input.deletionIntentId,
           sourceFileId: source.id,
-          affectedFileCount: 1
+          affectedFileCount: 1,
+          sourceMutation: source.active_revision_id
+            ? {
+                sourceFileId: source.id,
+                sourceRevisionId: source.active_revision_id,
+                kind: "source_deleted" as const,
+                previousPath: source.relative_path,
+                path: null,
+                resourceRevision: source.resource_revision
+              }
+            : null
         };
         await insertDeletionIntentAndOperation(transaction, {
           operationId: input.operationId,
@@ -704,11 +821,6 @@ export function createPostgresSourceResourceRepository(
           SET deletion_intent_id = ${input.deletionIntentId}, deleted_at = ${input.deletedAt}
           WHERE id = ${source.id} AND deleted_at IS NULL
         `;
-        await markSurvivingGraphNeighborsPublicationDirty(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          deletionIntentId: input.deletionIntentId,
-          dirtyAt: input.deletedAt
-        });
         await transaction`
           DELETE FROM focowiki.source_path_reservations reservation
           USING focowiki.upload_session_entries entry
@@ -729,7 +841,8 @@ export function createPostgresSourceResourceRepository(
           operation: mapOperation(operation),
           replayed: false,
           deletionIntentId: input.deletionIntentId,
-          sourceFileId: source.id
+          sourceFileId: source.id,
+          sourceMutation: result.sourceMutation
         };
       });
     },
@@ -766,16 +879,11 @@ export function createPostgresSourceResourceRepository(
           throw new SourceResourceError("RESOURCE_REVISION_CONFLICT");
         }
         const counts = await transaction<Array<{ file_count: number }>>`
-          SELECT COALESCE(root.descendant_file_count, 0)::int AS file_count
-          FROM (SELECT 1) seed
-          LEFT JOIN focowiki.knowledge_file_tree_nodes root
-            ON root.release_id = (
-              SELECT active_release_id FROM focowiki.knowledge_bases
-              WHERE id = ${input.knowledgeBaseId}
-            )
-           AND root.parent_id IS NULL
-           AND root.node_type = 'directory'
-          LIMIT 1
+          SELECT count(*)::int AS file_count
+          FROM focowiki.source_files
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND deleted_at IS NULL
+            AND task_deleted_at IS NULL
         `;
         const generation = Number(knowledgeBase.catalog_generation) + 1;
         const result = {
@@ -1085,7 +1193,7 @@ async function prepareSourceFileOperation(
     active_revision_id: string;
     candidate_operation_id: string | null;
     deletion_intent_id: string | null;
-    processing_status: SourceResourceFileRecord["processingState"];
+    processing_status: SourceResourceFileRecord["processingStatus"];
   }>>`
     SELECT id, knowledge_base_id, name, relative_path, path_key, directory_id,
            resource_revision, content_revision, object_key, content_type, size_bytes,
@@ -1200,11 +1308,14 @@ async function prepareSourceFileOperation(
         processing_stage = CASE WHEN ${replacement} THEN 'upload_storage' ELSE processing_stage END,
         processing_started_at = CASE WHEN ${replacement} THEN NULL ELSE processing_started_at END,
         processing_ended_at = CASE WHEN ${replacement} THEN NULL ELSE processing_ended_at END,
-        processing_error_code = CASE WHEN ${replacement} THEN NULL ELSE processing_error_code END,
-        processing_error_message = CASE WHEN ${replacement} THEN NULL ELSE processing_error_message END,
-        publication_dirty_at = CASE WHEN ${replacement} THEN publication_dirty_at ELSE ${input.now} END,
-        publication_error_code = NULL,
-        publication_error_message = NULL
+        terminal_failure_stage = CASE WHEN ${replacement} THEN NULL ELSE terminal_failure_stage END,
+        terminal_failure_code = CASE WHEN ${replacement} THEN NULL ELSE terminal_failure_code END,
+        terminal_failure_message = CASE WHEN ${replacement} THEN NULL ELSE terminal_failure_message END,
+        terminal_failure_at = CASE WHEN ${replacement} THEN NULL ELSE terminal_failure_at END,
+        terminal_failure_retry_kind = CASE WHEN ${replacement}
+          THEN NULL ELSE terminal_failure_retry_kind END,
+        terminal_failure_correlation_id = CASE WHEN ${replacement}
+          THEN NULL ELSE terminal_failure_correlation_id END
     WHERE id = ${source.id}
       AND candidate_operation_id IS NULL
       AND deleted_at IS NULL
@@ -1216,6 +1327,7 @@ async function prepareSourceFileOperation(
     SET state = ${state},
         result_json = ${transaction.json({
           sourceFileId: source.id,
+          sourceRevisionId: revisionId ?? source.active_revision_id,
           activeRelativePath: source.relative_path,
           candidateRelativePath: targetPath.relativePath,
           candidateResourceRevision: source.resource_revision + 1,
@@ -1462,10 +1574,7 @@ async function prepareSourceDirectoryMove(
         candidate_path_key = ${target.pathKey} || substring(source.path_key from char_length(${directory.path_key}) + 1),
         candidate_directory_id = source.directory_id,
         candidate_metadata_json = source.metadata_json,
-        candidate_model_suggestions_json = source.model_suggestions_json,
-        publication_dirty_at = ${input.now},
-        publication_error_code = NULL,
-        publication_error_message = NULL
+        candidate_model_suggestions_json = source.model_suggestions_json
     WHERE source.knowledge_base_id = ${directory.knowledge_base_id}
       AND source.deleted_at IS NULL
       AND source.directory_id IN (
@@ -1849,13 +1958,6 @@ async function prepareSourceDirectoryDeletionBatch(
         knowledgeBaseId: directory.knowledge_base_id,
         deletionIntentId: intent.id
       });
-  if (!remaining) {
-    await markSurvivingGraphNeighborsPublicationDirty(transaction, {
-      knowledgeBaseId: directory.knowledge_base_id,
-      deletionIntentId: intent.id,
-      dirtyAt: input.now
-    });
-  }
   const result = requireRecord(input.operation.result_json);
   const nextResult = {
     ...result,
@@ -1891,64 +1993,6 @@ async function prepareSourceDirectoryDeletionBatch(
       ? null
       : { deletionIntentId: intent.id, directoryId: input.directoryId }
   };
-}
-
-async function markSurvivingGraphNeighborsPublicationDirty(
-  transaction: import("postgres").TransactionSql,
-  input: {
-    knowledgeBaseId: string;
-    deletionIntentId: string;
-    dirtyAt: string;
-  }
-): Promise<void> {
-  await transaction`
-    WITH deleted_sources AS MATERIALIZED (
-      SELECT id
-      FROM focowiki.source_files
-      WHERE knowledge_base_id = ${input.knowledgeBaseId}
-        AND deletion_intent_id = ${input.deletionIntentId}
-    ),
-    graph_neighbors AS MATERIALIZED (
-      SELECT edge.to_source_file_id AS source_file_id
-      FROM focowiki.source_file_graph_edges edge
-      JOIN deleted_sources deleted ON deleted.id = edge.from_source_file_id
-      WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-        AND edge.status = 'accepted'
-      UNION
-      SELECT edge.from_source_file_id AS source_file_id
-      FROM focowiki.source_file_graph_edges edge
-      JOIN deleted_sources deleted ON deleted.id = edge.to_source_file_id
-      WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-        AND edge.status = 'accepted'
-    )
-    UPDATE focowiki.source_files source
-    SET generated_output_status = CASE
-          WHEN source.generated_output_status = 'visible'
-            AND source.generated_bundle_file_path IS NOT NULL
-            THEN 'visible'
-          ELSE 'pending'
-        END,
-        generated_bundle_file_id = CASE
-          WHEN source.generated_output_status = 'visible'
-            AND source.generated_bundle_file_path IS NOT NULL
-            THEN source.generated_bundle_file_id
-          ELSE NULL
-        END,
-        generated_bundle_file_path = CASE
-          WHEN source.generated_output_status = 'visible'
-            AND source.generated_bundle_file_path IS NOT NULL
-            THEN source.generated_bundle_file_path
-          ELSE NULL
-        END,
-        publication_dirty_at = ${input.dirtyAt},
-        publication_error_code = NULL,
-        publication_error_message = NULL
-    FROM graph_neighbors neighbor
-    WHERE source.id = neighbor.source_file_id
-      AND source.knowledge_base_id = ${input.knowledgeBaseId}
-      AND source.deleted_at IS NULL
-      AND source.deletion_intent_id IS NULL
-  `;
 }
 
 async function supersedeCandidateOperationsForDeletion(
@@ -2083,9 +2127,43 @@ async function countDirectoryDeletionRows(
 }
 
 function operationPreparationResult(operation: OperationRow, sourceFileId: string | null) {
+  const result = isRecord(operation.result_json) ? operation.result_json : {};
+  const sourceRevisionId = readString(result.sourceRevisionId);
+  const previousPath = readString(result.activeRelativePath);
+  const path = readString(result.candidateRelativePath);
+  const resourceRevision = readNumber(result.candidateResourceRevision);
   return {
     operation: mapOperation(operation),
     sourceFileId,
+    sourceMutation:
+      sourceFileId && sourceRevisionId && previousPath && path && resourceRevision > 0
+        ? {
+            sourceFileId,
+            sourceRevisionId,
+            kind: operation.operation_kind === "source_file_replace"
+              ? "source_replaced" as const
+              : "source_moved" as const,
+            previousPath,
+            path,
+            resourceRevision
+          }
+        : null,
+    directoryMutation:
+      !sourceFileId
+      && previousPath
+      && resourceRevision > 0
+      && (operation.operation_kind === "source_directory_move"
+        || operation.operation_kind === "source_directory_delete")
+        ? {
+            kind: operation.operation_kind === "source_directory_move"
+              ? "directory_moved" as const
+              : "directory_deleted" as const,
+            previousPath,
+            path,
+            resourceRevision,
+            deletionIntentId: readString(result.deletionIntentId)
+          }
+        : null,
     requiresSourceProcessing:
       operation.operation_kind === "source_file_replace" && operation.state === "processing",
     requiresPublication: operation.state === "publishing",
@@ -2105,6 +2183,26 @@ function readRequiredString(value: unknown, fallback?: string): string {
     throw new SourceResourceError("INVALID_RESOURCE_MUTATION");
   }
   return candidate.trim();
+}
+
+function readPendingSourceMutation(value: Record<string, unknown>) {
+  const candidate = value.sourceMutation;
+  if (!isRecord(candidate)) return null;
+  const sourceFileId = readString(candidate.sourceFileId);
+  const sourceRevisionId = readString(candidate.sourceRevisionId);
+  const previousPath = readString(candidate.previousPath);
+  const resourceRevision = readNumber(candidate.resourceRevision);
+  if (!sourceFileId || !sourceRevisionId || !previousPath || resourceRevision < 1) {
+    return null;
+  }
+  return {
+    sourceFileId,
+    sourceRevisionId,
+    kind: "source_deleted" as const,
+    previousPath,
+    path: null,
+    resourceRevision
+  };
 }
 
 function readNonNegativeInteger(value: unknown): number {
@@ -2168,13 +2266,34 @@ function mapSourceFile(row: SourceFileRow): SourceResourceFileRecord {
     resourceRevision: row.resource_revision,
     contentRevision: row.content_revision,
     activeRevisionId: row.active_revision_id,
-    processingState: row.processing_status,
+    processingStatus: row.processing_status,
     currentStage: row.processing_stage,
-    processingErrorCode: row.processing_error_code,
+    terminalFailure: mapTerminalFailure(row),
     generatedOutputStatus: row.generated_output_status,
-    generatedPath: row.generated_bundle_file_path,
+    generatedPath: generatedPagePath(row.relative_path),
     deleting: Boolean(row.deletion_intent_id),
     createdAt: row.created_at.toISOString()
+  };
+}
+
+function mapTerminalFailure(row: SourceFileRow): SourceFileTerminalFailure | null {
+  if (!row.terminal_failure_code) return null;
+  if (
+    !row.terminal_failure_stage
+    || !row.terminal_failure_message
+    || !row.terminal_failure_at
+    || !row.terminal_failure_retry_kind
+    || !row.terminal_failure_correlation_id
+  ) {
+    throw new Error("Source file terminal failure record is incomplete");
+  }
+  return {
+    stage: row.terminal_failure_stage,
+    code: row.terminal_failure_code,
+    message: row.terminal_failure_message,
+    occurredAt: row.terminal_failure_at.toISOString(),
+    retryKind: row.terminal_failure_retry_kind,
+    correlationId: row.terminal_failure_correlation_id
   };
 }
 

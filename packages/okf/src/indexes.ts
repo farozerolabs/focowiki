@@ -5,6 +5,10 @@ import {
   type IndexMetadataFields
 } from "./index-metadata.js";
 import { normalizeGeneratedLogicalPath } from "./source-path.js";
+import {
+  canonicalizeGeneratedTextIdentity,
+  decodeMarkdownIdentityLabel
+} from "./text-identity.js";
 
 export type BundleFileForIndex = {
   path: string;
@@ -68,7 +72,7 @@ export type MarkdownLinkIndexEntry = {
   label: string;
 };
 
-const MARKDOWN_LINK_PATTERN = /(?<!!)\[([^\]\n]+)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/gu;
+const MARKDOWN_LINK_PATTERN = /(?<!!)\[((?:\\.|[^\]\n])+)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/gu;
 const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
 
 export function buildManifestIndex(
@@ -104,7 +108,10 @@ export function buildSearchIndex(
     items: sources
       .map((source) => {
         const metadata = buildIndexMetadataFields(source.metadata ?? {});
-        const title = metadata.title ?? source.title;
+        const title = canonicalizeGeneratedTextIdentity(
+          metadata.title ?? source.title,
+          "search title"
+        );
         const description = metadata.description ?? source.description;
         const tags = metadata.tags ?? source.tags;
         const keywordInput = {
@@ -166,11 +173,15 @@ export function extractMarkdownLinkEntries(file: BundleFileForIndex): MarkdownLi
 
     const searchable = removeInlineCode(line);
     for (const match of searchable.matchAll(MARKDOWN_LINK_PATTERN)) {
-      const label = (match[1] ?? "").trim();
+      const rawLabel = match[1] ?? "";
       const target = match[2] ?? match[3] ?? "";
       const normalized = normalizeLinkTarget(file.path, target);
-      if (label && normalized) {
-        links.push({ from: file.path, to: normalized, label });
+      if (rawLabel && normalized) {
+        links.push({
+          from: file.path,
+          to: normalized,
+          label: decodeMarkdownIdentityLabel(rawLabel)
+        });
       }
     }
   }

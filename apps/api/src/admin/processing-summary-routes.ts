@@ -1,22 +1,28 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { AdminRepositories } from "../db/admin-repositories.js";
+import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
+import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
+import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
 
 export function registerAdminProcessingSummaryRoutes(
   app: Hono,
   services: {
     repositories: AdminRepositories | null;
+    roleJobs: RoleJobRepository | null;
+    publicationGenerations: PublicationGenerationRepository | null;
+    sourceDispatch: SourceDispatchRepository | null;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
   }
 ): void {
-  const { repositories } = services;
+  const { repositories, roleJobs, publicationGenerations, sourceDispatch } = services;
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/processing-summary",
     middlewares.requireAuth,
     async (context) => {
-      if (!repositories?.files?.countDirtySourceFiles || !repositories.workerJobs) {
+      if (!repositories || !roleJobs || !publicationGenerations || !sourceDispatch) {
         return missingRepositoryBackend(context);
       }
 
@@ -29,26 +35,34 @@ export function registerAdminProcessingSummaryRoutes(
       }
 
       const now = new Date().toISOString();
-      const [sourceFileJobs, publicationJobs, dirtySourceFiles] = await Promise.all([
-        repositories.workerJobs.getWorkerQueueSummary({
-          kinds: ["source_file_processing"],
+      const [sourceFileJobs, publicationJobs, pendingDispatch, publicationProgress] = await Promise.all([
+        roleJobs.getQueueSummary({
+          role: "source",
           knowledgeBaseId: knowledgeBase.id,
           now
         }),
-        repositories.workerJobs.getWorkerQueueSummary({
-          kinds: ["publication"],
+        roleJobs.getQueueSummary({
+          role: "publication",
           knowledgeBaseId: knowledgeBase.id,
           now
         }),
-        repositories.files.countDirtySourceFiles({
-          knowledgeBaseId: knowledgeBase.id
-        })
+        sourceDispatch.getSummary({ knowledgeBaseId: knowledgeBase.id }),
+        publicationGenerations.getProgressSummary({ knowledgeBaseId: knowledgeBase.id })
       ]);
 
       return context.json({
+        activeGenerationId: knowledgeBase.activeGenerationId,
+        pendingDispatch,
         sourceFileJobs,
         publicationJobs,
-        dirtySourceFiles
+        publicationProgress,
+        dirtySourceFiles: {
+          count: Math.max(
+            0,
+            publicationProgress.totalImpactCount - publicationProgress.processedImpactCount
+          ),
+          oldestDirtyAt: publicationProgress.oldestDirtyAt
+        }
       });
     }
   );

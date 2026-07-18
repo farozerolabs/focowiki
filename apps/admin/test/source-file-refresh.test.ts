@@ -11,6 +11,10 @@ function sourceFile(input: Partial<SourceFileRecord> & Pick<SourceFileRecord, "i
   return {
     name: `${input.id}.md`,
     relativePath: `${input.id}.md`,
+    state: "queued",
+    currentStage: "upload_storage",
+    failure: null,
+    actions: [],
     createdAt: "2026-06-14T00:00:00.000Z",
     ...input
   };
@@ -21,16 +25,20 @@ describe("source file refresh decisions", () => {
     const previous = rememberSourceFileRefreshSnapshots([
       sourceFile({
         id: "source-001",
-        processingStatus: "running",
-        processingStage: "metadata_resolution",
+        state: "running",
+        currentStage: "metadata_resolution",
+        failure: null,
+        actions: [],
         generatedFileAvailable: false,
         generatedFileId: null,
         generatedFilePath: null
       }),
       sourceFile({
         id: "source-002",
-        processingStatus: "running",
-        processingStage: "llm_suggestion",
+        state: "running",
+        currentStage: "llm_suggestion",
+        failure: null,
+        actions: [],
         generatedFileAvailable: false,
         generatedFileId: null,
         generatedFilePath: null
@@ -41,16 +49,20 @@ describe("source file refresh decisions", () => {
       shouldRefreshGeneratedFiles(previous, [
         sourceFile({
           id: "source-001",
-          processingStatus: "completed",
-          processingStage: "release_activation",
+          state: "visible",
+          currentStage: "generation_activation",
+          failure: null,
+          actions: [],
           generatedFileAvailable: true,
           generatedFileId: "bundle-001",
           generatedFilePath: "pages/intro.md"
         }),
         sourceFile({
           id: "source-002",
-          processingStatus: "running",
-          processingStage: "llm_suggestion",
+          state: "running",
+          currentStage: "llm_suggestion",
+          failure: null,
+          actions: [],
           generatedFileAvailable: false,
           generatedFileId: null,
           generatedFilePath: null
@@ -63,8 +75,10 @@ describe("source file refresh decisions", () => {
     const previous = rememberSourceFileRefreshSnapshots([
       sourceFile({
         id: "source-001",
-        processingStatus: "completed",
-        processingStage: "release_activation",
+        state: "visible",
+        currentStage: "generation_activation",
+        failure: null,
+        actions: [],
         generatedFileAvailable: true,
         generatedFileId: "bundle-001",
         generatedFilePath: "pages/intro.md"
@@ -82,7 +96,10 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            processingStatus: "running",
+            state: "running",
+            currentStage: "metadata_resolution",
+            failure: null,
+            actions: [],
             generatedOutputStatus: "pending"
           })
         ]
@@ -96,7 +113,10 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            processingStatus: "completed",
+            state: "visible",
+            currentStage: "generation_activation",
+            failure: null,
+            actions: [],
             generatedOutputStatus: "visible"
           })
         ]
@@ -110,7 +130,10 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            processingStatus: "running",
+            state: "running",
+            currentStage: "metadata_resolution",
+            failure: null,
+            actions: [],
             generatedOutputStatus: "pending"
           })
         ]
@@ -124,7 +147,10 @@ describe("source file refresh decisions", () => {
         sourceFiles: [
           sourceFile({
             id: "source-001",
-            processingStatus: "running",
+            state: "running",
+            currentStage: "metadata_resolution",
+            failure: null,
+            actions: [],
             generatedOutputStatus: "pending"
           })
         ]

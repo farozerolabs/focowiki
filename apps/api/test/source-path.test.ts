@@ -73,6 +73,14 @@ describe("source path policy", () => {
     expect(left.pathKey).not.toBe(right.pathKey);
   });
 
+  it.each([
+    "reports/100%_coverage.md",
+    "reports/discount%notes.md",
+    "reports/%ba-reference.md"
+  ])("preserves literal percent characters in source path %s", (input) => {
+    expect(normalizeSourceRelativePath(input).relativePath).toBe(input);
+  });
+
   it("maps source paths to canonical generated paths", () => {
     expect(generatedPagePath("manual/setup.md")).toBe("pages/manual/setup.md");
   });

@@ -2,125 +2,72 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const repositoryPath = resolve(import.meta.dirname, "../src/db/admin-repositories.ts");
-const developerServicePath = resolve(import.meta.dirname, "../src/developer-openapi/services.ts");
-const developerRoutesPath = resolve(import.meta.dirname, "../src/developer-openapi/routes.ts");
+const repositoryPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/active-generation-read-repository.ts"
+);
+const treeReadModelPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/active-tree-read-model.ts"
+);
+const routesPath = resolve(import.meta.dirname, "../src/developer-openapi/routes.ts");
+const projectionWriterPath = resolve(
+  import.meta.dirname,
+  "../src/publication/required-projection-writer.ts"
+);
 
-function readNormalized(path: string): string {
+function normalized(path: string): string {
   return readFileSync(path, "utf8").replace(/\s+/g, " ").toLowerCase();
 }
 
-describe("tree and generated-content repository contract", () => {
-  it("lists tree children from the knowledge file tree with keyset pagination and optional node type filters", () => {
-    const repository = readNormalized(repositoryPath);
-    const section = repository.slice(
-      repository.indexOf("async listbundletreeentries"),
-      repository.indexOf("async getbundlefile")
-    );
-
-    expect(section).toContain("entry.knowledge_base_id = ${knowledgebaseid}");
-    expect(section).toContain("from focowiki.knowledge_file_tree_nodes entry");
-    expect(section).toContain("left join focowiki.bundle_files file");
-    expect(section).toContain("entry.node_type = ${entrytype}");
-    expect(section).toContain("entry.sort_key > ${cursorvalue.sortkey}");
-    expect(section).toContain("order by entry.sort_key asc, entry.id asc");
-    expect(section).toContain("limit ${limit + 1}");
-    expect(section).toContain("entry.release_id = ${releaseid}");
-    expect(section).toContain("parent.path = ${parentpath}");
-    expect(section).not.toContain(" offset ");
+describe("active tree and generated-content repository contract", () => {
+  it("resolves one active generation inside a repeatable-read request scope", () => {
+    const repository = normalized(repositoryPath);
+    expect(repository).toContain("isolation level repeatable read read only");
+    expect(repository).toContain("select active_generation_id");
+    expect(repository).toContain("return reader(createscope(transaction, knowledgebaseid, generationid))");
   });
 
-  it("searches tree entries with keyset pagination, optional node type filters, and ancestor lookup", () => {
-    const repository = readNormalized(repositoryPath);
-    const section = repository.slice(
-      repository.indexOf("async searchbundletreeentries"),
-      repository.indexOf("async getbundlefile")
-    );
-
-    expect(section).toContain("from focowiki.knowledge_file_tree_nodes entry");
-    expect(section).toContain("entry.knowledge_base_id = ${knowledgebaseid}");
-    expect(section).toContain("entry.node_type = ${entrytype}");
-    expect(section).toContain("lower(entry.name || ' ' || entry.path)");
-    expect(section).toContain("like ${searchpattern}");
-    expect(section).toContain("entry.sort_key > ${cursorvalue.sortkey}");
-    expect(section).toContain("order by entry.sort_key asc, entry.id asc");
-    expect(section).toContain("limit ${limit + 1}");
-    expect(section).toContain("entry.path = any(${ancestorpaths})");
-    expect(section).not.toContain(" offset ");
+  it("lists and searches active tree projections with keyset pagination", () => {
+    const treeReadModel = normalized(treeReadModelPath);
+    expect(treeReadModel).toContain("projection_kind = 'tree'");
+    expect(treeReadModel).toContain("coalesce(parent_path, '') = ${input.parentpath}");
+    expect(treeReadModel).toContain("(coalesce(sort_key, ''), record_id) >");
+    expect(treeReadModel).toContain("order by coalesce(sort_key, ''), record_id");
+    expect(treeReadModel).toContain("limit ${input.limit + 1}");
+    expect(treeReadModel).toContain("logical_path in ${sql(ancestorpaths)}");
+    expect(treeReadModel).toContain("from focowiki.active_object_refs");
+    expect(treeReadModel).not.toContain(" offset ");
   });
 
-  it("looks up generated content by active release path or generated file ID", () => {
-    const repository = readNormalized(repositoryPath);
-    const logicalPathSection = repository.slice(
-      repository.indexOf("async getbundlefile"),
-      repository.indexOf("async getbundlefilebyid")
-    );
-    const idSection = repository.slice(
-      repository.indexOf("async getbundlefilebyid"),
-      repository.indexOf("async getsourcefile")
-    );
-
-    expect(logicalPathSection).toContain("from focowiki.bundle_files file");
-    expect(logicalPathSection).toContain("file.knowledge_base_id = ${knowledgebaseid}");
-    expect(logicalPathSection).toContain("file.release_id = ${releaseid}");
-    expect(logicalPathSection).toContain("file.logical_path = ${logicalpath}");
-    expect(logicalPathSection).toContain("limit 1");
-    expect(logicalPathSection).not.toContain("join focowiki.release_source_files");
-    expect(logicalPathSection).not.toContain("publication_required = true");
-    expect(idSection).toContain("from focowiki.bundle_files file");
-    expect(idSection).toContain("file.knowledge_base_id = ${knowledgebaseid}");
-    expect(idSection).toContain("file.release_id = ${releaseid}");
-    expect(idSection).toContain("file.id = ${fileid}");
-    expect(idSection).toContain("limit 1");
+  it("looks up generated files directly by active file ID or logical path", () => {
+    const repository = normalized(repositoryPath);
+    expect(repository).toContain("active.file_id = ${input.fileid}");
+    expect(repository).toContain("active.logical_path = ${input.path}");
+    expect(repository).toContain("from focowiki.active_object_refs active");
+    expect(repository).toContain("join focowiki.immutable_objects object");
+    expect(repository).not.toContain("bundle_files");
   });
 
-  it("does not fall back to paginated bundle scans for generated file ID content reads", () => {
-    const service = readNormalized(developerServicePath);
-    const section = service.slice(
-      service.indexOf("async function resolvebundlefilebyid"),
-      service.indexOf("async function expandgraphfromfile")
-    );
-
-    expect(section).toContain("getbundlefilebyid");
-    expect(section).not.toContain("listbundlefiles");
-    expect(section).not.toContain("findbundlefilebyid");
-  });
-
-  it("builds the immutable Developer OpenAPI document once during route registration", () => {
-    const routes = readNormalized(developerRoutesPath);
+  it("builds the immutable Developer OpenAPI document once during registration", () => {
+    const routes = normalized(routesPath);
     const registration = routes.slice(
       routes.indexOf("export function registerdeveloperopenapiroutes"),
       routes.indexOf("app.get(\"/openapi/v2/knowledge-bases\"")
     );
-
     expect(registration).toContain("const openapidocument = createdeveloperopenapidocument()");
     expect(registration).toContain(
       "app.get(\"/openapi/v2/openapi.json\", (context) => context.json(openapidocument))"
     );
   });
 
-  it("persists generated files and tree entries into release-scoped projections", () => {
-    const repository = readNormalized(repositoryPath);
-    const filesSection = repository.slice(
-      repository.indexOf("async createbundlefiles"),
-      repository.indexOf("async upsertbundlefilesearchdocuments")
-    );
-    const treeSection = repository.slice(
-      repository.indexOf("async createbundletreeentries"),
-      repository.indexOf("async activaterelease")
-    );
-
-    expect(filesSection).toContain("insert into focowiki.bundle_files");
-    expect(filesSection).toContain("logical_path");
-    expect(filesSection).toContain("navigation_only");
-    expect(filesSection).toContain("on conflict (release_id, logical_path) do nothing");
-    expect(treeSection).toContain("insert into focowiki.knowledge_file_tree_nodes");
-    expect(treeSection).toContain("parent_id");
-    expect(treeSection).toContain("from focowiki.bundle_files file");
-    expect(treeSection).toContain("file.knowledge_base_id = ${entry.knowledgebaseid}");
-    expect(treeSection).toContain("and file.release_id = ${entry.releaseid}");
-    expect(treeSection).toContain("and file.logical_path = ${entry.logicalpath}");
-    expect(treeSection).toContain("source_directory_id");
-    expect(treeSection).not.toMatch(/insert into focowiki\.bundle_\w+_entries/);
+  it("writes generation-local projection records and immutable object references", () => {
+    const writer = normalized(projectionWriterPath);
+    expect(writer).toContain("records.stageupsert");
+    expect(writer).toContain("input.references.stageupsert");
+    expect(writer).toContain("impact.projectionkind === \"tree\"");
+    expect(writer).toContain("impact.projectionkind === \"search\"");
+    expect(writer).not.toContain("releaseid");
+    expect(writer).not.toContain("bundlefile");
   });
 });

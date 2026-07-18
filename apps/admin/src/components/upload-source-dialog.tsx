@@ -11,7 +11,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import type { UploadSessionLimits } from "@/lib/admin-api";
+import type { UploadSessionTransport } from "@/lib/admin-api";
 import {
   cancelFolderUpload,
   resumeUploadSession,
@@ -54,7 +54,7 @@ export function UploadSourceDialog({
   const [progress, setProgress] = useState<UploadClientProgress | null>(null);
   const [activeSession, setActiveSession] = useState<{
     id: string;
-    limits: UploadSessionLimits;
+    transport: UploadSessionTransport;
   } | null>(null);
   const selectedFileItems = visibleSelectedFiles(selectedFiles);
   const selectedFileTotalSize = formatUploadBytes(totalSelectedFileBytes(selectedFiles));
@@ -89,16 +89,16 @@ export function UploadSourceDialog({
             knowledgeBaseId,
             sessionId: activeSession.id,
             files: selectedFiles,
-            limits: activeSession.limits,
+            transport: activeSession.transport,
             onProgress: setProgress
           })
         : runUploadSession({
             knowledgeBaseId,
             files: selectedFiles,
             onProgress: setProgress,
-            onSessionReady: (id, limits) => {
+            onSessionReady: (id, transport) => {
               if (uploadOperationEpochRef.current === operationEpoch) {
-                setActiveSession({ id, limits });
+                setActiveSession({ id, transport });
               }
             }
           })
