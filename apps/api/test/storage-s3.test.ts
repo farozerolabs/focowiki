@@ -49,6 +49,66 @@ describe("S3 storage adapter", () => {
     });
   });
 
+  it("lists bounded object metadata pages without loading the managed prefix", async () => {
+    const send = vi.fn(async () => ({
+      Contents: [
+        {
+          Key: `tenant/test/generated/v1/objects/aa/${"a".repeat(64)}`,
+          Size: 42,
+          ETag: '"etag-a"',
+          LastModified: new Date("2026-07-18T00:00:00.000Z")
+        }
+      ],
+      NextContinuationToken: "next-page"
+    }));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.listObjectMetadata({
+      prefix: "tenant/test/generated/",
+      continuationToken: "current-page",
+      limit: 5_000
+    })).resolves.toEqual({
+      objects: [{
+        key: `tenant/test/generated/v1/objects/aa/${"a".repeat(64)}`,
+        sizeBytes: 42,
+        etag: '"etag-a"',
+        lastModified: "2026-07-18T00:00:00.000Z"
+      }],
+      nextContinuationToken: "next-page"
+    });
+
+    const command = (send.mock.calls as unknown as Array<[{ input: unknown }]>)[0]![0];
+    expect(command.input).toEqual({
+      Bucket: "bucket-test",
+      Prefix: "tenant/test/generated/",
+      ContinuationToken: "current-page",
+      MaxKeys: 1_000
+    });
+  });
+
+  it.each([
+    "tenant/other/generated/",
+    "tenant/test/../other/generated/",
+    "tenant/test/%2e%2e/other/generated/",
+    "/tenant/test/generated/"
+  ])("rejects object metadata listing outside the configured keyspace: %s", async (prefix) => {
+    const send = vi.fn(async () => ({ Contents: [] }));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.listObjectMetadata({ prefix, limit: 100 })).rejects.toThrow(
+      "Storage listing prefix must stay within the configured keyspace"
+    );
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("deletes objects in unique non-empty batches no larger than 1000 keys", async () => {
     const send = vi.fn(async () => ({}));
     const storage = new S3StorageAdapter({

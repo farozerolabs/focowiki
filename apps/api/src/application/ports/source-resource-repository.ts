@@ -70,6 +70,7 @@ export type SourceResourceRepository = {
     contentType: string;
     sizeBytes: number;
     checksumSha256: string;
+    resourceRevision: number;
     contentRevision: number;
   } | null>;
   createOperation: (input: {

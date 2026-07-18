@@ -182,6 +182,9 @@ function createFixture(options: { file?: ActiveGenerationFile | null } = {}) {
         async findFileByPath(path) { return file?.path === path ? file : null; },
         async findFilesBySourceIds() { return file ? [file] : []; },
         async findProjection() { return null; },
+        async getGraphSummary() {
+          return { nodeCount: 0, edgeCount: 0, graphIndexAvailable: false, persisted: true };
+        },
         async listTree() { return { items: [], nextCursor: null }; },
         async listTreeAncestors() { return new Map(); },
         async search() { return { items: [], nextCursor: null }; },
@@ -209,6 +212,7 @@ function createFixture(options: { file?: ActiveGenerationFile | null } = {}) {
   const storage: StorageAdapter = {
     keyspace: createStorageKeyspace("test"),
     async putObject() {},
+    async headObjectMetadata() { return null; },
     async getObjectText() { return null; }
   };
   const app = createApiApp({

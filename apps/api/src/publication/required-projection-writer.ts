@@ -265,8 +265,9 @@ async function buildMachineRecord(
         parentPath: "",
         kind: "directory",
         resourceRevision: 1,
-        childCount: 0,
-        directFileCount: 0,
+        directEntryCount: directory.directEntryCount,
+        directDirectoryCount: directory.directDirectoryCount,
+        directFileCount: directory.directFileCount,
         descendantFileCount: directory.descendantFileCount
       } satisfies JsonProjectionRecord;
       return {
@@ -291,7 +292,8 @@ async function buildMachineRecord(
       parentPath: parentPath(logicalPath),
       kind: "directory",
       resourceRevision: directory.resourceRevision,
-      childCount: directory.childCount,
+      directEntryCount: directory.directEntryCount,
+      directDirectoryCount: directory.directDirectoryCount,
       directFileCount: directory.directFileCount,
       descendantFileCount: directory.descendantFileCount
     } satisfies JsonProjectionRecord;
@@ -387,8 +389,7 @@ async function buildMachineRecord(
     fileId: source.sourceFileId,
     path: source.generatedPath,
     title,
-    summary,
-    contentPath: source.generatedPath
+    summary
   };
   let record: JsonProjectionRecord;
   if (impact.projectionKind === "search") {
@@ -420,7 +421,11 @@ async function buildMachineRecord(
       ...common,
       name: source.name,
       parentPath: parentPath(source.generatedPath),
-      kind: "file"
+      kind: "file",
+      directEntryCount: 0,
+      directDirectoryCount: 0,
+      directFileCount: 0,
+      descendantFileCount: 0
     };
   } else if (impact.projectionKind === "graph_node") {
     record = { ...common, ...(node ?? {}), id: source.sourceFileId };

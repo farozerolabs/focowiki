@@ -22,6 +22,7 @@ import {
   type SourceMetadata,
   type SourceModelSuggestions
 } from "@focowiki/okf";
+import { GENERATED_GRAPH_RESOURCES } from "./generated-graph-resources.js";
 
 export type GeneratedFileKind =
   | "page"
@@ -42,12 +43,9 @@ export type GeneratedFileKind =
   | "change_index"
   | "change_index_shard"
   | "graph_index"
-  | "graph_manifest"
   | "graph_node_index"
   | "graph_edge_shard"
-  | "graph_file"
-  | "graph_community"
-  | "graph_insight";
+  | "graph_file";
 
 export type GeneratedPageSummary = {
   pagePath: string;
@@ -149,7 +147,7 @@ export function renderIndexFile(
       "",
       "- [Browse documents](/pages/index.md) - Explore source-backed Markdown files by directory.",
       ...(options.includeGraph
-        ? ["- [Relationship graph](/_graph/index.md) - Follow relationships between source-backed files."]
+        ? [`- [${GENERATED_GRAPH_RESOURCES.index.label}](/${GENERATED_GRAPH_RESOURCES.index.path}) - ${GENERATED_GRAPH_RESOURCES.index.description}`]
         : []),
       `- [${schema.title}](/${schema.path}) - Review concept metadata and navigation conventions.`,
       "- [Update history](/log.md) - Review bounded publication history.",
@@ -332,11 +330,11 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
         "## Focowiki Extensions",
         "",
         "- Source-backed pages remain the final evidence for generated relationships.",
-        "- `_graph/index.md` introduces the file graph.",
-        "- `_graph/manifest.json` describes graph file counts and path patterns.",
-        "- `_graph/nodes.jsonl` stores graph nodes directly or lists graph node shards.",
-        "- `_graph/nodes/*.jsonl` stores sharded graph nodes when present.",
-        "- `_graph/edges/*.jsonl` stores sharded graph edges.",
+        `- \`${GENERATED_GRAPH_RESOURCES.index.path}\` introduces the file graph.`,
+        `- \`${GENERATED_GRAPH_RESOURCES.catalogPath}\` lists bounded graph projection shards.`,
+        `- \`${GENERATED_GRAPH_RESOURCES.nodeDirectoryPath}/\` contains graph-node projection shards.`,
+        `- \`${GENERATED_GRAPH_RESOURCES.edgeDirectoryPath}/\` contains graph-edge projection shards.`,
+        `- \`${GENERATED_GRAPH_RESOURCES.byFileDirectoryPath}/\` contains per-file relationship records.`,
         "- Graph records resolve relationships to source-backed Markdown paths."
       ].join("\n")
     )
@@ -393,9 +391,9 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
         "",
         "The `_index/` directory contains manifests, search records, links, and change records.",
         "",
-        "The `_graph/` directory contains file-linked graph nodes, edges, neighborhoods, and insights.",
+        "The `_graph/` directory contains file-linked graph nodes, edges, and per-file relationship records.",
         "",
-        "The knowledge-base root `index.md` links to `_graph/index.md` whenever graph output is available.",
+        `The knowledge-base root \`index.md\` links to \`${GENERATED_GRAPH_RESOURCES.index.path}\` whenever graph output is available.`,
         "",
         "These files extend the knowledge base while preserving ordinary OKF concept and link semantics and real Markdown evidence paths."
       ].join("\n")

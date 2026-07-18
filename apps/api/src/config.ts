@@ -80,7 +80,6 @@ export type GraphRuntimeConfig = {
   searchMaxDepth: 0 | 1 | 2;
   searchDefaultFanout: number;
   searchMaxFanout: number;
-  insightEnabled: boolean;
   modelReviewEnabled: boolean;
   publicationShardSize: number;
   cacheTtlSeconds: number;
@@ -567,7 +566,6 @@ function createDefaultGraphConfig(): GraphRuntimeConfig {
     searchMaxDepth: DEFAULT_GRAPH_SEARCH_MAX_DEPTH,
     searchDefaultFanout: DEFAULT_GRAPH_SEARCH_DEFAULT_FANOUT,
     searchMaxFanout: DEFAULT_GRAPH_SEARCH_MAX_FANOUT,
-    insightEnabled: true,
     modelReviewEnabled: true,
     publicationShardSize: DEFAULT_GRAPH_PUBLICATION_SHARD_SIZE,
     cacheTtlSeconds: DEFAULT_GRAPH_CACHE_TTL_SECONDS,

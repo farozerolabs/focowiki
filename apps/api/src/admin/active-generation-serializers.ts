@@ -2,6 +2,7 @@ import type {
   ActiveGenerationFile,
   ActiveGenerationProjection
 } from "../application/ports/active-generation-read-repository.js";
+import { readTreeStatistics } from "../domain/tree-statistics.js";
 
 export function toAdminActiveTreeEntry(record: ActiveGenerationProjection) {
   const entryType = readString(record.payload, "kind") === "directory"
@@ -12,6 +13,7 @@ export function toAdminActiveTreeEntry(record: ActiveGenerationProjection) {
   const sourceDirectoryId = entryType === "directory"
     ? readString(record.payload, "sourceDirectoryId")
     : null;
+  const statistics = readTreeStatistics(record.payload, entryType);
   return {
     id: record.recordId,
     parentPath: record.parentPath ?? readString(record.payload, "parentPath") ?? "",
@@ -30,9 +32,7 @@ export function toAdminActiveTreeEntry(record: ActiveGenerationProjection) {
     fileKind: entryType === "file"
       ? readString(record.payload, "fileKind") ?? (sourceFileId ? "page" : "index")
       : null,
-    childCount: readNumber(record.payload, "childCount") ?? 0,
-    directFileCount: readNumber(record.payload, "directFileCount") ?? 0,
-    descendantFileCount: readNumber(record.payload, "descendantFileCount") ?? 0,
+    ...statistics,
     resourceRevision: readNumber(record.payload, "resourceRevision"),
     deletable: Boolean(sourceFileId || sourceDirectoryId)
   };
@@ -47,7 +47,6 @@ export function toAdminActiveFile(file: ActiveGenerationFile) {
     logicalPath: file.path,
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
     okfType: readString(file.payload, "type") ?? readString(metadata, "type"),
     title: file.title,
     description: file.summary,

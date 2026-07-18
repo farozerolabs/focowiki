@@ -52,7 +52,6 @@ const uploadSessionEntry = {
   name: "guide.md",
   declaredSize: 2048,
   receivedSize: 2048,
-  checksumSha256: "0".repeat(64),
   disposition: "upload_required",
   transferState: "uploaded",
   sourceDirectoryId: "source-directory-11111111-1111-4111-8111-111111111111",
@@ -115,7 +114,6 @@ const sourceResourceFile = {
   generatedPath: "pages/handbook/guide.md",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 1024,
-  checksumSha256: "sha256_example",
   resourceRevision: 1,
   contentRevision: 1,
   activeRevisionId: "source-revision-11111111-1111-4111-8111-111111111111",
@@ -164,7 +162,6 @@ const generatedFile = {
   fileKind: "page",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 2048,
-  checksumSha256: "sha256_example",
   okfType: "page",
   title: "Guide",
   description: "Short summary.",
@@ -318,54 +315,38 @@ const graphExpansion = {
   ]
 };
 
-const graphInsights = {
+const graphOverview = {
   generationId,
-  file: {
-    ...generatedFile,
-    fileId: "generated-file-graph-insights",
-    sourceFileId: null,
-    path: "_graph/insights.json",
-    fileKind: "graph_insight",
-    title: "Graph insights",
-    description: "Graph quality and navigation insights.",
-    tags: [],
-    frontmatter: {},
-    deletable: false,
-    readActions: {
-      fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights`,
-      fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights/content`,
-      fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Finsights.json`,
-      relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights/related`,
-      graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=generated-file-graph-insights`,
-      sourceFileStatusById: null,
-      sourceFileEventsById: null
-    }
+  availability: "available",
+  summary: {
+    nodeCount: 24,
+    edgeCount: 18
   },
-  contentPath: "_graph/insights.json",
-  insights: [
-    {
-      insightId: "insight-11111111-1111-4111-8111-111111111111",
-      severity: "info",
-      title: "Strong relationship cluster",
-      description: "Several files share content-backed relationships.",
-      filePaths: ["pages/guide.md", "pages/reference.md"]
-    }
-  ],
-  generatedAt: exampleTimestamp,
-  resultSummary: {
-    insightCount: 1,
-    meaning: "Graph insights can guide further file and graph exploration."
+  resources: {
+    graphIndexPath: "_graph/index.md",
+    nodeDirectoryPath: "_graph/graph_node/v1",
+    edgeDirectoryPath: "_graph/graph_edge/v1",
+    byFileDirectoryPath: "_graph/by-file"
   },
   readActions: {
-    graphIndex: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Findex.md`,
-    graphManifest: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Fmanifest.json`,
-    graphInsightsFile: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Finsights.json`,
-    graphInsightsContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Finsights.json`
+    readIndexContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=index.md`,
+    graphIndexContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Findex.md`,
+    listGraphRoot: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph`,
+    listGraphNodes: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_node%2Fv1`,
+    listGraphEdges: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_edge%2Fv1`,
+    listByFileGraph: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fby-file`,
+    searchGraph: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query={query}&mode=graph`,
+    expandGraphByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId={fileId}`,
+    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}`,
+    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/content`,
+    fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path={path}`,
+    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/related`
   },
+  message: "Graph projections are available. Continue to source-backed files before answering.",
   nextActions: [
-    "Read _graph/index.md to understand available graph files.",
-    "Read _graph/manifest.json for graph shard paths.",
-    "Use graph expansion or file search before answering from insights alone."
+    "Read the graph index or list graph directories to discover relationships.",
+    "Use graph search, related files, or graph expansion to identify candidate files.",
+    "Read candidate file content before answering."
   ]
 };
 
@@ -381,7 +362,8 @@ const treeEntry = {
   sortKey: "1:guide.md",
   entryType: "file",
   fileKind: "page",
-  childCount: 0,
+  directEntryCount: 0,
+  directDirectoryCount: 0,
   directFileCount: 0,
   descendantFileCount: 0,
   resourceRevision: 1,
@@ -522,7 +504,7 @@ export const requestExamples = {
     path: { knowledgeBaseId },
     query: { fileId, depth: 1, fanout: 10, limit: 10 }
   },
-  getGraphInsights: {
+  getGraphOverview: {
     path: { knowledgeBaseId }
   },
   getFileContentById: {
@@ -715,7 +697,7 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null
     },
     expandGraph: graphExpansion,
-    getGraphInsights: graphInsights,
+    getGraphOverview: graphOverview,
     getFileContentById: {
       file: generatedFile,
       content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."

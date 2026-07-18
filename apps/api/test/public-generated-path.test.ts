@@ -52,7 +52,6 @@ describe("public generated path policy", () => {
     "_index/manifest.json",
     "_index/search/1.jsonl",
     "_graph/communities.json",
-    "_graph/insights.json",
     "_graph/edges/private.jsonl",
     "_graph/by-file/nested/file.json",
     "unsupported.txt"

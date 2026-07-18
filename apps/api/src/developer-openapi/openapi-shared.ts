@@ -244,12 +244,9 @@ export function fileSearchParameters(): ParameterObject[] {
         "change_index",
         "change_index_shard",
         "graph_index",
-        "graph_manifest",
         "graph_node_index",
         "graph_edge_shard",
-        "graph_file",
-        "graph_community",
-        "graph_insight"
+        "graph_file"
       ],
       default: "page"
     }),

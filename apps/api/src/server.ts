@@ -29,6 +29,7 @@ import type { PublicationGenerationRepository } from "./application/ports/public
 import type { SourceDispatchRepository } from "./application/ports/source-dispatch-repository.js";
 import type { SourceFileRetryRepository } from "./application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "./application/ports/source-file-task-deletion-repository.js";
+import type { StorageReconciliationRepository } from "./application/ports/storage-reconciliation-repository.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -44,6 +45,7 @@ export type ApiAppOptions = {
   sourceDispatch?: SourceDispatchRepository;
   sourceFileRetries?: SourceFileRetryRepository;
   sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
+  storageReconciliation?: StorageReconciliationRepository;
 };
 
 type ApiAppServices = {
@@ -63,6 +65,7 @@ type ApiAppServices = {
   sourceDispatch: SourceDispatchRepository | null;
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
+  storageReconciliation: StorageReconciliationRepository | null;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
@@ -137,6 +140,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     publicationGenerations: options.publicationGenerations ?? null,
     sourceDispatch: options.sourceDispatch ?? null,
     sourceFileRetries: options.sourceFileRetries ?? null,
-    sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null
+    sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null,
+    storageReconciliation: options.storageReconciliation ?? null
   };
 }

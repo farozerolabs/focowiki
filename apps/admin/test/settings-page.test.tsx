@@ -6,6 +6,7 @@ import {
   createRuntimeModel,
   deleteRuntimeModel,
   fetchRuntimeSettings,
+  updateMaintenanceSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
   updateWorkerSettings
@@ -103,6 +104,28 @@ vi.mock("@/lib/admin-api", () => ({
         okfLogMaxEntries: 100,
         okfLogMaxBytes: 65536
       },
+      graph: {
+        candidateLimit: 200,
+        acceptedEdgeLimit: 40,
+        searchDefaultDepth: 1,
+        searchMaxDepth: 2,
+        searchDefaultFanout: 10,
+        searchMaxFanout: 25,
+        modelReviewEnabled: true,
+        publicationShardSize: 5000,
+        cacheTtlSeconds: 30,
+        genericPhraseThreshold: 4
+      },
+      maintenance: {
+        reconciliationEnabled: true,
+        scanIntervalSeconds: 21600,
+        scanBatchSize: 500,
+        deletionBatchSize: 100,
+        quarantineGracePeriodSeconds: 86400,
+        confirmationPasses: 2,
+        maxAttempts: 5,
+        retryDelayMs: 30000
+      },
       activeModel: {
         id: "model-001"
       }
@@ -136,6 +159,11 @@ vi.mock("@/lib/admin-api", () => ({
     publication: value
   } })),
   updateRateLimitSettings: vi.fn(),
+  updateGraphSettings: vi.fn(),
+  updateMaintenanceSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    maintenance: value
+  } })),
   updateWorkerSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     worker: value
@@ -194,6 +222,35 @@ describe("SettingsPage", () => {
     expect(
       await screen.findByText("Required numeric fields must be positive integers.")
     ).toBeTruthy();
+  });
+
+  it("shows and saves bounded maintenance settings", async () => {
+    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    const maintenanceTab = screen.getByRole("tab", { name: "Maintenance" });
+    fireEvent.pointerDown(maintenanceTab);
+    fireEvent.mouseDown(maintenanceTab);
+    fireEvent.pointerUp(maintenanceTab);
+    fireEvent.click(maintenanceTab);
+    await waitFor(() => {
+      expect(maintenanceTab.getAttribute("data-state")).toBe("active");
+    });
+    const scanBatchSize = document.getElementById("maintenance-scanBatchSize") as HTMLInputElement;
+    expect(scanBatchSize?.value).toBe("500");
+    expect(screen.getByText(/S3 page limit is 1,000 objects/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateMaintenanceSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reconciliationEnabled: true,
+          scanBatchSize: 500,
+          confirmationPasses: 2
+        })
+      );
+    });
   });
 
   it("shows model required-field feedback only after an invalid submit", async () => {

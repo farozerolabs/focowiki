@@ -453,10 +453,11 @@ describeDatabase("generation cleanup repository integration", () => {
     `;
     await sql`
       INSERT INTO focowiki.immutable_objects (
-        checksum_sha256, format_version, object_key, content_type, size_bytes
+        checksum_sha256, format_version, object_key, content_type, size_bytes,
+        verified_at
       ) VALUES (
         ${referencedChecksum}, 1,
-        'generated/cleanup-integration/referenced.md', 'text/markdown', 10
+        'generated/cleanup-integration/referenced.md', 'text/markdown', 10, now()
       )
       ON CONFLICT DO NOTHING
     `;

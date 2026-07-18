@@ -93,6 +93,7 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 - Frontmatter, headings, links, and body content extraction.
 - OKF-style files: `index.md`, `log.md`, `schema.md`, `pages/*.md`, `_index/*.json`, and `_graph/*`.
 - PostgreSQL records, Redis coordination, and S3-compatible file storage.
+- Isolated source-processing, publication, and maintenance Worker roles with durable database-backed progress.
 - Admin UI for knowledge-base management, uploads, file browsing, processing status, and OpenAPI keys.
 - Developer OpenAPI for backend and Agent integration.
 

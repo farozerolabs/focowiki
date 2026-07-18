@@ -133,6 +133,7 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
       contentType: "text/markdown; charset=utf-8",
       sizeBytes: 7,
       checksumSha256: "checksum",
+      resourceRevision: 1,
       contentRevision: 1
     })),
     createOperation: vi.fn(async (input) => ({
@@ -167,6 +168,7 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
     getObjectText: vi.fn(async () => "# Intro"),
     getObjectBody: vi.fn(async () => new TextEncoder().encode("# Intro")),
     putObject: vi.fn(async () => undefined),
+    headObjectMetadata: vi.fn(async () => null),
     deleteObject: vi.fn(async () => undefined)
   } satisfies StorageAdapter;
   const repositories = {
@@ -279,6 +281,7 @@ describe("Admin resource editing", () => {
 
     expect(read.status).toBe(200);
     await expect(read.text()).resolves.toBe("# Intro");
+    expect(read.headers.get("etag")).toBe('"1"');
     expect(read.headers.get("x-content-revision")).toBe("1");
     expect(replace.status).toBe(202);
     await expect(replace.json()).resolves.toMatchObject({

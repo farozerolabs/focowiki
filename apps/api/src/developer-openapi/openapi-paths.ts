@@ -497,7 +497,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             in: "query",
             required: false,
             description: "Logical parent path. Traversal and storage paths are rejected.",
-            schema: { type: "string", default: "" }
+            schema: { type: "string", default: "pages" }
           },
           {
             name: "query",
@@ -606,16 +606,16 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/insights": {
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/overview": {
       get: operation({
         tag: "Files",
-        operationId: "getGraphInsights",
-        summary: "Get graph insights",
+        operationId: "getGraphOverview",
+        summary: "Get active graph overview",
         parameters: [knowledgeBaseIdParameter()],
-        requestExample: requestExamples.getGraphInsights,
+        requestExample: requestExamples.getGraphOverview,
         successStatus: 200,
-        successSchema: ref("GraphInsightsResponse"),
-        successExample: responseExamples.getGraphInsights,
+        successSchema: ref("GraphOverviewResponse"),
+        successExample: responseExamples.getGraphOverview,
         additionalErrorStatuses: [404, 409]
       })
     },

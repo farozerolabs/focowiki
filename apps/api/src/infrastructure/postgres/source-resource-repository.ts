@@ -298,10 +298,12 @@ export function createPostgresSourceResourceRepository(
         content_type: string;
         size_bytes: number | string;
         checksum_sha256: string;
+        resource_revision: number;
         revision: number;
       }>>`
         SELECT revision.object_key, revision.content_type, revision.size_bytes,
-               revision.checksum_sha256, revision.revision
+               revision.checksum_sha256, source.resource_revision,
+               revision.revision
         FROM focowiki.source_files source
         JOIN focowiki.source_revisions revision
           ON revision.id = source.active_revision_id
@@ -319,6 +321,7 @@ export function createPostgresSourceResourceRepository(
             contentType: row.content_type,
             sizeBytes: Number(row.size_bytes),
             checksumSha256: row.checksum_sha256,
+            resourceRevision: row.resource_revision,
             contentRevision: row.revision
           }
         : null;

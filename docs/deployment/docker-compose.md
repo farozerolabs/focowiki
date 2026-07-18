@@ -90,21 +90,21 @@ docker compose -f docker-compose.yml exec -T postgres \
 
 Restore database-only backups with `pg_restore` after starting PostgreSQL.
 
-## Deploy the Current Data Generation
+## Upgrade an Existing Deployment
 
-This release uses a new data generation and does not perform an in-place upgrade from an earlier schema. Keep the coordinated backup, clear the local data directories, and use an empty dedicated S3 prefix before starting this release.
+This release applies an additive database migration. Existing knowledge bases, source files, logical paths, active generations, generated object references, and the configured S3 prefix remain in place. Do not clear PostgreSQL, Redis, or S3, and do not re-upload source Markdown.
 
 ```bash
 docker compose -f docker-compose.yml pull
 docker compose -f docker-compose.yml down
-mv data "data-before-incremental-publication-$(date +%Y%m%d-%H%M%S)"
-mkdir -p data/postgres data/redis
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml ps
 ```
 
-Use a new `S3_PREFIX` or empty the dedicated test prefix through the storage provider before migration. Re-upload retained source Markdown through Admin UI or Developer OpenAPI. After startup, verify the knowledge-base list, file preview, source queue, publication progress, active file tree, search, graph, and Developer OpenAPI health.
+After startup, the maintenance worker repairs bounded Focowiki-owned tree statistics and generated navigation in the background. The repair reuses unchanged immutable objects, does not call the model, and keeps the previous active generation readable until a repaired generation validates and activates. Historical storage-only generated objects are quarantined and reconciled under the Admin maintenance settings.
+
+Verify the knowledge-base list, file preview, active file tree, search, graph overview, graph expansion, and Developer OpenAPI file reads. Admin **Settings > Maintenance** shows aggregate reconciliation status without exposing storage keys.
 
 ## Run Migration Check
 
@@ -114,13 +114,13 @@ docker compose -f docker-compose.yml run --rm migrate
 
 The migration container uses the same API image as the HTTP and Worker roles and exits after database initialization. The production template starts the API and all three Worker roles only after migration completes.
 
-The migration command initializes the database schema and default Admin settings required by the current application.
+The migration command initializes the database schema and default Admin settings required by the current application. Running it more than once is safe.
 
-### Incompatible Schema Generation
+### Rollback
 
-The current release requires the schema generation shipped with its migration image. When the migration command reports an incompatible schema generation, keep the existing deployment stopped and retain its coordinated PostgreSQL and S3 backup. Start the current release with an empty deployment data directory and an empty configured S3 prefix, then upload the retained source Markdown through the supported Admin or Developer OpenAPI workflow.
+The migration does not change the existing active-generation pointer. If startup or verification fails before a repaired generation activates, keep the deployment stopped and restore the coordinated PostgreSQL, Redis, runtime-secret, and S3 backup together with the previous application images.
 
-Do not start the new runtime against an incompatible database, and do not delete the previous backup until generated files, source rows, search, graph exploration, and file reads have been verified.
+If a repaired generation has already activated, the previous immutable generation remains retained under the configured generation-retention policy. A full binary rollback still uses the coordinated pre-upgrade backup because an older runtime may not understand newer schema-generation markers. Keep the backup until generated files, source rows, tree statistics, search, graph exploration, and direct file reads have been verified.
 
 ## Start Services
 

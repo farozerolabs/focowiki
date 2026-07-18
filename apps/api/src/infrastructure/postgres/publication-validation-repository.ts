@@ -1,14 +1,6 @@
 import type { PublicationValidationRepository } from "../../application/ports/publication-validation-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
-
-const REQUIRED_ROOT_PATHS = [
-  "index.md",
-  "schema.md",
-  "log.md",
-  "_index/index.md",
-  "_index/catalog.json",
-  "_graph/index.md"
-];
+import { REQUIRED_GENERATED_NAVIGATION_RESOURCES } from "../../okf/generated-graph-resources.js";
 
 export function createPostgresPublicationValidationRepository(
   sql: DatabaseClient
@@ -40,7 +32,10 @@ export function createPostgresPublicationValidationRepository(
           WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
             AND reference.generation_id = ${input.generationId}
             AND reference.action = 'upsert'
-            AND object.checksum_sha256 IS NULL
+            AND (
+              object.checksum_sha256 IS NULL
+              OR object.lifecycle_state <> 'active'
+            )
 
           UNION ALL
 
@@ -58,22 +53,34 @@ export function createPostgresPublicationValidationRepository(
           SELECT 'ROOT_REFERENCE_MISSING',
                  'A required root file is unavailable.',
                  required.path
-          FROM unnest(${REQUIRED_ROOT_PATHS}::text[]) AS required(path)
+          FROM unnest(
+            ${REQUIRED_GENERATED_NAVIGATION_RESOURCES.map((resource) => resource.path)}::text[],
+            ${REQUIRED_GENERATED_NAVIGATION_RESOURCES.map((resource) => resource.refKind)}::text[]
+          ) AS required(path, ref_kind)
           WHERE NOT EXISTS (
             SELECT 1
             FROM focowiki.generation_object_refs candidate
             WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
               AND candidate.generation_id = ${input.generationId}
-              AND candidate.ref_kind = 'root'
-              AND candidate.ref_key = required.path
+              AND candidate.ref_kind = required.ref_kind
+              AND candidate.logical_path = required.path
               AND candidate.action = 'upsert'
           )
           AND NOT EXISTS (
             SELECT 1
             FROM focowiki.active_object_refs active
             WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
-              AND active.ref_kind = 'root'
-              AND active.ref_key = required.path
+              AND active.ref_kind = required.ref_kind
+              AND active.logical_path = required.path
+              AND NOT EXISTS (
+                SELECT 1
+                FROM focowiki.generation_object_refs candidate_delete
+                WHERE candidate_delete.knowledge_base_id = ${input.knowledgeBaseId}
+                  AND candidate_delete.generation_id = ${input.generationId}
+                  AND candidate_delete.ref_kind = active.ref_kind
+                  AND candidate_delete.ref_key = active.ref_key
+                  AND candidate_delete.action = 'delete'
+              )
           )
         )
         SELECT code, message, reference

@@ -68,6 +68,9 @@ describe("Admin active generation file reads", () => {
       }],
       content: "# A\n\nShared subject."
     });
+    expect((detailBody as { file: Record<string, unknown> }).file).not.toHaveProperty(
+      "checksumSha256"
+    );
     expect(JSON.stringify(detailBody)).not.toContain("bundleFileId");
   });
 
@@ -94,6 +97,7 @@ function createFixture() {
   const storage: StorageAdapter = {
     keyspace: createStorageKeyspace("test"),
     async putObject() {},
+    async headObjectMetadata() { return null; },
     async getObjectText(key) {
       return key === "generated/a" ? "# A\n\nShared subject." : null;
     }
@@ -186,6 +190,9 @@ function createScope(generationId: string): ActiveGenerationReadScope {
     },
     async findProjection() {
       return null;
+    },
+    async getGraphSummary() {
+      return { nodeCount: 0, edgeCount: 0, graphIndexAvailable: false, persisted: true };
     },
     async listTree(input) {
       const all = input.query ? [guide] : [directory, fileA];

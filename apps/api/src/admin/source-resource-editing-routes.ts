@@ -207,7 +207,7 @@ export function registerAdminSourceResourceEditingRoutes(
       return new Response(content, {
         headers: {
           "content-type": descriptor.contentType,
-          etag: `\"${descriptor.checksumSha256}\"`,
+          etag: `\"${descriptor.resourceRevision}\"`,
           "x-content-revision": String(descriptor.contentRevision)
         }
       });

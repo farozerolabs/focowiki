@@ -47,7 +47,8 @@ export type GeneratedTreeEntry = {
   sortKey?: string;
   entryType: "directory" | "file";
   generatedFileId: string | null;
-  childCount?: number;
+  directEntryCount?: number;
+  directDirectoryCount?: number;
   sourceFileId?: string | null;
   sourceDirectoryId?: string | null;
   directFileCount?: number;
@@ -65,7 +66,6 @@ export type GeneratedTreeEntry = {
     | "link_index"
     | "link_index_shard"
     | "graph_index"
-    | "graph_manifest"
     | "graph_node_index"
     | "graph_edge_shard"
     | "graph_file"
@@ -104,7 +104,6 @@ export type GeneratedFileDetail = {
       | "link_index"
       | "link_index_shard"
       | "graph_index"
-      | "graph_manifest"
       | "graph_node_index"
       | "graph_edge_shard"
       | "graph_file";
@@ -355,11 +354,21 @@ export type GraphSettings = {
   searchMaxDepth: 0 | 1 | 2;
   searchDefaultFanout: number;
   searchMaxFanout: number;
-  insightEnabled: boolean;
   modelReviewEnabled: boolean;
   publicationShardSize: number;
   cacheTtlSeconds: number;
   genericPhraseThreshold: number;
+};
+
+export type MaintenanceSettings = {
+  reconciliationEnabled: boolean;
+  scanIntervalSeconds: number;
+  scanBatchSize: number;
+  deletionBatchSize: number;
+  quarantineGracePeriodSeconds: number;
+  confirmationPasses: number;
+  maxAttempts: number;
+  retryDelayMs: number;
 };
 
 export type RuntimeModelConfig = {
@@ -388,9 +397,21 @@ export type RuntimeSettingsResponse = {
     worker: WorkerSettings;
     publication: PublicationSettings;
     graph: GraphSettings;
+    maintenance: MaintenanceSettings;
     activeModel: RuntimeModelConfig | null;
   };
   models: RuntimeModelConfig[];
+  maintenanceStatus: {
+    state: "idle" | "scanning" | "verifying" | "failed";
+    lastScanStartedAt: string | null;
+    lastScanCompletedAt: string | null;
+    listedCount: number;
+    quarantinedCount: number;
+    deletedCount: number;
+    missingCount: number;
+    retryCount: number;
+    lastErrorCode: string | null;
+  } | null;
 };
 
 type AuthFailureHandler = () => void;
@@ -616,6 +637,12 @@ export async function updateGraphSettings(
   return updateRuntimeSettings("/admin/api/settings/graph", input);
 }
 
+export async function updateMaintenanceSettings(
+  input: MaintenanceSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/maintenance", input);
+}
+
 export async function createRuntimeModel(input: {
   displayName: string;
   apiMode: RuntimeModelConfig["apiMode"];
@@ -755,7 +782,6 @@ export type UploadSessionEntry = {
   name: string;
   declaredSize: number;
   receivedSize: number | null;
-  checksumSha256: string | null;
   disposition:
     | "pending"
     | "upload_required"

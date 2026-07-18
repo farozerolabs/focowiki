@@ -193,9 +193,9 @@ export function registerDeveloperOpenApiRoutes(
     runtimeSettings: services.runtimeSettings
   });
 
-  app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/graph/insights", async (context) =>
+  app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/graph/overview", async (context) =>
     safe(context, () =>
-      api.getGraphInsights({
+      api.getGraphOverview({
         knowledgeBaseId: context.req.param("knowledgeBaseId")
       })
     )

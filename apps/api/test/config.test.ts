@@ -81,7 +81,6 @@ describe("parseRuntimeConfig", () => {
       searchMaxDepth: 2,
       searchDefaultFanout: 10,
       searchMaxFanout: 25,
-      insightEnabled: true,
       modelReviewEnabled: true,
       publicationShardSize: 5_000,
       cacheTtlSeconds: 5,

@@ -119,28 +119,40 @@ type ScaleEvidenceCase = {
 };
 
 async function createFixture(client: typeof sql): Promise<void> {
-  await client`
-    INSERT INTO focowiki.knowledge_bases (id, name, description)
-    VALUES (${KNOWLEDGE_BASE_ID}, 'Incremental scale evidence', 'Domain-neutral durable fixture')
-  `;
-  await client`
-    INSERT INTO focowiki.immutable_objects (
-      checksum_sha256, format_version, object_key, content_type, size_bytes
-    ) VALUES (
-      ${ACTIVE_OBJECT_CHECKSUM}, 1, 'validation/scale/shared.md',
-      'text/markdown; charset=utf-8', 32
-    )
-  `;
-  await client`
-    INSERT INTO focowiki.publication_generations (
-      id, knowledge_base_id, state, activated_at
-    ) VALUES ('generation-scale-seed', ${KNOWLEDGE_BASE_ID}, 'active', now())
-  `;
-  await client`
-    UPDATE focowiki.knowledge_bases
-    SET active_generation_id = 'generation-scale-seed'
-    WHERE id = ${KNOWLEDGE_BASE_ID}
-  `;
+  await client.begin(async (transaction) => {
+    await transaction`
+      INSERT INTO focowiki.knowledge_bases (id, name, description)
+      VALUES (${KNOWLEDGE_BASE_ID}, 'Incremental scale evidence', 'Domain-neutral durable fixture')
+    `;
+    await transaction`
+      INSERT INTO focowiki.immutable_objects (
+        checksum_sha256, format_version, object_key, content_type, size_bytes,
+        lifecycle_state, verified_at
+      ) VALUES (
+        ${ACTIVE_OBJECT_CHECKSUM}, 1, 'validation/scale/shared.md',
+        'text/markdown; charset=utf-8', 32, 'active', now()
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, activated_at
+      ) VALUES ('generation-scale-seed', ${KNOWLEDGE_BASE_ID}, 'active', now())
+    `;
+    await transaction`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = 'generation-scale-seed'
+      WHERE id = ${KNOWLEDGE_BASE_ID}
+    `;
+    await transaction`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id, state,
+        checkpoint_json, completed_at
+      ) VALUES (
+        ${KNOWLEDGE_BASE_ID}, 1, 'generation-scale-seed', 'completed',
+        ${transaction.json({ validationFixture: true })}, now()
+      )
+    `;
+  });
 }
 
 async function seedFixtureRange(client: typeof sql, start: number, end: number): Promise<void> {

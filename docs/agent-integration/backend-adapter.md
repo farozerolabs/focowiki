@@ -38,7 +38,7 @@ The backend can use the full Focowiki Developer OpenAPI surface:
 | Markdown ingestion | `createUploadSession`, `addUploadManifestEntries`, `sealUploadManifest`, `uploadSessionContentBatch`, `getUploadSession`, `finalizeUploadSession` |
 | Source observation | `listKnowledgeBaseSourceFiles`, `getKnowledgeBaseSourceFile`, `listKnowledgeBaseSourceFileEvents`, `retryKnowledgeBaseSourceFile` |
 | Source maintenance | `moveSourceFile`, `replaceSourceFileContent`, `deleteSourceFile`, `listSourceDirectories`, `moveSourceDirectory`, `deleteSourceDirectory`, `listResourceOperations`, `getResourceOperation` |
-| File reading and exploration | `listKnowledgeBaseTree`, `getFileById`, `getFileContentById`, `getFileContentByPath`, `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphInsights` |
+| File reading and exploration | `listKnowledgeBaseTree`, `getFileById`, `getFileContentById`, `getFileContentByPath`, `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphOverview` |
 | Webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
 These operations belong to the developer backend. The Agent-facing layer should expose only the read operations needed for exploration unless the product intentionally supports Agent-driven maintenance.

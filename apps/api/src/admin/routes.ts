@@ -66,6 +66,7 @@ import type { PublicationGenerationRepository } from "../application/ports/publi
 import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
+import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -84,6 +85,7 @@ export type AdminApiServices = {
   sourceDispatch: SourceDispatchRepository | null;
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
+  storageReconciliation: StorageReconciliationRepository | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -120,7 +122,11 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminRuntimeSettingsRoutes(
     app,
-    { runtimeSettings },
+    {
+      runtimeSettings,
+      storageReconciliation: services.storageReconciliation,
+      storagePrefix: config.storage.prefix
+    },
     {
       requireAuth,
       requireWriteProtection
