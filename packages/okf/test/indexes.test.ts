@@ -43,4 +43,17 @@ describe("Markdown link indexes", () => {
       }
     ]);
   });
+
+  it("extracts generated links whose labels contain escaped Markdown characters", () => {
+    expect(extractMarkdownLinkEntries({
+      path: "pages/corpus/index-000008.md",
+      content: "- [规则 \\[附录\\] (测试) \\*版本\\* \\\\ 路径](/pages/corpus/canonical-markdown-reserved.md) - Validation sample."
+    })).toEqual([
+      {
+        from: "pages/corpus/index-000008.md",
+        to: "pages/corpus/canonical-markdown-reserved.md",
+        label: "规则 [附录] (测试) *版本* \\ 路径"
+      }
+    ]);
+  });
 });

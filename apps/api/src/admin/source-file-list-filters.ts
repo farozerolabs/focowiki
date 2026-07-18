@@ -4,9 +4,9 @@ import type {
   SourceFileErrorState,
   SourceFileListFilters,
   SourceFileModelInvocationFilter,
-  SourceFileProcessingStage,
-  SourceFileProcessingStatus
+  SourceFileProcessingStage
 } from "../db/admin-repositories.js";
+import type { SourceFileLifecycleState } from "../domain/source-file-lifecycle.js";
 
 export type SourceFileListFilterErrorCode =
   | "INVALID_SOURCE_FILE_FILTER"
@@ -26,8 +26,8 @@ const ERROR_CODE_QUERY_MIN_LENGTH = 2;
 export function readSourceFileListFilters(input: {
   fileNameQuery: string | undefined;
   fileIdQuery: string | undefined;
-  processingStatus: string | undefined;
-  processingStage: string | undefined;
+  state: string | undefined;
+  currentStage: string | undefined;
   modelInvocationStatus: string | undefined;
   generatedOutputStatus: string | undefined;
   startedFrom: string | undefined;
@@ -47,21 +47,20 @@ export function readSourceFileListFilters(input: {
   const errorCodeQuery = readTextFilter(input.errorCodeQuery, {
     minLength: ERROR_CODE_QUERY_MIN_LENGTH
   });
-  const processingStatus = readOptionalSourceFileFilter<SourceFileProcessingStatus>(
-    input.processingStatus,
-    ["queued", "running", "completed", "failed"]
+  const state = readOptionalSourceFileFilter<SourceFileLifecycleState>(
+    input.state,
+    ["queued", "running", "pending_publication", "visible", "failed"]
   );
-  const processingStage = readOptionalSourceFileFilter<SourceFileProcessingStage>(
-    input.processingStage,
+  const currentStage = readOptionalSourceFileFilter<SourceFileProcessingStage>(
+    input.currentStage,
     [
       "upload_storage",
       "metadata_resolution",
       "llm_suggestion",
       "graph_generation",
-      "okf_validation",
-      "bundle_generation",
-      "index_publication",
-      "release_activation"
+      "projection_generation",
+      "generation_validation",
+      "generation_activation"
     ]
   );
   const modelInvocationStatus = readOptionalSourceFileFilter<SourceFileModelInvocationFilter>(
@@ -93,8 +92,8 @@ export function readSourceFileListFilters(input: {
   }
 
   if (
-    processingStatus === undefined ||
-    processingStage === undefined ||
+    state === undefined ||
+    currentStage === undefined ||
     modelInvocationStatus === undefined ||
     generatedOutputStatus === undefined ||
     errorState === undefined ||
@@ -120,8 +119,8 @@ export function readSourceFileListFilters(input: {
     filters: {
       fileNameQuery: fileNameQuery.value,
       fileIdQuery: fileIdQuery.value,
-      processingStatus,
-      processingStage,
+      state,
+      currentStage,
       modelInvocationStatus,
       generatedOutputStatus,
       startedFrom,
@@ -141,8 +140,8 @@ export function readSourceFileListFiltersFromQuery(
   return readSourceFileListFilters({
     fileNameQuery: readQuery("fileNameQuery"),
     fileIdQuery: readQuery("fileIdQuery"),
-    processingStatus: readQuery("processingStatus"),
-    processingStage: readQuery("processingStage"),
+    state: readQuery("state"),
+    currentStage: readQuery("currentStage"),
     modelInvocationStatus: readQuery("modelInvocationStatus"),
     generatedOutputStatus: readQuery("generatedOutputStatus"),
     startedFrom: readQuery("startedFrom"),

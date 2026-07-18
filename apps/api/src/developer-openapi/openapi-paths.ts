@@ -1,6 +1,5 @@
 import {
   deliveryIdParameter,
-  errorResponse,
   fileSearchParameters,
   fileIdParameter,
   filePathQueryParameter,
@@ -161,30 +160,29 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404, 409, 422]
       })
     },
-    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/content": {
-      post: operation({
+    "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}/entries/{entryId}/content": {
+      put: operation({
         tag: "Upload Sessions",
-        operationId: "uploadSessionContentBatch",
-        summary: "Upload Markdown content",
-        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
-        requestExample: requestExamples.uploadSessionContentBatch,
+        operationId: "uploadSessionEntryContent",
+        summary: "Upload one Markdown file body",
+        parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter(), uploadEntryIdParameter()],
+        requestExample: requestExamples.uploadSessionEntryContent,
         requestBody: {
           required: true,
           content: {
-            "multipart/form-data": {
-              example: requestExamples.uploadSessionContentBatch.body,
+            "text/markdown": {
+              example: requestExamples.uploadSessionEntryContent.body,
               schema: {
-                type: "object",
-                description: "Each multipart field name is a server-issued upload entry ID and each field value is that entry's Markdown body.",
-                additionalProperties: { type: "string", format: "binary" }
+                type: "string",
+                description: "The Markdown body for the server-issued upload entry."
               }
             }
           }
         },
         successStatus: 200,
-        successSchema: ref("UploadEntryBatchResponse"),
-        successExample: responseExamples.uploadSessionContentBatch,
-        additionalErrorStatuses: [404, 409, 413, 422]
+        successSchema: ref("UploadEntryResponse"),
+        successExample: responseExamples.uploadSessionEntryContent,
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/upload-sessions/{uploadSessionId}": {
@@ -241,7 +239,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         summary: "Complete an upload session",
         parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
         requestExample: requestExamples.finalizeUploadSession,
-        successStatus: 202,
+        successStatus: 200,
         successSchema: ref("UploadSessionResponse"),
         successExample: responseExamples.finalizeUploadSession,
         additionalErrorStatuses: [404, 409, 422]
@@ -354,7 +352,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successStatus: 202,
         successSchema: ref("ResourceOperationResponse"),
         successExample: responseExamples.replaceSourceFileContent,
-        additionalErrorStatuses: [404, 409, 413, 422]
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories": {
@@ -484,14 +482,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successStatus: 202,
         successSchema: ref("SourceResourceFileResponse"),
         successExample: responseExamples.retryKnowledgeBaseSourceFile,
-        additionalErrorStatuses: [404, 409, 422],
-        extraResponses: {
-          "503": errorResponse(
-            "The service is temporarily at processing capacity. Retry after a short delay.",
-            "QUEUE_BACKPRESSURE",
-            503
-          )
-        }
+        additionalErrorStatuses: [404, 409, 422]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/tree": {
@@ -740,6 +731,16 @@ function uploadSessionIdParameter() {
     required: true,
     description: "Upload session identifier returned by createUploadSession.",
     schema: { type: "string", example: "upload-session-123" }
+  };
+}
+
+function uploadEntryIdParameter() {
+  return {
+    name: "entryId",
+    in: "path",
+    required: true,
+    description: "Upload entry identifier returned by getUploadSession.",
+    schema: { type: "string", example: "upload-entry-123" }
   };
 }
 

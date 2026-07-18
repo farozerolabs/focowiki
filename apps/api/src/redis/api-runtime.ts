@@ -6,9 +6,14 @@ import {
   type RedisCommandClient,
   type RedisCoordinator
 } from "./coordination.js";
+import { createResilientRedisCoordinator } from "./resilient-coordinator.js";
 
 type ApiRedisClient = RedisCommandClient & {
-  on: (event: "error", listener: (error: Error) => void) => unknown;
+  isReady: boolean;
+  on: {
+    (event: "error", listener: (error: Error) => void): unknown;
+    (event: "ready", listener: () => void): unknown;
+  };
   connect: () => Promise<unknown>;
   destroy: () => void;
 };
@@ -19,11 +24,28 @@ export async function connectApiRedis(input: {
   createClient?: (config: RuntimeConfig) => ApiRedisClient;
 }): Promise<RedisCoordinator | null> {
   const client = input.createClient?.(input.config) ?? createDefaultApiRedisClient(input.config);
-  client.on("error", () => undefined);
+  let interruptionReported = false;
+  client.on("error", () => {
+    if (interruptionReported) {
+      return;
+    }
+    interruptionReported = true;
+    input.logger.warn("API Redis connection interrupted; continuing with bounded database reads");
+  });
+  client.on("ready", () => {
+    if (interruptionReported) {
+      input.logger.info("API Redis connection restored");
+    }
+    interruptionReported = false;
+  });
 
   try {
     await client.connect();
-    return createRedisCoordinator(client);
+    return createResilientRedisCoordinator({
+      client,
+      coordinator: createRedisCoordinator(client),
+      sessionWrites: "required"
+    });
   } catch {
     try {
       client.destroy();
@@ -36,5 +58,5 @@ export async function connectApiRedis(input: {
 }
 
 function createDefaultApiRedisClient(config: RuntimeConfig): ApiRedisClient {
-  return createRedisClient(config, { disableReconnect: true }) as unknown as ApiRedisClient;
+  return createRedisClient(config) as unknown as ApiRedisClient;
 }

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { DatabaseClient } from "./client.js";
 
 export const MIGRATION_FILES = ["001_production_admin_web.sql"] as const;
-export const RUNTIME_SCHEMA_GENERATION = "relation-search-publication-v1";
+export const RUNTIME_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {

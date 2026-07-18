@@ -25,9 +25,9 @@ export type SourceResourceFileRecord = {
   resourceRevision: number;
   contentRevision: number;
   activeRevisionId: string;
-  processingState: "queued" | "running" | "completed" | "failed";
-  currentStage: string;
-  processingErrorCode: string | null;
+  processingStatus: "queued" | "running" | "completed" | "failed";
+  currentStage: SourceFileFailureStage;
+  terminalFailure: SourceFileTerminalFailure | null;
   generatedOutputStatus: "pending" | "visible" | "unavailable";
   generatedPath: string | null;
   deleting: boolean;
@@ -37,7 +37,7 @@ export type SourceResourceFileRecord = {
 export type SourceResourceFileFilters = {
   pathQuery: string | null;
   sourceFileIdPrefix: string | null;
-  processingState: SourceResourceFileRecord["processingState"] | null;
+  state: SourceFileLifecycleState | null;
   currentStage: string | null;
   generatedOutputStatus: SourceResourceFileRecord["generatedOutputStatus"] | null;
 };
@@ -92,3 +92,8 @@ export class SourceResourceError extends Error {
     this.name = "SourceResourceError";
   }
 }
+import type {
+  SourceFileFailureStage,
+  SourceFileLifecycleState,
+  SourceFileTerminalFailure
+} from "./source-file-lifecycle.js";

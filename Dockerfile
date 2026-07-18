@@ -30,7 +30,11 @@ COPY --from=build /app/apps/api/runtime ./apps/api/runtime
 COPY --from=build /app/apps/api/migrations ./apps/api/runtime/migrations
 COPY deploy/docker/api-entrypoint.sh /usr/local/bin/focowiki-api-entrypoint
 RUN chmod +x /usr/local/bin/focowiki-api-entrypoint
-RUN test -f apps/api/runtime/main.mjs && test -f apps/api/runtime/worker.mjs && test -f apps/api/runtime/migrate.mjs
+RUN test -f apps/api/runtime/main.mjs \
+    && test -f apps/api/runtime/source-worker.mjs \
+    && test -f apps/api/runtime/publication-worker.mjs \
+    && test -f apps/api/runtime/maintenance-worker.mjs \
+    && test -f apps/api/runtime/migrate.mjs
 
 EXPOSE 43000 43200
 ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]

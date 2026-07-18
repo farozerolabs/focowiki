@@ -14,7 +14,7 @@ cp .env.example .env
 
 `.env` 是基础设施、端口、origins、登录初始化、日志、存储、分页保护和数据库连接池的启动配置。管理员可以在 Admin UI 中修改的运行时配置，见 [Admin 配置](./admin-settings.md)。
 
-首次启动时，如果 PostgreSQL 中还没有已保存的设置，Focowiki 会从启动默认值初始化 Admin 配置。初始化完成后，已保存的 Admin 配置会成为 API 限流、Worker 调优、发布调优、上传生成和模型配置的运行时来源。
+首次启动时，Focowiki 会使用产品默认值初始化 Admin 配置。保存后的 Admin 配置会控制 API 限流、Worker 执行、发布压力、图关系行为和模型配置。
 
 ## 运行模式
 
@@ -124,7 +124,7 @@ OpenAPI key 通过 Admin UI 创建，存储在数据库中，不应写入 `.env`
 
 | 变量 | 是否必填 | 填写方式 |
 | --- | --- | --- |
-| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | 是 | Admin source-file、task、release 和 generated-file 列表的默认页大小。 |
+| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | 是 | Admin source-file、task、generation 和 generated-file 列表的默认页大小。 |
 | `ADMIN_LIST_MAX_PAGE_SIZE` | 是 | Admin 列表 API 接受的最大页大小。 |
 | `TREE_CHILD_DEFAULT_PAGE_SIZE` | 是 | 生成文件树 API 的直接子节点默认页大小。 |
 | `TREE_CHILD_MAX_PAGE_SIZE` | 是 | 生成文件树 API 接受的最大直接子节点页大小。 |
@@ -135,11 +135,11 @@ OpenAPI key 通过 Admin UI 创建，存储在数据库中，不应写入 `.env`
 
 | 变量 | 是否必填 | 填写方式 |
 | --- | --- | --- |
-| `WORKER_DATABASE_POOL_MAX` | 是 | Worker 进程最多使用的 PostgreSQL 连接数。该配置与 API 连接池分开。 |
+| `SOURCE_WORKER_DATABASE_POOL_MAX` | 是 | 单个 source-worker 进程最多使用的 PostgreSQL 连接数。8C/32G 服务器可从 `8` 开始。 |
+| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | 是 | 单个 publication-worker 进程最多使用的 PostgreSQL 连接数。可从 `4` 开始。 |
+| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | 是 | 单个 maintenance-worker 进程最多使用的 PostgreSQL 连接数。可从 `2` 开始。 |
 
-`WORKER_DATABASE_POOL_MAX` 是启动配置，因为 PostgreSQL 连接池会在 Worker 进程启动时创建。需要调整连接池大小时，在 `.env` 中修改并重启 Worker service。
-
-8 核 32 GB 服务器建议从 `DATABASE_POOL_MAX=12` 和 `WORKER_DATABASE_POOL_MAX=8` 开始。PostgreSQL 连接预算按 `api replicas * DATABASE_POOL_MAX + worker replicas * WORKER_DATABASE_POOL_MAX + migration headroom + operational headroom` 计算。
+每个角色会在启动时创建自己的 PostgreSQL 连接池。修改 `.env` 后需要重启对应角色。总连接预算按 `API 副本数 * DATABASE_POOL_MAX + source-worker 副本数 * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker 副本数 * PUBLICATION_WORKER_DATABASE_POOL_MAX + maintenance-worker 副本数 * MAINTENANCE_WORKER_DATABASE_POOL_MAX + 迁移与运维余量` 计算。
 
 ## 安全审计
 

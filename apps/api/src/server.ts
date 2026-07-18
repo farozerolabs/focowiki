@@ -23,6 +23,12 @@ import type { UploadSessionStoragePort } from "./application/ports/upload-sessio
 import { systemApplicationRuntime } from "./infrastructure/runtime/system-runtime.js";
 import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
 import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
+import type { ActiveGenerationReadRepository } from "./application/ports/active-generation-read-repository.js";
+import type { RoleJobRepository } from "./application/ports/role-job-repository.js";
+import type { PublicationGenerationRepository } from "./application/ports/publication-generation-repository.js";
+import type { SourceDispatchRepository } from "./application/ports/source-dispatch-repository.js";
+import type { SourceFileRetryRepository } from "./application/ports/source-file-retry-repository.js";
+import type { SourceFileTaskDeletionRepository } from "./application/ports/source-file-task-deletion-repository.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -32,6 +38,12 @@ export type ApiAppOptions = {
   repositories?: AdminRepositories;
   runtimeSettings?: RuntimeSettingsService;
   logger?: RuntimeLogger;
+  activeGenerationReads?: ActiveGenerationReadRepository;
+  roleJobs?: RoleJobRepository;
+  publicationGenerations?: PublicationGenerationRepository;
+  sourceDispatch?: SourceDispatchRepository;
+  sourceFileRetries?: SourceFileRetryRepository;
+  sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
 };
 
 type ApiAppServices = {
@@ -45,6 +57,12 @@ type ApiAppServices = {
   applicationRuntime: ApplicationRuntime;
   uploadSessionStorage: UploadSessionStoragePort;
   logger: RuntimeLogger;
+  activeGenerationReads: ActiveGenerationReadRepository | null;
+  roleJobs: RoleJobRepository | null;
+  publicationGenerations: PublicationGenerationRepository | null;
+  sourceDispatch: SourceDispatchRepository | null;
+  sourceFileRetries: SourceFileRetryRepository | null;
+  sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
@@ -113,6 +131,12 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     runtimeSettings,
     applicationRuntime: systemApplicationRuntime,
     uploadSessionStorage: createUploadSessionStoragePort(storage),
-    logger: options.logger ?? createRuntimeLogger(options.config)
+    logger: options.logger ?? createRuntimeLogger(options.config),
+    activeGenerationReads: options.activeGenerationReads ?? null,
+    roleJobs: options.roleJobs ?? null,
+    publicationGenerations: options.publicationGenerations ?? null,
+    sourceDispatch: options.sourceDispatch ?? null,
+    sourceFileRetries: options.sourceFileRetries ?? null,
+    sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null
   };
 }

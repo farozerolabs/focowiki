@@ -214,7 +214,7 @@ describe("lightweight architecture boundaries", () => {
     expect(countLines("apps/api/src/admin/source-file-processor.ts")).toBeLessThanOrEqual(500);
     expect(countLines("apps/api/src/graph/file-graph.ts")).toBeLessThanOrEqual(150);
     expect(countLines("apps/api/src/developer-openapi/routes.ts")).toBeLessThanOrEqual(350);
-    expect(countLines("apps/api/src/okf/publication.ts")).toBeLessThanOrEqual(800);
+    expect(countLines("apps/api/src/publication/required-projection-writer.ts")).toBeLessThanOrEqual(600);
     expect(countLines("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx")).toBeLessThanOrEqual(
       700
     );
@@ -285,7 +285,7 @@ describe("lightweight architecture boundaries", () => {
     const pathPolicy = readWorkspaceFile("apps/api/src/domain/source-path.ts");
     const uploadSessions = readWorkspaceFile("apps/api/src/application/upload-sessions.ts");
     const directoryIndexes = readWorkspaceFile(
-      "apps/api/src/okf/directory-navigation-files.ts"
+      "apps/api/src/publication/directory-navigation-writer.ts"
     );
 
     expect(pathPolicy).not.toContain("Hono");
@@ -294,7 +294,7 @@ describe("lightweight architecture boundaries", () => {
     expect(uploadSessions).not.toContain("sql`");
     expect(directoryIndexes).not.toContain("Hono");
     expect(directoryIndexes).not.toContain("sql`");
-    expect(directoryIndexes).toContain("fetchEntryPage");
+    expect(directoryIndexes).toContain("navigation.applyEntry");
     expect(directoryIndexes).not.toContain("entries: DirectoryIndexEntry[]");
     expect(uploadSessions).toContain("UploadSessionStoragePort");
     expect(uploadSessions).toContain("ApplicationRuntime");
@@ -312,12 +312,15 @@ describe("lightweight architecture boundaries", () => {
     expect(developerPaths).not.toContain("/openapi/v1");
   });
 
-  it("keeps OKF publication independent from full release file maps", () => {
-    const publication = readWorkspaceFile("apps/api/src/okf/publication.ts");
+  it("keeps OKF publication independent from full generation file maps", () => {
+    const publication = readWorkspaceFile(
+      "apps/api/src/publication/required-projection-writer.ts"
+    );
 
     expect(publication).not.toContain("const bundleFiles: BundleFileDraft[]");
     expect(publication).not.toContain("buildBundleTreeEntries");
-    expect(publication).toContain("materializeBundleTree");
+    expect(publication).toContain("createRequiredProjectionWriter");
+    expect(publication).toContain("writeMachineProjectionBatch");
   });
 
   it("keeps upload acceptance out of process-local source-file workers", () => {
@@ -338,42 +341,47 @@ describe("lightweight architecture boundaries", () => {
     const hardDeleteJobs = readWorkspaceFile("apps/api/src/worker/hard-delete-jobs.ts");
     const redisCoordination = readWorkspaceFile("apps/api/src/redis/coordination.ts");
 
-    expect(hardDeleteJobs).toContain("listKnowledgeBaseSourceFileIds");
-    expect(hardDeleteJobs).not.toContain("sourceFileIds.push");
+    expect(hardDeleteJobs).toContain("listPendingObjectKeys");
+    expect(hardDeleteJobs).toContain("purgeTargetBatch");
+    expect(hardDeleteJobs).toContain("discoveryCursor");
+    expect(hardDeleteJobs).not.toContain("objectKeys.push");
     expect(redisCoordination).toContain("scanIterator");
     expect(redisCoordination).not.toContain("const seenKeys = new Set<string>()");
   });
 
-  it("keeps durable worker queue state restartable and bounded", () => {
+  it("keeps role worker queue state restartable and bounded", () => {
     const migration = readWorkspaceFile("apps/api/migrations/001_production_admin_web.sql");
-    const repository = readWorkspaceFile("apps/api/src/db/worker-job-repository.ts");
-    const runtime = readWorkspaceFile("apps/api/src/worker/runtime.ts");
-    const workerMain = readWorkspaceFile("apps/api/src/worker-main.ts");
+    const repository = readWorkspaceFile(
+      "apps/api/src/infrastructure/postgres/role-job-repository.ts"
+    );
+    const runtime = readWorkspaceFile("apps/api/src/worker/role-runtime.ts");
+    const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
+    const publicationMain = readWorkspaceFile("apps/api/src/publication-worker-main.ts");
+    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
     const migrationSql = migration.toLowerCase();
     const repositorySource = repository.toLowerCase();
 
-    expect(migrationSql).toContain("create table focowiki.worker_jobs");
-    expect(migrationSql).toContain("create table focowiki.worker_heartbeats");
+    expect(migrationSql).toContain("create table focowiki.role_jobs");
+    expect(migrationSql).toContain("create table focowiki.role_heartbeats");
     expect(migration).toContain("'dead_letter'");
-    expect(migration).toContain("worker_jobs_running_heartbeat_idx");
+    expect(migration).toContain("role_jobs_claim_idx");
     expect(repositorySource).toContain("for update skip locked");
-    expect(repository).toContain("heartbeatWorkerJob");
-    expect(repository).toContain("deadLetterWorkerJob");
-    expect(repository).toContain("cleanupWorkerJobs");
-    expect(repository).toContain("getWorkerQueueSummary");
-    expect(runtime).toContain("cleanupWorkerJobHistory");
-    expect(runtime).toContain("recordWorkerHeartbeat");
-    expect(workerMain).toContain("from focowiki.worker_jobs");
-    expect(workerMain).toContain("from focowiki.worker_heartbeats");
+    expect(repository).toContain("async heartbeat");
+    expect(repository).toContain("async fail");
+    expect(repository).toContain("async release");
+    expect(runtime).toContain("repository.heartbeat");
+    expect(sourceMain).toContain('role: "source"');
+    expect(publicationMain).toContain('role: "publication"');
+    expect(maintenanceMain).toContain('role: "maintenance"');
   });
 
   it("keeps source-file completion from running publication inline", () => {
     const processor = readWorkspaceFile("apps/api/src/admin/source-file-processor.ts");
-    const scheduler = readWorkspaceFile("apps/api/src/admin/publication-scheduler.ts");
 
-    expect(processor).toContain("!repositories.workerJobs");
-    expect(scheduler).toContain("workerJobs.enqueuePublicationJob");
-    expect(scheduler).not.toContain("const result = await service.publishNow");
+    expect(processor).toContain("completion.complete");
+    expect(processor).not.toContain("publishNow");
+    expect(processor).not.toContain("processSourceFilePublicationStage");
+    expect(processor).not.toContain("processSourceFileBundleStage");
   });
 
   it("keeps source-file list reads out of graph, model, and worker expansion paths", () => {
@@ -394,7 +402,8 @@ describe("lightweight architecture boundaries", () => {
     expect(sourceListRoute).not.toContain("enqueueSourceFileProcessingJobs");
     expect(sourceListRepository).not.toContain("LEFT JOIN LATERAL");
     expect(sourceListRepository).not.toContain("FROM focowiki.model_invocations");
-    expect(generatedOutput).toContain("listGeneratedOutputsForSourceFiles");
+    expect(generatedOutput).toContain("readGeneratedOutputsForSourceFiles");
+    expect(generatedOutput).toContain("withActiveGeneration");
     expect(generatedOutput).not.toContain("repositories.graph");
     expect(generatedOutput).not.toContain("workerJobs");
     expect(generatedOutput).not.toContain("model_invocations");

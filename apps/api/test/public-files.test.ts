@@ -33,11 +33,6 @@ function createConfig(publicApi?: Partial<RuntimeConfig["publicApi"]>): RuntimeC
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    upload: {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-    },
     publication: {
       mode: "batch",
       batchSize: 300,

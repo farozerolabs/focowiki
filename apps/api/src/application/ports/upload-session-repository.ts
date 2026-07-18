@@ -67,30 +67,6 @@ export type UploadSessionRepository = {
     sessionId: string;
     now: string;
   }) => Promise<UploadSessionRecord>;
-  finalizeEntryBatch: (input: {
-    knowledgeBaseId: string;
-    sessionId: string;
-    now: string;
-    runAfter: string;
-    limit: number;
-    jobMaxAttempts: number;
-  }) => Promise<{
-    session: UploadSessionRecord;
-    processedCount: number;
-    completed: boolean;
-    cancelled: boolean;
-  }>;
-  failFinalization: (input: {
-    knowledgeBaseId: string;
-    sessionId: string;
-    errorCode: string;
-    now: string;
-  }) => Promise<UploadSessionRecord>;
-  completeSession: (input: {
-    knowledgeBaseId: string;
-    sessionId: string;
-    now: string;
-  }) => Promise<UploadSessionRecord>;
   cancelSession: (input: {
     knowledgeBaseId: string;
     sessionId: string;

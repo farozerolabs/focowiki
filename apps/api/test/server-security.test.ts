@@ -32,11 +32,6 @@ function createProductionConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    upload: {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-    },
     publication: {
       mode: "batch",
       batchSize: 300,
@@ -96,10 +91,6 @@ function createProductionConfig(): RuntimeConfig {
         adminApi: {
           max: 600,
           windowSeconds: 60
-        },
-        upload: {
-          max: 20,
-          windowSeconds: 3_600
         },
         publicOpenApi: {
           max: 1_200,

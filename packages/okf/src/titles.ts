@@ -1,5 +1,8 @@
+import { canonicalizeOptionalGeneratedTextIdentity } from "./text-identity.js";
+
 export function knowledgeBaseTitle(title: string | undefined): string {
-  return title?.trim() || "Knowledge base";
+  return canonicalizeOptionalGeneratedTextIdentity(title, "knowledge base title")
+    ?? "Knowledge base";
 }
 
 export function bundleSchemaTitle(title: string | undefined): string {

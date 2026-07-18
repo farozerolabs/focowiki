@@ -4,12 +4,11 @@ import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import {
-  assertSourceFileQueueCapacity,
-  enqueueSourceFileProcessingJobs,
-  WorkerQueueBackpressureError
-} from "../worker/source-file-jobs.js";
+  retrySourceFile,
+  SourceFileRetryServiceError
+} from "../application/source-file-retry.js";
 import { toAdminSourceFile } from "./serializers.js";
-import { limitAdminUploadRequest } from "./security.js";
+import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 
 export function registerAdminSourceFileRetryRoutes(
   app: Hono,
@@ -18,30 +17,21 @@ export function registerAdminSourceFileRetryRoutes(
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
     runtimeSettings?: RuntimeSettingsService | null | undefined;
+    sourceFileRetries: SourceFileRetryRepository | null;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, redis, repositories, runtimeSettings } = services;
+  const { config, redis, repositories, runtimeSettings, sourceFileRetries } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/retry",
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const files = repositories?.files;
-      const getSourceFile = files?.getSourceFile;
-      const createSourceFileRetryAttempt = files?.createSourceFileRetryAttempt;
-
-      if (
-        !repositories ||
-        !getSourceFile ||
-        !createSourceFileRetryAttempt ||
-        !repositories.workerJobs ||
-        !redis
-      ) {
+      if (!repositories || !redis) {
         return missingRepositoryBackend(context);
       }
       const repo = repositories;
@@ -54,104 +44,47 @@ export function registerAdminSourceFileRetryRoutes(
         return notFound(context);
       }
 
-      const uploadLimited = await limitAdminUploadRequest({
-        config,
-        redis,
-        repositories: repo,
-        runtimeSettings,
-        context
-      });
-
-      if (uploadLimited) {
-        return uploadLimited;
-      }
-
-      const sourceFile = await getSourceFile({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFileId: context.req.param("sourceFileId")
-      });
-
-      if (!sourceFile) {
-        return notFound(context);
-      }
-
-      if (sourceFile.processingStatus !== "failed") {
-        return context.json(
-          {
-            error: {
-              code: "SOURCE_FILE_RETRY_NOT_ALLOWED",
-              messageKey: "errors.sourceFileRetryNotAllowed"
-            }
-          },
-          409
-        );
-      }
-
       try {
-        await assertSourceFileQueueCapacity({
+        const result = await retrySourceFile({
           repositories: repo,
+          retries: sourceFileRetries,
           knowledgeBaseId: knowledgeBase.id,
+          sourceFileId: context.req.param("sourceFileId"),
           config,
           worker: (await runtimeSettings?.getSnapshot())?.worker
         });
+        return context.json(
+          {
+            file: toAdminSourceFile(result.file),
+            retry: {
+              kind: result.kind,
+              scope: result.scope,
+              coalesced: result.coalesced
+            }
+          },
+          202
+        );
       } catch (error) {
-        if (error instanceof WorkerQueueBackpressureError) {
-          return queueBackpressure(context, error);
+        if (error instanceof SourceFileRetryServiceError) {
+          if (error.code === "SOURCE_FILE_NOT_FOUND") return notFound(context);
+          if (error.code === "SOURCE_FILE_RETRY_BACKEND_UNAVAILABLE") {
+            return missingRepositoryBackend(context);
+          }
+          return context.json(
+            {
+              error: {
+                code: error.code,
+                messageKey: error.code === "SOURCE_FILE_RETRY_NOT_ALLOWED"
+                  ? "errors.sourceFileRetryNotAllowed"
+                  : "errors.sourceFileRetryConflict"
+              }
+            },
+            409
+          );
         }
-
         throw error;
       }
-
-      const startedAt = new Date().toISOString();
-      await createSourceFileRetryAttempt({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFileId: sourceFile.id,
-        status: "running",
-        startedAt,
-        endedAt: null,
-        errorCode: null
-      });
-
-      await enqueueSourceFileProcessingJobs({
-        repositories: repo,
-        sourceFileIds: [sourceFile.id],
-        knowledgeBaseId: knowledgeBase.id,
-        reason: "retry",
-        config,
-        worker: (await runtimeSettings?.getSnapshot())?.worker
-      });
-
-      return context.json(
-        {
-          file: toAdminSourceFile(sourceFile)
-        },
-        202
-      );
     }
-  );
-}
-
-function queueBackpressure(
-  context: Parameters<MiddlewareHandler>[0],
-  error: WorkerQueueBackpressureError
-): Response {
-  return context.json(
-    {
-      error: {
-        code: error.code,
-        messageKey: "errors.queueBackpressure",
-        details: {
-          activeJobCount: error.activeJobCount,
-          limit: error.limit,
-          knowledgeBaseActiveJobCount: error.knowledgeBaseActiveJobCount,
-          knowledgeBaseLimit: error.knowledgeBaseLimit,
-          oldestQueuedAgeSeconds: error.oldestQueuedAgeSeconds,
-          maxQueuedAgeSeconds: error.maxQueuedAgeSeconds,
-          retryAfterSeconds: error.retryAfterSeconds
-        }
-      }
-    },
-    503
   );
 }
 

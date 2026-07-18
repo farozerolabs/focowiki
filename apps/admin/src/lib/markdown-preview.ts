@@ -98,11 +98,11 @@ function readInternalPreviewPath(href: string, currentLogicalPath: string) {
     return null;
   }
 
-  const current = normalizeBundlePath(currentLogicalPath, []);
+  const current = normalizeGeneratedPath(currentLogicalPath, []);
   if (!current) return null;
   const base = decoded.startsWith("/") ? [] : current.split("/").slice(0, -1);
-  const normalized = normalizeBundlePath(decoded.replace(/^\/+/, ""), base);
-  if (!normalized || !isPreviewableBundlePath(normalized)) return null;
+  const normalized = normalizeGeneratedPath(decoded.replace(/^\/+/, ""), base);
+  if (!normalized || !isPreviewableGeneratedPath(normalized)) return null;
   return normalized;
 }
 
@@ -122,7 +122,7 @@ function readCurrentLogicalPath(env: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : "index.md";
 }
 
-function normalizeBundlePath(value: string, base: string[]) {
+function normalizeGeneratedPath(value: string, base: string[]) {
   const segments = [...base];
   for (const segment of value.split("/")) {
     if (!segment || segment === ".") continue;
@@ -137,7 +137,7 @@ function normalizeBundlePath(value: string, base: string[]) {
   return segments.join("/") || null;
 }
 
-function isPreviewableBundlePath(value: string) {
+function isPreviewableGeneratedPath(value: string) {
   if (value.startsWith("pages/") || value.startsWith("_index/") || value.startsWith("_graph/")) {
     return hasPreviewableExtension(value);
   }

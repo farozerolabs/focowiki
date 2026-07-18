@@ -4,9 +4,9 @@ title: Project Introduction
 
 # Focowiki
 
-Focowiki is a lightweight Markdown knowledge-base system for developers and product managers. It accepts cleaned `.md` files, extracts Markdown frontmatter and document signals, generates an OKF-style public bundle, stores source and generated files in S3-compatible storage, and exposes knowledge-base workflows through Admin UI, Admin API, and Developer OpenAPI.
+Focowiki is a lightweight Markdown knowledge-base system for developers and product managers. It accepts cleaned `.md` files, extracts Markdown frontmatter and document signals, generates an OKF-style file knowledge base, stores source and generated files in S3-compatible storage, and exposes knowledge-base workflows through Admin UI, Admin API, and Developer OpenAPI.
 
-Focowiki is useful for teams that already have Markdown knowledge assets and want a small self-hosted service that produces file-based knowledge bundles for people, applications, and agents.
+Focowiki is useful for teams that already have Markdown knowledge assets and want a small self-hosted service that produces file-based knowledge for people, applications, and agents.
 
 ![Focowiki architecture](/images/focowiki-architecture.png)
 
@@ -15,9 +15,9 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 - Upload one or more `.md` files.
 - Parse YAML frontmatter, Markdown headings, Markdown links, and body content.
 - Preserve safe domain metadata from frontmatter.
-- Generate an OKF-style bundle with `index.md`, `log.md`, `schema.md`, `pages/*.md`, JSON indexes, and `_graph/*` relationship files.
-- Store uploaded source files and generated bundle files in S3-compatible storage.
-- Persist knowledge bases, source-file processing records, release records, generated file records, cursors, and API keys through PostgreSQL and Redis-backed coordination.
+- Generate an OKF-style knowledge base with `index.md`, `log.md`, `schema.md`, `pages/*.md`, JSON indexes, and `_graph/*` relationship files.
+- Store uploaded source revisions and content-addressed generated files in S3-compatible storage.
+- Persist knowledge bases, source processing, publication generations, active projections, cursors, and API keys through PostgreSQL and Redis-backed coordination.
 - Expose knowledge-base CRUD, Markdown upload, source-file processing observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
 
 ## Admin UI Preview
@@ -28,7 +28,7 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 
 [Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes OKF as an open, portable, human-readable, and agent-readable way to represent knowledge with Markdown files and YAML frontmatter.
 
-The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines field conventions and bundle structure. Focowiki uses the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
+The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines field conventions and a portable directory structure. Focowiki uses the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
 
 ## Markdown Upload Format
 
@@ -84,7 +84,7 @@ Markdown links are the primary relationship mechanism. Links in body content hel
 3. Open Admin UI, review runtime settings, and create a knowledge base.
 4. Upload one or more cleaned Markdown files.
 5. Watch source-file processing until each file ends.
-6. Read generated bundle files through Admin UI or Developer OpenAPI.
+6. Read generated knowledge-base files through Admin UI or Developer OpenAPI.
 7. Use Developer OpenAPI keys for application integration and agent-facing backends.
 
 ## Next Steps

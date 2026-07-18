@@ -276,9 +276,21 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
   const { t } = useTranslation();
   const sourceActive = activeCount(summary.sourceFileJobs);
   const publicationActive = activeCount(summary.publicationJobs);
+  const progress = summary.publicationProgress;
 
   return (
-    <div className="grid gap-2 sm:grid-cols-3">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <SummaryItem
+        label={t("tasks.summary.pendingDispatch")}
+        value={t("tasks.summary.pendingCount", { count: summary.pendingDispatch.pendingCount })}
+        detail={summary.pendingDispatch.paused
+          ? t("tasks.summary.dispatchPaused")
+          : summary.pendingDispatch.oldestPendingAt
+            ? t("tasks.summary.oldestDirty", {
+                time: new Date(summary.pendingDispatch.oldestPendingAt).toLocaleString()
+              })
+            : t("tasks.summary.noPendingDispatch")}
+      />
       <SummaryItem
         label={t("tasks.summary.sourceQueue")}
         value={t("tasks.summary.activeCount", { count: sourceActive })}
@@ -287,18 +299,22 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
       <SummaryItem
         label={t("tasks.summary.publicationQueue")}
         value={t("tasks.summary.activeCount", { count: publicationActive })}
-        detail={formatQueueDetail(summary.publicationJobs, t)}
+        detail={progress.stage
+          ? t("tasks.summary.publicationStage", {
+              stage: progress.stage,
+              processed: progress.processedImpactCount,
+              total: progress.totalImpactCount
+            })
+          : formatQueueDetail(summary.publicationJobs, t)}
       />
       <SummaryItem
-        label={t("tasks.summary.dirtyFiles")}
-        value={t("tasks.summary.dirtyCount", { count: summary.dirtySourceFiles.count })}
-        detail={
-          summary.dirtySourceFiles.oldestDirtyAt
-            ? t("tasks.summary.oldestDirty", {
-                time: new Date(summary.dirtySourceFiles.oldestDirtyAt).toLocaleString()
-              })
-            : t("tasks.summary.noDirtyFiles")
-        }
+        label={t("tasks.summary.activeVisibility")}
+        value={summary.activeGenerationId
+          ? t("tasks.summary.activeGeneration")
+          : t("tasks.summary.noActiveGeneration")}
+        detail={progress.safeErrorCode
+          ? t("tasks.summary.publicationFailed", { code: progress.safeErrorCode })
+          : summary.activeGenerationId ?? t("tasks.summary.waitingForFirstGeneration")}
       />
     </div>
   );

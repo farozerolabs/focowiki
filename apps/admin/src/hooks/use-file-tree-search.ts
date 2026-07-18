@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   searchKnowledgeBaseFileTree,
-  type BundleTreeSearchResult
+  type GeneratedTreeSearchResult
 } from "@/lib/admin-api";
 
 export type FileTreeSearchState = {
   query: string;
   setQuery: (query: string) => void;
-  results: BundleTreeSearchResult[];
+  results: GeneratedTreeSearchResult[];
   nextCursor: string | null;
   isLoading: boolean;
   errorMessageKey: string | null;
@@ -21,7 +21,7 @@ const MIN_SEARCH_QUERY_LENGTH = 2;
 
 export function useFileTreeSearch(knowledgeBaseId: string): FileTreeSearchState {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<BundleTreeSearchResult[]>([]);
+  const [results, setResults] = useState<GeneratedTreeSearchResult[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessageKey, setErrorMessageKey] = useState<string | null>(null);

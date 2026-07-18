@@ -3,15 +3,13 @@ export type UploadSessionStoragePort = {
     knowledgeBaseId: string;
     sessionId: string;
     entryId: string;
-    bytes: Uint8Array;
-  }) => Promise<{ objectKey: string }>;
+    body: ReadableStream<Uint8Array>;
+    declaredSize: number;
+  }) => Promise<{
+    objectKey: string;
+    receivedSize: number;
+    receivedChecksumSha256: string;
+  }>;
   deleteObject: (objectKey: string) => Promise<void>;
   deleteObjects: (objectKeys: string[]) => Promise<void>;
-};
-
-export type UploadSessionFinalizationPort = {
-  enqueue: (input: {
-    knowledgeBaseId: string;
-    sessionId: string;
-  }) => Promise<void>;
 };

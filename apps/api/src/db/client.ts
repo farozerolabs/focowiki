@@ -5,12 +5,17 @@ export type DatabaseClient = Sql;
 
 export function createDatabaseClient(
   config: RuntimeConfig,
-  options: { role?: "api" | "worker" | "migration" } = {}
+  options: {
+    role?: "api" | "source-worker" | "publication-worker" | "maintenance-worker" | "migration";
+  } = {}
 ): DatabaseClient {
-  const max =
-    options.role === "worker"
-      ? (config.worker?.databasePoolMax ?? config.database.poolMax ?? 10)
-      : (config.database.poolMax ?? 10);
+  const max = options.role === "source-worker"
+    ? config.database.sourceWorkerPoolMax ?? 6
+    : options.role === "publication-worker"
+      ? config.database.publicationWorkerPoolMax ?? 4
+      : options.role === "maintenance-worker"
+        ? config.database.maintenanceWorkerPoolMax ?? 2
+        : config.database.poolMax ?? 10;
 
   return postgres(config.database.url, {
     max,

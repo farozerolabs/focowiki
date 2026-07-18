@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApiApp } from "../src/server.js";
+import type { SourceFileTaskDeletionRepository } from "../src/application/ports/source-file-task-deletion-repository.js";
 import type { RuntimeConfig } from "../src/config.js";
 import type { AdminRepositories } from "../src/db/admin-repositories.js";
 import type { StorageAdapter } from "../src/storage/s3.js";
@@ -13,7 +14,7 @@ const knowledgeBase = {
   id: "kb-001",
   name: "Developer docs",
   description: null,
-  activeReleaseId: "release-001",
+  activeGenerationId: "generation-001",
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
 };
@@ -47,11 +48,6 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/demo",
       forcePathStyle: true
     },
-    upload: {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
-    },
     publication: {
       mode: "batch",
       batchSize: 300,
@@ -79,22 +75,20 @@ function createConfig(): RuntimeConfig {
   };
 }
 
-function createRepositories(deleteSourceFileTasks = vi.fn()) {
+function createRepositories() {
   return {
     knowledgeBases: {
       async getKnowledgeBase(id: string) {
         return id === knowledgeBase.id ? knowledgeBase : null;
       }
     },
-    files: {
-      deleteSourceFileTasks
-    }
+    files: {}
   } as unknown as AdminRepositories;
 }
 
 describe("source file task deletion Admin API", () => {
   it("deletes selected source-file tasks through explicit current-page IDs", async () => {
-    const deleteSourceFileTasks = vi.fn(async () => [
+    const deleteTasks = vi.fn(async () => [
       {
         sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
         outcome: "hidden" as const
@@ -103,7 +97,8 @@ describe("source file task deletion Admin API", () => {
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(deleteSourceFileTasks),
+      repositories: createRepositories(),
+      sourceFileTaskDeletions: { deleteTasks } as SourceFileTaskDeletionRepository,
       storage: {} as StorageAdapter
     });
     const cookie = await loginAndReadSessionCookie(app);
@@ -135,19 +130,26 @@ describe("source file task deletion Admin API", () => {
         skipped: 0
       }
     });
-    expect(deleteSourceFileTasks).toHaveBeenCalledWith({
+    expect(deleteTasks).toHaveBeenCalledWith({
       knowledgeBaseId: knowledgeBase.id,
       sourceFileIds: ["source-file-11111111-1111-4111-8111-111111111111"],
-      deletedAt: expect.any(String)
+      deletedAt: expect.any(String),
+      hardDeleteMaxAttempts: expect.any(Number),
+      publicationSettingsSnapshot: {
+        graph: {},
+        publication: {},
+        worker: {}
+      }
     });
   });
 
   it("rejects malformed deletion requests without partial mutation", async () => {
-    const deleteSourceFileTasks = vi.fn();
+    const deleteTasks = vi.fn();
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(deleteSourceFileTasks),
+      repositories: createRepositories(),
+      sourceFileTaskDeletions: { deleteTasks } as SourceFileTaskDeletionRepository,
       storage: {} as StorageAdapter
     });
     const cookie = await loginAndReadSessionCookie(app);
@@ -172,6 +174,6 @@ describe("source file task deletion Admin API", () => {
         messageKey: "errors.sourceFileTaskDeletionInvalid"
       }
     });
-    expect(deleteSourceFileTasks).not.toHaveBeenCalled();
+    expect(deleteTasks).not.toHaveBeenCalled();
   });
 });

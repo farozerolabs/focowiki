@@ -179,9 +179,8 @@ describeDatabase("source resource deletion integration", () => {
     const files = await sql<Array<{
       id: string;
       deletion_intent_id: string | null;
-      publication_dirty_at: Date | null;
     }>>`
-      SELECT id, deletion_intent_id, publication_dirty_at
+      SELECT id, deletion_intent_id
       FROM focowiki.source_files
       WHERE knowledge_base_id = ${knowledgeBaseId}
       ORDER BY id
@@ -189,23 +188,19 @@ describeDatabase("source resource deletion integration", () => {
     expect(files).toEqual([
       {
         id: "source-file-child-a",
-        deletion_intent_id: "deletion-intent-parent",
-        publication_dirty_at: null
+        deletion_intent_id: "deletion-intent-parent"
       },
       {
         id: "source-file-child-b",
-        deletion_intent_id: "deletion-intent-parent",
-        publication_dirty_at: null
+        deletion_intent_id: "deletion-intent-parent"
       },
       {
         id: "source-file-outside",
-        deletion_intent_id: null,
-        publication_dirty_at: expect.any(Date)
+        deletion_intent_id: null
       },
       {
         id: "source-file-sibling",
-        deletion_intent_id: "deletion-intent-parent",
-        publication_dirty_at: null
+        deletion_intent_id: "deletion-intent-parent"
       }
     ]);
 
@@ -224,15 +219,8 @@ describeDatabase("source resource deletion integration", () => {
     expect(absorbed.operation.id).toBe(parent.operation.id);
   });
 
-  it("marks surviving graph neighbors dirty when one source file is deleted", async () => {
-    await sql`
-      UPDATE focowiki.source_files
-      SET generated_output_status = 'visible',
-          generated_bundle_file_id = 'bundle-delete-neighbor-active',
-          generated_bundle_file_path = 'pages/documents/neighbor.md'
-      WHERE id = 'source-file-delete-neighbor'
-    `;
-    await repository.acceptSourceFileDeletion({
+  it("returns a deterministic source-deletion fact input without mutating neighbors", async () => {
+    const accepted = await repository.acceptSourceFileDeletion({
       operationId: "resource-operation-delete-source-file",
       deletionIntentId: "deletion-intent-source-file",
       knowledgeBaseId: sourceFileKnowledgeBaseId,
@@ -242,17 +230,21 @@ describeDatabase("source resource deletion integration", () => {
       expectedResourceRevision: 1,
       deletedAt: new Date().toISOString()
     });
+    expect(accepted.sourceMutation).toEqual({
+      sourceFileId: "source-file-delete-target",
+      sourceRevisionId: "source-revision-delete-target",
+      kind: "source_deleted",
+      previousPath: "documents/target.md",
+      path: null,
+      resourceRevision: 1
+    });
 
     const rows = await sql<Array<{
       id: string;
       deletion_intent_id: string | null;
-      publication_dirty_at: Date | null;
       generated_output_status: string;
-      generated_bundle_file_id: string | null;
-      generated_bundle_file_path: string | null;
     }>>`
-      SELECT id, deletion_intent_id, publication_dirty_at,
-             generated_output_status, generated_bundle_file_id, generated_bundle_file_path
+      SELECT id, deletion_intent_id, generated_output_status
       FROM focowiki.source_files
       WHERE knowledge_base_id = ${sourceFileKnowledgeBaseId}
       ORDER BY id
@@ -261,18 +253,12 @@ describeDatabase("source resource deletion integration", () => {
       {
         id: "source-file-delete-neighbor",
         deletion_intent_id: null,
-        publication_dirty_at: expect.any(Date),
-        generated_output_status: "visible",
-        generated_bundle_file_id: "bundle-delete-neighbor-active",
-        generated_bundle_file_path: "pages/documents/neighbor.md"
+        generated_output_status: "pending"
       },
       {
         id: "source-file-delete-target",
         deletion_intent_id: "deletion-intent-source-file",
-        publication_dirty_at: null,
-        generated_output_status: "pending",
-        generated_bundle_file_id: null,
-        generated_bundle_file_path: null
+        generated_output_status: "pending"
       }
     ]);
   });

@@ -1,25 +1,12 @@
 import { createHash } from "node:crypto";
-import type { PublicationJobReason } from "../domain/publication-job.js";
+import { createChangeFactIdentity } from "../domain/generation.js";
+import { planPublicationImpacts, type ImpactPlannerConfig } from "../publication/impact-planner.js";
+import type { PublicationGenerationRepository } from "./ports/publication-generation-repository.js";
+import type { RoleJobRepository } from "./ports/role-job-repository.js";
+import type { SerializableJson } from "./ports/source-dispatch-repository.js";
 import type { SourceResourceRepository } from "./ports/source-resource-repository.js";
 import type { ApplicationRuntime } from "./ports/runtime.js";
 import { createSourceResourceService } from "./source-resources.js";
-
-export type ResourceMutationWorkerPort = {
-  enqueueResourceOperationJob: (input: {
-    knowledgeBaseId: string;
-    operationId: string;
-    runAfter: string;
-    maxAttempts: number;
-  }) => Promise<unknown>;
-  enqueuePublicationJob: (input: {
-    knowledgeBaseId: string;
-    reason: PublicationJobReason;
-    targetCatalogGeneration: number;
-    runAfter: string;
-    maxAttempts: number;
-    forceSuccessor?: boolean | undefined;
-  }) => Promise<unknown>;
-};
 
 export type ResourceMutationStoragePort = {
   sourceRevisionKey: (
@@ -37,7 +24,22 @@ export type ResourceMutationStoragePort = {
 
 export function createSourceResourceMutationService(input: {
   repository: SourceResourceRepository;
-  worker: ResourceMutationWorkerPort;
+  roleJobs: Pick<
+    RoleJobRepository,
+    "enqueue" | "cancelSourceJobsForDeletionIntent" | "cancelKnowledgeBaseJobs"
+  >;
+  generations: Pick<PublicationGenerationRepository, "commitMutation">;
+  graph?: {
+    getMutationClosures?: (request: {
+      knowledgeBaseId: string;
+      sourceFileIds: string[];
+    }) => Promise<Map<string, {
+      neighborSourceFileIds: string[];
+      edgeIds: string[];
+    }>>;
+  } | undefined;
+  impactPlanner: ImpactPlannerConfig;
+  publicationSettingsSnapshot: SerializableJson;
   storage: ResourceMutationStoragePort;
   runtime: ApplicationRuntime;
 }) {
@@ -49,11 +51,20 @@ export function createSourceResourceMutationService(input: {
   ) {
     const result = await resources.acceptOperation(request);
     if (!result.replayed) {
-      await input.worker.enqueueResourceOperationJob({
+      const now = input.runtime.clock.now().toISOString();
+      await input.roleJobs.enqueue({
+        id: `role-job-resource-${result.operation.id}`,
+        role: "source",
+        kind: "resource_operation",
         knowledgeBaseId: request.knowledgeBaseId,
-        operationId: result.operation.id,
-        runAfter: input.runtime.clock.now().toISOString(),
-        maxAttempts
+        sourceFileId: null,
+        sourceRevisionId: null,
+        generationId: null,
+        payload: { operationId: result.operation.id },
+        settingsSnapshot: input.publicationSettingsSnapshot,
+        runAfter: now,
+        maxAttempts,
+        createdAt: now
       });
     }
     return result;
@@ -67,19 +78,43 @@ export function createSourceResourceMutationService(input: {
       maxAttempts: number
     ) {
       const updated = await resources.updateKnowledgeBase(request);
-      if (updated?.activeReleaseId) {
-        await input.worker.enqueuePublicationJob({
+      if (updated) {
+        const committedAt = input.runtime.clock.now().toISOString();
+        const changeFactId = createChangeFactIdentity({
           knowledgeBaseId: request.knowledgeBaseId,
-          reason: "metadata",
-          targetCatalogGeneration: updated.catalogGeneration,
-          runAfter: input.runtime.clock.now().toISOString(),
-          maxAttempts,
-          forceSuccessor: true
+          sourceRevisionId: null,
+          kind: "knowledge_base_metadata_changed",
+          previousPath: null,
+          path: null,
+          mutationIdentity: `resource-revision-${updated.resourceRevision}`
+        });
+        await input.generations.commitMutation({
+          knowledgeBaseId: request.knowledgeBaseId,
+          sourceFileId: null,
+          sourceRevisionId: null,
+          kind: "knowledge_base_metadata_changed",
+          previousPath: null,
+          path: null,
+          resourceRevision: updated.resourceRevision,
+          operationId: null,
+          deletionIntentId: null,
+          changeFactId,
+          impacts: planPublicationImpacts({
+            changeFactId,
+            kind: "knowledge_base_metadata_changed",
+            sourceFileId: null,
+            previousPath: null,
+            path: null,
+            config: input.impactPlanner
+          }),
+          publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+          publicationMaxAttempts: maxAttempts,
+          committedAt
         });
       }
       return {
         knowledgeBase: updated,
-        publicationQueued: Boolean(updated?.activeReleaseId)
+        publicationQueued: Boolean(updated)
       };
     },
     async replaceSourceContent(request: {
@@ -126,6 +161,175 @@ export function createSourceResourceMutationService(input: {
         await input.storage.delete(objectKey).catch(() => undefined);
         throw error;
       }
+    },
+    async deleteSourceFile(request: {
+      knowledgeBaseId: string;
+      sourceFileId: string;
+      idempotencyKey: string;
+      expectedResourceRevision: number;
+      maxAttempts: number;
+    }) {
+      const closures = await input.graph?.getMutationClosures?.({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileIds: [request.sourceFileId]
+      });
+      const result = await resources.deleteSourceFile(request);
+      const mutation = result.sourceMutation;
+      const now = input.runtime.clock.now().toISOString();
+      if (mutation) {
+        const closure = closures?.get(mutation.sourceFileId);
+        const changeFactId = createChangeFactIdentity({
+          knowledgeBaseId: request.knowledgeBaseId,
+          sourceRevisionId: mutation.sourceRevisionId,
+          kind: "source_deleted",
+          previousPath: mutation.previousPath,
+          path: null,
+          mutationIdentity: result.deletionIntentId
+        });
+        await input.generations.commitMutation({
+          knowledgeBaseId: request.knowledgeBaseId,
+          sourceFileId: mutation.sourceFileId,
+          sourceRevisionId: mutation.sourceRevisionId,
+          kind: "source_deleted",
+          previousPath: mutation.previousPath,
+          path: null,
+          resourceRevision: mutation.resourceRevision,
+          operationId: result.operation.id,
+          deletionIntentId: result.deletionIntentId,
+          changeFactId,
+          impacts: planPublicationImpacts({
+            changeFactId,
+            kind: "source_deleted",
+            sourceFileId: mutation.sourceFileId,
+            previousPath: mutation.previousPath,
+            path: null,
+            graphNeighborSourceFileIds: closure?.neighborSourceFileIds ?? [],
+            removedGraphEdgeIds: closure?.edgeIds ?? [],
+            config: input.impactPlanner
+          }),
+          publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+          publicationMaxAttempts: request.maxAttempts,
+          committedAt: now
+        });
+      }
+      await input.roleJobs.cancelSourceJobsForDeletionIntent({
+        knowledgeBaseId: request.knowledgeBaseId,
+        deletionIntentId: result.deletionIntentId,
+        cancelledAt: now,
+        code: "SOURCE_FILE_DELETED",
+        message: "Source file was deleted before queued processing started."
+      });
+      await input.roleJobs.enqueue({
+        id: `role-job-hard-delete-${result.deletionIntentId}`,
+        role: "maintenance",
+        kind: "hard_delete",
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: null,
+        sourceRevisionId: null,
+        generationId: null,
+        payload: {
+          targetKind: "source_file",
+          sourceFileId: request.sourceFileId,
+          deletionIntentId: result.deletionIntentId
+        },
+        settingsSnapshot: input.publicationSettingsSnapshot,
+        runAfter: now,
+        maxAttempts: request.maxAttempts,
+        createdAt: now
+      });
+      return result;
+    },
+    async deleteDirectory(request: {
+      knowledgeBaseId: string;
+      directoryId: string;
+      idempotencyKey: string;
+      expectedResourceRevision: number;
+      maxAttempts: number;
+    }) {
+      const result = await resources.deleteDirectory(request);
+      const now = input.runtime.clock.now().toISOString();
+      await input.roleJobs.enqueue({
+        id: `role-job-resource-${result.operation.id}`,
+        role: "source",
+        kind: "resource_operation",
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: null,
+        sourceRevisionId: null,
+        generationId: null,
+        payload: { operationId: result.operation.id },
+        settingsSnapshot: input.publicationSettingsSnapshot,
+        runAfter: now,
+        maxAttempts: request.maxAttempts,
+        createdAt: now
+      });
+      return result;
+    },
+    async deleteKnowledgeBase(request: {
+      knowledgeBaseId: string;
+      idempotencyKey: string;
+      expectedResourceRevision: number;
+      maxAttempts: number;
+    }) {
+      const result = await resources.deleteKnowledgeBase(request);
+      const now = input.runtime.clock.now().toISOString();
+      const changeFactId = createChangeFactIdentity({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceRevisionId: null,
+        kind: "knowledge_base_deleted",
+        previousPath: null,
+        path: null,
+        mutationIdentity: result.deletionIntentId
+      });
+      await input.generations.commitMutation({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: null,
+        sourceRevisionId: null,
+        kind: "knowledge_base_deleted",
+        previousPath: null,
+        path: null,
+        resourceRevision: request.expectedResourceRevision + 1,
+        operationId: result.operation.id,
+        deletionIntentId: result.deletionIntentId,
+        changeFactId,
+        impacts: planPublicationImpacts({
+          changeFactId,
+          kind: "knowledge_base_deleted",
+          sourceFileId: null,
+          previousPath: null,
+          path: null,
+          config: input.impactPlanner
+        }),
+        publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+        publicationMaxAttempts: request.maxAttempts,
+        schedulePublication: false,
+        committedAt: now
+      });
+      const hardDeleteJobId = `role-job-hard-delete-${result.deletionIntentId}`;
+      await input.roleJobs.cancelKnowledgeBaseJobs({
+        knowledgeBaseId: request.knowledgeBaseId,
+        excludeJobIds: [hardDeleteJobId],
+        cancelledAt: now,
+        code: "KNOWLEDGE_BASE_DELETED",
+        message: "Knowledge base deletion superseded queued work."
+      });
+      await input.roleJobs.enqueue({
+        id: hardDeleteJobId,
+        role: "maintenance",
+        kind: "hard_delete",
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: null,
+        sourceRevisionId: null,
+        generationId: null,
+        payload: {
+          targetKind: "knowledge_base",
+          deletionIntentId: result.deletionIntentId
+        },
+        settingsSnapshot: input.publicationSettingsSnapshot,
+        runAfter: now,
+        maxAttempts: request.maxAttempts,
+        createdAt: now
+      });
+      return result;
     }
   };
 }

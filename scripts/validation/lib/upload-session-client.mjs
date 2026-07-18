@@ -13,12 +13,12 @@ export async function uploadMarkdownFilesWithSession(input) {
     }
   });
   const sessionId = created.session?.id;
-  const limits = created.limits;
-  if (!sessionId || !limits?.manifestPageSize) {
-    throw new Error("Upload session creation did not return session identity and limits.");
+  const transport = created.transport;
+  if (!sessionId || !transport?.manifestPageSize) {
+    throw new Error("Upload session creation did not return session identity and transport.");
   }
 
-  for (const entries of chunk(files.map(toManifestEntry), limits.manifestPageSize)) {
+  for (const entries of chunk(files.map(toManifestEntry), transport.manifestPageSize)) {
     await requestData(input.request, `${input.routeBase}/${encodeURIComponent(sessionId)}/entries`, {
       method: "POST",
       body: { entries }
@@ -53,24 +53,24 @@ export async function uploadMarkdownFilesWithSession(input) {
       {
         query: {
           transferState: "missing",
-          limit: limits.manifestPageSize,
+          limit: transport.manifestPageSize,
           ...(cursor ? { cursor } : {})
         }
       }
     );
-    for (const entries of contentBatches(page.entries?.items ?? [], fileByPath, limits)) {
-      const formData = new FormData();
-      for (const entry of entries) {
-        formData.append(
-          entry.id,
-          new Blob([entry.file.bytes], { type: "text/markdown" }),
-          entry.file.relativePath.split("/").at(-1)
-        );
+    for (const entry of page.entries?.items ?? []) {
+      const file = fileByPath.get(entry.relativePath);
+      if (!file) {
+        throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
       }
       await requestData(
         input.request,
-        `${input.routeBase}/${encodeURIComponent(sessionId)}/content`,
-        { method: "POST", formData }
+        `${input.routeBase}/${encodeURIComponent(sessionId)}/entries/${encodeURIComponent(entry.id)}/content`,
+        {
+          method: "PUT",
+          headers: { "content-type": "text/markdown; charset=utf-8" },
+          rawBody: file.bytes
+        }
       );
     }
     cursor = page.entries?.nextCursor ?? null;
@@ -79,7 +79,7 @@ export async function uploadMarkdownFilesWithSession(input) {
   const finalized = await requestData(
     input.request,
     `${input.routeBase}/${encodeURIComponent(sessionId)}/finalize`,
-    { method: "POST", status: 202 }
+    { method: "POST", status: 200 }
   );
   const completed = await waitForFinalization({
     request: input.request,
@@ -93,11 +93,11 @@ export async function uploadMarkdownFilesWithSession(input) {
     request: input.request,
     routeBase: input.routeBase,
     sessionId,
-    limit: limits.manifestPageSize
+    limit: transport.manifestPageSize
   });
   return {
     session: completed,
-    limits,
+    transport,
     entries,
     files: entries
       .filter((entry) => entry.sourceFileId)
@@ -175,31 +175,6 @@ function toManifestEntry(file) {
     declaredSize: file.bytes.byteLength,
     checksumSha256: createHash("sha256").update(file.bytes).digest("hex")
   };
-}
-
-function contentBatches(entries, fileByPath, limits) {
-  const batches = [];
-  let current = [];
-  let currentBytes = 0;
-  for (const entry of entries) {
-    const file = fileByPath.get(entry.relativePath);
-    if (!file) throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
-    if (
-      current.length > 0
-      && (
-        current.length >= limits.contentBatchMaxFiles
-        || currentBytes + file.bytes.byteLength > limits.contentBatchMaxBytes
-      )
-    ) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push({ id: entry.id, file });
-    currentBytes += file.bytes.byteLength;
-  }
-  if (current.length > 0) batches.push(current);
-  return batches;
 }
 
 function chunk(items, size) {

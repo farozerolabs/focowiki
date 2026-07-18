@@ -21,7 +21,13 @@ export type RedisCommandClient = {
   incr: (key: string) => Promise<number>;
   expire: (key: string, seconds: number) => Promise<number | boolean>;
   ttl: (key: string) => Promise<number>;
+  sAdd: (key: string, member: string | string[]) => Promise<number>;
+  sRem: (key: string, member: string | string[]) => Promise<number>;
   scanIterator?: (options: { MATCH?: string; COUNT?: number }) => AsyncIterable<string | string[]>;
+  sScanIterator: (
+    key: string,
+    options?: { COUNT?: number }
+  ) => AsyncIterable<string[]>;
 };
 
 export type RedisCoordinator = {
@@ -44,12 +50,12 @@ export type RedisCoordinator = {
   ) => Promise<boolean>;
   releaseSourceFileGraphLock: (sourceFileId: string, ownerId: string) => Promise<boolean>;
   recordSourceFileEvent: (
-    sourceFileId: string,
+    input: { knowledgeBaseId: string; sourceFileId: string },
     value: unknown,
     ttlSeconds: number
   ) => Promise<void>;
   recordSourceFileGraphState: (
-    sourceFileId: string,
+    input: { knowledgeBaseId: string; sourceFileId: string },
     value: unknown,
     ttlSeconds: number
   ) => Promise<void>;
@@ -213,15 +219,17 @@ export function createRedisCoordinator(
       await client.del(key);
       return true;
     },
-    async recordSourceFileEvent(sourceFileId, value, ttlSeconds) {
-      await client.set(buildKey("source-file-events", sourceFileId), JSON.stringify(value), {
+    async recordSourceFileEvent(input, value, ttlSeconds) {
+      await client.set(buildKey("source-file-events", input.sourceFileId), JSON.stringify(value), {
         EX: ttlSeconds
       });
+      await trackSourceRuntimeKey(client, buildKey, input, ttlSeconds);
     },
-    async recordSourceFileGraphState(sourceFileId, value, ttlSeconds) {
-      await client.set(buildKey("source-file-graph-state", sourceFileId), JSON.stringify(value), {
+    async recordSourceFileGraphState(input, value, ttlSeconds) {
+      await client.set(buildKey("source-file-graph-state", input.sourceFileId), JSON.stringify(value), {
         EX: ttlSeconds
       });
+      await trackSourceRuntimeKey(client, buildKey, input, ttlSeconds);
     },
     async acquireKnowledgeBasePublicationLock(knowledgeBaseId, ownerId, ttlSeconds) {
       const result = await client.set(
@@ -378,7 +386,10 @@ async function clearSourceFileRuntimeKeys(
     `${buildKey("page-cache")}:*${knowledgeBaseId}*${sourceFileId}*`
   ];
 
-  return (await deleteExactKeys(client, exactKeys)) + (await deleteMatchingKeys(client, patterns));
+  const runtimeIndexKey = buildKey("source-file-runtime-index", knowledgeBaseId);
+  return (await deleteExactKeys(client, exactKeys))
+    + (await deleteMatchingKeys(client, patterns))
+    + await client.sRem(runtimeIndexKey, sourceFileId);
 }
 
 async function clearKnowledgeBaseRuntimeKeys(
@@ -394,7 +405,35 @@ async function clearKnowledgeBaseRuntimeKeys(
     `${buildKey("page-cache")}:*${normalizedKnowledgeBaseId}*`
   ];
 
-  return (await deleteExactKeys(client, exactKeys)) + (await deleteMatchingKeys(client, patterns));
+  let deleted = (await deleteExactKeys(client, exactKeys))
+    + (await deleteMatchingKeys(client, patterns));
+  const runtimeIndexKey = buildKey("source-file-runtime-index", normalizedKnowledgeBaseId);
+  for await (const batch of client.sScanIterator(runtimeIndexKey, { COUNT: 100 })) {
+    for (const sourceFileId of uniqueStrings(batch)) {
+      deleted += await deleteExactKeys(client, [
+        buildKey("source-file-events", sourceFileId),
+        buildKey("source-file-graph-state", sourceFileId),
+        buildKey("source-file-locks", sourceFileId),
+        buildKey("source-file-graph-locks", sourceFileId)
+      ]);
+    }
+  }
+  deleted += await client.del(runtimeIndexKey);
+  return deleted;
+}
+
+async function trackSourceRuntimeKey(
+  client: RedisCommandClient,
+  buildKey: (...parts: string[]) => string,
+  input: { knowledgeBaseId: string; sourceFileId: string },
+  ttlSeconds: number
+): Promise<void> {
+  const indexKey = buildKey("source-file-runtime-index", input.knowledgeBaseId);
+  await client.sAdd(indexKey, normalizeKeyPart(input.sourceFileId));
+  const currentTtl = await client.ttl(indexKey);
+  if (currentTtl < ttlSeconds) {
+    await client.expire(indexKey, ttlSeconds);
+  }
 }
 
 async function deleteExactKeys(client: RedisCommandClient, keys: string[]): Promise<number> {

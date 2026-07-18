@@ -27,13 +27,17 @@ export async function processSourceFileGraphStage(input: {
   progressClock: () => string;
   mark: SourceFileStageMarker;
   recordStage: SourceFileStageRecorder;
-}): Promise<{ affectedSourceFileIds: string[] }> {
+}): Promise<{
+  affectedSourceFileIds: string[];
+  edgeIds: string[];
+  removedEdgeIds: string[];
+}> {
   const stage: SourceFileProcessingStage = "graph_generation";
   const startedAt = input.progressClock();
   let graphJobId: string | null = null;
   let graphLockAcquired = false;
 
-  await input.mark({ status: "running", stage, endedAt: null, errorCode: null });
+  await input.mark({ status: "running", stage, endedAt: null });
   await input.recordStage(stage, { startedAt, endedAt: null, severity: "info" });
 
   if (!input.repositories.graph) {
@@ -42,10 +46,16 @@ export async function processSourceFileGraphStage(input: {
       endedAt: input.progressClock(),
       severity: "info"
     });
-    return { affectedSourceFileIds: [input.source.id] };
+    return {
+      affectedSourceFileIds: [input.source.id],
+      edgeIds: [],
+      removedEdgeIds: []
+    };
   }
 
   let affectedSourceFileIds = [input.source.id];
+  let edgeIds: string[] = [];
+  let removedEdgeIds: string[] = [];
 
   try {
     graphLockAcquired = await input.redis.acquireSourceFileGraphLock(
@@ -59,7 +69,7 @@ export async function processSourceFileGraphStage(input: {
     }
 
     await input.redis.recordSourceFileGraphState(
-      input.source.id,
+      { knowledgeBaseId: input.knowledgeBaseId, sourceFileId: input.source.id },
       {
         knowledgeBaseId: input.knowledgeBaseId,
         status: "running",
@@ -97,6 +107,8 @@ export async function processSourceFileGraphStage(input: {
         : null
     });
     affectedSourceFileIds = graphResult.affectedSourceFileIds;
+    edgeIds = graphResult.edgeIds;
+    removedEdgeIds = graphResult.removedEdgeIds;
 
     if (graphJobId) {
       await input.repositories.graph.completeGraphJob?.({
@@ -108,7 +120,7 @@ export async function processSourceFileGraphStage(input: {
     }
 
     await input.redis.recordSourceFileGraphState(
-      input.source.id,
+      { knowledgeBaseId: input.knowledgeBaseId, sourceFileId: input.source.id },
       {
         knowledgeBaseId: input.knowledgeBaseId,
         status: "completed",
@@ -136,7 +148,7 @@ export async function processSourceFileGraphStage(input: {
     }
     await input.redis
       .recordSourceFileGraphState(
-        input.source.id,
+        { knowledgeBaseId: input.knowledgeBaseId, sourceFileId: input.source.id },
         {
           knowledgeBaseId: input.knowledgeBaseId,
           status: "failed",
@@ -159,5 +171,5 @@ export async function processSourceFileGraphStage(input: {
     severity: "info"
   });
 
-  return { affectedSourceFileIds };
+  return { affectedSourceFileIds, edgeIds, removedEdgeIds };
 }

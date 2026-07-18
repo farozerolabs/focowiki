@@ -38,8 +38,8 @@ describe("redis coordination cleanup", () => {
     const client = createRedisClient({
       keys: [
         "focowiki:pagination-invalid:source-files:kb-test",
-        "focowiki:pagination-cursors:file-tree:kb-test:release-test:cursor-a",
-        "focowiki:page-cache:bundle-files:kb-test:release-test:page-a"
+        "focowiki:pagination-cursors:file-tree:kb-test:generation-test:cursor-a",
+        "focowiki:page-cache:active-files:kb-test:generation-test:page-a"
       ],
       deletedKeys
     });
@@ -50,19 +50,42 @@ describe("redis coordination cleanup", () => {
       sourceFileIds: ["source-file-a"]
     });
 
-    expect(deleted).toBe(8);
+    expect(deleted).toBe(9);
     expect(deletedKeys).toEqual(
       expect.arrayContaining([
         "focowiki:knowledge-base-publication-locks:kb-test",
         "focowiki:pagination-invalid:source-files:kb-test",
-        "focowiki:pagination-cursors:file-tree:kb-test:release-test:cursor-a",
-        "focowiki:page-cache:bundle-files:kb-test:release-test:page-a",
+        "focowiki:pagination-cursors:file-tree:kb-test:generation-test:cursor-a",
+        "focowiki:page-cache:active-files:kb-test:generation-test:page-a",
         "focowiki:source-file-events:source-file-a",
         "focowiki:source-file-graph-state:source-file-a",
         "focowiki:source-file-locks:source-file-a",
         "focowiki:source-file-graph-locks:source-file-a"
       ])
     );
+  });
+
+  it("discovers source runtime keys from the knowledge-base index during hard delete", async () => {
+    const deletedKeys: string[] = [];
+    const client = createRedisClient({ keys: [], deletedKeys });
+    const redis = createRedisCoordinator(client);
+    await redis.recordSourceFileEvent(
+      { knowledgeBaseId: "kb-test", sourceFileId: "source-file-indexed" },
+      { knowledgeBaseId: "kb-test", stage: "completed" },
+      300
+    );
+    await redis.recordSourceFileGraphState(
+      { knowledgeBaseId: "kb-test", sourceFileId: "source-file-indexed" },
+      { knowledgeBaseId: "kb-test", status: "completed" },
+      300
+    );
+
+    await redis.clearKnowledgeBaseRuntimeKeys({ knowledgeBaseId: "kb-test" });
+
+    expect(deletedKeys).toEqual(expect.arrayContaining([
+      "focowiki:source-file-events:source-file-indexed",
+      "focowiki:source-file-graph-state:source-file-indexed"
+    ]));
   });
 
   it("clears both authorization and usage keys for a revoked OpenAPI key", async () => {
@@ -83,8 +106,13 @@ function createRedisClient(input: {
   deletedKeys: string[];
 }): RedisCommandClient {
   const deleted = new Set<string>();
+  const keys = new Set(input.keys);
+  const sets = new Map<string, Set<string>>();
   return {
-    set: vi.fn(async () => "OK"),
+    set: vi.fn(async (key: string) => {
+      keys.add(key);
+      return "OK";
+    }),
     get: vi.fn(async () => null),
     del: vi.fn(async (key: string) => {
       if (deleted.has(key)) {
@@ -92,18 +120,46 @@ function createRedisClient(input: {
       }
       deleted.add(key);
       input.deletedKeys.push(key);
+      keys.delete(key);
+      sets.delete(key);
       return 1;
     }),
     incr: vi.fn(async () => 1),
     expire: vi.fn(async () => 1),
     ttl: vi.fn(async () => 60),
+    sAdd: vi.fn(async (key: string, member: string | string[]) => {
+      const values = Array.isArray(member) ? member : [member];
+      const members = sets.get(key) ?? new Set<string>();
+      let added = 0;
+      for (const value of values) {
+        if (!members.has(value)) added += 1;
+        members.add(value);
+      }
+      sets.set(key, members);
+      keys.add(key);
+      return added;
+    }),
+    sRem: vi.fn(async (key: string, member: string | string[]) => {
+      const values = Array.isArray(member) ? member : [member];
+      const members = sets.get(key);
+      if (!members) return 0;
+      let removed = 0;
+      for (const value of values) {
+        if (members.delete(value)) removed += 1;
+      }
+      return removed;
+    }),
     scanIterator: async function* (options: { MATCH?: string }) {
       const pattern = options.MATCH ?? "*";
-      const matches = input.keys.filter((key) => matchesPattern(key, pattern));
+      const matches = [...keys].filter((key) => matchesPattern(key, pattern));
 
       if (matches.length > 0) {
         yield matches;
       }
+    },
+    sScanIterator: async function* (key: string) {
+      const members = [...(sets.get(key) ?? [])];
+      if (members.length > 0) yield members;
     }
   };
 }

@@ -1,13 +1,17 @@
-export type SourceFileProcessingStatus = "queued" | "running" | "completed" | "failed";
-export type SourceFileProcessingStage =
+export type SourceFileLifecycleState =
+  | "queued"
+  | "running"
+  | "pending_publication"
+  | "visible"
+  | "failed";
+export type SourceFileCurrentStage =
   | "upload_storage"
   | "metadata_resolution"
   | "llm_suggestion"
   | "graph_generation"
-  | "okf_validation"
-  | "bundle_generation"
-  | "index_publication"
-  | "release_activation";
+  | "projection_generation"
+  | "generation_validation"
+  | "generation_activation";
 export type SourceFileModelInvocationStatus =
   | "running"
   | "completed"
@@ -21,8 +25,8 @@ export type SourceFileActionState = "openable" | "retryable" | "none";
 export type SourceFileListFilters = {
   fileNameQuery: string;
   fileIdQuery: string;
-  processingStatus: SourceFileProcessingStatus | null;
-  processingStage: SourceFileProcessingStage | null;
+  state: SourceFileLifecycleState | null;
+  currentStage: SourceFileCurrentStage | null;
   modelInvocationStatus: SourceFileModelInvocationStatus | null;
   generatedOutputStatus: SourceFileGeneratedOutputStatus | null;
   startedFrom: string | null;
@@ -34,22 +38,22 @@ export type SourceFileListFilters = {
   actionState: SourceFileActionState | null;
 };
 
-export const SOURCE_FILE_PROCESSING_STATUSES: SourceFileProcessingStatus[] = [
+export const SOURCE_FILE_LIFECYCLE_STATES: SourceFileLifecycleState[] = [
   "queued",
   "running",
-  "completed",
+  "pending_publication",
+  "visible",
   "failed"
 ];
 
-export const SOURCE_FILE_PROCESSING_STAGES: SourceFileProcessingStage[] = [
+export const SOURCE_FILE_CURRENT_STAGES: SourceFileCurrentStage[] = [
   "upload_storage",
   "metadata_resolution",
   "llm_suggestion",
   "graph_generation",
-  "okf_validation",
-  "bundle_generation",
-  "index_publication",
-  "release_activation"
+  "projection_generation",
+  "generation_validation",
+  "generation_activation"
 ];
 
 export const SOURCE_FILE_MODEL_INVOCATION_STATUSES: SourceFileModelInvocationStatus[] = [
@@ -81,8 +85,8 @@ export function createEmptySourceFileListFilters(): SourceFileListFilters {
   return {
     fileNameQuery: "",
     fileIdQuery: "",
-    processingStatus: null,
-    processingStage: null,
+    state: null,
+    currentStage: null,
     modelInvocationStatus: null,
     generatedOutputStatus: null,
     startedFrom: null,
@@ -103,8 +107,8 @@ export function sourceFileFilterCount(filters: SourceFileListFilters): number {
   return [
     filters.fileNameQuery.trim(),
     filters.fileIdQuery.trim(),
-    filters.processingStatus,
-    filters.processingStage,
+    filters.state,
+    filters.currentStage,
     filters.modelInvocationStatus,
     filters.generatedOutputStatus,
     filters.startedFrom,
@@ -123,8 +127,8 @@ export function appendSourceFileFilterParams(
 ): void {
   setTextParam(params, "fileNameQuery", filters.fileNameQuery);
   setTextParam(params, "fileIdQuery", filters.fileIdQuery);
-  setEnumParam(params, "processingStatus", filters.processingStatus);
-  setEnumParam(params, "processingStage", filters.processingStage);
+  setEnumParam(params, "state", filters.state);
+  setEnumParam(params, "currentStage", filters.currentStage);
   setEnumParam(params, "modelInvocationStatus", filters.modelInvocationStatus);
   setEnumParam(params, "generatedOutputStatus", filters.generatedOutputStatus);
   setEnumParam(params, "startedFrom", filters.startedFrom);

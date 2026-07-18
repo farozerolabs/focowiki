@@ -10,7 +10,7 @@ import {
   writeFullCodebaseReport
 } from "./lib/full-codebase-validation.mjs";
 
-const DEFAULT_CHANGE_ID = "validate-clean-architecture-full-system";
+const DEFAULT_CHANGE_ID = "implement-incremental-sharded-publication";
 
 loadLocalEnv();
 

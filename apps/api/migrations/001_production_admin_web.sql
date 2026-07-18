@@ -24,113 +24,68 @@ SET row_security = off;
 
 CREATE SCHEMA focowiki;
 
-CREATE EXTENSION pg_trgm WITH SCHEMA focowiki;
+
+--
+-- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA focowiki;
 
 
 --
--- Name: adjust_worker_queue_summary(text, text, text, integer); Type: FUNCTION; Schema: focowiki; Owner: -
+-- Name: EXTENSION pg_trgm; Type: COMMENT; Schema: -; Owner: -
 --
 
-CREATE FUNCTION focowiki.adjust_worker_queue_summary(input_knowledge_base_id text, input_kind text, input_status text, input_delta integer) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  IF input_delta > 0 THEN
-    INSERT INTO focowiki.worker_queue_summaries (
-      knowledge_base_id,
-      kind,
-      status,
-      job_count,
-      updated_at
-    )
-    VALUES (
-      input_knowledge_base_id,
-      input_kind,
-      input_status,
-      input_delta,
-      now()
-    )
-    ON CONFLICT (knowledge_base_id, kind, status)
-    DO UPDATE SET
-      job_count = focowiki.worker_queue_summaries.job_count + input_delta,
-      updated_at = now();
-  ELSIF input_delta < 0 THEN
-    UPDATE focowiki.worker_queue_summaries
-    SET
-      job_count = GREATEST(job_count + input_delta, 0),
-      updated_at = now()
-    WHERE knowledge_base_id = input_knowledge_base_id
-      AND kind = input_kind
-      AND status = input_status;
-
-    DELETE FROM focowiki.worker_queue_summaries
-    WHERE knowledge_base_id = input_knowledge_base_id
-      AND kind = input_kind
-      AND status = input_status
-      AND job_count = 0;
-  END IF;
-END;
-$$;
-
-
---
--- Name: sync_worker_queue_summary(); Type: FUNCTION; Schema: focowiki; Owner: -
---
-
-CREATE FUNCTION focowiki.sync_worker_queue_summary() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    PERFORM focowiki.adjust_worker_queue_summary(
-      NEW.knowledge_base_id,
-      NEW.kind,
-      NEW.status,
-      1
-    );
-    RETURN NEW;
-  ELSIF TG_OP = 'DELETE' THEN
-    PERFORM focowiki.adjust_worker_queue_summary(
-      OLD.knowledge_base_id,
-      OLD.kind,
-      OLD.status,
-      -1
-    );
-    RETURN OLD;
-  ELSIF TG_OP = 'UPDATE' THEN
-    IF (
-      OLD.knowledge_base_id,
-      OLD.kind,
-      OLD.status
-    ) IS DISTINCT FROM (
-      NEW.knowledge_base_id,
-      NEW.kind,
-      NEW.status
-    ) THEN
-      PERFORM focowiki.adjust_worker_queue_summary(
-        OLD.knowledge_base_id,
-        OLD.kind,
-        OLD.status,
-        -1
-      );
-      PERFORM focowiki.adjust_worker_queue_summary(
-        NEW.knowledge_base_id,
-        NEW.kind,
-        NEW.status,
-        1
-      );
-    END IF;
-    RETURN NEW;
-  END IF;
-
-  RETURN NULL;
-END;
-$$;
+COMMENT ON EXTENSION pg_trgm IS 'text similarity measurement and index searching based on trigrams';
 
 
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: active_object_refs; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.active_object_refs (
+    knowledge_base_id text NOT NULL,
+    ref_kind text NOT NULL,
+    ref_key text NOT NULL,
+    file_id text NOT NULL,
+    last_changed_generation_id text NOT NULL,
+    checksum_sha256 text NOT NULL,
+    format_version integer NOT NULL,
+    logical_path text,
+    source_file_id text,
+    projection_shard_id text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: active_projection_records; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.active_projection_records (
+    knowledge_base_id text NOT NULL,
+    projection_kind text NOT NULL,
+    record_id text NOT NULL,
+    last_changed_generation_id text NOT NULL,
+    shard_key text NOT NULL,
+    source_file_id text,
+    related_source_file_id text,
+    logical_path text,
+    parent_path text,
+    sort_key text,
+    title text,
+    summary text,
+    searchable_text text,
+    payload_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT active_projection_records_kind_check CHECK ((projection_kind = ANY (ARRAY['search'::text, 'links'::text, 'manifest'::text, 'tree'::text, 'graph_node'::text, 'graph_edge'::text, 'related_files'::text]))),
+    CONSTRAINT active_projection_records_payload_check CHECK ((jsonb_typeof(payload_json) = 'object'::text))
+);
+
 
 --
 -- Name: admin_audit_events; Type: TABLE; Schema: focowiki; Owner: -
@@ -151,53 +106,38 @@ CREATE TABLE focowiki.admin_audit_events (
 
 
 --
--- Name: bundle_files; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: cleanup_checkpoints; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.bundle_files (
-    id text NOT NULL,
+CREATE TABLE focowiki.cleanup_checkpoints (
+    job_id text NOT NULL,
     knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    source_file_id text,
-    file_kind text NOT NULL,
-    logical_path text NOT NULL,
-    object_key text NOT NULL,
-    content_type text NOT NULL,
-    size_bytes bigint NOT NULL,
-    checksum_sha256 text NOT NULL,
-    okf_type text,
-    title text,
-    description text,
-    tags_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    frontmatter_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    navigation_only boolean DEFAULT false NOT NULL,
-    source_directory_id text,
+    target_kind text NOT NULL,
+    target_id text NOT NULL,
+    deletion_intent_id text NOT NULL,
+    phase text NOT NULL,
+    discovery_cursor text,
+    discovery_completed boolean DEFAULT false NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT bundle_files_check CHECK ((((file_kind = 'page'::text) AND (source_file_id IS NOT NULL)) OR ((file_kind <> 'page'::text) AND (source_file_id IS NULL)))),
-    CONSTRAINT bundle_files_file_kind_check CHECK ((file_kind = ANY (ARRAY['page'::text, 'index'::text, 'log'::text, 'history_page'::text, 'schema'::text, 'directory_index'::text, 'directory_index_page'::text, 'directory_index_map'::text, 'index_catalog'::text, 'manifest_index'::text, 'manifest_index_shard'::text, 'search_index'::text, 'search_index_shard'::text, 'link_index'::text, 'link_index_shard'::text, 'change_index'::text, 'change_index_shard'::text, 'graph_index'::text, 'graph_manifest'::text, 'graph_node_index'::text, 'graph_edge_shard'::text, 'graph_file'::text, 'graph_community'::text, 'graph_insight'::text]))),
-    CONSTRAINT bundle_files_size_bytes_check CHECK ((size_bytes >= 0))
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT cleanup_checkpoints_phase_check CHECK ((phase = ANY (ARRAY['object_discovery'::text, 'object_deletion'::text, 'database_cleanup'::text]))),
+    CONSTRAINT cleanup_checkpoints_target_kind_check CHECK ((target_kind = ANY (ARRAY['source_file'::text, 'source_directory'::text, 'knowledge_base'::text])))
 );
 
 
 --
--- Name: bundle_file_search_documents; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: cleanup_object_deletions; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.bundle_file_search_documents (
-    bundle_file_id text NOT NULL,
+CREATE TABLE focowiki.cleanup_object_deletions (
+    job_id text NOT NULL,
     knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    source_file_id text,
-    file_kind text NOT NULL,
-    logical_path text NOT NULL,
-    path_text text NOT NULL,
-    title_text text NOT NULL,
-    description_text text NOT NULL,
-    metadata_text text NOT NULL,
-    search_text text NOT NULL,
+    object_key text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    deleted_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT bundle_file_search_documents_file_kind_check CHECK ((file_kind = ANY (ARRAY['page'::text, 'index'::text, 'log'::text, 'history_page'::text, 'schema'::text, 'directory_index'::text, 'directory_index_page'::text, 'directory_index_map'::text, 'index_catalog'::text, 'manifest_index'::text, 'manifest_index_shard'::text, 'search_index'::text, 'search_index_shard'::text, 'link_index'::text, 'link_index_shard'::text, 'change_index'::text, 'change_index_shard'::text, 'graph_index'::text, 'graph_manifest'::text, 'graph_node_index'::text, 'graph_edge_shard'::text, 'graph_file'::text, 'graph_community'::text, 'graph_insight'::text])))
+    CONSTRAINT cleanup_object_deletions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'deleted'::text])))
 );
 
 
@@ -226,17 +166,124 @@ CREATE TABLE focowiki.deletion_intents (
 
 
 --
--- Name: hard_delete_object_deletions; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.hard_delete_object_deletions (
+CREATE TABLE focowiki.directory_navigation_leaves (
     id text NOT NULL,
-    job_id text NOT NULL,
     knowledge_base_id text NOT NULL,
+    directory_path text NOT NULL,
+    previous_leaf_id text,
+    next_leaf_id text,
+    entry_count integer NOT NULL,
+    byte_count integer NOT NULL,
+    first_sort_key text,
+    last_sort_key text,
+    entries_json jsonb DEFAULT '[]'::jsonb NOT NULL,
+    revision bigint DEFAULT 1 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT directory_navigation_leaves_count_check CHECK (((entry_count >= 0) AND (byte_count >= 0))),
+    CONSTRAINT directory_navigation_leaves_entries_check CHECK ((jsonb_typeof(entries_json) = 'array'::text))
+);
+
+
+--
+-- Name: directory_navigation_summaries; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.directory_navigation_summaries (
+    knowledge_base_id text NOT NULL,
+    directory_path text NOT NULL,
+    entry_count bigint DEFAULT 0 NOT NULL,
+    first_leaf_id text,
+    revision bigint DEFAULT 1 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT directory_navigation_summaries_count_check CHECK ((entry_count >= 0))
+);
+
+
+--
+-- Name: dispatch_pressure_state; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.dispatch_pressure_state (
+    scope text NOT NULL,
+    paused boolean DEFAULT false NOT NULL,
+    reason text,
+    pressure_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT dispatch_pressure_state_json_check CHECK ((jsonb_typeof(pressure_json) = 'object'::text)),
+    CONSTRAINT dispatch_pressure_state_scope_check CHECK ((scope = 'global'::text))
+);
+
+
+--
+-- Name: generation_object_refs; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.generation_object_refs (
+    generation_id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    ref_kind text NOT NULL,
+    ref_key text NOT NULL,
+    file_id text,
+    action text DEFAULT 'upsert'::text NOT NULL,
+    checksum_sha256 text,
+    format_version integer,
+    logical_path text,
     source_file_id text,
+    projection_shard_id text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT generation_object_refs_action_check CHECK ((action = ANY (ARRAY['upsert'::text, 'delete'::text]))),
+    CONSTRAINT generation_object_refs_object_check CHECK ((((action = 'upsert'::text) AND (file_id IS NOT NULL) AND (checksum_sha256 IS NOT NULL) AND (format_version IS NOT NULL)) OR ((action = 'delete'::text) AND (file_id IS NULL) AND (checksum_sha256 IS NULL) AND (format_version IS NULL))))
+);
+
+
+--
+-- Name: generation_projection_records; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.generation_projection_records (
+    generation_id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    projection_kind text NOT NULL,
+    record_id text NOT NULL,
+    action text DEFAULT 'upsert'::text NOT NULL,
+    shard_key text NOT NULL,
+    source_file_id text,
+    related_source_file_id text,
+    logical_path text,
+    parent_path text,
+    sort_key text,
+    title text,
+    summary text,
+    searchable_text text,
+    payload_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT generation_projection_records_action_check CHECK ((action = ANY (ARRAY['upsert'::text, 'delete'::text]))),
+    CONSTRAINT generation_projection_records_kind_check CHECK ((projection_kind = ANY (ARRAY['search'::text, 'links'::text, 'manifest'::text, 'tree'::text, 'graph_node'::text, 'graph_edge'::text, 'related_files'::text]))),
+    CONSTRAINT generation_projection_records_payload_check CHECK ((jsonb_typeof(payload_json) = 'object'::text))
+);
+
+
+--
+-- Name: immutable_objects; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.immutable_objects (
+    checksum_sha256 text NOT NULL,
+    format_version integer NOT NULL,
     object_key text NOT NULL,
-    deleted_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    content_type text NOT NULL,
+    size_bytes bigint NOT NULL,
+    lifecycle_state text DEFAULT 'active'::text NOT NULL,
+    deletion_job_id text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    verified_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT immutable_objects_checksum_check CHECK ((checksum_sha256 ~ '^[a-f0-9]{64}$'::text)),
+    CONSTRAINT immutable_objects_format_check CHECK ((format_version > 0)),
+    CONSTRAINT immutable_objects_lifecycle_check CHECK ((((lifecycle_state = 'active'::text) AND (deletion_job_id IS NULL)) OR ((lifecycle_state = 'deleting'::text) AND (deletion_job_id IS NOT NULL)))),
+    CONSTRAINT immutable_objects_size_check CHECK ((size_bytes >= 0))
 );
 
 
@@ -248,7 +295,7 @@ CREATE TABLE focowiki.knowledge_bases (
     id text NOT NULL,
     name text NOT NULL,
     description text,
-    active_release_id text,
+    active_generation_id text,
     resource_revision integer DEFAULT 1 NOT NULL,
     catalog_generation bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -257,151 +304,6 @@ CREATE TABLE focowiki.knowledge_bases (
     CONSTRAINT knowledge_bases_catalog_generation_check CHECK ((catalog_generation >= 0)),
     CONSTRAINT knowledge_bases_id_check CHECK ((id ~ '^[a-z0-9][a-z0-9-]*[a-z0-9]$'::text)),
     CONSTRAINT knowledge_bases_resource_revision_check CHECK ((resource_revision >= 1))
-);
-
-
---
--- Name: knowledge_file_tree_nodes; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.knowledge_file_tree_nodes (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    parent_id text,
-    path text NOT NULL,
-    name text NOT NULL,
-    node_type text NOT NULL,
-    file_id text,
-    source_directory_id text,
-    depth integer NOT NULL,
-    sort_key text NOT NULL,
-    child_count integer DEFAULT 0 NOT NULL,
-    direct_file_count integer DEFAULT 0 NOT NULL,
-    descendant_file_count integer DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT knowledge_file_tree_nodes_check CHECK ((((node_type = 'directory'::text) AND (file_id IS NULL)) OR ((node_type = 'file'::text) AND (file_id IS NOT NULL)))),
-    CONSTRAINT knowledge_file_tree_nodes_child_count_check CHECK ((child_count >= 0)),
-    CONSTRAINT knowledge_file_tree_nodes_depth_check CHECK ((depth >= 0)),
-    CONSTRAINT knowledge_file_tree_nodes_descendant_file_count_check CHECK ((descendant_file_count >= 0)),
-    CONSTRAINT knowledge_file_tree_nodes_direct_file_count_check CHECK ((direct_file_count >= 0)),
-    CONSTRAINT knowledge_file_tree_nodes_node_type_check CHECK ((node_type = ANY (ARRAY['directory'::text, 'file'::text])))
-);
-
-
---
--- Name: knowledge_graph_edges; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.knowledge_graph_edges (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    from_node_id text NOT NULL,
-    to_node_id text NOT NULL,
-    from_file_id text NOT NULL,
-    to_file_id text NOT NULL,
-    relation_type text NOT NULL,
-    direction text DEFAULT 'directed'::text NOT NULL,
-    confidence numeric NOT NULL,
-    weight numeric NOT NULL,
-    quality_status text DEFAULT 'accepted'::text NOT NULL,
-    reason text NOT NULL,
-    evidence_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    signals_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_by text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT knowledge_graph_edges_check CHECK ((from_node_id <> to_node_id)),
-    CONSTRAINT knowledge_graph_edges_check1 CHECK ((from_file_id <> to_file_id)),
-    CONSTRAINT knowledge_graph_edges_confidence_check CHECK (((confidence >= (0)::numeric) AND (confidence <= (1)::numeric))),
-    CONSTRAINT knowledge_graph_edges_direction_check CHECK ((direction = ANY (ARRAY['directed'::text, 'bidirectional'::text]))),
-    CONSTRAINT knowledge_graph_edges_evidence_json_check CHECK ((jsonb_typeof(evidence_json) = 'array'::text)),
-    CONSTRAINT knowledge_graph_edges_quality_status_check CHECK ((quality_status = ANY (ARRAY['accepted'::text, 'rejected'::text, 'needs_review'::text]))),
-    CONSTRAINT knowledge_graph_edges_signals_json_check CHECK ((jsonb_typeof(signals_json) = 'object'::text)),
-    CONSTRAINT knowledge_graph_edges_weight_check CHECK (((weight >= (0)::numeric) AND (weight <= (1)::numeric)))
-);
-
-
---
--- Name: knowledge_graph_insights; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.knowledge_graph_insights (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    insight_type text NOT NULL,
-    title text NOT NULL,
-    description text NOT NULL,
-    payload_json jsonb NOT NULL,
-    severity text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT knowledge_graph_insights_payload_json_check CHECK ((jsonb_typeof(payload_json) = 'object'::text)),
-    CONSTRAINT knowledge_graph_insights_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'error'::text])))
-);
-
-
---
--- Name: knowledge_graph_nodes; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.knowledge_graph_nodes (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    file_id text NOT NULL,
-    source_file_id text,
-    path text NOT NULL,
-    title text,
-    summary text,
-    subjects_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    entities_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    keywords_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    headings_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    explicit_references_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    profile_text text NOT NULL,
-    quality_status text DEFAULT 'ready'::text NOT NULL,
-    quality_notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT knowledge_graph_nodes_entities_json_check CHECK ((jsonb_typeof(entities_json) = 'array'::text)),
-    CONSTRAINT knowledge_graph_nodes_explicit_references_json_check CHECK ((jsonb_typeof(explicit_references_json) = 'array'::text)),
-    CONSTRAINT knowledge_graph_nodes_headings_json_check CHECK ((jsonb_typeof(headings_json) = 'array'::text)),
-    CONSTRAINT knowledge_graph_nodes_keywords_json_check CHECK ((jsonb_typeof(keywords_json) = 'array'::text)),
-    CONSTRAINT knowledge_graph_nodes_metadata_json_check CHECK ((jsonb_typeof(metadata_json) = 'object'::text)),
-    CONSTRAINT knowledge_graph_nodes_quality_status_check CHECK ((quality_status = ANY (ARRAY['ready'::text, 'partial'::text, 'failed'::text]))),
-    CONSTRAINT knowledge_graph_nodes_subjects_json_check CHECK ((jsonb_typeof(subjects_json) = 'array'::text))
-);
-
-
---
--- Name: knowledge_graph_search_documents; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.knowledge_graph_search_documents (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    release_id text NOT NULL,
-    node_id text,
-    edge_id text,
-    file_id text,
-    path text,
-    anchor_type text NOT NULL,
-    title text,
-    summary text,
-    search_text text NOT NULL,
-    matched_field_text text,
-    neighbor_text text DEFAULT ''::text NOT NULL,
-    relationship_count integer DEFAULT 0 NOT NULL,
-    top_neighbors_json jsonb DEFAULT '[]'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT knowledge_graph_search_documents_anchor_type_check CHECK ((anchor_type = ANY (ARRAY['file'::text, 'node'::text, 'edge'::text, 'community'::text, 'insight'::text]))),
-    CONSTRAINT knowledge_graph_search_documents_relationship_count_check CHECK ((relationship_count >= 0)),
-    CONSTRAINT knowledge_graph_search_documents_top_neighbors_json_check CHECK ((jsonb_typeof(top_neighbors_json) = 'array'::text))
 );
 
 
@@ -460,6 +362,27 @@ CREATE TABLE focowiki.model_invocations (
 
 
 --
+-- Name: projection_shards; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.projection_shards (
+    id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    projection_kind text NOT NULL,
+    shard_key text NOT NULL,
+    format_version integer NOT NULL,
+    checksum_sha256 text NOT NULL,
+    object_key text NOT NULL,
+    record_count integer NOT NULL,
+    first_sort_key text,
+    last_sort_key text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT projection_shards_format_check CHECK ((format_version > 0)),
+    CONSTRAINT projection_shards_record_count_check CHECK ((record_count >= 0))
+);
+
+
+--
 -- Name: public_api_keys; Type: TABLE; Schema: focowiki; Owner: -
 --
 
@@ -479,153 +402,135 @@ CREATE TABLE focowiki.public_api_keys (
 
 
 --
--- Name: publication_jobs; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: publication_change_facts; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.publication_jobs (
+CREATE TABLE focowiki.publication_change_facts (
     id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    mode text NOT NULL,
-    reason text NOT NULL,
-    status text DEFAULT 'queued'::text NOT NULL,
-    dirty_source_count integer DEFAULT 0 NOT NULL,
-    release_id text,
-    started_at timestamp with time zone,
-    ended_at timestamp with time zone,
-    error_code text,
-    error_message text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT publication_jobs_check CHECK (((ended_at IS NULL) OR (started_at IS NULL) OR (ended_at >= started_at))),
-    CONSTRAINT publication_jobs_dirty_source_count_check CHECK ((dirty_source_count >= 0)),
-    CONSTRAINT publication_jobs_mode_check CHECK ((mode = ANY (ARRAY['batch'::text, 'manual'::text, 'per_file'::text]))),
-    CONSTRAINT publication_jobs_reason_check CHECK ((reason = ANY (ARRAY['bootstrap'::text, 'batch_threshold'::text, 'batch_interval'::text, 'manual'::text, 'per_file'::text, 'metadata'::text, 'deletion'::text]))),
-    CONSTRAINT publication_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text])))
-);
-
-
---
--- Name: releases; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.releases (
-    id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    bundle_root_key text NOT NULL,
-    generated_at timestamp with time zone NOT NULL,
-    published_at timestamp with time zone,
-    file_count integer DEFAULT 0 NOT NULL,
-    manifest_checksum_sha256 text NOT NULL,
-    catalog_generation bigint DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT releases_catalog_generation_check CHECK ((catalog_generation >= 0)),
-    CONSTRAINT releases_file_count_check CHECK ((file_count >= 0))
-);
-
-
---
--- Name: release_read_summaries; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.release_read_summaries (
-    release_id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    searchable_file_count integer DEFAULT 0 NOT NULL,
-    tree_node_count integer DEFAULT 0 NOT NULL,
-    graph_document_count integer DEFAULT 0 NOT NULL,
-    graph_relationship_count integer DEFAULT 0 NOT NULL,
-    graph_node_count integer DEFAULT 0 NOT NULL,
-    graph_edge_count integer DEFAULT 0 NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT release_read_summaries_counts_check CHECK (
-      searchable_file_count >= 0
-      AND tree_node_count >= 0
-      AND graph_document_count >= 0
-      AND graph_relationship_count >= 0
-      AND graph_node_count >= 0
-      AND graph_edge_count >= 0
-    )
-);
-
-
---
--- Name: release_markdown_links; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.release_markdown_links (
-    release_id text NOT NULL,
     knowledge_base_id text NOT NULL,
     source_file_id text,
-    from_path text NOT NULL,
-    to_path text NOT NULL,
-    label text NOT NULL,
-    navigation_only boolean DEFAULT false NOT NULL,
+    source_revision_id text,
+    operation_id text,
+    deletion_intent_id text,
+    kind text NOT NULL,
+    previous_path text,
+    path text,
+    resource_revision bigint NOT NULL,
+    generation_id text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT release_markdown_links_from_path_check CHECK ((from_path <> ''::text)),
-    CONSTRAINT release_markdown_links_to_path_check CHECK ((to_path <> ''::text)),
-    CONSTRAINT release_markdown_links_label_check CHECK ((label <> ''::text))
+    CONSTRAINT publication_change_facts_kind_check CHECK ((kind = ANY (ARRAY['source_created'::text, 'source_replaced'::text, 'source_metadata_changed'::text, 'source_moved'::text, 'source_renamed'::text, 'directory_moved'::text, 'knowledge_base_metadata_changed'::text, 'source_deleted'::text, 'directory_deleted'::text, 'knowledge_base_deleted'::text]))),
+    CONSTRAINT publication_change_facts_revision_check CHECK ((resource_revision > 0))
 );
 
 
 --
--- Name: release_source_directories; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: publication_generations; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.release_source_directories (
-    release_id text NOT NULL,
+CREATE TABLE focowiki.publication_generations (
+    id text NOT NULL,
     knowledge_base_id text NOT NULL,
-    source_directory_id text NOT NULL,
-    parent_source_directory_id text,
-    name text NOT NULL,
-    relative_path text NOT NULL,
-    path_key text NOT NULL,
-    depth integer NOT NULL,
-    resource_revision integer NOT NULL,
+    predecessor_generation_id text,
+    successor_generation_id text,
+    state text DEFAULT 'open'::text NOT NULL,
+    format_version integer DEFAULT 1 NOT NULL,
+    root_manifest_checksum_sha256 text,
+    root_manifest_object_key text,
+    frozen_at timestamp with time zone,
+    validated_at timestamp with time zone,
+    activated_at timestamp with time zone,
+    failed_at timestamp with time zone,
+    safe_error_code text,
+    safe_error_message text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT release_source_directories_depth_check CHECK ((depth >= 1)),
-    CONSTRAINT release_source_directories_resource_revision_check CHECK ((resource_revision >= 1))
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_generations_error_check CHECK ((((state = 'failed'::text) AND (safe_error_code IS NOT NULL) AND (safe_error_message IS NOT NULL) AND (failed_at IS NOT NULL)) OR ((state <> 'failed'::text) AND (safe_error_code IS NULL) AND (safe_error_message IS NULL) AND (failed_at IS NULL)))),
+    CONSTRAINT publication_generations_format_check CHECK ((format_version > 0)),
+    CONSTRAINT publication_generations_state_check CHECK ((state = ANY (ARRAY['open'::text, 'frozen'::text, 'building'::text, 'validating'::text, 'active'::text, 'failed'::text, 'superseded'::text])))
 );
 
 
 --
--- Name: release_source_files; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: publication_impact_causes; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.release_source_files (
-    release_id text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    source_file_id text NOT NULL,
-    source_revision_id text NOT NULL,
-    source_directory_id text,
-    name text NOT NULL,
-    relative_path text NOT NULL,
-    path_key text NOT NULL,
-    generated_path text NOT NULL,
-    object_key text NOT NULL,
-    content_type text NOT NULL,
-    size_bytes bigint NOT NULL,
-    checksum_sha256 text NOT NULL,
-    metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    model_suggestions_json jsonb,
-    publication_required boolean DEFAULT false NOT NULL,
-    resource_revision integer NOT NULL,
-    content_revision integer NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT release_source_files_content_revision_check CHECK ((content_revision >= 1)),
-    CONSTRAINT release_source_files_resource_revision_check CHECK ((resource_revision >= 1)),
-    CONSTRAINT release_source_files_size_bytes_check CHECK ((size_bytes >= 0))
+CREATE TABLE focowiki.publication_impact_causes (
+    impact_id text NOT NULL,
+    change_fact_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
 --
--- Name: release_resource_operations; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: publication_impacts; Type: TABLE; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.release_resource_operations (
-    release_id text NOT NULL,
+CREATE TABLE focowiki.publication_impacts (
+    id text NOT NULL,
     knowledge_base_id text NOT NULL,
-    operation_id text NOT NULL,
-    captured_at timestamp with time zone DEFAULT now() NOT NULL
+    generation_id text NOT NULL,
+    projection_kind text NOT NULL,
+    projection_key text NOT NULL,
+    record_identity text NOT NULL,
+    action text NOT NULL,
+    projection_input_key text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    retry_cursor_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    run_after timestamp with time zone DEFAULT now() NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 3 NOT NULL,
+    claimed_by text,
+    claimed_at timestamp with time zone,
+    heartbeat_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    last_error_code text,
+    last_error_message text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_impacts_action_check CHECK ((action = ANY (ARRAY['upsert'::text, 'delete'::text, 'validate'::text]))),
+    CONSTRAINT publication_impacts_attempt_check CHECK (((attempt_count >= 0) AND (max_attempts > 0))),
+    CONSTRAINT publication_impacts_projection_kind_check CHECK ((projection_kind = ANY (ARRAY['page'::text, 'directory'::text, 'root'::text, 'search'::text, 'links'::text, 'manifest'::text, 'tree'::text, 'graph_node'::text, 'graph_edge'::text, 'graph_reverse_neighbor'::text, 'related_files'::text, 'cleanup'::text]))),
+    CONSTRAINT publication_impacts_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: publication_projection_inputs; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.publication_projection_inputs (
+    knowledge_base_id text NOT NULL,
+    generation_id text NOT NULL,
+    input_key text NOT NULL,
+    payload_json jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_projection_inputs_payload_check CHECK ((jsonb_typeof(payload_json) = 'object'::text))
+);
+
+
+--
+-- Name: publication_progress; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.publication_progress (
+    knowledge_base_id text NOT NULL,
+    generation_id text NOT NULL,
+    stage text NOT NULL,
+    processed_impact_count bigint DEFAULT 0 NOT NULL,
+    total_impact_count bigint DEFAULT 0 NOT NULL,
+    touched_shard_count bigint DEFAULT 0 NOT NULL,
+    oldest_dirty_at timestamp with time zone,
+    queued_at timestamp with time zone,
+    started_at timestamp with time zone,
+    heartbeat_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    last_success_at timestamp with time zone,
+    safe_error_code text,
+    safe_error_message text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_progress_counts_check CHECK (((processed_impact_count >= 0) AND (total_impact_count >= 0) AND (processed_impact_count <= total_impact_count) AND (touched_shard_count >= 0))),
+    CONSTRAINT publication_progress_stage_check CHECK ((stage = ANY (ARRAY['pending'::text, 'planning'::text, 'projection'::text, 'validation'::text, 'activation'::text, 'active'::text, 'failed'::text])))
 );
 
 
@@ -687,6 +592,56 @@ CREATE TABLE focowiki.resource_path_reservations (
 
 
 --
+-- Name: role_heartbeats; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.role_heartbeats (
+    worker_id text NOT NULL,
+    role text NOT NULL,
+    last_seen_at timestamp with time zone NOT NULL,
+    active_job_count integer DEFAULT 0 NOT NULL,
+    metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT role_heartbeats_count_check CHECK ((active_job_count >= 0)),
+    CONSTRAINT role_heartbeats_role_check CHECK ((role = ANY (ARRAY['source'::text, 'publication'::text, 'maintenance'::text])))
+);
+
+
+--
+-- Name: role_jobs; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.role_jobs (
+    id text NOT NULL,
+    role text NOT NULL,
+    kind text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    source_file_id text,
+    source_revision_id text,
+    generation_id text,
+    payload_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    settings_snapshot_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    run_after timestamp with time zone DEFAULT now() NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 3 NOT NULL,
+    locked_by text,
+    locked_at timestamp with time zone,
+    heartbeat_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    failed_at timestamp with time zone,
+    last_error_code text,
+    last_error_message text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT role_jobs_attempt_check CHECK (((attempt_count >= 0) AND (max_attempts > 0))),
+    CONSTRAINT role_jobs_role_check CHECK ((role = ANY (ARRAY['source'::text, 'publication'::text, 'maintenance'::text]))),
+    CONSTRAINT role_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text])))
+);
+
+
+--
 -- Name: runtime_generation; Type: TABLE; Schema: focowiki; Owner: -
 --
 
@@ -723,7 +678,7 @@ CREATE TABLE focowiki.runtime_settings (
     source text DEFAULT 'bootstrap'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT runtime_settings_key_check CHECK ((key = ANY (ARRAY['rate_limits'::text, 'worker'::text, 'publication'::text, 'upload_generation'::text, 'graph'::text]))),
+    CONSTRAINT runtime_settings_key_check CHECK ((key = ANY (ARRAY['rate_limits'::text, 'worker'::text, 'publication'::text, 'graph'::text]))),
     CONSTRAINT runtime_settings_source_check CHECK ((source = ANY (ARRAY['bootstrap'::text, 'admin'::text])))
 );
 
@@ -758,6 +713,42 @@ CREATE TABLE focowiki.source_directories (
 
 
 --
+-- Name: source_dispatch_markers; Type: TABLE; Schema: focowiki; Owner: -
+--
+
+CREATE TABLE focowiki.source_dispatch_markers (
+    id text NOT NULL,
+    knowledge_base_id text NOT NULL,
+    source_file_id text NOT NULL,
+    source_revision_id text NOT NULL,
+    sequence_number bigint NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    run_after timestamp with time zone DEFAULT now() NOT NULL,
+    claimed_by text,
+    claimed_at timestamp with time zone,
+    dispatched_at timestamp with time zone,
+    last_error_code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT source_dispatch_markers_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'claimed'::text, 'dispatched'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: source_dispatch_markers_sequence_number_seq; Type: SEQUENCE; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE focowiki.source_dispatch_markers ALTER COLUMN sequence_number ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME focowiki.source_dispatch_markers_sequence_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: source_file_events; Type: TABLE; Schema: focowiki; Owner: -
 --
 
@@ -773,7 +764,7 @@ CREATE TABLE focowiki.source_file_events (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT source_file_events_check CHECK (((ended_at IS NULL) OR (started_at IS NULL) OR (ended_at >= started_at))),
     CONSTRAINT source_file_events_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'error'::text]))),
-    CONSTRAINT source_file_events_stage_key_check CHECK ((stage_key = ANY (ARRAY['upload_storage'::text, 'source_deletion'::text, 'metadata_resolution'::text, 'llm_suggestion'::text, 'graph_generation'::text, 'okf_validation'::text, 'bundle_generation'::text, 'index_publication'::text, 'release_activation'::text])))
+    CONSTRAINT source_file_events_stage_key_check CHECK ((stage_key = ANY (ARRAY['upload_storage'::text, 'source_deletion'::text, 'metadata_resolution'::text, 'llm_suggestion'::text, 'graph_generation'::text, 'projection_generation'::text, 'generation_validation'::text, 'generation_activation'::text])))
 );
 
 
@@ -880,11 +871,13 @@ CREATE TABLE focowiki.source_files (
     processing_stage text DEFAULT 'upload_storage'::text NOT NULL,
     processing_started_at timestamp with time zone,
     processing_ended_at timestamp with time zone,
-    processing_error_code text,
-    processing_error_message text,
+    terminal_failure_stage text,
+    terminal_failure_code text,
+    terminal_failure_message text,
+    terminal_failure_at timestamp with time zone,
+    terminal_failure_retry_kind text,
+    terminal_failure_correlation_id text,
     generated_output_status text DEFAULT 'pending'::text NOT NULL,
-    generated_bundle_file_id text,
-    generated_bundle_file_path text,
     graph_relationship_count integer DEFAULT 0 NOT NULL,
     graph_top_relationships_json jsonb DEFAULT '[]'::jsonb NOT NULL,
     model_invocation_status text,
@@ -893,10 +886,6 @@ CREATE TABLE focowiki.source_files (
     model_invocation_ended_at timestamp with time zone,
     model_invocation_warning_count integer,
     model_invocation_error_code text,
-    publication_dirty_at timestamp with time zone,
-    publication_visible_at timestamp with time zone,
-    publication_error_code text,
-    publication_error_message text,
     retry_count integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     task_deleted_at timestamp with time zone,
@@ -926,11 +915,18 @@ CREATE TABLE focowiki.source_files (
     CONSTRAINT source_files_graph_relationship_count_check CHECK ((graph_relationship_count >= 0)),
     CONSTRAINT source_files_graph_top_relationships_json_check CHECK ((jsonb_typeof(graph_top_relationships_json) = 'array'::text)),
     CONSTRAINT source_files_model_invocation_status_check CHECK (((model_invocation_status IS NULL) OR (model_invocation_status = ANY (ARRAY['running'::text, 'completed'::text, 'failed'::text, 'skipped'::text])))),
-    CONSTRAINT source_files_processing_stage_check CHECK ((processing_stage = ANY (ARRAY['upload_storage'::text, 'metadata_resolution'::text, 'llm_suggestion'::text, 'graph_generation'::text, 'okf_validation'::text, 'bundle_generation'::text, 'index_publication'::text, 'release_activation'::text]))),
+    CONSTRAINT source_files_processing_stage_check CHECK ((processing_stage = ANY (ARRAY['upload_storage'::text, 'metadata_resolution'::text, 'llm_suggestion'::text, 'graph_generation'::text, 'projection_generation'::text, 'generation_validation'::text, 'generation_activation'::text]))),
     CONSTRAINT source_files_processing_status_check CHECK ((processing_status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
     CONSTRAINT source_files_processing_time_check CHECK (((processing_ended_at IS NULL) OR (processing_started_at IS NULL) OR (processing_ended_at >= processing_started_at))),
     CONSTRAINT source_files_retry_count_check CHECK ((retry_count >= 0)),
-    CONSTRAINT source_files_size_bytes_check CHECK ((size_bytes >= 0))
+    CONSTRAINT source_files_size_bytes_check CHECK ((size_bytes >= 0)),
+    CONSTRAINT source_files_terminal_failure_check CHECK ((((terminal_failure_code IS NULL) AND (terminal_failure_stage IS NULL) AND (terminal_failure_message IS NULL) AND (terminal_failure_at IS NULL) AND (terminal_failure_retry_kind IS NULL) AND (terminal_failure_correlation_id IS NULL)) OR ((terminal_failure_code IS NOT NULL) AND (terminal_failure_stage IS NOT NULL) AND (terminal_failure_message IS NOT NULL) AND (terminal_failure_at IS NOT NULL) AND (terminal_failure_retry_kind IS NOT NULL) AND (terminal_failure_correlation_id IS NOT NULL)))),
+    CONSTRAINT source_files_terminal_failure_code_length_check CHECK (((terminal_failure_code IS NULL) OR (char_length(terminal_failure_code) <= 128))),
+    CONSTRAINT source_files_terminal_failure_correlation_length_check CHECK (((terminal_failure_correlation_id IS NULL) OR (char_length(terminal_failure_correlation_id) <= 200))),
+    CONSTRAINT source_files_terminal_failure_message_length_check CHECK (((terminal_failure_message IS NULL) OR (char_length(terminal_failure_message) <= 1000))),
+    CONSTRAINT source_files_terminal_failure_retry_kind_check CHECK (((terminal_failure_retry_kind IS NULL) OR (terminal_failure_retry_kind = ANY (ARRAY['source_processing'::text, 'publication'::text, 'none'::text])))),
+    CONSTRAINT source_files_terminal_failure_stage_check CHECK (((terminal_failure_stage IS NULL) OR (terminal_failure_stage = ANY (ARRAY['upload_storage'::text, 'metadata_resolution'::text, 'llm_suggestion'::text, 'graph_generation'::text, 'projection_generation'::text, 'generation_validation'::text, 'generation_activation'::text])))),
+    CONSTRAINT source_files_visible_failure_check CHECK (((generated_output_status <> 'visible'::text) OR (terminal_failure_code IS NULL)))
 );
 
 
@@ -985,7 +981,7 @@ CREATE TABLE focowiki.upload_session_entries (
     name text NOT NULL,
     declared_size bigint NOT NULL,
     received_size bigint,
-    checksum_sha256 text NOT NULL,
+    checksum_sha256 text,
     received_checksum_sha256 text,
     disposition text DEFAULT 'pending'::text NOT NULL,
     transfer_state text DEFAULT 'pending'::text NOT NULL,
@@ -1085,71 +1081,19 @@ CREATE TABLE focowiki.webhook_subscriptions (
 
 
 --
--- Name: worker_heartbeats; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: active_object_refs active_object_refs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.worker_heartbeats (
-    worker_id text NOT NULL,
-    last_seen_at timestamp with time zone NOT NULL,
-    active_job_count integer DEFAULT 0 NOT NULL,
-    metadata_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT worker_heartbeats_active_job_count_check CHECK ((active_job_count >= 0))
-);
+ALTER TABLE ONLY focowiki.active_object_refs
+    ADD CONSTRAINT active_object_refs_pkey PRIMARY KEY (knowledge_base_id, ref_kind, ref_key);
 
 
 --
--- Name: worker_jobs; Type: TABLE; Schema: focowiki; Owner: -
+-- Name: active_projection_records active_projection_records_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE TABLE focowiki.worker_jobs (
-    id text NOT NULL,
-    kind text NOT NULL,
-    status text DEFAULT 'queued'::text NOT NULL,
-    knowledge_base_id text NOT NULL,
-    source_file_id text,
-    payload_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    run_after timestamp with time zone DEFAULT now() NOT NULL,
-    attempt_count integer DEFAULT 0 NOT NULL,
-    max_attempts integer DEFAULT 3 NOT NULL,
-    locked_by text,
-    locked_at timestamp with time zone,
-    heartbeat_at timestamp with time zone,
-    started_at timestamp with time zone,
-    completed_at timestamp with time zone,
-    failed_at timestamp with time zone,
-    last_error_code text,
-    last_error_message text,
-    hard_delete_stage text,
-    hard_delete_cursor_json jsonb DEFAULT '{}'::jsonb NOT NULL,
-    hard_delete_progress_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT worker_jobs_attempt_count_check CHECK ((attempt_count >= 0)),
-    CONSTRAINT worker_jobs_check CHECK (((completed_at IS NULL) OR (started_at IS NULL) OR (completed_at >= started_at))),
-    CONSTRAINT worker_jobs_check1 CHECK (((failed_at IS NULL) OR (started_at IS NULL) OR (failed_at >= started_at))),
-    CONSTRAINT worker_jobs_kind_check CHECK ((kind = ANY (ARRAY['upload_session_finalization'::text, 'source_file_processing'::text, 'resource_operation'::text, 'publication'::text, 'hard_delete'::text]))),
-    CONSTRAINT worker_jobs_max_attempts_check CHECK ((max_attempts > 0)),
-    CONSTRAINT worker_jobs_publication_payload_check CHECK (((kind <> 'publication'::text) OR ((jsonb_typeof(payload_json) = 'object'::text) AND (payload_json ? 'reason'::text) AND ((payload_json ->> 'reason'::text) = ANY (ARRAY['bootstrap'::text, 'batch_threshold'::text, 'batch_interval'::text, 'manual'::text, 'per_file'::text, 'metadata'::text, 'deletion'::text])) AND (payload_json ? 'targetCatalogGeneration'::text) AND (jsonb_typeof((payload_json -> 'targetCatalogGeneration'::text)) = 'number'::text) AND ((payload_json ->> 'targetCatalogGeneration'::text) ~ '^(0|[1-9][0-9]*)$'::text) AND (((payload_json ->> 'targetCatalogGeneration'::text))::numeric <= 9007199254740991::numeric)))),
-    CONSTRAINT worker_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text])))
-);
-
-
---
--- Name: worker_queue_summaries; Type: TABLE; Schema: focowiki; Owner: -
---
-
-CREATE TABLE focowiki.worker_queue_summaries (
-    knowledge_base_id text NOT NULL,
-    kind text NOT NULL,
-    status text NOT NULL,
-    job_count bigint DEFAULT 0 NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT worker_queue_summaries_job_count_check CHECK ((job_count >= 0)),
-    CONSTRAINT worker_queue_summaries_kind_check CHECK ((kind = ANY (ARRAY['upload_session_finalization'::text, 'source_file_processing'::text, 'resource_operation'::text, 'publication'::text, 'hard_delete'::text]))),
-    CONSTRAINT worker_queue_summaries_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text])))
-);
+ALTER TABLE ONLY focowiki.active_projection_records
+    ADD CONSTRAINT active_projection_records_pkey PRIMARY KEY (knowledge_base_id, projection_kind, record_id);
 
 
 --
@@ -1161,27 +1105,19 @@ ALTER TABLE ONLY focowiki.admin_audit_events
 
 
 --
--- Name: bundle_files bundle_files_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: cleanup_checkpoints cleanup_checkpoints_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_pkey PRIMARY KEY (id);
-
-
---
--- Name: bundle_file_search_documents bundle_file_search_documents_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_file_search_documents
-    ADD CONSTRAINT bundle_file_search_documents_pkey PRIMARY KEY (bundle_file_id);
+ALTER TABLE ONLY focowiki.cleanup_checkpoints
+    ADD CONSTRAINT cleanup_checkpoints_pkey PRIMARY KEY (job_id);
 
 
 --
--- Name: bundle_files bundle_files_release_id_logical_path_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: cleanup_object_deletions cleanup_object_deletions_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_release_id_logical_path_key UNIQUE (release_id, logical_path);
+ALTER TABLE ONLY focowiki.cleanup_object_deletions
+    ADD CONSTRAINT cleanup_object_deletions_pkey PRIMARY KEY (job_id, object_key);
 
 
 --
@@ -1201,19 +1137,59 @@ ALTER TABLE ONLY focowiki.deletion_intents
 
 
 --
--- Name: hard_delete_object_deletions hard_delete_object_deletions_job_id_object_key_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves directory_navigation_leaves_knowledge_base_id_directory_pat_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.hard_delete_object_deletions
-    ADD CONSTRAINT hard_delete_object_deletions_job_id_object_key_key UNIQUE (job_id, object_key);
+ALTER TABLE ONLY focowiki.directory_navigation_leaves
+    ADD CONSTRAINT directory_navigation_leaves_knowledge_base_id_directory_pat_key UNIQUE (knowledge_base_id, directory_path, id);
 
 
 --
--- Name: hard_delete_object_deletions hard_delete_object_deletions_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves directory_navigation_leaves_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.hard_delete_object_deletions
-    ADD CONSTRAINT hard_delete_object_deletions_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY focowiki.directory_navigation_leaves
+    ADD CONSTRAINT directory_navigation_leaves_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: directory_navigation_summaries directory_navigation_summaries_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.directory_navigation_summaries
+    ADD CONSTRAINT directory_navigation_summaries_pkey PRIMARY KEY (knowledge_base_id, directory_path);
+
+
+--
+-- Name: dispatch_pressure_state dispatch_pressure_state_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.dispatch_pressure_state
+    ADD CONSTRAINT dispatch_pressure_state_pkey PRIMARY KEY (scope);
+
+
+--
+-- Name: generation_object_refs generation_object_refs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.generation_object_refs
+    ADD CONSTRAINT generation_object_refs_pkey PRIMARY KEY (generation_id, ref_kind, ref_key);
+
+
+--
+-- Name: generation_projection_records generation_projection_records_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.generation_projection_records
+    ADD CONSTRAINT generation_projection_records_pkey PRIMARY KEY (generation_id, projection_kind, record_id);
+
+
+--
+-- Name: immutable_objects immutable_objects_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.immutable_objects
+    ADD CONSTRAINT immutable_objects_pkey PRIMARY KEY (checksum_sha256, format_version);
 
 
 --
@@ -1222,78 +1198,6 @@ ALTER TABLE ONLY focowiki.hard_delete_object_deletions
 
 ALTER TABLE ONLY focowiki.knowledge_bases
     ADD CONSTRAINT knowledge_bases_pkey PRIMARY KEY (id);
-
-
---
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_pkey PRIMARY KEY (id);
-
-
---
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_release_id_parent_id_name_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_release_id_parent_id_name_key UNIQUE (release_id, parent_id, name);
-
-
---
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_release_id_path_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_release_id_path_key UNIQUE (release_id, path);
-
-
---
--- Name: knowledge_graph_edges knowledge_graph_edges_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_pkey PRIMARY KEY (id);
-
-
---
--- Name: knowledge_graph_edges knowledge_graph_edges_release_id_from_node_id_to_node_id_re_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_release_id_from_node_id_to_node_id_re_key UNIQUE (release_id, from_node_id, to_node_id, relation_type);
-
-
---
--- Name: knowledge_graph_insights knowledge_graph_insights_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_insights
-    ADD CONSTRAINT knowledge_graph_insights_pkey PRIMARY KEY (id);
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_pkey PRIMARY KEY (id);
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_release_id_file_id_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_release_id_file_id_key UNIQUE (release_id, file_id);
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_pkey PRIMARY KEY (id);
 
 
 --
@@ -1313,6 +1217,22 @@ ALTER TABLE ONLY focowiki.model_invocations
 
 
 --
+-- Name: projection_shards projection_shards_knowledge_base_id_projection_kind_shard_k_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.projection_shards
+    ADD CONSTRAINT projection_shards_knowledge_base_id_projection_kind_shard_k_key UNIQUE (knowledge_base_id, projection_kind, shard_key, format_version, checksum_sha256);
+
+
+--
+-- Name: projection_shards projection_shards_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.projection_shards
+    ADD CONSTRAINT projection_shards_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: public_api_keys public_api_keys_key_hash_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
@@ -1329,83 +1249,59 @@ ALTER TABLE ONLY focowiki.public_api_keys
 
 
 --
--- Name: publication_jobs publication_jobs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_change_facts publication_change_facts_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.publication_jobs
-    ADD CONSTRAINT publication_jobs_pkey PRIMARY KEY (id);
-
-
---
--- Name: releases releases_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.releases
-    ADD CONSTRAINT releases_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY focowiki.publication_change_facts
+    ADD CONSTRAINT publication_change_facts_pkey PRIMARY KEY (id);
 
 
 --
--- Name: release_read_summaries release_read_summaries_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_generations publication_generations_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_read_summaries
-    ADD CONSTRAINT release_read_summaries_pkey PRIMARY KEY (release_id);
-
-
---
--- Name: release_markdown_links release_markdown_links_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_markdown_links
-    ADD CONSTRAINT release_markdown_links_pkey PRIMARY KEY (release_id, from_path, to_path, label);
+ALTER TABLE ONLY focowiki.publication_generations
+    ADD CONSTRAINT publication_generations_pkey PRIMARY KEY (id);
 
 
 --
--- Name: release_source_directories release_source_directories_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impact_causes publication_impact_causes_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_pkey PRIMARY KEY (release_id, source_directory_id);
-
-
---
--- Name: release_source_directories release_source_directories_release_id_path_key_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_release_id_path_key_key UNIQUE (release_id, path_key);
+ALTER TABLE ONLY focowiki.publication_impact_causes
+    ADD CONSTRAINT publication_impact_causes_pkey PRIMARY KEY (impact_id, change_fact_id);
 
 
 --
--- Name: release_source_files release_source_files_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impacts publication_impacts_generation_id_projection_kind_projectio_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_pkey PRIMARY KEY (release_id, source_file_id);
-
-
---
--- Name: release_source_files release_source_files_release_id_path_key_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_release_id_path_key_key UNIQUE (release_id, path_key);
+ALTER TABLE ONLY focowiki.publication_impacts
+    ADD CONSTRAINT publication_impacts_generation_id_projection_kind_projectio_key UNIQUE (generation_id, projection_kind, projection_key, record_identity);
 
 
 --
--- Name: release_source_files release_source_files_release_id_generated_path_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impacts publication_impacts_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_release_id_generated_path_key UNIQUE (release_id, generated_path);
+ALTER TABLE ONLY focowiki.publication_impacts
+    ADD CONSTRAINT publication_impacts_pkey PRIMARY KEY (id);
 
 
 --
--- Name: release_resource_operations release_resource_operations_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_projection_inputs publication_projection_inputs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_resource_operations
-    ADD CONSTRAINT release_resource_operations_pkey PRIMARY KEY (release_id, operation_id);
+ALTER TABLE ONLY focowiki.publication_projection_inputs
+    ADD CONSTRAINT publication_projection_inputs_pkey PRIMARY KEY (generation_id, input_key);
+
+
+--
+-- Name: publication_progress publication_progress_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.publication_progress
+    ADD CONSTRAINT publication_progress_pkey PRIMARY KEY (knowledge_base_id, generation_id);
 
 
 --
@@ -1449,6 +1345,22 @@ ALTER TABLE ONLY focowiki.resource_path_reservations
 
 
 --
+-- Name: role_heartbeats role_heartbeats_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_heartbeats
+    ADD CONSTRAINT role_heartbeats_pkey PRIMARY KEY (worker_id);
+
+
+--
+-- Name: role_jobs role_jobs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_jobs
+    ADD CONSTRAINT role_jobs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: runtime_generation runtime_generation_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
 --
 
@@ -1478,6 +1390,22 @@ ALTER TABLE ONLY focowiki.runtime_settings
 
 ALTER TABLE ONLY focowiki.source_directories
     ADD CONSTRAINT source_directories_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_dispatch_markers source_dispatch_markers_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.source_dispatch_markers
+    ADD CONSTRAINT source_dispatch_markers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_dispatch_markers source_dispatch_markers_source_revision_id_key; Type: CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.source_dispatch_markers
+    ADD CONSTRAINT source_dispatch_markers_source_revision_id_key UNIQUE (source_revision_id);
 
 
 --
@@ -1633,27 +1561,65 @@ ALTER TABLE ONLY focowiki.webhook_subscriptions
 
 
 --
--- Name: worker_heartbeats worker_heartbeats_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: active_object_refs_file_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.worker_heartbeats
-    ADD CONSTRAINT worker_heartbeats_pkey PRIMARY KEY (worker_id);
-
-
---
--- Name: worker_jobs worker_jobs_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.worker_jobs
-    ADD CONSTRAINT worker_jobs_pkey PRIMARY KEY (id);
+CREATE UNIQUE INDEX active_object_refs_file_idx ON focowiki.active_object_refs USING btree (knowledge_base_id, file_id);
 
 
 --
--- Name: worker_queue_summaries worker_queue_summaries_pkey; Type: CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: active_object_refs_path_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.worker_queue_summaries
-    ADD CONSTRAINT worker_queue_summaries_pkey PRIMARY KEY (knowledge_base_id, kind, status);
+CREATE UNIQUE INDEX active_object_refs_path_idx ON focowiki.active_object_refs USING btree (knowledge_base_id, logical_path) WHERE (logical_path IS NOT NULL);
+
+
+--
+-- Name: active_object_refs_source_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_object_refs_source_idx ON focowiki.active_object_refs USING btree (knowledge_base_id, source_file_id, ref_key) WHERE (source_file_id IS NOT NULL);
+
+
+--
+-- Name: active_projection_records_graph_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_projection_records_graph_idx ON focowiki.active_projection_records USING btree (knowledge_base_id, source_file_id, related_source_file_id, record_id) WHERE (projection_kind = ANY (ARRAY['graph_edge'::text, 'related_files'::text]));
+
+CREATE INDEX active_projection_records_graph_search_fts_idx ON focowiki.active_projection_records USING gin (to_tsvector('simple'::regconfig, COALESCE(searchable_text, ''::text))) WHERE (projection_kind = ANY (ARRAY['graph_node'::text, 'graph_edge'::text]));
+
+CREATE INDEX active_projection_records_graph_search_trgm_idx ON focowiki.active_projection_records USING gin (lower(COALESCE(searchable_text, ''::text)) focowiki.gin_trgm_ops) WHERE (projection_kind = ANY (ARRAY['graph_node'::text, 'graph_edge'::text]));
+
+
+--
+-- Name: active_projection_records_path_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_projection_records_path_idx ON focowiki.active_projection_records USING btree (knowledge_base_id, projection_kind, logical_path, record_id) WHERE (logical_path IS NOT NULL);
+
+
+--
+-- Name: active_projection_records_search_fts_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_projection_records_search_fts_idx ON focowiki.active_projection_records USING gin (to_tsvector('simple'::regconfig, COALESCE(searchable_text, ''::text))) WHERE (projection_kind = 'search'::text);
+
+
+--
+-- Name: active_projection_records_search_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_projection_records_search_trgm_idx ON focowiki.active_projection_records USING gin (lower(COALESCE(searchable_text, ''::text)) focowiki.gin_trgm_ops) WHERE (projection_kind = 'search'::text);
+
+
+--
+-- Name: active_projection_records_tree_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX active_projection_records_tree_idx ON focowiki.active_projection_records USING btree (knowledge_base_id, parent_path, sort_key, record_id) WHERE (projection_kind = 'tree'::text);
+
+CREATE INDEX active_projection_records_tree_search_trgm_idx ON focowiki.active_projection_records USING gin (lower(COALESCE(title, ''::text) || ' '::text || COALESCE(logical_path, ''::text)) focowiki.gin_trgm_ops) WHERE (projection_kind = 'tree'::text);
 
 
 --
@@ -1671,73 +1637,17 @@ CREATE INDEX admin_audit_events_type_result_idx ON focowiki.admin_audit_events U
 
 
 --
--- Name: bundle_files_kb_release_logical_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: cleanup_checkpoints_scope_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX bundle_files_kb_release_logical_cursor_idx ON focowiki.bundle_files USING btree (knowledge_base_id, release_id, logical_path, id);
-
-
---
--- Name: bundle_files_kb_release_source_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_files_kb_release_source_idx ON focowiki.bundle_files USING btree (knowledge_base_id, release_id, source_file_id, id);
+CREATE INDEX cleanup_checkpoints_scope_idx ON focowiki.cleanup_checkpoints USING btree (knowledge_base_id, phase, updated_at, job_id);
 
 
 --
--- Name: bundle_files_object_key_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: cleanup_object_deletions_pending_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX bundle_files_object_key_idx ON focowiki.bundle_files USING btree (object_key);
-
-
---
--- Name: bundle_files_release_logical_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_files_release_logical_cursor_idx ON focowiki.bundle_files USING btree (release_id, logical_path, id);
-
-
---
--- Name: bundle_file_search_documents_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_search_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (search_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: bundle_file_search_documents_metadata_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_metadata_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (metadata_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: bundle_file_search_documents_path_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_path_text_trgm_idx ON focowiki.bundle_file_search_documents USING gin (path_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: bundle_file_search_documents_release_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_release_cursor_idx ON focowiki.bundle_file_search_documents USING btree (knowledge_base_id, release_id, logical_path, bundle_file_id);
-
-
---
--- Name: bundle_file_search_documents_release_kind_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_release_kind_cursor_idx ON focowiki.bundle_file_search_documents USING btree (knowledge_base_id, release_id, file_kind, logical_path, bundle_file_id);
-
-
---
--- Name: bundle_file_search_documents_path_prefix_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX bundle_file_search_documents_path_prefix_idx ON focowiki.bundle_file_search_documents (knowledge_base_id, release_id, path_text text_pattern_ops, bundle_file_id);
+CREATE INDEX cleanup_object_deletions_pending_idx ON focowiki.cleanup_object_deletions USING btree (job_id, status, object_key);
 
 
 --
@@ -1755,24 +1665,66 @@ CREATE INDEX deletion_intents_work_idx ON focowiki.deletion_intents USING btree 
 
 
 --
--- Name: hard_delete_object_deletions_job_pending_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves_entries_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX hard_delete_object_deletions_job_pending_idx ON focowiki.hard_delete_object_deletions USING btree (job_id, created_at, id) WHERE (deleted_at IS NULL);
-
-
---
--- Name: hard_delete_object_deletions_kb_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX hard_delete_object_deletions_kb_idx ON focowiki.hard_delete_object_deletions USING btree (knowledge_base_id, job_id, id);
+CREATE INDEX directory_navigation_leaves_entries_idx ON focowiki.directory_navigation_leaves USING gin (entries_json jsonb_path_ops);
 
 
 --
--- Name: hard_delete_object_deletions_source_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves_order_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX hard_delete_object_deletions_source_idx ON focowiki.hard_delete_object_deletions USING btree (knowledge_base_id, source_file_id, job_id, id) WHERE (source_file_id IS NOT NULL);
+CREATE INDEX directory_navigation_leaves_order_idx ON focowiki.directory_navigation_leaves USING btree (knowledge_base_id, directory_path, first_sort_key, id);
+
+
+--
+-- Name: generation_object_refs_file_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX generation_object_refs_file_idx ON focowiki.generation_object_refs USING btree (knowledge_base_id, generation_id, file_id) WHERE (file_id IS NOT NULL);
+
+
+--
+-- Name: generation_object_refs_object_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX generation_object_refs_object_idx ON focowiki.generation_object_refs USING btree (checksum_sha256, format_version, generation_id);
+
+
+--
+-- Name: generation_object_refs_path_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX generation_object_refs_path_idx ON focowiki.generation_object_refs USING btree (knowledge_base_id, generation_id, logical_path, ref_key) WHERE (logical_path IS NOT NULL);
+
+
+--
+-- Name: generation_object_refs_source_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX generation_object_refs_source_idx ON focowiki.generation_object_refs USING btree (knowledge_base_id, generation_id, source_file_id) WHERE (source_file_id IS NOT NULL);
+
+
+--
+-- Name: generation_projection_records_shard_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX generation_projection_records_shard_idx ON focowiki.generation_projection_records USING btree (knowledge_base_id, generation_id, projection_kind, shard_key, record_id);
+
+
+--
+-- Name: immutable_objects_gc_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX immutable_objects_gc_idx ON focowiki.immutable_objects USING btree (lifecycle_state, created_at, checksum_sha256, format_version);
+
+
+--
+-- Name: immutable_objects_key_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX immutable_objects_key_idx ON focowiki.immutable_objects USING btree (object_key);
 
 
 --
@@ -1794,216 +1746,6 @@ CREATE INDEX knowledge_bases_metadata_search_trgm_idx ON focowiki.knowledge_base
 --
 
 CREATE UNIQUE INDEX knowledge_bases_name_active_unique ON focowiki.knowledge_bases USING btree (lower(name)) WHERE (deleted_at IS NULL);
-
-
---
--- Name: knowledge_file_tree_nodes_file_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_file_idx ON focowiki.knowledge_file_tree_nodes USING btree (knowledge_base_id, file_id) WHERE (file_id IS NOT NULL);
-
-
---
--- Name: knowledge_file_tree_nodes_kb_path_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_kb_path_idx ON focowiki.knowledge_file_tree_nodes USING btree (knowledge_base_id, path);
-
-
---
--- Name: knowledge_file_tree_nodes_name_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_name_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (name focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_file_tree_nodes_parent_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_parent_cursor_idx ON focowiki.knowledge_file_tree_nodes USING btree (knowledge_base_id, parent_id, sort_key, id);
-
-
---
--- Name: knowledge_file_tree_nodes_path_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_path_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (path focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_file_tree_nodes_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_search_text_trgm_idx ON focowiki.knowledge_file_tree_nodes USING gin (lower(((name || ' '::text) || path)) focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_file_tree_nodes_search_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_search_cursor_idx ON focowiki.knowledge_file_tree_nodes USING btree (knowledge_base_id, release_id, sort_key, id);
-
-
---
--- Name: knowledge_file_tree_nodes_source_directory_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_file_tree_nodes_source_directory_idx ON focowiki.knowledge_file_tree_nodes USING btree (release_id, source_directory_id) WHERE (source_directory_id IS NOT NULL);
-
-
---
--- Name: knowledge_graph_edges_from_file_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_from_file_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, from_file_id, weight DESC, to_file_id) WHERE (quality_status = 'accepted'::text);
-
-
---
--- Name: knowledge_graph_edges_from_weight_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_from_weight_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, from_node_id, weight DESC, to_node_id) WHERE (quality_status = 'accepted'::text);
-
-
---
--- Name: knowledge_graph_edges_quality_weight_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_quality_weight_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, quality_status, weight DESC, id);
-
-
---
--- Name: knowledge_graph_edges_reason_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_reason_trgm_idx ON focowiki.knowledge_graph_edges USING gin (reason focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_graph_edges_relation_weight_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_relation_weight_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, relation_type, weight DESC, id) WHERE (quality_status = 'accepted'::text);
-
-
---
--- Name: knowledge_graph_edges_to_file_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_to_file_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, to_file_id, weight DESC, from_file_id) WHERE (quality_status = 'accepted'::text);
-
-
---
--- Name: knowledge_graph_edges_to_weight_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_edges_to_weight_idx ON focowiki.knowledge_graph_edges USING btree (knowledge_base_id, to_node_id, weight DESC, from_node_id) WHERE (quality_status = 'accepted'::text);
-
-
---
--- Name: knowledge_graph_insights_kb_severity_created_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_insights_kb_severity_created_idx ON focowiki.knowledge_graph_insights USING btree (knowledge_base_id, severity, created_at DESC, id);
-
-
---
--- Name: knowledge_graph_insights_kb_type_created_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_insights_kb_type_created_idx ON focowiki.knowledge_graph_insights USING btree (knowledge_base_id, insight_type, created_at DESC, id);
-
-
---
--- Name: knowledge_graph_insights_release_created_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_insights_release_created_idx ON focowiki.knowledge_graph_insights USING btree (knowledge_base_id, release_id, created_at DESC, id);
-
-
---
--- Name: knowledge_graph_nodes_kb_file_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_nodes_kb_file_idx ON focowiki.knowledge_graph_nodes USING btree (knowledge_base_id, file_id);
-
-
---
--- Name: knowledge_graph_nodes_kb_source_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_nodes_kb_source_idx ON focowiki.knowledge_graph_nodes USING btree (knowledge_base_id, source_file_id) WHERE (source_file_id IS NOT NULL);
-
-
---
--- Name: knowledge_graph_nodes_profile_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_nodes_profile_text_trgm_idx ON focowiki.knowledge_graph_nodes USING gin (profile_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_graph_search_documents_anchor_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_anchor_cursor_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, anchor_type, id);
-
-
---
--- Name: knowledge_graph_search_documents_kb_edge_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_kb_edge_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, edge_id, file_id) WHERE (edge_id IS NOT NULL);
-
-
---
--- Name: knowledge_graph_search_documents_kb_file_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_kb_file_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, file_id, anchor_type, id) WHERE (file_id IS NOT NULL);
-
-
---
--- Name: knowledge_graph_search_documents_kb_node_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_kb_node_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, node_id, file_id) WHERE (node_id IS NOT NULL);
-
-
---
--- Name: knowledge_graph_search_documents_release_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_release_cursor_idx ON focowiki.knowledge_graph_search_documents USING btree (knowledge_base_id, release_id, path, file_id, id) WHERE ((path IS NOT NULL) AND (file_id IS NOT NULL));
-
-
---
--- Name: knowledge_graph_search_documents_search_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_search_text_trgm_idx ON focowiki.knowledge_graph_search_documents USING gin (search_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_graph_search_documents_neighbor_text_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_neighbor_text_trgm_idx ON focowiki.knowledge_graph_search_documents USING gin (neighbor_text focowiki.gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536);
-
-
---
--- Name: knowledge_graph_search_documents_path_prefix_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX knowledge_graph_search_documents_path_prefix_idx ON focowiki.knowledge_graph_search_documents (knowledge_base_id, release_id, path text_pattern_ops, file_id, id) WHERE (path IS NOT NULL);
-
-
---
--- Name: release_read_summaries_knowledge_base_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX release_read_summaries_knowledge_base_idx ON focowiki.release_read_summaries (knowledge_base_id, release_id);
 
 
 --
@@ -2035,6 +1777,13 @@ CREATE INDEX model_invocations_source_created_idx ON focowiki.model_invocations 
 
 
 --
+-- Name: projection_shards_lookup_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX projection_shards_lookup_idx ON focowiki.projection_shards USING btree (knowledge_base_id, projection_kind, shard_key, created_at DESC, id);
+
+
+--
 -- Name: public_api_keys_active_hash_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2056,73 +1805,87 @@ CREATE INDEX public_api_keys_status_created_cursor_idx ON focowiki.public_api_ke
 
 
 --
--- Name: publication_jobs_kb_created_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_change_facts_deletion_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX publication_jobs_kb_created_idx ON focowiki.publication_jobs USING btree (knowledge_base_id, created_at DESC, id);
-
-
---
--- Name: publication_jobs_kb_status_created_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX publication_jobs_kb_status_created_idx ON focowiki.publication_jobs USING btree (knowledge_base_id, status, created_at, id);
+CREATE INDEX publication_change_facts_deletion_idx ON focowiki.publication_change_facts USING btree (knowledge_base_id, deletion_intent_id, id) WHERE (deletion_intent_id IS NOT NULL);
 
 
 --
--- Name: releases_kb_published_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_change_facts_operation_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX releases_kb_published_cursor_idx ON focowiki.releases USING btree (knowledge_base_id, published_at DESC, id);
-
-
---
--- Name: release_markdown_links_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX release_markdown_links_cursor_idx ON focowiki.release_markdown_links USING btree (release_id, from_path COLLATE "C", to_path COLLATE "C", label COLLATE "C");
+CREATE INDEX publication_change_facts_operation_idx ON focowiki.publication_change_facts USING btree (knowledge_base_id, operation_id, id) WHERE (operation_id IS NOT NULL);
 
 
 --
--- Name: release_markdown_links_source_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_change_facts_source_revision_kind_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX release_markdown_links_source_idx ON focowiki.release_markdown_links USING btree (release_id, source_file_id, from_path COLLATE "C");
-
-
---
--- Name: release_source_directories_navigation_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX release_source_directories_navigation_idx ON focowiki.release_source_directories USING btree (release_id, parent_source_directory_id, lower(name), source_directory_id);
+CREATE UNIQUE INDEX publication_change_facts_source_revision_kind_idx ON focowiki.publication_change_facts USING btree (knowledge_base_id, COALESCE(source_revision_id, '-'::text), kind, COALESCE(previous_path, '-'::text), COALESCE(path, '-'::text));
 
 
 --
--- Name: release_source_directories_path_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_change_facts_unassigned_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX release_source_directories_path_cursor_idx ON focowiki.release_source_directories USING btree (release_id, path_key COLLATE "C", source_directory_id);
-
-
---
--- Name: release_source_files_directory_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX release_source_files_directory_cursor_idx ON focowiki.release_source_files USING btree (release_id, source_directory_id, lower(name), source_file_id);
+CREATE INDEX publication_change_facts_unassigned_idx ON focowiki.publication_change_facts USING btree (knowledge_base_id, created_at, id) WHERE (generation_id IS NULL);
 
 
 --
--- Name: release_source_files_path_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_generations_claim_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX release_source_files_path_cursor_idx ON focowiki.release_source_files USING btree (release_id, path_key COLLATE "C", source_file_id);
+CREATE INDEX publication_generations_claim_idx ON focowiki.publication_generations USING btree (state, created_at, id);
 
 
 --
--- Name: release_resource_operations_operation_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: publication_generations_one_active_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX release_resource_operations_operation_idx ON focowiki.release_resource_operations USING btree (operation_id, release_id);
+CREATE UNIQUE INDEX publication_generations_one_active_idx ON focowiki.publication_generations USING btree (knowledge_base_id) WHERE (state = 'active'::text);
+
+
+--
+-- Name: publication_generations_one_frozen_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX publication_generations_one_frozen_idx ON focowiki.publication_generations USING btree (knowledge_base_id) WHERE (state = ANY (ARRAY['frozen'::text, 'building'::text, 'validating'::text]));
+
+
+--
+-- Name: publication_generations_one_open_successor_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX publication_generations_one_open_successor_idx ON focowiki.publication_generations USING btree (knowledge_base_id) WHERE (state = 'open'::text);
+
+
+--
+-- Name: publication_impact_causes_fact_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX publication_impact_causes_fact_idx ON focowiki.publication_impact_causes USING btree (change_fact_id, impact_id);
+
+
+--
+-- Name: publication_impacts_claim_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX publication_impacts_claim_idx ON focowiki.publication_impacts USING btree (generation_id, status, run_after, created_at, id);
+
+
+--
+-- Name: publication_impacts_dirty_shard_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX publication_impacts_dirty_shard_idx ON focowiki.publication_impacts USING btree (knowledge_base_id, projection_kind, projection_key, status, id);
+
+
+--
+-- Name: publication_progress_summary_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX publication_progress_summary_idx ON focowiki.publication_progress USING btree (knowledge_base_id, updated_at DESC, generation_id);
 
 
 --
@@ -2154,6 +1917,41 @@ CREATE INDEX resource_path_reservations_operation_idx ON focowiki.resource_path_
 
 
 --
+-- Name: role_heartbeats_seen_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX role_heartbeats_seen_idx ON focowiki.role_heartbeats USING btree (role, last_seen_at DESC, worker_id);
+
+
+--
+-- Name: role_jobs_claim_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX role_jobs_claim_idx ON focowiki.role_jobs USING btree (role, status, run_after, created_at, id);
+
+
+--
+-- Name: role_jobs_publication_generation_active_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX role_jobs_publication_generation_active_idx ON focowiki.role_jobs USING btree (knowledge_base_id) WHERE ((role = 'publication'::text) AND (status = 'running'::text));
+
+
+--
+-- Name: role_jobs_publication_generation_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX role_jobs_publication_generation_idx ON focowiki.role_jobs USING btree (generation_id) WHERE ((role = 'publication'::text) AND (generation_id IS NOT NULL));
+
+
+--
+-- Name: role_jobs_source_revision_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE UNIQUE INDEX role_jobs_source_revision_idx ON focowiki.role_jobs USING btree (source_revision_id) WHERE ((role = 'source'::text) AND (source_revision_id IS NOT NULL));
+
+
+--
 -- Name: runtime_setting_audit_logs_setting_created_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2179,6 +1977,20 @@ CREATE INDEX source_directories_parent_cursor_idx ON focowiki.source_directories
 --
 
 CREATE INDEX source_directories_path_prefix_idx ON focowiki.source_directories USING btree (knowledge_base_id, path_key COLLATE "C", id);
+
+
+--
+-- Name: source_dispatch_markers_claim_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_dispatch_markers_claim_idx ON focowiki.source_dispatch_markers USING btree (status, run_after, sequence_number, id);
+
+
+--
+-- Name: source_dispatch_markers_kb_pressure_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_dispatch_markers_kb_pressure_idx ON focowiki.source_dispatch_markers USING btree (knowledge_base_id, status, created_at, id);
 
 
 --
@@ -2221,6 +2033,7 @@ CREATE INDEX source_file_graph_jobs_source_created_idx ON focowiki.source_file_g
 --
 
 CREATE INDEX source_file_graph_nodes_entities_gin_idx ON focowiki.source_file_graph_nodes USING gin (entities_json);
+
 
 --
 -- Name: source_file_graph_nodes_explicit_references_gin_idx; Type: INDEX; Schema: focowiki; Owner: -
@@ -2279,6 +2092,20 @@ CREATE UNIQUE INDEX source_files_active_path_key_idx ON focowiki.source_files US
 
 
 --
+-- Name: source_files_active_revision_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_active_revision_idx ON focowiki.source_files USING btree (active_revision_id);
+
+
+--
+-- Name: source_files_candidate_revision_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_candidate_revision_idx ON focowiki.source_files USING btree (candidate_revision_id) WHERE (candidate_revision_id IS NOT NULL);
+
+
+--
 -- Name: source_files_directory_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2310,7 +2137,7 @@ CREATE INDEX source_files_kb_ended_cursor_idx ON focowiki.source_files USING btr
 -- Name: source_files_kb_error_state_created_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX source_files_kb_error_state_created_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND ((processing_error_code IS NOT NULL) OR (publication_error_code IS NOT NULL)));
+CREATE INDEX source_files_kb_error_state_created_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_code IS NOT NULL));
 
 
 --
@@ -2331,21 +2158,14 @@ CREATE INDEX source_files_kb_model_invocation_status_idx ON focowiki.source_file
 -- Name: source_files_kb_no_error_created_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX source_files_kb_no_error_created_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (processing_error_code IS NULL) AND (publication_error_code IS NULL));
+CREATE INDEX source_files_kb_no_error_created_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_code IS NULL));
 
 
 --
 -- Name: source_files_kb_openable_action_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX source_files_kb_openable_action_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (generated_output_status = 'visible'::text) AND (generated_bundle_file_path IS NOT NULL));
-
-
---
--- Name: source_files_kb_processing_error_code_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX source_files_kb_processing_error_code_idx ON focowiki.source_files USING btree (knowledge_base_id, processing_error_code, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (processing_error_code IS NOT NULL));
+CREATE INDEX source_files_kb_openable_action_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (generated_output_status = 'visible'::text));
 
 
 --
@@ -2355,25 +2175,12 @@ CREATE INDEX source_files_kb_processing_error_code_idx ON focowiki.source_files 
 CREATE INDEX source_files_kb_processing_idx ON focowiki.source_files USING btree (knowledge_base_id, processing_status, processing_stage, created_at DESC, id);
 
 
---
--- Name: source_files_kb_publication_dirty_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX source_files_kb_publication_dirty_idx ON focowiki.source_files USING btree (knowledge_base_id, publication_dirty_at, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (processing_status = 'completed'::text) AND (publication_dirty_at IS NOT NULL));
-
-
---
--- Name: source_files_kb_publication_error_code_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX source_files_kb_publication_error_code_idx ON focowiki.source_files USING btree (knowledge_base_id, publication_error_code, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (publication_error_code IS NOT NULL));
-
 
 --
 -- Name: source_files_kb_retryable_action_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX source_files_kb_retryable_action_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (processing_status = 'failed'::text));
+CREATE INDEX source_files_kb_retryable_action_idx ON focowiki.source_files USING btree (knowledge_base_id, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_retry_kind = ANY (ARRAY['source_processing'::text, 'publication'::text])));
 
 
 --
@@ -2398,6 +2205,27 @@ CREATE INDEX source_files_kb_task_visible_processing_idx ON focowiki.source_file
 
 
 --
+-- Name: source_files_kb_terminal_failure_code_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_kb_terminal_failure_code_idx ON focowiki.source_files USING btree (knowledge_base_id, terminal_failure_code, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_code IS NOT NULL));
+
+
+--
+-- Name: source_files_kb_terminal_failure_retry_kind_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_kb_terminal_failure_retry_kind_idx ON focowiki.source_files USING btree (knowledge_base_id, terminal_failure_retry_kind, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_retry_kind IS NOT NULL));
+
+
+--
+-- Name: source_files_kb_terminal_failure_stage_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_kb_terminal_failure_stage_idx ON focowiki.source_files USING btree (knowledge_base_id, terminal_failure_stage, created_at DESC, id) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL) AND (terminal_failure_stage IS NOT NULL));
+
+
+--
 -- Name: source_files_object_key_unique; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2418,24 +2246,28 @@ CREATE INDEX source_files_path_prefix_idx ON focowiki.source_files USING btree (
 CREATE INDEX source_files_relative_path_trgm_idx ON focowiki.source_files USING gin (relative_path focowiki.gin_trgm_ops) WHERE ((deleted_at IS NULL) AND (task_deleted_at IS NULL));
 
 
+--
 -- Name: source_files_resource_cursor_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
 CREATE INDEX source_files_resource_cursor_idx ON focowiki.source_files USING btree (knowledge_base_id, id) WHERE ((deleted_at IS NULL) AND (deletion_intent_id IS NULL));
 
 
--- Name: source_files_resource_processing_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
-
-CREATE INDEX source_files_resource_processing_idx ON focowiki.source_files USING btree (knowledge_base_id, processing_status, processing_stage, generated_output_status, id) WHERE ((deleted_at IS NULL) AND (deletion_intent_id IS NULL));
-
-
 -- Name: source_files_resource_id_prefix_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
 CREATE INDEX source_files_resource_id_prefix_idx ON focowiki.source_files USING btree (knowledge_base_id, id text_pattern_ops) WHERE ((deleted_at IS NULL) AND (deletion_intent_id IS NULL));
 
 
+--
+-- Name: source_files_resource_processing_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX source_files_resource_processing_idx ON focowiki.source_files USING btree (knowledge_base_id, processing_status, processing_stage, generated_output_status, id) WHERE ((deleted_at IS NULL) AND (deletion_intent_id IS NULL));
+
+
+--
 -- Name: source_files_resource_relative_path_trgm_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2464,6 +2296,13 @@ CREATE INDEX upload_session_entries_disposition_idx ON focowiki.upload_session_e
 
 
 --
+-- Name: upload_session_entries_finalization_idx; Type: INDEX; Schema: focowiki; Owner: -
+--
+
+CREATE INDEX upload_session_entries_finalization_idx ON focowiki.upload_session_entries USING btree (session_id, sequence_number, id) WHERE ((disposition = 'upload_required'::text) AND (transfer_state = 'uploaded'::text) AND (finalized_at IS NULL));
+
+
+--
 -- Name: upload_session_entries_path_disposition_idx; Type: INDEX; Schema: focowiki; Owner: -
 --
 
@@ -2475,13 +2314,6 @@ CREATE INDEX upload_session_entries_path_disposition_idx ON focowiki.upload_sess
 --
 
 CREATE INDEX upload_session_entries_resume_idx ON focowiki.upload_session_entries USING btree (session_id, transfer_state, sequence_number, id);
-
-
---
--- Name: upload_session_entries_finalization_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX upload_session_entries_finalization_idx ON focowiki.upload_session_entries USING btree (session_id, sequence_number, id) WHERE ((disposition = 'upload_required'::text) AND (transfer_state = 'uploaded'::text) AND (finalized_at IS NULL));
 
 
 --
@@ -2520,161 +2352,35 @@ CREATE INDEX webhook_subscriptions_enabled_created_cursor_idx ON focowiki.webhoo
 
 
 --
--- Name: worker_heartbeats_seen_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: active_object_refs active_object_refs_checksum_sha256_format_version_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX worker_heartbeats_seen_idx ON focowiki.worker_heartbeats USING btree (last_seen_at DESC, worker_id);
-
-
---
--- Name: worker_jobs_claim_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_claim_idx ON focowiki.worker_jobs USING btree (status, run_after, created_at, id);
+ALTER TABLE ONLY focowiki.active_object_refs
+    ADD CONSTRAINT active_object_refs_checksum_sha256_format_version_fkey FOREIGN KEY (checksum_sha256, format_version) REFERENCES focowiki.immutable_objects(checksum_sha256, format_version) ON DELETE RESTRICT;
 
 
 --
--- Name: worker_jobs_hard_delete_active_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: active_object_refs active_object_refs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX worker_jobs_hard_delete_active_idx ON focowiki.worker_jobs USING btree (knowledge_base_id, kind, status, run_after, id) WHERE ((kind = 'hard_delete'::text) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
-
-
---
--- Name: worker_jobs_kb_created_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_kb_created_idx ON focowiki.worker_jobs USING btree (knowledge_base_id, created_at DESC, id);
+ALTER TABLE ONLY focowiki.active_object_refs
+    ADD CONSTRAINT active_object_refs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: worker_jobs_kind_status_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: active_projection_records active_projection_records_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX worker_jobs_kind_status_idx ON focowiki.worker_jobs USING btree (kind, status, run_after, id);
-
-
---
--- Name: worker_jobs_upload_finalization_active_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_upload_finalization_active_idx ON focowiki.worker_jobs USING btree (knowledge_base_id, (payload_json ->> 'sessionId'::text), status, run_after, id) WHERE ((kind = 'upload_session_finalization'::text) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
+ALTER TABLE ONLY focowiki.active_projection_records
+    ADD CONSTRAINT active_projection_records_generation_id_fkey FOREIGN KEY (last_changed_generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE RESTRICT;
 
 
 --
--- Name: worker_jobs_publication_active_idx; Type: INDEX; Schema: focowiki; Owner: -
+-- Name: active_projection_records active_projection_records_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-CREATE INDEX worker_jobs_publication_active_idx ON focowiki.worker_jobs USING btree (kind, knowledge_base_id, status, run_after) WHERE ((kind = 'publication'::text) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
-
-CREATE UNIQUE INDEX worker_jobs_publication_queued_unique_idx ON focowiki.worker_jobs USING btree (knowledge_base_id) WHERE ((kind = 'publication'::text) AND (status = 'queued'::text));
-
-CREATE UNIQUE INDEX worker_jobs_publication_running_unique_idx ON focowiki.worker_jobs USING btree (knowledge_base_id) WHERE ((kind = 'publication'::text) AND (status = 'running'::text));
-
-
---
--- Name: worker_jobs_queued_oldest_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_queued_oldest_idx ON focowiki.worker_jobs USING btree (kind, knowledge_base_id, run_after, id) WHERE (status = 'queued'::text);
-
-
---
--- Name: worker_jobs_retention_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_retention_idx ON focowiki.worker_jobs USING btree (status, completed_at, failed_at, id) WHERE (status = ANY (ARRAY['completed'::text, 'failed'::text, 'dead_letter'::text, 'cancelled'::text]));
-
-
---
--- Name: worker_jobs_running_heartbeat_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_running_heartbeat_idx ON focowiki.worker_jobs USING btree (status, heartbeat_at, locked_at, id) WHERE (status = 'running'::text);
-
-
---
--- Name: worker_jobs_source_active_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_source_active_idx ON focowiki.worker_jobs USING btree (kind, source_file_id, status) WHERE ((source_file_id IS NOT NULL) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
-
-
---
--- Name: worker_jobs_source_cancel_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_jobs_source_cancel_idx ON focowiki.worker_jobs USING btree (knowledge_base_id, kind, status, source_file_id, run_after, created_at, id) WHERE ((kind = 'source_file_processing'::text) AND (source_file_id IS NOT NULL) AND (status = ANY (ARRAY['queued'::text, 'running'::text])));
-
-
---
--- Name: worker_queue_summaries_kind_status_idx; Type: INDEX; Schema: focowiki; Owner: -
---
-
-CREATE INDEX worker_queue_summaries_kind_status_idx ON focowiki.worker_queue_summaries USING btree (kind, status, knowledge_base_id);
-
-
---
--- Name: worker_jobs worker_jobs_summary_sync_trigger; Type: TRIGGER; Schema: focowiki; Owner: -
---
-
-CREATE TRIGGER worker_jobs_summary_sync_trigger AFTER INSERT OR DELETE OR UPDATE OF knowledge_base_id, kind, status ON focowiki.worker_jobs FOR EACH ROW EXECUTE FUNCTION focowiki.sync_worker_queue_summary();
-
-
---
--- Name: bundle_files bundle_files_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: bundle_file_search_documents bundle_file_search_documents_bundle_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_file_search_documents
-    ADD CONSTRAINT bundle_file_search_documents_bundle_file_id_fkey FOREIGN KEY (bundle_file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: bundle_file_search_documents bundle_file_search_documents_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_file_search_documents
-    ADD CONSTRAINT bundle_file_search_documents_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
-
-
---
--- Name: bundle_file_search_documents bundle_file_search_documents_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_file_search_documents
-    ADD CONSTRAINT bundle_file_search_documents_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: bundle_files bundle_files_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id);
-
-
---
--- Name: bundle_files bundle_files_source_directory_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_source_directory_id_fkey FOREIGN KEY (source_directory_id) REFERENCES focowiki.source_directories(id) ON DELETE SET NULL;
-
-
---
--- Name: bundle_files bundle_files_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.bundle_files
-    ADD CONSTRAINT bundle_files_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id);
+ALTER TABLE ONLY focowiki.active_projection_records
+    ADD CONSTRAINT active_projection_records_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -2686,219 +2392,67 @@ ALTER TABLE ONLY focowiki.deletion_intents
 
 
 --
--- Name: hard_delete_object_deletions hard_delete_object_deletions_job_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: directory_navigation_leaves directory_navigation_leaves_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.hard_delete_object_deletions
-    ADD CONSTRAINT hard_delete_object_deletions_job_id_fkey FOREIGN KEY (job_id) REFERENCES focowiki.worker_jobs(id) ON DELETE CASCADE;
-
-
---
--- Name: hard_delete_object_deletions hard_delete_object_deletions_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.hard_delete_object_deletions
-    ADD CONSTRAINT hard_delete_object_deletions_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+ALTER TABLE ONLY focowiki.directory_navigation_leaves
+    ADD CONSTRAINT directory_navigation_leaves_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: hard_delete_object_deletions hard_delete_object_deletions_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: directory_navigation_summaries directory_navigation_summaries_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.hard_delete_object_deletions
-    ADD CONSTRAINT hard_delete_object_deletions_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id);
-
-
---
--- Name: knowledge_bases knowledge_bases_active_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_bases
-    ADD CONSTRAINT knowledge_bases_active_release_id_fkey FOREIGN KEY (active_release_id) REFERENCES focowiki.releases(id);
+ALTER TABLE ONLY focowiki.directory_navigation_summaries
+    ADD CONSTRAINT directory_navigation_summaries_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_object_refs generation_object_refs_checksum_sha256_format_version_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_file_id_fkey FOREIGN KEY (file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+ALTER TABLE ONLY focowiki.generation_object_refs
+    ADD CONSTRAINT generation_object_refs_checksum_sha256_format_version_fkey FOREIGN KEY (checksum_sha256, format_version) REFERENCES focowiki.immutable_objects(checksum_sha256, format_version) ON DELETE RESTRICT;
 
 
 --
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_object_refs generation_object_refs_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_file_tree_nodes knowledge_file_tree_nodes_source_directory_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_file_tree_nodes
-    ADD CONSTRAINT knowledge_file_tree_nodes_source_directory_id_fkey FOREIGN KEY (source_directory_id) REFERENCES focowiki.source_directories(id) ON DELETE SET NULL;
+ALTER TABLE ONLY focowiki.generation_object_refs
+    ADD CONSTRAINT generation_object_refs_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
 
 
 --
--- Name: knowledge_graph_edges knowledge_graph_edges_from_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_object_refs generation_object_refs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_from_file_id_fkey FOREIGN KEY (from_file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_edges knowledge_graph_edges_from_node_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_from_node_id_fkey FOREIGN KEY (from_node_id) REFERENCES focowiki.knowledge_graph_nodes(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.generation_object_refs
+    ADD CONSTRAINT generation_object_refs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: knowledge_graph_edges knowledge_graph_edges_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_object_refs generation_object_refs_projection_shard_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: knowledge_graph_edges knowledge_graph_edges_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.generation_object_refs
+    ADD CONSTRAINT generation_object_refs_projection_shard_id_fkey FOREIGN KEY (projection_shard_id) REFERENCES focowiki.projection_shards(id) ON DELETE RESTRICT;
 
 
 --
--- Name: knowledge_graph_edges knowledge_graph_edges_to_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_projection_records generation_projection_records_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_to_file_id_fkey FOREIGN KEY (to_file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_edges knowledge_graph_edges_to_node_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_edges
-    ADD CONSTRAINT knowledge_graph_edges_to_node_id_fkey FOREIGN KEY (to_node_id) REFERENCES focowiki.knowledge_graph_nodes(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.generation_projection_records
+    ADD CONSTRAINT generation_projection_records_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
 
 
 --
--- Name: knowledge_graph_insights knowledge_graph_insights_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: generation_projection_records generation_projection_records_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.knowledge_graph_insights
-    ADD CONSTRAINT knowledge_graph_insights_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: knowledge_graph_insights knowledge_graph_insights_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_insights
-    ADD CONSTRAINT knowledge_graph_insights_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_file_id_fkey FOREIGN KEY (file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_nodes knowledge_graph_nodes_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_nodes
-    ADD CONSTRAINT knowledge_graph_nodes_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id);
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_edge_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_edge_id_fkey FOREIGN KEY (edge_id) REFERENCES focowiki.knowledge_graph_edges(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_file_id_fkey FOREIGN KEY (file_id) REFERENCES focowiki.bundle_files(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_node_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_node_id_fkey FOREIGN KEY (node_id) REFERENCES focowiki.knowledge_graph_nodes(id) ON DELETE CASCADE;
-
-
---
--- Name: knowledge_graph_search_documents knowledge_graph_search_documents_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.knowledge_graph_search_documents
-    ADD CONSTRAINT knowledge_graph_search_documents_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: release_read_summaries release_read_summaries_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_read_summaries
-    ADD CONSTRAINT release_read_summaries_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
-
-
---
--- Name: release_read_summaries release_read_summaries_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_read_summaries
-    ADD CONSTRAINT release_read_summaries_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.generation_projection_records
+    ADD CONSTRAINT generation_projection_records_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -2906,7 +2460,7 @@ ALTER TABLE ONLY focowiki.release_read_summaries
 --
 
 ALTER TABLE ONLY focowiki.model_invocations
-    ADD CONSTRAINT model_invocations_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT model_invocations_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -2918,139 +2472,107 @@ ALTER TABLE ONLY focowiki.model_invocations
 
 
 --
--- Name: publication_jobs publication_jobs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: projection_shards projection_shards_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.publication_jobs
-    ADD CONSTRAINT publication_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: publication_jobs publication_jobs_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.publication_jobs
-    ADD CONSTRAINT publication_jobs_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id);
+ALTER TABLE ONLY focowiki.projection_shards
+    ADD CONSTRAINT projection_shards_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: releases releases_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_change_facts publication_change_facts_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.releases
-    ADD CONSTRAINT releases_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: release_source_directories release_source_directories_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.publication_change_facts
+    ADD CONSTRAINT publication_change_facts_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE SET NULL;
 
 
 --
--- Name: release_markdown_links release_markdown_links_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_change_facts publication_change_facts_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_markdown_links
-    ADD CONSTRAINT release_markdown_links_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: release_markdown_links release_markdown_links_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_markdown_links
-    ADD CONSTRAINT release_markdown_links_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.publication_change_facts
+    ADD CONSTRAINT publication_change_facts_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_source_directories release_source_directories_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_generations publication_generations_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: release_source_directories release_source_directories_source_directory_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_source_directory_id_fkey FOREIGN KEY (source_directory_id) REFERENCES focowiki.source_directories(id);
+ALTER TABLE ONLY focowiki.publication_generations
+    ADD CONSTRAINT publication_generations_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_source_directories release_source_directories_parent_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impact_causes publication_impact_causes_change_fact_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_directories
-    ADD CONSTRAINT release_source_directories_parent_fkey FOREIGN KEY (release_id, parent_source_directory_id) REFERENCES focowiki.release_source_directories(release_id, source_directory_id);
-
-
---
--- Name: release_source_files release_source_files_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.publication_impact_causes
+    ADD CONSTRAINT publication_impact_causes_change_fact_id_fkey FOREIGN KEY (change_fact_id) REFERENCES focowiki.publication_change_facts(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_source_files release_source_files_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impact_causes publication_impact_causes_impact_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: release_source_files release_source_files_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id);
+ALTER TABLE ONLY focowiki.publication_impact_causes
+    ADD CONSTRAINT publication_impact_causes_impact_id_fkey FOREIGN KEY (impact_id) REFERENCES focowiki.publication_impacts(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_source_files release_source_files_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impacts publication_impacts_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_source_revision_id_fkey FOREIGN KEY (source_revision_id) REFERENCES focowiki.source_revisions(id);
-
-
---
--- Name: release_source_files release_source_files_source_directory_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_source_files
-    ADD CONSTRAINT release_source_files_source_directory_fkey FOREIGN KEY (release_id, source_directory_id) REFERENCES focowiki.release_source_directories(release_id, source_directory_id);
+ALTER TABLE ONLY focowiki.publication_impacts
+    ADD CONSTRAINT publication_impacts_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_resource_operations release_resource_operations_release_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impacts publication_impacts_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_resource_operations
-    ADD CONSTRAINT release_resource_operations_release_id_fkey FOREIGN KEY (release_id) REFERENCES focowiki.releases(id) ON DELETE CASCADE;
-
-
---
--- Name: release_resource_operations release_resource_operations_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.release_resource_operations
-    ADD CONSTRAINT release_resource_operations_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.publication_impacts
+    ADD CONSTRAINT publication_impacts_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
--- Name: release_resource_operations release_resource_operations_operation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- Name: publication_impacts publication_impacts_projection_input_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
-ALTER TABLE ONLY focowiki.release_resource_operations
-    ADD CONSTRAINT release_resource_operations_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES focowiki.resource_operations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY focowiki.publication_impacts
+    ADD CONSTRAINT publication_impacts_projection_input_fkey FOREIGN KEY (generation_id, projection_input_key) REFERENCES focowiki.publication_projection_inputs(generation_id, input_key) ON DELETE CASCADE;
+
+
+--
+-- Name: publication_projection_inputs publication_projection_inputs_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.publication_projection_inputs
+    ADD CONSTRAINT publication_projection_inputs_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: publication_projection_inputs publication_projection_inputs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.publication_projection_inputs
+    ADD CONSTRAINT publication_projection_inputs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: publication_progress publication_progress_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.publication_progress
+    ADD CONSTRAINT publication_progress_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: publication_progress publication_progress_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.publication_progress
+    ADD CONSTRAINT publication_progress_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3083,6 +2605,38 @@ ALTER TABLE ONLY focowiki.resource_path_reservations
 
 ALTER TABLE ONLY focowiki.resource_path_reservations
     ADD CONSTRAINT resource_path_reservations_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES focowiki.resource_operations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_jobs role_jobs_generation_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_jobs
+    ADD CONSTRAINT role_jobs_generation_id_fkey FOREIGN KEY (generation_id) REFERENCES focowiki.publication_generations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_jobs role_jobs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_jobs
+    ADD CONSTRAINT role_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_jobs role_jobs_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_jobs
+    ADD CONSTRAINT role_jobs_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id) ON DELETE CASCADE;
+
+
+--
+-- Name: role_jobs role_jobs_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.role_jobs
+    ADD CONSTRAINT role_jobs_source_revision_id_fkey FOREIGN KEY (source_revision_id) REFERENCES focowiki.source_revisions(id) ON DELETE CASCADE;
 
 
 --
@@ -3126,11 +2680,35 @@ ALTER TABLE ONLY focowiki.source_directories
 
 
 --
+-- Name: source_dispatch_markers source_dispatch_markers_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.source_dispatch_markers
+    ADD CONSTRAINT source_dispatch_markers_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
+
+
+--
+-- Name: source_dispatch_markers source_dispatch_markers_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.source_dispatch_markers
+    ADD CONSTRAINT source_dispatch_markers_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id) ON DELETE CASCADE;
+
+
+--
+-- Name: source_dispatch_markers source_dispatch_markers_source_revision_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+--
+
+ALTER TABLE ONLY focowiki.source_dispatch_markers
+    ADD CONSTRAINT source_dispatch_markers_source_revision_id_fkey FOREIGN KEY (source_revision_id) REFERENCES focowiki.source_revisions(id) ON DELETE CASCADE;
+
+
+--
 -- Name: source_file_events source_file_events_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
 --
 
 ALTER TABLE ONLY focowiki.source_file_events
-    ADD CONSTRAINT source_file_events_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_file_events_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3154,7 +2732,7 @@ ALTER TABLE ONLY focowiki.source_file_graph_edges
 --
 
 ALTER TABLE ONLY focowiki.source_file_graph_edges
-    ADD CONSTRAINT source_file_graph_edges_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_file_graph_edges_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3170,7 +2748,7 @@ ALTER TABLE ONLY focowiki.source_file_graph_edges
 --
 
 ALTER TABLE ONLY focowiki.source_file_graph_jobs
-    ADD CONSTRAINT source_file_graph_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_file_graph_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3186,7 +2764,7 @@ ALTER TABLE ONLY focowiki.source_file_graph_jobs
 --
 
 ALTER TABLE ONLY focowiki.source_file_graph_nodes
-    ADD CONSTRAINT source_file_graph_nodes_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_file_graph_nodes_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3202,7 +2780,7 @@ ALTER TABLE ONLY focowiki.source_file_graph_nodes
 --
 
 ALTER TABLE ONLY focowiki.source_file_retry_attempts
-    ADD CONSTRAINT source_file_retry_attempts_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_file_retry_attempts_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3266,7 +2844,7 @@ ALTER TABLE ONLY focowiki.source_files
 --
 
 ALTER TABLE ONLY focowiki.source_files
-    ADD CONSTRAINT source_files_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
+    ADD CONSTRAINT source_files_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id) ON DELETE CASCADE;
 
 
 --
@@ -3330,7 +2908,7 @@ ALTER TABLE ONLY focowiki.upload_session_entries
 --
 
 ALTER TABLE ONLY focowiki.upload_session_entries
-    ADD CONSTRAINT upload_session_entries_source_directory_id_fkey FOREIGN KEY (source_directory_id) REFERENCES focowiki.source_directories(id);
+    ADD CONSTRAINT upload_session_entries_source_directory_id_fkey FOREIGN KEY (source_directory_id) REFERENCES focowiki.source_directories(id) ON DELETE SET NULL;
 
 
 --
@@ -3350,29 +2928,10 @@ ALTER TABLE ONLY focowiki.webhook_deliveries
 
 
 --
--- Name: worker_jobs worker_jobs_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
+-- PostgreSQL database dump complete
 --
-
-ALTER TABLE ONLY focowiki.worker_jobs
-    ADD CONSTRAINT worker_jobs_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
-
-
---
--- Name: worker_jobs worker_jobs_source_file_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.worker_jobs
-    ADD CONSTRAINT worker_jobs_source_file_id_fkey FOREIGN KEY (source_file_id) REFERENCES focowiki.source_files(id);
-
-
---
--- Name: worker_queue_summaries worker_queue_summaries_knowledge_base_id_fkey; Type: FK CONSTRAINT; Schema: focowiki; Owner: -
---
-
-ALTER TABLE ONLY focowiki.worker_queue_summaries
-    ADD CONSTRAINT worker_queue_summaries_knowledge_base_id_fkey FOREIGN KEY (knowledge_base_id) REFERENCES focowiki.knowledge_bases(id);
 
 
 
 INSERT INTO focowiki.runtime_generation (singleton, generation)
-VALUES (true, 'relation-search-publication-v1');
+VALUES (true, 'incremental-sharded-publication-v1');

@@ -28,11 +28,11 @@ import {
   matchAdminSourceFilesToSamples,
   readUploadSourceFileId
 } from "./lib/source-file-contract.mjs";
+import { requiresSourceBodyComparison } from "./lib/okf-file-contract.mjs";
 import {
-  isManifestOwnedPath,
-  requiresSourceBodyComparison
-} from "./lib/okf-file-contract.mjs";
-import { assertPagesReachableFromRootIndex } from "./lib/progressive-navigation.mjs";
+  assertPagesReachableFromRootIndex,
+  hydrateReachableMarkdownBodies
+} from "./lib/progressive-navigation.mjs";
 import { findInCursorPages } from "./lib/cursor-search.mjs";
 
 export {
@@ -44,7 +44,7 @@ export {
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
-  "validate-clean-architecture-full-system";
+  "implement-incremental-sharded-publication";
 const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
@@ -58,10 +58,9 @@ const EXPECTED_UPLOAD_PHASE_KEYS = new Set([
   "metadata_resolution",
   "llm_suggestion",
   "graph_generation",
-  "bundle_generation",
-  "okf_validation",
-  "index_publication",
-  "release_activation"
+  "projection_generation",
+  "generation_validation",
+  "generation_activation"
 ]);
 const SECURITY_AUDIT_SECRET_PATTERN =
   /password|session=|\bPUBLIC_OPENAPI_KEY\b|\bS3_SECRET(?:_ACCESS_KEY)?\b|\bMODEL_API_KEY\b|Bearer\s+[A-Za-z0-9._-]+/i;
@@ -233,7 +232,7 @@ export async function runApiValidation() {
 
     logValidationStep("admin-auth");
     await loginAdmin(admin, env, report);
-    await validateRuntimeUploadGenerationSettings(
+    await validateRuntimeProcessingSettings(
       admin,
       Math.max(singleSamples.length, batchSamples.length),
       report
@@ -861,37 +860,53 @@ async function readRuntimeSettings(admin) {
   return response.json();
 }
 
-async function validateRuntimeUploadGenerationSettings(admin, sampleCount, report) {
+async function validateRuntimeProcessingSettings(admin, sampleCount, report) {
   const body = await readRuntimeSettings(admin);
-  const uploadGeneration = body.settings?.uploadGeneration;
+  const worker = body.settings?.worker;
+  const publication = body.settings?.publication;
 
-  if (!uploadGeneration) {
-    throw new Error("Runtime settings response did not include upload-generation settings.");
+  if (!worker || !publication) {
+    throw new Error("Runtime settings response did not include worker and publication settings.");
   }
 
-  for (const [field, value] of Object.entries(uploadGeneration)) {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new Error(`Runtime upload-generation setting ${field} must be a positive integer.`);
-    }
-  }
+  assertRuntimeProcessingSettingsShape({ worker, publication });
 
   report.checks.push(
     okCheck(
-      "runtime-upload-generation-settings",
-      "Admin UI runtime upload-generation settings persist bounded manifest and content transfer pages.",
+      "runtime-processing-settings",
+      "Admin UI runtime settings persist bounded source dispatch and incremental publication work.",
       {
         sampleCount,
-        generationBatchSize: uploadGeneration.generationBatchSize,
-        fileProcessingConcurrency: uploadGeneration.fileProcessingConcurrency,
-        manifestPageSize: uploadGeneration.manifestPageSize,
-        contentBatchMaxFiles: uploadGeneration.contentBatchMaxFiles,
-        contentBatchMaxBytes: uploadGeneration.contentBatchMaxBytes
+        generationBatchSize: worker.generationBatchSize,
+        sourceFileConcurrency: worker.sourceFileConcurrency,
+        sourceQueueHardDepth: worker.sourceQueueHardDepth,
+        impactBatchSize: publication.impactBatchSize,
+        impactConcurrency: publication.impactConcurrency,
+        pendingImpactHardCount: publication.pendingImpactHardCount,
+        indexShardSize: publication.indexShardSize
       },
       WHITE_BOX
     )
   );
 
-  return uploadGeneration;
+  return { worker, publication };
+}
+
+export function assertRuntimeProcessingSettingsShape({ worker, publication }) {
+  if (typeof worker.hardDeleteVersionPurgeEnabled !== "boolean") {
+    throw new Error(
+      "Runtime processing setting hardDeleteVersionPurgeEnabled must be a boolean."
+    );
+  }
+
+  for (const [field, value] of [
+    ...Object.entries(worker).filter(([, value]) => typeof value === "number"),
+    ...Object.entries(publication).filter(([, value]) => typeof value === "number")
+  ]) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Runtime processing setting ${field} must be a positive integer.`);
+    }
+  }
 }
 
 async function readRuntimeModelAssistanceMode(admin, env) {
@@ -1378,7 +1393,7 @@ async function uploadSamples(admin, knowledgeBaseId, samples, report, options = 
           ...(requestOptions.headers ?? {}),
           ...(requestOptions.body ? { "content-type": "application/json" } : {})
         },
-        body: requestOptions.formData
+        body: requestOptions.rawBody
           ?? (requestOptions.body ? JSON.stringify(requestOptions.body) : undefined)
       });
       if (!response.ok) {
@@ -1418,16 +1433,16 @@ async function pollSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds, t
   while (Date.now() < deadline) {
     const files = await listAdminSourceFiles(admin, knowledgeBaseId, 50);
     const selectedFiles = files.filter((file) => expectedIds.has(file.id));
-    const failedFile = selectedFiles.find((file) => file.processingStatus === "failed");
+    const failedFile = selectedFiles.find((file) => file.state === "failed");
 
     if (failedFile) {
-      throw new Error(`Source file processing failed for ${failedFile.id}: ${failedFile.processingErrorCode ?? "UNKNOWN"}.`);
+      throw new Error(`Source file processing failed for ${failedFile.id}: ${failedFile.failure?.code ?? "UNKNOWN"}.`);
     }
 
     if (
       selectedFiles.length === expectedIds.size &&
       selectedFiles.every(
-        (file) => file.processingStatus === "completed" && file.generatedOutputStatus === "visible"
+        (file) => file.state === "visible" && file.generatedOutputStatus === "visible"
       )
     ) {
       report.checks.push(
@@ -1461,18 +1476,64 @@ async function listAdminSourceFiles(admin, knowledgeBaseId, limit = 50) {
   return files;
 }
 
-async function listAdminBundleFiles(admin, knowledgeBaseId, limit = 100) {
+async function listAdminGeneratedFiles(admin, knowledgeBaseId, limit = 100) {
   const files = [];
-  let cursor = null;
+  const paths = new Set();
+  const directoryQueue = ["pages"];
+  const rootPaths = [
+    "index.md",
+    "schema.md",
+    "log.md",
+    "pages/index.md",
+    "_index/index.md",
+    "_index/catalog.json",
+    "_graph/index.md"
+  ];
 
-  do {
-    const pathWithCursor = `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=${limit}${
-      cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
-    }`;
-    const body = await readJson(admin, pathWithCursor);
-    files.push(...(body.items ?? []));
-    cursor = body.nextCursor ?? null;
-  } while (cursor);
+  for (const logicalPath of rootPaths) {
+    const detail = await readJson(
+      admin,
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/detail?path=${encodeURIComponent(logicalPath)}`
+    );
+    if (!detail.file?.logicalPath || paths.has(detail.file.logicalPath)) continue;
+    paths.add(detail.file.logicalPath);
+    files.push(detail.file);
+  }
+
+  while (directoryQueue.length > 0) {
+    const parentPath = directoryQueue.shift();
+    let cursor = null;
+    do {
+      const body = await readJson(
+        admin,
+        `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?parentPath=${encodeURIComponent(parentPath)}&limit=${limit}${
+          cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
+        }`
+      );
+      for (const entry of body.items ?? []) {
+        if (entry.entryType === "directory") {
+          directoryQueue.push(entry.logicalPath);
+          const indexPath = `${entry.logicalPath}/index.md`;
+          if (!paths.has(indexPath)) {
+            const detail = await readJson(
+              admin,
+              `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/detail?path=${encodeURIComponent(indexPath)}`
+            );
+            if (detail.file?.logicalPath) {
+              paths.add(detail.file.logicalPath);
+              files.push(detail.file);
+            }
+          }
+          continue;
+        }
+        if (!paths.has(entry.logicalPath)) {
+          paths.add(entry.logicalPath);
+          files.push({ ...entry, fileKind: entry.fileKind ?? "page" });
+        }
+      }
+      cursor = body.nextCursor ?? null;
+    } while (cursor);
+  }
 
   return {
     items: files,
@@ -1579,7 +1640,7 @@ async function validateSourceFileRows(admin, knowledgeBaseId, expectedFiles, rep
       throw new Error(`Expected source-file row was missing: ${expectedFile.id}`);
     }
 
-    if (file.processingStatus !== "completed" || !file.processingStartedAt || !file.processingEndedAt) {
+    if (file.state !== "visible" || !file.processingStartedAt || !file.processingEndedAt) {
       throw new Error(`Source-file row did not expose expected lifecycle data: ${expectedFile.id}`);
     }
   }
@@ -1631,8 +1692,8 @@ async function validateSourceFilePagination(
 
   if (
     first.items[0]?.id === second.items[0]?.id ||
-    !first.items[0]?.processingStatus ||
-    !second.items[0]?.processingStatus
+    !first.items[0]?.state ||
+    !second.items[0]?.state
   ) {
     throw new Error("Source-file cursor did not return stable source-file rows.");
   }
@@ -1666,30 +1727,30 @@ async function validateAdminSourceFileFilters(admin, knowledgeBaseId, expectedFi
 
   const filteredByStatus = await readJson(
     admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&processingStatus=completed`
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&state=visible`
   );
 
   if (
     !filteredByStatus.items?.length ||
-    filteredByStatus.items.some((file) => file.processingStatus !== "completed")
+    filteredByStatus.items.some((file) => file.state !== "visible")
   ) {
-    throw new Error("Admin source-file processingStatus filter returned unexpected rows.");
+    throw new Error("Admin source-file state filter returned unexpected rows.");
   }
 
   const filteredByStage = await readJson(
     admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&processingStage=release_activation`
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=5&currentStage=generation_activation`
   );
 
   if (
     !filteredByStage.items?.length ||
-    filteredByStage.items.some((file) => file.processingStage !== "release_activation")
+    filteredByStage.items.some((file) => file.currentStage !== "generation_activation")
   ) {
-    throw new Error("Admin source-file processingStage filter returned unexpected rows.");
+    throw new Error("Admin source-file currentStage filter returned unexpected rows.");
   }
 
   const invalidFilter = await admin.request(
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingStatus=invalid`
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?state=invalid`
   );
 
   if (invalidFilter.status !== 400) {
@@ -1698,7 +1759,7 @@ async function validateAdminSourceFileFilters(admin, knowledgeBaseId, expectedFi
 
   report.checks.push(
     okCheck("admin-source-file-filters", "Admin source-file list filters use bounded database-backed queries.", {
-      filterKinds: ["fileNameQuery", "processingStatus", "processingStage"]
+      filterKinds: ["fileNameQuery", "state", "currentStage"]
     })
   );
 }
@@ -1788,34 +1849,33 @@ async function validateAdminProcessingSummary(admin, knowledgeBaseId, report) {
 
 async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options = {}) {
   const expectedSamples = options.expectedSamples ?? [];
-  const [releases, bundleFiles, tree, urls] = await Promise.all([
-    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/releases?limit=10`),
-    listAdminBundleFiles(admin, knowledgeBaseId),
-    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=50`),
+  const [knowledgeBase, generatedFiles, tree, urls] = await Promise.all([
+    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`),
+    listAdminGeneratedFiles(admin, knowledgeBaseId),
+    readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?parentPath=pages&limit=50`),
     readJson(admin, `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/public-urls`)
   ]);
 
-  const release = releases.items?.[0];
-
-  if (!release?.publishedAt || bundleFiles.items.length === 0 || (tree.items?.length ?? 0) === 0) {
-    throw new Error("Expected published release, bundle files, and root tree entries.");
+  if (!knowledgeBase.knowledgeBase?.activeGenerationId || generatedFiles.items.length === 0 || (tree.items?.length ?? 0) === 0) {
+    throw new Error("Expected an active generation, generated files, and document tree entries.");
   }
 
-  const pageFiles = bundleFiles.items.filter(requiresSourceBodyComparison);
+  const pageFiles = generatedFiles.items.filter(requiresSourceBodyComparison);
   const pageFile = pageFiles[0];
-  const navigationFiles = bundleFiles.items.filter((file) =>
-    file.fileKind === "directory_index"
+  const navigationFiles = generatedFiles.items.filter((file) =>
+    file.fileKind === "index"
     && typeof file.logicalPath === "string"
+    && file.logicalPath.startsWith("pages/")
     && file.logicalPath.endsWith(".md")
   );
-  const indexFile = bundleFiles.items.find((file) => file.logicalPath === "index.md");
-  const logFile = bundleFiles.items.find((file) => file.logicalPath === "log.md");
-  const schemaFile = bundleFiles.items.find((file) => file.logicalPath === "schema.md");
-  const searchFile = bundleFiles.items.find((file) => file.logicalPath === "_index/search.json");
-  const exposedSourceFile = bundleFiles.items.find((file) => String(file.logicalPath).startsWith("sources/"));
+  const indexFile = generatedFiles.items.find((file) => file.logicalPath === "index.md");
+  const logFile = generatedFiles.items.find((file) => file.logicalPath === "log.md");
+  const schemaFile = generatedFiles.items.find((file) => file.logicalPath === "schema.md");
+  const searchFile = generatedFiles.items.find((file) => file.logicalPath === "_index/catalog.json");
+  const exposedSourceFile = generatedFiles.items.find((file) => String(file.logicalPath).startsWith("sources/"));
 
   if (!pageFile || !indexFile || !logFile || !schemaFile || !searchFile || exposedSourceFile) {
-    throw new Error("Generated bundle must include reserved, page, and index files without sources/ files.");
+    throw new Error("Active generation must include reserved, page, and index files without sources/ files.");
   }
 
   for (const sample of expectedSamples) {
@@ -1836,8 +1896,8 @@ async function validateAdminFileSurfaces(admin, knowledgeBaseId, report, options
   }
 
   report.checks.push(
-    okCheck(options.checkName ?? "admin-file-surfaces", options.message ?? "Admin release, bundle, tree, detail, and Developer OpenAPI URL surfaces work.", {
-      bundleFiles: bundleFiles.items.length,
+    okCheck(options.checkName ?? "admin-file-surfaces", options.message ?? "Admin active-generation files, tree, detail, and Developer OpenAPI URL surfaces work.", {
+      generatedFiles: generatedFiles.items.length,
       rootTreeItems: tree.items.length,
       pageFiles: pageFiles.length,
       expectedSamples: expectedSamples.length
@@ -1863,30 +1923,9 @@ async function validateAdminPaginationSurfaces(
   report,
   performanceEvidence
 ) {
-  const bundleFirst = await readJson(
-    admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=1`
-  );
-
-  if (bundleFirst.items?.length !== 1 || !bundleFirst.nextCursor) {
-    throw new Error("Expected bundle-file pagination to return one item and a next cursor.");
-  }
-
-  const bundleSecond = await readJson(
-    admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=1&cursor=${encodeURIComponent(bundleFirst.nextCursor)}`
-  );
-
-  if (
-    bundleSecond.items?.length !== 1 ||
-    bundleSecond.items[0]?.logicalPath === bundleFirst.items[0]?.logicalPath
-  ) {
-    throw new Error("Bundle-file cursor did not return the next bounded page.");
-  }
-
   const treeFirst = await readJson(
     admin,
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=1`
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?parentPath=pages&limit=1`
   );
 
   if (treeFirst.items?.length !== 1) {
@@ -1898,7 +1937,7 @@ async function validateAdminPaginationSurfaces(
   if (treeFirst.nextCursor) {
     const treeSecond = await readJson(
       admin,
-      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?limit=1&cursor=${encodeURIComponent(treeFirst.nextCursor)}`
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/tree?parentPath=pages&limit=1&cursor=${encodeURIComponent(treeFirst.nextCursor)}`
     );
 
     if (
@@ -1911,11 +1950,6 @@ async function validateAdminPaginationSurfaces(
     treePages = 2;
   }
 
-  recordPaginationEvidence(performanceEvidence, "bundle-file-pagination", {
-    expectedSourceCount: expectedPageCount,
-    observedPages: 2,
-    itemCount: 2
-  });
   recordPaginationEvidence(performanceEvidence, "file-tree-pagination", {
     expectedSourceCount: expectedPageCount,
     observedPages: treePages,
@@ -1925,10 +1959,9 @@ async function validateAdminPaginationSurfaces(
   report.checks.push(
     okCheck(
       "admin-pagination-surfaces",
-      "Admin bundle file and file tree reads support bounded cursor pagination.",
+      "Admin active file tree reads support bounded generation-scoped cursor pagination.",
       {
         expectedPageCount,
-        bundlePages: 2,
         treePages
       }
     )
@@ -1969,11 +2002,14 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
             ...(requestOptions.headers ?? {}),
             ...(requestOptions.body ? { "content-type": "application/json" } : {})
           },
-          body: requestOptions.formData
+          body: requestOptions.rawBody
             ?? (requestOptions.body ? JSON.stringify(requestOptions.body) : undefined)
         });
         if (!response.ok) {
-          throw new Error(`Developer OpenAPI upload-session request failed with HTTP ${response.status}.`);
+          const text = await response.text();
+          throw new Error(
+            `Developer OpenAPI upload-session request failed for ${pathname} with HTTP ${response.status}: ${redactPotentialPathText(text)}`
+          );
         }
         return await response.json();
       },
@@ -1994,7 +2030,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
     if (
       sourceFile.sourceFileId !== fileId
       || sourceFile.knowledgeBaseId !== knowledgeBaseId
-      || sourceFile.processingState !== "completed"
+      || sourceFile.state !== "visible"
     ) {
       throw new Error("Developer OpenAPI source-file detail did not accept the upload fileId or return completed lifecycle state.");
     }
@@ -2022,10 +2058,10 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
       throw new Error("Developer OpenAPI source-file detail did not preserve the upload response fileId.");
     }
 
-    const rootTree = await readJson(
+    const rootIndex = await readPublicText(
       publicApi,
-      `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/tree?limit=50`,
-      { headers }
+      developerFileContentPath(knowledgeBaseId, "index.md"),
+      headers
     );
     const pagesTree = await readJson(
       publicApi,
@@ -2043,8 +2079,8 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
         );
     const pageEntry = parentTree.items?.find((item) => item.path === expectedPagePath);
 
-    if (!rootTree.items?.some((item) => item.path === "index.md") || !pageEntry?.fileId) {
-      throw new Error("Developer OpenAPI tree did not expose generated root and page file identifiers.");
+    if (!rootIndex.includes(knowledgeBaseName) || !pageEntry?.fileId) {
+      throw new Error("Developer OpenAPI index and tree did not preserve generated root and page continuity.");
     }
 
     const fileDetail = await readJson(
@@ -2088,7 +2124,7 @@ async function validateDeveloperOpenApiUploadContinuity({ publicApi, env, sample
         "Developer OpenAPI create, upload, source-file detail, tree, filters, task deletion, file detail, and content calls preserve reusable identifiers.",
         {
           uploadedFiles: 1,
-          processingState: sourceFile.processingState,
+          state: sourceFile.state,
           checkedPath: pageEntry.path
         },
         BLACK_BOX
@@ -2127,7 +2163,7 @@ async function validateDeveloperOpenApiWebhooks(publicApi, env, report) {
     body: JSON.stringify({
       name: "Validation webhook",
       url: "https://hooks.example.com/focowiki-validation",
-      events: ["source_file.completed", "source_file.failed", "release.published"]
+      events: ["source_file.completed", "source_file.failed", "generation.activated"]
     })
   });
   const webhookId = created.webhook?.webhookId;
@@ -2212,7 +2248,7 @@ async function validateDeveloperSourceFileFilters({
   const nameToken = createSearchTokenFromFilename(sample.basename);
   const filtered = await readJson(
     publicApi,
-    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&pathQuery=${encodeURIComponent(nameToken)}&processingState=completed`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&pathQuery=${encodeURIComponent(nameToken)}&state=visible`,
     { headers: authHeaders }
   );
 
@@ -2222,7 +2258,7 @@ async function validateDeveloperSourceFileFilters({
 
   await expectJsonError(
     publicApi,
-    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?processingState=invalid`,
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?state=invalid`,
     authHeaders,
     [422]
   );
@@ -2266,13 +2302,13 @@ async function pollDeveloperSourceFileCompleted(publicApi, knowledgeBaseId, sour
     );
     const file = body.sourceFile;
 
-    if (file?.processingState === "failed") {
-      throw new Error(`Developer OpenAPI source file failed with ${file.processingErrorCode ?? "UNKNOWN"}.`);
+    if (file?.state === "failed") {
+      throw new Error(`Developer OpenAPI source file failed with ${file.failure?.code ?? "UNKNOWN"}.`);
     }
 
-    if (file?.processingState === "completed" && file?.generatedOutputStatus === "visible") {
-      if (file.processingErrorCode) {
-        throw new Error(`Developer OpenAPI source file completed with ${file.processingErrorCode}.`);
+    if (file?.state === "visible" && file?.generatedOutputStatus === "visible") {
+      if (file.failure) {
+        throw new Error(`Developer OpenAPI source file became visible with ${file.failure.code}.`);
       }
 
       return file;
@@ -2313,9 +2349,7 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
     "schema.md",
     ...adminFiles.navigationFiles.map((file) => file.logicalPath),
     ...adminFiles.pageFiles.map((file) => file.logicalPath),
-    "_index/manifest.json",
-    "_index/search.json",
-    "_index/links.json"
+    "_index/catalog.json"
   ];
   const bodies = new Map();
 
@@ -2328,32 +2362,46 @@ async function validatePublicOpenApi(publicApi, knowledgeBaseId, adminFiles, env
 
     bodies.set(logicalPath, body);
   }
+  const catalog = parseJsonIndex(bodies.get("_index/catalog.json"), "_index/catalog.json");
   const indexes = {
-    manifest: await readJsonIndexWithShards({
+    manifest: { files: await readProjectionRecordsFromCatalog({
       publicApi,
       knowledgeBaseId,
       authHeaders,
       bodies,
-      rootPath: "_index/manifest.json",
-      collectionKey: "files"
-    }),
-    search: await readJsonIndexWithShards({
+      catalog,
+      projectionName: "manifest",
+      projectionKind: "manifest"
+    }) },
+    search: { items: await readProjectionRecordsFromCatalog({
       publicApi,
       knowledgeBaseId,
       authHeaders,
       bodies,
-      rootPath: "_index/search.json",
-      collectionKey: "items"
-    }),
-    links: await readJsonIndexWithShards({
+      catalog,
+      projectionName: "search",
+      projectionKind: "search"
+    }) },
+    links: { links: await readProjectionRecordsFromCatalog({
       publicApi,
       knowledgeBaseId,
       authHeaders,
       bodies,
-      rootPath: "_index/links.json",
-      collectionKey: "links"
-    })
+      catalog,
+      projectionName: "links",
+      projectionKind: "links"
+    }) }
   };
+
+  await hydrateReachableMarkdownBodies({
+    bodies,
+    startPath: "index.md",
+    read: (logicalPath) => readPublicText(
+      publicApi,
+      developerFileContentPath(knowledgeBaseId, logicalPath),
+      authHeaders
+    )
+  });
 
   validateOkfPublicArtifactBodies({
     bodies,
@@ -2649,16 +2697,6 @@ export function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, ind
     throw new Error("Public schema.md must be a concept Markdown file with type and title frontmatter.");
   }
 
-  for (const reservedPath of ["index.md", "log.md", "schema.md"]) {
-    const manifestEntry = Array.isArray(manifest.files)
-      ? manifest.files.find((file) => file.path === reservedPath)
-      : null;
-
-    if (!manifestEntry) {
-      throw new Error(`Manifest index does not include reserved public file ${reservedPath}.`);
-    }
-  }
-
   if (Array.isArray(search.items) && search.items.some((item) => item.path === "index.md" || item.path === "log.md")) {
     throw new Error("Search index unexpectedly includes reserved root Markdown files.");
   }
@@ -2669,11 +2707,8 @@ export function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, ind
 
   const manifestPaths = new Set((manifest.files ?? []).map((file) => file.path));
   for (const link of links.links) {
-    if (
-      (link.from && !manifestPaths.has(link.from) && !isManifestOwnedPath(link.from)) ||
-      (link.to && !manifestPaths.has(link.to) && !isManifestOwnedPath(link.to))
-    ) {
-      throw new Error("Link index references a path missing from the manifest.");
+    if (!link.path || !manifestPaths.has(link.path)) {
+      throw new Error("Link projection references a source path missing from the manifest projection.");
     }
   }
 
@@ -2911,7 +2946,7 @@ async function validateSourceDeletionFullFlow({
     timeoutMs: processingTimeoutMs
   });
 
-  const releaseId = await validateDeletionDatabaseBoundaries({
+  const generationId = await validateDeletionDatabaseBoundaries({
     databaseUrl: env.DATABASE_URL,
     knowledgeBaseId,
     sourceFileId: pageFile.sourceFileId,
@@ -2946,7 +2981,7 @@ async function validateSourceDeletionFullFlow({
   );
 
   return {
-    releaseId,
+    generationId,
     deletedPagePath: pageFile.logicalPath,
     remainingPagePath: remainingPage.logicalPath
   };
@@ -2973,30 +3008,18 @@ async function pollSourceDeletionPublished({ admin, knowledgeBaseId, deletedPage
 }
 
 async function findRemainingSourceBackedPageAfterDeletion({ admin, knowledgeBaseId, deletedPagePath }) {
-  let cursor = null;
   let remainingPage = null;
   let sawDeletedPage = false;
+  const activeFiles = await listAdminGeneratedFiles(admin, knowledgeBaseId, 50);
 
-  do {
-    const body = await readJson(
-      admin,
-      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?limit=50${
-        cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""
-      }`
-    );
-
-    for (const file of body.items ?? []) {
-      if (file.logicalPath === deletedPagePath) {
-        sawDeletedPage = true;
-      }
-
-      if (!remainingPage && String(file.logicalPath).startsWith("pages/")) {
-        remainingPage = file;
-      }
+  for (const file of activeFiles.items) {
+    if (file.logicalPath === deletedPagePath) {
+      sawDeletedPage = true;
     }
-
-    cursor = body.nextCursor ?? null;
-  } while (cursor);
+    if (!remainingPage && file.fileKind === "page" && file.deletable === true) {
+      remainingPage = file;
+    }
+  }
 
   return { remainingPage, sawDeletedPage };
 }
@@ -3019,9 +3042,9 @@ async function validateDeletionDatabaseBoundaries({
     while (Date.now() < deadline) {
       const [shape] = await sql`
         SELECT
-          (SELECT active_release_id
+          (SELECT active_generation_id
            FROM focowiki.knowledge_bases
-           WHERE id = ${knowledgeBaseId}) AS active_release_id,
+           WHERE id = ${knowledgeBaseId}) AS active_generation_id,
           (SELECT count(*)::int
            FROM focowiki.source_files
            WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -3032,24 +3055,20 @@ async function validateDeletionDatabaseBoundaries({
              AND id = ${sourceFileId}
              AND deleted_at IS NOT NULL) AS deleted_sources,
           (SELECT count(*)::int
-           FROM focowiki.releases
-           WHERE knowledge_base_id = ${knowledgeBaseId}
-             AND id = (
-               SELECT active_release_id
-               FROM focowiki.knowledge_bases
-               WHERE id = ${knowledgeBaseId}
-             )
-             AND published_at IS NOT NULL) AS published_releases,
+           FROM focowiki.publication_generations generation
+           JOIN focowiki.knowledge_bases knowledge_base
+             ON knowledge_base.id = generation.knowledge_base_id
+            AND knowledge_base.active_generation_id = generation.id
+           WHERE generation.knowledge_base_id = ${knowledgeBaseId}
+             AND generation.state = 'active'
+             AND generation.activated_at IS NOT NULL) AS active_generations,
           (SELECT count(*)::int
            FROM focowiki.source_file_events
            WHERE knowledge_base_id = ${knowledgeBaseId}
              AND source_file_id = ${sourceFileId}
              AND stage_key = 'source_deletion') AS source_deletion_events,
           (SELECT count(*)::int
-           FROM focowiki.bundle_files file
-           JOIN focowiki.knowledge_bases knowledge_base
-             ON knowledge_base.id = file.knowledge_base_id
-            AND knowledge_base.active_release_id = file.release_id
+           FROM focowiki.active_object_refs file
            WHERE file.knowledge_base_id = ${knowledgeBaseId}
              AND file.logical_path = ${deletedPagePath}) AS stale_active_pages
       `;
@@ -3060,22 +3079,22 @@ async function validateDeletionDatabaseBoundaries({
       const deletionRecordedOrFinalized = shape.source_deletion_events >= 1 || shape.source_rows === 0;
 
       if (
-        shape.active_release_id &&
+        shape.active_generation_id &&
         sourceRemovedOrTombstoned &&
-        shape.published_releases === 1 &&
+        shape.active_generations === 1 &&
         deletionRecordedOrFinalized &&
         shape.stale_active_pages === 0
       ) {
         report.checks.push(
           okCheck(
             "deletion-database-boundaries",
-            "PostgreSQL records source deletion or finalized hard deletion with a replacement active release.",
+            "PostgreSQL records source deletion or finalized hard deletion with a replacement active generation.",
             shape,
             WHITE_BOX
           )
         );
 
-        return shape.active_release_id;
+        return shape.active_generation_id;
       }
 
       await sleep(1_000);
@@ -3143,30 +3162,42 @@ async function validatePublicDeletionState({
       await readPublicText(publicApi, developerFileContentPath(knowledgeBaseId, "log.md"), headers)
     ],
     [
-      "_index/manifest.json",
+      "_index/catalog.json",
       await readPublicText(
         publicApi,
-        developerFileContentPath(knowledgeBaseId, "_index/manifest.json"),
-        headers
-      )
-    ],
-    [
-      "_index/search.json",
-      await readPublicText(
-        publicApi,
-        developerFileContentPath(knowledgeBaseId, "_index/search.json"),
-        headers
-      )
-    ],
-    [
-      "_index/links.json",
-      await readPublicText(
-        publicApi,
-        developerFileContentPath(knowledgeBaseId, "_index/links.json"),
+        developerFileContentPath(knowledgeBaseId, "_index/catalog.json"),
         headers
       )
     ]
   ]);
+  const catalog = parseJsonIndex(publicBodies.get("_index/catalog.json"), "_index/catalog.json");
+  const manifest = { files: await readProjectionRecordsFromCatalog({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    catalog,
+    projectionName: "manifest",
+    projectionKind: "manifest"
+  }) };
+  const search = { items: await readProjectionRecordsFromCatalog({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    catalog,
+    projectionName: "search",
+    projectionKind: "search"
+  }) };
+  const links = { links: await readProjectionRecordsFromCatalog({
+    publicApi,
+    knowledgeBaseId,
+    authHeaders: headers,
+    bodies: publicBodies,
+    catalog,
+    projectionName: "links",
+    projectionKind: "links"
+  }) };
 
   for (const [logicalPath, body] of publicBodies) {
     if (body.includes(deletedPagePath) || body.includes(encodeURIComponent(path.basename(deletedPagePath)))) {
@@ -3174,35 +3205,10 @@ async function validatePublicDeletionState({
     }
   }
 
-  const manifest = await readJsonIndexWithShards({
-    publicApi,
-    knowledgeBaseId,
-    authHeaders: headers,
-    bodies: publicBodies,
-    rootPath: "_index/manifest.json",
-    collectionKey: "files"
-  });
-  const search = await readJsonIndexWithShards({
-    publicApi,
-    knowledgeBaseId,
-    authHeaders: headers,
-    bodies: publicBodies,
-    rootPath: "_index/search.json",
-    collectionKey: "items"
-  });
-  const links = await readJsonIndexWithShards({
-    publicApi,
-    knowledgeBaseId,
-    authHeaders: headers,
-    bodies: publicBodies,
-    rootPath: "_index/links.json",
-    collectionKey: "links"
-  });
-
   if (
     manifest.files.some((file) => file.path === deletedPagePath) ||
     search.items.some((item) => item.path === deletedPagePath) ||
-    links.links.some((link) => link.from === deletedPagePath || link.to === deletedPagePath)
+    links.links.some((link) => link.path === deletedPagePath)
   ) {
     throw new Error("Generated indexes still contain deleted page graph or metadata references.");
   }
@@ -3333,15 +3339,17 @@ async function recordOperationalPerformanceSnapshot(databaseUrl, knowledgeBaseId
            AND deleted_at IS NULL
            AND generated_output_status = 'visible') AS visible_source_files,
         (SELECT count(*)::int
-         FROM focowiki.publication_jobs
-         WHERE knowledge_base_id = ${knowledgeBaseId}) AS publication_jobs,
-        (SELECT count(*)::int
-         FROM focowiki.publication_jobs
+         FROM focowiki.role_jobs
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND status IN ('queued', 'running', 'retrying')) AS active_publication_jobs,
+           AND role = 'publication') AS publication_role_jobs,
         (SELECT count(*)::int
-         FROM focowiki.releases
-         WHERE knowledge_base_id = ${knowledgeBaseId}) AS release_count
+         FROM focowiki.role_jobs
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND role = 'publication'
+           AND status IN ('queued', 'running')) AS active_publication_role_jobs,
+        (SELECT count(*)::int
+         FROM focowiki.publication_generations
+         WHERE knowledge_base_id = ${knowledgeBaseId}) AS generation_count
     `;
 
     recordOperationalSnapshot(performanceEvidence, "post-validation", {
@@ -3350,9 +3358,9 @@ async function recordOperationalPerformanceSnapshot(databaseUrl, knowledgeBaseId
       completedSourceFiles: snapshot.completed_source_files,
       failedSourceFiles: snapshot.failed_source_files,
       visibleSourceFiles: snapshot.visible_source_files,
-      publicationJobs: snapshot.publication_jobs,
-      activePublicationJobs: snapshot.active_publication_jobs,
-      releaseCount: snapshot.release_count
+      publicationJobs: snapshot.publication_role_jobs,
+      activePublicationJobs: snapshot.active_publication_role_jobs,
+      generationCount: snapshot.generation_count
     });
     report.checks.push(
       okCheck(
@@ -3360,7 +3368,7 @@ async function recordOperationalPerformanceSnapshot(databaseUrl, knowledgeBaseId
         "PostgreSQL operational counters were recorded for queue depth, publication count, visible files, and failed files.",
         {
           queueDepth: snapshot.queue_depth,
-          publicationJobs: snapshot.publication_jobs,
+          publicationJobs: snapshot.publication_role_jobs,
           visibleSourceFiles: snapshot.visible_source_files,
           failedSourceFiles: snapshot.failed_source_files
         },
@@ -3526,9 +3534,9 @@ async function validateDatabaseBoundaries(
     const [recordCounts] = await sql`
       SELECT
         (SELECT count(*)::int FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_files,
-        (SELECT count(*)::int FROM focowiki.releases WHERE knowledge_base_id = ${knowledgeBaseId}) AS releases,
-        (SELECT count(*)::int FROM focowiki.bundle_files WHERE knowledge_base_id = ${knowledgeBaseId}) AS bundle_files,
-        (SELECT count(*)::int FROM focowiki.knowledge_file_tree_nodes WHERE knowledge_base_id = ${knowledgeBaseId}) AS knowledge_file_tree_nodes
+        (SELECT count(*)::int FROM focowiki.publication_generations WHERE knowledge_base_id = ${knowledgeBaseId}) AS generations,
+        (SELECT count(*)::int FROM focowiki.active_object_refs WHERE knowledge_base_id = ${knowledgeBaseId}) AS active_object_refs,
+        (SELECT count(*)::int FROM focowiki.active_projection_records WHERE knowledge_base_id = ${knowledgeBaseId}) AS active_projection_records
     `;
     const storageShapeRows = await sql`
       SELECT
@@ -3537,21 +3545,21 @@ async function validateDatabaseBoundaries(
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND id = ANY(${sourceFileIds})
            AND object_key LIKE ${internalSourceObjectPattern}
-           AND object_key NOT LIKE '%/releases/%') AS internal_source_objects,
+           AND object_key NOT LIKE '%/generated/objects/%') AS internal_source_objects,
         (SELECT count(*)::int
-         FROM focowiki.bundle_files file
-         JOIN focowiki.knowledge_bases knowledge_base
-           ON knowledge_base.id = file.knowledge_base_id
-          AND knowledge_base.active_release_id = file.release_id
+         FROM focowiki.active_object_refs file
+         JOIN focowiki.immutable_objects object
+           ON object.checksum_sha256 = file.checksum_sha256
+          AND object.format_version = file.format_version
          WHERE file.knowledge_base_id = ${knowledgeBaseId}
-           AND file.file_kind = 'page'
+           AND file.ref_kind = 'page'
            AND file.source_file_id IS NOT NULL
            AND file.logical_path LIKE 'pages/%'
-           AND file.object_key LIKE '%/releases/%/bundle/pages/%') AS public_page_objects,
+           AND object.lifecycle_state = 'active') AS public_page_objects,
         (SELECT count(*)::int
-         FROM focowiki.bundle_files
+         FROM focowiki.active_object_refs
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND logical_path LIKE 'sources/%') AS exposed_source_bundle_files,
+           AND logical_path LIKE 'sources/%') AS exposed_source_generated_files,
         (SELECT bool_and(jsonb_typeof(metadata_json) = 'object')
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -3561,7 +3569,7 @@ async function validateDatabaseBoundaries(
       SELECT table_name, column_name
       FROM information_schema.columns
       WHERE table_schema = 'focowiki'
-        AND table_name IN ('source_files', 'bundle_files')
+        AND table_name IN ('source_files', 'active_object_refs', 'immutable_objects')
         AND (
           column_name IN ('body', 'content', 'raw_body', 'markdown_body', 'json_body', 'file_body')
           OR column_name LIKE '%\\_body'
@@ -3576,16 +3584,15 @@ async function validateDatabaseBoundaries(
       ORDER BY relative_path
     `;
     const pageRows = await sql`
-      SELECT file.logical_path, file.object_key, file.frontmatter_json
-      FROM focowiki.bundle_files file
-      JOIN focowiki.knowledge_bases knowledge_base
-        ON knowledge_base.id = file.knowledge_base_id
-       AND knowledge_base.active_release_id = file.release_id
+      SELECT file.logical_path, object.object_key
+      FROM focowiki.active_object_refs file
+      JOIN focowiki.immutable_objects object
+        ON object.checksum_sha256 = file.checksum_sha256
+       AND object.format_version = file.format_version
       WHERE file.knowledge_base_id = ${knowledgeBaseId}
-        AND file.file_kind = 'page'
+        AND file.ref_kind = 'page'
         AND file.source_file_id = ANY(${sourceFileIds})
         AND file.logical_path LIKE 'pages/%'
-        AND file.object_key IS NOT NULL
       ORDER BY file.logical_path
     `;
     const storageShape = storageShapeRows[0] ?? {};
@@ -3595,9 +3602,9 @@ async function validateDatabaseBoundaries(
 
     if (
       recordCounts.source_files !== allSamples.length ||
-      recordCounts.releases < 1 ||
-      recordCounts.bundle_files < 1 ||
-      recordCounts.knowledge_file_tree_nodes < 1
+      recordCounts.generations < 1 ||
+      recordCounts.active_object_refs < 1 ||
+      recordCounts.active_projection_records < 1
     ) {
       throw new Error(`Unexpected database record counts: ${JSON.stringify(recordCounts)}`);
     }
@@ -3609,7 +3616,7 @@ async function validateDatabaseBoundaries(
     if (
       storageShape.internal_source_objects !== selectedSamples.length ||
       storageShape.public_page_objects < allSamples.length ||
-      storageShape.exposed_source_bundle_files !== 0 ||
+      storageShape.exposed_source_generated_files !== 0 ||
       storageShape.source_metadata_is_object !== true
     ) {
       throw new Error(`Unexpected storage-backed database shape: ${JSON.stringify(storageShape)}`);
@@ -3646,12 +3653,12 @@ async function validateDatabaseBoundaries(
     report.checks.push(
       okCheck(
         options.checkName ?? "database-boundaries",
-        options.message ?? "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns.",
+        options.message ?? "PostgreSQL contains source facts, active generation references, storage-backed keys, and no raw file body columns.",
         {
           ...recordCounts,
           internalSourceObjects: storageShape.internal_source_objects,
           publicPageObjects: storageShape.public_page_objects,
-          exposedSourceBundleFiles: storageShape.exposed_source_bundle_files,
+          exposedSourceGeneratedFiles: storageShape.exposed_source_generated_files,
           selectedSamples: selectedSamples.length,
           activeSamples: allSamples.length
         },
@@ -3844,58 +3851,40 @@ function parseJsonIndex(raw, logicalPath) {
   }
 }
 
-async function readJsonIndexWithShards({
+async function readProjectionRecordsFromCatalog({
   publicApi,
   knowledgeBaseId,
   authHeaders,
   bodies,
-  rootPath,
-  collectionKey
+  catalog,
+  projectionName,
+  projectionKind
 }) {
-  const root = parseJsonIndex(bodies.get(rootPath), rootPath);
-
-  if (root.mode !== "sharded") {
-    return root;
+  const descriptor = catalog?.projections?.[projectionName];
+  if (!descriptor || !Array.isArray(descriptor.shards)) {
+    throw new Error(`Projection catalog is missing ${projectionName} shard descriptors.`);
   }
-
-  if (root.collection !== collectionKey || !Array.isArray(root.shards)) {
-    throw new Error(`Public sharded index descriptor is malformed: ${rootPath}`);
-  }
-
-  const items = [];
-
-  for (const shard of root.shards) {
-    if (!shard || typeof shard.path !== "string") {
-      throw new Error(`Public sharded index includes an invalid shard descriptor: ${rootPath}`);
+  const records = [];
+  for (const shard of descriptor.shards) {
+    if (!shard || typeof shard.path !== "string" || !Number.isSafeInteger(shard.recordCount)) {
+      throw new Error(`Projection catalog includes an invalid ${projectionName} shard descriptor.`);
     }
-
     const body = await readPublicText(
       publicApi,
       developerFileContentPath(knowledgeBaseId, shard.path),
       authHeaders
     );
     bodies.set(shard.path, body);
-    items.push(...parseJsonLines(body, shard.path));
+    const parsed = parseJsonIndex(body, shard.path);
+    if (parsed.projection !== projectionKind || !Array.isArray(parsed.records)) {
+      throw new Error(`Projection shard payload is malformed: ${shard.path}`);
+    }
+    if (parsed.records.length !== shard.recordCount) {
+      throw new Error(`Projection shard count differs from its catalog descriptor: ${shard.path}`);
+    }
+    records.push(...parsed.records);
   }
-
-  return {
-    ...root,
-    [collectionKey]: items
-  };
-}
-
-function parseJsonLines(raw, logicalPath) {
-  return String(raw ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        throw new Error(`Public index shard is not valid JSONL: ${logicalPath}`);
-      }
-    });
+  return records;
 }
 
 async function getS3ObjectText(client, bucket, key) {

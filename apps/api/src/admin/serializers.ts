@@ -1,60 +1,13 @@
 import type {
-  BundleFileRecord,
-  BundleTreeEntryRecord,
-  BundleTreeSearchResultRecord,
   FileGraphSummaryRecord,
   GeneratedSourceFileOutputRecord,
-  ReleaseRecord,
   SourceFileEventRecord,
   SourceFileRecord
 } from "../db/admin-repositories.js";
-
-export function toAdminBundleTreeEntry(entry: BundleTreeEntryRecord) {
-  return {
-    id: entry.id,
-    parentPath: entry.parentPath,
-    name: entry.name,
-    logicalPath: entry.logicalPath,
-    sortKey: entry.sortKey,
-    entryType: entry.entryType,
-    bundleFileId: entry.bundleFileId,
-    sourceFileId: entry.sourceFileId,
-    sourceDirectoryId: entry.sourceDirectoryId,
-    fileKind: entry.fileKind,
-    childCount: entry.childCount,
-    directFileCount: entry.directFileCount ?? 0,
-    descendantFileCount: entry.descendantFileCount ?? 0,
-    resourceRevision: entry.resourceRevision ?? null,
-    deletable:
-      (entry.fileKind === "page" && Boolean(entry.sourceFileId)) ||
-      (entry.entryType === "directory" && Boolean(entry.sourceDirectoryId))
-  };
-}
-
-export function toAdminBundleTreeSearchResult(result: BundleTreeSearchResultRecord) {
-  return {
-    entry: toAdminBundleTreeEntry(result.entry),
-    ancestors: result.ancestors.map(toAdminBundleTreeEntry)
-  };
-}
-
-export function toAdminBundleFile(file: BundleFileRecord) {
-  return {
-    id: file.id,
-    sourceFileId: file.sourceFileId,
-    fileKind: file.fileKind,
-    logicalPath: file.logicalPath,
-    contentType: file.contentType,
-    sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
-    okfType: file.okfType,
-    title: file.title,
-    description: file.description,
-    tags: file.tags,
-    frontmatter: file.frontmatter,
-    deletable: file.fileKind === "page" && Boolean(file.sourceFileId)
-  };
-}
+import {
+  deriveSourceFileLifecycle,
+  type SourceFileLifecycleActionKind
+} from "../domain/source-file-lifecycle.js";
 
 export function toAdminSourceFile(
   file: SourceFileRecord,
@@ -62,18 +15,21 @@ export function toAdminSourceFile(
   generatedOutput?: GeneratedSourceFileOutputRecord | null
 ) {
   const hasGeneratedOutputLookup = generatedOutput !== undefined;
-  const generatedFilePath = hasGeneratedOutputLookup
-    ? generatedOutput?.logicalPath ?? null
-    : file.generatedBundleFilePath ?? null;
-  const generatedFileId = hasGeneratedOutputLookup
-    ? generatedOutput?.bundleFileId ?? null
-    : file.generatedBundleFileId ?? null;
+  const generatedFilePath = generatedOutput?.logicalPath ?? null;
+  const generatedFileId = generatedOutput?.fileId ?? null;
   const generatedOutputStatus = resolveGeneratedOutputStatus(
     file.generatedOutputStatus,
     generatedOutput,
     hasGeneratedOutputLookup,
     Boolean(generatedFilePath)
   );
+  const lifecycle = deriveSourceFileLifecycle({
+    processingStatus: file.processingStatus ?? "completed",
+    processingStage: file.processingStage ?? "generation_activation",
+    generatedOutputStatus,
+    generatedPath: generatedFilePath,
+    failure: file.terminalFailure ?? null
+  });
 
   return {
     id: file.id,
@@ -85,12 +41,8 @@ export function toAdminSourceFile(
     checksumSha256: file.checksumSha256,
     metadata: file.metadata,
     modelSuggestions: file.modelSuggestions ?? null,
-    processingStatus: file.processingStatus ?? "completed",
-    processingStage: file.processingStage ?? "release_activation",
-    processingStartedAt: file.processingStartedAt ?? file.createdAt,
-    processingEndedAt: file.processingEndedAt ?? file.createdAt,
-    processingErrorCode: file.processingErrorCode ?? null,
-    processingErrorMessage: file.processingErrorMessage ?? null,
+    processingStartedAt: file.processingStartedAt ?? null,
+    processingEndedAt: file.processingEndedAt ?? null,
     retryCount: file.retryCount ?? 0,
     modelInvocationStatus: file.modelInvocationStatus ?? null,
     modelInvocationModelName: file.modelInvocationModelName ?? null,
@@ -103,8 +55,56 @@ export function toAdminSourceFile(
     generatedFilePath,
     generatedFileId,
     graphSummary: graphSummary ? toAdminGraphSummary(graphSummary) : null,
+    state: lifecycle.state,
+    currentStage: lifecycle.currentStage,
+    failure: lifecycle.failure,
+    actions: lifecycle.actions.map((kind) =>
+      adminLifecycleAction(file, kind, generatedFilePath)
+    ),
     createdAt: file.createdAt
   };
+}
+
+function adminLifecycleAction(
+  file: SourceFileRecord,
+  kind: SourceFileLifecycleActionKind,
+  generatedFilePath: string | null
+) {
+  const sourceBase = `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
+    + `/source-files/${encodeURIComponent(file.id)}`;
+  switch (kind) {
+    case "open_generated_file":
+      return {
+        kind,
+        method: "GET" as const,
+        href: generatedFilePath
+          ? `/admin/api/knowledge-bases/${encodeURIComponent(file.knowledgeBaseId)}`
+            + `/files/content?path=${encodeURIComponent(generatedFilePath)}`
+          : null,
+        scope: "source_file" as const
+      };
+    case "retry_publication":
+      return {
+        kind,
+        method: "POST" as const,
+        href: `${sourceBase}/retry`,
+        scope: "knowledge_base_publication" as const
+      };
+    case "retry_source_processing":
+      return {
+        kind,
+        method: "POST" as const,
+        href: `${sourceBase}/retry`,
+        scope: "source_file" as const
+      };
+    case "view_failure_details":
+      return {
+        kind,
+        method: null,
+        href: null,
+        scope: "source_file" as const
+      };
+  }
 }
 
 function resolveGeneratedOutputStatus(
@@ -131,7 +131,7 @@ export function toAdminGraphSummary(summary: FileGraphSummaryRecord) {
     relationships: summary.relationships.map((relationship) => ({
       fileId: relationship.fileId,
       sourceFileId: relationship.sourceFileId,
-      bundleFileId: relationship.bundleFileId,
+      generatedFileId: relationship.generatedFileId,
       path: relationship.path,
       title: relationship.title,
       relationType: relationship.relationType,
@@ -141,17 +141,6 @@ export function toAdminGraphSummary(summary: FileGraphSummaryRecord) {
       source: relationship.source,
       contentAvailable: relationship.contentAvailable
     }))
-  };
-}
-
-export function toAdminRelease(release: ReleaseRecord) {
-  return {
-    id: release.id,
-    generatedAt: release.generatedAt,
-    publishedAt: release.publishedAt,
-    fileCount: release.fileCount,
-    manifestChecksumSha256: release.manifestChecksumSha256,
-    createdAt: release.createdAt
   };
 }
 

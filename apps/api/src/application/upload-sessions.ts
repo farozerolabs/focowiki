@@ -7,27 +7,24 @@ import {
 } from "../domain/upload-session.js";
 import { normalizeSourceRelativePath } from "../domain/source-path.js";
 import type { ApplicationRuntime } from "./ports/runtime.js";
-import type {
-  UploadSessionFinalizationPort,
-  UploadSessionStoragePort
-} from "./ports/upload-session-storage.js";
+import type { UploadSessionStoragePort } from "./ports/upload-session-storage.js";
 import type { UploadSessionRepository } from "./ports/upload-session-repository.js";
 
 export type UploadManifestEntryDraft = {
   relativePath: string;
   declaredSize: number;
-  checksumSha256: string;
+  checksumSha256?: string | null;
 };
 
 export type UploadSessionService = ReturnType<typeof createUploadSessionService>;
+export const UPLOAD_SESSION_TTL_SECONDS = 86_400;
+export const UPLOAD_MANIFEST_PAGE_SIZE = 500;
 
 export function createUploadSessionService(input: {
   repository: UploadSessionRepository;
   storage: UploadSessionStoragePort;
-  finalization: UploadSessionFinalizationPort;
   runtime: ApplicationRuntime;
   sessionTtlSeconds: number;
-  maxFileBytes: number;
 }) {
   return {
     createSession: async (request: {
@@ -59,7 +56,7 @@ export function createUploadSessionService(input: {
         id: input.runtime.ids.create("upload-entry"),
         sourceFileId: input.runtime.ids.create("source-file"),
         path: normalizeSourceRelativePath(entry.relativePath),
-        declaredSize: validateSize(entry.declaredSize, input.maxFileBytes),
+        declaredSize: validateSize(entry.declaredSize),
         checksumSha256: validateChecksum(entry.checksumSha256)
       }));
       const keys = new Set<string>();
@@ -88,7 +85,7 @@ export function createUploadSessionService(input: {
       knowledgeBaseId: string;
       sessionId: string;
       entryId: string;
-      bytes: Uint8Array;
+      body: ReadableStream<Uint8Array>;
     }): Promise<UploadSessionEntryRecord> => {
       const entry = await input.repository.getEntry(request);
       if (!entry) {
@@ -97,31 +94,42 @@ export function createUploadSessionService(input: {
       if (entry.disposition !== "upload_required") {
         throw new UploadSessionError("UPLOAD_ENTRY_NOT_REQUIRED");
       }
-      if (request.bytes.byteLength > input.maxFileBytes) {
-        throw new UploadSessionError("UPLOAD_FILE_TOO_LARGE");
+      if (entry.transferState === "uploaded") {
+        return entry;
       }
-      if (entry.declaredSize !== request.bytes.byteLength) {
-        throw new UploadSessionError("UPLOAD_ENTRY_SIZE_MISMATCH");
-      }
-      const checksum = sha256(request.bytes);
-      if (entry.checksumSha256 !== checksum) {
-        throw new UploadSessionError("UPLOAD_ENTRY_CHECKSUM_MISMATCH");
-      }
-      const stored = await input.storage.putEntry({
-        knowledgeBaseId: request.knowledgeBaseId,
-        sessionId: request.sessionId,
-        entryId: request.entryId,
-        bytes: request.bytes
-      });
+      let stored: Awaited<ReturnType<UploadSessionStoragePort["putEntry"]>> | null = null;
       try {
+        stored = await input.storage.putEntry({
+          knowledgeBaseId: request.knowledgeBaseId,
+          sessionId: request.sessionId,
+          entryId: request.entryId,
+          body: request.body,
+          declaredSize: entry.declaredSize
+        });
+        if (entry.declaredSize !== stored.receivedSize) {
+          throw new UploadSessionError("UPLOAD_ENTRY_SIZE_MISMATCH");
+        }
+        if (entry.checksumSha256 && entry.checksumSha256 !== stored.receivedChecksumSha256) {
+          throw new UploadSessionError("UPLOAD_ENTRY_CHECKSUM_MISMATCH");
+        }
         return await input.repository.markEntryUploaded({
           ...request,
           stagingObjectKey: stored.objectKey,
-          receivedSize: request.bytes.byteLength,
-          receivedChecksumSha256: checksum
+          receivedSize: stored.receivedSize,
+          receivedChecksumSha256: stored.receivedChecksumSha256
         });
       } catch (error) {
-        await input.storage.deleteObject(stored.objectKey).catch(() => undefined);
+        if (stored) {
+          await input.storage.deleteObject(stored.objectKey).catch(() => undefined);
+        }
+        await input.repository.markEntryFailed({
+          knowledgeBaseId: request.knowledgeBaseId,
+          sessionId: request.sessionId,
+          entryId: request.entryId,
+          errorCode: error instanceof UploadSessionError
+            ? error.code
+            : "UPLOAD_ENTRY_STORAGE_FAILED"
+        }).catch(() => undefined);
         throw error;
       }
     },
@@ -138,18 +146,7 @@ export function createUploadSessionService(input: {
       sessionId: string;
     }): Promise<UploadSessionRecord> => {
       const now = input.runtime.clock.now().toISOString();
-      const session = await input.repository.finalizeSession({ ...request, now });
-      if (session.counts.uploadRequired === 0) {
-        return input.repository.completeSession({
-          ...request,
-          now: input.runtime.clock.now().toISOString()
-        });
-      }
-      await input.finalization.enqueue({
-        knowledgeBaseId: request.knowledgeBaseId,
-        sessionId: request.sessionId
-      });
-      return session;
+      return input.repository.finalizeSession({ ...request, now });
     },
 
     cancelSession: async (request: {
@@ -186,17 +183,17 @@ function validateSessionTotals(fileCount: number, byteCount: number): void {
   }
 }
 
-function validateSize(size: number, maxFileBytes: number): number {
+function validateSize(size: number): number {
   if (!Number.isSafeInteger(size) || size < 0) {
     throw new UploadSessionError("UPLOAD_MANIFEST_TOTAL_MISMATCH");
-  }
-  if (size > maxFileBytes) {
-    throw new UploadSessionError("UPLOAD_FILE_TOO_LARGE");
   }
   return size;
 }
 
-function validateChecksum(checksum: string): string {
+function validateChecksum(checksum: string | null | undefined): string | null {
+  if (checksum === null || checksum === undefined) {
+    return null;
+  }
   if (!/^[a-f0-9]{64}$/u.test(checksum)) {
     throw new UploadSessionError("UPLOAD_MANIFEST_TOTAL_MISMATCH");
   }
@@ -214,8 +211,4 @@ function createManifestFingerprint(session: UploadSessionRecord): string {
       })
     )
     .digest("hex");
-}
-
-function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }

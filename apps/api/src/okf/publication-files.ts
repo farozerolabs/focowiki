@@ -6,7 +6,9 @@ import {
   DEFAULT_OKF_LOG_LIMITS,
   generatedConceptFrontmatter,
   knowledgeBaseTitle,
+  canonicalizeOptionalGeneratedTextIdentity,
   prepareGeneratedMarkdownBody,
+  renderMarkdownIdentityLabel,
   rewriteSourceMarkdownLinks,
   renderOkfLog,
   renderGeneratedCitations,
@@ -21,7 +23,7 @@ import {
   type SourceModelSuggestions
 } from "@focowiki/okf";
 
-export type BundleFileKind =
+export type GeneratedFileKind =
   | "page"
   | "index"
   | "log"
@@ -59,7 +61,7 @@ export type GeneratedPageSummary = {
 export type GeneratedOkfFile = {
   logicalPath: string;
   sourceFileId: string | null;
-  fileKind: BundleFileKind;
+  fileKind: GeneratedFileKind;
   content: string;
   metadata: SourceMetadata | null;
 };
@@ -108,10 +110,11 @@ export function renderPageFile(
     prepared.content,
     page.pagePath.replace(/^pages\//u, "")
   );
+  const canonicalBody = canonicalizeFirstHeading(rewrittenBody, page.metadata.title);
   return renderConceptFile(
     page.metadata,
     [
-      rewrittenBody,
+      canonicalBody,
       "",
       ...renderRelatedLinks(page.graphLinks ?? []),
       ...(prepared.trailingCitations
@@ -137,7 +140,7 @@ export function renderIndexFile(
       "---",
       'okf_version: "0.1"',
       "---",
-      `# ${knowledgeBaseTitle(title)}`,
+      `# ${renderMarkdownIdentityLabel(knowledgeBaseTitle(title))}`,
       "",
       ...(options.description ? [options.description, ""] : []),
       `Generated at: ${generatedAt}`,
@@ -392,9 +395,9 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
         "",
         "The `_graph/` directory contains file-linked graph nodes, edges, neighborhoods, and insights.",
         "",
-        "The bundle-root `index.md` links to `_graph/index.md` whenever graph output is available.",
+        "The knowledge-base root `index.md` links to `_graph/index.md` whenever graph output is available.",
         "",
-        "These files extend the bundle while preserving ordinary OKF concept and link semantics and real Markdown evidence paths."
+        "These files extend the knowledge base while preserving ordinary OKF concept and link semantics and real Markdown evidence paths."
       ].join("\n")
     )
   ];
@@ -410,10 +413,10 @@ export function renderIndexCatalogFile(): GeneratedOkfFile {
       "# Machine-readable indexes",
       "",
       "- [Browse documents](/pages/index.md) - Continue to source-backed Markdown evidence.",
-      "- [Manifest](/_index/manifest.json) - List generated release files and safe concept metadata.",
+      "- [Manifest](/_index/manifest.json) - List active generated files and safe concept metadata.",
       "- [Search index](/_index/search.json) - Discover source-backed concepts through generated search records.",
       "- [Link index](/_index/links.json) - Follow standard Markdown and graph-backed concept relationships.",
-      "- [Release changes](/_index/changes.json) - Review created, updated, moved, and deleted concept paths."
+      "- [Generation changes](/_index/changes.json) - Review created, updated, moved, and deleted concept paths."
     ].join("\n")
   };
 }
@@ -465,7 +468,7 @@ export function pageToSearchIndexItem(page: GeneratedPageSummary): SearchIndexIt
 export function renderJsonCollectionRootFile<T>(input: {
   generatedAt: string;
   rootPath: string;
-  rootKind: BundleFileKind;
+  rootKind: GeneratedFileKind;
   collectionKey: string;
   itemCount: number;
   shardSize: number;
@@ -503,7 +506,7 @@ export function renderJsonCollectionRootFile<T>(input: {
 
 export function renderJsonCollectionShardFile<T>(input: {
   logicalPath: string;
-  shardKind: BundleFileKind;
+  shardKind: GeneratedFileKind;
   items: T[];
 }): GeneratedOkfFile {
   return {
@@ -545,10 +548,12 @@ function renderCitations(metadata: SourceMetadata): string[] {
 function renderRelatedLinks(graphLinks: OkfGraphRelationship[]): string[] {
   const graphRelated = graphLinks
     .map((link) => {
-      const title = escapeInlineMarkdown(cleanInlineGraphText(link.title) || "Related concept");
-      const reason = cleanInlineGraphText(link.reason)
+      const title = renderMarkdownIdentityLabel(
+        canonicalizeOptionalGeneratedTextIdentity(link.title) ?? "Related concept"
+      );
+      const reason = canonicalizeOptionalGeneratedTextIdentity(link.reason)
         || `Related through ${humanizeRelationshipType(link.relationType)}.`;
-      return `- [${title}](${toBundleMarkdownHref(link.path)}) - ${escapeInlineMarkdown(reason)}`;
+      return `- [${title}](${toBundleMarkdownHref(link.path)}) - ${renderMarkdownIdentityLabel(reason)}`;
     });
 
   if (graphRelated.length > 0) {
@@ -558,20 +563,17 @@ function renderRelatedLinks(graphLinks: OkfGraphRelationship[]): string[] {
   return [];
 }
 
-function cleanInlineGraphText(value: string): string {
-  return value.trim().replace(/\s+/gu, " ");
-}
-
 function humanizeRelationshipType(value: string): string {
-  const normalized = cleanInlineGraphText(value.replace(/[_-]+/gu, " "));
+  const normalized = canonicalizeOptionalGeneratedTextIdentity(value.replace(/[_-]+/gu, " "));
   return normalized || "a documented relationship";
 }
 
-function escapeInlineMarkdown(value: string): string {
-  return value
-    .replaceAll("\\", "\\\\")
-    .replaceAll("[", "\\[")
-    .replaceAll("]", "\\]");
+function canonicalizeFirstHeading(body: string, title: string): string {
+  const heading = `# ${renderMarkdownIdentityLabel(title)}`;
+  if (/^#\s+.+$/mu.test(body)) {
+    return body.replace(/^#\s+.+$/mu, heading);
+  }
+  return `${heading}\n\n${body}`.trimEnd();
 }
 
 function renderConceptFile(metadata: SourceMetadata, body: string): string {

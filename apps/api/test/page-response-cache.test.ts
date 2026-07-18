@@ -34,7 +34,7 @@ describe("page response cache", () => {
 
     await readThroughPageResponseCache({
       redis: fixture.redis,
-      scope: "search:release-1",
+      scope: "search:generation-1",
       cacheId: "query=missing",
       load: async () => ({ items: [] as string[] }),
       ttlSeconds: 60,
@@ -50,12 +50,12 @@ describe("page response cache", () => {
 
     const cached = await readPageResponseCache<{ items: string[] }>({
       redis: fixture.redis,
-      scope: "search:release-1",
+      scope: "search:generation-1",
       cacheId: "query=guide"
     });
     const loaded = await readThroughPageResponseCache({
       redis: fixture.redis,
-      scope: "search:release-1",
+      scope: "search:generation-1",
       cacheId: "query=guide",
       load: async () => ({ items: ["database-result"] }),
       ttlSeconds: 60,
@@ -70,7 +70,7 @@ describe("page response cache", () => {
   it("loads directly from the bounded repository when Redis is not configured", async () => {
     const loaded = await readThroughPageResponseCache({
       redis: null,
-      scope: "search:release-1",
+      scope: "search:generation-1",
       cacheId: "query=guide",
       load: async () => ({ items: ["database-result"] }),
       ttlSeconds: 60,
@@ -88,7 +88,7 @@ function readThrough(
 ) {
   return readThroughPageResponseCache({
     redis,
-    scope: "search:release-1",
+    scope: "search:generation-1",
     cacheId: "query=guide",
     load,
     ttlSeconds: 60,

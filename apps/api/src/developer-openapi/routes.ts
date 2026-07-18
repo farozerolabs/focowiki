@@ -30,6 +30,10 @@ import {
   toSourceFileResponse
 } from "./source-resource-routes.js";
 import { readLimit, safe } from "./route-helpers.js";
+import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
+import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
+import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
+import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 
 export type DeveloperOpenApiRouteServices = {
   config: RuntimeConfig;
@@ -40,6 +44,10 @@ export type DeveloperOpenApiRouteServices = {
   runtimeSettings: RuntimeSettingsService | null;
   applicationRuntime: ApplicationRuntime;
   uploadSessionStorage: UploadSessionStoragePort;
+  activeGenerationReads: ActiveGenerationReadRepository | null;
+  roleJobs: RoleJobRepository | null;
+  publicationGenerations: PublicationGenerationRepository | null;
+  sourceFileRetries: SourceFileRetryRepository | null;
 };
 
 export function registerDeveloperOpenApiRoutes(
@@ -116,7 +124,7 @@ export function registerDeveloperOpenApiRoutes(
         async () => {
           const knowledgeBaseId = context.req.param("knowledgeBaseId");
           const sourceFileId = context.req.param("sourceFileId");
-          await api.retrySourceFile({ knowledgeBaseId, sourceFileId });
+          const retry = await api.retrySourceFile({ knowledgeBaseId, sourceFileId });
           const sourceResources = services.repositories?.sourceResources;
 
           if (!sourceResources) {
@@ -135,7 +143,14 @@ export function registerDeveloperOpenApiRoutes(
             throw repositoryUnavailable();
           }
 
-          return { sourceFile: toSourceFileResponse(sourceFile) };
+          return {
+            sourceFile: toSourceFileResponse(sourceFile),
+            retry: {
+              kind: retry.kind,
+              scope: retry.scope,
+              coalesced: retry.coalesced
+            }
+          };
         },
         202
       )
@@ -153,7 +168,7 @@ export function registerDeveloperOpenApiRoutes(
 
       return api.listTree({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        parentPath: context.req.query("parentPath") ?? "",
+        parentPath: context.req.query("parentPath") ?? "pages",
         entryType,
         query: context.req.query("query") ?? null,
         limit: readLimit(context.req.query("limit"), services.config, {

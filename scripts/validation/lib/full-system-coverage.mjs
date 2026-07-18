@@ -10,7 +10,7 @@ export const EXPECTED_DEVELOPER_OPENAPI_OPERATIONS = [
   "createUploadSession",
   "addUploadManifestEntries",
   "sealUploadManifest",
-  "uploadSessionContentBatch",
+  "uploadSessionEntryContent",
   "getUploadSession",
   "cancelUploadSession",
   "reconcileUploadSession",
@@ -96,11 +96,12 @@ export const ADMIN_API_ROUTE_FAMILIES = [
 ];
 
 export const WORKER_JOB_KINDS = [
-  "source_file_processing",
+  "source_processing",
+  "generation_publication",
   "resource_operation",
-  "upload_session_finalization",
-  "publication",
-  "hard_delete"
+  "hard_delete",
+  "projection_audit",
+  "garbage_collection"
 ];
 
 export const RUNTIME_SETTINGS_GROUPS = [
@@ -108,26 +109,23 @@ export const RUNTIME_SETTINGS_GROUPS = [
   "worker",
   "publication",
   "graph",
-  "uploads",
-  "pagination-and-content",
-  "security-retention",
   "models"
 ];
 
 export const GENERATED_OUTPUT_FAMILIES = [
   "source-backed-pages",
-  "root-navigation",
+  "bounded-root-files",
   "nested-navigation",
   "numbered-index-shards",
-  "schema-files",
-  "log-shards",
-  "manifest-index",
-  "search-index",
-  "link-index",
+  "directory-navigation-leaves",
+  "active-generation-manifest",
+  "search-shards",
+  "link-shards",
+  "manifest-shards",
+  "tree-shards",
   "graph-overview",
   "graph-shards",
-  "per-file-graph",
-  "release-history"
+  "per-file-graph"
 ];
 
 const OPERATION_COVERAGE = EXPECTED_DEVELOPER_OPENAPI_OPERATIONS.map((operationId) => ({

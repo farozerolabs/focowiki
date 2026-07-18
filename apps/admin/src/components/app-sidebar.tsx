@@ -67,7 +67,7 @@ export type AdminSidebarTreeNode = {
 
 export type AdminSidebarSourceFile = {
   id: string;
-  processingStatus?: "queued" | "running" | "completed" | "failed";
+  state: "queued" | "running" | "pending_publication" | "visible" | "failed";
 };
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
@@ -153,7 +153,7 @@ export function AppSidebar({
   ...props
 }: AppSidebarProps) {
   const runningSourceFiles = sourceFiles.filter(
-    (file) => file.processingStatus === "queued" || file.processingStatus === "running"
+    (file) => file.state === "queued" || file.state === "running"
   ).length;
 
   return (

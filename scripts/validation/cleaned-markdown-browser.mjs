@@ -8,7 +8,7 @@ import { redactReportText } from "./lib/redaction.mjs";
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
-  "validate-clean-architecture-full-system";
+  "implement-incremental-sharded-publication";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const BROWSER_REPORT_JSON = path.join(CHANGE_DIR, "browser-validation-report.json");
 
@@ -369,7 +369,7 @@ async function waitForSourceFilesCompletedByApi(page, knowledgeBaseId, sourceFil
   while (Date.now() < deadline) {
     const records = await readSourceFileRecordsByApi(page, knowledgeBaseId, expectedIds);
     const missingIds = sourceFileIds.filter((sourceFileId) => !records.has(sourceFileId));
-    const failedRecords = [...records.values()].filter((record) => record.processingStatus === "failed");
+    const failedRecords = [...records.values()].filter((record) => record.state === "failed");
 
     if (failedRecords.length > 0) {
       lastFailedRecord = failedRecords[0];
@@ -378,7 +378,7 @@ async function waitForSourceFilesCompletedByApi(page, knowledgeBaseId, sourceFil
     if (
       missingIds.length === 0 &&
       [...records.values()].every(
-        (record) => record.processingStatus === "completed" && record.generatedFileAvailable
+        (record) => record.state === "visible" && record.generatedFileAvailable
       )
     ) {
       return;
@@ -471,21 +471,17 @@ function readSourceFileIdFromTestId(testId) {
 async function validateRuntimeSettingsPage(page) {
   await page.getByRole("button", { name: "Open settings" }).click();
   await page.getByRole("heading", { name: "Settings" }).waitFor();
-  await page.getByRole("tab", { name: "Upload and generation" }).click();
-  await page.locator("#upload-generation-maxBytes").waitFor();
-  await page.getByText("Maximum bytes accepted for one Markdown source file.", { exact: false }).waitFor();
+  await page.getByRole("tab", { name: "Worker" }).click();
+  await page.locator("#worker-generationBatchSize").waitFor();
 
-  const requiredFields = [
-    "upload-generation-maxBytes",
-    "upload-generation-generationBatchSize",
-    "upload-generation-fileProcessingConcurrency",
-    "upload-generation-sessionTtlSeconds",
-    "upload-generation-manifestPageSize",
-    "upload-generation-contentBatchMaxFiles",
-    "upload-generation-contentBatchMaxBytes"
+  const workerFields = [
+    "worker-sourceFileConcurrency",
+    "worker-generationBatchSize",
+    "worker-sourceQueueHardDepth",
+    "worker-sourceQueueResumeDepth"
   ];
 
-  for (const fieldId of requiredFields) {
+  for (const fieldId of workerFields) {
     const field = page.locator(`#${fieldId}`);
     await field.waitFor();
     const value = await field.inputValue();
@@ -495,19 +491,36 @@ async function validateRuntimeSettingsPage(page) {
     }
   }
 
-  const maxBytes = page.locator("#upload-generation-maxBytes");
-  const originalMaxBytes = await maxBytes.inputValue();
-  await maxBytes.fill("");
+  const generationBatchSize = page.locator("#worker-generationBatchSize");
+  const originalGenerationBatchSize = await generationBatchSize.inputValue();
+  await generationBatchSize.fill("");
   await page.getByRole("button", { name: "Save" }).click();
   await page
     .getByRole("alert")
     .filter({ hasText: "Required numeric fields must be positive integers." })
     .first()
     .waitFor();
-  await maxBytes.fill(originalMaxBytes);
+  await generationBatchSize.fill(originalGenerationBatchSize);
+
+  await page.getByRole("tab", { name: "Publication" }).click();
+  for (const fieldId of [
+    "publication-impactBatchSize",
+    "publication-pendingImpactHardCount",
+    "publication-indexShardSize"
+  ]) {
+    const field = page.locator(`#${fieldId}`);
+    await field.waitFor();
+    if (Number(await field.inputValue()) <= 0) {
+      throw new Error(`Runtime settings field ${fieldId} must be positive.`);
+    }
+  }
+
   await page.locator("header button").first().click();
   await page.getByRole("button", { name: "Create knowledge base" }).first().waitFor();
-  report.checks.push(okCheck("runtime-settings-page", "Admin UI runtime settings page validates upload-generation fields."));
+  report.checks.push(okCheck(
+    "runtime-settings-page",
+    "Admin UI runtime settings validate source dispatch and incremental publication fields."
+  ));
 }
 
 function createSearchTokenFromFilename(filename) {

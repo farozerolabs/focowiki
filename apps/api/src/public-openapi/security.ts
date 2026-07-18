@@ -1,9 +1,9 @@
 import type { MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import {
-  isAllowedPublicBundleFilePath,
-  publicBundleContentType
-} from "../public-bundle-path.js";
+  isAllowedPublicGeneratedFilePath,
+  publicGeneratedContentType
+} from "../public-generated-path.js";
 
 type RequestContext = Parameters<MiddlewareHandler>[0];
 
@@ -35,7 +35,7 @@ export function publicResponseHeaders(
   config: RuntimeConfig
 ): Headers {
   const headers = new Headers({
-    "content-type": publicBundleContentType(path)
+    "content-type": publicGeneratedContentType(path)
   });
   const origin = context.req.header("origin");
 
@@ -48,7 +48,7 @@ export function publicResponseHeaders(
 }
 
 export function isAllowedPublicLogicalPath(path: string): boolean {
-  return isAllowedPublicBundleFilePath(path);
+  return isAllowedPublicGeneratedFilePath(path);
 }
 
 export function invalidPath(context: RequestContext): Response {

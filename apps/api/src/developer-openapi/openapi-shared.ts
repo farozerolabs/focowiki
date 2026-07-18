@@ -159,10 +159,10 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
       maxLength: 160,
       example: "source-file-11111111"
     }),
-    queryParameter("processingState", "Source-file processing state filter.", {
+    queryParameter("state", "Backend-derived source-file lifecycle state filter.", {
       type: "string",
-      enum: ["queued", "running", "completed", "failed"],
-      example: "completed"
+      enum: ["queued", "running", "pending_publication", "visible", "failed"],
+      example: "visible"
     }),
     queryParameter("currentStage", "Current source-file stage filter.", {
       type: "string",
@@ -171,12 +171,11 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
         "metadata_resolution",
         "llm_suggestion",
         "graph_generation",
-        "okf_validation",
-        "bundle_generation",
-        "index_publication",
-        "release_activation"
+        "projection_generation",
+        "generation_validation",
+        "generation_activation"
       ],
-      example: "release_activation"
+      example: "generation_activation"
     }),
     queryParameter("generatedOutputStatus", "Generated output state filter.", {
       type: "string",

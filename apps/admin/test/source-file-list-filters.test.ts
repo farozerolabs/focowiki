@@ -12,7 +12,7 @@ describe("source file list filter state", () => {
     const filters = {
       ...createEmptySourceFileListFilters(),
       fileNameQuery: " intro ",
-      processingStatus: "completed" as const,
+      state: "visible" as const,
       actionState: "openable" as const
     };
     const params = new URLSearchParams();
@@ -20,7 +20,7 @@ describe("source file list filter state", () => {
     appendSourceFileFilterParams(params, filters);
 
     expect(params.toString()).toBe(
-      "fileNameQuery=intro&processingStatus=completed&actionState=openable"
+      "fileNameQuery=intro&state=visible&actionState=openable"
     );
     expect(hasActiveSourceFileFilters(filters)).toBe(true);
     expect(sourceFileFilterCount(filters)).toBe(3);

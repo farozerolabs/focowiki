@@ -16,6 +16,7 @@ export function withTrustedAdminOrigin(headers: Record<string, string> = {}): Re
 
 export class MemoryRedisCommandClient implements RedisCommandClient {
   public readonly values = new Map<string, string>();
+  public readonly sets = new Map<string, Set<string>>();
   public readonly expirations = new Map<string, number>();
 
   public async set(
@@ -36,9 +37,10 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
   }
 
   public async del(key: string): Promise<number> {
-    const existed = this.values.delete(key);
+    const valueExisted = this.values.delete(key);
+    const setExisted = this.sets.delete(key);
     this.expirations.delete(key);
-    return existed ? 1 : 0;
+    return valueExisted || setExisted ? 1 : 0;
   }
 
   public async incr(key: string): Promise<number> {
@@ -55,7 +57,7 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
   }
 
   public async expire(key: string, seconds: number): Promise<number> {
-    if (!this.values.has(key)) {
+    if (!this.values.has(key) && !this.sets.has(key)) {
       return 0;
     }
 
@@ -66,7 +68,7 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
   public async ttl(key: string): Promise<number> {
     const expiresAt = this.expirations.get(key);
 
-    if (!this.values.has(key)) {
+    if (!this.values.has(key) && !this.sets.has(key)) {
       return -2;
     }
 
@@ -75,6 +77,34 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
     }
 
     return Math.max(1, Math.ceil((expiresAt - Date.now()) / 1_000));
+  }
+
+  public async sAdd(key: string, member: string | string[]): Promise<number> {
+    const values = Array.isArray(member) ? member : [member];
+    const members = this.sets.get(key) ?? new Set<string>();
+    let added = 0;
+    for (const value of values) {
+      if (!members.has(value)) added += 1;
+      members.add(value);
+    }
+    this.sets.set(key, members);
+    return added;
+  }
+
+  public async sRem(key: string, member: string | string[]): Promise<number> {
+    const values = Array.isArray(member) ? member : [member];
+    const members = this.sets.get(key);
+    if (!members) return 0;
+    let removed = 0;
+    for (const value of values) {
+      if (members.delete(value)) removed += 1;
+    }
+    return removed;
+  }
+
+  public async *sScanIterator(key: string): AsyncIterable<string[]> {
+    const members = [...(this.sets.get(key) ?? [])];
+    if (members.length > 0) yield members;
   }
 }
 

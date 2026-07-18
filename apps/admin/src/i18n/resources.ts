@@ -99,7 +99,6 @@ export const resources = {
           worker: "Worker",
           publication: "Publication",
           graph: "Graph",
-          uploadGeneration: "Upload and generation",
           models: "Models"
         },
         rateLimits: {
@@ -108,19 +107,15 @@ export const resources = {
         },
         worker: {
           title: "Worker",
-          description: "Tune queue processing, backpressure, retry, and retention values."
+          description: "Tune source processing, dispatch pressure, retry, and retention values."
         },
         publication: {
           title: "Publication",
-          description: "Tune generated knowledge base publication and index shard values."
+          description: "Tune incremental projection work, publication pressure, and shard values."
         },
         graph: {
           title: "Graph",
           description: "Tune file relationship generation, graph search, graph publication, and graph caches."
-        },
-        uploadGeneration: {
-          title: "Upload and generation",
-          description: "Tune upload-session transfer limits and generation batch size."
         },
         publicationModes: {
           batch: "Batch",
@@ -157,12 +152,6 @@ export const resources = {
               windowSecondsLabel: "Admin API / Window seconds",
               windowSecondsDescription: "Counting window for Admin UI API requests. Recommended: 60 seconds."
             },
-            upload: {
-              maxLabel: "Upload / Max requests",
-              maxDescription: "Maximum Markdown upload requests allowed in one counting window. Recommended: 20.",
-              windowSecondsLabel: "Upload / Window seconds",
-              windowSecondsDescription: "Counting window for Markdown upload requests. Recommended: 3600 seconds."
-            },
             publicOpenApi: {
               maxLabel: "Developer OpenAPI / Max requests",
               maxDescription: "Maximum Developer OpenAPI requests allowed in one counting window. Recommended: 1200, then tune by server capacity and traffic.",
@@ -173,15 +162,16 @@ export const resources = {
           worker: {
             sourceFileConcurrency: "Number of source files processed at the same time. Recommended: 2 to 4 on an 8C/32G server.",
             claimBatchSize: "Number of jobs claimed in one poll. Recommended: 10 to 50 and close to actual concurrency.",
+            generationBatchSize: "Maximum source records committed in one bounded generation-input batch. Recommended: 50 to 200.",
             pollIntervalMs: "How often the worker checks the queue. Recommended: 1000 to 3000 ms.",
             lockTtlSeconds: "How long a job lock stays valid. Recommended: longer than normal file processing time, commonly 900 seconds.",
             heartbeatIntervalMs: "How often a running job refreshes its heartbeat. Recommended: 10000 to 30000 ms.",
             jobMaxAttempts: "Maximum attempts before a job moves to dead letter. Recommended: 3.",
             jobRetryDelayMs: "Delay before retrying a failed job. Recommended: 30000 to 120000 ms.",
-            queueBackpressureLimit: "Global queued job limit. Recommended: 5000 to 20000 on larger servers.",
-            queueBackpressureKnowledgeBaseLimit: "Queued job limit for one knowledge base. Recommended: lower than the global limit.",
-            queueBackpressureMaxAgeSeconds: "Oldest accepted queue age before uploads slow down. Recommended: 3600 to 7200 seconds.",
-            queueBackpressureRetryAfterSeconds: "Suggested wait time after backpressure. Recommended: 30 to 300 seconds.",
+            sourceQueueHardDepth: "Queued source-job count that pauses new dispatch from durable upload markers. Upload registration continues. Recommended: 5000 to 20000.",
+            sourceQueueResumeDepth: "Queued source-job count below which dispatch can resume. Keep it lower than the hard depth. Recommended: 50% to 70% of the hard depth.",
+            sourceQueueHardAgeSeconds: "Oldest queued source-job age that pauses new dispatch. Upload registration continues. Recommended: 3600 to 7200 seconds.",
+            sourceQueueResumeAgeSeconds: "Oldest queued source-job age below which dispatch can resume. Keep it lower than the hard age. Recommended: about half of the hard age.",
             shutdownGraceMs: "Time allowed for worker shutdown. Recommended: 30000 to 120000 ms.",
             completedJobRetentionDays: "Days to keep completed job records. Recommended: 7 to 30.",
             failedJobRetentionDays: "Days to keep failed job records. Recommended: 30 or longer.",
@@ -199,9 +189,22 @@ export const resources = {
             mode: "Publication strategy. Recommended: batch for large knowledge bases, per file for fast visibility, manual for controlled release.",
             batchSize: "Files included in one publication job. Recommended: 100 to 500.",
             intervalSeconds: "Minimum interval between batch publications. Recommended: 120 to 600 seconds.",
+            roleConcurrency: "Publication jobs processed concurrently by this worker role. Recommended: 1 per deployment until database and S3 capacity are measured.",
+            claimBatchSize: "Publication jobs claimed in one polling cycle. Recommended: 1 to 4 and no lower than publication concurrency.",
+            impactBatchSize: "Projection impact items processed in one bounded work page. Recommended: 100 to 500.",
+            impactConcurrency: "Independent projection groups processed concurrently inside one publication. Recommended: 4 to 8 after measuring database and S3 capacity.",
+            dirtyFileHardCount: "Dirty source-file count that pauses source dispatch. Upload registration continues. Recommended: 2000 to 10000.",
+            dirtyFileResumeCount: "Dirty source-file count below which source dispatch can resume. Keep it lower than the hard count.",
+            dirtyAgeHardSeconds: "Oldest dirty-file age that pauses source dispatch. Recommended: 900 to 3600 seconds.",
+            dirtyAgeResumeSeconds: "Oldest dirty-file age below which source dispatch can resume. Keep it lower than the hard age.",
+            pendingImpactHardCount: "Pending projection-impact count that pauses source dispatch. Recommended: 20000 to 100000.",
+            pendingImpactResumeCount: "Pending projection-impact count below which source dispatch can resume. Keep it lower than the hard count.",
+            generationRetentionDays: "Days to retain inactive generation references before garbage collection. Recommended: 7 to 30.",
             indexShardSize: "Entries per search index shard. Recommended: 1000 to 5000.",
             linkIndexShardSize: "Entries per link index shard. Recommended: 1000 to 5000.",
             manifestShardSize: "Entries per manifest shard. Recommended: 1000 to 5000.",
+            graphEdgeShardSize: "Stable graph edges assigned to each machine shard. Recommended: 5000 to 20000.",
+            graphCandidateLimit: "Candidate relationship records evaluated in one bounded projection operation. Recommended: 100 to 300.",
             graphMaintenanceBatchSize: "Files refreshed in each graph maintenance pass. Recommended: 200 to 1000.",
             rootSummaryLimit: "Items shown in the root summary and index. Recommended: 200 to 1000.",
             directoryIndexMaxEntries: "Maximum direct entries in one generated directory index page. Recommended: 100 to 500. This does not limit files in a directory.",
@@ -234,21 +237,11 @@ export const resources = {
             suggestionConcurrency: "Parallel model suggestion requests. Recommended: 1 to 2 first, then increase after observing stability.",
             transientRetryDelayMs: "Delay before retrying transient model failures. Recommended: 60000 ms.",
             requestMinIntervalMs: "Minimum delay between model requests. Recommended: 0 for stable providers, 1000 to 5000 ms for strict rate limits."
-          },
-          uploadGeneration: {
-            maxBytes: "Maximum bytes accepted for one Markdown source file. Recommended: 10485760 for 10 MB, or lower for small deployments.",
-            generationBatchSize: "Batch size used by generation, graph, indexing, and publication work. Recommended: 100 on an 8C/32G server.",
-            fileProcessingConcurrency: "Number of file processing operations inside one worker job. Recommended: 1 for stable large imports.",
-            sessionTtlSeconds: "Time available to resume an unfinished upload session. Recommended: 86400 seconds.",
-            manifestPageSize: "Maximum manifest entries registered per request. Recommended: 500.",
-            contentBatchMaxFiles: "Maximum file bodies transferred in one content batch. Recommended: 24.",
-            contentBatchMaxBytes: "Maximum total body bytes transferred in one content batch. Recommended: 16777216 for 16 MB."
           }
         },
         rateLimitGroups: {
           adminLogin: "Admin login",
           adminApi: "Admin API",
-          upload: "Upload",
           publicOpenApi: "Developer OpenAPI"
         },
         fields: {
@@ -256,15 +249,16 @@ export const resources = {
           windowSeconds: "Window seconds",
           sourceFileConcurrency: "Source file concurrency",
           claimBatchSize: "Claim batch size",
+          generationBatchSize: "Generation batch size",
           pollIntervalMs: "Poll interval ms",
           lockTtlSeconds: "Lock TTL seconds",
           heartbeatIntervalMs: "Heartbeat interval ms",
           jobMaxAttempts: "Job max attempts",
           jobRetryDelayMs: "Job retry delay ms",
-          queueBackpressureLimit: "Global queue limit",
-          queueBackpressureKnowledgeBaseLimit: "Knowledge base queue limit",
-          queueBackpressureMaxAgeSeconds: "Queue max age seconds",
-          queueBackpressureRetryAfterSeconds: "Retry after seconds",
+          sourceQueueHardDepth: "Source queue hard depth",
+          sourceQueueResumeDepth: "Source queue resume depth",
+          sourceQueueHardAgeSeconds: "Source queue hard age seconds",
+          sourceQueueResumeAgeSeconds: "Source queue resume age seconds",
           shutdownGraceMs: "Shutdown grace ms",
           completedJobRetentionDays: "Completed retention days",
           failedJobRetentionDays: "Failed retention days",
@@ -280,9 +274,21 @@ export const resources = {
           mode: "Mode",
           batchSize: "Batch size",
           intervalSeconds: "Interval seconds",
+          roleConcurrency: "Role concurrency",
+          impactBatchSize: "Impact batch size",
+          impactConcurrency: "Impact concurrency",
+          dirtyFileHardCount: "Dirty file hard count",
+          dirtyFileResumeCount: "Dirty file resume count",
+          dirtyAgeHardSeconds: "Dirty age hard seconds",
+          dirtyAgeResumeSeconds: "Dirty age resume seconds",
+          pendingImpactHardCount: "Pending impact hard count",
+          pendingImpactResumeCount: "Pending impact resume count",
+          generationRetentionDays: "Generation retention days",
           indexShardSize: "Index shard size",
           linkIndexShardSize: "Link index shard size",
           manifestShardSize: "Manifest shard size",
+          graphEdgeShardSize: "Graph edge shard size",
+          graphCandidateLimit: "Graph candidate limit",
           graphMaintenanceBatchSize: "Graph maintenance batch size",
           candidateLimit: "Graph candidate limit",
           acceptedEdgeLimit: "Accepted edge limit",
@@ -300,13 +306,6 @@ export const resources = {
           directoryIndexMaxBytes: "Directory index bytes per page",
           okfLogMaxEntries: "Log max entries",
           okfLogMaxBytes: "Log max bytes",
-          maxBytes: "Max upload bytes",
-          generationBatchSize: "Generation batch size",
-          fileProcessingConcurrency: "File processing concurrency",
-          sessionTtlSeconds: "Upload session TTL seconds",
-          manifestPageSize: "Manifest page size",
-          contentBatchMaxFiles: "Content batch max files",
-          contentBatchMaxBytes: "Content batch max bytes",
           displayName: "Display name",
           apiMode: "API mode",
           baseUrl: "Base URL",
@@ -395,11 +394,7 @@ export const resources = {
         relationshipDirection: "Direction: {{direction}}",
         relationshipWeight: "Weight: {{weight}}",
         sourceFiles: "Source files",
-        releases: "Releases",
-        bundleFiles: "Bundle files",
-        emptyList: "No records",
-        releaseItem: "{{count}} files",
-        releaseItem_plural: "{{count}} files"
+        emptyList: "No records"
       },
       tasks: {
         title: "File processing",
@@ -444,10 +439,26 @@ export const resources = {
             none: "No action"
           }
         },
-        retryFile: "Retry parsing",
+        retryProcessing: "Retry processing",
+        retryPublication: "Retry publication",
         retryingFile: "Retrying",
         openGeneratedFile: "Open file",
         noAction: "No action",
+        failureDetails: {
+          open: "View failure details",
+          title: "Failure details",
+          stage: "Stage",
+          code: "Code",
+          message: "Message",
+          occurredAt: "Occurred",
+          retryKind: "Recovery",
+          correlationId: "Correlation ID",
+          retryKinds: {
+            source_processing: "Retry source processing",
+            publication: "Retry knowledge base publication",
+            none: "Manual inspection required"
+          }
+        },
         deleteSelected: "Delete selected",
         selection: {
           currentPageOnly: "Selection applies to the current page only.",
@@ -482,9 +493,9 @@ export const resources = {
         },
         fileStatus: {
           queued: "Queued",
-          pending: "Queued",
           running: "Running",
-          completed: "Completed",
+          pending_publication: "Pending publication",
+          visible: "Visible",
           failed: "Failed"
         },
         phase: {
@@ -493,10 +504,9 @@ export const resources = {
           metadataResolution: "Metadata resolution",
           llmSuggestion: "LLM suggestions",
           graphGeneration: "Graph generation",
-          okfValidation: "OKF validation",
-          bundleGeneration: "Bundle generation",
-          indexPublication: "Index publication",
-          releaseActivation: "Release activation"
+          projectionGeneration: "Projection generation",
+          generationValidation: "Generation validation",
+          generationActivation: "Generation activation"
         },
         modelStatus: {
           running: "Running",
@@ -507,6 +517,10 @@ export const resources = {
         modelWarnings: "{{count}} warning",
         modelWarnings_plural: "{{count}} warnings",
         summary: {
+          pendingDispatch: "Pending dispatch",
+          pendingCount: "{{count}} pending",
+          dispatchPaused: "Dispatch is paused by processing pressure",
+          noPendingDispatch: "No sources waiting for dispatch",
           sourceQueue: "Source queue",
           publicationQueue: "Publication queue",
           dirtyFiles: "Publication waiting",
@@ -519,7 +533,13 @@ export const resources = {
           deadLetter: "{{count}} dead-letter",
           oldestQueuedAge: "oldest {{seconds}}s",
           oldestDirty: "oldest {{time}}",
-          noDirtyFiles: "No files waiting"
+          noDirtyFiles: "No files waiting",
+          publicationStage: "{{stage}} · {{processed}}/{{total}} impacts",
+          activeVisibility: "Active visibility",
+          activeGeneration: "Active generation",
+          noActiveGeneration: "Not active yet",
+          waitingForFirstGeneration: "Waiting for the first validated generation",
+          publicationFailed: "Publication failed: {{code}}"
         },
         operation: {
           upload: "Upload",
@@ -567,15 +587,6 @@ export const resources = {
         summary_plural: "{{count}} Markdown files ready for generation",
         markdownOnly: "Upload cleaned .md files only"
       },
-      generation: {
-        start: "Generate bundle",
-        inProgress: "Generating",
-        success: "Bundle generated",
-        failure: "Generation failed",
-        modelWarnings: "Model suggestions were skipped; deterministic generation continued",
-        generatedCount: "{{count}} generated file",
-        generatedCount_plural: "{{count}} generated files"
-      },
       result: {
         title: "Generated files",
         preview: "Preview",
@@ -607,8 +618,6 @@ export const resources = {
       },
       errors: {
         uploadMarkdownOnly: "Upload cleaned .md files only",
-        uploadFileCountLimit: "Too many files selected",
-        uploadByteLimit: "Selected files exceed the upload limit",
         missingMetadata: "Required metadata is missing",
         invalidKnowledgeBase: "Knowledge base data is invalid",
         invalidMetadata: "Metadata is invalid",
@@ -619,7 +628,6 @@ export const resources = {
         duplicateUploadFileName: "Markdown relative paths must be unique",
         uploadPathDeleting: "A selected path is being deleted. Try again after deletion finishes.",
         uploadPathReserved: "A selected path is being uploaded by another session. Resume after that upload finishes.",
-        queueBackpressure: "Processing queue is busy. Try again later.",
         folderPickerUnsupported: "This browser cannot select folders. Choose Markdown files instead.",
         folderPickerFailed: "The folder could not be read.",
         uploadFailed: "Upload request failed",
@@ -749,7 +757,6 @@ export const resources = {
           worker: "Worker",
           publication: "发布",
           graph: "图关系",
-          uploadGeneration: "上传与生成",
           models: "模型"
         },
         rateLimits: {
@@ -758,19 +765,15 @@ export const resources = {
         },
         worker: {
           title: "Worker",
-          description: "调整队列处理、反压、重试和保留策略。"
+          description: "调整来源处理、派发压力、重试和保留策略。"
         },
         publication: {
           title: "发布",
-          description: "调整生成知识库发布和索引分片参数。"
+          description: "调整增量投影工作、发布压力和分片参数。"
         },
         graph: {
           title: "图关系",
           description: "调整文件关系生成、图搜索、图发布和图缓存参数。"
-        },
-        uploadGeneration: {
-          title: "上传与生成",
-          description: "调整上传会话传输限制和生成批次大小。"
         },
         publicationModes: {
           batch: "批量",
@@ -807,12 +810,6 @@ export const resources = {
               windowSecondsLabel: "Admin API / 窗口秒数",
               windowSecondsDescription: "Admin UI API 请求次数的计数窗口长度。推荐值 60 秒。"
             },
-            upload: {
-              maxLabel: "上传 / 最大请求数",
-              maxDescription: "一个计数窗口内允许的 Markdown 上传请求次数上限。推荐值 20。",
-              windowSecondsLabel: "上传 / 窗口秒数",
-              windowSecondsDescription: "Markdown 上传请求次数的计数窗口长度。推荐值 3600 秒。"
-            },
             publicOpenApi: {
               maxLabel: "Developer OpenAPI / 最大请求数",
               maxDescription: "一个计数窗口内允许的 Developer OpenAPI 请求次数上限。推荐值 1200，再按服务器容量和真实流量调整。",
@@ -823,15 +820,16 @@ export const resources = {
           worker: {
             sourceFileConcurrency: "同时处理的来源文件数量。8C/32G 服务器推荐 2 到 4。",
             claimBatchSize: "每轮领取的任务数量。推荐 10 到 50，并接近实际并发。",
+            generationBatchSize: "单次有界 generation 输入批次提交的来源记录上限。推荐 50 到 200。",
             pollIntervalMs: "Worker 检查队列的间隔。推荐 1000 到 3000 毫秒。",
             lockTtlSeconds: "任务锁的有效时间。推荐长于单文件正常处理时间，常用 900 秒。",
             heartbeatIntervalMs: "运行中任务刷新心跳的间隔。推荐 10000 到 30000 毫秒。",
             jobMaxAttempts: "任务进入死信前的最大尝试次数。推荐 3 次。",
             jobRetryDelayMs: "失败任务再次重试前的等待时间。推荐 30000 到 120000 毫秒。",
-            queueBackpressureLimit: "全局排队任务上限。大服务器推荐 5000 到 20000。",
-            queueBackpressureKnowledgeBaseLimit: "单个知识库的排队任务上限。推荐低于全局上限。",
-            queueBackpressureMaxAgeSeconds: "最早排队任务超过该时长后放慢上传。推荐 3600 到 7200 秒。",
-            queueBackpressureRetryAfterSeconds: "反压触发后的建议等待时间。推荐 30 到 300 秒。",
+            sourceQueueHardDepth: "来源任务排队数量达到该值后暂停从持久化上传标记派发新任务。上传登记继续运行。推荐 5000 到 20000。",
+            sourceQueueResumeDepth: "来源任务排队数量低于该值后允许恢复派发。该值必须低于硬上限，推荐为硬上限的 50% 到 70%。",
+            sourceQueueHardAgeSeconds: "最早来源任务等待时间达到该值后暂停新任务派发。上传登记继续运行。推荐 3600 到 7200 秒。",
+            sourceQueueResumeAgeSeconds: "最早来源任务等待时间低于该值后允许恢复派发。该值必须低于硬上限，推荐约为硬上限的一半。",
             shutdownGraceMs: "Worker 关闭时允许任务收尾的时间。推荐 30000 到 120000 毫秒。",
             completedJobRetentionDays: "完成任务记录保留天数。推荐 7 到 30 天。",
             failedJobRetentionDays: "失败任务记录保留天数。推荐 30 天或更长。",
@@ -849,9 +847,22 @@ export const resources = {
             mode: "发布策略。大知识库推荐批量，需要快速可见用按文件，需要人工控制用手动。",
             batchSize: "单次发布任务包含的文件数量。推荐 100 到 500。",
             intervalSeconds: "批量发布之间的最小间隔。推荐 120 到 600 秒。",
+            roleConcurrency: "发布角色同时处理的任务数量。完成数据库和 S3 容量评估前推荐每个部署使用 1。",
+            claimBatchSize: "每轮领取的发布任务数量。推荐 1 到 4，且不低于发布并发。",
+            impactBatchSize: "单个有界工作页处理的投影影响项数量。推荐 100 到 500。",
+            impactConcurrency: "单次发布内同时处理的独立投影组数量。完成数据库和 S3 容量评估后推荐 4 到 8。",
+            dirtyFileHardCount: "待投影来源文件数量达到该值后暂停来源任务派发。上传登记继续运行。推荐 2000 到 10000。",
+            dirtyFileResumeCount: "待投影来源文件数量低于该值后允许恢复派发。该值必须低于硬上限。",
+            dirtyAgeHardSeconds: "最早待投影文件等待时间达到该值后暂停来源任务派发。推荐 900 到 3600 秒。",
+            dirtyAgeResumeSeconds: "最早待投影文件等待时间低于该值后允许恢复派发。该值必须低于硬上限。",
+            pendingImpactHardCount: "待处理投影影响项达到该值后暂停来源任务派发。推荐 20000 到 100000。",
+            pendingImpactResumeCount: "待处理投影影响项低于该值后允许恢复派发。该值必须低于硬上限。",
+            generationRetentionDays: "非活动 generation 引用进入垃圾回收前的保留天数。推荐 7 到 30 天。",
             indexShardSize: "搜索索引每个分片的条目数。推荐 1000 到 5000。",
             linkIndexShardSize: "链接索引每个分片的条目数。推荐 1000 到 5000。",
             manifestShardSize: "Manifest 每个分片的条目数。推荐 1000 到 5000。",
+            graphEdgeShardSize: "每个机器分片分配的稳定图边数量。推荐 5000 到 20000。",
+            graphCandidateLimit: "单个有界投影操作评估的候选关系记录数量。推荐 100 到 300。",
             graphMaintenanceBatchSize: "每轮图关系维护刷新的文件数量。推荐 200 到 1000。",
             rootSummaryLimit: "根目录摘要和索引展示的条目上限。推荐 200 到 1000。",
             directoryIndexMaxEntries: "单个目录索引页允许的直接条目上限。推荐 100 到 500。该配置不限制目录可包含的文件数量。",
@@ -884,21 +895,11 @@ export const resources = {
             suggestionConcurrency: "模型建议生成的并行请求数。推荐先用 1 到 2，稳定后再调高。",
             transientRetryDelayMs: "临时失败后的重试等待时间。推荐 60000 毫秒。",
             requestMinIntervalMs: "模型请求之间的最小间隔。稳定服务商可用 0，限流严格时推荐 1000 到 5000 毫秒。"
-          },
-          uploadGeneration: {
-            maxBytes: "单个 Markdown 来源文件允许的字节数上限。推荐值 10485760，即 10 MB；小型部署可降低。",
-            generationBatchSize: "生成、图关系、索引和发布工作每批处理的数据量。8C/32G 服务器推荐值 100。",
-            fileProcessingConcurrency: "单个 worker job 内部的文件处理并发数。大规模导入推荐值 1，更稳定。",
-            sessionTtlSeconds: "未完成上传会话允许断点续传的时间。推荐值 86400 秒。",
-            manifestPageSize: "每次请求登记的清单条目上限。推荐值 500。",
-            contentBatchMaxFiles: "每个正文传输批次允许的文件数量上限。推荐值 24。",
-            contentBatchMaxBytes: "每个正文传输批次允许的总字节数上限。推荐值 16777216，即 16 MB。"
           }
         },
         rateLimitGroups: {
           adminLogin: "管理员登录",
           adminApi: "Admin API",
-          upload: "上传",
           publicOpenApi: "Developer OpenAPI"
         },
         fields: {
@@ -906,15 +907,16 @@ export const resources = {
           windowSeconds: "窗口秒数",
           sourceFileConcurrency: "来源文件并发",
           claimBatchSize: "领取批次大小",
+          generationBatchSize: "生成批次大小",
           pollIntervalMs: "轮询间隔毫秒",
           lockTtlSeconds: "锁 TTL 秒数",
           heartbeatIntervalMs: "心跳间隔毫秒",
           jobMaxAttempts: "任务最大尝试次数",
           jobRetryDelayMs: "任务重试延迟毫秒",
-          queueBackpressureLimit: "全局队列上限",
-          queueBackpressureKnowledgeBaseLimit: "知识库队列上限",
-          queueBackpressureMaxAgeSeconds: "队列最大等待秒数",
-          queueBackpressureRetryAfterSeconds: "重试等待秒数",
+          sourceQueueHardDepth: "来源队列硬上限",
+          sourceQueueResumeDepth: "来源队列恢复值",
+          sourceQueueHardAgeSeconds: "来源队列硬等待秒数",
+          sourceQueueResumeAgeSeconds: "来源队列恢复等待秒数",
           shutdownGraceMs: "关闭等待毫秒",
           completedJobRetentionDays: "完成任务保留天数",
           failedJobRetentionDays: "失败任务保留天数",
@@ -930,9 +932,21 @@ export const resources = {
           mode: "模式",
           batchSize: "批次大小",
           intervalSeconds: "间隔秒数",
+          roleConcurrency: "角色并发",
+          impactBatchSize: "影响项批次大小",
+          impactConcurrency: "影响项并发",
+          dirtyFileHardCount: "待投影文件硬上限",
+          dirtyFileResumeCount: "待投影文件恢复值",
+          dirtyAgeHardSeconds: "待投影硬等待秒数",
+          dirtyAgeResumeSeconds: "待投影恢复等待秒数",
+          pendingImpactHardCount: "待处理影响项硬上限",
+          pendingImpactResumeCount: "待处理影响项恢复值",
+          generationRetentionDays: "Generation 保留天数",
           indexShardSize: "索引分片大小",
           linkIndexShardSize: "链接索引分片大小",
           manifestShardSize: "Manifest 分片大小",
+          graphEdgeShardSize: "图边分片大小",
+          graphCandidateLimit: "图候选上限",
           graphMaintenanceBatchSize: "图维护批次大小",
           candidateLimit: "图候选上限",
           acceptedEdgeLimit: "接受关系上限",
@@ -950,13 +964,6 @@ export const resources = {
           directoryIndexMaxBytes: "目录索引单页字节数",
           okfLogMaxEntries: "日志最大条数",
           okfLogMaxBytes: "日志最大字节数",
-          maxBytes: "最大上传字节数",
-          generationBatchSize: "生成批次大小",
-          fileProcessingConcurrency: "文件处理并发",
-          sessionTtlSeconds: "上传会话 TTL 秒数",
-          manifestPageSize: "清单分页大小",
-          contentBatchMaxFiles: "正文批次文件上限",
-          contentBatchMaxBytes: "正文批次字节上限",
           displayName: "显示名称",
           apiMode: "API 模式",
           baseUrl: "Base URL",
@@ -1045,11 +1052,7 @@ export const resources = {
         relationshipDirection: "方向：{{direction}}",
         relationshipWeight: "权重：{{weight}}",
         sourceFiles: "来源文件",
-        releases: "发布版本",
-        bundleFiles: "知识包文件",
-        emptyList: "暂无记录",
-        releaseItem: "{{count}} 个文件",
-        releaseItem_plural: "{{count}} 个文件"
+        emptyList: "暂无记录"
       },
       tasks: {
         title: "文件处理",
@@ -1094,10 +1097,26 @@ export const resources = {
             none: "无操作"
           }
         },
-        retryFile: "重新解析",
+        retryProcessing: "重新处理",
+        retryPublication: "重新发布",
         retryingFile: "解析中",
         openGeneratedFile: "打开文件",
         noAction: "无操作",
+        failureDetails: {
+          open: "查看失败详情",
+          title: "失败详情",
+          stage: "失败阶段",
+          code: "错误码",
+          message: "错误信息",
+          occurredAt: "发生时间",
+          retryKind: "恢复方式",
+          correlationId: "关联 ID",
+          retryKinds: {
+            source_processing: "重新处理来源文件",
+            publication: "重新发布知识库",
+            none: "需要人工检查"
+          }
+        },
         deleteSelected: "删除所选任务",
         selection: {
           currentPageOnly: "仅选择当前页数据。",
@@ -1132,9 +1151,9 @@ export const resources = {
         },
         fileStatus: {
           queued: "排队中",
-          pending: "排队中",
           running: "运行中",
-          completed: "已完成",
+          pending_publication: "等待发布",
+          visible: "可用",
           failed: "失败"
         },
         phase: {
@@ -1143,10 +1162,9 @@ export const resources = {
           metadataResolution: "元数据解析",
           llmSuggestion: "LLM 建议",
           graphGeneration: "图关系生成",
-          okfValidation: "OKF 校验",
-          bundleGeneration: "知识包生成",
-          indexPublication: "索引发布",
-          releaseActivation: "发布激活"
+          projectionGeneration: "投影生成",
+          generationValidation: "Generation 校验",
+          generationActivation: "Generation 激活"
         },
         modelStatus: {
           running: "运行中",
@@ -1157,6 +1175,10 @@ export const resources = {
         modelWarnings: "{{count}} 个警告",
         modelWarnings_plural: "{{count}} 个警告",
         summary: {
+          pendingDispatch: "等待派发",
+          pendingCount: "{{count}} 个等待中",
+          dispatchPaused: "处理压力已暂停任务派发",
+          noPendingDispatch: "暂无等待派发的来源文件",
           sourceQueue: "来源队列",
           publicationQueue: "发布队列",
           dirtyFiles: "等待发布",
@@ -1169,7 +1191,13 @@ export const resources = {
           deadLetter: "{{count}} 个死信",
           oldestQueuedAge: "最早 {{seconds}} 秒",
           oldestDirty: "最早 {{time}}",
-          noDirtyFiles: "暂无等待发布文件"
+          noDirtyFiles: "暂无等待发布文件",
+          publicationStage: "{{stage}} · {{processed}}/{{total}} 个影响项",
+          activeVisibility: "生效可见性",
+          activeGeneration: "已有生效版本",
+          noActiveGeneration: "尚未生效",
+          waitingForFirstGeneration: "等待首个通过验证的版本",
+          publicationFailed: "发布失败：{{code}}"
         },
         operation: {
           upload: "上传",
@@ -1217,15 +1245,6 @@ export const resources = {
         summary_plural: "{{count}} 个 Markdown 文件可用于生成",
         markdownOnly: "仅上传清洗后的 .md 文件"
       },
-      generation: {
-        start: "生成知识包",
-        inProgress: "生成中",
-        success: "知识包已生成",
-        failure: "生成失败",
-        modelWarnings: "模型建议已跳过，系统已继续确定性生成",
-        generatedCount: "已生成 {{count}} 个文件",
-        generatedCount_plural: "已生成 {{count}} 个文件"
-      },
       result: {
         title: "生成文件",
         preview: "预览",
@@ -1257,8 +1276,6 @@ export const resources = {
       },
       errors: {
         uploadMarkdownOnly: "仅上传清洗后的 .md 文件",
-        uploadFileCountLimit: "选择的文件数量过多",
-        uploadByteLimit: "选择的文件超过上传限制",
         missingMetadata: "缺少必填元数据",
         invalidKnowledgeBase: "知识库数据无效",
         invalidMetadata: "元数据无效",
@@ -1269,7 +1286,6 @@ export const resources = {
         duplicateUploadFileName: "Markdown 相对路径不能重复",
         uploadPathDeleting: "所选路径正在删除，请在删除完成后重试。",
         uploadPathReserved: "所选路径正在由另一个上传会话处理，请在该上传完成后继续。",
-        queueBackpressure: "处理队列繁忙，请稍后重试",
         folderPickerUnsupported: "当前浏览器无法选择文件夹，请改为选择 Markdown 文件。",
         folderPickerFailed: "无法读取所选文件夹。",
         uploadFailed: "上传请求失败",

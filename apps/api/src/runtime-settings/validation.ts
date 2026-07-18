@@ -1,7 +1,7 @@
 import {
-  DEFAULT_UPLOAD_SESSION_SETTINGS,
   resolveSecurityConfig,
   resolveGraphConfig,
+  resolvePublicationConfig,
   resolveWorkerConfig,
   type RuntimeConfig,
   type WorkerRuntimeConfig
@@ -16,7 +16,6 @@ import {
   type RuntimeRateLimitSettings,
   type RuntimeSettingsDefaults,
   type RuntimeSettingsValidationIssue,
-  type RuntimeUploadGenerationSettings,
   type RuntimeWorkerSettings
 } from "./types.js";
 
@@ -28,13 +27,10 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     rateLimits: resolveSecurityConfig(config).rateLimits,
     worker: sanitizeWorkerSettings(resolveWorkerConfig(config)),
     publication: {
-      ...config.publication,
-      directoryIndexMaxEntries: config.publication.directoryIndexMaxEntries ?? 200,
-      directoryIndexMaxBytes: config.publication.directoryIndexMaxBytes ?? 65_536,
+      ...resolvePublicationConfig(config),
       okfLogMaxEntries: config.okf?.log.maxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES,
       okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES
     },
-    uploadGeneration: sanitizeUploadGenerationSettings(config.upload),
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     model: config.model.enabled
         ? {
@@ -72,7 +68,6 @@ export function sanitizeRateLimitSettings(input: RuntimeRateLimitSettings): Runt
   return {
     adminLogin: sanitizeLimit(input.adminLogin),
     adminApi: sanitizeLimit(input.adminApi),
-    upload: sanitizeLimit(input.upload),
     publicOpenApi: sanitizeLimit(input.publicOpenApi)
   };
 }
@@ -84,15 +79,16 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
   [
     "sourceFileConcurrency",
     "claimBatchSize",
+    "generationBatchSize",
     "pollIntervalMs",
     "lockTtlSeconds",
     "heartbeatIntervalMs",
     "jobMaxAttempts",
     "jobRetryDelayMs",
-    "queueBackpressureLimit",
-    "queueBackpressureKnowledgeBaseLimit",
-    "queueBackpressureMaxAgeSeconds",
-    "queueBackpressureRetryAfterSeconds",
+    "sourceQueueHardDepth",
+    "sourceQueueResumeDepth",
+    "sourceQueueHardAgeSeconds",
+    "sourceQueueResumeAgeSeconds",
     "shutdownGraceMs",
     "completedJobRetentionDays",
     "failedJobRetentionDays",
@@ -113,6 +109,14 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     });
   }
 
+  validateResumeBelowHard(value, "sourceQueueResumeDepth", "sourceQueueHardDepth", issues);
+  validateResumeBelowHard(
+    value,
+    "sourceQueueResumeAgeSeconds",
+    "sourceQueueHardAgeSeconds",
+    issues
+  );
+
   if (typeof value.hardDeleteVersionPurgeEnabled !== "boolean") {
     issues.push({
       field: "hardDeleteVersionPurgeEnabled",
@@ -123,19 +127,20 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
   return issues;
 }
 
-export function sanitizeWorkerSettings(input: WorkerRuntimeConfig): RuntimeWorkerSettings {
+export function sanitizeWorkerSettings(input: Required<WorkerRuntimeConfig>): RuntimeWorkerSettings {
   return {
     sourceFileConcurrency: input.sourceFileConcurrency,
     claimBatchSize: input.claimBatchSize,
+    generationBatchSize: input.generationBatchSize,
     pollIntervalMs: input.pollIntervalMs,
     lockTtlSeconds: input.lockTtlSeconds,
     heartbeatIntervalMs: input.heartbeatIntervalMs!,
     jobMaxAttempts: input.jobMaxAttempts,
     jobRetryDelayMs: input.jobRetryDelayMs,
-    queueBackpressureLimit: input.queueBackpressureLimit,
-    queueBackpressureKnowledgeBaseLimit: input.queueBackpressureKnowledgeBaseLimit!,
-    queueBackpressureMaxAgeSeconds: input.queueBackpressureMaxAgeSeconds!,
-    queueBackpressureRetryAfterSeconds: input.queueBackpressureRetryAfterSeconds!,
+    sourceQueueHardDepth: input.sourceQueueHardDepth,
+    sourceQueueResumeDepth: input.sourceQueueResumeDepth,
+    sourceQueueHardAgeSeconds: input.sourceQueueHardAgeSeconds,
+    sourceQueueResumeAgeSeconds: input.sourceQueueResumeAgeSeconds,
     shutdownGraceMs: input.shutdownGraceMs,
     completedJobRetentionDays: input.completedJobRetentionDays!,
     failedJobRetentionDays: input.failedJobRetentionDays!,
@@ -165,6 +170,17 @@ export function validatePublicationSettings(input: unknown): RuntimeSettingsVali
   [
     "batchSize",
     "intervalSeconds",
+    "roleConcurrency",
+    "claimBatchSize",
+    "impactBatchSize",
+    "impactConcurrency",
+    "dirtyFileHardCount",
+    "dirtyFileResumeCount",
+    "dirtyAgeHardSeconds",
+    "dirtyAgeResumeSeconds",
+    "pendingImpactHardCount",
+    "pendingImpactResumeCount",
+    "generationRetentionDays",
     "indexShardSize",
     "linkIndexShardSize",
     "manifestShardSize",
@@ -175,6 +191,22 @@ export function validatePublicationSettings(input: unknown): RuntimeSettingsVali
     "okfLogMaxEntries",
     "okfLogMaxBytes"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  if (Number.isInteger(value.impactConcurrency) && Number(value.impactConcurrency) > 32) {
+    issues.push({
+      field: "impactConcurrency",
+      message: "impactConcurrency must be less than or equal to 32"
+    });
+  }
+
+  validateResumeBelowHard(value, "dirtyFileResumeCount", "dirtyFileHardCount", issues);
+  validateResumeBelowHard(value, "dirtyAgeResumeSeconds", "dirtyAgeHardSeconds", issues);
+  validateResumeBelowHard(
+    value,
+    "pendingImpactResumeCount",
+    "pendingImpactHardCount",
+    issues
+  );
 
   return issues;
 }
@@ -235,25 +267,6 @@ export function validateGraphSettings(input: unknown): RuntimeSettingsValidation
   return issues;
 }
 
-export function validateUploadGenerationSettings(
-  input: unknown
-): RuntimeSettingsValidationIssue[] {
-  const issues: RuntimeSettingsValidationIssue[] = [];
-  const value = objectValue(input);
-
-  [
-    "maxBytes",
-    "generationBatchSize",
-    "fileProcessingConcurrency",
-    "sessionTtlSeconds",
-    "manifestPageSize",
-    "contentBatchMaxFiles",
-    "contentBatchMaxBytes"
-  ].forEach((field) => requirePositiveInteger(value[field], field, issues));
-
-  return issues;
-}
-
 export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSettingsValidationIssue[] {
   const issues: RuntimeSettingsValidationIssue[] = [];
 
@@ -281,9 +294,22 @@ export function sanitizePublicationSettings(
     mode: input.mode,
     batchSize: input.batchSize,
     intervalSeconds: input.intervalSeconds,
+    roleConcurrency: input.roleConcurrency,
+    claimBatchSize: input.claimBatchSize,
+    impactBatchSize: input.impactBatchSize,
+    impactConcurrency: input.impactConcurrency,
+    dirtyFileHardCount: input.dirtyFileHardCount,
+    dirtyFileResumeCount: input.dirtyFileResumeCount,
+    dirtyAgeHardSeconds: input.dirtyAgeHardSeconds,
+    dirtyAgeResumeSeconds: input.dirtyAgeResumeSeconds,
+    pendingImpactHardCount: input.pendingImpactHardCount,
+    pendingImpactResumeCount: input.pendingImpactResumeCount,
+    generationRetentionDays: input.generationRetentionDays,
     indexShardSize: input.indexShardSize,
     linkIndexShardSize: input.linkIndexShardSize,
     manifestShardSize: input.manifestShardSize,
+    graphEdgeShardSize: input.graphEdgeShardSize,
+    graphCandidateLimit: input.graphCandidateLimit,
     graphMaintenanceBatchSize: input.graphMaintenanceBatchSize,
     rootSummaryLimit: input.rootSummaryLimit,
     directoryIndexMaxEntries: input.directoryIndexMaxEntries,
@@ -306,24 +332,6 @@ export function sanitizeGraphSettings(input: RuntimeGraphSettings): RuntimeGraph
     publicationShardSize: input.publicationShardSize,
     cacheTtlSeconds: input.cacheTtlSeconds,
     genericPhraseThreshold: input.genericPhraseThreshold
-  };
-}
-
-export function sanitizeUploadGenerationSettings(
-  input: RuntimeConfig["upload"]
-): RuntimeUploadGenerationSettings {
-  return {
-    maxBytes: input.maxBytes,
-    generationBatchSize: input.generationBatchSize,
-    fileProcessingConcurrency: input.fileProcessingConcurrency,
-    sessionTtlSeconds:
-      input.sessionTtlSeconds ?? DEFAULT_UPLOAD_SESSION_SETTINGS.sessionTtlSeconds,
-    manifestPageSize:
-      input.manifestPageSize ?? DEFAULT_UPLOAD_SESSION_SETTINGS.manifestPageSize,
-    contentBatchMaxFiles:
-      input.contentBatchMaxFiles ?? DEFAULT_UPLOAD_SESSION_SETTINGS.contentBatchMaxFiles,
-    contentBatchMaxBytes:
-      input.contentBatchMaxBytes ?? DEFAULT_UPLOAD_SESSION_SETTINGS.contentBatchMaxBytes
   };
 }
 
@@ -383,6 +391,24 @@ function requirePositiveInteger(
 ) {
   if (!Number.isInteger(value) || Number(value) <= 0) {
     issues.push({ field, message: `${field} must be a positive integer` });
+  }
+}
+
+function validateResumeBelowHard(
+  value: Record<string, unknown>,
+  resumeField: string,
+  hardField: string,
+  issues: RuntimeSettingsValidationIssue[]
+): void {
+  if (
+    Number.isSafeInteger(value[resumeField]) &&
+    Number.isSafeInteger(value[hardField]) &&
+    Number(value[resumeField]) >= Number(value[hardField])
+  ) {
+    issues.push({
+      field: resumeField,
+      message: `${resumeField} must be less than ${hardField}`
+    });
   }
 }
 

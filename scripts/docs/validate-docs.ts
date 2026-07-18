@@ -69,6 +69,13 @@ const forbiddenPatterns = [
   { name: "S3 secret assignment", pattern: /S3_SECRET_ACCESS_KEY\s*=/ },
   { name: "model key assignment", pattern: /MODEL_API_KEY\s*=/ }
 ];
+const forbiddenArchitecturePatterns = [
+  { name: "upload-generation setting", pattern: /upload generation|上传生成/i },
+  { name: "legacy worker database pool", pattern: /^WORKER_DATABASE_POOL_MAX=/m },
+  { name: "release-scoped generated data", pattern: /release-scoped/i },
+  { name: "legacy active release", pattern: /active release|活动版本/i },
+  { name: "legacy release activation", pattern: /release activation|版本激活/i }
+];
 
 async function main() {
   const markdownFiles = await listMarkdownFiles(docsRoot);
@@ -85,9 +92,21 @@ async function main() {
   await validatePublicOpenApiCopy();
   await validateMarkdownLinks(markdownFiles);
   await validateLanguageStyle(markdownFiles);
+  await validateCurrentArchitectureLanguage(markdownFiles);
   await validateSensitiveContent(markdownFiles);
   validateSafeContent("Developer OpenAPI contract", JSON.stringify(openApiDocument));
   console.log("Documentation validation passed.");
+}
+
+async function validateCurrentArchitectureLanguage(markdownFiles: string[]) {
+  for (const file of markdownFiles) {
+    const content = await fs.readFile(file, "utf8");
+    for (const forbidden of forbiddenArchitecturePatterns) {
+      if (forbidden.pattern.test(content)) {
+        throw new Error(`Documentation contains ${forbidden.name} in ${relative(file)}.`);
+      }
+    }
+  }
 }
 
 async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
@@ -191,9 +210,6 @@ async function validatePublicOpenApiCopy() {
       path.join(locale.operationsDir, "retry-knowledge-base-source-file.md"),
       "utf8"
     );
-    if (!retryPage.includes("`QUEUE_BACKPRESSURE`")) {
-      throw new Error(`Retry operation does not document QUEUE_BACKPRESSURE in ${relative(locale.operationsDir)}.`);
-    }
   }
 }
 

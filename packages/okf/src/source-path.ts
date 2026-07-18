@@ -166,12 +166,7 @@ function validateSegment(segment: string, path: string): void {
 
   let decoded = segment;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    let next: string;
-    try {
-      next = decodeURIComponent(decoded);
-    } catch {
-      throw new SourcePathValidationError("segment", path);
-    }
+    const next = decodeAsciiPercentSequences(decoded);
     if (next === decoded) {
       break;
     }
@@ -187,14 +182,13 @@ function validateSegment(segment: string, path: string): void {
     }
   }
 
-  try {
-    if (decodeURIComponent(decoded) !== decoded) {
-      throw new SourcePathValidationError("segment", path);
-    }
-  } catch (error) {
-    if (error instanceof SourcePathValidationError) {
-      throw error;
-    }
+  if (decodeAsciiPercentSequences(decoded) !== decoded) {
     throw new SourcePathValidationError("segment", path);
   }
+}
+
+function decodeAsciiPercentSequences(value: string): string {
+  return value.replace(/%([0-7][0-9a-f])/giu, (_match, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16))
+  );
 }

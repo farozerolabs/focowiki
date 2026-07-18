@@ -16,6 +16,15 @@ export type ResourceOperationFailureResult = {
   objectKeys: string[];
 };
 
+export type PendingSourceMutation = {
+  sourceFileId: string;
+  sourceRevisionId: string;
+  kind: "source_moved" | "source_deleted";
+  previousPath: string;
+  path: string | null;
+  resourceRevision: number;
+};
+
 export type SourceResourceRepository = {
   updateKnowledgeBase: (input: {
     knowledgeBaseId: string;
@@ -26,7 +35,7 @@ export type SourceResourceRepository = {
     id: string;
     name: string;
     description: string | null;
-    activeReleaseId: string | null;
+    activeGenerationId: string | null;
     resourceRevision: number;
     catalogGeneration: number;
     createdAt: string;
@@ -82,6 +91,21 @@ export type SourceResourceRepository = {
   }) => Promise<{
     operation: ResourceOperationRecord;
     sourceFileId: string | null;
+    sourceMutation?: {
+      sourceFileId: string;
+      sourceRevisionId: string;
+      kind: "source_replaced" | "source_moved";
+      previousPath: string;
+      path: string;
+      resourceRevision: number;
+    } | null;
+    directoryMutation?: {
+      kind: "directory_moved" | "directory_deleted";
+      previousPath: string;
+      path: string | null;
+      resourceRevision: number;
+      deletionIntentId: string | null;
+    } | null;
     requiresSourceProcessing: boolean;
     requiresPublication: boolean;
     requiresContinuation: boolean;
@@ -89,6 +113,15 @@ export type SourceResourceRepository = {
       deletionIntentId: string;
       directoryId: string;
     } | null;
+  }>;
+  listPendingOperationSourceMutations?: (input: {
+    knowledgeBaseId: string;
+    operationId: string;
+    deletionIntentId: string | null;
+    limit: number;
+  }) => Promise<{
+    items: PendingSourceMutation[];
+    hasMore: boolean;
   }>;
   failOperation: (input: {
     knowledgeBaseId: string;
@@ -143,6 +176,7 @@ export type SourceResourceRepository = {
     replayed: boolean;
     deletionIntentId: string;
     sourceFileId: string;
+    sourceMutation?: PendingSourceMutation | null;
   }>;
   acceptKnowledgeBaseDeletion: (input: {
     operationId: string;

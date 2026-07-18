@@ -1,14 +1,9 @@
 import type { SourceFileRecord } from "@/lib/admin-api";
 
 export function isSourceFileTaskDeletionSelectable(file: SourceFileRecord): boolean {
-  if (file.processingStatus === "running") {
+  if (file.state === "running" || file.state === "pending_publication") {
     return false;
   }
-
-  if (file.processingStatus === "completed") {
-    return file.generatedOutputStatus === "visible" || Boolean(file.generatedFileAvailable);
-  }
-
   return true;
 }
 

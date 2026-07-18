@@ -253,7 +253,7 @@ describe("file graph", () => {
             {
               fileId: "source-related",
               sourceFileId: "source-related",
-              bundleFileId: "bundle-related",
+              generatedFileId: "bundle-related",
               path: "pages/related-policy.md",
               title: "Related policy",
               relationType: "same_specific_subject",
@@ -1652,7 +1652,10 @@ function createMemoryGraphRepository(input: {
     },
     async replaceGraphEdgesForSourceFile(request) {
       if (!input.storedEdges) {
-        return input.replacedTargetFileIds ?? [];
+        return {
+          sourceFileIds: input.replacedTargetFileIds ?? [],
+          edgeIds: []
+        };
       }
 
       for (let index = input.storedEdges.length - 1; index >= 0; index -= 1) {
@@ -1660,15 +1663,22 @@ function createMemoryGraphRepository(input: {
           input.storedEdges.splice(index, 1);
         }
       }
-      return input.replacedTargetFileIds ?? [];
+      return {
+        sourceFileIds: input.replacedTargetFileIds ?? [],
+        edgeIds: []
+      };
     },
     async reconcileExplicitReferenceEdgesForTarget() {
       if (input.explicitReconciliationResult?.edge) {
         input.storedEdges?.push(input.explicitReconciliationResult.edge);
       }
-      return input.explicitReconciliationResult ?? {
+      return input.explicitReconciliationResult ? {
+        ...input.explicitReconciliationResult,
+        edgeIds: []
+      } : {
         edgeCount: 0,
-        sourceFileIds: []
+        sourceFileIds: [],
+        edgeIds: []
       };
     },
     async listGraphNodes(request) {
@@ -1706,11 +1716,10 @@ function createSourceFile(id: string, relativePath: string): SourceFileRecord {
     metadata: {},
     modelSuggestions: null,
     processingStatus: "completed",
-    processingStage: "release_activation",
+    processingStage: "generation_activation",
     processingStartedAt: now,
     processingEndedAt: now,
-    processingErrorCode: null,
-    processingErrorMessage: null,
+    terminalFailure: null,
     retryCount: 0,
     createdAt: now,
     deletedAt: null

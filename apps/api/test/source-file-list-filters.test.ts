@@ -7,8 +7,8 @@ describe("source file list filters", () => {
     const result = readSourceFileListFilters({
       fileNameQuery: " intro ",
       fileIdQuery: "source-file-001",
-      processingStatus: "completed",
-      processingStage: "release_activation",
+      state: "visible",
+      currentStage: "generation_activation",
       modelInvocationStatus: "not_recorded",
       generatedOutputStatus: "visible",
       startedFrom: "2026-06-14T00:00:00.000Z",
@@ -25,8 +25,8 @@ describe("source file list filters", () => {
       filters: {
         fileNameQuery: "intro",
         fileIdQuery: "source-file-001",
-        processingStatus: "completed",
-        processingStage: "release_activation",
+        state: "visible",
+        currentStage: "generation_activation",
         modelInvocationStatus: "not_recorded",
         generatedOutputStatus: "visible",
         startedFrom: "2026-06-14T00:00:00.000Z",
@@ -45,8 +45,8 @@ describe("source file list filters", () => {
       readSourceFileListFilters({
         fileNameQuery: "峡",
         fileIdQuery: undefined,
-        processingStatus: undefined,
-        processingStage: undefined,
+        state: undefined,
+        currentStage: undefined,
         modelInvocationStatus: undefined,
         generatedOutputStatus: undefined,
         startedFrom: undefined,
@@ -62,8 +62,8 @@ describe("source file list filters", () => {
       filters: {
         fileNameQuery: "峡",
         fileIdQuery: null,
-        processingStatus: null,
-        processingStage: null,
+        state: null,
+        currentStage: null,
         modelInvocationStatus: null,
         generatedOutputStatus: null,
         startedFrom: null,
@@ -82,8 +82,8 @@ describe("source file list filters", () => {
       readSourceFileListFilters({
         fileNameQuery: undefined,
         fileIdQuery: undefined,
-        processingStatus: undefined,
-        processingStage: undefined,
+        state: undefined,
+        currentStage: undefined,
         modelInvocationStatus: undefined,
         generatedOutputStatus: undefined,
         startedFrom: undefined,
@@ -100,8 +100,8 @@ describe("source file list filters", () => {
       readSourceFileListFilters({
         fileNameQuery: undefined,
         fileIdQuery: undefined,
-        processingStatus: undefined,
-        processingStage: undefined,
+        state: undefined,
+        currentStage: undefined,
         modelInvocationStatus: undefined,
         generatedOutputStatus: undefined,
         startedFrom: "2026-06-15T00:00:00.000Z",
@@ -118,15 +118,15 @@ describe("source file list filters", () => {
   it("creates stable bounded signatures for cursor and cache scope", () => {
     const first = createSourceFileFilterSignature({
       fileNameQuery: "intro",
-      processingStatus: "completed"
+      state: "visible"
     });
     const second = createSourceFileFilterSignature({
       fileNameQuery: "intro",
-      processingStatus: "completed"
+      state: "visible"
     });
     const third = createSourceFileFilterSignature({
       fileNameQuery: "setup",
-      processingStatus: "completed"
+      state: "visible"
     });
 
     expect(first).toBe(second);

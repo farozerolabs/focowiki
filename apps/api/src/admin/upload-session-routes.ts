@@ -1,6 +1,10 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { createUploadSessionService } from "../application/upload-sessions.js";
-import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
+import {
+  createUploadSessionService,
+  UPLOAD_MANIFEST_PAGE_SIZE,
+  UPLOAD_SESSION_TTL_SECONDS
+} from "../application/upload-sessions.js";
+import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import {
   UploadSessionError,
@@ -9,10 +13,9 @@ import {
 import { SourcePathValidationError } from "../domain/source-path.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
 import type { ApplicationRuntime } from "../application/ports/runtime.js";
 import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
-import { limitAdminUploadRequest, recordAdminAudit } from "./security.js";
+import { recordAdminAudit } from "./security.js";
 
 export function registerAdminUploadSessionRoutes(
   app: Hono,
@@ -37,16 +40,6 @@ export function registerAdminUploadSessionRoutes(
     if (environment instanceof Response) {
       return environment;
     }
-    const limited = await limitAdminUploadRequest({
-      config: services.config,
-      redis: services.redis,
-      repositories: services.repositories,
-      runtimeSettings: services.runtimeSettings,
-      context
-    });
-    if (limited) {
-      return limited;
-    }
     const body = await readJson(context.req.raw);
     const idempotencyKey = context.req.header("idempotency-key")?.trim() ?? "";
     if (
@@ -67,11 +60,8 @@ export function registerAdminUploadSessionRoutes(
       return context.json(
         {
           session,
-          limits: {
-            manifestPageSize: environment.settings.manifestPageSize,
-            contentBatchMaxFiles: environment.settings.contentBatchMaxFiles,
-            contentBatchMaxBytes: environment.settings.contentBatchMaxBytes,
-            maxFileBytes: environment.settings.maxBytes
+          transport: {
+            manifestPageSize: UPLOAD_MANIFEST_PAGE_SIZE
           }
         },
         201
@@ -87,7 +77,7 @@ export function registerAdminUploadSessionRoutes(
       return environment;
     }
     const body = await readJson(context.req.raw);
-    if (!Array.isArray(body.entries) || body.entries.length > environment.settings.manifestPageSize) {
+    if (!Array.isArray(body.entries) || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE) {
       await recordUploadAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_UPLOAD_MANIFEST_PAGE");
       return invalidRequest(context, "INVALID_UPLOAD_MANIFEST_PAGE");
     }
@@ -125,7 +115,7 @@ export function registerAdminUploadSessionRoutes(
       const entries = await environment.service.listEntries({
         knowledgeBaseId: environment.knowledgeBaseId,
         sessionId: session.id,
-        limit: Math.min(environment.settings.manifestPageSize, 100),
+        limit: Math.min(UPLOAD_MANIFEST_PAGE_SIZE, 100),
         cursor: null
       });
       return context.json({
@@ -138,33 +128,23 @@ export function registerAdminUploadSessionRoutes(
     }
   });
 
-  app.post(`${prefix}/:sessionId/content`, ...protectedRoute, async (context) => {
+  app.put(`${prefix}/:sessionId/entries/:entryId/content`, ...protectedRoute, async (context) => {
     const environment = await requireEnvironment(context, services);
     if (environment instanceof Response) {
       return environment;
     }
-    const form = await context.req.formData();
-    const parts = [...form.entries()].filter((entry): entry is [string, File] => isFile(entry[1]));
-    if (parts.length === 0 || parts.length > environment.settings.contentBatchMaxFiles) {
-      return invalidRequest(context, "UPLOAD_CONTENT_BATCH_FILE_LIMIT");
+    const body = context.req.raw.body;
+    if (!body || !isMarkdownContentType(context.req.header("content-type"))) {
+      return invalidRequest(context, "INVALID_MARKDOWN_CONTENT");
     }
-    const totalBytes = parts.reduce((sum, [, file]) => sum + file.size, 0);
-    if (totalBytes > environment.settings.contentBatchMaxBytes) {
-      return invalidRequest(context, "UPLOAD_CONTENT_BATCH_BYTE_LIMIT", 413);
-    }
-    const uploaded: UploadSessionEntryRecord[] = [];
     try {
-      for (const [entryId, file] of parts) {
-        uploaded.push(
-          await environment.service.putEntryContent({
-            knowledgeBaseId: environment.knowledgeBaseId,
-            sessionId: context.req.param("sessionId") ?? "",
-            entryId,
-            bytes: new Uint8Array(await file.arrayBuffer())
-          })
-        );
-      }
-      return context.json({ entries: uploaded.map(toSafeEntry) });
+      const entry = await environment.service.putEntryContent({
+        knowledgeBaseId: environment.knowledgeBaseId,
+        sessionId: context.req.param("sessionId") ?? "",
+        entryId: context.req.param("entryId") ?? "",
+        body
+      });
+      return context.json({ entry: toSafeEntry(entry) });
     } catch (error) {
       return uploadSessionFailure(context, error);
     }
@@ -188,7 +168,7 @@ export function registerAdminUploadSessionRoutes(
         knowledgeBaseId: environment.knowledgeBaseId,
         sessionId: session.id,
         ...(transferState ? { transferState } : {}),
-        limit: readLimit(context.req.query("limit"), environment.settings.manifestPageSize),
+        limit: readLimit(context.req.query("limit"), UPLOAD_MANIFEST_PAGE_SIZE),
         cursor: context.req.query("cursor") ?? null
       });
       return context.json({
@@ -227,7 +207,7 @@ export function registerAdminUploadSessionRoutes(
         sessionId: context.req.param("sessionId") ?? ""
       });
       await recordUploadAudit(services, context, "upload_session_finalized", "success");
-      return context.json({ session }, 202);
+      return context.json({ session });
     } catch (error) {
       return uploadSessionFailure(context, error);
     }
@@ -255,7 +235,7 @@ async function requireEnvironment(
   context: Context,
   services: Parameters<typeof registerAdminUploadSessionRoutes>[1]
 ) {
-  if (!services.repositories?.uploadSessions || !services.repositories.workerJobs || !services.redis) {
+  if (!services.repositories?.uploadSessions) {
     return context.json({ error: { code: "SERVICE_UNAVAILABLE" } }, 503);
   }
   const knowledgeBaseId = context.req.param("knowledgeBaseId") ?? "";
@@ -263,38 +243,19 @@ async function requireEnvironment(
   if (!knowledgeBase) {
     return context.json({ error: { code: "NOT_FOUND" } }, 404);
   }
-  const settings = await resolveUploadGenerationSettings({
-    config: services.config,
-    runtimeSettings: services.runtimeSettings
-  });
-  const worker = services.runtimeSettings
-    ? (await services.runtimeSettings.getSnapshot()).worker
-    : resolveWorkerConfig(services.config);
-  const workerJobs = services.repositories.workerJobs;
   return {
     knowledgeBaseId,
-    settings,
     service: createUploadSessionService({
       repository: services.repositories.uploadSessions,
       storage: services.uploadSessionStorage,
       runtime: services.applicationRuntime,
-      sessionTtlSeconds: settings.sessionTtlSeconds,
-      maxFileBytes: settings.maxBytes,
-      finalization: {
-        enqueue: async ({ knowledgeBaseId: id, sessionId }) => {
-          if (!workerJobs?.enqueueUploadSessionFinalizationJob) {
-            throw new Error("Upload finalization queue is unavailable");
-          }
-          await workerJobs.enqueueUploadSessionFinalizationJob({
-            knowledgeBaseId: id,
-            sessionId,
-            runAfter: services.applicationRuntime.clock.now().toISOString(),
-            maxAttempts: worker.jobMaxAttempts
-          });
-        }
-      }
+      sessionTtlSeconds: UPLOAD_SESSION_TTL_SECONDS
     })
   };
+}
+
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
 }
 
 function readManifestEntry(value: unknown) {
@@ -304,11 +265,11 @@ function readManifestEntry(value: unknown) {
   const entry = value as Record<string, unknown>;
   return typeof entry.relativePath === "string" &&
     isNonNegativeInteger(entry.declaredSize) &&
-    typeof entry.checksumSha256 === "string"
+    (entry.checksumSha256 === undefined || entry.checksumSha256 === null || typeof entry.checksumSha256 === "string")
     ? {
         relativePath: entry.relativePath,
         declaredSize: entry.declaredSize,
-        checksumSha256: entry.checksumSha256
+        checksumSha256: entry.checksumSha256 ?? null
       }
     : null;
 }
@@ -340,11 +301,11 @@ function uploadSessionFailure(
     return context.json({ error: { code: error.code } }, 400);
   }
   if (error instanceof UploadSessionError) {
-    const status = error.code === "UPLOAD_FILE_TOO_LARGE"
-      ? 413
-      : error.code.endsWith("NOT_FOUND")
+    const status = error.code.endsWith("NOT_FOUND")
         ? 404
-        : 409;
+        : error.code.includes("MISMATCH") || error.code.includes("DUPLICATE")
+          ? 400
+          : 409;
     return context.json({ error: { code: error.code } }, status);
   }
   throw error;
@@ -380,10 +341,6 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   return body && typeof body === "object" && !Array.isArray(body)
     ? (body as Record<string, unknown>)
     : {};
-}
-
-function isFile(value: FormDataEntryValue): value is File {
-  return typeof value === "object" && value !== null && "arrayBuffer" in value && "size" in value;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

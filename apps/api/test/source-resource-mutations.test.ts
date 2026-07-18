@@ -18,9 +18,23 @@ describe("source resource mutations", () => {
     let sequence = 0;
     const service = createSourceResourceMutationService({
       repository: { createOperation } as unknown as SourceResourceRepository,
-      worker: {
-        enqueueResourceOperationJob: vi.fn(async () => null),
-        enqueuePublicationJob: vi.fn(async () => null)
+      roleJobs: { enqueue: vi.fn(async () => ({ id: "role-job-test" })) } as never,
+      generations: { commitMutation: vi.fn(async () => ({
+        generationId: "generation-test",
+        changeFactId: "change-test",
+        impactCount: 1,
+        replayed: false
+      })) },
+      impactPlanner: {
+        searchShardCount: 16,
+        linkShardCount: 16,
+        manifestShardCount: 16,
+        treeShardCount: 16,
+        graphNodeShardCount: 16,
+        graphEdgeShardCount: 16
+      },
+      publicationSettingsSnapshot: {
+        publication: { mode: "batch", batchSize: 50, intervalSeconds: 30 }
       },
       storage: {
         sourceRevisionKey: (_knowledgeBaseId, _sourceFileId, revision) => `revisions/${revision}.md`,

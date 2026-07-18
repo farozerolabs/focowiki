@@ -54,7 +54,6 @@ import {
   updateGraphSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
-  updateUploadGenerationSettings,
   updateWorkerSettings,
   type ApiFailure,
   type GraphSettings,
@@ -62,7 +61,6 @@ import {
   type RateLimitSettings,
   type RuntimeModelConfig,
   type RuntimeSettingsResponse,
-  type UploadGenerationSettings,
   type WorkerSettings
 } from "@/lib/admin-api";
 
@@ -74,22 +72,22 @@ type SettingsPageProps = {
 const rateLimitGroups = [
   "adminLogin",
   "adminApi",
-  "upload",
   "publicOpenApi"
 ] as const satisfies readonly (keyof RateLimitSettings)[];
 
 const workerNumberFields = [
   "sourceFileConcurrency",
   "claimBatchSize",
+  "generationBatchSize",
   "pollIntervalMs",
   "lockTtlSeconds",
   "heartbeatIntervalMs",
   "jobMaxAttempts",
   "jobRetryDelayMs",
-  "queueBackpressureLimit",
-  "queueBackpressureKnowledgeBaseLimit",
-  "queueBackpressureMaxAgeSeconds",
-  "queueBackpressureRetryAfterSeconds",
+  "sourceQueueHardDepth",
+  "sourceQueueResumeDepth",
+  "sourceQueueHardAgeSeconds",
+  "sourceQueueResumeAgeSeconds",
   "shutdownGraceMs",
   "completedJobRetentionDays",
   "failedJobRetentionDays",
@@ -110,9 +108,22 @@ const workerBooleanFields = [
 const publicationFields = [
   "batchSize",
   "intervalSeconds",
+  "roleConcurrency",
+  "claimBatchSize",
+  "impactBatchSize",
+  "impactConcurrency",
+  "dirtyFileHardCount",
+  "dirtyFileResumeCount",
+  "dirtyAgeHardSeconds",
+  "dirtyAgeResumeSeconds",
+  "pendingImpactHardCount",
+  "pendingImpactResumeCount",
+  "generationRetentionDays",
   "indexShardSize",
   "linkIndexShardSize",
   "manifestShardSize",
+  "graphEdgeShardSize",
+  "graphCandidateLimit",
   "graphMaintenanceBatchSize",
   "rootSummaryLimit",
   "directoryIndexMaxEntries",
@@ -139,16 +150,6 @@ const graphBooleanFields = [
   "insightEnabled",
   "modelReviewEnabled"
 ] as const satisfies readonly (keyof Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">)[];
-
-const uploadGenerationFields = [
-  "maxBytes",
-  "generationBatchSize",
-  "fileProcessingConcurrency",
-  "sessionTtlSeconds",
-  "manifestPageSize",
-  "contentBatchMaxFiles",
-  "contentBatchMaxBytes"
-] as const satisfies readonly (keyof UploadGenerationSettings)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
@@ -193,11 +194,6 @@ const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) 
   descriptionKey: `settings.tips.graph.${field}`
 }));
 
-const uploadGenerationTipItems = uploadGenerationFields.map((field) => ({
-  labelKey: `settings.fields.${field}`,
-  descriptionKey: `settings.tips.uploadGeneration.${field}`
-}));
-
 const modelTipItems = [
   "displayName",
   "apiMode",
@@ -215,7 +211,6 @@ type RateLimitGroup = (typeof rateLimitGroups)[number];
 type WorkerNumberField = (typeof workerNumberFields)[number];
 type PublicationField = (typeof publicationFields)[number];
 type GraphNumberField = (typeof graphNumberFields)[number];
-type UploadGenerationField = (typeof uploadGenerationFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
 
@@ -233,7 +228,6 @@ type EditablePublicationSettings = {
 } & Record<PublicationField, EditableNumber>;
 type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
   Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">;
-type EditableUploadGenerationSettings = Record<UploadGenerationField, EditableNumber>;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -250,8 +244,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   const [worker, setWorker] = useState<EditableWorkerSettings | null>(null);
   const [publication, setPublication] = useState<EditablePublicationSettings | null>(null);
   const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
-  const [uploadGeneration, setUploadGeneration] =
-    useState<EditableUploadGenerationSettings | null>(null);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -332,19 +324,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     await saveSettings("graph", () => updateGraphSettings(payload));
   }
 
-  async function handleUploadGenerationSave(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!uploadGeneration) {
-      return;
-    }
-    const payload = buildUploadGenerationSettings(uploadGeneration);
-    if (!payload) {
-      showNumberValidationError();
-      return;
-    }
-    await saveSettings("uploadGeneration", () => updateUploadGenerationSettings(payload));
-  }
-
   async function saveSettings(
     key: string,
     submit: () => Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure>
@@ -364,7 +343,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
-    setUploadGeneration(toEditableUploadGenerationSettings(result.settings.uploadGeneration));
     showAdminToast({ title: t("settings.toast.saveSuccess") });
   }
 
@@ -410,7 +388,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
-    setUploadGeneration(toEditableUploadGenerationSettings(result.settings.uploadGeneration));
   }
 
   function showNumberValidationError() {
@@ -508,9 +485,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                 <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
                 <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
                 <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
-                <TabsTrigger value="upload-generation">
-                  {t("settings.tabs.uploadGeneration")}
-                </TabsTrigger>
                 <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
               </TabsList>
             </div>
@@ -722,37 +696,6 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                   <PlainTips items={graphTipItems} />
                 </div>
               ) : null}
-            </TabsContent>
-            <TabsContent value="upload-generation">
-              <div className="space-y-3">
-                <SettingsCard
-                  title={t("settings.uploadGeneration.title")}
-                  description={t("settings.uploadGeneration.description")}
-                >
-                  {uploadGeneration ? (
-                    <form noValidate onSubmit={handleUploadGenerationSave}>
-                      <FieldGroup>
-                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                          {uploadGenerationFields.map((field) => (
-                            <NumberField
-                              key={field}
-                              id={`upload-generation-${field}`}
-                              label={t(`settings.fields.${field}`)}
-                              value={uploadGeneration[field]}
-                              required
-                              onChange={(value) =>
-                                setUploadGeneration({ ...uploadGeneration, [field]: value })
-                              }
-                            />
-                          ))}
-                        </div>
-                        <SaveButton isSaving={isSaving === "uploadGeneration"} />
-                      </FieldGroup>
-                    </form>
-                  ) : null}
-                </SettingsCard>
-                <PlainTips items={uploadGenerationTipItems} />
-              </div>
             </TabsContent>
             <TabsContent value="models">
               <div className="space-y-3">
@@ -1149,7 +1092,6 @@ function toEditableRateLimits(settings: RateLimitSettings): EditableRateLimitSet
   return {
     adminLogin: { ...settings.adminLogin },
     adminApi: { ...settings.adminApi },
-    upload: { ...settings.upload },
     publicOpenApi: { ...settings.publicOpenApi }
   };
 }
@@ -1166,26 +1108,18 @@ function toEditableGraphSettings(settings: GraphSettings): EditableGraphSettings
   return { ...settings };
 }
 
-function toEditableUploadGenerationSettings(
-  settings: UploadGenerationSettings
-): EditableUploadGenerationSettings {
-  return { ...settings };
-}
-
 function buildRateLimitSettings(input: EditableRateLimitSettings): RateLimitSettings | null {
   const adminLogin = buildRateLimitGroup(input.adminLogin);
   const adminApi = buildRateLimitGroup(input.adminApi);
-  const upload = buildRateLimitGroup(input.upload);
   const publicOpenApi = buildRateLimitGroup(input.publicOpenApi);
 
-  if (!adminLogin || !adminApi || !upload || !publicOpenApi) {
+  if (!adminLogin || !adminApi || !publicOpenApi) {
     return null;
   }
 
   return {
     adminLogin,
     adminApi,
-    upload,
     publicOpenApi
   };
 }
@@ -1243,14 +1177,6 @@ function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null 
 
 function isGraphDepth(value: number): value is GraphSettings["searchDefaultDepth"] {
   return value === 0 || value === 1 || value === 2;
-}
-
-function buildUploadGenerationSettings(
-  input: EditableUploadGenerationSettings
-): UploadGenerationSettings | null {
-  const settings = buildNumberRecord(input, uploadGenerationFields);
-
-  return settings ? (settings as UploadGenerationSettings) : null;
 }
 
 function buildModelPayload(

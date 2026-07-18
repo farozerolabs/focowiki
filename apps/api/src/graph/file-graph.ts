@@ -24,6 +24,8 @@ export type BuildSourceFileGraphResult = {
   edgeCount: number;
   rejectedEdgeCount: number;
   affectedSourceFileIds: string[];
+  edgeIds: string[];
+  removedEdgeIds: string[];
   warnings: string[];
 };
 
@@ -66,17 +68,17 @@ export async function buildSourceFileGraph(
     modelConfirmation: input.modelConfirmation ?? null
   });
 
-  const replacedTargetIds = (await input.graph.replaceGraphEdgesForSourceFile?.({
+  const replaced = (await input.graph.replaceGraphEdgesForSourceFile?.({
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFileId: input.source.id
-  })) ?? [];
+  })) ?? { sourceFileIds: [], edgeIds: [] };
 
-  if (confirmation.edges.length > 0) {
-    await input.graph.upsertGraphEdges({
+  const acceptedEdgeIds = confirmation.edges.length > 0
+    ? (await input.graph.upsertGraphEdges({
       knowledgeBaseId: input.knowledgeBaseId,
       edges: confirmation.edges
-    });
-  }
+    })) ?? []
+    : [];
 
   if (confirmation.rejectedEdges.length > 0) {
     await input.graph.upsertRejectedGraphEdges?.({
@@ -91,7 +93,7 @@ export async function buildSourceFileGraph(
         target: node,
         limit: resolveMaxCandidateNodes(input)
       })
-    : { edgeCount: 0, sourceFileIds: [] };
+    : { edgeCount: 0, sourceFileIds: [], edgeIds: [] };
 
   return {
     edgeCount: confirmation.edges.length + explicitReferenceReconciliation.edgeCount,
@@ -99,11 +101,16 @@ export async function buildSourceFileGraph(
     affectedSourceFileIds: Array.from(
       new Set([
         input.source.id,
-        ...replacedTargetIds,
+        ...replaced.sourceFileIds,
         ...explicitReferenceReconciliation.sourceFileIds,
         ...confirmation.edges.flatMap((edge) => [edge.fromFileId, edge.toFileId])
       ])
     ),
+    edgeIds: Array.from(new Set([
+      ...acceptedEdgeIds,
+      ...explicitReferenceReconciliation.edgeIds
+    ])),
+    removedEdgeIds: replaced.edgeIds,
     warnings: confirmation.warnings
   };
 }
