@@ -265,7 +265,6 @@ function toSafeEntry(entry: UploadSessionEntryRecord) {
     name: entry.name,
     declaredSize: entry.declaredSize,
     receivedSize: entry.receivedSize,
-    checksumSha256: entry.checksumSha256,
     disposition: entry.disposition,
     transferState: entry.transferState,
     sourceDirectoryId: entry.sourceDirectoryId,

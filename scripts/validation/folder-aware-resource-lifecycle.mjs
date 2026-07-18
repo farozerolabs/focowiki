@@ -621,7 +621,7 @@ async function checkConnectedReadOperations(sourceFile) {
   const search = await developer.json(`${base}/files/search?query=${encodeURIComponent(sourceFile.name)}&limit=10`);
   assert(Array.isArray(search.items), "Search did not return a bounded item list.");
   await developer.json(`${base}/graph/expand?fileId=${encodeURIComponent(entry.fileId)}&depth=2&fanout=5&limit=20`);
-  await developer.json(`${base}/graph/insights`);
+  await developer.json(`${base}/graph/overview`);
   await developer.json(`${base}/files/${encodeURIComponent(entry.fileId)}/related?limit=20`);
   await developer.text(`${base}/source-files/${encodeURIComponent(sourceFile.sourceFileId)}/content`);
   pass("connected-read-operations", { generatedFileId: entry.fileId });

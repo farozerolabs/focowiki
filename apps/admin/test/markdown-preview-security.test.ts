@@ -48,14 +48,14 @@ describe("Markdown preview security", () => {
       [
         "# File graph",
         "",
-        "- [Manifest](manifest.json)",
+        "- [Catalog](../_index/catalog.json)",
         "- [Knowledge base](../index.md)",
         "- [Outside](../../outside.md)"
       ].join("\n"),
       "_graph/index.md"
     );
 
-    expect(html).toContain('data-preview-path="_graph/manifest.json"');
+    expect(html).toContain('data-preview-path="_index/catalog.json"');
     expect(html).toContain('data-preview-path="index.md"');
     expect(html).not.toContain('data-preview-path="outside.md"');
   });
@@ -65,8 +65,8 @@ describe("Markdown preview security", () => {
     ["log.md", "log-000001.md", "log-000001.md"],
     ["log-000002.md", "log-000001.md", "log-000001.md"],
     ["_index/index.md", "manifest.json", "_index/manifest.json"],
-    ["_graph/index.md", "nodes.jsonl", "_graph/nodes.jsonl"],
-    ["_graph/index.md", "edges/0000.jsonl", "_graph/edges/0000.jsonl"],
+    ["_graph/index.md", "graph_node/v1/0001.json", "_graph/graph_node/v1/0001.json"],
+    ["_graph/index.md", "graph_edge/v1/0001.json", "_graph/graph_edge/v1/0001.json"],
     ["pages/team/index.md", "guide.md", "pages/team/guide.md"],
     ["pages/team/index-000002.md", "index-000001.md", "pages/team/index-000001.md"],
     ["pages/team/guide.md", "/pages/reference.md", "pages/reference.md"]

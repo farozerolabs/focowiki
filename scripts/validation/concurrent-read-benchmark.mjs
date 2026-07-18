@@ -37,22 +37,27 @@ try {
   await login();
   const credential = await createKey();
   keyId = credential.id;
-  const headers = { authorization: `Bearer ${credential.rawKey}` };
+  const openApiHeaders = { authorization: `Bearer ${credential.rawKey}` };
   const base = `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`;
   const endpointFactories = {
-    health: () => "/openapi/v2/health",
-    knowledgeBase: () => base,
-    sourceFiles: () => `${base}/source-files?limit=25`,
-    tree: () => `${base}/tree?limit=100`,
-    content: () => `${base}/files/content?path=index.md`,
-    search: () => `${base}/files/search?query=backup&limit=10`,
-    graph: () => `${base}/graph/insights`,
-    operations: () => `${base}/operations?limit=25`
+    adminTree: () => ({
+      url: `${adminBaseUrl}/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+        + "/files/tree?parentPath=pages&limit=100",
+      headers: { cookie }
+    }),
+    health: () => ({ url: `${openApiBaseUrl}/openapi/v2/health`, headers: openApiHeaders }),
+    knowledgeBase: () => ({ url: `${openApiBaseUrl}${base}`, headers: openApiHeaders }),
+    sourceFiles: () => ({ url: `${openApiBaseUrl}${base}/source-files?limit=25`, headers: openApiHeaders }),
+    tree: () => ({ url: `${openApiBaseUrl}${base}/tree?limit=100`, headers: openApiHeaders }),
+    content: () => ({ url: `${openApiBaseUrl}${base}/files/content?path=index.md`, headers: openApiHeaders }),
+    search: () => ({ url: `${openApiBaseUrl}${base}/files/search?query=backup&limit=10`, headers: openApiHeaders }),
+    graph: () => ({ url: `${openApiBaseUrl}${base}/graph/overview`, headers: openApiHeaders }),
+    operations: () => ({ url: `${openApiBaseUrl}${base}/operations?limit=25`, headers: openApiHeaders })
   };
   const work = [];
   for (let round = 0; round < rounds; round += 1) {
-    for (const [name, createPath] of Object.entries(endpointFactories)) {
-      work.push({ name, pathname: createPath() });
+    for (const [name, createRequest] of Object.entries(endpointFactories)) {
+      work.push({ name, ...createRequest() });
     }
   }
 
@@ -64,7 +69,7 @@ try {
       cursor += 1;
       const item = work[index];
       const startedAt = performance.now();
-      const response = await fetch(`${openApiBaseUrl}${item.pathname}`, { headers });
+      const response = await fetch(item.url, { headers: item.headers });
       const body = await response.arrayBuffer();
       const durationMs = performance.now() - startedAt;
       if (!response.ok || body.byteLength === 0) {

@@ -45,7 +45,7 @@ Agent、Skill 或内置工具只调用开发者控制的接口。Focowiki OpenAP
 | 读取文件元数据 | `getFileById` |
 | 按稳定标识读取文件内容 | `getFileContentById` |
 | 按逻辑路径读取文件内容 | `getFileContentByPath` |
-| 搜索和探索相关文件 | `searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphInsights` |
+| 搜索和探索相关文件 | `searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphOverview` |
 | 管理 Webhook | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
 这些接口服务于开发者后端和产品工作流。Agent-facing interface 默认保持读取为主。只有产品明确需要 Agent 维护知识库时，才向 Agent 暴露写入或删除能力。

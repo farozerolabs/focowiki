@@ -15,6 +15,7 @@ import type { Readable } from "node:stream";
 import type { RuntimeConfig } from "../config.js";
 import {
   createStorageKeyspace,
+  StorageKeyError,
   type StorageKeyspace
 } from "./keys.js";
 
@@ -23,6 +24,23 @@ export type StoredObject = {
   body: string | Uint8Array;
   contentType?: string;
   cacheControl?: string;
+  metadata?: Record<string, string>;
+};
+
+export type StorageObjectMetadata = {
+  key: string;
+  contentType: string | null;
+  sizeBytes: number;
+  etag: string | null;
+  lastModified: string | null;
+  metadata: Record<string, string>;
+};
+
+export type ListedStorageObjectMetadata = {
+  key: string;
+  sizeBytes: number;
+  etag: string | null;
+  lastModified: string | null;
 };
 
 export class StorageObjectTooLargeError extends Error {
@@ -43,6 +61,7 @@ export type StorageAdapter = {
   readonly keyspace: StorageKeyspace;
   checkHealth?: () => Promise<void>;
   putObject: (object: StoredObject) => Promise<void>;
+  headObjectMetadata?: (key: string) => Promise<StorageObjectMetadata | null>;
   putStreamObject?: (object: {
     key: string;
     body: Readable;
@@ -55,6 +74,14 @@ export type StorageAdapter = {
     continuationToken?: string | null;
     limit: number;
   }) => Promise<{ keys: string[]; nextContinuationToken: string | null }>;
+  listObjectMetadata?: (input: {
+    prefix: string;
+    continuationToken?: string | null;
+    limit: number;
+  }) => Promise<{
+    objects: ListedStorageObjectMetadata[];
+    nextContinuationToken: string | null;
+  }>;
   deleteObject?: (key: string) => Promise<void>;
   deleteObjects?: (keys: string[]) => Promise<void>;
   deleteObjectVersions?: (keys: string[]) => Promise<void>;
@@ -87,7 +114,7 @@ export function createS3ClientConfig(
 export function createS3StorageAdapter(
   storage: RuntimeConfig["storage"],
   client = new S3Client(createS3ClientConfig(storage))
-): StorageAdapter {
+): S3StorageAdapter {
   return new S3StorageAdapter({
     client,
     bucket: storage.bucket,
@@ -124,9 +151,30 @@ export class S3StorageAdapter implements StorageAdapter {
         Key: object.key,
         Body: object.body,
         ...(object.contentType ? { ContentType: object.contentType } : {}),
-        ...(object.cacheControl ? { CacheControl: object.cacheControl } : {})
+        ...(object.cacheControl ? { CacheControl: object.cacheControl } : {}),
+        ...(object.metadata ? { Metadata: object.metadata } : {})
       })
     );
+  }
+
+  public async headObjectMetadata(key: string): Promise<StorageObjectMetadata | null> {
+    try {
+      const response = await this.client.send(new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key
+      }));
+      return {
+        key,
+        contentType: response.ContentType ?? null,
+        sizeBytes: response.ContentLength ?? 0,
+        etag: response.ETag ?? null,
+        lastModified: response.LastModified?.toISOString() ?? null,
+        metadata: response.Metadata ?? {}
+      };
+    } catch (error) {
+      if (error instanceof NoSuchKey || isNoSuchKeyError(error)) return null;
+      throw error;
+    }
   }
 
   public async putStreamObject(object: {
@@ -165,6 +213,23 @@ export class S3StorageAdapter implements StorageAdapter {
     continuationToken?: string | null;
     limit: number;
   }): Promise<{ keys: string[]; nextContinuationToken: string | null }> {
+    const page = await this.listObjectMetadata(input);
+
+    return {
+      keys: page.objects.map((object) => object.key),
+      nextContinuationToken: page.nextContinuationToken
+    };
+  }
+
+  public async listObjectMetadata(input: {
+    prefix: string;
+    continuationToken?: string | null;
+    limit: number;
+  }): Promise<{
+    objects: ListedStorageObjectMetadata[];
+    nextContinuationToken: string | null;
+  }> {
+    assertListingPrefix(this.keyspace.prefix, input.prefix);
     const response = await this.client.send(
       new ListObjectsV2Command({
         Bucket: this.bucket,
@@ -175,9 +240,12 @@ export class S3StorageAdapter implements StorageAdapter {
     );
 
     return {
-      keys: (response.Contents ?? [])
-        .map((object) => object.Key)
-        .filter((key): key is string => Boolean(key)),
+      objects: (response.Contents ?? []).flatMap((object) => object.Key ? [{
+        key: object.Key,
+        sizeBytes: object.Size ?? 0,
+        etag: object.ETag ?? null,
+        lastModified: object.LastModified?.toISOString() ?? null
+      }] : []),
       nextContinuationToken: response.NextContinuationToken ?? null
     };
   }
@@ -403,6 +471,33 @@ export class S3StorageAdapter implements StorageAdapter {
     }
   }
 
+}
+
+function assertListingPrefix(configuredPrefix: string, requestedPrefix: string): void {
+  const normalized = requestedPrefix.trim();
+  let decoded = normalized;
+
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      throw new StorageKeyError("Storage listing prefix must stay within the configured keyspace");
+    }
+  }
+
+  const segments = decoded.split("/");
+  if (
+    normalized !== decoded
+    || !decoded.startsWith(`${configuredPrefix}/`)
+    || decoded.startsWith("/")
+    || decoded.includes("\\")
+    || segments.some((segment) => segment === "." || segment === "..")
+    || /[\u0000-\u001F\u007F]/u.test(decoded)
+  ) {
+    throw new StorageKeyError("Storage listing prefix must stay within the configured keyspace");
+  }
 }
 
 function isVersionListingUnsupported(error: unknown): boolean {

@@ -8,8 +8,25 @@ import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { RoleJobFailure } from "./domain/role-job.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
+import { createPostgresGenerationObjectReferenceRepository } from "./infrastructure/postgres/generation-object-reference-repository.js";
+import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
+import { createPostgresProjectionCatalogRepository } from "./infrastructure/postgres/projection-catalog-repository.js";
+import { createPostgresProjectionRecordRepository } from "./infrastructure/postgres/projection-record-repository.js";
+import { createPostgresProjectionRepairRepository } from "./infrastructure/postgres/projection-repair-repository.js";
+import { createPostgresProjectionShardRepository } from "./infrastructure/postgres/projection-shard-repository.js";
+import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
 import { createRuntimeLogger } from "./logger.js";
+import { runImmutableWriteRecoverySlice } from "./maintenance/immutable-write-recovery.js";
+import { runProjectionRepairSlice } from "./maintenance/projection-repair.js";
+import { runMaintenanceBackground } from "./maintenance/runtime.js";
+import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
+import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
+import { createJsonProjectionShardWriter } from "./publication/json-projection-shard-writer.js";
+import { createProjectionCatalogWriter } from "./publication/projection-catalog-writer.js";
+import { INCREMENTAL_PUBLICATION_DEFAULTS } from "./publication/incremental-defaults.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
@@ -42,9 +59,10 @@ async function runMaintenanceWorker(): Promise<void> {
     await assertRuntimeSchemaGeneration(sql);
     await redisClient.connect();
     redisConnected = true;
+    const authoritativeRedis = createRedisCoordinator(redisClient);
     const redis = createResilientRedisCoordinator({
       client: redisClient,
-      coordinator: createRedisCoordinator(redisClient),
+      coordinator: authoritativeRedis,
       sessionWrites: "best_effort"
     });
     const repositories = createPostgresAdminRepositories(sql);
@@ -59,6 +77,32 @@ async function runMaintenanceWorker(): Promise<void> {
     await runtimeSettings.ensureBootstrapped();
     const cleanup = createPostgresGenerationCleanupRepository(sql);
     const storage = createS3StorageAdapter(config.storage);
+    const immutableRepository = createPostgresImmutableObjectRepository(sql);
+    const immutableObjects = createImmutableObjectWriter({
+      repository: immutableRepository,
+      storage
+    });
+    const references = createPostgresGenerationObjectReferenceRepository(sql);
+    const records = createPostgresProjectionRecordRepository(sql);
+    const shards = createJsonProjectionShardWriter({
+      references,
+      shards: createPostgresProjectionShardRepository(sql),
+      immutableObjects,
+      storage,
+      maxShardBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardBytes
+    });
+    const catalog = createProjectionCatalogWriter({
+      catalog: createPostgresProjectionCatalogRepository(sql),
+      references,
+      immutableObjects,
+      maxShardDescriptors: Object.values(
+        INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner
+      ).reduce((total, count) => total + count, 0)
+    });
+    const repair = createPostgresProjectionRepairRepository(sql);
+    const reconciliation = createPostgresStorageReconciliationRepository(sql);
+    const generations = createPostgresPublicationGenerationRepository(sql);
+    const validation = createPostgresPublicationValidationRepository(sql);
     const runtime = createRoleWorkerRuntime({
       role: "maintenance",
       workerId: `maintenance-worker-${randomUUID()}`,
@@ -130,7 +174,90 @@ async function runMaintenanceWorker(): Promise<void> {
       },
       logger
     });
-    await runtime.run(abort.signal);
+    const maintenanceOwner = `maintenance-sweep-${randomUUID()}`;
+    const repairLeaseToken = `projection-repair-${randomUUID()}`;
+    const reconciliationLeaseToken = `storage-reconciliation-${randomUUID()}`;
+    await Promise.all([
+      runtime.run(abort.signal),
+      runMaintenanceBackground({
+        logger,
+        async pollIntervalMs() {
+          return (await runtimeSettings.getSnapshot()).worker.pollIntervalMs;
+        },
+        async runSweep() {
+          let redisLock = false;
+          try {
+            redisLock = await authoritativeRedis.acquireLock(
+              "maintenance-sweep",
+              "global",
+              maintenanceOwner,
+              60
+            );
+            if (!redisLock) {
+              return {
+                repairPhase: "contended",
+                recovered: 0,
+                reconciliationPhase: "contended",
+                reconciliationScanned: 0,
+                reconciliationDeleted: 0,
+                reconciliationVerified: 0,
+                reconciliationFailed: 0
+              };
+            }
+          } catch {
+            redisLock = false;
+          }
+          try {
+            const snapshot = await runtimeSettings.getSnapshot();
+            const repairResult = await runProjectionRepairSlice({
+              repair,
+              records,
+              shards,
+              references,
+              immutableObjects,
+              catalog,
+              validation,
+              generations,
+              repairVersion: 1,
+              leaseToken: repairLeaseToken,
+              treePageSize: snapshot.maintenance.scanBatchSize,
+              maxAttempts: snapshot.maintenance.maxAttempts,
+              retryDelayMs: snapshot.maintenance.retryDelayMs,
+              validationIssueLimit: 50
+            });
+            const recoveryResult = await runImmutableWriteRecoverySlice({
+              repository: immutableRepository,
+              storage,
+              batchSize: snapshot.maintenance.scanBatchSize
+            });
+            const reconciliationResult = await runStorageReconciliationSlice({
+              repository: reconciliation,
+              storage,
+              settings: snapshot.maintenance,
+              versionPurgeEnabled: snapshot.worker.hardDeleteVersionPurgeEnabled,
+              leaseToken: reconciliationLeaseToken
+            });
+            return {
+              repairPhase: repairResult.phase,
+              recovered: recoveryResult.activated + recoveryResult.expired,
+              reconciliationPhase: reconciliationResult.phase,
+              reconciliationScanned: reconciliationResult.scanned,
+              reconciliationDeleted: reconciliationResult.deleted,
+              reconciliationVerified: reconciliationResult.verified,
+              reconciliationFailed: reconciliationResult.failed
+            };
+          } finally {
+            if (redisLock) {
+              await authoritativeRedis.releaseLock(
+                "maintenance-sweep",
+                "global",
+                maintenanceOwner
+              ).catch(() => false);
+            }
+          }
+        }
+      }, abort.signal)
+    ]);
   } finally {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);
@@ -144,7 +271,12 @@ async function runHealthcheck(): Promise<void> {
   let redisConnected = false;
   try {
     await assertRuntimeSchemaGeneration(sql);
-    await sql`SELECT count(*)::int AS count FROM focowiki.role_jobs WHERE role = 'maintenance'`;
+    await sql`
+      SELECT
+        (SELECT count(*) FROM focowiki.role_jobs WHERE role = 'maintenance') AS role_job_count,
+        (SELECT count(*) FROM focowiki.knowledge_base_projection_repairs) AS repair_count,
+        (SELECT count(*) FROM focowiki.storage_reconciliation_cycles) AS reconciliation_count
+    `;
     await redisClient.connect();
     redisConnected = true;
     await redisClient.ping();

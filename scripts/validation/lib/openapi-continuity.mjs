@@ -33,7 +33,7 @@ const transitions = [
   terminal("getFileContentByPath", "Full Markdown content is terminal evidence."),
   edge("searchGeneratedFiles", "getFileById", "items.0.generatedFileId", "path.fileId"),
   edge("expandGraph", "getFileById", "relationships.0.fileId", "path.fileId"),
-  edge("getGraphInsights", "getFileContentByPath", "contentPath", "query.path"),
+  edge("getGraphOverview", "getFileContentByPath", "resources.graphIndexPath", "query.path"),
   edge("getFileById", "getFileContentById", "file.fileId", "path.fileId"),
   terminal("getFileContentById", "Full Markdown content is terminal evidence."),
   edge("listRelatedFiles", "getFileContentById", "items.0.fileId", "path.fileId"),

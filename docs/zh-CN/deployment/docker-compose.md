@@ -90,21 +90,21 @@ docker compose -f docker-compose.yml exec -T postgres \
 
 数据库单独备份需要在启动 PostgreSQL 后使用 `pg_restore` 还原。
 
-## 部署当前数据代际
+## 升级已有部署
 
-当前版本使用新的数据代际，不会对旧数据库结构执行原地升级。启动前保留完整协调备份，清理本地数据目录，并使用一个空的专用 S3 prefix。
+当前版本执行增量数据库迁移。已有知识库、来源文件、逻辑路径、活动 generation、生成对象引用和已配置的 S3 prefix 都会保留。升级时不要清理 PostgreSQL、Redis 或 S3，也不需要重新上传来源 Markdown。
 
 ```bash
 docker compose -f docker-compose.yml pull
 docker compose -f docker-compose.yml down
-mv data "data-before-incremental-publication-$(date +%Y%m%d-%H%M%S)"
-mkdir -p data/postgres data/redis
 docker compose -f docker-compose.yml run --rm migrate
 docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml ps
 ```
 
-迁移前通过存储服务清空专用测试 prefix，或者设置新的 `S3_PREFIX`。随后通过 Admin UI 或 Developer OpenAPI 重新上传保留的来源 Markdown。启动后检查知识库列表、文件预览、来源队列、发布进度、活动文件树、搜索、图关系和 Developer OpenAPI health。
+启动后，维护 Worker 会在后台有界修复 Focowiki 管理的文件树统计和生成导航。修复会复用未变化的不可变对象，不调用模型，并在修复 generation 校验和激活前保持原活动 generation 可读。历史遗留的仅存储生成对象会按 Admin 维护配置先隔离，再执行对账。
+
+升级后检查知识库列表、文件预览、活动文件树、搜索、图概览、图扩展和 Developer OpenAPI 文件读取。Admin 的**设置 > 维护**只展示汇总对账状态，不展示存储对象键。
 
 ## 执行迁移检查
 
@@ -114,13 +114,13 @@ docker compose -f docker-compose.yml run --rm migrate
 
 迁移容器与 HTTP 和 Worker 角色使用同一个 API 镜像，数据库初始化完成后退出。生产 Compose 模板会在迁移完成后再启动 API 和三个 Worker 角色。
 
-迁移命令会初始化当前应用需要的数据库结构和默认 Admin 配置。
+迁移命令会初始化当前应用需要的数据库结构和默认 Admin 配置。重复执行迁移命令是安全的。
 
-### 数据结构代际不兼容
+### 回滚
 
-当前版本要求使用迁移镜像中提供的数据结构代际。迁移命令提示数据结构代际不兼容时，保持原部署停止，并保留同一时间点的 PostgreSQL 与 S3 备份。使用空的部署数据目录和空的 S3 前缀启动当前版本，随后通过 Admin 或 Developer OpenAPI 支持的上传流程重新导入保留的来源 Markdown。
+迁移不会修改已有活动 generation 指针。修复 generation 激活前出现启动或验证失败时，保持部署停止，并将协调备份中的 PostgreSQL、Redis、runtime secrets 和 S3 与旧应用镜像一起恢复。
 
-不要让新运行时连接不兼容的数据库。在生成文件、来源文件列表、搜索、图探索和文件读取完成验证前，继续保留原备份。
+修复 generation 已经激活时，旧的不可变 generation 仍会按 generation 保留策略继续保存。完整回退应用版本仍应恢复升级前的协调备份，因为旧运行时可能无法识别新的数据结构代际标记。在生成文件、来源文件列表、文件树统计、搜索、图探索和直接文件读取完成验证前，继续保留原备份。
 
 ## 启动服务
 

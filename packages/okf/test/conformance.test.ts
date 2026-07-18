@@ -282,7 +282,7 @@ describe("validateOkfBundle", () => {
         content: "---\ntype: Directory Index Page\ntitle: Team index continuation\nnavigation_only: true\n---\n# Team index continuation"
       },
       { path: "_graph/index.md", content: "# File graph\n\nSee graph records." },
-      { path: "_graph/manifest.json", content: "{\"version\":1}" }
+      { path: "_index/catalog.json", content: "{\"formatVersion\":1}" }
     ];
 
     expect(() => validateOkfBundle(files)).not.toThrow();

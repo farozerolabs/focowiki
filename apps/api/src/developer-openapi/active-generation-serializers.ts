@@ -2,6 +2,7 @@ import type {
   ActiveGenerationFile,
   ActiveGenerationProjection
 } from "../application/ports/active-generation-read-repository.js";
+import { readTreeStatistics } from "../domain/tree-statistics.js";
 import { graphRefForSourceFile } from "../search/graph-search-documents.js";
 
 export function toDeveloperActiveFile(
@@ -18,7 +19,6 @@ export function toDeveloperActiveFile(
     fileKind: fileKind(file.refKind, file.path),
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
     okfType: readString(file.payload, "type") ?? readString(metadata, "type"),
     title: file.title,
     description: file.summary,
@@ -46,6 +46,7 @@ export function toDeveloperActiveTreeEntry(
   const fileId = entryType === "file"
     ? readString(record.payload, "fileId") ?? record.sourceFileId
     : null;
+  const statistics = readTreeStatistics(record.payload, entryType);
   return {
     generationId: record.generationId,
     id: record.recordId,
@@ -57,10 +58,10 @@ export function toDeveloperActiveTreeEntry(
     path,
     sortKey: record.sortKey,
     entryType,
-    fileKind: entryType === "directory" ? null : "page",
-    childCount: readNumber(record.payload, "childCount") ?? 0,
-    directFileCount: readNumber(record.payload, "directFileCount") ?? 0,
-    descendantFileCount: readNumber(record.payload, "descendantFileCount") ?? 0,
+    fileKind: entryType === "directory"
+      ? null
+      : readString(record.payload, "fileKind") ?? "page",
+    ...statistics,
     resourceRevision: readNumber(record.payload, "resourceRevision"),
     deletable: Boolean(record.sourceFileId) || entryType === "directory",
     contentAvailable: Boolean(fileId),
@@ -176,8 +177,12 @@ export function createReadActions(input: {
     fileDetailById: `${base}/files/${input.fileId}`,
     fileContentById: `${base}/files/${input.fileId}/content`,
     fileContentByPath: `${base}/files/content?path=${encodeURIComponent(input.path)}`,
-    relatedFilesById: `${base}/files/${input.fileId}/related`,
-    graphExpansionByFileId: `${base}/graph/expand?fileId=${input.fileId}`,
+    relatedFilesById: input.sourceFileId
+      ? `${base}/files/${input.fileId}/related`
+      : null,
+    graphExpansionByFileId: input.sourceFileId
+      ? `${base}/graph/expand?fileId=${input.fileId}`
+      : null,
     sourceFileStatusById: input.sourceFileId ? `${base}/source-files/${input.sourceFileId}` : null,
     sourceFileEventsById: input.sourceFileId ? `${base}/source-files/${input.sourceFileId}/events` : null
   };

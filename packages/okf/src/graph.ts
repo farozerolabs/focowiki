@@ -43,7 +43,6 @@ export type OkfGraphLimits = {
   pageRelatedLimit?: number;
   perFileLimit?: number;
   edgeShardSize?: number;
-  insightEnabled?: boolean;
 };
 
 export type OkfGraphRelationship = {

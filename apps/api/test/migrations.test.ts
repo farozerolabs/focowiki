@@ -5,8 +5,11 @@ import type { DatabaseClient } from "../src/db/client.js";
 import {
   applyMigrations,
   assertRuntimeSchemaGeneration,
+  MIGRATION_FILES,
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
+
+const RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -27,19 +30,16 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase("absent");
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(1);
-    expect(database.beginCalls).toBe(1);
+    expect(database.unsafeCalls).toBe(MIGRATION_FILES.length);
+    expect(database.beginCalls).toBe(MIGRATION_FILES.length);
   });
 
-  it("rejects the former runtime generation after the destructive schema reset", async () => {
-    const database = createGenerationDatabase("relation-search-publication-v1");
+  it("upgrades the latest released generation without replaying the baseline", async () => {
+    const database = createGenerationDatabase(RELEASED_SCHEMA_GENERATION);
 
-    await expect(applyMigrations(database.sql)).rejects.toMatchObject({
-      name: "RuntimeSchemaGenerationError",
-      message: expect.stringContaining("empty database")
-    });
-    expect(database.unsafeCalls).toBe(0);
-    expect(database.beginCalls).toBe(0);
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(1);
+    expect(database.beginCalls).toBe(1);
   });
 
   it("rejects unmarked and incompatible schemas", async () => {
@@ -48,7 +48,7 @@ describe("runtime schema generation guard", () => {
 
       await expect(applyMigrations(database.sql)).rejects.toMatchObject({
         name: "RuntimeSchemaGenerationError",
-        message: expect.stringContaining("empty database")
+        message: expect.stringContaining("cannot be upgraded automatically")
       });
       expect(database.unsafeCalls).toBe(0);
     }
@@ -104,9 +104,11 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
     throw new Error(`Unexpected SQL in generation test: ${statement}`);
   };
   const sql = tagged as unknown as DatabaseClient;
-  sql.unsafe = (async () => {
+  sql.unsafe = (async (statement: string) => {
     unsafeCalls += 1;
-    generation = RUNTIME_SCHEMA_GENERATION;
+    if (statement.includes(RUNTIME_SCHEMA_GENERATION)) {
+      generation = RUNTIME_SCHEMA_GENERATION;
+    }
     return [];
   }) as unknown as DatabaseClient["unsafe"];
   sql.begin = (async (callback: (transaction: DatabaseClient) => Promise<unknown>) => {

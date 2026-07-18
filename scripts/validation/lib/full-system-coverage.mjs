@@ -33,7 +33,7 @@ export const EXPECTED_DEVELOPER_OPENAPI_OPERATIONS = [
   "getFileContentByPath",
   "searchGeneratedFiles",
   "expandGraph",
-  "getGraphInsights",
+  "getGraphOverview",
   "getFileById",
   "getFileContentById",
   "listRelatedFiles",
@@ -211,7 +211,7 @@ export function collectOpenApiOperations(openApiDocument) {
 function classifyOperationCases(operationId) {
   const cases = ["authentication", "schema", "safe-error"];
 
-  if (/list|search|expand|insights/i.test(operationId)) {
+  if (/list|search|expand|overview/i.test(operationId)) {
     cases.push("pagination-or-bounded-read");
   }
   if (/create|upload|replace|move|retry|redeliver/i.test(operationId)) {
@@ -220,7 +220,7 @@ function classifyOperationCases(operationId) {
   if (/delete|cancel/i.test(operationId)) {
     cases.push("reverse-lifecycle", "deleted-resource-read");
   }
-  if (/get|list|search|expand|insights/i.test(operationId)) {
+  if (/get|list|search|expand|overview/i.test(operationId)) {
     cases.push("identifier-continuity");
   }
 

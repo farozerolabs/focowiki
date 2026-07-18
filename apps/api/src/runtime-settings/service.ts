@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RuntimeConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { loadDeploymentSecret } from "../security/runtime-secrets.js";
@@ -13,6 +14,7 @@ import {
   serializePublicModel,
   type ModelApiMode,
   type RuntimeGraphSettings,
+  type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
   type RuntimeModelConfigPrivate,
   type RuntimeModelConfigPublic,
@@ -24,10 +26,12 @@ import {
 import {
   createRuntimeSettingsDefaults,
   sanitizeGraphSettings,
+  sanitizeMaintenanceSettings,
   sanitizePublicationSettings,
   sanitizeRateLimitSettings,
   sanitizeWorkerSettings,
   validateGraphSettings,
+  validateMaintenanceSettings,
   validateModelDraft,
   validatePublicationSettings,
   validateRateLimitSettings,
@@ -50,6 +54,7 @@ export type RuntimeSettingsService = {
     worker: RuntimeSettingsSnapshot["worker"];
     publication: RuntimePublicationSettings;
     graph: RuntimeGraphSettings;
+    maintenance: RuntimeMaintenanceSettings;
     activeModel: RuntimeModelConfigPublic | null;
   }>;
   updateRateLimits: (input: {
@@ -66,6 +71,10 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   updateGraph: (input: {
     value: RuntimeGraphSettings;
+    actor?: string | null | undefined;
+  }) => Promise<RuntimeSettingsSnapshot>;
+  updateMaintenance: (input: {
+    value: RuntimeMaintenanceSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   listModels: () => Promise<RuntimeModelConfigPublic[]>;
@@ -126,6 +135,13 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
+    if (!existingKeys.has("maintenance")) {
+      await input.repository.upsertSetting({
+        key: "maintenance",
+        value: defaults.maintenance,
+        source: "bootstrap"
+      });
+    }
 
     const models = await input.repository.listModels();
     if (models.length === 0 && defaults.model) {
@@ -149,12 +165,14 @@ export function createRuntimeSettingsService(input: {
       workerRecord,
       publicationRecord,
       graphRecord,
+      maintenanceRecord,
       model
     ] = await Promise.all([
       input.repository.getSetting("rate_limits"),
       input.repository.getSetting("worker"),
       input.repository.getSetting("publication"),
       input.repository.getSetting("graph"),
+      input.repository.getSetting("maintenance"),
       input.repository.getActiveModel()
     ]);
     const snapshot: RuntimeSettingsSnapshot = {
@@ -175,6 +193,12 @@ export function createRuntimeSettingsService(input: {
           ...defaults.graph,
           ...(graphRecord?.value ?? {})
         } as RuntimeGraphSettings
+      ),
+      maintenance: sanitizeMaintenanceSettings(
+        {
+          ...defaults.maintenance,
+          ...(maintenanceRecord?.value ?? {})
+        } as RuntimeMaintenanceSettings
       ),
       activeModel: model ? tryDecryptModel(model) : null
     };
@@ -296,6 +320,7 @@ export function createRuntimeSettingsService(input: {
         worker: snapshot.worker,
         publication: snapshot.publication,
         graph: snapshot.graph,
+        maintenance: snapshot.maintenance,
         activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
       };
     },
@@ -326,6 +351,13 @@ export function createRuntimeSettingsService(input: {
         throw new RuntimeSettingsValidationError(issues);
       }
       return updateSetting("graph", sanitizeGraphSettings(value), actor);
+    },
+    async updateMaintenance({ value, actor }) {
+      const issues = validateMaintenanceSettings(value);
+      if (issues.length > 0) {
+        throw new RuntimeSettingsValidationError(issues);
+      }
+      return updateSetting("maintenance", sanitizeMaintenanceSettings(value), actor);
     },
     async listModels() {
       await ensureBootstrapped();
@@ -408,7 +440,7 @@ export function createRuntimeSettingsService(input: {
   }
 
   async function bumpVersion(): Promise<void> {
-    await input.redis?.setRuntimeSettingsVersion?.(`${Date.now()}`);
+    await input.redis?.setRuntimeSettingsVersion?.(`${Date.now()}-${randomUUID()}`);
   }
 
   async function validateModelKeyProtection(): Promise<void> {

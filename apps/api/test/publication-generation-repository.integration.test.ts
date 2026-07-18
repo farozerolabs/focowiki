@@ -509,7 +509,7 @@ describeDatabase("publication generation repository integration", () => {
     })).toBe(true);
 
     const checksum = "ab".repeat(32);
-    await objects.register({
+    await registerVerifiedObject({
       checksumSha256: checksum,
       formatVersion: 1,
       objectKey: `generated/${checksum}`,
@@ -788,7 +788,7 @@ describeDatabase("publication generation repository integration", () => {
       state: "validating",
       updatedAt: `${input.timestampPrefix}:02.000Z`
     })).toBe(true);
-    await objects.register({
+    await registerVerifiedObject({
       checksumSha256: input.checksum,
       formatVersion: 1,
       objectKey: `generated/${input.checksum}`,
@@ -831,6 +831,27 @@ describeDatabase("publication generation repository integration", () => {
       await transaction`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.source_directories WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
+    });
+  }
+
+  async function registerVerifiedObject(input: {
+    checksumSha256: string;
+    formatVersion: number;
+    objectKey: string;
+    contentType: string;
+    sizeBytes: number;
+    verifiedAt: string;
+  }) {
+    const writeToken = `test-write-${input.checksumSha256.slice(0, 12)}`;
+    await objects.reserve({
+      ...input,
+      writeToken,
+      writeStartedAt: input.verifiedAt,
+      staleBefore: input.verifiedAt
+    });
+    await objects.activate({
+      ...input,
+      writeToken
     });
   }
 });

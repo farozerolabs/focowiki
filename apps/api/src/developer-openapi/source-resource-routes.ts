@@ -213,7 +213,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         return new Response(content, {
           headers: {
             "content-type": descriptor.contentType,
-            etag: `\"${descriptor.checksumSha256}\"`,
+            etag: `\"${descriptor.resourceRevision}\"`,
             "x-content-revision": String(descriptor.contentRevision)
           }
         });
@@ -363,7 +363,6 @@ export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<
     generatedPath: sourceFile.generatedPath,
     contentType: sourceFile.contentType,
     sizeBytes: sourceFile.sizeBytes,
-    checksumSha256: sourceFile.checksumSha256,
     resourceRevision: sourceFile.resourceRevision,
     contentRevision: sourceFile.contentRevision,
     activeRevisionId: sourceFile.activeRevisionId,

@@ -3,17 +3,21 @@ import {
   RuntimeSettingsValidationError,
   serializePublicModel,
   type RuntimeGraphSettings,
+  type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
+import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
 
 export function registerAdminRuntimeSettingsRoutes(
   app: Hono,
   services: {
     runtimeSettings: RuntimeSettingsService | null;
+    storageReconciliation: StorageReconciliationRepository | null;
+    storagePrefix: string;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -27,10 +31,15 @@ export function registerAdminRuntimeSettingsRoutes(
       return service;
     }
 
-    const [snapshot, models] = await Promise.all([service.getPublicSnapshot(), service.listModels()]);
+    const [snapshot, models, maintenanceStatus] = await Promise.all([
+      service.getPublicSnapshot(),
+      service.listModels(),
+      services.storageReconciliation?.getStatus(`${services.storagePrefix}/generated/`) ?? null
+    ]);
     return context.json({
       settings: snapshot,
-      models
+      models,
+      maintenanceStatus
     });
   });
 
@@ -81,6 +90,19 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) =>
         service.updateGraph({
           value: body as RuntimeGraphSettings,
+          actor: "admin"
+        })
+      )
+  );
+
+  app.put(
+    "/admin/api/settings/maintenance",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateMaintenance({
+          value: body as RuntimeMaintenanceSettings,
           actor: "admin"
         })
       )
@@ -194,6 +216,7 @@ export function registerAdminRuntimeSettingsRoutes(
           worker: snapshot.worker,
           publication: snapshot.publication,
           graph: snapshot.graph,
+          maintenance: snapshot.maintenance,
           activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
         }
       });

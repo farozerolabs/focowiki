@@ -38,7 +38,6 @@ export function toAdminSourceFile(
     resourceRevision: file.resourceRevision ?? 1,
     contentType: file.contentType,
     sizeBytes: file.sizeBytes,
-    checksumSha256: file.checksumSha256,
     metadata: file.metadata,
     modelSuggestions: file.modelSuggestions ?? null,
     processingStartedAt: file.processingStartedAt ?? null,
