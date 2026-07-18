@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
@@ -11,7 +10,9 @@ import {
 import { readTreePageLimit } from "./pagination.js";
 import { readFileTreeSearchQuery } from "./file-tree-search-filters.js";
 import { createFileTreeSearchCursorScope } from "./file-tree-search-signature.js";
-import { toAdminBundleTreeSearchResult } from "./serializers.js";
+import { toAdminActiveTreeEntry } from "./active-generation-serializers.js";
+import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
+import { readGenerationCursor, writeGenerationCursor } from "./generation-pagination.js";
 
 export function registerAdminFileTreeSearchRoutes(
   app: Hono,
@@ -19,18 +20,19 @@ export function registerAdminFileTreeSearchRoutes(
     config: RuntimeConfig;
     redis: RedisCoordinator | null;
     repositories: AdminRepositories | null;
+    activeGenerationReads: ActiveGenerationReadRepository | null;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
   }
 ): void {
-  const { config, redis, repositories } = services;
+  const { config, redis, repositories, activeGenerationReads } = services;
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/tree/search",
     middlewares.requireAuth,
     async (context) => {
-      if (!repositories?.files?.searchBundleTreeEntries || !redis) {
+      if (!repositories || !redis || !activeGenerationReads) {
         return missingRepositoryBackend(context);
       }
 
@@ -40,10 +42,6 @@ export function registerAdminFileTreeSearchRoutes(
 
       if (!knowledgeBase) {
         return notFound(context);
-      }
-
-      if (!knowledgeBase.activeReleaseId) {
-        return context.json({ items: [], nextCursor: null });
       }
 
       const searchQuery = readFileTreeSearchQuery(context.req.query("query"));
@@ -59,87 +57,78 @@ export function registerAdminFileTreeSearchRoutes(
       }
 
       const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = createFileTreeSearchCursorScope({
+      const paginationScope = createFileTreeSearchCursorScope({
         knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
+        generationId: null,
         query: searchQuery.query,
         limit
       });
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
-
-      if (cursorToken && !repositoryCursor) {
+      const storedCursor = await readGenerationCursor<{
+        sortKey: string;
+        recordId: string;
+      }>({ redis, scope: paginationScope, token: cursorToken });
+      if (storedCursor === undefined) {
         return invalidPagination(context);
       }
-
-      const cacheId = createPageResponseCacheId({
-        cursorToken,
-        limit,
-        extra: searchQuery.query
-      });
-      const cachedResponse = await readPageResponseCache<{
-        items: ReturnType<typeof toAdminBundleTreeSearchResult>[];
-        nextCursor: string | null;
-      }>({
-        redis,
-        scope: cursorScope,
-        cacheId,
-        invalidationScopes: [`file-tree:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`]
-      });
-
-      if (cachedResponse) {
-        return context.json(cachedResponse);
-      }
-
-      const page = await repositories.files.searchBundleTreeEntries({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        query: searchQuery.query,
-        limit,
-        cursor: repositoryCursor
-      });
-      const nextCursor = await writeOpaqueCursor({
-        redis,
-        scope: cursorScope,
-        cursor: page.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-      const responseBody = {
-        items: page.items.map(toAdminBundleTreeSearchResult),
-        nextCursor
-      };
-
-      await writePageResponseCache({
-        redis,
-        scope: cursorScope,
-        cacheId,
-        value: responseBody
-      });
-
-      return context.json(responseBody);
+      const result = await activeGenerationReads.withActiveGeneration(
+        knowledgeBase.id,
+        async (scope) => {
+          if (storedCursor && storedCursor.generationId !== scope.generationId) {
+            return { invalidCursor: true as const };
+          }
+          const cacheScope = createFileTreeSearchCursorScope({
+            knowledgeBaseId: knowledgeBase.id,
+            generationId: scope.generationId,
+            query: searchQuery.query,
+            limit
+          });
+          const cacheId = createPageResponseCacheId({
+            cursorToken,
+            limit,
+            extra: searchQuery.query
+          });
+          const cached = await readPageResponseCache<{
+            items: Array<{
+              entry: ReturnType<typeof toAdminActiveTreeEntry>;
+              ancestors: ReturnType<typeof toAdminActiveTreeEntry>[];
+            }>;
+            nextCursor: string | null;
+          }>({ redis, scope: cacheScope, cacheId });
+          if (cached) return { invalidCursor: false as const, response: cached };
+          const page = await scope.listTree({
+            parentPath: "",
+            entryType: null,
+            query: searchQuery.query,
+            limit,
+            cursor: storedCursor?.value ?? null
+          });
+          const paths = page.items
+            .map((item) => item.path)
+            .filter((path): path is string => Boolean(path));
+          const ancestors = await scope.listTreeAncestors(paths);
+          const nextCursor = await writeGenerationCursor({
+            redis,
+            scope: paginationScope,
+            generationId: scope.generationId,
+            value: page.nextCursor,
+            ttlSeconds: config.pagination.cursorTtlSeconds
+          });
+          const response = {
+            items: page.items.map((item) => ({
+              entry: toAdminActiveTreeEntry(item),
+              ancestors: (item.path ? ancestors.get(item.path) : [])?.map(toAdminActiveTreeEntry) ?? []
+            })),
+            nextCursor
+          };
+          await writePageResponseCache({ redis, scope: cacheScope, cacheId, value: response });
+          return { invalidCursor: false as const, response };
+        }
+      );
+      if (result?.invalidCursor) return invalidPagination(context);
+      if (!result) return context.json({ items: [], nextCursor: null });
+      return context.json(result.response);
     }
   );
-}
-
-async function writeOpaqueCursor(options: {
-  redis: RedisCoordinator;
-  scope: string;
-  cursor: string | null;
-  ttlSeconds: number;
-}): Promise<string | null> {
-  if (!options.cursor) {
-    return null;
-  }
-
-  const cursorId = `cursor-${randomUUID()}`;
-  await options.redis.setPaginationCursor(
-    options.scope,
-    cursorId,
-    options.cursor,
-    options.ttlSeconds
-  );
-  return cursorId;
 }
 
 function missingRepositoryBackend(context: Parameters<MiddlewareHandler>[0]): Response {

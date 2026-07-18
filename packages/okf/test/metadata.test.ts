@@ -179,4 +179,33 @@ describe("resolveSourceMetadata", () => {
       tags: ["model"]
     });
   });
+
+  it("canonicalizes generated identity fields while preserving custom metadata", () => {
+    const result = resolveSourceMetadata({
+      fileName: "identity.md",
+      content: [
+        "---",
+        "type: \" technical\\tguide \"",
+        "title: \" Café\\u3000operations  guide \"",
+        "owner: docs-team",
+        "---",
+        "Body"
+      ].join("\n"),
+      metadata: {}
+    });
+
+    expect(result.metadata).toMatchObject({
+      type: "technical guide",
+      title: "Café operations guide",
+      owner: "docs-team"
+    });
+  });
+
+  it("rejects unsafe generated identity before publication", () => {
+    expect(() => resolveSourceMetadata({
+      fileName: "unsafe.md",
+      content: "# unsafe\u202etitle",
+      metadata: {}
+    })).toThrow(/identity/i);
+  });
 });

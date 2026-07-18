@@ -4,121 +4,121 @@ title: Admin Settings
 
 # Admin Settings
 
-Open the Admin UI, click the settings icon on the knowledge-base home page, and update runtime configuration without editing `.env` or restarting services. Saved values apply to later requests and later background jobs.
+Open **Settings** from the Admin UI knowledge-base page. Saved values apply to later requests and background work and remain available after service restarts.
 
-On first deployment, Focowiki initializes these settings from default values. After an administrator saves settings, later runtime behavior uses the saved values from the Admin UI.
-
-Model API keys are protected after saving. The page shows a key identifier and never shows the full key again. Saved keys continue to work after service restarts when deployment data is kept intact. If protection data is deleted during maintenance, re-enter the affected model API keys from this page.
-
-## Rate Limits
-
-Rate limits protect Admin login, Admin API, upload requests, and Developer OpenAPI. Each group has the same two fields.
-
-| Group | Field | Meaning | Recommended value |
-| --- | --- | --- | --- |
-| Admin login | Max requests | Maximum login attempts allowed in one counting window. | `8`, or 5 to 10 for public deployments. |
-| Admin login | Window seconds | Counting window for login attempts. | `900`. |
-| Admin API | Max requests | Maximum Admin UI API requests allowed in one counting window. | `600`. |
-| Admin API | Window seconds | Counting window for Admin UI API requests. | `60`. |
-| Upload | Max requests | Maximum Markdown upload requests allowed in one counting window. | `20`. |
-| Upload | Window seconds | Counting window for Markdown upload requests. | `3600`. |
-| Developer OpenAPI | Max requests | Maximum Developer OpenAPI requests allowed in one counting window. | `1200`, then tune by server capacity and traffic. |
-| Developer OpenAPI | Window seconds | Counting window for Developer OpenAPI requests. | `60`. |
-
-Tune these values together with reverse proxy, Cloudflare, or other edge-layer limits.
-
-## Background Processing
-
-Background processing settings control source-file concurrency, job claiming, retries, queue protection, and job-record retention. Current running jobs continue their current step. New jobs use the latest saved values.
+## API Rate Limits
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Source file concurrency | Number of source files processed at the same time. | 2 to 4 on an 8C/32G server. |
-| Claim batch size | Number of jobs claimed in one poll. | 10 to 50 and close to actual concurrency. |
-| Poll interval ms | How often the background service checks pending jobs. | 1000 to 3000 ms. |
-| Lock TTL seconds | How long a job lock stays valid. | Longer than normal file processing time, commonly 900 seconds. |
-| Heartbeat interval ms | How often a running job refreshes its heartbeat. | 10000 to 30000 ms. |
-| Job max attempts | Maximum attempts before a job moves to dead letter. | 3. |
-| Job retry delay ms | Delay before retrying a failed job. | 30000 to 120000 ms. |
-| Global queue limit | Global queued job limit. | 5000 to 20000 on larger servers. |
-| Knowledge base queue limit | Queued job limit for one knowledge base. | Lower than the global limit. |
-| Queue max age seconds | Oldest accepted queue age before uploads slow down. | 3600 to 7200 seconds. |
-| Retry after seconds | Suggested wait time when the queue is busy. | 30 to 300 seconds. |
-| Shutdown grace ms | Time allowed for background service shutdown. | 30000 to 120000 ms. |
-| Completed retention days | Days to keep completed job records. | 7 to 30. |
-| Failed retention days | Days to keep failed job records. | 30 or longer. |
-| Dead-letter retention days | Days to keep dead-letter records. | 90. |
-| Retention cleanup batch size | Rows removed in each cleanup pass. | 500 to 2000. |
-| Cleanup concurrency | Number of backend cleanup jobs processed at the same time. | 1 for most deployments. |
-| Cleanup database batch size | Database rows handled in one backend cleanup batch. | 500 to 2000. |
-| Cleanup object batch size | Stored objects handled in one backend cleanup request. | 1000, and never higher than 1000. |
-| Cleanup max attempts | Maximum attempts for backend cleanup work. | 3. |
-| Cleanup retry delay ms | Delay before retrying backend cleanup after a transient failure. | 60000 to 300000 ms. |
-| Cleanup failed retention days | Days to keep failed backend cleanup records for maintenance. | 30. |
-| Versioned cleanup | Requires storage version deletion support during backend cleanup. | Keep disabled unless the deployment uses versioned storage cleanup. |
+| Admin login / Max requests | Login attempts allowed in one window. | `8`; use 5 to 10 for public deployments. |
+| Admin login / Window seconds | Length of the login counting window. | `900`. |
+| Admin API / Max requests | Admin UI API requests allowed in one window. | `600`. |
+| Admin API / Window seconds | Length of the Admin API counting window. | `60`. |
+| Developer OpenAPI / Max requests | Developer OpenAPI requests allowed in one window. | `1200`, then tune by server capacity. |
+| Developer OpenAPI / Window seconds | Length of the Developer OpenAPI counting window. | `60`. |
 
-Keep queue limits high enough for planned imports and low enough to preserve Admin UI and OpenAPI responsiveness. Increase concurrency gradually while observing CPU, memory, storage speed, processing speed, and model response time.
+Upload registration follows the authenticated upload-session contract and has no separate product rate or logical file-count quota. Reverse proxies and storage providers can still enforce infrastructure limits outside Focowiki.
+
+## Worker
+
+Worker settings control source processing, durable dispatch, retries, retention, and asynchronous deletion. Hard and resume values form hysteresis: dispatch pauses at a hard value and resumes only after pressure falls below the lower resume value. Upload registration continues while dispatch is paused.
+
+| Field | Meaning | Recommended value |
+| --- | --- | --- |
+| Source file concurrency | Source files processed concurrently. | 2 to 4 on an 8C/32G server. |
+| Claim batch size | Source jobs claimed per polling cycle. | 10 to 50 and close to actual concurrency. |
+| Generation batch size | Source records committed in one bounded generation-input batch. | 50 to 200. |
+| Poll interval ms | Delay between queue polls. | 1000 to 3000 ms. |
+| Lock TTL seconds | Validity period for a claimed job lock. | Longer than normal processing time; commonly 900 seconds. |
+| Heartbeat interval ms | Interval for refreshing a running claim. | 10000 to 30000 ms. |
+| Job max attempts | Attempts allowed before a job becomes dead letter. | `3`. |
+| Job retry delay ms | Delay before retrying a transient failure. | 30000 to 120000 ms. |
+| Source queue hard depth | Queued source-job count that pauses new dispatch. | 5000 to 20000. |
+| Source queue resume depth | Queued source-job count that permits dispatch to resume. | 50% to 70% of the hard depth. |
+| Source queue hard age seconds | Oldest queued source-job age that pauses dispatch. | 3600 to 7200 seconds. |
+| Source queue resume age seconds | Oldest queued source-job age that permits dispatch to resume. | About half of the hard age. |
+| Shutdown grace ms | Time allowed for an orderly Worker shutdown. | 30000 to 120000 ms. |
+| Completed retention days | Retention for completed job records. | 7 to 30 days. |
+| Failed retention days | Retention for failed job records. | 30 days or longer. |
+| Dead-letter retention days | Retention for dead-letter job records. | 90 days. |
+| Retention cleanup batch size | Job rows removed in one maintenance page. | 500 to 2000. |
+| Cleanup concurrency | Asynchronous deletion jobs processed concurrently. | `1` for most deployments. |
+| Cleanup database batch size | Database rows deleted in one cleanup page. | 500 to 2000. |
+| Cleanup object batch size | S3 objects deleted in one request page. | `1000`; the maximum is 1000. |
+| Cleanup max attempts | Attempts allowed for asynchronous deletion. | `3`. |
+| Cleanup retry delay ms | Delay before retrying asynchronous deletion. | 60000 to 300000 ms. |
+| Cleanup failed retention days | Retention for failed cleanup evidence. | 30 days. |
+| Versioned cleanup | Enables deletion of versioned S3 objects. | Leave disabled unless the storage lifecycle requires it. |
 
 ## Publication
 
-Publication makes processed files visible in the current file tree and Developer OpenAPI reads. File processing can finish before publication makes generated files visible.
+Publication creates immutable generated objects, updates affected projection shards, validates the changed closure, and atomically switches the active generation. Later uploads can continue into one successor generation while the current generation is frozen.
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Mode | Publication strategy. `batch` groups completed files, `manual` waits for explicit publication work, and `per_file` publishes after each file. | `batch` for large knowledge bases, `per_file` for fast visibility, `manual` for controlled release. |
-| Batch size | Files included in one publication job. | 100 to 500. |
-| Interval seconds | Minimum interval between batch publications. | 120 to 600 seconds. |
-| Index shard size | Entries per search index shard. | 1000 to 5000. |
-| Link index shard size | Entries per link index shard. | 1000 to 5000. |
-| Manifest shard size | Entries per manifest shard. | 1000 to 5000. |
-| Graph edge shard size | Graph edges per shard. | 5000 to 20000. |
-| Graph candidate limit | Candidate files considered for relationships. | 100 to 300. |
-| Graph maintenance batch size | Files refreshed in each graph maintenance pass. | 200 to 1000. |
-| Root summary limit | Items shown in the root summary and index. | 200 to 1000. |
-| Log max entries | Recent update entries kept in `log.md`. | 50 to 200. |
-| Log max bytes | Maximum generated `log.md` size. | 65536 or higher for active knowledge bases. |
+| Mode | `batch`, `per_file`, or `manual` publication scheduling. | `batch` for large imports; `per_file` for fast visibility. |
+| Batch size | Completed source changes that make a batch immediately eligible. | 100 to 500. |
+| Interval seconds | Maximum batching wait from the generation creation time. | 120 to 600 seconds. |
+| Role concurrency | Publication jobs processed concurrently by the role. | `1` until database and S3 capacity are measured. |
+| Claim batch size | Publication jobs claimed per polling cycle. | 1 to 4 and no lower than role concurrency. |
+| Impact batch size | Projection impacts processed in one bounded page. | 100 to 500. |
+| Dirty file hard count | Dirty source-file count that pauses source dispatch. | 2000 to 10000. |
+| Dirty file resume count | Dirty count that permits source dispatch to resume. | Lower than the hard count. |
+| Dirty age hard seconds | Oldest dirty-file age that pauses source dispatch. | 900 to 3600 seconds. |
+| Dirty age resume seconds | Dirty age that permits source dispatch to resume. | Lower than the hard age. |
+| Pending impact hard count | Pending projection-impact count that pauses source dispatch. | 20000 to 100000. |
+| Pending impact resume count | Pending impact count that permits source dispatch to resume. | Lower than the hard count. |
+| Generation retention days | Inactive generation references retained before garbage collection. | 7 to 30 days. |
+| Index shard size | Search records assigned to one stable machine shard. | 1000 to 5000. |
+| Link index shard size | Link records assigned to one stable machine shard. | 1000 to 5000. |
+| Manifest shard size | Manifest records assigned to one stable machine shard. | 1000 to 5000. |
+| Graph edge shard size | Graph edges assigned to one stable machine shard. | 5000 to 20000. |
+| Graph candidate limit | Relationship candidates evaluated in one bounded projection operation. | 100 to 300. |
+| Graph maintenance batch size | Graph records refreshed in one maintenance page. | 200 to 1000. |
+| Root summary limit | Entries included in bounded root summaries. | 200 to 1000. |
+| Directory index entries per page | Direct entries in one generated directory navigation page. | 100 to 500. |
+| Directory index bytes per page | UTF-8 byte boundary for one directory navigation page. | 65536 to 262144. |
+| Log max entries | Recent generation changes kept in `log.md`. | 50 to 200. |
+| Log max bytes | UTF-8 byte boundary for `log.md`. | 65536 or higher. |
 
-The file-processing list shows both source-file processing state and generated-output visibility. Treat a file as fully readable when processing is completed and generated output is visible.
+## Graph
 
-## Upload and Generation
-
-Upload and generation settings control Markdown file size, resumable upload sessions, bounded transfer batches, and generation work batching. Folder size has no business-level file-count limit; the manifest and content are transferred in bounded pages.
+Graph settings control body-grounded file relationship discovery, graph search, traversal bounds, generated graph shards, and short-lived query caching.
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Max upload bytes | Maximum bytes accepted for one Markdown source file. | `10485760` for 10 MB, or lower for small deployments. |
-| Generation batch size | Batch size used by generation, graph, indexing, and publication work. | 100 on an 8C/32G server. |
-| File processing concurrency | Number of file processing operations inside one background job. | 1 for stable large imports. |
-| Upload session TTL seconds | Time available to resume an unfinished upload session. | `86400`. |
-| Manifest page size | Maximum relative-path entries registered in one manifest request. | 500. |
-| Content batch max files | Maximum Markdown bodies transferred in one content request. | 24. |
-| Content batch max bytes | Maximum total bytes transferred in one content request. | `16777216` for 16 MB. |
-
-Uploads accept Markdown files only. A source file can be uploaded successfully while processing and publication continue in the background.
+| Graph candidate limit | Candidate files considered during relationship generation. | 100 to 300. |
+| Accepted edge limit | Accepted relationships retained per file. | 20 to 80. |
+| Default search depth | Graph expansion depth used when OpenAPI omits `depth`. | `1`. |
+| Max search depth | Maximum graph expansion depth accepted by OpenAPI. | `2`. |
+| Default search fanout | Related files followed per graph hop by default. | `10`. |
+| Max search fanout | Maximum related files followed per graph hop. | `25`. |
+| Graph insights | Publishes optional graph insight files. | Enabled. |
+| Model relationship review | Allows the active model to review candidate relationships. | Enable when the model service is stable. |
+| Graph publication shard size | Graph nodes and edges assigned to one generated shard. | 5000 to 20000. |
+| Graph cache TTL seconds | Redis cache lifetime for graph search and expansion. | 5 to 60 seconds. |
+| Generic phrase threshold | Minimum normalized phrase length used by generic phrase filtering. | `4`. |
 
 ## Models
 
-Model assistance is optional. When no model is active, uploads continue with deterministic OKF generation and model suggestions are skipped.
+Model assistance is optional. Source processing continues with deterministic metadata, navigation, search, and graph inputs when no model is active. One model can be active at a time.
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Display name | Admin-facing model name. | Include provider and usage. |
-| API mode | Provider protocol used for model calls. `responses` uses Responses API structured outputs. `chat_completions` uses Chat Completions JSON object output. | Use `responses` for providers with `/responses`. Use `chat_completions` for providers with `/chat/completions` JSON output. |
-| Base URL | OpenAI-compatible API base URL. | Include `/v1` when the provider requires it. |
-| API key | Provider API key. | Use a scoped key and rotate it regularly. |
-| Model name | Model identifier sent to the provider. | Match provider documentation exactly. |
-| Context window tokens | Model context window size. | Set the real model context limit. |
-| Request max timeout ms | Maximum request time. | 600000 ms or higher for long documents. |
-| Request idle timeout ms | Idle timeout while waiting for model output. | 120000 to 300000 ms. |
-| Suggestion concurrency | Parallel model suggestion requests. | Start with 1 to 2, then increase after observing stability. |
-| Transient retry delay ms | Delay before retrying transient model failures. | 60000 ms. |
-| Request min interval ms | Minimum delay between model requests. | 0 for stable providers, 1000 to 5000 ms for strict rate limits. |
+| Display name | Name shown in Admin UI. | Include provider and purpose. |
+| API mode | `responses` or `chat_completions` provider protocol. | Match the provider endpoint. |
+| Base URL | OpenAI-compatible API base URL. | Include `/v1` when required. |
+| API key | Credential sent only by the backend. | Use a scoped, regularly rotated key. |
+| Model name | Provider model identifier. | Match provider documentation exactly. |
+| Context window tokens | Model context-window capacity. | Use the provider's real limit. |
+| Request max timeout ms | Maximum total model request time. | 600000 ms or higher for long documents. |
+| Request idle timeout ms | Maximum time without model response activity. | 120000 to 300000 ms. |
+| Suggestion concurrency | Concurrent model suggestion requests. | Start with 1 to 2. |
+| Transient retry delay ms | Delay before retrying a transient provider failure. | 60000 ms. |
+| Request min interval ms | Minimum interval between model requests. | 0 for stable providers; 1000 to 5000 ms for strict limits. |
 
-Activating a model selects it for new source-file jobs. Pausing a model keeps the configuration and prevents new jobs from using it. Deleting a model is blocked while running work still uses that model.
+Saved API keys remain hidden after creation. Pausing a model prevents new jobs from selecting it. Deletion is blocked while running work still references the model.
 
-## Operational Notes
+## Apply and Observe
 
-- Saved settings continue to apply after services restart.
-- Deleting deployment data also removes saved settings.
-- Settings are Admin-only and are not exposed through Developer OpenAPI.
-- Runtime changes apply to later requests and later background jobs. Some values affect long-running work after the next job or the next check.
+Saved runtime settings are durable. Running jobs keep their captured settings where consistency requires a stable snapshot. Later claims and requests use the new values. Startup-only ports, origins, credentials, database pools, storage credentials, and log paths remain in `.env` and require service restart when changed.

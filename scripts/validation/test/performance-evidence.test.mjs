@@ -38,6 +38,7 @@ test("performance evidence enforces large-scale batch size and records bounded m
   });
   recordSourceFileDuration(evidence, {
     id: "source-secret-id",
+    state: "visible",
     processingStartedAt: "2026-06-16T00:00:00.000Z",
     processingEndedAt: "2026-06-16T00:00:05.000Z"
   });

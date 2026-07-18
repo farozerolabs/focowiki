@@ -1,8 +1,8 @@
 import type { AdminSidebarTreeNode } from "@/components/app-sidebar";
-import type { BundleTreeEntry, BundleTreeSearchResult } from "@/lib/admin-api";
+import type { GeneratedTreeEntry, GeneratedTreeSearchResult } from "@/lib/admin-api";
 
 export type TreePageState = {
-  items: BundleTreeEntry[];
+  items: GeneratedTreeEntry[];
   nextCursor: string | null;
   isLoading: boolean;
 };
@@ -40,7 +40,7 @@ export function buildSidebarTree(
 }
 
 export function buildSidebarSearchTree(
-  results: BundleTreeSearchResult[],
+  results: GeneratedTreeSearchResult[],
   selectedFilePath: string
 ): AdminSidebarTreeNode[] {
   const nodes = new Map<string, AdminSidebarTreeNode>();
@@ -82,7 +82,7 @@ function readParentPath(logicalPath: string): string {
 }
 
 function createSearchNode(
-  entry: BundleTreeEntry,
+  entry: GeneratedTreeEntry,
   selectedFilePath: string
 ): AdminSidebarTreeNode {
   return {

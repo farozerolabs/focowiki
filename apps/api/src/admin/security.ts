@@ -7,7 +7,7 @@ import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import { applyAdminCors } from "../security/headers.js";
 import { recordSecurityAudit } from "../security/audit.js";
 import { requireRateLimit } from "../security/rate-limit.js";
-import { getRateLimitClientKey, isTrustedAdminOrigin } from "../security/request.js";
+import { isTrustedAdminOrigin } from "../security/request.js";
 
 type RequestContext = Parameters<MiddlewareHandler>[0];
 
@@ -148,35 +148,6 @@ export async function limitAdminLoginRequest(input: {
   return clientLimited ?? usernameLimited;
 }
 
-export async function limitAdminUploadRequest(input: {
-  config: RuntimeConfig;
-  redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
-  runtimeSettings?: RuntimeSettingsService | null | undefined;
-  context: RequestContext;
-}): Promise<Response | null> {
-  const limited = await requireRateLimit({
-    config: input.config,
-    redis: input.redis,
-    context: input.context,
-    scope: "upload",
-    id: getRateLimitClientKey(input.config, input.context),
-    limit: await readRuntimeRateLimit(input, "upload")
-  });
-
-  if (!limited) {
-    return null;
-  }
-
-  await recordAdminAudit({
-    ...input,
-    eventType: "upload_rate_limited",
-    result: "blocked",
-    errorCode: "RATE_LIMITED"
-  });
-  return limited;
-}
-
 async function readRuntimeRateLimit(
   services: Pick<AdminSecurityServices, "config" | "runtimeSettings">,
   key: keyof NonNullable<RuntimeConfig["security"]>["rateLimits"]
@@ -196,8 +167,6 @@ function defaultRateLimit(
       return { max: 8, windowSeconds: 900 };
     case "adminApi":
       return { max: 600, windowSeconds: 60 };
-    case "upload":
-      return { max: 20, windowSeconds: 3_600 };
     case "publicOpenApi":
       return { max: 1_200, windowSeconds: 60 };
   }

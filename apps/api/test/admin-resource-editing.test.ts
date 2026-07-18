@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SourceResourceRepository } from "../src/application/ports/source-resource-repository.js";
 import type { RuntimeConfig } from "../src/config.js";
 import type { AdminRepositories, KnowledgeBaseRecord } from "../src/db/admin-repositories.js";
-import type { WorkerJobRepository } from "../src/db/worker-job-repository.js";
+import type { PublicationGenerationRepository } from "../src/application/ports/publication-generation-repository.js";
+import type { RoleJobRepository } from "../src/application/ports/role-job-repository.js";
 import type { ResourceOperationRecord } from "../src/domain/source-resource.js";
 import { SourceResourceError } from "../src/domain/source-resource.js";
 import { createApiApp } from "../src/server.js";
@@ -30,7 +31,6 @@ function createConfig(): RuntimeConfig {
       prefix: "tenant/test",
       forcePathStyle: true
     },
-    upload: { maxBytes: 1_048_576, generationBatchSize: 50, fileProcessingConcurrency: 1 },
     publication: {
       mode: "batch",
       batchSize: 300,
@@ -78,7 +78,7 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
     id: "kb-docs",
     name: "Docs",
     description: "Current description",
-    activeReleaseId: "release-active",
+    activeGenerationId: "generation-active",
     resourceRevision: 2,
     catalogGeneration: 1,
     createdAt: "2026-07-12T00:00:00.000Z",
@@ -120,9 +120,9 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
       resourceRevision: 3,
       contentRevision: 1,
       activeRevisionId: "source-revision-1",
-      processingState: "completed" as const,
-      currentStage: "release_activation",
-      processingErrorCode: null,
+      processingStatus: "completed" as const,
+      currentStage: "generation_activation" as const,
+      terminalFailure: null,
       generatedOutputStatus: "visible" as const,
       generatedPath: "pages/intro.md",
       deleting: false,
@@ -152,15 +152,20 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
     acceptKnowledgeBaseDeletion: vi.fn(),
     ...overrides
   } satisfies SourceResourceRepository;
-  const enqueueResourceOperationJob = vi.fn(async () => ({ id: "worker-job-1" }));
-  const enqueuePublicationJob = vi.fn(async () => ({ id: "worker-job-publication" }));
-  const workerJobs = {
-    enqueueResourceOperationJob,
-    enqueuePublicationJob
-  } as unknown as WorkerJobRepository;
+  const enqueueRoleJob = vi.fn(async () => null);
+  const commitMutation = vi.fn(async () => ({
+    generationId: "generation-next",
+    changeFactCreated: true,
+    scheduledPublication: true
+  }));
+  const roleJobs = { enqueue: enqueueRoleJob } as unknown as RoleJobRepository;
+  const publicationGenerations = {
+    commitMutation
+  } as unknown as PublicationGenerationRepository;
   const storage = {
     keyspace: createStorageKeyspace("tenant/test"),
     getObjectText: vi.fn(async () => "# Intro"),
+    getObjectBody: vi.fn(async () => new TextEncoder().encode("# Intro")),
     putObject: vi.fn(async () => undefined),
     deleteObject: vi.fn(async () => undefined)
   } satisfies StorageAdapter;
@@ -170,14 +175,15 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
       createKnowledgeBase: vi.fn(),
       getKnowledgeBase: vi.fn(async () => knowledgeBase)
     },
-    sourceResources,
-    workerJobs
+    sourceResources
   } as unknown as AdminRepositories;
   const app = createApiApp({
     config: createConfig(),
     redis: createTestRedisCoordinator(),
     repositories,
-    storage
+    storage,
+    roleJobs,
+    publicationGenerations
   });
   const cookie = await loginAndReadSessionCookie(app);
   return {
@@ -185,8 +191,8 @@ async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
     cookie,
     sourceResources,
     storage,
-    enqueuePublicationJob,
-    enqueueResourceOperationJob
+    commitMutation,
+    enqueueRoleJob
   };
 }
 
@@ -213,8 +219,12 @@ describe("Admin resource editing", () => {
       },
       publicationQueued: true
     });
-    expect(context.enqueuePublicationJob).toHaveBeenCalledWith(
-      expect.objectContaining({ knowledgeBaseId: "kb-docs", reason: "metadata" })
+    expect(context.commitMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        knowledgeBaseId: "kb-docs",
+        kind: "knowledge_base_metadata_changed",
+        resourceRevision: 3
+      })
     );
   });
 
@@ -238,7 +248,13 @@ describe("Admin resource editing", () => {
     await expect(response.json()).resolves.toMatchObject({
       operation: { operationId: "resource-operation-1", kind: "source_file_move" }
     });
-    expect(context.enqueueResourceOperationJob).toHaveBeenCalledTimes(1);
+    expect(context.enqueueRoleJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "source",
+        kind: "resource_operation",
+        knowledgeBaseId: "kb-docs"
+      })
+    );
   });
 
   it("reads and replaces original source Markdown", async () => {

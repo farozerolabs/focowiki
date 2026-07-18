@@ -1,5 +1,10 @@
 import matter from "gray-matter";
 import { z } from "zod";
+import {
+  GeneratedTextIdentityError,
+  canonicalizeGeneratedTextIdentity,
+  canonicalizeOptionalGeneratedTextIdentity
+} from "./text-identity.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -113,28 +118,63 @@ export function resolveSourceMetadata(source: UploadedMarkdownSource): ResolvedS
     })
   ) as SourceMetadataDefaults;
 
-  const type = typeof metadata.type === "string" ? metadata.type.trim() : "";
-  const title = typeof metadata.title === "string" ? metadata.title.trim() : "";
-  const resolvedType = type || cleanSuggestedString(source.suggestions?.type) || "document";
-  const resolvedTitle =
-    title ||
-    findFirstHeading(parsed.content) ||
-    fileNameStem(source.fileName) ||
-    cleanSuggestedString(source.suggestions?.title) ||
-    "Untitled";
-  const description =
-    cleanMetadataString(metadata.description) || cleanSuggestedString(source.suggestions?.description);
-  const tags = readResolvedTags(metadata.tags, source.suggestions?.tags);
+  let resolvedType: string;
+  let resolvedTitle: string;
+  let description: string | null;
+  let tags: string[];
+  let timestamp: string | null;
+  let version: string | null;
+  try {
+    const type = canonicalizeOptionalGeneratedTextIdentity(metadata.type, "type");
+    const title = canonicalizeOptionalGeneratedTextIdentity(metadata.title, "title");
+    resolvedType = canonicalizeGeneratedTextIdentity(
+      type ?? cleanSuggestedString(source.suggestions?.type) ?? "document",
+      "type"
+    );
+    resolvedTitle = canonicalizeGeneratedTextIdentity(
+      title
+        ?? findFirstHeading(parsed.content)
+        ?? fileNameStem(source.fileName)
+        ?? cleanSuggestedString(source.suggestions?.title)
+        ?? "Untitled",
+      "title"
+    );
+    description = canonicalizeOptionalGeneratedTextIdentity(metadata.description, "description")
+      ?? canonicalizeOptionalGeneratedTextIdentity(
+        source.suggestions?.description,
+        "suggested description"
+      );
+    tags = readResolvedTags(metadata.tags, source.suggestions?.tags);
+    timestamp = canonicalizeOptionalGeneratedTextIdentity(metadata.timestamp, "timestamp");
+    version = canonicalizeOptionalGeneratedTextIdentity(metadata.version, "version");
+  } catch (error) {
+    if (error instanceof GeneratedTextIdentityError) {
+      throw new MetadataValidationError([error.message]);
+    }
+    throw error;
+  }
+
+  const {
+    type: _type,
+    title: _title,
+    description: _description,
+    tags: _tags,
+    timestamp: _timestamp,
+    version: _version,
+    ...customMetadata
+  } = metadata;
 
   return {
     fileName: source.fileName,
     body: parsed.content.trim(),
     metadata: removeUndefinedValues({
-      ...metadata,
+      ...customMetadata,
       type: resolvedType,
       title: resolvedTitle,
       ...(description ? { description } : {}),
-      ...(tags.length > 0 ? { tags } : {})
+      ...(tags.length > 0 ? { tags } : {}),
+      ...(timestamp ? { timestamp } : {}),
+      ...(version ? { version } : {})
     }) as SourceMetadata
   };
 }
@@ -199,12 +239,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function cleanMetadataString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function cleanSuggestedString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
+function cleanSuggestedString(value: unknown): string | null {
+  return canonicalizeOptionalGeneratedTextIdentity(value);
 }
 
 function readResolvedTags(metadataTags: unknown, suggestedTags: unknown): string[] {
@@ -219,25 +255,28 @@ function readResolvedTags(metadataTags: unknown, suggestedTags: unknown): string
 
 function readStringList(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean)
+    ? value.flatMap((item) => {
+        const canonical = canonicalizeOptionalGeneratedTextIdentity(item, "tag");
+        return canonical ? [canonical] : [];
+      })
     : [];
 }
 
-function findFirstHeading(body: string): string {
+function findFirstHeading(body: string): string | null {
   for (const line of body.split(/\r?\n/)) {
     const match = /^#\s+(.+?)\s*#*\s*$/.exec(line);
 
     if (match?.[1]) {
-      return match[1].trim();
+      return match[1];
     }
   }
 
-  return "";
+  return null;
 }
 
-function fileNameStem(fileName: string): string {
+function fileNameStem(fileName: string): string | null {
   const baseName = fileName.split(/[\\/]/).pop() ?? fileName;
-  return baseName.replace(/\.md$/i, "").trim();
+  return canonicalizeOptionalGeneratedTextIdentity(baseName.replace(/\.md$/i, ""));
 }
 
 function removeUndefinedValues<T extends Record<string, unknown>>(value: T): T {

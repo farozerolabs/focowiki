@@ -17,7 +17,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
   --data '{
   "name": "Source file updates",
   "url": "https://hooks.example.com/focowiki",
-  "events": ["source_file.completed", "source_file.failed", "release.published"]
+  "events": ["source_file.completed", "source_file.failed", "generation.activated"]
 }'
 ```
 
@@ -102,8 +102,8 @@ Use the raw request body bytes or exact raw body string received by the server. 
 | `source_file.progress` | A source file starts or continues processing. | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.completed` | A source file completes processing. | `knowledgeBaseId`, `sourceFileId` |
 | `source_file.failed` | A source file fails processing. | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `release.published` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `sourceFileId`, `releaseId` when available |
-| `file.deleted` | A source file and its readable page are deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `releaseId` |
+| `generation.activated` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `sourceFileId`, `generationId` when available |
+| `file.deleted` | A source file and its readable page are deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `generationId` |
 | `knowledge_base.deleted` | A knowledge base is deleted. | `knowledgeBaseId` |
 
 ## Delivery Records And Redelivery

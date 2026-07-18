@@ -21,11 +21,37 @@ env:
   REGISTRY: ghcr.io
   API_IMAGE: ghcr.io/farozerolabs/focowiki-api
   ADMIN_IMAGE: ghcr.io/farozerolabs/focowiki-admin
+  FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+  REDIS_URL: redis://127.0.0.1:56379/0
 
 jobs:
   publish:
     name: Build and publish
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: focowiki
+          POSTGRES_USER: focowiki
+          POSTGRES_PASSWORD: focowiki
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U focowiki -d focowiki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout
@@ -148,6 +174,28 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
+      - name: Start S3 health fixture
+        run: |
+          node scripts/ci/s3-health-fixture.mjs &
+          echo $! > /tmp/focowiki-s3-health-fixture.pid
+
+      - name: Validate published API image roles
+        shell: bash
+        run: |
+          image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          docker pull "${image}"
+          docker tag "${image}" focowiki-api:release-smoke
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migrate.mjs
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/source-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/publication-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/maintenance-worker.mjs --healthcheck
+          api_container="$(docker run -d --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/main.mjs)"
+          trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
+          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
+          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
+          docker rm -f "${api_container}" >/dev/null
+          trap - EXIT
+
       - name: Build and push Admin image
         id: build-admin
         uses: docker/build-push-action@v7.2.0
@@ -175,3 +223,10 @@ jobs:
           subject-name: ${{ env.ADMIN_IMAGE }}
           subject-digest: ${{ steps.build-admin.outputs.digest }}
           push-to-registry: true
+
+      - name: Stop S3 health fixture
+        if: always()
+        run: |
+          if [[ -f /tmp/focowiki-s3-health-fixture.pid ]]; then
+            kill "$(cat /tmp/focowiki-s3-health-fixture.pid)" || true
+          fi

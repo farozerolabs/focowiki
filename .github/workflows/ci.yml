@@ -18,6 +18,33 @@ jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    env:
+      FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+      REDIS_URL: redis://127.0.0.1:56379/0
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: focowiki
+          POSTGRES_USER: focowiki
+          POSTGRES_PASSWORD: focowiki
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U focowiki -d focowiki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout
@@ -47,7 +74,7 @@ jobs:
           cp .env.dev.example .env
           pnpm compose:dev:example:config
 
-      - name: Validate local infrastructure Compose template
+      - name: Validate local full-stack Compose template
         run: |
           cp .env.dev.example .env
           pnpm compose:local:example:config
@@ -58,8 +85,33 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Build API Docker image
+        run: |
+          docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci .
+          docker image inspect focowiki-api:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
+
+      - name: Migrate CI database with API image
+        run: >-
+          docker run --rm --network host --env-file .env.dev.example
+          -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}"
+          -e REDIS_URL="${REDIS_URL}"
+          focowiki-api:ci node apps/api/runtime/migrate.mjs
+
+      - name: Start S3 health fixture
+        run: |
+          node scripts/ci/s3-health-fixture.mjs &
+          echo $! > /tmp/focowiki-s3-health-fixture.pid
+
       - name: Test
         run: pnpm test
+
+      - name: Validate source-to-activation smoke flow
+        run: >-
+          pnpm --filter @focowiki/api exec vitest run
+          test/upload-session-repository.integration.test.ts
+          test/source-dispatch-repository.integration.test.ts
+          test/publication-generation-repository.integration.test.ts
+          test/active-generation-read-repository.integration.test.ts
 
       - name: Test validation scripts
         run: pnpm test:validation
@@ -73,13 +125,14 @@ jobs:
       - name: Validate OpenAPI contract
         run: pnpm openapi:validate
 
-      - name: Build API Docker image
-        run: |
-          docker build --target api --build-arg FOCOWIKI_RELEASE_VERSION=0.0.0-ci -t focowiki-api:ci .
-          docker image inspect focowiki-api:ci --format '{{json .Config.Env}}' | grep 'FOCOWIKI_RELEASE_VERSION=0.0.0-ci'
+      - name: Validate API Docker worker runtimes
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
 
-      - name: Validate API Docker worker runtime
-        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/worker.mjs']) fs.accessSync(file);"
+      - name: Validate API image role health
+        run: |
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/source-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/publication-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/maintenance-worker.mjs --healthcheck
 
       - name: Build Admin Docker image
         run: docker build --target admin -t focowiki-admin:ci .
@@ -91,3 +144,10 @@ jobs:
 
       - name: Validate local path leaks
         run: pnpm validate:no-local-paths
+
+      - name: Stop S3 health fixture
+        if: always()
+        run: |
+          if [[ -f /tmp/focowiki-s3-health-fixture.pid ]]; then
+            kill "$(cat /tmp/focowiki-s3-health-fixture.pid)" || true
+          fi

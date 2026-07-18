@@ -20,7 +20,7 @@ Focowiki 上传 Markdown 文件。团队从 PDF、Word、HTML、表格、OCR 文
 | Markdown 正文 | 保存完整可读文档，包括标题、段落、表格、列表、引用和链接。 |
 | 来源说明 | 保存来源证据、转换说明、未解决问题和更新记录。 |
 
-Focowiki 会解析安全的 frontmatter 字段，保留领域元数据，读取标题和链接，并生成包含 `index.md`、`schema.md`、`_index/`、`pages/` 和 `_graph/` 文件的 OKF-style bundle。
+Focowiki 会解析安全的 frontmatter 字段，保留领域元数据，读取标题和链接，并生成包含 `index.md`、`schema.md`、`_index/`、`pages/` 和 `_graph/` 文件的 OKF-style 文件知识库。
 
 ## 文件夹路径与生成路径
 

@@ -32,8 +32,6 @@ type SourceGraphNodeRow = {
   updated_at: Date;
 };
 
-type ReleaseGraphNodeRow = SourceGraphNodeRow & { id: string };
-
 type GraphEdgeRow = {
   id: string;
   knowledge_base_id: string;
@@ -53,7 +51,7 @@ type RelatedRow = {
   current_path: string;
   current_title: string;
   source_file_id: string;
-  bundle_file_id: string | null;
+  generated_file_id: string | null;
   path: string;
   title: string;
   relation_type: string;
@@ -184,32 +182,36 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       `;
     },
     async upsertGraphEdges({ knowledgeBaseId, edges }) {
-      await upsertSourceEdges(sql, knowledgeBaseId, edges, "accepted");
+      const edgeIds = await upsertSourceEdges(sql, knowledgeBaseId, edges, "accepted");
       await refreshGraphSummariesForSourceFiles({
         knowledgeBaseId,
         sourceFileIds: edges.flatMap((edge) => [edge.fromFileId, edge.toFileId]),
         limit: 3
       });
+      return edgeIds;
     },
     async upsertRejectedGraphEdges({ knowledgeBaseId, edges }) {
       await upsertSourceEdges(sql, knowledgeBaseId, edges, "rejected");
     },
     async replaceGraphEdgesForSourceFile({ knowledgeBaseId, sourceFileId }) {
-      const rows = await sql<Array<{ source_file_id: string }>>`
+      const rows = await sql<Array<{ source_file_id: string; edge_id: string }>>`
         WITH removed AS (
           DELETE FROM focowiki.source_file_graph_edges
           WHERE knowledge_base_id = ${knowledgeBaseId}
             AND from_source_file_id = ${sourceFileId}
-          RETURNING to_source_file_id
+          RETURNING id, to_source_file_id
         )
-        SELECT DISTINCT to_source_file_id AS source_file_id FROM removed
+        SELECT to_source_file_id AS source_file_id, id AS edge_id FROM removed
       `;
       await refreshGraphSummariesForSourceFiles({
         knowledgeBaseId,
         sourceFileIds: [sourceFileId, ...rows.map((row) => row.source_file_id)],
         limit: 3
       });
-      return rows.map((row) => row.source_file_id);
+      return {
+        sourceFileIds: unique(rows.map((row) => row.source_file_id)),
+        edgeIds: unique(rows.map((row) => row.edge_id))
+      };
     },
     async reconcileExplicitReferenceEdgesForTarget({ knowledgeBaseId, target, limit }) {
       const targetPath = normalizeGraphReferencePath(target.path);
@@ -227,7 +229,7 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
             AND evidence_json ->> 'reconciliation' = 'explicit_reference'
         `;
 
-        return transaction<Array<{ source_file_id: string }>>`
+        return transaction<Array<{ source_file_id: string; edge_id: string }>>`
           WITH matching_referrers AS (
             SELECT node.source_file_id
             FROM focowiki.source_file_graph_nodes node
@@ -271,12 +273,13 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
               status = EXCLUDED.status,
               evidence_json = EXCLUDED.evidence_json,
               updated_at = now()
-            RETURNING from_source_file_id AS source_file_id
+            RETURNING from_source_file_id AS source_file_id, id AS edge_id
           )
-          SELECT source_file_id FROM inserted
+          SELECT source_file_id, edge_id FROM inserted
         `;
       });
       const sourceFileIds = unique(rows.map((row) => row.source_file_id));
+      const edgeIds = unique(rows.map((row) => row.edge_id));
 
       if (sourceFileIds.length > 0) {
         await refreshGraphSummariesForSourceFiles({
@@ -288,7 +291,8 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
 
       return {
         edgeCount: sourceFileIds.length,
-        sourceFileIds
+        sourceFileIds,
+        edgeIds
       };
     },
     async listGraphNodes(input) {
@@ -350,24 +354,51 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
         relationships: related.items
       };
     },
-    refreshGraphSummariesForSourceFiles,
-    async listActiveGraphNodes(input) {
-      return listReleaseNodes(sql, input);
-    },
-    async listActiveGraphEdges(input) {
-      return listReleaseEdges(sql, input);
-    },
-    async getActiveGraphEdge(input) {
-      const rows = await sql<GraphEdgeRow[]>`
-        ${releaseEdgeSelect(sql, input.knowledgeBaseId, input.releaseId)}
-          AND edge.id = ${input.edgeId}
-        LIMIT 1
+    async getMutationClosures({ knowledgeBaseId, sourceFileIds }) {
+      const uniqueSourceFileIds = unique(sourceFileIds).slice(0, 1_000);
+      const closures = new Map<string, {
+        neighborSourceFileIds: string[];
+        edgeIds: string[];
+      }>();
+      for (const sourceFileId of uniqueSourceFileIds) {
+        closures.set(sourceFileId, { neighborSourceFileIds: [], edgeIds: [] });
+      }
+      if (uniqueSourceFileIds.length === 0) return closures;
+
+      const rows = await sql<Array<{
+        id: string;
+        from_source_file_id: string;
+        to_source_file_id: string;
+      }>>`
+        SELECT id, from_source_file_id, to_source_file_id
+        FROM focowiki.source_file_graph_edges
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND status = 'accepted'
+          AND (
+            from_source_file_id = ANY(${uniqueSourceFileIds})
+            OR to_source_file_id = ANY(${uniqueSourceFileIds})
+          )
+        ORDER BY id ASC
       `;
-      return rows[0] ? mapEdge(rows[0]) : null;
+      for (const row of rows) {
+        const from = closures.get(row.from_source_file_id);
+        if (from) {
+          from.edgeIds.push(row.id);
+          from.neighborSourceFileIds.push(row.to_source_file_id);
+        }
+        const to = closures.get(row.to_source_file_id);
+        if (to) {
+          to.edgeIds.push(row.id);
+          to.neighborSourceFileIds.push(row.from_source_file_id);
+        }
+      }
+      for (const closure of closures.values()) {
+        closure.edgeIds = unique(closure.edgeIds);
+        closure.neighborSourceFileIds = unique(closure.neighborSourceFileIds);
+      }
+      return closures;
     },
-    async listActiveGraphNeighborhood(input) {
-      return listReleaseNeighborhood(sql, input);
-    },
+    refreshGraphSummariesForSourceFiles,
     async deleteGraphForSourceFile({ knowledgeBaseId, sourceFileId }) {
       await sql.begin(async (transaction) => {
         await transaction`
@@ -389,9 +420,10 @@ async function upsertSourceEdges(
   knowledgeBaseId: string,
   edges: OkfGraphEdge[],
   status: "accepted" | "rejected"
-): Promise<void> {
+): Promise<string[]> {
+  const edgeIds: string[] = [];
   for (const edge of edges) {
-    await sql`
+    const rows = await sql<Array<{ id: string }>>`
       INSERT INTO focowiki.source_file_graph_edges (
         id, knowledge_base_id, from_source_file_id, to_source_file_id,
         relation_type, weight, reason, source, status, evidence_json, updated_at
@@ -413,8 +445,13 @@ async function upsertSourceEdges(
       DO UPDATE SET weight = EXCLUDED.weight, reason = EXCLUDED.reason,
                     source = EXCLUDED.source, status = EXCLUDED.status,
                     evidence_json = EXCLUDED.evidence_json, updated_at = now()
+      RETURNING id
     `;
+    if (rows[0]) {
+      edgeIds.push(rows[0].id);
+    }
   }
+  return edgeIds;
 }
 
 async function listSourceNodes(
@@ -518,7 +555,7 @@ async function listSourceNeighborhood(
     )
     SELECT current.source_file_id AS current_source_file_id,
            current.path AS current_path, current.title AS current_title,
-           related.source_file_id, NULL::text AS bundle_file_id, node.path,
+           related.source_file_id, NULL::text AS generated_file_id, node.path,
            node.title, related.relation_type, related.direction::text AS direction,
            related.weight, related.reason, related.source, related.evidence_json,
            false AS content_available
@@ -537,126 +574,6 @@ async function listSourceNeighborhood(
   return relatedPage(rows, input.limit);
 }
 
-async function listReleaseNodes(
-  sql: DatabaseClient,
-  input: { knowledgeBaseId: string; releaseId: string; limit: number; cursor: string | null }
-) {
-  const cursor = parseIdCursor(input.cursor);
-  const rows = await sql<ReleaseGraphNodeRow[]>`
-    ${releaseNodeSelect(sql, input.knowledgeBaseId, input.releaseId)}
-      ${cursor ? sql`AND node.id > ${cursor}` : sql``}
-    ORDER BY node.id ASC
-    LIMIT ${input.limit + 1}
-  `;
-  const items = rows.slice(0, input.limit).map(mapNode);
-  return {
-    items,
-    nextCursor: rows.length > input.limit
-      ? serializeIdCursor(rows[input.limit - 1]?.id ?? "")
-      : null
-  };
-}
-
-function releaseNodeSelect(sql: DatabaseClient, knowledgeBaseId: string, releaseId: string) {
-  return sql`
-    SELECT node.id, node.knowledge_base_id, node.source_file_id, node.path, node.title,
-           file.okf_type AS type, file.description, node.summary, node.subjects_json,
-           file.tags_json, node.entities_json, node.explicit_references_json,
-           '[]'::jsonb AS relationship_hints_json, node.headings_json, node.keywords_json,
-           NULL::text AS language, node.metadata_json AS profile_json,
-           node.metadata_json, node.updated_at
-    FROM focowiki.knowledge_graph_nodes node
-    JOIN focowiki.bundle_files file ON file.id = node.file_id AND file.release_id = node.release_id
-    WHERE node.knowledge_base_id = ${knowledgeBaseId} AND node.release_id = ${releaseId}
-  `;
-}
-
-async function listReleaseEdges(
-  sql: DatabaseClient,
-  input: { knowledgeBaseId: string; releaseId: string; limit: number; cursor: string | null }
-) {
-  const cursor = parseIdCursor(input.cursor);
-  const rows = await sql<GraphEdgeRow[]>`
-    ${releaseEdgeSelect(sql, input.knowledgeBaseId, input.releaseId)}
-      ${cursor ? sql`AND edge.id > ${cursor}` : sql``}
-    ORDER BY edge.id ASC
-    LIMIT ${input.limit + 1}
-  `;
-  return edgePage(rows, input.limit);
-}
-
-function releaseEdgeSelect(sql: DatabaseClient, knowledgeBaseId: string, releaseId: string) {
-  return sql`
-    SELECT edge.id, edge.knowledge_base_id,
-           from_file.source_file_id AS from_source_file_id,
-           to_file.source_file_id AS to_source_file_id,
-           edge.relation_type, edge.weight, edge.reason, edge.created_by AS source,
-           CASE WHEN edge.quality_status = 'accepted' THEN 'accepted' ELSE 'rejected' END AS status,
-           edge.evidence_json, edge.updated_at
-    FROM focowiki.knowledge_graph_edges edge
-    JOIN focowiki.bundle_files from_file ON from_file.id = edge.from_file_id
-    JOIN focowiki.bundle_files to_file ON to_file.id = edge.to_file_id
-    WHERE edge.knowledge_base_id = ${knowledgeBaseId} AND edge.release_id = ${releaseId}
-      AND edge.quality_status = 'accepted'
-  `;
-}
-
-async function listReleaseNeighborhood(
-  sql: DatabaseClient,
-  input: { knowledgeBaseId: string; releaseId: string; sourceFileId: string; limit: number; cursor?: string | null }
-) {
-  const cursor = parseRelationCursor(input.cursor ?? null);
-  const rows = await sql<RelatedRow[]>`
-    WITH source_file AS (
-      SELECT id, source_file_id, logical_path,
-             COALESCE(title, logical_path) AS title
-      FROM focowiki.bundle_files
-      WHERE knowledge_base_id = ${input.knowledgeBaseId} AND release_id = ${input.releaseId}
-        AND source_file_id = ${input.sourceFileId} AND file_kind = 'page'
-      LIMIT 1
-    ), raw_relationships AS (
-      SELECT edge.to_file_id AS file_id, edge.relation_type, 'outgoing'::text AS direction,
-             edge.weight, edge.reason, edge.created_by AS source, edge.evidence_json
-      FROM focowiki.knowledge_graph_edges edge
-      WHERE edge.release_id = ${input.releaseId} AND edge.from_file_id IN (SELECT id FROM source_file)
-        AND edge.quality_status = 'accepted'
-      UNION ALL
-      SELECT edge.from_file_id, edge.relation_type, 'incoming'::text, edge.weight,
-             edge.reason, edge.created_by, edge.evidence_json
-      FROM focowiki.knowledge_graph_edges edge
-      WHERE edge.release_id = ${input.releaseId} AND edge.to_file_id IN (SELECT id FROM source_file)
-        AND edge.quality_status = 'accepted'
-    ), relationships AS (
-      SELECT file_id, relation_type, direction, weight, reason, source, evidence_json
-      FROM (
-        SELECT raw_relationships.*,
-               row_number() OVER (
-                 PARTITION BY file_id
-                 ORDER BY weight DESC,
-                          CASE WHEN direction = 'outgoing' THEN 0 ELSE 1 END,
-                          relation_type ASC
-               ) AS relationship_rank
-        FROM raw_relationships
-      ) ranked
-      WHERE relationship_rank = 1
-    )
-    SELECT current.source_file_id AS current_source_file_id,
-           current.logical_path AS current_path, current.title AS current_title,
-           file.source_file_id, file.id AS bundle_file_id, file.logical_path AS path,
-           COALESCE(file.title, file.logical_path) AS title, related.relation_type,
-           related.direction::text AS direction, related.weight, related.reason,
-           related.source, related.evidence_json, true AS content_available
-    FROM relationships related
-    JOIN focowiki.bundle_files file ON file.id = related.file_id AND file.release_id = ${input.releaseId}
-    CROSS JOIN source_file current
-    WHERE file.source_file_id IS NOT NULL
-      ${cursor ? sql`AND (related.weight < ${cursor.weight}
-        OR (related.weight = ${cursor.weight} AND file.source_file_id > ${cursor.fileId}))` : sql``}
-    ORDER BY related.weight DESC, file.source_file_id ASC
-    LIMIT ${input.limit + 1}
-  `;
-  return relatedPage(rows, input.limit);
-}
 
 function nodePage(rows: SourceGraphNodeRow[], limit: number) {
   const items = rows.slice(0, limit).map(mapNode);
@@ -739,7 +656,7 @@ function mapRelated(row: RelatedRow): FileGraphRelatedRecord {
   return {
     ...relationship,
     sourceFileId: row.source_file_id,
-    bundleFileId: row.bundle_file_id,
+    generatedFileId: row.generated_file_id,
     contentAvailable: row.content_available
   };
 }

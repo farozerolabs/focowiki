@@ -13,7 +13,7 @@ type KnowledgeBaseRecord = {
   id: string;
   name: string;
   description: string | null;
-  activeReleaseId: string | null;
+  activeGenerationId: string | null;
   catalogGeneration: number;
   createdAt: string;
   updatedAt: string;
@@ -47,11 +47,6 @@ function createConfig(): RuntimeConfig {
       secretAccessKey: "s3-secret",
       prefix: "tenant/demo",
       forcePathStyle: true
-    },
-    upload: {
-      maxBytes: 1_048_576,
-      generationBatchSize: 50,
-      fileProcessingConcurrency: 1,
     },
     publication: {
       mode: "batch",
@@ -113,7 +108,7 @@ function createRepository() {
         id: `kb-${String(nextId).padStart(6, "0")}`,
         name: input.name,
         description: input.description,
-        activeReleaseId: null,
+        activeGenerationId: null,
         catalogGeneration: 0,
         createdAt: now,
         updatedAt: now
@@ -181,7 +176,7 @@ describe("Knowledge base Admin API", () => {
       id: expect.stringMatching(/^kb-[a-z0-9-]+$/),
       name: "Developer docs",
       description: "Internal markdown knowledge",
-      activeReleaseId: null
+      activeGenerationId: null
     });
     await expect(detail.json()).resolves.toEqual({
       knowledgeBase: createBody.knowledgeBase

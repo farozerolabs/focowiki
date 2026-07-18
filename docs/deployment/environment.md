@@ -14,7 +14,7 @@ Keep the real `.env` file out of git. Use long random values for passwords, data
 
 `.env` is the startup configuration for infrastructure, ports, origins, authentication bootstrap, logs, storage, pagination guards, and database pools. Runtime values that administrators can change from the Admin UI are documented in [Admin Settings](./admin-settings.md).
 
-On first startup, Focowiki seeds Admin Settings from startup defaults when no saved settings exist in PostgreSQL. After that initialization, saved Admin Settings become the runtime source for API limits, Worker tuning, publication tuning, upload generation, and model configurations.
+On first startup, Focowiki seeds Admin Settings from product defaults. Saved Admin Settings then control API rate limits, Worker execution, publication pressure, graph behavior, and model configurations.
 
 ## Runtime
 
@@ -124,7 +124,7 @@ These values stay in `.env` because they set API memory boundaries, Redis cursor
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | Yes | Default page size for Admin source-file, task, release, and generated-file lists. |
+| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | Yes | Default page size for Admin source-file, task, generation, and generated-file lists. |
 | `ADMIN_LIST_MAX_PAGE_SIZE` | Yes | Maximum page size accepted by Admin list APIs. |
 | `TREE_CHILD_DEFAULT_PAGE_SIZE` | Yes | Default direct-child page size for generated file tree APIs. |
 | `TREE_CHILD_MAX_PAGE_SIZE` | Yes | Maximum direct-child page size accepted by generated file tree APIs. |
@@ -135,11 +135,11 @@ These values stay in `.env` because they set API memory boundaries, Redis cursor
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by the Worker process. Keep this separate from the API pool size. |
+| `SOURCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one source-worker process. Start with `8` on an 8C/32G server. |
+| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one publication-worker process. Start with `4`. |
+| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one maintenance-worker process. Start with `2`. |
 
-`WORKER_DATABASE_POOL_MAX` is a startup setting because the PostgreSQL pool is created when the Worker process starts. Change it in `.env` and restart the Worker service when the pool size needs to change.
-
-For an 8-core, 32 GB server, start with `DATABASE_POOL_MAX=12` and `WORKER_DATABASE_POOL_MAX=8`. Keep PostgreSQL connections within `api replicas * DATABASE_POOL_MAX + worker replicas * WORKER_DATABASE_POOL_MAX + migration headroom + operational headroom`.
+Each role creates its PostgreSQL pool during startup. Change a role pool in `.env` and restart that role. Keep the total budget within `API replicas * DATABASE_POOL_MAX + source-worker replicas * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker replicas * PUBLICATION_WORKER_DATABASE_POOL_MAX + maintenance-worker replicas * MAINTENANCE_WORKER_DATABASE_POOL_MAX + migration and operational headroom`.
 
 ## Security Audit
 

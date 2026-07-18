@@ -5,10 +5,12 @@ import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import { SourceResourceError, type ResourceOperationRecord } from "../domain/source-resource.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import type { ApplicationRuntime } from "../application/ports/runtime.js";
+import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
+import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
+import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 import { readPageLimit } from "./pagination.js";
 import { recordAdminAudit } from "./security.js";
 
@@ -20,6 +22,8 @@ export function registerAdminSourceResourceEditingRoutes(
     redis: RedisCoordinator | null;
     runtimeSettings: RuntimeSettingsService | null;
     storage: StorageAdapter;
+    roleJobs: RoleJobRepository | null;
+    publicationGenerations: PublicationGenerationRepository | null;
     applicationRuntime: ApplicationRuntime;
   },
   middlewares: {
@@ -29,15 +33,20 @@ export function registerAdminSourceResourceEditingRoutes(
 ): void {
   const requireMutationService = async () => {
     const sourceResources = services.repositories?.sourceResources;
-    const workerJobs = services.repositories?.workerJobs;
-    if (!sourceResources || !workerJobs?.enqueueResourceOperationJob) return null;
-    const runtimeWorker = (await services.runtimeSettings?.getSnapshot())?.worker;
+    if (!sourceResources || !services.roleJobs || !services.publicationGenerations) return null;
+    const snapshot = await services.runtimeSettings?.getSnapshot();
+    const runtimeWorker = snapshot?.worker;
     return {
       mutations: createSourceResourceMutationService({
         repository: sourceResources,
-        worker: {
-          enqueueResourceOperationJob: workerJobs.enqueueResourceOperationJob.bind(workerJobs),
-          enqueuePublicationJob: workerJobs.enqueuePublicationJob.bind(workerJobs)
+        roleJobs: services.roleJobs,
+        generations: services.publicationGenerations,
+        graph: services.repositories?.graph,
+        impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
+        publicationSettingsSnapshot: {
+          publication: snapshot?.publication ?? {},
+          graph: snapshot?.graph ?? {},
+          worker: snapshot?.worker ?? {}
         },
         storage: {
           sourceRevisionKey: services.storage.keyspace.sourceRevisionKey,
@@ -146,6 +155,42 @@ export function registerAdminSourceResourceEditingRoutes(
     }
   );
 
+  app.delete(
+    "/admin/api/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) => {
+      const service = await requireMutationService();
+      if (!service) return unavailable(context);
+      const body = await readJsonBody(context.req.raw);
+      const expectedResourceRevision = Number(body.expectedResourceRevision);
+      if (!Number.isInteger(expectedResourceRevision) || expectedResourceRevision < 1) {
+        return invalid(context, "errors.invalidResourceRevision");
+      }
+      try {
+        const result = await service.mutations.deleteDirectory({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          directoryId: context.req.param("directoryId"),
+          idempotencyKey:
+            context.req.header("idempotency-key")?.trim()
+            || services.applicationRuntime.ids.create("admin-delete"),
+          expectedResourceRevision,
+          maxAttempts: service.worker.jobMaxAttempts
+        });
+        await audit(context, services, "source_directory_delete_accepted");
+        return context.json({
+          accepted: true,
+          operationId: result.operation.id,
+          directoryId: result.effectiveDirectoryId,
+          affectedDirectoryCount: result.affectedDirectoryCount,
+          affectedFileCount: result.affectedFileCount
+        }, 202);
+      } catch (error) {
+        return mutationError(context, error);
+      }
+    }
+  );
+
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     middlewares.requireAuth,
@@ -157,18 +202,15 @@ export function registerAdminSourceResourceEditingRoutes(
         sourceFileId: context.req.param("sourceFileId")
       });
       if (!descriptor) return notFound(context);
-      const settings = await resolveUploadGenerationSettings({
-        config: services.config,
-        runtimeSettings: services.runtimeSettings
+      const content = await services.storage.getObjectBody?.(descriptor.objectKey);
+      if (content == null) return notFound(context);
+      return new Response(content, {
+        headers: {
+          "content-type": descriptor.contentType,
+          etag: `\"${descriptor.checksumSha256}\"`,
+          "x-content-revision": String(descriptor.contentRevision)
+        }
       });
-      const content = await services.storage.getObjectText(descriptor.objectKey, {
-        maxBytes: settings.maxBytes
-      });
-      if (content === null) return notFound(context);
-      context.header("content-type", descriptor.contentType);
-      context.header("etag", `\"${descriptor.checksumSha256}\"`);
-      context.header("x-content-revision", String(descriptor.contentRevision));
-      return context.body(content);
     }
   );
 
@@ -208,15 +250,8 @@ export function registerAdminSourceResourceEditingRoutes(
     async (context) => {
       const service = await requireMutationService();
       if (!service) return unavailable(context);
-      const settings = await resolveUploadGenerationSettings({
-        config: services.config,
-        runtimeSettings: services.runtimeSettings
-      });
       const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
       if (bytes.byteLength === 0) return invalid(context, "errors.sourceContentRequired");
-      if (bytes.byteLength > settings.maxBytes) {
-        return context.json({ error: { code: "PAYLOAD_TOO_LARGE", messageKey: "errors.sourceContentTooLarge" } }, 413);
-      }
       try {
         const relativePath = context.req.header("x-source-relative-path")?.trim();
         const result = await service.mutations.replaceSourceContent({

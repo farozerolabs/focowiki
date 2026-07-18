@@ -19,21 +19,18 @@ import {
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
   type RuntimeSettingKey,
-  type RuntimeSettingsSnapshot,
-  type RuntimeUploadGenerationSettings
+  type RuntimeSettingsSnapshot
 } from "./types.js";
 import {
   createRuntimeSettingsDefaults,
   sanitizeGraphSettings,
   sanitizePublicationSettings,
   sanitizeRateLimitSettings,
-  sanitizeUploadGenerationSettings,
   sanitizeWorkerSettings,
   validateGraphSettings,
   validateModelDraft,
   validatePublicationSettings,
   validateRateLimitSettings,
-  validateUploadGenerationSettings,
   validateWorkerSettings
 } from "./validation.js";
 
@@ -52,7 +49,6 @@ export type RuntimeSettingsService = {
     rateLimits: RuntimeRateLimitSettings;
     worker: RuntimeSettingsSnapshot["worker"];
     publication: RuntimePublicationSettings;
-    uploadGeneration: RuntimeUploadGenerationSettings;
     graph: RuntimeGraphSettings;
     activeModel: RuntimeModelConfigPublic | null;
   }>;
@@ -66,10 +62,6 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   updatePublication: (input: {
     value: RuntimePublicationSettings;
-    actor?: string | null | undefined;
-  }) => Promise<RuntimeSettingsSnapshot>;
-  updateUploadGeneration: (input: {
-    value: RuntimeUploadGenerationSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   updateGraph: (input: {
@@ -127,13 +119,6 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
-    if (!existingKeys.has("upload_generation")) {
-      await input.repository.upsertSetting({
-        key: "upload_generation",
-        value: defaults.uploadGeneration,
-        source: "bootstrap"
-      });
-    }
     if (!existingKeys.has("graph")) {
       await input.repository.upsertSetting({
         key: "graph",
@@ -163,14 +148,12 @@ export function createRuntimeSettingsService(input: {
       rateLimitsRecord,
       workerRecord,
       publicationRecord,
-      uploadGenerationRecord,
       graphRecord,
       model
     ] = await Promise.all([
       input.repository.getSetting("rate_limits"),
       input.repository.getSetting("worker"),
       input.repository.getSetting("publication"),
-      input.repository.getSetting("upload_generation"),
       input.repository.getSetting("graph"),
       input.repository.getActiveModel()
     ]);
@@ -186,12 +169,6 @@ export function createRuntimeSettingsService(input: {
       ),
       publication: sanitizePublicationSettings(
         (publicationRecord?.value ?? defaults.publication) as RuntimePublicationSettings
-      ),
-      uploadGeneration: sanitizeUploadGenerationSettings(
-        {
-          ...defaults.uploadGeneration,
-          ...(uploadGenerationRecord?.value ?? {})
-        } as RuntimeUploadGenerationSettings
       ),
       graph: sanitizeGraphSettings(
         {
@@ -318,7 +295,6 @@ export function createRuntimeSettingsService(input: {
         rateLimits: snapshot.rateLimits,
         worker: snapshot.worker,
         publication: snapshot.publication,
-        uploadGeneration: snapshot.uploadGeneration,
         graph: snapshot.graph,
         activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
       };
@@ -343,13 +319,6 @@ export function createRuntimeSettingsService(input: {
         throw new RuntimeSettingsValidationError(issues);
       }
       return updateSetting("publication", sanitizePublicationSettings(value), actor);
-    },
-    async updateUploadGeneration({ value, actor }) {
-      const issues = validateUploadGenerationSettings(value);
-      if (issues.length > 0) {
-        throw new RuntimeSettingsValidationError(issues);
-      }
-      return updateSetting("upload_generation", sanitizeUploadGenerationSettings(value), actor);
     },
     async updateGraph({ value, actor }) {
       const issues = validateGraphSettings(value);

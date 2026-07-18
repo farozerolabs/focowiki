@@ -7,7 +7,7 @@ export type KnowledgeBase = {
   id: string;
   name: string;
   description: string | null;
-  activeReleaseId: string | null;
+  activeGenerationId: string | null;
   resourceRevision?: number;
   catalogGeneration?: number;
   createdAt?: string;
@@ -39,14 +39,14 @@ export type PublicOpenApiKeyPage = {
   oneTimeKey: OneTimePublicOpenApiKey | null;
 };
 
-export type BundleTreeEntry = {
+export type GeneratedTreeEntry = {
   id: string;
   parentPath?: string;
   name: string;
   logicalPath: string;
   sortKey?: string;
   entryType: "directory" | "file";
-  bundleFileId: string | null;
+  generatedFileId: string | null;
   childCount?: number;
   sourceFileId?: string | null;
   sourceDirectoryId?: string | null;
@@ -73,22 +73,22 @@ export type BundleTreeEntry = {
   deletable?: boolean;
 };
 
-export type BundleTreePage = {
-  items: BundleTreeEntry[];
+export type GeneratedTreePage = {
+  items: GeneratedTreeEntry[];
   nextCursor: string | null;
 };
 
-export type BundleTreeSearchResult = {
-  entry: BundleTreeEntry;
-  ancestors: BundleTreeEntry[];
+export type GeneratedTreeSearchResult = {
+  entry: GeneratedTreeEntry;
+  ancestors: GeneratedTreeEntry[];
 };
 
-export type BundleTreeSearchPage = {
-  items: BundleTreeSearchResult[];
+export type GeneratedTreeSearchPage = {
+  items: GeneratedTreeSearchResult[];
   nextCursor: string | null;
 };
 
-export type BundleFileDetail = {
+export type GeneratedFileDetail = {
   file: {
     id: string;
     sourceFileId: string | null;
@@ -116,7 +116,7 @@ export type BundleFileDetail = {
   relationships: Array<{
     fileId: string;
     sourceFileId: string;
-    bundleFileId: string | null;
+    generatedFileId: string | null;
     path: string;
     title: string;
     relationType: string;
@@ -135,20 +135,35 @@ export type SourceFileRecord = {
   name: string;
   relativePath: string;
   resourceRevision?: number;
-  processingStatus?: "queued" | "running" | "completed" | "failed";
-  processingStage?:
+  state: "queued" | "running" | "pending_publication" | "visible" | "failed";
+  currentStage:
     | "upload_storage"
     | "metadata_resolution"
     | "llm_suggestion"
     | "graph_generation"
-    | "okf_validation"
-    | "bundle_generation"
-    | "index_publication"
-    | "release_activation";
+    | "projection_generation"
+    | "generation_validation"
+    | "generation_activation";
+  failure: {
+    stage: SourceFileRecord["currentStage"];
+    code: string;
+    message: string;
+    occurredAt: string;
+    retryKind: "source_processing" | "publication" | "none";
+    correlationId: string;
+  } | null;
+  actions: Array<{
+    kind:
+      | "open_generated_file"
+      | "view_failure_details"
+      | "retry_source_processing"
+      | "retry_publication";
+    method: "GET" | "POST" | null;
+    href: string | null;
+    scope: "source_file" | "knowledge_base_publication";
+  }>;
   processingStartedAt?: string | null;
   processingEndedAt?: string | null;
-  processingErrorCode?: string | null;
-  processingErrorMessage?: string | null;
   retryCount?: number;
   modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | null;
   modelInvocationModelName?: string | null;
@@ -166,7 +181,7 @@ export type SourceFileRecord = {
     relationships: Array<{
       fileId: string;
       sourceFileId: string;
-      bundleFileId: string | null;
+      generatedFileId: string | null;
       path: string;
       title: string;
       relationType: string;
@@ -184,20 +199,6 @@ export type SourceFileDetail = {
   file: SourceFileRecord;
   events: unknown[];
   nextCursor: string | null;
-};
-
-export type ReleaseRecord = {
-  id: string;
-  fileCount: number;
-  generatedAt: string;
-  publishedAt: string | null;
-};
-
-export type BundleFileRecord = {
-  id: string;
-  logicalPath: string;
-  contentType: string;
-  title: string | null;
 };
 
 export type CursorPage<T> = {
@@ -246,8 +247,30 @@ export type WorkerQueueSummary = {
 };
 
 export type ProcessingSummary = {
+  activeGenerationId: string | null;
+  pendingDispatch: {
+    pendingCount: number;
+    oldestPendingAt: string | null;
+    paused: boolean;
+    pausedReason: string | null;
+  };
   sourceFileJobs: WorkerQueueSummary;
   publicationJobs: WorkerQueueSummary;
+  publicationProgress: {
+    generationId: string | null;
+    stage: string | null;
+    processedImpactCount: number;
+    totalImpactCount: number;
+    touchedShardCount: number;
+    oldestDirtyAt: string | null;
+    queuedAt: string | null;
+    startedAt: string | null;
+    heartbeatAt: string | null;
+    completedAt: string | null;
+    lastSuccessAt: string | null;
+    safeErrorCode: string | null;
+    safeErrorMessage: string | null;
+  };
   dirtySourceFiles: {
     count: number;
     oldestDirtyAt: string | null;
@@ -267,22 +290,22 @@ export type ApiFailure = {
 export type RateLimitSettings = {
   adminLogin: { max: number; windowSeconds: number };
   adminApi: { max: number; windowSeconds: number };
-  upload: { max: number; windowSeconds: number };
   publicOpenApi: { max: number; windowSeconds: number };
 };
 
 export type WorkerSettings = {
   sourceFileConcurrency: number;
   claimBatchSize: number;
+  generationBatchSize: number;
   pollIntervalMs: number;
   lockTtlSeconds: number;
   heartbeatIntervalMs: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
-  queueBackpressureLimit: number;
-  queueBackpressureKnowledgeBaseLimit: number;
-  queueBackpressureMaxAgeSeconds: number;
-  queueBackpressureRetryAfterSeconds: number;
+  sourceQueueHardDepth: number;
+  sourceQueueResumeDepth: number;
+  sourceQueueHardAgeSeconds: number;
+  sourceQueueResumeAgeSeconds: number;
   shutdownGraceMs: number;
   completedJobRetentionDays: number;
   failedJobRetentionDays: number;
@@ -301,9 +324,22 @@ export type PublicationSettings = {
   mode: "batch" | "manual" | "per_file";
   batchSize: number;
   intervalSeconds: number;
+  roleConcurrency: number;
+  claimBatchSize: number;
+  impactBatchSize: number;
+  impactConcurrency: number;
+  dirtyFileHardCount: number;
+  dirtyFileResumeCount: number;
+  dirtyAgeHardSeconds: number;
+  dirtyAgeResumeSeconds: number;
+  pendingImpactHardCount: number;
+  pendingImpactResumeCount: number;
+  generationRetentionDays: number;
   indexShardSize: number;
   linkIndexShardSize: number;
   manifestShardSize: number;
+  graphEdgeShardSize: number;
+  graphCandidateLimit: number;
   graphMaintenanceBatchSize: number;
   rootSummaryLimit: number;
   directoryIndexMaxEntries: number;
@@ -324,16 +360,6 @@ export type GraphSettings = {
   publicationShardSize: number;
   cacheTtlSeconds: number;
   genericPhraseThreshold: number;
-};
-
-export type UploadGenerationSettings = {
-  maxBytes: number;
-  generationBatchSize: number;
-  fileProcessingConcurrency: number;
-  sessionTtlSeconds: number;
-  manifestPageSize: number;
-  contentBatchMaxFiles: number;
-  contentBatchMaxBytes: number;
 };
 
 export type RuntimeModelConfig = {
@@ -361,7 +387,6 @@ export type RuntimeSettingsResponse = {
     rateLimits: RateLimitSettings;
     worker: WorkerSettings;
     publication: PublicationSettings;
-    uploadGeneration: UploadGenerationSettings;
     graph: GraphSettings;
     activeModel: RuntimeModelConfig | null;
   };
@@ -585,12 +610,6 @@ export async function updatePublicationSettings(
   return updateRuntimeSettings("/admin/api/settings/publication", input);
 }
 
-export async function updateUploadGenerationSettings(
-  input: UploadGenerationSettings
-): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
-  return updateRuntimeSettings("/admin/api/settings/upload-generation", input);
-}
-
 export async function updateGraphSettings(
   input: GraphSettings
 ): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
@@ -736,7 +755,7 @@ export type UploadSessionEntry = {
   name: string;
   declaredSize: number;
   receivedSize: number | null;
-  checksumSha256: string;
+  checksumSha256: string | null;
   disposition:
     | "pending"
     | "upload_required"
@@ -751,11 +770,8 @@ export type UploadSessionEntry = {
   errorCode: string | null;
 };
 
-export type UploadSessionLimits = {
+export type UploadSessionTransport = {
   manifestPageSize: number;
-  contentBatchMaxFiles: number;
-  contentBatchMaxBytes: number;
-  maxFileBytes: number;
 };
 
 export async function createUploadSession(input: {
@@ -763,7 +779,7 @@ export async function createUploadSession(input: {
   idempotencyKey: string;
   declaredFileCount: number;
   declaredByteCount: number;
-}): Promise<{ session: UploadSession; limits: UploadSessionLimits } | ApiFailure> {
+}): Promise<{ session: UploadSession; transport: UploadSessionTransport } | ApiFailure> {
   return uploadSessionJsonRequest(
     uploadSessionBasePath(input.knowledgeBaseId),
     {
@@ -780,7 +796,7 @@ export async function createUploadSession(input: {
 export async function addUploadManifestEntries(input: {
   knowledgeBaseId: string;
   sessionId: string;
-  entries: Array<{ relativePath: string; declaredSize: number; checksumSha256: string }>;
+  entries: Array<{ relativePath: string; declaredSize: number; checksumSha256?: string | null }>;
 }): Promise<{ session: UploadSession } | ApiFailure> {
   return uploadSessionJsonRequest(uploadSessionPath(input, "entries"), {
     method: "POST",
@@ -819,16 +835,17 @@ export async function getUploadSession(input: {
 export async function uploadSessionContent(input: {
   knowledgeBaseId: string;
   sessionId: string;
-  entries: Array<{ entryId: string; file: File }>;
-}): Promise<{ entries: UploadSessionEntry[] } | ApiFailure> {
-  const body = new FormData();
-  for (const entry of input.entries) {
-    body.append(entry.entryId, entry.file, entry.file.name);
-  }
-  return uploadSessionJsonRequest(uploadSessionPath(input, "content"), {
-    method: "POST",
-    body
-  });
+  entryId: string;
+  file: File;
+}): Promise<{ entry: UploadSessionEntry } | ApiFailure> {
+  return uploadSessionJsonRequest(
+    uploadSessionPath(input, `entries/${encodeURIComponent(input.entryId)}/content`),
+    {
+      method: "PUT",
+      headers: { "content-type": "text/markdown; charset=utf-8" },
+      body: input.file
+    }
+  );
 }
 
 export async function reconcileUploadSession(input: {
@@ -873,7 +890,14 @@ function uploadSessionPath(
 export async function retryKnowledgeBaseSourceFile(input: {
   knowledgeBaseId: string;
   sourceFileId: string;
-}): Promise<{ file: SourceFileRecord } | ApiFailure> {
+}): Promise<{
+  file: SourceFileRecord;
+  retry: {
+    kind: "source_processing" | "publication";
+    scope: "source_file" | "knowledge_base_publication";
+    coalesced: boolean;
+  };
+} | ApiFailure> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
@@ -883,14 +907,28 @@ export async function retryKnowledgeBaseSourceFile(input: {
     }
   );
   const body = (await response.json()) as
-    | { file: SourceFileRecord }
+    | {
+        file: SourceFileRecord;
+        retry: {
+          kind: "source_processing" | "publication";
+          scope: "source_file" | "knowledge_base_publication";
+          coalesced: boolean;
+        };
+      }
     | { error?: { messageKey?: string } };
 
   if (!response.ok) {
     return readFailure(body, "errors.uploadFailed");
   }
 
-  return body as { file: SourceFileRecord };
+  return body as {
+    file: SourceFileRecord;
+    retry: {
+      kind: "source_processing" | "publication";
+      scope: "source_file" | "knowledge_base_publication";
+      coalesced: boolean;
+    };
+  };
 }
 
 export async function deleteKnowledgeBaseSourceFileTasks(input: {
@@ -926,7 +964,7 @@ export async function fetchKnowledgeBaseFileTree(input: {
   knowledgeBaseId: string;
   parentPath?: string;
   cursor?: string | null;
-}): Promise<BundleTreePage> {
+}): Promise<GeneratedTreePage> {
   const params = new URLSearchParams();
 
   if (input.parentPath) {
@@ -949,14 +987,14 @@ export async function fetchKnowledgeBaseFileTree(input: {
     };
   }
 
-  return (await response.json()) as BundleTreePage;
+  return (await response.json()) as GeneratedTreePage;
 }
 
 export async function searchKnowledgeBaseFileTree(input: {
   knowledgeBaseId: string;
   query: string;
   cursor?: string | null;
-}): Promise<BundleTreeSearchPage> {
+}): Promise<GeneratedTreeSearchPage> {
   const params = new URLSearchParams({
     query: input.query
   });
@@ -976,13 +1014,13 @@ export async function searchKnowledgeBaseFileTree(input: {
     };
   }
 
-  return (await response.json()) as BundleTreeSearchPage;
+  return (await response.json()) as GeneratedTreeSearchPage;
 }
 
 export async function fetchKnowledgeBaseFileDetail(input: {
   knowledgeBaseId: string;
   path: string;
-}): Promise<BundleFileDetail | null> {
+}): Promise<GeneratedFileDetail | null> {
   const response = await adminFetch(
     `/admin/api/knowledge-bases/${encodeURIComponent(
       input.knowledgeBaseId
@@ -993,7 +1031,7 @@ export async function fetchKnowledgeBaseFileDetail(input: {
     return null;
   }
 
-  return (await response.json()) as BundleFileDetail;
+  return (await response.json()) as GeneratedFileDetail;
 }
 
 export async function deleteKnowledgeBaseFile(input: {
@@ -1123,55 +1161,6 @@ export async function fetchKnowledgeBasePublicUrls(input: {
 
   const body = (await response.json()) as { publicUrls: KnowledgeBasePublicUrls };
   return body.publicUrls;
-}
-
-export async function listReleases(input: {
-  knowledgeBaseId: string;
-  cursor?: string | null;
-}): Promise<CursorPage<ReleaseRecord>> {
-  return fetchKnowledgeBaseList<ReleaseRecord>({
-    knowledgeBaseId: input.knowledgeBaseId,
-    path: "releases",
-    ...(input.cursor !== undefined ? { cursor: input.cursor } : {})
-  });
-}
-
-export async function listBundleFiles(input: {
-  knowledgeBaseId: string;
-  cursor?: string | null;
-}): Promise<CursorPage<BundleFileRecord>> {
-  return fetchKnowledgeBaseList<BundleFileRecord>({
-    knowledgeBaseId: input.knowledgeBaseId,
-    path: "bundle-files",
-    ...(input.cursor !== undefined ? { cursor: input.cursor } : {})
-  });
-}
-
-async function fetchKnowledgeBaseList<T>(input: {
-  knowledgeBaseId: string;
-  path: string;
-  cursor?: string | null;
-}): Promise<CursorPage<T>> {
-  const params = new URLSearchParams();
-
-  if (input.cursor) {
-    params.set("cursor", input.cursor);
-  }
-
-  const response = await adminFetch(
-    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/${input.path}${
-      params.size ? `?${params}` : ""
-    }`
-  );
-
-  if (!response.ok) {
-    return {
-      items: [],
-      nextCursor: null
-    };
-  }
-
-  return (await response.json()) as CursorPage<T>;
 }
 
 function readFailure(

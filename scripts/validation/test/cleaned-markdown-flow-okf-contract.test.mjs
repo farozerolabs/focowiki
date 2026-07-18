@@ -15,7 +15,7 @@ test("accepts the OKF version declaration on the bundle-root index", () => {
         "- [Browse documents](pages/index.md)"
       ].join("\n")
     ],
-    ["log.md", "# Directory Update Log\n\n## 2026-07-13\n\n* **Publication**: Published one page."],
+    ["log.md", "# Directory Update Log\n\n## Active generation\n\n- Published one page."],
     [
       "schema.md",
       "---\ntype: schema\ntitle: Metadata schema\n---\n# Metadata schema"
@@ -48,9 +48,7 @@ test("accepts the OKF version declaration on the bundle-root index", () => {
       }
     ]
   };
-  const links = {
-    links: [{ from: "pages/index.md", to: "pages/example.md", label: "Example" }]
-  };
+  const links = { links: [{ path: "pages/example.md", references: [] }] };
   const report = { checks: [], contentQuality: [], modelAssistance: null };
 
   assert.doesNotThrow(() => validateOkfPublicArtifactBodies({

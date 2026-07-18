@@ -4,20 +4,26 @@ import { describe, expect, it } from "vitest";
 import { createKnowledgeBaseId } from "../src/db/admin-repositories.js";
 
 const migrationPath = resolve(import.meta.dirname, "../migrations/001_production_admin_web.sql");
-const repositoryPath = resolve(import.meta.dirname, "../src/db/admin-repositories.ts");
-const fileGraphRepositoryPath = resolve(import.meta.dirname, "../src/db/file-graph-repository.ts");
+const generationRepositoryPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/publication-generation-repository.ts"
+);
+const activeReadRepositoryPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/active-generation-read-repository.ts"
+);
 
 function readNormalized(path: string): string {
   return readFileSync(path, "utf8").replace(/\s+/g, " ").toLowerCase();
 }
 
-describe("resource-editing database baseline", () => {
-  it("creates one clean relation-search-publication schema", () => {
+describe("incremental publication database baseline", () => {
+  it("creates one destructive generation and active-projection schema", () => {
     const sql = readNormalized(migrationPath);
 
     expect(sql).toContain("create schema focowiki");
-    expect(sql).toContain("create extension pg_trgm with schema focowiki");
-    expect(sql).toContain("values (true, 'relation-search-publication-v1')");
+    expect(sql).toContain("create extension if not exists pg_trgm with schema focowiki");
+    expect(sql).toContain("incremental-sharded-publication-v1");
     for (const table of [
       "knowledge_bases",
       "source_directories",
@@ -26,44 +32,54 @@ describe("resource-editing database baseline", () => {
       "upload_sessions",
       "upload_session_entries",
       "source_path_reservations",
+      "source_dispatch_markers",
+      "publication_change_facts",
+      "publication_generations",
+      "publication_impacts",
+      "publication_impact_causes",
+      "publication_progress",
+      "projection_shards",
+      "generation_object_refs",
+      "generation_projection_records",
+      "active_object_refs",
+      "active_projection_records",
+      "directory_navigation_leaves",
+      "directory_navigation_summaries",
+      "role_jobs",
+      "role_heartbeats",
       "deletion_intents",
-      "resource_operations",
-      "resource_operation_targets",
-      "resource_path_reservations",
-      "releases",
-      "release_source_directories",
-      "release_source_files",
-      "release_resource_operations",
-      "release_markdown_links",
-      "bundle_files",
-      "bundle_file_search_documents",
-      "knowledge_file_tree_nodes",
-      "knowledge_graph_nodes",
-      "knowledge_graph_edges",
-      "knowledge_graph_search_documents",
-      "knowledge_graph_insights",
-      "release_read_summaries",
-      "source_file_graph_nodes",
-      "source_file_graph_edges",
-      "worker_jobs",
-      "worker_queue_summaries",
-      "hard_delete_object_deletions",
+      "cleanup_checkpoints",
+      "cleanup_object_deletions",
+      "immutable_objects",
       "runtime_generation"
     ]) {
       expect(sql).toContain(`create table focowiki.${table}`);
     }
   });
 
-  it("removes every previous flat-file and compatibility artifact", () => {
+  it("removes release copies, shared workers, and compatibility artifacts", () => {
     const sql = readNormalized(migrationPath);
-    const repository = readNormalized(repositoryPath);
 
+    for (const table of [
+      "releases",
+      "release_source_files",
+      "release_source_directories",
+      "bundle_files",
+      "bundle_file_search_documents",
+      "knowledge_file_tree_nodes",
+      "knowledge_graph_nodes",
+      "knowledge_graph_edges",
+      "release_read_summaries",
+      "worker_jobs",
+      "publication_jobs"
+    ]) {
+      expect(sql).not.toContain(`create table focowiki.${table} `);
+    }
     for (const removed of [
-      "knowledge_files",
-      "original_name",
-      "internal_migration_markers",
-      "upload_tasks",
-      "upload_task_events",
+      "generated_bundle_file_id",
+      "generated_bundle_file_path",
+      "publication_dirty_at",
+      "publication_visible_at",
       "add column if not exists",
       "drop column if exists",
       "legacy",
@@ -71,51 +87,28 @@ describe("resource-editing database baseline", () => {
     ]) {
       expect(sql).not.toContain(removed);
     }
-    expect(repository).not.toContain("createSourceFiles");
-    expect(repository).not.toContain("hasActiveSourceFileNames");
-    expect(repository).not.toContain("focowiki.knowledge_files");
   });
 
-  it("keeps raw Markdown bodies in object storage", () => {
+  it("keeps source bodies in object storage and revisions idempotent", () => {
     const sql = readNormalized(migrationPath);
 
     expect(sql).not.toMatch(/\b(raw_body|raw_content|markdown_body|json_body|file_body)\b/);
     expect(sql).toContain("object_key text not null");
     expect(sql).toContain("checksum_sha256 text not null");
+    expect(sql).toContain("source_revisions_source_file_id_revision_key");
+    expect(sql).toContain("source_dispatch_markers_source_revision_id_key");
+    expect(sql).toContain("source_revisions_file_revision_idx");
+    expect(sql).toContain("source_dispatch_markers_claim_idx");
   });
 
-  it("defines nested source identity and immutable revisions", () => {
+  it("indexes source revision references for bounded inverse deletion", () => {
     const sql = readNormalized(migrationPath);
 
-    for (const field of [
-      "parent_id text",
-      "name text not null",
-      "relative_path text not null",
-      "path_key text not null",
-      "directory_id text",
-      "active_revision_id text not null",
-      "resource_revision integer default 1 not null",
-      "content_revision integer default 1 not null",
-      "candidate_operation_id text",
-      "candidate_relative_path text",
-      "candidate_revision_id text"
-    ]) {
-      expect(sql).toContain(field);
-    }
-    expect(sql).toContain("source_files_active_revision_id_fkey");
-    expect(sql).toContain("deferrable initially deferred");
-    expect(sql).toContain("source_revisions_source_file_id_fkey");
-    expect(sql).toContain("source_files_active_path_key_idx");
-    expect(sql).toContain("source_directories_active_path_key_idx");
-    expect(sql).toContain("source_directories_parent_cursor_idx");
-    expect(sql).toContain("source_files_directory_cursor_idx");
-    expect(sql).toContain("source_files_resource_cursor_idx");
-    expect(sql).toContain("source_files_resource_processing_idx");
-    expect(sql).toContain("source_files_resource_id_prefix_idx");
-    expect(sql).toContain("source_files_resource_relative_path_trgm_idx");
+    expect(sql).toContain("source_files_active_revision_idx");
+    expect(sql).toContain("source_files_candidate_revision_idx");
   });
 
-  it("defines resumable upload sessions and durable path reservations", () => {
+  it("defines resumable upload sessions without product admission quotas", () => {
     const sql = readNormalized(migrationPath);
 
     for (const value of [
@@ -127,96 +120,128 @@ describe("resource-editing database baseline", () => {
       "sequence_number bigint not null",
       "staging_object_key text",
       "finalized_at timestamp with time zone",
-      "upload_required",
-      "skipped_existing",
-      "waiting_reservation",
-      "rejected_deleting",
       "upload_sessions_state_expiry_idx",
       "upload_session_entries_resume_idx",
-      "upload_session_entries_path_disposition_idx",
-      "upload_session_entries_finalization_idx",
-      "source_path_reservations_expiry_idx"
+      "upload_session_entries_finalization_idx"
+    ]) {
+      expect(sql).toContain(value);
+    }
+    expect(sql).not.toContain("max_upload_bytes");
+    expect(sql).not.toContain("max_upload_files");
+    expect(sql).not.toContain("upload_storage_concurrency");
+  });
+
+  it("constrains one active, one building, and one successor generation", () => {
+    const sql = readNormalized(migrationPath);
+
+    for (const value of [
+      "publication_generations_one_active_idx",
+      "publication_generations_one_frozen_idx",
+      "publication_generations_one_open_successor_idx",
+      "publication_generations_error_check",
+      "publication_impacts_generation_id_projection_kind_projectio_key",
+      "publication_impacts_claim_idx",
+      "publication_impacts_dirty_shard_idx",
+      "publication_progress_counts_check"
     ]) {
       expect(sql).toContain(value);
     }
   });
 
-  it("defines durable mutations, deletion ownership, and bounded cleanup state", () => {
+  it("defines immutable objects, structural sharing, and stable projection shards", () => {
     const sql = readNormalized(migrationPath);
 
     for (const value of [
-      "create table focowiki.deletion_intents",
-      "create table focowiki.resource_operations",
-      "create table focowiki.resource_operation_targets",
-      "create table focowiki.release_resource_operations",
-      "request_fingerprint text not null",
-      "expected_resource_revision integer",
-      "candidate_catalog_generation bigint not null",
-      "source_directory_delete",
-      "knowledge_base_delete",
-      "hard_delete_stage text",
-      "hard_delete_cursor_json jsonb",
-      "hard_delete_object_deletions_job_pending_idx",
-      "deletion_intents_owner_idx",
-      "resource_operations_fingerprint_idx"
+      "immutable_objects_pkey primary key (checksum_sha256, format_version)",
+      "immutable_objects_key_idx",
+      "immutable_objects_gc_idx",
+      "active_object_refs_knowledge_base_id_fkey foreign key (knowledge_base_id) references focowiki.knowledge_bases(id) on delete cascade",
+      "generation_object_refs_pkey primary key (generation_id, ref_kind, ref_key)",
+      "generation_projection_records_pkey primary key (generation_id, projection_kind, record_id)",
+      "projection_shards_knowledge_base_id_projection_kind_shard_k_key",
+      "projection_shards_lookup_idx",
+      "directory_navigation_leaves_knowledge_base_id_directory_pat_key",
+      "directory_navigation_summaries_pkey"
     ]) {
       expect(sql).toContain(value);
     }
   });
 
-  it("defines nested release, navigation, search, and graph projections", () => {
+  it("indexes active file, tree, search, graph, and related-file reads", () => {
     const sql = readNormalized(migrationPath);
-    const graphRepository = readNormalized(fileGraphRepositoryPath);
 
     for (const value of [
-      "unique (release_id, logical_path)",
-      "navigation_only boolean default false not null",
-      "source_directory_id text",
-      "direct_file_count integer default 0 not null",
-      "descendant_file_count integer default 0 not null",
-      "bundle_files_release_logical_cursor_idx",
-      "release_source_directories_path_cursor_idx",
-      "release_source_files_path_cursor_idx",
-      "release_resource_operations_operation_idx",
-      "release_markdown_links_cursor_idx",
-      "release_markdown_links_source_idx",
-      "bundle_file_search_documents_search_text_trgm_idx",
-      "bundle_file_search_documents_metadata_text_trgm_idx",
-      "bundle_file_search_documents_path_text_trgm_idx",
-      "bundle_file_search_documents_release_cursor_idx",
-      "knowledge_file_tree_nodes_source_directory_idx",
-      "knowledge_file_tree_nodes_search_text_trgm_idx",
-      "knowledge_file_tree_nodes_search_cursor_idx",
-      "knowledge_graph_search_documents_search_text_trgm_idx",
-      "knowledge_graph_search_documents_neighbor_text_trgm_idx",
-      "knowledge_graph_search_documents_release_cursor_idx",
-      "release_read_summaries_knowledge_base_idx"
+      "active_object_refs_path_idx",
+      "active_object_refs_source_idx",
+      "active_projection_records_path_idx",
+      "active_projection_records_tree_idx",
+      "active_projection_records_tree_search_trgm_idx",
+      "active_projection_records_search_fts_idx",
+      "active_projection_records_search_trgm_idx",
+      "active_projection_records_graph_idx",
+      "active_projection_records_graph_search_fts_idx",
+      "active_projection_records_graph_search_trgm_idx"
     ]) {
       expect(sql).toContain(value);
     }
-    expect(graphRepository).toContain("focowiki.bundle_files");
-    expect(graphRepository).toContain("focowiki.knowledge_graph_nodes");
-    expect(graphRepository).toContain("focowiki.knowledge_graph_edges");
-    expect(graphRepository).not.toContain("focowiki.knowledge_files");
   });
 
-  it("keeps queue, audit, key, webhook, and runtime-setting constraints", () => {
+  it("separates source, publication, and maintenance role claims", () => {
+    const sql = readNormalized(migrationPath);
+
+    expect(sql).toContain("role_jobs_role_check");
+    expect(sql).toContain("'source'::text, 'publication'::text, 'maintenance'::text");
+    expect(sql).toContain("role_jobs_claim_idx");
+    expect(sql).toContain("role_jobs_publication_generation_active_idx");
+    expect(sql).toContain("role_jobs_publication_generation_idx");
+    expect(sql).toContain("role_jobs_source_revision_idx");
+  });
+
+  it("defines bounded inverse cleanup and deletion fences", () => {
     const sql = readNormalized(migrationPath);
 
     for (const value of [
-      "source_file_processing",
-      "upload_session_finalization",
-      "resource_operation",
-      "publication",
-      "hard_delete",
-      "dead_letter",
-      "worker_jobs_claim_idx",
-      "worker_jobs_running_heartbeat_idx",
-      "worker_jobs_upload_finalization_active_idx",
-      "key_hash text not null",
+      "deletion_intents_target_kind_check",
+      "cleanup_checkpoints_phase_check",
+      "cleanup_checkpoints_scope_idx",
+      "cleanup_object_deletions_pending_idx",
+      "source_files_deletion_intent_id_fkey",
+      "source_directories_deletion_intent_id_fkey",
+      "on delete cascade"
+    ]) {
+      expect(sql).toContain(value);
+    }
+  });
+
+  it("cascades every knowledge-base-owned source and model record", () => {
+    const sql = readNormalized(migrationPath);
+
+    for (const constraint of [
+      "model_invocations_knowledge_base_id_fkey",
+      "source_file_events_knowledge_base_id_fkey",
+      "source_file_graph_edges_knowledge_base_id_fkey",
+      "source_file_graph_jobs_knowledge_base_id_fkey",
+      "source_file_graph_nodes_knowledge_base_id_fkey",
+      "source_file_retry_attempts_knowledge_base_id_fkey",
+      "source_files_knowledge_base_id_fkey"
+    ]) {
+      expect(sql).toMatch(new RegExp(
+        `add constraint ${constraint} foreign key \\(knowledge_base_id\\) `
+        + "references focowiki\\.knowledge_bases\\(id\\) on delete cascade"
+      ));
+    }
+  });
+
+  it("keeps terminal failure, key, webhook, model, and settings contracts", () => {
+    const sql = readNormalized(migrationPath);
+
+    for (const value of [
+      "source_files_terminal_failure_check",
+      "source_files_terminal_failure_stage_check",
+      "source_files_terminal_failure_retry_kind_check",
       "public_api_keys_active_hash_idx",
-      "runtime_settings",
-      "model_configs",
+      "runtime_settings_key_check",
+      "model_configs_api_mode_check",
       "webhook_subscriptions",
       "webhook_deliveries"
     ]) {
@@ -233,20 +258,15 @@ describe("resource-editing database baseline", () => {
     expect(id).not.toContain(" ");
   });
 
-  it("activates releases and candidate source mappings atomically", () => {
-    const repository = readNormalized(repositoryPath);
-    const activeReadProjection = repository.slice(
-      repository.indexOf("const source_file_select_columns"),
-      repository.indexOf("const source_file_processing_select_columns")
-    );
+  it("resolves one active generation per request and activates with a locked CAS", () => {
+    const generationRepository = readNormalized(generationRepositoryPath);
+    const activeReads = readNormalized(activeReadRepositoryPath);
 
-    expect(repository).toContain("await sql.begin");
-    expect(repository).toContain("active_release_id = ${input.releaseid}");
-    expect(repository).toContain("candidate_operation_id = null");
-    expect(repository).toContain("active_revision_id = coalesce(source.candidate_revision_id");
-    expect(repository).toContain("object_key = coalesce(source.candidate_object_key, source.object_key)");
-    expect(activeReadProjection).not.toContain(
-      "coalesce(source.candidate_object_key, source.object_key) as object_key"
-    );
+    expect(activeReads).toContain("select active_generation_id");
+    expect(activeReads).toContain("const generationid = rows[0]?.active_generation_id");
+    expect(generationRepository).toContain("select active_generation_id");
+    expect(generationRepository).toContain("for update");
+    expect(generationRepository).toContain("active_generation_id !== input.expectedpredecessorgenerationid");
+    expect(generationRepository).toContain("set active_generation_id = ${input.generationid}");
   });
 });

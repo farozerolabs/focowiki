@@ -1,8 +1,54 @@
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { S3StorageAdapter } from "../src/storage/s3.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 
 describe("S3 storage adapter", () => {
+  it("sends the declared content length for streaming writes", async () => {
+    const send = vi.fn(async () => ({}));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await storage.putStreamObject({
+      key: "objects/source.md",
+      body: Readable.from([Buffer.from("# Heading\nBody")]),
+      contentLength: 14,
+      contentType: "text/markdown; charset=utf-8"
+    });
+
+    const command = (send.mock.calls as unknown as Array<[{ input?: unknown }]>)[0]?.[0];
+    expect(command?.input).toEqual({
+      Bucket: "bucket-test",
+      Key: "objects/source.md",
+      Body: expect.anything(),
+      ContentLength: 14,
+      ContentType: "text/markdown; charset=utf-8"
+    });
+  });
+
+  it("checks storage health with one bounded read under the configured prefix", async () => {
+    const send = vi.fn(async () => ({ Contents: [] }));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.checkHealth()).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledOnce();
+    const command = (send.mock.calls as unknown as Array<[{ constructor: { name: string }; input: unknown }]>)[0]?.[0];
+    expect(command?.constructor.name).toBe("ListObjectsV2Command");
+    expect(command?.input).toEqual({
+      Bucket: "bucket-test",
+      Prefix: "tenant/test/",
+      MaxKeys: 1
+    });
+  });
+
   it("deletes objects in unique non-empty batches no larger than 1000 keys", async () => {
     const send = vi.fn(async () => ({}));
     const storage = new S3StorageAdapter({

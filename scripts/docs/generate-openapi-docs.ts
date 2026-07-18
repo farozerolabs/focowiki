@@ -96,11 +96,11 @@ const nextOperationIds: Record<string, string[]> = {
   createKnowledgeBase: ["createUploadSession", "getKnowledgeBase"],
   createUploadSession: ["addUploadManifestEntries", "getUploadSession"],
   addUploadManifestEntries: ["sealUploadManifest", "getUploadSession"],
-  sealUploadManifest: ["uploadSessionContentBatch", "getUploadSession"],
-  uploadSessionContentBatch: ["finalizeUploadSession", "getUploadSession"],
+  sealUploadManifest: ["uploadSessionEntryContent", "getUploadSession"],
+  uploadSessionEntryContent: ["finalizeUploadSession", "getUploadSession"],
   reconcileUploadSession: ["getUploadSession", "finalizeUploadSession"],
   finalizeUploadSession: ["getUploadSession", "listKnowledgeBaseSourceFiles"],
-  getUploadSession: ["uploadSessionContentBatch", "reconcileUploadSession", "finalizeUploadSession"],
+  getUploadSession: ["uploadSessionEntryContent", "reconcileUploadSession", "finalizeUploadSession"],
   getKnowledgeBaseSourceFile: ["getSourceFileContent", "listKnowledgeBaseSourceFileEvents"],
   moveSourceFile: ["getResourceOperation"],
   replaceSourceFileContent: ["getResourceOperation"],
@@ -390,8 +390,8 @@ function parameterExampleByName(name: string): string | undefined {
     parentPath: "pages",
     pathQuery: "handbook/guide",
     sourceFileIdPrefix: "source-file-11111111",
-    processingState: "completed",
-    currentStage: "release_activation",
+    state: "visible",
+    currentStage: "generation_activation",
     generatedOutputStatus: "visible",
     startedFrom: "2026-06-17T00:00:00.000Z",
     startedTo: "2026-06-18T00:00:00.000Z",
@@ -643,8 +643,7 @@ function errorCodeForStatus(status: string): string {
     "413": "PAYLOAD_TOO_LARGE",
     "422": "VALIDATION_ERROR",
     "429": "RATE_LIMITED",
-    "500": "INTERNAL_ERROR",
-    "503": "QUEUE_BACKPRESSURE"
+    "500": "INTERNAL_ERROR"
   };
   return map[status] ?? "ERROR";
 }

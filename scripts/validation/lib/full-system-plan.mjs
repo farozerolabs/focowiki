@@ -2,9 +2,9 @@ import path from "node:path";
 
 export const FULL_SYSTEM_EXTERNAL_APPROVAL_ENV =
   "FOCOWIKI_FULL_SYSTEM_ALLOW_CONFIGURED_EXTERNALS";
-export const DEFAULT_FULL_SYSTEM_CHANGE_ID = "validate-focowiki-full-system-e2e";
+export const DEFAULT_FULL_SYSTEM_CHANGE_ID = "implement-incremental-sharded-publication";
 export const DEFAULT_FULL_SYSTEM_REPORT_DIR =
-  "ReferenceDocs/validate-focowiki-full-system-e2e";
+  "ReferenceDocs/implement-incremental-sharded-publication";
 
 export function readFullSystemConfig(command = "all", env = process.env) {
   if (!["plan", "baseline", "runtime", "all"].includes(command)) {
@@ -87,7 +87,7 @@ export function buildFullSystemPlan(config) {
           )
         ]
       : []),
-    localDatabaseStep("large-nested-database")
+    localDatabaseStep("incremental-database")
   ];
 
   if (config.command === "plan") {
@@ -130,10 +130,16 @@ function localDatabaseStep(id) {
       "exec",
       "vitest",
       "run",
-      "test/large-nested-scale.integration.test.ts"
+      "test/upload-session-repository.integration.test.ts",
+      "test/source-dispatch-repository.integration.test.ts",
+      "test/publication-generation-repository.integration.test.ts",
+      "test/publication-impact-repository.integration.test.ts",
+      "test/directory-navigation-repository.integration.test.ts",
+      "test/active-generation-read-repository.integration.test.ts",
+      "test/generation-cleanup-repository.integration.test.ts",
+      "test/query-plan-validation.test.ts"
     ],
     extraEnv: {
-      FOCOWIKI_RUN_LARGE_NESTED_SCALE: "1",
       FOCOWIKI_TEST_DATABASE_URL: "<DATABASE_URL>"
     }
   });

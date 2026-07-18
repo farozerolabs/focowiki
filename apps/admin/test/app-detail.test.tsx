@@ -9,8 +9,6 @@ import {
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
   fetchKnowledgeBasePublicUrls,
-  listBundleFiles,
-  listReleases,
   listSourceFiles,
   loginAdmin,
   searchKnowledgeBaseFileTree,
@@ -73,7 +71,7 @@ vi.mock("../src/lib/admin-api", () => ({
         name: "intro.md",
         logicalPath: "pages/intro.md",
         entryType: "file",
-        bundleFileId: "file-001",
+        generatedFileId: "file-001",
         sourceFileId: "source-001",
         resourceRevision: 2,
         fileKind: "page",
@@ -98,7 +96,7 @@ vi.mock("../src/lib/admin-api", () => ({
           name: "intro.md",
           logicalPath: "pages/intro.md",
           entryType: "file",
-          bundleFileId: "file-001",
+          generatedFileId: "file-001",
           sourceFileId: "source-001",
           fileKind: "page",
           deletable: true
@@ -109,7 +107,7 @@ vi.mock("../src/lib/admin-api", () => ({
             name: "pages",
             logicalPath: "pages",
             entryType: "directory",
-            bundleFileId: null,
+            generatedFileId: null,
             sourceFileId: null,
             fileKind: null,
             deletable: false
@@ -120,6 +118,13 @@ vi.mock("../src/lib/admin-api", () => ({
     nextCursor: null
   })),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
+    activeGenerationId: null,
+    pendingDispatch: {
+      pendingCount: 0,
+      oldestPendingAt: null,
+      paused: false,
+      pausedReason: null
+    },
     sourceFileJobs: {
       queuedCount: 0,
       runningCount: 0,
@@ -137,6 +142,12 @@ vi.mock("../src/lib/admin-api", () => ({
       deadLetterCount: 0,
       oldestQueuedAt: null,
       oldestQueuedAgeSeconds: null
+    },
+    publicationProgress: {
+      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
+      touchedShardCount: 0, oldestDirtyAt: null, queuedAt: null, startedAt: null,
+      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
+      safeErrorCode: null, safeErrorMessage: null
     },
     dirtySourceFiles: {
       count: 0,
@@ -159,7 +170,7 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "kb-docs",
         name: "Developer docs",
         description: "Markdown product knowledge",
-        activeReleaseId: "release-001"
+        activeGenerationId: "generation-001"
       }
     ],
     nextCursor: null
@@ -170,45 +181,25 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "source-001",
         name: "intro.md",
         relativePath: "intro.md",
-        processingStatus: "running",
-        processingStage: "metadata_resolution",
+        state: "running",
+        currentStage: "metadata_resolution",
         processingStartedAt: "2026-06-14T00:00:00.000Z",
         processingEndedAt: null,
-        processingErrorCode: null,
+        failure: null,
+        actions: [],
         createdAt: "2026-06-14T00:00:00.000Z"
       },
       {
         id: "source-002",
         name: "setup.md",
         relativePath: "setup.md",
-        processingStatus: "queued",
-        processingStage: "upload_storage",
+        state: "queued",
+        currentStage: "upload_storage",
         processingStartedAt: "2026-06-14T00:00:01.000Z",
         processingEndedAt: null,
-        processingErrorCode: null,
+        failure: null,
+        actions: [],
         createdAt: "2026-06-14T00:00:01.000Z"
-      }
-    ],
-    nextCursor: null
-  })),
-  listBundleFiles: vi.fn(async () => ({
-    items: [
-      {
-        id: "bundle-file-001",
-        logicalPath: "pages/intro.md",
-        contentType: "text/markdown",
-        title: "Intro"
-      }
-    ],
-    nextCursor: null
-  })),
-  listReleases: vi.fn(async () => ({
-    items: [
-      {
-        id: "release-001",
-        fileCount: 7,
-        generatedAt: "2026-06-14T00:00:00.000Z",
-        publishedAt: "2026-06-14T00:00:01.000Z"
       }
     ],
     nextCursor: null
@@ -412,7 +403,7 @@ describe("Admin knowledge base detail", () => {
           name: longName,
           logicalPath: `pages/${longName}`,
           entryType: "file",
-          bundleFileId: "file-long",
+          generatedFileId: "file-long",
           sourceFileId: "source-long",
           fileKind: "page",
           deletable: true
@@ -544,11 +535,19 @@ describe("Admin knowledge base detail", () => {
           id: "source-001",
           name: "intro.md",
           relativePath: "intro.md",
-          processingStatus: "completed",
-          processingStage: "release_activation",
+          state: "visible",
+          currentStage: "generation_activation",
+          failure: null,
+          actions: [
+            {
+              kind: "open_generated_file",
+              method: "GET",
+              href: "/admin/api/knowledge-bases/kb-docs/files/content?path=pages%2Fintro.md",
+              scope: "source_file"
+            }
+          ],
           processingStartedAt: "2026-06-14T00:00:00.000Z",
           processingEndedAt: "2026-06-14T00:00:10.000Z",
-          processingErrorCode: null,
           generatedFileAvailable: true,
           generatedFileId: "file-001",
           generatedFilePath: "pages/intro.md",
@@ -571,7 +570,7 @@ describe("Admin knowledge base detail", () => {
     });
   });
 
-  it("keeps failed source files out of the generated tree and keeps manual retry visible", async () => {
+  it("shows publication failures with details and the backend-authorized retry action", async () => {
     vi.mocked(fetchKnowledgeBaseFileTree).mockResolvedValueOnce({
       items: [],
       nextCursor: null
@@ -582,12 +581,34 @@ describe("Admin knowledge base detail", () => {
           id: "source-failed",
           name: "broken.md",
           relativePath: "broken.md",
-          processingStatus: "failed",
-          processingStage: "llm_suggestion",
+          state: "failed",
+          currentStage: "generation_validation",
+          failure: {
+            stage: "generation_validation",
+            code: "RELEASE_VALIDATION_FAILED",
+            message: "Generated navigation did not pass release validation.",
+            occurredAt: "2026-06-14T00:00:10.000Z",
+            retryKind: "publication",
+            correlationId: "publication-001"
+          },
+          actions: [
+            {
+              kind: "view_failure_details",
+              method: null,
+              href: null,
+              scope: "source_file"
+            },
+            {
+              kind: "retry_publication",
+              method: "POST",
+              href: "/admin/api/knowledge-bases/kb-docs/source-files/source-failed/retry",
+              scope: "knowledge_base_publication"
+            }
+          ],
           processingStartedAt: "2026-06-14T00:00:00.000Z",
           processingEndedAt: "2026-06-14T00:00:10.000Z",
-          processingErrorCode: "MODEL_OUTPUT_INVALID",
           generatedFileAvailable: false,
+          generatedOutputStatus: "unavailable",
           generatedFileId: null,
           generatedFilePath: null,
           createdAt: "2026-06-14T00:00:00.000Z"
@@ -599,8 +620,13 @@ describe("Admin knowledge base detail", () => {
     await openDetail();
 
     expect(screen.queryByRole("button", { name: "broken.md" })).toBeNull();
-    expect(await screen.findByText("Pending")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry parsing" })).toBeTruthy();
+    expect(await screen.findByText("Unavailable")).toBeTruthy();
+    expect(screen.getByText("RELEASE_VALIDATION_FAILED")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry publication" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View failure details" }));
+    expect(await screen.findByRole("dialog", { name: "Failure details" })).toBeTruthy();
+    expect(screen.getByText("Generated navigation did not pass release validation.")).toBeTruthy();
+    expect(screen.getByText("publication-001")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Open file" })).toBeNull();
   });
 
@@ -612,11 +638,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -628,11 +655,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-002",
             name: "setup.md",
             relativePath: "setup.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:11.000Z",
             processingEndedAt: "2026-06-14T00:00:20.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:11.000Z"
           }
         ],
@@ -679,11 +707,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -699,11 +728,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:10.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -791,7 +821,7 @@ describe("Admin knowledge base detail", () => {
             name: "intro.md",
             logicalPath: "pages/intro.md",
             entryType: "file",
-            bundleFileId: "file-001"
+            generatedFileId: "file-001"
           }
         ],
         nextCursor: "tree-cursor-001"
@@ -803,7 +833,7 @@ describe("Admin knowledge base detail", () => {
             name: "setup.md",
             logicalPath: "pages/setup.md",
             entryType: "file",
-            bundleFileId: "file-002"
+            generatedFileId: "file-002"
           }
         ],
         nextCursor: null
@@ -832,11 +862,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "running",
-            processingStage: "metadata_resolution",
+            state: "running",
+            currentStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -848,11 +879,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-002",
             name: "setup.md",
             relativePath: "setup.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-13T00:00:00.000Z",
             processingEndedAt: "2026-06-13T00:00:10.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-13T00:00:00.000Z"
           }
         ],
@@ -864,11 +896,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "running",
-            processingStage: "metadata_resolution",
+            state: "running",
+            currentStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -906,11 +939,12 @@ describe("Admin knowledge base detail", () => {
             id: "source-001",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:03.000Z",
             processingEndedAt: "2026-06-14T00:00:04.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:03.000Z"
           }
         ],
@@ -959,7 +993,7 @@ describe("Admin knowledge base detail", () => {
           name: "index.md",
           logicalPath: "index.md",
           entryType: "file",
-          bundleFileId: "file-index",
+          generatedFileId: "file-index",
           sourceFileId: null,
           fileKind: "index",
           deletable: false
@@ -982,7 +1016,7 @@ describe("Admin knowledge base detail", () => {
           name: "handbook",
           logicalPath: "pages/handbook",
           entryType: "directory",
-          bundleFileId: null,
+          generatedFileId: null,
           sourceFileId: null,
           fileKind: null,
           childCount: 2,
@@ -1027,7 +1061,7 @@ describe("Admin knowledge base detail", () => {
             name: "pages",
             logicalPath: "pages",
             entryType: "directory",
-            bundleFileId: null
+            generatedFileId: null
           }
         ],
         nextCursor: null
@@ -1039,7 +1073,7 @@ describe("Admin knowledge base detail", () => {
             name: "intro.md",
             logicalPath: "pages/intro.md",
             entryType: "file",
-            bundleFileId: "file-001"
+            generatedFileId: "file-001"
           }
         ],
         nextCursor: null
@@ -1063,7 +1097,5 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByText("Source files")).toBeNull();
     expect(screen.queryByText("Releases")).toBeNull();
     expect(screen.queryByText("Bundle files")).toBeNull();
-    expect(listReleases).not.toHaveBeenCalled();
-    expect(listBundleFiles).not.toHaveBeenCalled();
   });
 });

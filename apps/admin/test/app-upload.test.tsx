@@ -37,6 +37,13 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   fetchKnowledgeBase: vi.fn(async () => null),
   fetchKnowledgeBaseProcessingSummary: vi.fn(async () => ({
+    activeGenerationId: null,
+    pendingDispatch: {
+      pendingCount: 0,
+      oldestPendingAt: null,
+      paused: false,
+      pausedReason: null
+    },
     sourceFileJobs: {
       queuedCount: 0,
       runningCount: 0,
@@ -55,6 +62,12 @@ vi.mock("../src/lib/admin-api", () => ({
       oldestQueuedAt: null,
       oldestQueuedAgeSeconds: null
     },
+    publicationProgress: {
+      generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
+      touchedShardCount: 0, oldestDirtyAt: null, queuedAt: null, startedAt: null,
+      heartbeatAt: null, completedAt: null, lastSuccessAt: null,
+      safeErrorCode: null, safeErrorMessage: null
+    },
     dirtySourceFiles: {
       count: 0,
       oldestDirtyAt: null
@@ -70,20 +83,12 @@ vi.mock("../src/lib/admin-api", () => ({
         id: "kb-docs",
         name: "Developer docs",
         description: "Markdown product knowledge",
-        activeReleaseId: null
+        activeGenerationId: null
       }
     ],
     nextCursor: null
   })),
   listSourceFiles: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listBundleFiles: vi.fn(async () => ({
-    items: [],
-    nextCursor: null
-  })),
-  listReleases: vi.fn(async () => ({
     items: [],
     nextCursor: null
   })),
@@ -129,22 +134,24 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "queued",
-            processingStage: "upload_storage",
+            state: "queued",
+            currentStage: "upload_storage",
             processingStartedAt: null,
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           },
           {
             id: "source-ongoing",
             name: "ongoing.md",
             relativePath: "ongoing.md",
-            processingStatus: "running",
-            processingStage: "llm_suggestion",
+            state: "running",
+            currentStage: "llm_suggestion",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:01.000Z"
           }
         ],
@@ -188,11 +195,12 @@ describe("Admin upload file picker", () => {
             id: "source-page-one",
             name: "page-one.md",
             relativePath: "page-one.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:01.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -204,11 +212,12 @@ describe("Admin upload file picker", () => {
             id: "source-page-two",
             name: "page-two.md",
             relativePath: "page-two.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "pending_publication",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: "2026-06-14T00:00:02.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:01.000Z"
           }
         ],
@@ -220,11 +229,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "new.md",
             relativePath: "new.md",
-            processingStatus: "queued",
-            processingStage: "upload_storage",
+            state: "queued",
+            currentStage: "upload_storage",
             processingStartedAt: null,
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:03.000Z"
           }
         ],
@@ -407,7 +417,7 @@ describe("Admin upload file picker", () => {
 
   it("resumes a created upload session after a recoverable transfer failure", async () => {
     vi.mocked(runUploadSession).mockImplementationOnce(async (input) => {
-      input.onSessionReady?.("upload-session-resume", createUploadLimits());
+      input.onSessionReady?.("upload-session-resume", createUploadTransport());
       return {
         ok: false,
         failure: { messageKey: "errors.uploadFailed" },
@@ -434,7 +444,7 @@ describe("Admin upload file picker", () => {
           knowledgeBaseId: "kb-docs",
           sessionId: "upload-session-resume",
           files: [file],
-          limits: createUploadLimits()
+          transport: createUploadTransport()
         })
       );
       expect(screen.queryByRole("dialog")).toBeNull();
@@ -447,7 +457,7 @@ describe("Admin upload file picker", () => {
     vi.mocked(runUploadSession).mockImplementationOnce(
       (input) =>
         new Promise((resolve) => {
-          input.onSessionReady?.("upload-session-cancel", createUploadLimits());
+          input.onSessionReady?.("upload-session-cancel", createUploadTransport());
           resolveUpload = resolve;
         })
     );
@@ -487,7 +497,7 @@ describe("Admin upload file picker", () => {
               name: "intro.md",
               logicalPath: "pages/intro.md",
               entryType: "file",
-              bundleFileId: "bundle-intro"
+              generatedFileId: "bundle-intro"
             }
           ],
           nextCursor: null
@@ -501,7 +511,7 @@ describe("Admin upload file picker", () => {
             name: "pages",
             logicalPath: "pages",
             entryType: "directory",
-            bundleFileId: null
+            generatedFileId: null
           }
         ],
         nextCursor: null
@@ -514,11 +524,12 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "running",
-            processingStage: "metadata_resolution",
+            state: "running",
+            currentStage: "metadata_resolution",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:00.000Z"
           }
         ],
@@ -530,11 +541,19 @@ describe("Admin upload file picker", () => {
             id: "source-new",
             name: "intro.md",
             relativePath: "intro.md",
-            processingStatus: "completed",
-            processingStage: "release_activation",
+            state: "visible",
+            currentStage: "generation_activation",
             processingStartedAt: "2026-06-14T00:00:00.000Z",
             processingEndedAt: "2026-06-14T00:00:05.000Z",
-            processingErrorCode: null,
+            failure: null,
+            actions: [
+              {
+                kind: "open_generated_file",
+                method: "GET",
+                href: "/admin/api/knowledge-bases/kb-docs/files/content?path=pages%2Fintro.md",
+                scope: "source_file"
+              }
+            ],
             generatedFileAvailable: true,
             generatedFileId: "bundle-intro",
             generatedFilePath: "pages/intro.md",
@@ -544,11 +563,12 @@ describe("Admin upload file picker", () => {
             id: "source-ongoing",
             name: "ongoing.md",
             relativePath: "ongoing.md",
-            processingStatus: "running",
-            processingStage: "llm_suggestion",
+            state: "running",
+            currentStage: "llm_suggestion",
             processingStartedAt: "2026-06-14T00:00:01.000Z",
             processingEndedAt: null,
-            processingErrorCode: null,
+            failure: null,
+            actions: [],
             createdAt: "2026-06-14T00:00:01.000Z"
           }
         ],
@@ -565,7 +585,7 @@ describe("Admin upload file picker", () => {
     await waitFor(
       () => {
         expect(
-          within(screen.getByTestId("source-file-row-source-new")).getByText("Completed")
+          within(screen.getByTestId("source-file-row-source-new")).getByText("Visible")
         ).toBeTruthy();
       },
       { timeout: 3_000 }
@@ -824,12 +844,9 @@ function createCompletedUploadResult() {
   };
 }
 
-function createUploadLimits() {
+function createUploadTransport() {
   return {
-    manifestPageSize: 500,
-    contentBatchMaxFiles: 24,
-    contentBatchMaxBytes: 16_777_216,
-    maxFileBytes: 1_048_576
+    manifestPageSize: 500
   };
 }
 

@@ -58,7 +58,7 @@ export type UploadManifestEntryInput = {
   sourceFileId: string;
   path: SourceRelativePath;
   declaredSize: number;
-  checksumSha256: string;
+  checksumSha256: string | null;
 };
 
 export type UploadSessionEntryRecord = {
@@ -70,7 +70,7 @@ export type UploadSessionEntryRecord = {
   name: string;
   declaredSize: number;
   receivedSize: number | null;
-  checksumSha256: string;
+  checksumSha256: string | null;
   receivedChecksumSha256: string | null;
   disposition: UploadEntryDisposition;
   transferState: UploadEntryTransferState;
@@ -89,11 +89,11 @@ export type UploadSessionErrorCode =
   | "UPLOAD_IDEMPOTENCY_CONFLICT"
   | "UPLOAD_MANIFEST_DUPLICATE_PATH"
   | "UPLOAD_MANIFEST_TOTAL_MISMATCH"
-  | "UPLOAD_FILE_TOO_LARGE"
   | "UPLOAD_ENTRY_NOT_FOUND"
   | "UPLOAD_ENTRY_NOT_REQUIRED"
   | "UPLOAD_ENTRY_SIZE_MISMATCH"
   | "UPLOAD_ENTRY_CHECKSUM_MISMATCH"
+  | "UPLOAD_ENTRY_STORAGE_FAILED"
   | "UPLOAD_SESSION_INCOMPLETE";
 
 export class UploadSessionError extends Error {

@@ -17,29 +17,44 @@ const origin = process.env.ADMIN_PUBLIC_ORIGIN?.trim() || "http://127.0.0.1:4310
 let cookie = "";
 
 await login();
-const files = await listBundleFiles();
-const knownPaths = new Set(files.map((file) => file.logicalPath));
-const markdownFiles = files.filter((file) => file.logicalPath.endsWith(".md"));
 const failures = [];
 let internalLinkCount = 0;
 let externalLinkCount = 0;
+const files = [];
+const markdownFiles = [];
+const visited = new Set();
+const queue = ["index.md"];
 
-await mapWithConcurrency(markdownFiles, 8, async (file) => {
-  const detail = await requestJson(
-    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/detail?path=${encodeURIComponent(file.logicalPath)}`
-  );
+while (queue.length > 0) {
+  const logicalPath = queue.shift();
+  if (!logicalPath || visited.has(logicalPath)) continue;
+  visited.add(logicalPath);
+  let detail;
+  try {
+    detail = await requestJson(
+      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/detail?path=${encodeURIComponent(logicalPath)}`
+    );
+  } catch (error) {
+    failures.push({ source: null, href: logicalPath, target: logicalPath, error: String(error) });
+    continue;
+  }
+  files.push(detail.file);
+  if (!logicalPath.endsWith(".md")) continue;
+  markdownFiles.push(detail.file);
   for (const href of extractMarkdownLinks(detail.content)) {
     if (hasUriScheme(href) || href.startsWith("//")) {
       externalLinkCount += 1;
       continue;
     }
     internalLinkCount += 1;
-    const target = resolveBundleLink(href, file.logicalPath);
-    if (!target || !knownPaths.has(target)) {
-      failures.push({ source: file.logicalPath, href, target });
+    const target = resolveBundleLink(href, logicalPath);
+    if (!target) {
+      failures.push({ source: logicalPath, href, target });
+      continue;
     }
+    if (!visited.has(target)) queue.push(target);
   }
-});
+}
 
 console.log(JSON.stringify({
   knowledgeBaseId,
@@ -61,21 +76,6 @@ async function login() {
     headers: { "content-type": "application/json", origin },
     body: JSON.stringify({ username, password })
   });
-}
-
-async function listBundleFiles() {
-  const items = [];
-  let cursor = null;
-  do {
-    const query = new URLSearchParams({ limit: "200" });
-    if (cursor) query.set("cursor", cursor);
-    const page = await requestJson(
-      `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/bundle-files?${query}`
-    );
-    items.push(...(page.items ?? []));
-    cursor = page.nextCursor ?? null;
-  } while (cursor);
-  return items;
 }
 
 async function requestJson(pathname, options = {}) {
@@ -149,19 +149,6 @@ function decodeRepeatedly(value) {
 
 function hasUriScheme(value) {
   return /^[a-z][a-z0-9+.-]*:/iu.test(value);
-}
-
-async function mapWithConcurrency(items, concurrency, run) {
-  let nextIndex = 0;
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    for (;;) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const item = items[index];
-      if (!item) return;
-      await run(item);
-    }
-  }));
 }
 
 function requiredEnv(name) {

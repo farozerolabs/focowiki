@@ -35,7 +35,6 @@ async function prepare() {
     ["rateLimits", "/admin/api/settings/rate-limits"],
     ["worker", "/admin/api/settings/worker"],
     ["publication", "/admin/api/settings/publication"],
-    ["uploadGeneration", "/admin/api/settings/upload-generation"],
     ["graph", "/admin/api/settings/graph"]
   ];
   const checks = [];

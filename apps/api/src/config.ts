@@ -2,22 +2,16 @@ import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
 
 const DEFAULT_DATABASE_POOL_MAX = 10;
-const DEFAULT_WORKER_DATABASE_POOL_MAX = 6;
+const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
+const DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX = 4;
+const DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX = 2;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
 const DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE = 200;
 const DEFAULT_TREE_CHILD_PAGE_SIZE = 100;
 const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
-const DEFAULT_UPLOAD_MAX_BYTES = 1_048_576;
 const DEFAULT_GENERATION_BATCH_SIZE = 50;
-const DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY = 1;
-export const DEFAULT_UPLOAD_SESSION_SETTINGS = {
-  sessionTtlSeconds: 86_400,
-  manifestPageSize: 500,
-  contentBatchMaxFiles: 24,
-  contentBatchMaxBytes: 16_777_216
-} as const;
 const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
 const DEFAULT_WORKER_CLAIM_BATCH_SIZE = 10;
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
@@ -25,10 +19,10 @@ const DEFAULT_WORKER_LOCK_TTL_SECONDS = 900;
 const DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WORKER_JOB_MAX_ATTEMPTS = 3;
 const DEFAULT_WORKER_JOB_RETRY_DELAY_MS = 30_000;
-const DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT = 5_000;
-const DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT = 2_000;
-const DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS = 3_600;
-const DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS = 60;
+const DEFAULT_SOURCE_QUEUE_HARD_DEPTH = 5_000;
+const DEFAULT_SOURCE_QUEUE_RESUME_DEPTH = 3_000;
+const DEFAULT_SOURCE_QUEUE_HARD_AGE_SECONDS = 3_600;
+const DEFAULT_SOURCE_QUEUE_RESUME_AGE_SECONDS = 1_800;
 const DEFAULT_WORKER_SHUTDOWN_GRACE_MS = 30_000;
 const DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS = 7;
 const DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS = 30;
@@ -44,6 +38,17 @@ const DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED = false;
 const DEFAULT_PUBLICATION_MODE = "batch";
 const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
 const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
+const DEFAULT_PUBLICATION_ROLE_CONCURRENCY = 1;
+const DEFAULT_PUBLICATION_CLAIM_BATCH_SIZE = 1;
+const DEFAULT_PUBLICATION_IMPACT_BATCH_SIZE = 100;
+const DEFAULT_PUBLICATION_IMPACT_CONCURRENCY = 8;
+const DEFAULT_PUBLICATION_DIRTY_FILE_HARD_COUNT = 2_000;
+const DEFAULT_PUBLICATION_DIRTY_FILE_RESUME_COUNT = 1_000;
+const DEFAULT_PUBLICATION_DIRTY_AGE_HARD_SECONDS = 900;
+const DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS = 300;
+const DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT = 20_000;
+const DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT = 10_000;
+const DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS = 7;
 const DEFAULT_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_LINK_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_MANIFEST_SHARD_SIZE = 1_000;
@@ -83,18 +88,18 @@ export type GraphRuntimeConfig = {
 };
 
 export type WorkerRuntimeConfig = {
-  databasePoolMax?: number;
   sourceFileConcurrency: number;
   claimBatchSize: number;
+  generationBatchSize?: number;
   pollIntervalMs: number;
   lockTtlSeconds: number;
   heartbeatIntervalMs?: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
-  queueBackpressureLimit: number;
-  queueBackpressureKnowledgeBaseLimit?: number;
-  queueBackpressureMaxAgeSeconds?: number;
-  queueBackpressureRetryAfterSeconds?: number;
+  sourceQueueHardDepth?: number;
+  sourceQueueResumeDepth?: number;
+  sourceQueueHardAgeSeconds?: number;
+  sourceQueueResumeAgeSeconds?: number;
   shutdownGraceMs: number;
   completedJobRetentionDays?: number;
   failedJobRetentionDays?: number;
@@ -132,7 +137,6 @@ export type RuntimeSecurityConfig = {
   rateLimits: {
     adminLogin: RateLimitConfig;
     adminApi: RateLimitConfig;
-    upload: RateLimitConfig;
     publicOpenApi: RateLimitConfig;
   };
   audit: {
@@ -148,6 +152,9 @@ export type RuntimeConfig = {
   database: {
     url: string;
     poolMax?: number;
+    sourceWorkerPoolMax?: number;
+    publicationWorkerPoolMax?: number;
+    maintenanceWorkerPoolMax?: number;
   };
   redis: {
     url: string;
@@ -169,20 +176,22 @@ export type RuntimeConfig = {
     prefix: string;
     forcePathStyle: boolean;
   };
-  upload: {
-    maxBytes: number;
-    generationBatchSize: number;
-    fileProcessingConcurrency: number;
-    sessionTtlSeconds?: number;
-    manifestPageSize?: number;
-    contentBatchMaxFiles?: number;
-    contentBatchMaxBytes?: number;
-  };
   worker?: WorkerRuntimeConfig;
   publication: {
     mode: PublicationMode;
     batchSize: number;
     intervalSeconds: number;
+    roleConcurrency?: number;
+    claimBatchSize?: number;
+    impactBatchSize?: number;
+    impactConcurrency?: number;
+    dirtyFileHardCount?: number;
+    dirtyFileResumeCount?: number;
+    dirtyAgeHardSeconds?: number;
+    dirtyAgeResumeSeconds?: number;
+    pendingImpactHardCount?: number;
+    pendingImpactResumeCount?: number;
+    generationRetentionDays?: number;
     indexShardSize: number;
     linkIndexShardSize: number;
     manifestShardSize: number;
@@ -261,6 +270,24 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_DATABASE_POOL_MAX,
     issues
   );
+  const sourceWorkerPoolMax = optionalPositiveInteger(
+    env,
+    "SOURCE_WORKER_DATABASE_POOL_MAX",
+    DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX,
+    issues
+  );
+  const publicationWorkerPoolMax = optionalPositiveInteger(
+    env,
+    "PUBLICATION_WORKER_DATABASE_POOL_MAX",
+    DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX,
+    issues
+  );
+  const maintenanceWorkerPoolMax = optionalPositiveInteger(
+    env,
+    "MAINTENANCE_WORKER_DATABASE_POOL_MAX",
+    DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX,
+    issues
+  );
   const redisUrl = requireRedisUrl(env, "REDIS_URL", issues);
   const ports = parseServicePorts(env, issues);
   const publicBaseUrl = requireUrl(env, "PUBLIC_BASE_URL", issues);
@@ -272,12 +299,9 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
   const secretAccessKey = requireString(env, "S3_SECRET_ACCESS_KEY", issues);
   const prefix = normalizePrefix(requireString(env, "S3_PREFIX", issues), issues);
   const forcePathStyle = optionalBoolean(env, "S3_FORCE_PATH_STYLE", false, issues);
-  const maxBytes = DEFAULT_UPLOAD_MAX_BYTES;
-  const generationBatchSize = DEFAULT_GENERATION_BATCH_SIZE;
-  const fileProcessingConcurrency = DEFAULT_UPLOAD_FILE_PROCESSING_CONCURRENCY;
   const publication = createDefaultPublicationConfig();
   const graph = createDefaultGraphConfig();
-  const worker = parseWorkerConfig(env, issues);
+  const worker = parseWorkerConfig();
   const pagination = parsePaginationConfig(env, issues);
   const okf = createDefaultOkfConfig();
   const corsOrigins = parseUrlList(env, "CORS_ORIGINS", issues);
@@ -306,7 +330,10 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     },
     database: {
       url: databaseUrl,
-      poolMax: databasePoolMax
+      poolMax: databasePoolMax,
+      sourceWorkerPoolMax,
+      publicationWorkerPoolMax,
+      maintenanceWorkerPoolMax
     },
     redis: {
       url: redisUrl
@@ -325,12 +352,6 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       secretAccessKey,
       prefix,
       forcePathStyle
-    },
-    upload: {
-      maxBytes,
-      generationBatchSize,
-      fileProcessingConcurrency,
-      ...DEFAULT_UPLOAD_SESSION_SETTINGS
     },
     worker,
     publication,
@@ -517,6 +538,17 @@ function createDefaultPublicationConfig(): RuntimeConfig["publication"] {
     mode: DEFAULT_PUBLICATION_MODE,
     batchSize: DEFAULT_PUBLICATION_BATCH_SIZE,
     intervalSeconds: DEFAULT_PUBLICATION_INTERVAL_SECONDS,
+    roleConcurrency: DEFAULT_PUBLICATION_ROLE_CONCURRENCY,
+    claimBatchSize: DEFAULT_PUBLICATION_CLAIM_BATCH_SIZE,
+    impactBatchSize: DEFAULT_PUBLICATION_IMPACT_BATCH_SIZE,
+    impactConcurrency: DEFAULT_PUBLICATION_IMPACT_CONCURRENCY,
+    dirtyFileHardCount: DEFAULT_PUBLICATION_DIRTY_FILE_HARD_COUNT,
+    dirtyFileResumeCount: DEFAULT_PUBLICATION_DIRTY_FILE_RESUME_COUNT,
+    dirtyAgeHardSeconds: DEFAULT_PUBLICATION_DIRTY_AGE_HARD_SECONDS,
+    dirtyAgeResumeSeconds: DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS,
+    pendingImpactHardCount: DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT,
+    pendingImpactResumeCount: DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT,
+    generationRetentionDays: DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS,
     indexShardSize: DEFAULT_INDEX_SHARD_SIZE,
     linkIndexShardSize: DEFAULT_LINK_INDEX_SHARD_SIZE,
     manifestShardSize: DEFAULT_MANIFEST_SHARD_SIZE,
@@ -543,25 +575,20 @@ function createDefaultGraphConfig(): GraphRuntimeConfig {
   };
 }
 
-function parseWorkerConfig(env: RuntimeEnv, issues: string[]): WorkerRuntimeConfig {
+function parseWorkerConfig(): WorkerRuntimeConfig {
   return {
-    databasePoolMax: optionalPositiveInteger(
-      env,
-      "WORKER_DATABASE_POOL_MAX",
-      DEFAULT_WORKER_DATABASE_POOL_MAX,
-      issues
-    ),
     sourceFileConcurrency: DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: DEFAULT_WORKER_CLAIM_BATCH_SIZE,
+    generationBatchSize: DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs: DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
     jobMaxAttempts: DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
     jobRetryDelayMs: DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
-    queueBackpressureLimit: DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
-    queueBackpressureKnowledgeBaseLimit: DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
-    queueBackpressureMaxAgeSeconds: DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
-    queueBackpressureRetryAfterSeconds: DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
+    sourceQueueHardDepth: DEFAULT_SOURCE_QUEUE_HARD_DEPTH,
+    sourceQueueResumeDepth: DEFAULT_SOURCE_QUEUE_RESUME_DEPTH,
+    sourceQueueHardAgeSeconds: DEFAULT_SOURCE_QUEUE_HARD_AGE_SECONDS,
+    sourceQueueResumeAgeSeconds: DEFAULT_SOURCE_QUEUE_RESUME_AGE_SECONDS,
     shutdownGraceMs: DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
     completedJobRetentionDays: DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
     failedJobRetentionDays: DEFAULT_WORKER_FAILED_JOB_RETENTION_DAYS,
@@ -579,29 +606,26 @@ function parseWorkerConfig(env: RuntimeEnv, issues: string[]): WorkerRuntimeConf
 
 export function resolveWorkerConfig(
   config: Pick<RuntimeConfig, "worker">
-): WorkerRuntimeConfig {
+): Required<WorkerRuntimeConfig> {
   return {
-    databasePoolMax: config.worker?.databasePoolMax ?? DEFAULT_WORKER_DATABASE_POOL_MAX,
     sourceFileConcurrency:
       config.worker?.sourceFileConcurrency ?? DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: config.worker?.claimBatchSize ?? DEFAULT_WORKER_CLAIM_BATCH_SIZE,
+    generationBatchSize: config.worker?.generationBatchSize ?? DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: config.worker?.pollIntervalMs ?? DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: config.worker?.lockTtlSeconds ?? DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs:
       config.worker?.heartbeatIntervalMs ?? DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
     jobMaxAttempts: config.worker?.jobMaxAttempts ?? DEFAULT_WORKER_JOB_MAX_ATTEMPTS,
     jobRetryDelayMs: config.worker?.jobRetryDelayMs ?? DEFAULT_WORKER_JOB_RETRY_DELAY_MS,
-    queueBackpressureLimit:
-      config.worker?.queueBackpressureLimit ?? DEFAULT_WORKER_QUEUE_BACKPRESSURE_LIMIT,
-    queueBackpressureKnowledgeBaseLimit:
-      config.worker?.queueBackpressureKnowledgeBaseLimit ??
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_KB_LIMIT,
-    queueBackpressureMaxAgeSeconds:
-      config.worker?.queueBackpressureMaxAgeSeconds ??
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_MAX_AGE_SECONDS,
-    queueBackpressureRetryAfterSeconds:
-      config.worker?.queueBackpressureRetryAfterSeconds ??
-      DEFAULT_WORKER_QUEUE_BACKPRESSURE_RETRY_AFTER_SECONDS,
+    sourceQueueHardDepth:
+      config.worker?.sourceQueueHardDepth ?? DEFAULT_SOURCE_QUEUE_HARD_DEPTH,
+    sourceQueueResumeDepth:
+      config.worker?.sourceQueueResumeDepth ?? DEFAULT_SOURCE_QUEUE_RESUME_DEPTH,
+    sourceQueueHardAgeSeconds:
+      config.worker?.sourceQueueHardAgeSeconds ?? DEFAULT_SOURCE_QUEUE_HARD_AGE_SECONDS,
+    sourceQueueResumeAgeSeconds:
+      config.worker?.sourceQueueResumeAgeSeconds ?? DEFAULT_SOURCE_QUEUE_RESUME_AGE_SECONDS,
     shutdownGraceMs: config.worker?.shutdownGraceMs ?? DEFAULT_WORKER_SHUTDOWN_GRACE_MS,
     completedJobRetentionDays:
       config.worker?.completedJobRetentionDays ?? DEFAULT_WORKER_COMPLETED_JOB_RETENTION_DAYS,
@@ -629,6 +653,19 @@ export function resolveWorkerConfig(
       config.worker?.hardDeleteVersionPurgeEnabled ??
       DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
   };
+}
+
+export function resolvePublicationConfig(
+  config: Pick<RuntimeConfig, "publication">
+): Required<RuntimeConfig["publication"]> {
+  return {
+    ...createDefaultPublicationConfig(),
+    ...config.publication,
+    graphEdgeShardSize: config.publication.graphEdgeShardSize ?? 5_000,
+    graphCandidateLimit: config.publication.graphCandidateLimit ?? 200,
+    directoryIndexMaxEntries: config.publication.directoryIndexMaxEntries ?? 200,
+    directoryIndexMaxBytes: config.publication.directoryIndexMaxBytes ?? 65_536
+  } as Required<RuntimeConfig["publication"]>;
 }
 
 export function resolveGraphConfig(
@@ -817,10 +854,6 @@ function parseSecurityConfig(
         max: 600,
         windowSeconds: 60
       },
-      upload: {
-        max: 20,
-        windowSeconds: 3_600
-      },
       publicOpenApi: {
         max: 1_200,
         windowSeconds: 60
@@ -866,10 +899,6 @@ function createDefaultSecurityConfig(
       adminApi: {
         max: 600,
         windowSeconds: 60
-      },
-      upload: {
-        max: 20,
-        windowSeconds: 3_600
       },
       publicOpenApi: {
         max: 1_200,

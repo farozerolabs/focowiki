@@ -3,18 +3,22 @@ import { createSourceResourceMutationService } from "../application/source-resou
 import { createSourceResourceService } from "../application/source-resources.js";
 import { resolveWorkerConfig } from "../config.js";
 import { SourceResourceError } from "../domain/source-resource.js";
-import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
+import {
+  deriveSourceFileLifecycle,
+  type SourceFileLifecycleActionKind
+} from "../domain/source-file-lifecycle.js";
 import { recordSecurityAudit } from "../security/audit.js";
 import {
   conflict,
   notFound,
-  payloadTooLarge,
   repositoryUnavailable,
   validationError,
   writeDeveloperOpenApiError
 } from "./errors.js";
 import { readLimit, safe } from "./route-helpers.js";
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
+import { toDeveloperKnowledgeBase } from "./serializers.js";
+import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 
 export function registerDeveloperOpenApiSourceResourceRoutes(
   app: Hono,
@@ -52,50 +56,22 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
       );
       const updated = result.knowledgeBase;
       if (!updated) throw conflict("Knowledge-base revision does not match the active resource.");
-      return {
-        knowledgeBase: {
-          knowledgeBaseId: updated.id,
-          name: updated.name,
-          description: updated.description,
-          activeReleaseId: updated.activeReleaseId,
-          resourceRevision: updated.resourceRevision,
-          catalogGeneration: updated.catalogGeneration,
-          createdAt: updated.createdAt,
-          updatedAt: updated.updatedAt
-        }
-      };
+      return { knowledgeBase: toDeveloperKnowledgeBase(updated) };
     })
   );
 
   app.delete("/openapi/v2/knowledge-bases/:knowledgeBaseId", async (context) =>
     safe(context, async () => {
       const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      const mutation = await requireMutationService(services);
       const result = await runSourceResourceMutation(() =>
-        requireService().deleteKnowledgeBase({
+        mutation.service.deleteKnowledgeBase({
           knowledgeBaseId,
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-          expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
+          expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
+          maxAttempts: mutation.maxAttempts
         })
       );
-      if (!result.replayed) {
-        const workerJobs = services.repositories?.workerJobs;
-        if (!workerJobs?.enqueueHardDeleteJob) throw repositoryUnavailable();
-        const now = new Date().toISOString();
-        await workerJobs.cancelQueuedKnowledgeBaseJobs?.({
-          knowledgeBaseId,
-          cancelledAt: now,
-          errorCode: "KNOWLEDGE_BASE_DELETED",
-          errorMessage: "Knowledge base deletion superseded queued work."
-        });
-        await workerJobs.enqueueHardDeleteJob({
-          knowledgeBaseId,
-          targetKind: "knowledge_base",
-          deletionIntentId: result.deletionIntentId,
-          reason: "knowledge_base_deleted",
-          runAfter: now,
-          maxAttempts: 3
-        });
-      }
       return {
         deletion: {
           knowledgeBaseId,
@@ -163,26 +139,16 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const directoryId = context.req.param("directoryId");
+        const mutation = await requireMutationService(services);
         const result = await runSourceResourceMutation(() =>
-          requireService().deleteDirectory({
+          mutation.service.deleteDirectory({
             knowledgeBaseId,
             directoryId,
             idempotencyKey,
-            expectedResourceRevision
+            expectedResourceRevision,
+            maxAttempts: mutation.maxAttempts
           })
         );
-        if (!result.replayed) {
-          const workerJobs = services.repositories?.workerJobs;
-          if (!workerJobs?.enqueueResourceOperationJob) throw repositoryUnavailable();
-          const runtimeWorker = (await services.runtimeSettings?.getSnapshot())?.worker;
-          const worker = runtimeWorker ?? resolveWorkerConfig(services.config);
-          await workerJobs.enqueueResourceOperationJob({
-            knowledgeBaseId,
-            operationId: result.operation.id,
-            runAfter: new Date().toISOString(),
-            maxAttempts: worker.jobMaxAttempts
-          });
-        }
         await recordSecurityAudit({
           repositories: services.repositories,
           config: services.config,
@@ -242,18 +208,15 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           sourceFileId: context.req.param("sourceFileId")
         });
         if (!descriptor) throw notFound("Source file was not found.");
-        const settings = await resolveUploadGenerationSettings({
-          config: services.config,
-          runtimeSettings: services.runtimeSettings
+        const content = await services.storage.getObjectBody?.(descriptor.objectKey);
+        if (content == null) throw notFound("Source content was not found.");
+        return new Response(content, {
+          headers: {
+            "content-type": descriptor.contentType,
+            etag: `\"${descriptor.checksumSha256}\"`,
+            "x-content-revision": String(descriptor.contentRevision)
+          }
         });
-        const content = await services.storage.getObjectText(descriptor.objectKey, {
-          maxBytes: settings.maxBytes
-        });
-        if (content === null) throw notFound("Source content was not found.");
-        context.header("content-type", descriptor.contentType);
-        context.header("etag", `\"${descriptor.checksumSha256}\"`);
-        context.header("x-content-revision", String(descriptor.contentRevision));
-        return context.body(content);
       } catch (error) {
         return writeDeveloperOpenApiError(context, error);
       }
@@ -282,20 +245,9 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     async (context) =>
       safe(context, async () => {
-        const settings = await resolveUploadGenerationSettings({
-          config: services.config,
-          runtimeSettings: services.runtimeSettings
-        });
-        const declaredLength = Number(context.req.header("content-length") ?? "0");
-        if (Number.isFinite(declaredLength) && declaredLength > settings.maxBytes) {
-          throw payloadTooLarge("Markdown replacement exceeds the configured file limit.");
-        }
         const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
         if (bytes.byteLength === 0) {
           throw validationError("Markdown replacement body is required.");
-        }
-        if (bytes.byteLength > settings.maxBytes) {
-          throw payloadTooLarge("Markdown replacement exceeds the configured file limit.");
         }
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const sourceFileId = context.req.param("sourceFileId");
@@ -320,43 +272,16 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
       safe(context, async () => {
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const sourceFileId = context.req.param("sourceFileId");
+        const mutation = await requireMutationService(services);
         const result = await runSourceResourceMutation(() =>
-          requireService().deleteSourceFile({
+          mutation.service.deleteSourceFile({
             knowledgeBaseId,
             sourceFileId,
             idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readExpectedRevision(context.req.header("if-match"))
+            expectedResourceRevision: readExpectedRevision(context.req.header("if-match")),
+            maxAttempts: mutation.maxAttempts
           })
         );
-        if (!result.replayed) {
-          const workerJobs = services.repositories?.workerJobs;
-          if (!workerJobs?.enqueueHardDeleteJob) throw repositoryUnavailable();
-          const now = new Date().toISOString();
-          await workerJobs.cancelQueuedSourceFileJobs?.({
-            knowledgeBaseId,
-            sourceFileIds: [sourceFileId],
-            cancelledAt: now,
-            errorCode: "SOURCE_FILE_DELETED",
-            errorMessage: "Source file was deleted before queued processing started."
-          });
-          await workerJobs.enqueuePublicationJob({
-            knowledgeBaseId,
-            reason: "deletion",
-            targetCatalogGeneration: result.operation.candidateCatalogGeneration,
-            runAfter: now,
-            maxAttempts: 3,
-            forceSuccessor: true
-          });
-          await workerJobs.enqueueHardDeleteJob({
-            knowledgeBaseId,
-            targetKind: "source_file",
-            sourceFileId,
-            deletionIntentId: result.deletionIntentId,
-            reason: "source_file_deleted",
-            runAfter: now,
-            maxAttempts: 3
-          });
-        }
         return {
           operation: toOperationResponse(result.operation),
           deletion: { sourceFileId }
@@ -422,6 +347,13 @@ function toDirectoryResponse(directory: Awaited<ReturnType<ReturnType<typeof cre
 
 export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getSourceFile"]>>>) {
   const base = `/openapi/v2/knowledge-bases/${sourceFile.knowledgeBaseId}`;
+  const lifecycle = deriveSourceFileLifecycle({
+    processingStatus: sourceFile.processingStatus,
+    processingStage: sourceFile.currentStage,
+    generatedOutputStatus: sourceFile.generatedOutputStatus,
+    generatedPath: sourceFile.generatedPath,
+    failure: sourceFile.terminalFailure
+  });
   return {
     sourceFileId: sourceFile.id,
     knowledgeBaseId: sourceFile.knowledgeBaseId,
@@ -435,17 +367,19 @@ export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<
     resourceRevision: sourceFile.resourceRevision,
     contentRevision: sourceFile.contentRevision,
     activeRevisionId: sourceFile.activeRevisionId,
-    processingState: sourceFile.processingState,
-    currentStage: sourceFile.currentStage,
-    processingErrorCode: sourceFile.processingErrorCode,
+    state: lifecycle.state,
+    currentStage: lifecycle.currentStage,
+    failure: lifecycle.failure,
     generatedOutputStatus: sourceFile.generatedOutputStatus,
     mutable: !sourceFile.deleting,
     deletable: !sourceFile.deleting,
     deleting: sourceFile.deleting,
-    actions: {
+    actions: lifecycle.actions.map((kind) =>
+      developerLifecycleAction(base, sourceFile.id, sourceFile.generatedPath, kind)
+    ),
+    links: {
       self: `${base}/source-files/${sourceFile.id}`,
       events: `${base}/source-files/${sourceFile.id}/events`,
-      retry: `${base}/source-files/${sourceFile.id}/retry`,
       generatedContent: sourceFile.generatedPath
         ? `${base}/files/content?path=${encodeURIComponent(sourceFile.generatedPath)}`
         : null,
@@ -453,6 +387,42 @@ export function toSourceFileResponse(sourceFile: NonNullable<Awaited<ReturnType<
     },
     createdAt: sourceFile.createdAt
   };
+}
+
+function developerLifecycleAction(
+  base: string,
+  sourceFileId: string,
+  generatedPath: string | null,
+  kind: SourceFileLifecycleActionKind
+) {
+  const sourceBase = `${base}/source-files/${sourceFileId}`;
+  switch (kind) {
+    case "open_generated_file":
+      return {
+        kind,
+        method: "GET" as const,
+        href: generatedPath
+          ? `${base}/files/content?path=${encodeURIComponent(generatedPath)}`
+          : sourceBase,
+        scope: "source_file" as const
+      };
+    case "retry_publication":
+      return {
+        kind,
+        method: "POST" as const,
+        href: `${sourceBase}/retry`,
+        scope: "knowledge_base_publication" as const
+      };
+    case "retry_source_processing":
+      return {
+        kind,
+        method: "POST" as const,
+        href: `${sourceBase}/retry`,
+        scope: "source_file" as const
+      };
+    case "view_failure_details":
+      return { kind, method: "GET" as const, href: sourceBase, scope: "source_file" as const };
+  }
 }
 
 function toOperationResponse(operation: NonNullable<Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getOperation"]>>>) {
@@ -523,16 +493,15 @@ function readNullableQuery(value: string | undefined): string | null {
 }
 
 function readSourceResourceFilters(query: Record<string, string>) {
-  const processingStates = new Set(["queued", "running", "completed", "failed"]);
+  const lifecycleStates = new Set(["queued", "running", "pending_publication", "visible", "failed"]);
   const currentStages = new Set([
     "upload_storage",
     "metadata_resolution",
     "llm_suggestion",
     "graph_generation",
-    "okf_validation",
-    "bundle_generation",
-    "index_publication",
-    "release_activation"
+    "projection_generation",
+    "generation_validation",
+    "generation_activation"
   ]);
   const generatedOutputStatuses = new Set(["pending", "visible", "unavailable"]);
   const pathQuery = readBoundedQueryText(query.pathQuery, "pathQuery", 1, 160);
@@ -543,9 +512,14 @@ function readSourceResourceFilters(query: Record<string, string>) {
     160
   );
 
-  if (query.processingState && !processingStates.has(query.processingState)) {
-    throw validationError("Source-file processing state filter is invalid.", {
+  if (query.processingState !== undefined) {
+    throw validationError("Source-file processingState filter is not supported. Use state.", {
       field: "processingState"
+    });
+  }
+  if (query.state && !lifecycleStates.has(query.state)) {
+    throw validationError("Source-file lifecycle state filter is invalid.", {
+      field: "state"
     });
   }
   if (query.currentStage && !currentStages.has(query.currentStage)) {
@@ -562,10 +536,11 @@ function readSourceResourceFilters(query: Record<string, string>) {
   return {
     pathQuery,
     sourceFileIdPrefix,
-    processingState: (query.processingState || null) as
+    state: (query.state || null) as
       | "queued"
       | "running"
-      | "completed"
+      | "pending_publication"
+      | "visible"
       | "failed"
       | null,
     currentStage: query.currentStage || null,
@@ -634,16 +609,23 @@ async function acceptAndEnqueueOperation(
 
 async function requireMutationService(services: DeveloperOpenApiRouteServices) {
   const repository = services.repositories?.sourceResources;
-  const workerJobs = services.repositories?.workerJobs;
-  if (!repository || !workerJobs?.enqueueResourceOperationJob) throw repositoryUnavailable();
-  const runtimeWorker = (await services.runtimeSettings?.getSnapshot())?.worker;
+  if (!repository || !services.roleJobs || !services.publicationGenerations) {
+    throw repositoryUnavailable();
+  }
+  const snapshot = await services.runtimeSettings?.getSnapshot();
+  const runtimeWorker = snapshot?.worker;
   const worker = runtimeWorker ?? resolveWorkerConfig(services.config);
   return {
     service: createSourceResourceMutationService({
       repository,
-      worker: {
-        enqueueResourceOperationJob: workerJobs.enqueueResourceOperationJob.bind(workerJobs),
-        enqueuePublicationJob: workerJobs.enqueuePublicationJob.bind(workerJobs)
+      roleJobs: services.roleJobs,
+      generations: services.publicationGenerations,
+      graph: services.repositories?.graph,
+      impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
+      publicationSettingsSnapshot: {
+        publication: snapshot?.publication ?? {},
+        graph: snapshot?.graph ?? {},
+        worker: snapshot?.worker ?? {}
       },
       storage: {
         sourceRevisionKey: services.storage.keyspace.sourceRevisionKey,

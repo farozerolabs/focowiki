@@ -5,6 +5,7 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["test/**/*.test.ts"],
+    fileParallelism: !process.env.FOCOWIKI_TEST_DATABASE_URL,
     server: {
       deps: {
         external: ["typescript"]

@@ -1,25 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
+import type { SourceFileTaskDeletionRepository } from "../src/application/ports/source-file-task-deletion-repository.js";
 import type { AdminRepositories } from "../src/db/admin-repositories.js";
 import type { RedisCoordinator } from "../src/redis/coordination.js";
-import type { StorageAdapter } from "../src/storage/s3.js";
 import { createSourceFileTaskDeletionService } from "../src/admin/source-file-task-deletion-service.js";
 
 const knowledgeBase = {
   id: "kb-001",
   name: "Developer docs",
   description: null,
-  activeReleaseId: "release-001",
+  activeGenerationId: "generation-001",
   createdAt: "2026-06-14T00:00:00.000Z",
   updatedAt: "2026-06-14T00:00:00.000Z"
 };
 
 describe("source file task deletion service", () => {
   it("returns safe per-row results and cleans only unpublished deleted source files", async () => {
-    const deleteSourceFileTasks = vi.fn(async () => [
+    const deleteTasks = vi.fn(async () => [
       {
         sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
-        outcome: "deleted" as const,
-        objectKey: "tenant/raw/private-source.md"
+        outcome: "deleted" as const
       },
       {
         sourceFileId: "source-file-22222222-2222-4222-8222-222222222222",
@@ -31,29 +30,6 @@ describe("source file task deletion service", () => {
         reason: "running" as const
       }
     ]);
-    const deleteGraphForSourceFile = vi.fn(async () => undefined);
-    const deleteObject = vi.fn(async () => undefined);
-    const enqueueHardDeleteJob = vi.fn(async () => ({
-      id: "worker-job-hard-delete-001",
-      kind: "hard_delete" as const,
-      status: "queued" as const,
-      knowledgeBaseId: knowledgeBase.id,
-      sourceFileId: null,
-      payload: {},
-      runAfter: "2026-06-14T00:00:00.000Z",
-      attemptCount: 0,
-      maxAttempts: 3,
-      lockedBy: null,
-      lockedAt: null,
-      heartbeatAt: null,
-      startedAt: null,
-      completedAt: null,
-      failedAt: null,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      createdAt: "2026-06-14T00:00:00.000Z",
-      updatedAt: "2026-06-14T00:00:00.000Z"
-    }));
     const markPaginationInvalid = vi.fn(async () => undefined);
     const service = createSourceFileTaskDeletionService(
       {
@@ -62,19 +38,11 @@ describe("source file task deletion service", () => {
             return id === knowledgeBase.id ? knowledgeBase : null;
           }
         },
-        files: {
-          deleteSourceFileTasks
-        },
-        graph: {
-          deleteGraphForSourceFile
-        },
-        workerJobs: {
-          enqueueHardDeleteJob
-        }
+        files: {}
       } as unknown as AdminRepositories,
       {
-        deleteObject
-      } as unknown as StorageAdapter,
+        deleteTasks
+      } as SourceFileTaskDeletionRepository,
       {
         markPaginationInvalid
       } as unknown as RedisCoordinator
@@ -89,33 +57,21 @@ describe("source file task deletion service", () => {
       ],
       deletedAt: "2026-06-14T00:00:00.000Z",
       cursorTtlSeconds: 900,
-      hardDeleteMaxAttempts: 5
+      hardDeleteMaxAttempts: 5,
+      publicationSettingsSnapshot: { publication: { mode: "per_file" } }
     });
 
-    expect(deleteSourceFileTasks).toHaveBeenCalledWith({
+    expect(deleteTasks).toHaveBeenCalledWith({
       knowledgeBaseId: knowledgeBase.id,
       sourceFileIds: [
         "source-file-11111111-1111-4111-8111-111111111111",
         "source-file-22222222-2222-4222-8222-222222222222",
         "source-file-33333333-3333-4333-8333-333333333333"
       ],
-      deletedAt: "2026-06-14T00:00:00.000Z"
+      deletedAt: "2026-06-14T00:00:00.000Z",
+      hardDeleteMaxAttempts: 5,
+      publicationSettingsSnapshot: { publication: { mode: "per_file" } }
     });
-    expect(deleteGraphForSourceFile).toHaveBeenCalledWith({
-      knowledgeBaseId: knowledgeBase.id,
-      sourceFileId: "source-file-11111111-1111-4111-8111-111111111111"
-    });
-    expect(deleteGraphForSourceFile).toHaveBeenCalledTimes(1);
-    expect(deleteObject).not.toHaveBeenCalled();
-    expect(enqueueHardDeleteJob).toHaveBeenCalledWith({
-      knowledgeBaseId: knowledgeBase.id,
-      targetKind: "source_file",
-      sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
-      reason: "source_file_task_deleted",
-      runAfter: "2026-06-14T00:00:00.000Z",
-      maxAttempts: 5
-    });
-    expect(JSON.stringify(result)).not.toContain("tenant/raw/private-source.md");
     expect(result).toEqual({
       results: [
         {
@@ -153,11 +109,6 @@ describe("source file task deletion service", () => {
       "changed",
       900
     );
-    expect(markPaginationInvalid).toHaveBeenCalledWith(
-      `developer-openapi:file-search:${knowledgeBase.id}:${knowledgeBase.activeReleaseId}`,
-      "changed",
-      900
-    );
     expect(markPaginationInvalid).not.toHaveBeenCalledWith(
       expect.stringContaining("source-file-33333333-3333-4333-8333-333333333333"),
       "changed",
@@ -166,8 +117,7 @@ describe("source file task deletion service", () => {
   });
 
   it("does not mutate storage or caches when the knowledge base is missing", async () => {
-    const deleteSourceFileTasks = vi.fn();
-    const deleteObject = vi.fn();
+    const deleteTasks = vi.fn();
     const markPaginationInvalid = vi.fn();
     const service = createSourceFileTaskDeletionService(
       {
@@ -176,13 +126,11 @@ describe("source file task deletion service", () => {
             return null;
           }
         },
-        files: {
-          deleteSourceFileTasks
-        }
+        files: {}
       } as unknown as AdminRepositories,
       {
-        deleteObject
-      } as unknown as StorageAdapter,
+        deleteTasks
+      } as unknown as SourceFileTaskDeletionRepository,
       {
         markPaginationInvalid
       } as unknown as RedisCoordinator
@@ -193,11 +141,11 @@ describe("source file task deletion service", () => {
         knowledgeBaseId: "kb-missing",
         sourceFileIds: ["source-file-11111111-1111-4111-8111-111111111111"],
         deletedAt: "2026-06-14T00:00:00.000Z",
-        cursorTtlSeconds: 900
+        cursorTtlSeconds: 900,
+        publicationSettingsSnapshot: { publication: { mode: "per_file" } }
       })
     ).resolves.toBeNull();
-    expect(deleteSourceFileTasks).not.toHaveBeenCalled();
-    expect(deleteObject).not.toHaveBeenCalled();
+    expect(deleteTasks).not.toHaveBeenCalled();
     expect(markPaginationInvalid).not.toHaveBeenCalled();
   });
 });

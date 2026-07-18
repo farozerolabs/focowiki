@@ -5,7 +5,7 @@ import { validateOpenApiContinuity } from "./lib/openapi-continuity.mjs";
 const contractPath = path.resolve("docs/public/openapi/focowiki-openapi.json");
 const reportDir = path.resolve(
   process.env.FOCOWIKI_VALIDATION_REPORT_DIR ||
-    "openspec/changes/validate-clean-architecture-full-system"
+    "openspec/changes/implement-incremental-sharded-publication"
 );
 const document = JSON.parse(fs.readFileSync(contractPath, "utf8"));
 const result = validateOpenApiContinuity(document);

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { redactReportText } from "./redaction.mjs";
 
-export const DEFAULT_FULL_CODEBASE_REPORT_DIR = "ReferenceDocs/validate-unified-openapi-e2e";
+export const DEFAULT_FULL_CODEBASE_REPORT_DIR =
+  "ReferenceDocs/implement-incremental-sharded-publication";
 
 const BASE_SURFACES = [
   {
@@ -56,8 +57,8 @@ const BASE_SURFACES = [
   {
     id: "publication",
     owner: "publication modules",
-    coverage: ["unit", "release-visibility", "batching"],
-    boundedness: "Publication checks must inspect validation-owned releases only."
+    coverage: ["unit", "generation-visibility", "incremental-shards"],
+    boundedness: "Publication checks must inspect validation-owned generations only."
   },
   {
     id: "okf-generation",

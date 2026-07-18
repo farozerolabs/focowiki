@@ -3,14 +3,15 @@ import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 const exampleTimestamp = "2026-06-17T00:00:00.000Z";
 const knowledgeBaseId = "kb-11111111-1111-4111-8111-111111111111";
 const sourceFileId = "source-file-11111111-1111-4111-8111-111111111111";
-const bundleFileId = "bundle-file-11111111-1111-4111-8111-111111111111";
+const generationId = "generation-11111111-1111-4111-8111-111111111111";
+const fileId = sourceFileId;
 const webhookId = "webhook-11111111-1111-4111-8111-111111111111";
 const deliveryId = "delivery-11111111-1111-4111-8111-111111111111";
 const knowledgeBase = {
   knowledgeBaseId,
   name: "Product Docs",
   description: "Product documentation",
-  activeReleaseId: "release-11111111-1111-4111-8111-111111111111",
+  activeGenerationId: generationId,
   resourceRevision: 1,
   catalogGeneration: 1,
   createdAt: exampleTimestamp,
@@ -42,12 +43,7 @@ const uploadSession = {
   updatedAt: exampleTimestamp
 };
 
-const uploadSessionLimits = {
-  manifestPageSize: 500,
-  contentBatchMaxFiles: 24,
-  contentBatchMaxBytes: 16_777_216,
-  maxFileBytes: 1_048_576
-};
+const uploadSessionTransport = { manifestPageSize: 500 };
 
 const uploadSessionEntry = {
   id: "upload-entry-11111111-1111-4111-8111-111111111111",
@@ -123,17 +119,24 @@ const sourceResourceFile = {
   resourceRevision: 1,
   contentRevision: 1,
   activeRevisionId: "source-revision-11111111-1111-4111-8111-111111111111",
-  processingState: "completed",
-  currentStage: "release_activation",
-  processingErrorCode: null,
+  state: "visible",
+  currentStage: "generation_activation",
+  failure: null,
   generatedOutputStatus: "visible",
   mutable: true,
   deletable: true,
   deleting: false,
-  actions: {
+  actions: [
+    {
+      kind: "open_generated_file",
+      method: "GET",
+      href: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fhandbook%2Fguide.md`,
+      scope: "source_file"
+    }
+  ],
+  links: {
     self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
     events: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`,
-    retry: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/retry`,
     generatedContent: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fhandbook%2Fguide.md`,
     search: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=guide.md`
   },
@@ -152,13 +155,12 @@ const sourceFileEvent = {
   createdAt: exampleTimestamp
 };
 
-const bundleFile = {
-  fileId: bundleFileId,
+const generatedFile = {
+  generationId,
+  fileId,
   knowledgeBaseId,
   sourceFileId,
   path: "pages/guide.md",
-  sourceName: "guide.md",
-  sourceRelativePath: "guide.md",
   fileKind: "page",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 2048,
@@ -172,14 +174,23 @@ const bundleFile = {
     title: "Guide"
   },
   deletable: true,
-  contentAvailable: true
+  contentAvailable: true,
+  readActions: {
+    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
+    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
+    fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
+    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
+    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
+    sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
+    sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
+  }
 };
 
 const fileSearchResult = {
-  fileId: bundleFileId,
-  generatedFileId: bundleFileId,
+  generationId,
+  fileId,
+  generatedFileId: fileId,
   knowledgeBaseId,
-  releaseId: "release-11111111-1111-4111-8111-111111111111",
   sourceFileId,
   path: "pages/guide.md",
   generatedFilePath: "pages/guide.md",
@@ -195,11 +206,11 @@ const fileSearchResult = {
   score: 9,
   contentAvailable: true,
   readActions: {
-    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}`,
-    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}/content`,
+    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
+    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
-    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}/related`,
-    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${bundleFileId}`,
+    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
+    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
     sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
     sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
   }
@@ -246,9 +257,9 @@ const fileSearchNextRequestTemplates = {
 };
 
 const relatedFile = {
-  fileId: "bundle-file-22222222-2222-4222-8222-222222222222",
+  generationId,
+  fileId: "source-file-22222222-2222-4222-8222-222222222222",
   sourceFileId: "source-file-22222222-2222-4222-8222-222222222222",
-  bundleFileId: "bundle-file-22222222-2222-4222-8222-222222222222",
   path: "pages/reference.md",
   title: "Reference",
   relationType: "same_specific_subject",
@@ -261,19 +272,20 @@ const relatedFile = {
   },
   contentAvailable: true,
   readActions: {
-    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/bundle-file-22222222-2222-4222-8222-222222222222`,
-    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/bundle-file-22222222-2222-4222-8222-222222222222/content`,
+    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-file-22222222-2222-4222-8222-222222222222`,
+    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-file-22222222-2222-4222-8222-222222222222/content`,
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Freference.md`,
-    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/bundle-file-22222222-2222-4222-8222-222222222222/related`,
-    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=bundle-file-22222222-2222-4222-8222-222222222222`,
+    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-file-22222222-2222-4222-8222-222222222222/related`,
+    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=source-file-22222222-2222-4222-8222-222222222222`,
     sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/source-file-22222222-2222-4222-8222-222222222222`,
     sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/source-file-22222222-2222-4222-8222-222222222222/events`
   }
 };
 
 const graphExpansion = {
+  generationId,
   query: {
-    fileId: bundleFileId,
+    fileId,
     nodeId: null,
     edgeId: null,
     query: null,
@@ -283,7 +295,7 @@ const graphExpansion = {
     limit: 10,
     cursorProvided: false
   },
-  seedFile: bundleFile,
+  seedFile: generatedFile,
   seedResults: [],
   relationships: [relatedFile],
   graphPaths: [
@@ -307,19 +319,27 @@ const graphExpansion = {
 };
 
 const graphInsights = {
+  generationId,
   file: {
-    ...bundleFile,
-    fileId: "bundle-file-graph-insights",
+    ...generatedFile,
+    fileId: "generated-file-graph-insights",
     sourceFileId: null,
     path: "_graph/insights.json",
-    sourceName: null,
-    sourceRelativePath: null,
     fileKind: "graph_insight",
     title: "Graph insights",
     description: "Graph quality and navigation insights.",
     tags: [],
     frontmatter: {},
-    deletable: false
+    deletable: false,
+    readActions: {
+      fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights`,
+      fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights/content`,
+      fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Finsights.json`,
+      relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/generated-file-graph-insights/related`,
+      graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=generated-file-graph-insights`,
+      sourceFileStatusById: null,
+      sourceFileEventsById: null
+    }
   },
   contentPath: "_graph/insights.json",
   insights: [
@@ -350,9 +370,11 @@ const graphInsights = {
 };
 
 const treeEntry = {
+  generationId,
   id: "tree-file-11111111111111111111111111111111",
-  fileId: bundleFileId,
+  fileId,
   sourceFileId,
+  directoryId: null,
   parentPath: "pages",
   name: "guide.md",
   path: "pages/guide.md",
@@ -360,14 +382,17 @@ const treeEntry = {
   entryType: "file",
   fileKind: "page",
   childCount: 0,
+  directFileCount: 0,
+  descendantFileCount: 0,
+  resourceRevision: 1,
   deletable: true,
   contentAvailable: true,
   readActions: {
-    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}`,
-    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}/content`,
+    fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
+    fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=pages%2Fguide.md`,
-    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${bundleFileId}/related`,
-    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${bundleFileId}`,
+    relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/related`,
+    graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
     sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
     sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
   }
@@ -377,7 +402,7 @@ const webhook = {
   webhookId,
   name: "Source file updates",
   endpointHost: "hooks.example.com",
-  events: ["source_file.completed", "source_file.failed", "release.published"],
+  events: ["source_file.completed", "source_file.failed", "generation.activated"],
   enabled: true,
   createdAt: exampleTimestamp,
   updatedAt: exampleTimestamp,
@@ -431,9 +456,9 @@ export const requestExamples = {
     }
   },
   sealUploadManifest: { path: { knowledgeBaseId, uploadSessionId: uploadSession.id } },
-  uploadSessionContentBatch: {
-    path: { knowledgeBaseId, uploadSessionId: uploadSession.id },
-    body: { [uploadSessionEntry.id]: "guide.md" }
+  uploadSessionEntryContent: {
+    path: { knowledgeBaseId, uploadSessionId: uploadSession.id, entryId: uploadSessionEntry.id },
+    body: "# Guide\n\nCurrent onboarding guidance."
   },
   getUploadSession: { path: { knowledgeBaseId, uploadSessionId: uploadSession.id }, query: { limit: 50 } },
   reconcileUploadSession: { path: { knowledgeBaseId, uploadSessionId: uploadSession.id } },
@@ -487,27 +512,27 @@ export const requestExamples = {
     }
   },
   getFileById: {
-    path: { knowledgeBaseId, fileId: bundleFileId }
+    path: { knowledgeBaseId, fileId }
   },
   listRelatedFiles: {
-    path: { knowledgeBaseId, fileId: bundleFileId },
+    path: { knowledgeBaseId, fileId },
     query: { limit: 50 }
   },
   expandGraph: {
     path: { knowledgeBaseId },
-    query: { fileId: bundleFileId, depth: 1, fanout: 10, limit: 10 }
+    query: { fileId, depth: 1, fanout: 10, limit: 10 }
   },
   getGraphInsights: {
     path: { knowledgeBaseId }
   },
   getFileContentById: {
-    path: { knowledgeBaseId, fileId: bundleFileId }
+    path: { knowledgeBaseId, fileId }
   },
   createWebhook: {
     body: {
       name: "Source file updates",
       url: "https://hooks.example.com/focowiki",
-      events: ["source_file.completed", "source_file.failed", "release.published"]
+      events: ["source_file.completed", "source_file.failed", "generation.activated"]
     }
   },
   listWebhooks: {
@@ -583,37 +608,34 @@ export function createDeveloperOpenApiResponseExamples() {
     },
     createUploadSession: {
       session: { ...uploadSession, state: "draft", completedAt: null },
-      limits: uploadSessionLimits
+      transport: uploadSessionTransport
     },
     addUploadManifestEntries: {
       session: { ...uploadSession, state: "manifest_building", completedAt: null },
-      limits: uploadSessionLimits
+      transport: uploadSessionTransport
     },
     sealUploadManifest: {
       session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      limits: uploadSessionLimits
+      transport: uploadSessionTransport
     },
-    uploadSessionContentBatch: { entries: [uploadSessionEntry] },
+    uploadSessionEntryContent: { entry: uploadSessionEntry },
     getUploadSession: {
       session: uploadSession,
       entries: { items: [uploadSessionEntry], nextCursor: null }
     },
     reconcileUploadSession: {
       session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      limits: uploadSessionLimits
+      transport: uploadSessionTransport
     },
     finalizeUploadSession: {
       session: {
         ...uploadSession,
-        state: "finalizing",
-        counts: { ...uploadSession.counts, finalized: 0 },
-        completedAt: null
-      },
-      limits: uploadSessionLimits
+        state: "completed"
+      }
     },
     cancelUploadSession: {
       session: { ...uploadSession, state: "cancelled", completedAt: exampleTimestamp },
-      limits: uploadSessionLimits
+      transport: uploadSessionTransport
     },
     moveSourceFile: { operation: sourceMoveOperation },
     deleteSourceFile: {
@@ -654,19 +676,24 @@ export function createDeveloperOpenApiResponseExamples() {
     retryKnowledgeBaseSourceFile: {
       sourceFile: {
         ...sourceResourceFile,
-        processingState: "queued",
-        currentStage: "upload_storage"
+        state: "queued",
+        currentStage: "upload_storage",
+        failure: null,
+        generatedOutputStatus: "pending",
+        actions: []
       }
     },
     listKnowledgeBaseTree: {
+      generationId,
       items: [treeEntry],
       nextCursor: null
     },
     getFileContentByPath: {
-      file: bundleFile,
+      file: generatedFile,
       content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
     },
     searchGeneratedFiles: {
+      generationId,
       query: fileSearchQueryContext,
       items: [fileSearchResult],
       nextCursor: null,
@@ -678,10 +705,11 @@ export function createDeveloperOpenApiResponseExamples() {
       nextRequestTemplates: fileSearchNextRequestTemplates
     },
     getFileById: {
-      file: bundleFile
+      file: generatedFile
     },
     listRelatedFiles: {
-      fileId: bundleFileId,
+      generationId,
+      fileId,
       sourceFileId,
       items: [relatedFile],
       nextCursor: null
@@ -689,7 +717,7 @@ export function createDeveloperOpenApiResponseExamples() {
     expandGraph: graphExpansion,
     getGraphInsights: graphInsights,
     getFileContentById: {
-      file: bundleFile,
+      file: generatedFile,
       content: "---\ntype: page\ntitle: Guide\n---\n# Guide\n\nContent."
     },
     createWebhook: {
@@ -723,10 +751,6 @@ export function errorExample(code: string, httpStatus: number, message: string) 
     },
     requestId: "req-11111111-1111-4111-8111-111111111111"
   };
-}
-
-export function payloadTooLargeExample() {
-  return errorExample("PAYLOAD_TOO_LARGE", 413, "Uploaded files exceed configured limits.");
 }
 
 export type DeveloperOpenApiOperationId = keyof typeof requestExamples &

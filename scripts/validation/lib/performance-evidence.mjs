@@ -66,7 +66,7 @@ export function recordSourceFileDuration(evidence, sourceFile) {
 
   evidence.sourceFileDurations.push({
     fileId: sourceFile.id || sourceFile.fileId ? "<source-file>" : null,
-    status: sourceFile.processingStatus ?? sourceFile.processingState ?? "unknown",
+    status: sourceFile.state ?? "unknown",
     durationMs: endedAt - startedAt
   });
 }

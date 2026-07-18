@@ -7,7 +7,7 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 const emptyFilters = {
   pathQuery: null,
   sourceFileIdPrefix: null,
-  processingState: null,
+  state: null,
   currentStage: null,
   generatedOutputStatus: null
 } as const;
@@ -36,17 +36,23 @@ describeDatabase("source resource list integration", () => {
           id, knowledge_base_id, name, relative_path, path_key, directory_id,
           object_key, content_type, size_bytes, checksum_sha256, active_revision_id,
           processing_status, processing_stage, generated_output_status,
-          generated_bundle_file_path
+          terminal_failure_stage, terminal_failure_code,
+          terminal_failure_message, terminal_failure_at, terminal_failure_retry_kind,
+          terminal_failure_correlation_id
         ) VALUES
           ('source-file-list-a', ${knowledgeBaseId}, 'guide.md', 'guides/guide.md', 'guides/guide.md',
            'source-directory-list-guides', 'objects/list-a', 'text/markdown', 1, 'a',
-           'source-revision-list-a', 'completed', 'release_activation', 'visible', 'pages/guides/guide.md'),
+           'source-revision-list-a', 'completed', 'generation_activation', 'visible',
+           NULL, NULL, NULL, NULL, NULL, NULL),
           ('source-file-list-b', ${knowledgeBaseId}, '100%_guide.md', 'guides/100%_guide.md', 'guides/100%_guide.md',
            'source-directory-list-guides', 'objects/list-b', 'text/markdown', 1, 'b',
-           'source-revision-list-b', 'failed', 'graph_generation', 'unavailable', NULL),
+           'source-revision-list-b', 'failed', 'graph_generation', 'unavailable',
+           'graph_generation', 'GRAPH_GENERATION_FAILED', 'Graph generation did not complete.',
+           now(), 'source_processing', 'source-job-list-b'),
           ('source-file-list-c', ${knowledgeBaseId}, 'note.md', 'notes/note.md', 'notes/note.md',
            'source-directory-list-notes', 'objects/list-c', 'text/markdown', 1, 'c',
-           'source-revision-list-c', 'queued', 'upload_storage', 'pending', NULL)
+           'source-revision-list-c', 'queued', 'upload_storage', 'pending',
+           NULL, NULL, NULL, NULL, NULL, NULL)
       `;
       await transaction`
         INSERT INTO focowiki.source_revisions (
@@ -73,8 +79,8 @@ describeDatabase("source resource list integration", () => {
         ...emptyFilters,
         pathQuery: "guides/guide",
         sourceFileIdPrefix: "source-file-list-a",
-        processingState: "completed",
-        currentStage: "release_activation",
+        state: "visible",
+        currentStage: "generation_activation",
         generatedOutputStatus: "visible"
       },
       limit: 10,

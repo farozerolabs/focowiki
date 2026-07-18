@@ -30,10 +30,12 @@ let keyId = null;
 let knowledgeBaseId = null;
 let knowledgeBaseRevision = null;
 let originalPublicationSettings = null;
+let originalWorkerSettings = null;
 const keepKnowledgeBase = process.env.FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE === "1";
 
 try {
   await loginAdmin();
+  originalWorkerSettings = await useValidationWorkerPolicy();
   originalPublicationSettings = await useValidationPublicationPolicy();
   const credential = await createOpenApiKey();
   keyId = credential.id;
@@ -127,8 +129,9 @@ try {
   assert(replaced.resourceRevision === replaceTarget.resourceRevision + 1, "Replacement did not advance the resource revision.");
   assert(replaced.contentRevision === replaceTarget.contentRevision + 1, "Replacement did not advance the content revision.");
   assert(replaced.generatedPath, "Replacement completed without a generated Markdown path.");
-  assert(replaced.actions.generatedContent, "Replacement completed without a generated content action.");
-  const replacementContent = await developer.text(replaced.actions.generatedContent);
+  const generatedContentAction = replaced.actions.find((action) => action.kind === "open_generated_file");
+  assert(generatedContentAction?.href, "Replacement completed without a generated content action.");
+  const replacementContent = await developer.text(generatedContentAction.href);
   assert(replacementContent.includes("Lifecycle validation revision"), "Replacement content is absent from the generated page.");
   pass("source-file-replace", { sourceFileId: replaced.sourceFileId });
 
@@ -282,7 +285,10 @@ try {
           `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
         );
       }
-      pass("knowledge-base-cleanup", { knowledgeBaseId });
+      pass("knowledge-base-hidden", {
+        knowledgeBaseId,
+        note: "Physical PostgreSQL, Redis, and storage cleanup is verified by the white-box residual inspection."
+      });
     } catch (error) {
       report.ok = false;
       report.failures.push(
@@ -300,6 +306,9 @@ try {
   }
   if (originalPublicationSettings) {
     await updatePublicationSettings(originalPublicationSettings).catch(() => undefined);
+  }
+  if (originalWorkerSettings) {
+    await updateWorkerSettings(originalWorkerSettings).catch(() => undefined);
   }
   report.finishedAt = new Date().toISOString();
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
@@ -384,7 +393,7 @@ async function useValidationPublicationPolicy() {
     ...publication,
     mode: "batch",
     batchSize: 8,
-    intervalSeconds: 300
+    intervalSeconds: 5
   };
   await updatePublicationSettings(validationPolicy);
   pass("publication-mode", {
@@ -396,11 +405,35 @@ async function useValidationPublicationPolicy() {
   return publication;
 }
 
+async function useValidationWorkerPolicy() {
+  const current = await admin.json("/admin/api/settings/runtime");
+  const worker = current.settings?.worker;
+  assert(worker, "Runtime worker settings are unavailable.");
+  const validationPolicy = {
+    ...worker,
+    hardDeleteRetryDelayMs: 100
+  };
+  await updateWorkerSettings(validationPolicy);
+  pass("worker-policy", {
+    previousHardDeleteRetryDelayMs: worker.hardDeleteRetryDelayMs,
+    validationHardDeleteRetryDelayMs: validationPolicy.hardDeleteRetryDelayMs
+  });
+  return worker;
+}
+
 async function updatePublicationSettings(publication) {
   await admin.json("/admin/api/settings/publication", {
     method: "PUT",
     headers: { "content-type": "application/json", origin: adminOrigin() },
     body: JSON.stringify(publication)
+  });
+}
+
+async function updateWorkerSettings(worker) {
+  await admin.json("/admin/api/settings/worker", {
+    method: "PUT",
+    headers: { "content-type": "application/json", origin: adminOrigin() },
+    body: JSON.stringify(worker)
   });
 }
 
@@ -446,7 +479,7 @@ async function upload(files) {
         ...(options.headers ?? {}),
         ...(options.body ? { "content-type": "application/json" } : {})
       },
-      body: options.formData ?? (options.body ? JSON.stringify(options.body) : undefined),
+      body: options.rawBody ?? (options.body ? JSON.stringify(options.body) : undefined),
       expectedStatus: options.status
     }),
     routeBase: `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/upload-sessions`,
@@ -510,9 +543,9 @@ async function waitForFiles(sourceFileIds, timeoutMs = 300_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const files = (await listSourceFiles()).filter((file) => expected.has(file.sourceFileId));
-    if (files.length === expected.size && files.every((file) => file.processingState === "completed")) return files;
-    const failed = files.find((file) => file.processingState === "failed");
-    if (failed) throw new Error(`Source processing failed for ${failed.relativePath}: ${failed.processingErrorCode}`);
+    if (files.length === expected.size && files.every((file) => file.state === "visible")) return files;
+    const failed = files.find((file) => file.state === "failed");
+    if (failed) throw new Error(`Source processing failed for ${failed.relativePath}: ${failed.failure?.code ?? "UNKNOWN"}`);
     await sleep(500);
   }
   throw new Error("Timed out waiting for source-file processing.");
@@ -663,7 +696,7 @@ async function checkWebhooks() {
     body: JSON.stringify({
       name: "Folder lifecycle webhook",
       url: "https://hooks.example.com/folder-lifecycle",
-      events: ["source_file.completed", "release.published"]
+      events: ["source_file.completed", "generation.activated"]
     }),
     expectedStatus: 201
   });

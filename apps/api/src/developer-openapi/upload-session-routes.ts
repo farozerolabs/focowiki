@@ -1,14 +1,15 @@
 import { Hono, type Context } from "hono";
-import { resolveWorkerConfig } from "../config.js";
-import { createUploadSessionService } from "../application/upload-sessions.js";
+import {
+  createUploadSessionService,
+  UPLOAD_MANIFEST_PAGE_SIZE,
+  UPLOAD_SESSION_TTL_SECONDS
+} from "../application/upload-sessions.js";
 import { UploadSessionError, type UploadSessionEntryRecord } from "../domain/upload-session.js";
 import { SourcePathValidationError } from "../domain/source-path.js";
-import { resolveUploadGenerationSettings } from "../runtime-settings/upload-generation.js";
 import { recordSecurityAudit } from "../security/audit.js";
 import {
   conflict,
   notFound,
-  payloadTooLarge,
   repositoryUnavailable,
   validationError
 } from "./errors.js";
@@ -46,11 +47,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       await recordUploadSessionAudit(services, context, "upload_session_created", "success");
       return {
         session: toSafeSession(session),
-        limits: {
-          manifestPageSize: environment.settings.manifestPageSize,
-          contentBatchMaxFiles: environment.settings.contentBatchMaxFiles,
-          contentBatchMaxBytes: environment.settings.contentBatchMaxBytes,
-          maxFileBytes: environment.settings.maxBytes
+        transport: {
+          manifestPageSize: UPLOAD_MANIFEST_PAGE_SIZE
         }
       };
     }, 201)
@@ -60,7 +58,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       const body = await readJsonBody(context.req.raw);
-      if (!Array.isArray(body.entries) || body.entries.length > environment.settings.manifestPageSize) {
+      if (!Array.isArray(body.entries) || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE) {
         await recordUploadSessionAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_MANIFEST_PAGE");
         throw validationError("Manifest page is invalid.");
       }
@@ -98,32 +96,22 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
     })
   );
 
-  app.post(`${prefix}/:uploadSessionId/content`, async (context) =>
+  app.put(`${prefix}/:uploadSessionId/entries/:entryId/content`, async (context) =>
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const form = await context.req.formData();
-      const parts = [...form.entries()].filter((entry): entry is [string, File] => isFile(entry[1]));
-      if (parts.length === 0 || parts.length > environment.settings.contentBatchMaxFiles) {
-        throw validationError("Content batch file count is invalid.");
+      const body = context.req.raw.body;
+      if (!body || !isMarkdownContentType(context.req.header("content-type"))) {
+        throw validationError("A text/markdown request body is required.");
       }
-      if (parts.reduce((sum, [, file]) => sum + file.size, 0) > environment.settings.contentBatchMaxBytes) {
-        throw validationError("Content batch byte count is invalid.");
-      }
-      const entries: UploadSessionEntryRecord[] = [];
-      for (const [entryId, file] of parts) {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        entries.push(
-          await run(() =>
-            environment.service.putEntryContent({
-              knowledgeBaseId: environment.knowledgeBaseId,
-              sessionId: context.req.param("uploadSessionId"),
-              entryId,
-              bytes
-            })
-          )
-        );
-      }
-      return { entries: entries.map(toSafeEntry) };
+      const entry = await run(() =>
+        environment.service.putEntryContent({
+          knowledgeBaseId: environment.knowledgeBaseId,
+          sessionId: context.req.param("uploadSessionId"),
+          entryId: context.req.param("entryId"),
+          body
+        })
+      );
+      return { entry: toSafeEntry(entry) };
     })
   );
 
@@ -146,8 +134,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
         sessionId,
         ...(state ? { transferState: state } : {}),
         limit: readLimit(context.req.query("limit"), services.config, {
-          defaultPageSize: environment.settings.manifestPageSize,
-          maxPageSize: environment.settings.manifestPageSize
+          defaultPageSize: UPLOAD_MANIFEST_PAGE_SIZE,
+          maxPageSize: UPLOAD_MANIFEST_PAGE_SIZE
         }),
         cursor: context.req.query("cursor") ?? null
       });
@@ -185,7 +173,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
           session
         )
       };
-    }, 202)
+    })
   );
 
   app.delete(`${prefix}/:uploadSessionId`, async (context) =>
@@ -206,46 +194,28 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 }
 
 async function createEnvironment(services: DeveloperOpenApiRouteServices, knowledgeBaseId: string) {
-  const repository = services.repositories?.uploadSessions;
-  if (!repository || !services.repositories?.workerJobs) {
+  const repositories = services.repositories;
+  const repository = repositories?.uploadSessions;
+  if (!repository) {
     throw repositoryUnavailable();
   }
-  const knowledgeBase = await services.repositories.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
+  const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
   if (!knowledgeBase) {
     throw notFound("Knowledge base was not found.");
   }
-  const settings = await resolveUploadGenerationSettings({
-    config: services.config,
-    runtimeSettings: services.runtimeSettings
-  });
-  const worker = services.runtimeSettings
-    ? (await services.runtimeSettings.getSnapshot()).worker
-    : resolveWorkerConfig(services.config);
-  const workerJobs = services.repositories.workerJobs;
   return {
     knowledgeBaseId,
-    settings,
     service: createUploadSessionService({
       repository,
       storage: services.uploadSessionStorage,
       runtime: services.applicationRuntime,
-      sessionTtlSeconds: settings.sessionTtlSeconds,
-      maxFileBytes: settings.maxBytes,
-      finalization: {
-        enqueue: async ({ knowledgeBaseId: id, sessionId }) => {
-          if (!workerJobs?.enqueueUploadSessionFinalizationJob) {
-            throw repositoryUnavailable();
-          }
-          await workerJobs.enqueueUploadSessionFinalizationJob({
-            knowledgeBaseId: id,
-            sessionId,
-            runAfter: services.applicationRuntime.clock.now().toISOString(),
-            maxAttempts: worker.jobMaxAttempts
-          });
-        }
-      }
+      sessionTtlSeconds: UPLOAD_SESSION_TTL_SECONDS
     })
   };
+}
+
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
 }
 
 async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise<void>): Promise<T> {
@@ -261,7 +231,6 @@ async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise
     }
     if (error instanceof UploadSessionError) {
       if (error.code.endsWith("NOT_FOUND")) throw notFound(error.code);
-      if (error.code === "UPLOAD_FILE_TOO_LARGE") throw payloadTooLarge(error.code);
       if (error.code.includes("MISMATCH") || error.code.includes("DUPLICATE")) {
         throw validationError(error.code);
       }
@@ -328,11 +297,11 @@ function readManifestEntry(value: unknown) {
   const record = value as Record<string, unknown>;
   return typeof record.relativePath === "string" &&
     isNonNegativeInteger(record.declaredSize) &&
-    typeof record.checksumSha256 === "string"
+    (record.checksumSha256 === undefined || record.checksumSha256 === null || typeof record.checksumSha256 === "string")
     ? {
         relativePath: record.relativePath,
         declaredSize: record.declaredSize,
-        checksumSha256: record.checksumSha256
+        checksumSha256: record.checksumSha256 ?? null
       }
     : null;
 }
@@ -346,10 +315,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
 
 function readTransferState(value: string | undefined): "missing" | "failed" | "uploaded" | null {
   return value === "missing" || value === "failed" || value === "uploaded" ? value : null;
-}
-
-function isFile(value: FormDataEntryValue): value is File {
-  return typeof value === "object" && value !== null && "arrayBuffer" in value && "size" in value;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

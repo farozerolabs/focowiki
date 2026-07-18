@@ -1,4 +1,5 @@
 import type { SourceFileProcessingStage, SourceFileRecord } from "../db/admin-repositories.js";
+import type { SourceFileTerminalFailure } from "../domain/source-file-lifecycle.js";
 
 export type SourceFileStageEvent = {
   startedAt: string | null;
@@ -11,8 +12,7 @@ export type SourceFileStageMarker = (update: {
   stage: SourceFileProcessingStage;
   startedAt?: string | null;
   endedAt?: string | null;
-  errorCode?: string | null;
-  errorMessage?: string | null;
+  terminalFailure?: SourceFileTerminalFailure | null;
 }) => Promise<void>;
 
 export type SourceFileStageRecorder = (

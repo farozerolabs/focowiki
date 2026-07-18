@@ -1,9 +1,13 @@
-import path from "node:path";
-
-const RESERVED_MARKDOWN_BASENAMES = new Set(["index.md", "log.md"]);
+const RESERVED_MARKDOWN_PATHS = new Set([
+  "index.md",
+  "log.md",
+  "schema.md",
+  "_graph/index.md",
+  "_index/index.md"
+]);
 
 export function isReservedOkfMarkdownPath(logicalPath) {
-  return RESERVED_MARKDOWN_BASENAMES.has(path.posix.basename(logicalPath));
+  return RESERVED_MARKDOWN_PATHS.has(logicalPath);
 }
 
 export function requiresSourceBodyComparison(file) {
@@ -13,6 +17,6 @@ export function requiresSourceBodyComparison(file) {
 }
 
 export function isManifestOwnedPath(logicalPath) {
-  return logicalPath === "_index/manifest.json"
-    || logicalPath.startsWith("_index/manifest/");
+  return logicalPath === "_index/catalog.json"
+    || /^_index\/manifest\/v1\/[0-9]{4}\.json$/u.test(logicalPath);
 }

@@ -1,10 +1,13 @@
 import type {
-  AdminRepositories,
+  AdminRepositories
+} from "../db/admin-repositories.js";
+import type {
+  SourceFileTaskDeletionRepository,
   SourceFileTaskDeletionRepositoryResult,
   SourceFileTaskDeletionSkippedReason
-} from "../db/admin-repositories.js";
+} from "../application/ports/source-file-task-deletion-repository.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import type { StorageAdapter } from "../storage/s3.js";
+import type { SerializableJson } from "../application/ports/source-dispatch-repository.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 
 export type SourceFileTaskDeletionStatus = "deleted" | "hidden" | "skipped";
@@ -35,21 +38,18 @@ export type SourceFileTaskDeletionService = {
     deletedAt: string;
     cursorTtlSeconds: number;
     hardDeleteMaxAttempts?: number | undefined;
+    publicationSettingsSnapshot: SerializableJson;
   }) => Promise<SourceFileTaskDeletionResponse | null>;
 };
 
 export function createSourceFileTaskDeletionService(
   repositories: AdminRepositories,
-  _storage: StorageAdapter,
+  taskDeletions: SourceFileTaskDeletionRepository | null,
   redis: RedisCoordinator
 ): SourceFileTaskDeletionService | null {
-  const deleteSourceFileTasks = repositories.files?.deleteSourceFileTasks;
-
-  if (!deleteSourceFileTasks) {
+  if (!taskDeletions) {
     return null;
   }
-
-  const workerJobs = repositories.workerJobs ?? null;
 
   return {
     async deleteTasks(input) {
@@ -59,31 +59,21 @@ export function createSourceFileTaskDeletionService(
         return null;
       }
 
-      const repositoryResults = await deleteSourceFileTasks({
+      const repositoryResults = await taskDeletions.deleteTasks({
         knowledgeBaseId: knowledgeBase.id,
         sourceFileIds: input.sourceFileIds,
-        deletedAt: input.deletedAt
-      });
-      const deletedResults = repositoryResults.filter(isDeletedRepositoryResult);
-      const hiddenResults = repositoryResults.filter((result) => result.outcome === "hidden");
-      const affectedSourceFileIds = [...deletedResults, ...hiddenResults].map(
-        (result) => result.sourceFileId
-      );
-
-      await cleanupDeletedSourceFiles({
-        repositories,
-        workerJobs,
-        knowledgeBaseId: knowledgeBase.id,
         deletedAt: input.deletedAt,
-        hardDeleteMaxAttempts: input.hardDeleteMaxAttempts,
-        deletedResults
+        hardDeleteMaxAttempts: input.hardDeleteMaxAttempts ?? 3,
+        publicationSettingsSnapshot: input.publicationSettingsSnapshot
       });
+      const affectedSourceFileIds = repositoryResults
+        .filter((result) => result.outcome === "deleted" || result.outcome === "hidden")
+        .map((result) => result.sourceFileId);
 
       if (affectedSourceFileIds.length > 0) {
         await invalidateKnowledgeBaseCaches({
           redis,
           knowledgeBaseId: knowledgeBase.id,
-          releaseId: knowledgeBase.activeReleaseId,
           sourceFileIds: affectedSourceFileIds,
           ttlSeconds: input.cursorTtlSeconds
         });
@@ -95,30 +85,6 @@ export function createSourceFileTaskDeletionService(
       };
     }
   };
-}
-
-async function cleanupDeletedSourceFiles(input: {
-  repositories: AdminRepositories;
-  workerJobs: AdminRepositories["workerJobs"] | null;
-  knowledgeBaseId: string;
-  deletedAt: string;
-  hardDeleteMaxAttempts?: number | undefined;
-  deletedResults: Array<Extract<SourceFileTaskDeletionRepositoryResult, { outcome: "deleted" }>>;
-}): Promise<void> {
-  for (const result of input.deletedResults) {
-    await input.repositories.graph?.deleteGraphForSourceFile({
-      knowledgeBaseId: input.knowledgeBaseId,
-      sourceFileId: result.sourceFileId
-    });
-    await input.workerJobs?.enqueueHardDeleteJob?.({
-      knowledgeBaseId: input.knowledgeBaseId,
-      targetKind: "source_file",
-      sourceFileId: result.sourceFileId,
-      reason: "source_file_task_deleted",
-      runAfter: input.deletedAt,
-      maxAttempts: input.hardDeleteMaxAttempts ?? 3
-    });
-  }
 }
 
 function toSourceFileTaskDeletionResult(
@@ -147,12 +113,6 @@ function summarizeSourceFileTaskDeletion(
     hidden: results.filter((result) => result.outcome === "hidden").length,
     skipped: results.filter((result) => result.outcome === "skipped").length
   };
-}
-
-function isDeletedRepositoryResult(
-  result: SourceFileTaskDeletionRepositoryResult
-): result is Extract<SourceFileTaskDeletionRepositoryResult, { outcome: "deleted" }> {
-  return result.outcome === "deleted";
 }
 
 function readGeneratedOutputFields(

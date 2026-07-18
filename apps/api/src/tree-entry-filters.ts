@@ -1,6 +1,4 @@
-import type { BundleTreeEntryRecord } from "./db/admin-repositories.js";
-
-export type TreeEntryTypeFilter = BundleTreeEntryRecord["entryType"] | null;
+export type TreeEntryTypeFilter = "file" | "directory" | null;
 
 export function readTreeEntryTypeFilter(value: string | undefined): TreeEntryTypeFilter | undefined {
   if (!value) {
@@ -10,9 +8,9 @@ export function readTreeEntryTypeFilter(value: string | undefined): TreeEntryTyp
   return value === "file" || value === "directory" ? value : undefined;
 }
 
-export function createBundleTreeCursorScope(input: {
+export function createGeneratedTreeCursorScope(input: {
   knowledgeBaseId: string;
-  releaseId: string;
+  generationId: string | null;
   parentPath: string;
   entryType: TreeEntryTypeFilter;
   scopePrefix: string;
@@ -21,23 +19,9 @@ export function createBundleTreeCursorScope(input: {
   return [
     input.scopePrefix,
     input.knowledgeBaseId,
-    input.releaseId,
+    input.generationId ?? "active",
     input.parentPath || "root",
     `entryType=${input.entryType ?? ""}`,
     ...(input.query ? [`query=${input.query}`] : [])
-  ].join(":");
-}
-
-export function createBundleTreeSnapshotCursorScope(input: {
-  knowledgeBaseId: string;
-  parentPath: string;
-  entryType: TreeEntryTypeFilter;
-  scopePrefix: string;
-}): string {
-  return [
-    input.scopePrefix,
-    input.knowledgeBaseId,
-    input.parentPath || "root",
-    `entryType=${input.entryType ?? ""}`
   ].join(":");
 }

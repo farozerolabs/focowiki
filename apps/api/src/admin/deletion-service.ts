@@ -1,22 +1,23 @@
-import { createSourceResourceService } from "../application/source-resources.js";
+import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
+import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
+import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
+import type { ApplicationRuntime } from "../application/ports/runtime.js";
+import type { SerializableJson } from "../application/ports/source-dispatch-repository.js";
+import { createSourceResourceMutationService } from "../application/source-resource-mutations.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
+import type { StorageAdapter } from "../storage/s3.js";
+import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 
 export type AdminDeletionService = {
   deleteKnowledgeBase: (input: {
     knowledgeBaseId: string;
-    deletedAt: string;
-    cursorTtlSeconds: number;
-    hardDeleteMaxAttempts?: number | undefined;
+    maxAttempts: number;
   }) => Promise<boolean>;
   deleteSourcePage: (input: {
     knowledgeBaseId: string;
     logicalPath: string;
-    deletedAt: string;
-    cursorTtlSeconds: number;
-    hardDeleteMaxAttempts?: number | undefined;
+    maxAttempts: number;
   }) => Promise<SourcePageDeletionResult>;
 };
 
@@ -24,119 +25,76 @@ export type SourcePageDeletionResult =
   | { ok: true; publicationQueued: true }
   | { ok: false; reason: "not_found" | "not_deletable" };
 
-export function createDeletionService(
-  repositories: AdminRepositories,
-  redis: RedisCoordinator,
-  runtime: ApplicationRuntime
-): AdminDeletionService | null {
-  const sourceResources = repositories.sourceResources;
-  const files = repositories.files;
-  const workerJobs = repositories.workerJobs;
+export function createDeletionService(input: {
+  repositories: AdminRepositories;
+  activeGenerationReads: ActiveGenerationReadRepository;
+  roleJobs: RoleJobRepository;
+  publicationGenerations: PublicationGenerationRepository;
+  storage: StorageAdapter;
+  redis: RedisCoordinator;
+  runtime: ApplicationRuntime;
+  publicationSettingsSnapshot: SerializableJson;
+}): AdminDeletionService | null {
+  const sourceResources = input.repositories.sourceResources;
+  if (!sourceResources) return null;
 
-  if (!sourceResources || !files?.getBundleFile || !workerJobs) {
-    return null;
-  }
-
-  const resources = createSourceResourceService(sourceResources, runtime);
+  const mutations = createSourceResourceMutationService({
+    repository: sourceResources,
+    roleJobs: input.roleJobs,
+    generations: input.publicationGenerations,
+    graph: input.repositories.graph,
+    impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
+    publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+    storage: {
+      sourceRevisionKey: input.storage.keyspace.sourceRevisionKey,
+      put: (object) => input.storage.putObject(object),
+      delete: async (key) => {
+        await input.storage.deleteObject?.(key);
+      }
+    },
+    runtime: input.runtime
+  });
 
   return {
-    async deleteKnowledgeBase(input) {
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(input.knowledgeBaseId);
+    async deleteKnowledgeBase(request) {
+      const knowledgeBase = await input.repositories.knowledgeBases.getKnowledgeBase(
+        request.knowledgeBaseId
+      );
       if (!knowledgeBase) return false;
-
-      const result = await resources.deleteKnowledgeBase({
+      await mutations.deleteKnowledgeBase({
         knowledgeBaseId: knowledgeBase.id,
         idempotencyKey: `admin-knowledge-base-delete:${knowledgeBase.id}:${knowledgeBase.resourceRevision ?? 1}`,
-        expectedResourceRevision: knowledgeBase.resourceRevision ?? 1
+        expectedResourceRevision: knowledgeBase.resourceRevision ?? 1,
+        maxAttempts: request.maxAttempts
       });
-
-      if (!result.replayed) {
-        const hardDeleteJob = await workerJobs.enqueueHardDeleteJob?.({
-          knowledgeBaseId: knowledgeBase.id,
-          targetKind: "knowledge_base",
-          deletionIntentId: result.deletionIntentId,
-          reason: "knowledge_base_deleted",
-          runAfter: input.deletedAt,
-          maxAttempts: input.hardDeleteMaxAttempts ?? 3
-        });
-        await workerJobs.cancelQueuedKnowledgeBaseJobs?.({
-          knowledgeBaseId: knowledgeBase.id,
-          excludedJobIds: hardDeleteJob ? [hardDeleteJob.id] : [],
-          cancelledAt: input.deletedAt,
-          errorCode: "KNOWLEDGE_BASE_DELETED",
-          errorMessage: "Knowledge base deletion superseded queued work."
-        });
-      }
-
-      await invalidateKnowledgeBaseCaches({
-        redis,
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        ttlSeconds: input.cursorTtlSeconds
-      });
+      await input.redis.clearKnowledgeBaseRuntimeKeys({ knowledgeBaseId: knowledgeBase.id });
       return true;
     },
 
-    async deleteSourcePage(input) {
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(input.knowledgeBaseId);
-      if (!knowledgeBase?.activeReleaseId) return { ok: false, reason: "not_found" };
-
-      const file = await files.getBundleFile({
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        logicalPath: input.logicalPath
-      });
+    async deleteSourcePage(request) {
+      const file = await input.activeGenerationReads.withActiveGeneration(
+        request.knowledgeBaseId,
+        (scope) => scope.findFileByPath(request.logicalPath)
+      );
       if (!file) return { ok: false, reason: "not_found" };
-      if (file.fileKind !== "page" || !file.sourceFileId) {
+      if (file.refKind !== "page" || !file.sourceFileId) {
         return { ok: false, reason: "not_deletable" };
       }
-
-      const sourceFile = await resources.getSourceFile({
-        knowledgeBaseId: knowledgeBase.id,
+      const sourceFile = await mutations.resources.getSourceFile({
+        knowledgeBaseId: request.knowledgeBaseId,
         sourceFileId: file.sourceFileId
       });
       if (!sourceFile) return { ok: false, reason: "not_found" };
-
-      const result = await resources.deleteSourceFile({
-        knowledgeBaseId: knowledgeBase.id,
+      await mutations.deleteSourceFile({
+        knowledgeBaseId: request.knowledgeBaseId,
         sourceFileId: sourceFile.id,
         idempotencyKey: `admin-source-file-delete:${sourceFile.id}:${sourceFile.resourceRevision}`,
-        expectedResourceRevision: sourceFile.resourceRevision
+        expectedResourceRevision: sourceFile.resourceRevision,
+        maxAttempts: request.maxAttempts
       });
-
-      if (!result.replayed) {
-        await workerJobs.cancelQueuedSourceFileJobs?.({
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFileIds: [sourceFile.id],
-          cancelledAt: input.deletedAt,
-          errorCode: "SOURCE_FILE_DELETED",
-          errorMessage: "Source file deletion superseded queued processing."
-        });
-        await workerJobs.enqueuePublicationJob({
-          knowledgeBaseId: knowledgeBase.id,
-          reason: "deletion",
-          targetCatalogGeneration: result.operation.candidateCatalogGeneration,
-          runAfter: input.deletedAt,
-          maxAttempts: input.hardDeleteMaxAttempts ?? 3,
-          forceSuccessor: true
-        });
-        await workerJobs.enqueueHardDeleteJob?.({
-          knowledgeBaseId: knowledgeBase.id,
-          targetKind: "source_file",
-          sourceFileId: sourceFile.id,
-          deletionIntentId: result.deletionIntentId,
-          reason: "source_file_deleted",
-          runAfter: input.deletedAt,
-          maxAttempts: input.hardDeleteMaxAttempts ?? 3
-        });
-      }
-
-      await invalidateKnowledgeBaseCaches({
-        redis,
-        knowledgeBaseId: knowledgeBase.id,
-        releaseId: knowledgeBase.activeReleaseId,
-        sourceFileId: sourceFile.id,
-        ttlSeconds: input.cursorTtlSeconds
+      await input.redis.clearSourceFileRuntimeKeys({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: sourceFile.id
       });
       return { ok: true, publicationQueued: true };
     }

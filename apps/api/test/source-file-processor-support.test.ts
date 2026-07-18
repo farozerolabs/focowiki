@@ -41,8 +41,8 @@ describe("source file processor support", () => {
       "metadata_resolution",
       "llm_suggestion",
       "graph_generation",
-      "bundle_generation",
-      "index_publication"
+      "projection_generation",
+      "projection_generation"
     ]) {
       const stageOffset = processor.indexOf(`currentstage = \"${stage}\"`);
       const boundary = processor.slice(stageOffset, stageOffset + 220);

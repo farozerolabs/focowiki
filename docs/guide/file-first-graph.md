@@ -102,7 +102,7 @@ Admin previews copy a Developer OpenAPI content URL for the selected generated f
 
 Developer OpenAPI file search uses generated file discovery by default. `mode=file` searches generated file documents and preserves the existing file-search contract. `mode=hybrid` combines file and graph candidates into one deduplicated file-level result list. `mode=graph` searches persisted graph node and relationship search documents.
 
-Graph search reads the same persisted relationship data that generates `_graph/` files and `Related` sections. It does not parse graph files during the request. This keeps large knowledge-base queries bounded and lets ingestion, deletion, and publication update search data through the same release-scoped read models.
+Graph search reads the same active relationship projection that generates `_graph/` files and `Related` sections. It does not parse graph files during the request. This keeps large knowledge-base queries bounded and lets ingestion, deletion, and publication update graph reads through one active generation.
 
 Each graph result can include `matchType`, `graphContext.graphRef`, `graphContext.relationships`, `graphContext.graphPaths`, and result-level `readActions`. Use graph fields as navigation hints, then follow `readActions` to read the generated Markdown file by ID or path. The generated Markdown file content remains the evidence source that should be read before producing an answer.
 
@@ -110,7 +110,7 @@ Graph expansion accepts a file, node, edge, or query seed and returns bounded re
 
 ## Operational Notes
 
-PostgreSQL stores graph nodes, graph edges, and graph job records. Redis coordinates locks, cursors, and processing state. S3-compatible storage stores the generated `_graph/` files with the rest of the OKF bundle.
+PostgreSQL stores relationship facts, projection impacts, active graph nodes, and active graph edges. Redis coordinates scoped locks, cursors, and short-lived graph caches. S3-compatible storage keeps generated `_graph/` Markdown and machine shards as immutable objects referenced by the active generation.
 
 Processing is file-level. A graph failure for one source file does not require unrelated files to stop processing. Failed files can be retried manually through the same source-file retry flow.
 

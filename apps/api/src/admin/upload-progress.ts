@@ -4,6 +4,7 @@ import type {
   SourceFileProcessingStatus
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { SourceFileTerminalFailure } from "../domain/source-file-lifecycle.js";
 import { invalidateKnowledgeBaseCaches } from "./cache-invalidation.js";
 
 export type UploadProgressTracker = {
@@ -17,8 +18,7 @@ export type UploadProgressUpdate = {
   stage: SourceFileProcessingStage;
   startedAt?: string | null;
   endedAt?: string | null;
-  errorCode?: string | null;
-  errorMessage?: string | null;
+  terminalFailure?: SourceFileTerminalFailure | null;
 };
 
 export type UploadProgressNotification = UploadProgressUpdate & {
@@ -39,7 +39,6 @@ export function createUploadProgressTracker(input: {
     invalidateKnowledgeBaseCaches({
       redis: input.redis,
       knowledgeBaseId: input.knowledgeBaseId,
-      releaseId: null,
       ttlSeconds: input.ttlSeconds
     });
   const markFiles = async (update: UploadProgressUpdate & { sourceFileIds: string[] }) => {
@@ -54,8 +53,7 @@ export function createUploadProgressTracker(input: {
       stage: update.stage,
       startedAt: update.startedAt ?? null,
       endedAt: update.endedAt ?? null,
-      errorCode: update.errorCode ?? null,
-      errorMessage: update.errorMessage ?? null
+      terminalFailure: update.terminalFailure ?? null
     });
     await invalidate();
     await input.onProgress?.({
@@ -64,8 +62,7 @@ export function createUploadProgressTracker(input: {
       stage: update.stage,
       startedAt: update.startedAt ?? null,
       endedAt: update.endedAt ?? null,
-      errorCode: update.errorCode ?? null,
-      errorMessage: update.errorMessage ?? null
+      terminalFailure: update.terminalFailure ?? null
     });
   };
 

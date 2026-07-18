@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 
 export function createFileTreeSearchCursorScope(input: {
   knowledgeBaseId: string;
-  releaseId: string;
+  generationId: string | null;
   query: string;
   limit: number;
 }): string {
   return [
     "file-tree-search",
     input.knowledgeBaseId,
-    input.releaseId,
+    input.generationId ?? "active",
     `query=${createFileTreeSearchSignature(input.query)}`,
     `limit=${input.limit}`
   ].join(":");

@@ -75,9 +75,9 @@ Uploads preserve relative folder paths. Every uploaded item must be a Markdown f
 4. Confirm the manifest.
 5. Upload content for entries whose disposition is `upload_required`.
 6. Complete the upload session.
-7. Observe each returned `sourceFileId` until the file is readable.
+7. Observe each uploaded entry's `sourceFileId` until the file is readable.
 
-The session response declares accepted limits. Large folders should send manifest and content pages within those limits. Reusing an existing folder path adds new files. Existing files at the same relative path are skipped. Use the source-file replacement operation when content at an existing path must change.
+Upload registration has no product-level file-count or byte quota. The session response provides a bounded manifest page size for transport. Upload each required Markdown body through its server-issued entry ID. Reusing an existing folder path adds new files. Existing files at the same relative path are skipped. Use the source-file replacement operation when content at an existing path must change.
 
 ### Minimal Example
 
@@ -121,10 +121,11 @@ status=$(curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_
   -H "Authorization: Bearer $OPENAPI_KEY")
 UPLOAD_ENTRY_ID=$(printf '%s' "$status" | jq -r '.entries.items[] | select(.disposition == "upload_required") | .id' | head -n 1)
 
-uploaded=$(curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/content" \
+uploaded=$(curl -sS -X PUT "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/entries/$UPLOAD_ENTRY_ID/content" \
   -H "Authorization: Bearer $OPENAPI_KEY" \
-  -F "$UPLOAD_ENTRY_ID=@$FILE_PATH;type=text/markdown")
-SOURCE_FILE_ID=$(printf '%s' "$uploaded" | jq -r '.entries[0].sourceFileId')
+  -H "Content-Type: text/markdown" \
+  --data-binary "@$FILE_PATH")
+SOURCE_FILE_ID=$(printf '%s' "$uploaded" | jq -r '.entry.sourceFileId')
 
 curl -sS -X POST "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/upload-sessions/$UPLOAD_SESSION_ID/finalize" \
   -H "Authorization: Bearer $OPENAPI_KEY"
@@ -136,10 +137,13 @@ Use the source-file detail operation to determine when content is ready.
 
 | Field | Values | Meaning |
 | --- | --- | --- |
-| `processingState` | `queued`, `running`, `completed`, `failed` | Processing lifecycle. |
+| `state` | `queued`, `running`, `pending_publication`, `visible`, `failed` | Backend-derived source-file lifecycle. |
+| `currentStage` | `upload_storage` through `generation_activation` | Current or terminal lifecycle stage. |
+| `failure` | object or `null` | Safe terminal failure details and retry kind. |
 | `generatedOutputStatus` | `pending`, `visible`, `unavailable` | Availability in generated file APIs. |
+| `actions` | array | Followable operations authorized for the current lifecycle state. |
 
-A file is ready when `processingState` is `completed` and `generatedOutputStatus` is `visible`. A `failed` file can be inspected through its event list and submitted to the retry operation.
+A file is ready when `state` is `visible`. When `state` is `failed`, read `failure` and follow one of the returned `actions`. A publication retry has knowledge-base publication scope and preserves completed source processing.
 
 ```bash
 curl -sS "$OPENAPI_BASE_URL/openapi/v2/knowledge-bases/$KNOWLEDGE_BASE_ID/source-files/$SOURCE_FILE_ID" \

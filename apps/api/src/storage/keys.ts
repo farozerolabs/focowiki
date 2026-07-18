@@ -1,7 +1,3 @@
-import {
-  isAllowedPublicBundleFilePath,
-  normalizeGeneratedLogicalPath
-} from "@focowiki/okf";
 import { AppError } from "../errors.js";
 
 const SAFE_ID_TOKEN_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
@@ -24,8 +20,6 @@ export type StorageKeyspace = {
     sessionId: string,
     entryId: string
   ) => string;
-  releaseRootKey: (knowledgeBaseId: string, releaseId: string) => string;
-  releaseBundleKey: (knowledgeBaseId: string, releaseId: string, logicalPath: string) => string;
 };
 
 export class StorageKeyError extends AppError {
@@ -49,11 +43,7 @@ export function createStorageKeyspace(rawPrefix: string): StorageKeyspace {
     sourceRevisionKey: (knowledgeBaseId, sourceFileId, revisionToken) =>
       `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/sources/${normalizeId(sourceFileId, "sourceFileId")}/revisions/${normalizeId(revisionToken, "revisionToken")}/content.md`,
     uploadSessionEntryKey: (knowledgeBaseId, sessionId, entryId) =>
-      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/upload-sessions/${normalizeId(sessionId, "sessionId")}/entries/${normalizeId(entryId, "entryId")}/content.md`,
-    releaseRootKey: (knowledgeBaseId, releaseId) =>
-      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/releases/${normalizeId(releaseId, "releaseId")}/bundle/`,
-    releaseBundleKey: (knowledgeBaseId, releaseId, logicalPath) =>
-      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/releases/${normalizeId(releaseId, "releaseId")}/bundle/${normalizeBundlePath(logicalPath)}`
+      `${knowledgeBaseRoot(prefix, knowledgeBaseId)}/upload-sessions/${normalizeId(sessionId, "sessionId")}/entries/${normalizeId(entryId, "entryId")}/content.md`
   };
 }
 
@@ -79,19 +69,6 @@ function normalizePrefix(rawPrefix: string): string {
 
 function normalizeId(value: string, fieldName: string): string {
   return normalizeFileName(value, fieldName);
-}
-
-function normalizeBundlePath(rawPath: string): string {
-  let normalized: string;
-  try {
-    normalized = normalizeGeneratedLogicalPath(decodeForValidation(rawPath).replace(/^\/+/, ""));
-  } catch {
-    throw new StorageKeyError("path must stay inside the bundle root");
-  }
-  if (!isAllowedPublicBundleFilePath(normalized)) {
-    throw new StorageKeyError("path is not an allowed public bundle path");
-  }
-  return normalized;
 }
 
 function normalizeFileName(value: string, fieldName: string): string {

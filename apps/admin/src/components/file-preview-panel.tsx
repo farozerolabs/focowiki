@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import type { BundleFileDetail, KnowledgeBasePublicUrls } from "@/lib/admin-api";
+import type { GeneratedFileDetail, KnowledgeBasePublicUrls } from "@/lib/admin-api";
 
 export function FilePreviewPanel({
   copiedUrl,
@@ -25,7 +25,7 @@ export function FilePreviewPanel({
   copiedUrl: string;
   previewHtml: string;
   publicUrls: KnowledgeBasePublicUrls | null;
-  relationships?: BundleFileDetail["relationships"];
+  relationships?: GeneratedFileDetail["relationships"];
   selectedFileTitle: string;
   selectedFilePath: string;
   onCopy: (url: string) => void;

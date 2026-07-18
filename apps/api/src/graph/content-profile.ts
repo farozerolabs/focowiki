@@ -1,5 +1,9 @@
 import type { SourceMetadata, SourceMetadataDefaults, SourceModelSuggestions } from "@focowiki/okf";
-import { applyPresentationSuggestions, isLowInformationSharedGraphTerm } from "@focowiki/okf";
+import {
+  applyPresentationSuggestions,
+  canonicalizeOptionalGeneratedTextIdentity,
+  isLowInformationSharedGraphTerm
+} from "@focowiki/okf";
 
 export type SourceContentProfile = {
   summary: string;
@@ -201,10 +205,10 @@ function toResolvedProfileMetadata(
   metadata: SourceMetadataDefaults,
   fallbackTitle: string
 ): SourceMetadata {
-  const title = typeof metadata.title === "string" && metadata.title.trim()
-    ? metadata.title
-    : fallbackTitle;
-  const type = typeof metadata.type === "string" && metadata.type.trim() ? metadata.type : "page";
+  const title = canonicalizeOptionalGeneratedTextIdentity(metadata.title, "title")
+    ?? canonicalizeOptionalGeneratedTextIdentity(fallbackTitle, "fallbackTitle")
+    ?? "Untitled Markdown file";
+  const type = canonicalizeOptionalGeneratedTextIdentity(metadata.type, "type") ?? "page";
 
   return {
     ...metadata,

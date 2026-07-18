@@ -9,8 +9,7 @@ import {
   uploadSessionContent,
   type ApiFailure,
   type UploadSession,
-  type UploadSessionEntry,
-  type UploadSessionLimits
+  type UploadSessionTransport
 } from "./admin-api";
 import { fileRelativePath, normalizeUploadRelativePath } from "./upload-selection";
 
@@ -37,12 +36,12 @@ export async function runUploadSession(input: {
   knowledgeBaseId: string;
   files: File[];
   onProgress: (progress: UploadClientProgress) => void;
-  onSessionReady?: (sessionId: string, limits: UploadSessionLimits) => void;
+  onSessionReady?: (sessionId: string, transport: UploadSessionTransport) => void;
 }): Promise<UploadClientResult> {
   const manifest = [] as Array<{
     relativePath: string;
     declaredSize: number;
-    checksumSha256: string;
+    checksumSha256: string | null;
   }>;
   for (let index = 0; index < input.files.length; index += 1) {
     const file = input.files[index];
@@ -50,7 +49,7 @@ export async function runUploadSession(input: {
     manifest.push({
       relativePath: fileRelativePath(file),
       declaredSize: file.size,
-      checksumSha256: await sha256File(file)
+      checksumSha256: null
     });
     input.onProgress({
       stage: "hashing",
@@ -69,19 +68,19 @@ export async function runUploadSession(input: {
     return { ok: false, failure: created, sessionId: null };
   }
   const sessionId = created.session.id;
-  input.onSessionReady?.(sessionId, created.limits);
-  for (let offset = 0; offset < manifest.length; offset += created.limits.manifestPageSize) {
+  input.onSessionReady?.(sessionId, created.transport);
+  for (let offset = 0; offset < manifest.length; offset += created.transport.manifestPageSize) {
     const response = await addUploadManifestEntries({
       knowledgeBaseId: input.knowledgeBaseId,
       sessionId,
-      entries: manifest.slice(offset, offset + created.limits.manifestPageSize)
+      entries: manifest.slice(offset, offset + created.transport.manifestPageSize)
     });
     if (isFailure(response)) {
       return { ok: false, failure: response, sessionId };
     }
     input.onProgress({
       stage: "manifest",
-      completed: Math.min(offset + created.limits.manifestPageSize, manifest.length),
+      completed: Math.min(offset + created.transport.manifestPageSize, manifest.length),
       total: manifest.length,
       session: response.session
     });
@@ -125,7 +124,7 @@ export async function runUploadSession(input: {
     knowledgeBaseId: input.knowledgeBaseId,
     sessionId,
     files: input.files,
-    limits: created.limits,
+    transport: created.transport,
     session,
     onProgress: input.onProgress
   });
@@ -158,7 +157,7 @@ export async function resumeUploadSession(input: {
   knowledgeBaseId: string;
   sessionId: string;
   files: File[];
-  limits: UploadSessionLimits;
+  transport: UploadSessionTransport;
   onProgress: (progress: UploadClientProgress) => void;
 }): Promise<UploadClientResult> {
   const current = await getUploadSession({
@@ -199,7 +198,7 @@ export async function resumeUploadSession(input: {
     knowledgeBaseId: input.knowledgeBaseId,
     sessionId: input.sessionId,
     files: input.files,
-    limits: input.limits,
+    transport: input.transport,
     session,
     onProgress: input.onProgress
   });
@@ -227,7 +226,7 @@ async function transferMissingEntries(input: {
   knowledgeBaseId: string;
   sessionId: string;
   files: File[];
-  limits: UploadSessionLimits;
+  transport: UploadSessionTransport;
   session: UploadSession;
   onProgress: (progress: UploadClientProgress) => void;
 }): Promise<UploadClientResult> {
@@ -242,18 +241,22 @@ async function transferMissingEntries(input: {
       sessionId: input.sessionId,
       transferState: "missing",
       cursor,
-      limit: input.limits.manifestPageSize
+      limit: input.transport.manifestPageSize
     });
     if (isFailure(page)) {
       return { ok: false, failure: page, sessionId: input.sessionId };
     }
     session = page.session;
-    const batches = createContentBatches(page.entries.items, fileByPath, input.limits);
-    for (const batch of batches) {
+    for (const entry of page.entries.items) {
+      const file = fileByPath.get(normalizeUploadRelativePath(entry.relativePath));
+      if (!file) {
+        throw new Error("UPLOAD_SELECTION_CHANGED");
+      }
       const response = await uploadSessionContent({
         knowledgeBaseId: input.knowledgeBaseId,
         sessionId: input.sessionId,
-        entries: batch
+        entryId: entry.id,
+        file
       });
       if (isFailure(response)) {
         return { ok: false, failure: response, sessionId: input.sessionId };
@@ -262,7 +265,7 @@ async function transferMissingEntries(input: {
         ...session,
         counts: {
           ...session.counts,
-          uploaded: session.counts.uploaded + response.entries.length
+          uploaded: session.counts.uploaded + 1
         }
       };
       input.onProgress({
@@ -275,44 +278,6 @@ async function transferMissingEntries(input: {
     cursor = page.entries.nextCursor;
   } while (cursor);
   return { ok: true, session };
-}
-
-function createContentBatches(
-  entries: UploadSessionEntry[],
-  fileByPath: Map<string, File>,
-  limits: UploadSessionLimits
-): Array<Array<{ entryId: string; file: File }>> {
-  const batches: Array<Array<{ entryId: string; file: File }>> = [];
-  let current: Array<{ entryId: string; file: File }> = [];
-  let currentBytes = 0;
-  for (const entry of entries) {
-    const file = fileByPath.get(normalizeUploadRelativePath(entry.relativePath));
-    if (!file) {
-      throw new Error("UPLOAD_SELECTION_CHANGED");
-    }
-    if (file.size > limits.maxFileBytes || file.size > limits.contentBatchMaxBytes) {
-      throw new Error("UPLOAD_FILE_TOO_LARGE");
-    }
-    if (
-      current.length >= limits.contentBatchMaxFiles ||
-      currentBytes + file.size > limits.contentBatchMaxBytes
-    ) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push({ entryId: entry.id, file });
-    currentBytes += file.size;
-  }
-  if (current.length > 0) {
-    batches.push(current);
-  }
-  return batches;
-}
-
-async function sha256File(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function isFailure(value: unknown): value is ApiFailure {
