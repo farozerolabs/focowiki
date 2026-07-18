@@ -49,6 +49,28 @@ export function createPostgresProjectionRecordRepository(
             summary = EXCLUDED.summary, searchable_text = EXCLUDED.searchable_text,
             payload_json = EXCLUDED.payload_json
       `;
+      const statistics = readDirectoryStatistics(input.payload);
+      if (input.projectionKind === "tree" && input.logicalPath && statistics) {
+        await sql`
+          INSERT INTO focowiki.generation_tree_directory_stats (
+            knowledge_base_id, generation_id, path, parent_path,
+            direct_entry_count, direct_directory_count, direct_file_count,
+            descendant_file_count, updated_at
+          ) VALUES (
+            ${input.knowledgeBaseId}, ${input.generationId}, ${input.logicalPath},
+            ${input.parentPath ?? ""}, ${statistics.directEntryCount},
+            ${statistics.directDirectoryCount}, ${statistics.directFileCount},
+            ${statistics.descendantFileCount}, now()
+          )
+          ON CONFLICT (generation_id, path) DO UPDATE
+          SET parent_path = EXCLUDED.parent_path,
+              direct_entry_count = EXCLUDED.direct_entry_count,
+              direct_directory_count = EXCLUDED.direct_directory_count,
+              direct_file_count = EXCLUDED.direct_file_count,
+              descendant_file_count = EXCLUDED.descendant_file_count,
+              updated_at = EXCLUDED.updated_at
+        `;
+      }
     },
 
     async stageDelete(input) {
@@ -102,6 +124,25 @@ export function createPostgresProjectionRecordRepository(
       return rows[0] ? mapRecord(rows[0]) : null;
     }
   };
+}
+
+function readDirectoryStatistics(payload: SerializableJson): {
+  directEntryCount: number;
+  directDirectoryCount: number;
+  directFileCount: number;
+  descendantFileCount: number;
+} | null {
+  if (!payload || Array.isArray(payload) || typeof payload !== "object") return null;
+  const object = payload as Record<string, SerializableJson>;
+  if (object.kind !== "directory") return null;
+  const directEntryCount = Number(object.directEntryCount);
+  const directDirectoryCount = Number(object.directDirectoryCount);
+  const directFileCount = Number(object.directFileCount);
+  const descendantFileCount = Number(object.descendantFileCount);
+  const values = [directEntryCount, directDirectoryCount, directFileCount, descendantFileCount];
+  if (!values.every((value) => Number.isInteger(value) && value >= 0)) return null;
+  if (directEntryCount !== directDirectoryCount + directFileCount) return null;
+  return { directEntryCount, directDirectoryCount, directFileCount, descendantFileCount };
 }
 
 function mapRecord(row: ProjectionRecordRow): ProjectionRecord {

@@ -5,6 +5,11 @@ import type {
   CursorPage
 } from "../db/admin-repositories.js";
 import type { GeneratedFileKind } from "../okf/publication-files.js";
+import {
+  GENERATED_GRAPH_RESOURCES,
+  graphFileContentAction,
+  graphTreeAction
+} from "../okf/generated-graph-resources.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import {
@@ -152,22 +157,34 @@ type DeveloperGraphExpansionResponse = {
   nextActions?: string[];
 };
 
-type DeveloperGraphInsightsResponse = {
+type DeveloperGraphOverviewResponse = {
   generationId: string;
-  file: ReturnType<typeof toDeveloperActiveFile> | null;
-  contentPath: "_graph/insights.json";
-  insights: Record<string, unknown>[];
-  generatedAt: string | null;
-  resultSummary: {
-    insightCount: number;
-    meaning: string;
+  availability: "available" | "empty" | "unavailable";
+  summary: {
+    nodeCount: number;
+    edgeCount: number;
+  };
+  resources: {
+    graphIndexPath: string | null;
+    nodeDirectoryPath: string | null;
+    edgeDirectoryPath: string | null;
+    byFileDirectoryPath: string | null;
   };
   readActions: {
-    graphIndex: string;
-    graphManifest: string;
-    graphInsightsFile: string;
-    graphInsightsContent: string;
+    readIndexContent: string;
+    graphIndexContent: string | null;
+    listGraphRoot: string;
+    listGraphNodes: string | null;
+    listGraphEdges: string | null;
+    listByFileGraph: string | null;
+    searchGraph: string;
+    expandGraphByFileId: string;
+    fileDetailById: string;
+    fileContentById: string;
+    fileContentByPath: string;
+    relatedFilesById: string;
   };
+  message: string;
   nextActions: string[];
 };
 
@@ -615,41 +632,92 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         })
       };
     },
-    async getGraphInsights(input: { knowledgeBaseId: string }): Promise<DeveloperGraphInsightsResponse> {
+    async getGraphOverview(input: { knowledgeBaseId: string }): Promise<DeveloperGraphOverviewResponse> {
       const active = await requireActiveGenerationReads().withActiveGeneration(
         input.knowledgeBaseId,
-        async (scope) => ({
-          generationId: scope.generationId,
-          file: await scope.findFileByPath("_graph/insights.json")
-        })
+        async (scope) => {
+          const cacheScope = "developer-openapi:graph-overview";
+          const cacheId = `${input.knowledgeBaseId}:${scope.generationId}`;
+          const cached = await redis?.getPageCache<{
+            nodeCount: number;
+            edgeCount: number;
+            graphIndexAvailable: boolean;
+          }>(cacheScope, cacheId);
+          if (cached) return { generationId: scope.generationId, summary: cached };
+          const summary = await scope.getGraphSummary();
+          if (!summary.persisted) {
+            await redis?.setPageCache(cacheScope, cacheId, {
+              nodeCount: summary.nodeCount,
+              edgeCount: summary.edgeCount,
+              graphIndexAvailable: summary.graphIndexAvailable
+            }, 30);
+          }
+          return { generationId: scope.generationId, summary };
+        }
       );
       if (!active) throw notFound();
-      const content = active.file
-        ? await readGeneratedObjectText(storage, active.file.objectKey, config)
-        : null;
-      const parsed = parseGraphInsights(content);
-      const base = `/openapi/v2/knowledge-bases/${input.knowledgeBaseId}/files/content?path=`;
+      const availability = !active.summary.graphIndexAvailable
+        ? "unavailable" as const
+        : active.summary.nodeCount > 0 || active.summary.edgeCount > 0
+          ? "available" as const
+          : "empty" as const;
+      const base = `/openapi/v2/knowledge-bases/${input.knowledgeBaseId}`;
       return {
         generationId: active.generationId,
-        file: active.file ? toDeveloperActiveFile(input.knowledgeBaseId, active.file) : null,
-        contentPath: "_graph/insights.json",
-        insights: parsed.insights,
-        generatedAt: parsed.generatedAt,
-        resultSummary: {
-          insightCount: parsed.insights.length,
-          meaning: parsed.insights.length > 0
-            ? "Optional graph insights can guide further file and graph exploration."
-            : "Optional graph insights are not available. Continue with file tree, file search, related files, and graph expansion."
+        availability,
+        summary: {
+          nodeCount: active.summary.nodeCount,
+          edgeCount: active.summary.edgeCount
+        },
+        resources: {
+          graphIndexPath: active.summary.graphIndexAvailable
+            ? GENERATED_GRAPH_RESOURCES.index.path
+            : null,
+          nodeDirectoryPath: active.summary.nodeCount > 0
+            ? GENERATED_GRAPH_RESOURCES.nodeDirectoryPath
+            : null,
+          edgeDirectoryPath: active.summary.edgeCount > 0
+            ? GENERATED_GRAPH_RESOURCES.edgeDirectoryPath
+            : null,
+          byFileDirectoryPath: active.summary.nodeCount > 0
+            ? GENERATED_GRAPH_RESOURCES.byFileDirectoryPath
+            : null
         },
         readActions: {
-          graphIndex: `${base}_graph%2Findex.md`,
-          graphManifest: `${base}_graph%2Fmanifest.json`,
-          graphInsightsFile: `${base}_graph%2Finsights.json`,
-          graphInsightsContent: `${base}_graph%2Finsights.json`
+          readIndexContent: `${base}/files/content?path=index.md`,
+          graphIndexContent: active.summary.graphIndexAvailable
+            ? graphFileContentAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.index.path)
+            : null,
+          listGraphRoot: graphTreeAction(
+            input.knowledgeBaseId,
+            GENERATED_GRAPH_RESOURCES.rootDirectoryPath
+          ),
+          listGraphNodes: active.summary.nodeCount > 0
+            ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.nodeDirectoryPath)
+            : null,
+          listGraphEdges: active.summary.edgeCount > 0
+            ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.edgeDirectoryPath)
+            : null,
+          listByFileGraph: active.summary.nodeCount > 0
+            ? graphTreeAction(input.knowledgeBaseId, GENERATED_GRAPH_RESOURCES.byFileDirectoryPath)
+            : null,
+          searchGraph: `${base}/files/search?query={query}&mode=graph`,
+          expandGraphByFileId: `${base}/graph/expand?fileId={fileId}`,
+          fileDetailById: `${base}/files/{fileId}`,
+          fileContentById: `${base}/files/{fileId}/content`,
+          fileContentByPath: `${base}/files/content?path={path}`,
+          relatedFilesById: `${base}/files/{fileId}/related`
         },
+        message: availability === "available"
+          ? "Graph projections are available. Continue to source-backed files before answering."
+          : availability === "empty"
+            ? "The graph is currently empty. Relevant source-backed files may still exist."
+            : "Graph projections are not available yet. Continue with index.md, the file tree, and file search.",
         nextActions: [
-          "Read _graph/index.md to discover graph projection files.",
-          "Use related files or graph expansion to reach source-backed files.",
+          availability === "available"
+            ? "Read the graph index or list graph directories to discover relationships."
+            : "Read index.md and list the file tree to discover source-backed files.",
+          "Use graph search, related files, or graph expansion to identify candidate files.",
           "Read candidate file content before answering."
         ]
       };
@@ -802,33 +870,6 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.length > 0))];
-}
-
-function parseGraphInsights(content: string | null): {
-  insights: Record<string, unknown>[];
-  generatedAt: string | null;
-} {
-  if (!content) return { insights: [], generatedAt: null };
-  try {
-    const parsed: unknown = JSON.parse(content);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { insights: [], generatedAt: null };
-    }
-    const object = parsed as Record<string, unknown>;
-    const insights = Array.isArray(object.insights)
-      ? object.insights.filter((item): item is Record<string, unknown> =>
-          Boolean(item) && typeof item === "object" && !Array.isArray(item)
-        )
-      : [];
-    const generatedAt = typeof object.generatedAt === "string"
-      ? object.generatedAt
-      : typeof object.generated_at === "string"
-        ? object.generated_at
-        : null;
-    return { insights, generatedAt };
-  } catch {
-    return { insights: [], generatedAt: null };
-  }
 }
 
 function createGraphExpansionQuery(input: {

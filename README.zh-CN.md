@@ -93,6 +93,7 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
 - Frontmatter、标题、链接和正文内容提取。
 - OKF-style 文件：`index.md`、`log.md`、`schema.md`、`pages/*.md`、`_index/*.json` 和 `_graph/*`。
 - PostgreSQL 记录、Redis 协调和 S3 兼容文件存储。
+- 相互隔离的来源处理、发布和维护 Worker 角色，以及由数据库持久化的处理进度。
 - Admin UI，用于知识库管理、上传、文件浏览、处理状态和 OpenAPI key。
 - Developer OpenAPI，用于后端和 Agent 集成。
 

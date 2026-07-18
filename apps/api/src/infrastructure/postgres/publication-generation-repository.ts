@@ -53,6 +53,7 @@ export function createPostgresPublicationGenerationRepository(
           ON progress.knowledge_base_id = generation.knowledge_base_id
          AND progress.generation_id = generation.id
         WHERE generation.knowledge_base_id = ${input.knowledgeBaseId}
+          AND generation.generation_kind = 'normal'
           AND generation.state IN ('open', 'frozen', 'building', 'validating', 'failed')
         ORDER BY CASE generation.state
                    WHEN 'frozen' THEN 0 WHEN 'building' THEN 0 WHEN 'validating' THEN 0
@@ -502,6 +503,52 @@ export function createPostgresPublicationGenerationRepository(
         if (candidates.length !== 1) {
           return false;
         }
+        const invalidObjectReferences = await transaction<Array<{ count: number }>>`
+          SELECT count(*)::int AS count
+          FROM focowiki.generation_object_refs reference
+          LEFT JOIN focowiki.immutable_objects object
+            ON object.checksum_sha256 = reference.checksum_sha256
+           AND object.format_version = reference.format_version
+          WHERE reference.generation_id = ${input.generationId}
+            AND reference.knowledge_base_id = ${input.knowledgeBaseId}
+            AND reference.action = 'upsert'
+            AND (
+              object.checksum_sha256 IS NULL
+              OR object.lifecycle_state <> 'active'
+            )
+        `;
+        if (Number(invalidObjectReferences[0]?.count ?? 0) > 0) {
+          throw new Error("Candidate generation contains an unverified immutable object");
+        }
+        if (input.expectedPredecessorGenerationId) {
+          await transaction`
+            INSERT INTO focowiki.generation_tree_directory_stats (
+              knowledge_base_id, generation_id, path, parent_path,
+              direct_entry_count, direct_directory_count, direct_file_count,
+              descendant_file_count, created_at, updated_at
+            )
+            SELECT knowledge_base_id, ${input.generationId}, path, parent_path,
+                   direct_entry_count, direct_directory_count, direct_file_count,
+                   descendant_file_count, ${input.activatedAt}, ${input.activatedAt}
+            FROM focowiki.generation_tree_directory_stats
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND generation_id = ${input.expectedPredecessorGenerationId}
+            ON CONFLICT (generation_id, path) DO NOTHING
+          `;
+        }
+        await transaction`
+          DELETE FROM focowiki.generation_tree_directory_stats statistics
+          USING focowiki.generation_projection_records change
+          WHERE change.generation_id = ${input.generationId}
+            AND change.knowledge_base_id = ${input.knowledgeBaseId}
+            AND change.projection_kind = 'tree'
+            AND change.action = 'delete'
+            AND statistics.generation_id = change.generation_id
+            AND statistics.path = CASE
+              WHEN change.record_id = 'directory:' THEN 'pages'
+              ELSE 'pages/' || substring(change.record_id from length('directory:') + 1)
+            END
+        `;
         if (input.expectedPredecessorGenerationId) {
           const predecessors = await transaction<Array<{ id: string }>>`
             UPDATE focowiki.publication_generations
@@ -526,6 +573,15 @@ export function createPostgresPublicationGenerationRepository(
           WHERE id = ${input.generationId}
             AND knowledge_base_id = ${input.knowledgeBaseId}
             AND state = 'validating'
+        `;
+        await transaction`
+          UPDATE focowiki.publication_generations
+          SET predecessor_generation_id = ${input.generationId},
+              updated_at = ${input.activatedAt}
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND id <> ${input.generationId}
+            AND state IN ('open', 'frozen', 'building', 'validating')
+            AND predecessor_generation_id IS NOT DISTINCT FROM ${input.expectedPredecessorGenerationId}
         `;
         await transaction`
           DELETE FROM focowiki.active_object_refs active
@@ -600,6 +656,29 @@ export function createPostgresPublicationGenerationRepository(
               summary = EXCLUDED.summary,
               searchable_text = EXCLUDED.searchable_text,
               payload_json = EXCLUDED.payload_json,
+              updated_at = EXCLUDED.updated_at
+        `;
+        await transaction`
+          INSERT INTO focowiki.generation_graph_summaries (
+            knowledge_base_id, generation_id, node_count, edge_count,
+            graph_index_available, updated_at
+          )
+          SELECT ${input.knowledgeBaseId}, ${input.generationId},
+                 count(*) FILTER (WHERE projection_kind = 'graph_node'),
+                 count(*) FILTER (WHERE projection_kind = 'graph_edge'),
+                 EXISTS (
+                   SELECT 1 FROM focowiki.active_object_refs reference
+                   WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+                     AND reference.logical_path = '_graph/index.md'
+                 ),
+                 ${input.activatedAt}
+          FROM focowiki.active_projection_records
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND projection_kind IN ('graph_node', 'graph_edge')
+          ON CONFLICT (generation_id) DO UPDATE
+          SET node_count = EXCLUDED.node_count,
+              edge_count = EXCLUDED.edge_count,
+              graph_index_available = EXCLUDED.graph_index_available,
               updated_at = EXCLUDED.updated_at
         `;
         await transaction`

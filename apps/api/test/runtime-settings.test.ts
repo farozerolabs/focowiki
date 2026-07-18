@@ -22,6 +22,7 @@ import {
   encryptRuntimeSecret,
   fingerprintRuntimeSecret
 } from "../src/runtime-settings/encryption.js";
+import type { StorageReconciliationRepository } from "../src/application/ports/storage-reconciliation-repository.js";
 
 describe("runtime settings service", () => {
   it("bootstraps settings and keeps model assistance optional", async () => {
@@ -63,7 +64,66 @@ describe("runtime settings service", () => {
       pendingImpactResumeCount: 10_000,
       generationRetentionDays: 7
     });
+    expect(snapshot.maintenance).toEqual({
+      reconciliationEnabled: true,
+      scanIntervalSeconds: 21_600,
+      scanBatchSize: 500,
+      deletionBatchSize: 100,
+      quarantineGracePeriodSeconds: 86_400,
+      confirmationPasses: 2,
+      maxAttempts: 5,
+      retryDelayMs: 30_000
+    });
     expect(snapshot.activeModel).toBeNull();
+  });
+
+  it("audits maintenance updates and notifies other runtimes through Redis", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const redis = createTestRedisCoordinator();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis,
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+    const previousVersion = await redis.getRuntimeSettingsVersion();
+
+    const updated = await service.updateMaintenance({
+      actor: "admin",
+      value: {
+        ...initial.maintenance,
+        scanBatchSize: 1_000,
+        deletionBatchSize: 250
+      }
+    });
+
+    expect(updated.maintenance).toMatchObject({
+      scanBatchSize: 1_000,
+      deletionBatchSize: 250
+    });
+    expect(await redis.getRuntimeSettingsVersion()).not.toBe(previousVersion);
+    expect(repository.auditLogs).toContainEqual(
+      expect.objectContaining({
+        settingKey: "maintenance",
+        action: "update",
+        actor: "admin"
+      })
+    );
+
+    await expect(
+      service.updateMaintenance({
+        actor: "admin",
+        value: {
+          ...updated.maintenance,
+          scanBatchSize: 1_001,
+          confirmationPasses: 1
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+    expect((await service.getSnapshot()).maintenance).toEqual(updated.maintenance);
   });
 
   it("creates a model without exposing the raw key and blocks deleting a running model", async () => {
@@ -225,7 +285,8 @@ describe("runtime settings service", () => {
             return null;
           }
         }
-      }
+      },
+      storageReconciliation: createStorageReconciliationRepository()
     });
     const cookie = await loginAndReadSessionCookie(app);
     const initial = await app.request("/admin/api/settings/runtime", {
@@ -246,10 +307,33 @@ describe("runtime settings service", () => {
     const initialBody = (await initial.json()) as {
       settings: RuntimeSettingsSnapshot;
       models: unknown[];
+      maintenanceStatus: unknown;
     };
     expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
     expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
     expect(initialBody.settings.rateLimits).not.toHaveProperty("upload");
+    expect(initialBody.settings.maintenance).toMatchObject({
+      reconciliationEnabled: true,
+      confirmationPasses: 2
+    });
+    expect(initialBody.maintenanceStatus).toEqual({
+      state: "verifying",
+      lastScanStartedAt: "2026-07-18T10:00:00.000Z",
+      lastScanCompletedAt: null,
+      listedCount: 500,
+      quarantinedCount: 2,
+      deletedCount: 1,
+      missingCount: 0,
+      retryCount: 1,
+      lastErrorCode: null
+    });
+    const serializedInitial = JSON.stringify(initialBody);
+    for (const forbidden of [
+      "objectKey", "checksumSha256", "secretAccessKey", "SELECT ",
+      "storage_reconciliation_candidates", "tenant/demo/generated"
+    ]) {
+      expect(serializedInitial).not.toContain(forbidden);
+    }
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toMatchObject({
       error: {
@@ -343,8 +427,71 @@ describe("runtime settings service", () => {
         graph: initialBody.settings.graph
       }
     });
+
+    const invalidMaintenance = await app.request("/admin/api/settings/maintenance", {
+      method: "PUT",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        ...initialBody.settings.maintenance,
+        scanBatchSize: 1_001,
+        confirmationPasses: 1
+      })
+    });
+    expect(invalidMaintenance.status).toBe(400);
+
+    const validMaintenance = await app.request("/admin/api/settings/maintenance", {
+      method: "PUT",
+      headers: withTrustedAdminOrigin({
+        cookie,
+        "content-type": "application/json"
+      }),
+      body: JSON.stringify({
+        ...initialBody.settings.maintenance,
+        scanBatchSize: 1_000
+      })
+    });
+    expect(validMaintenance.status).toBe(200);
+    await expect(validMaintenance.json()).resolves.toMatchObject({
+      settings: {
+        maintenance: {
+          scanBatchSize: 1_000
+        }
+      }
+    });
   });
 });
+
+function createStorageReconciliationRepository(): StorageReconciliationRepository {
+  return {
+    async claimCycle() { return null; },
+    async recordScanPage() { return true; },
+    async claimDeletionCandidates() { return []; },
+    async authorizeCandidateDeletion() { return false; },
+    async refreshCandidateObservation() {},
+    async completeCandidateDeletion() {},
+    async failCandidateDeletion() {},
+    async listRegisteredObjectsForVerification() { return []; },
+    async recordRegisteredObjectCheck() { return true; },
+    async finishCycle() { return true; },
+    async failCycle() {},
+    async getStatus() {
+      return {
+        state: "verifying",
+        lastScanStartedAt: "2026-07-18T10:00:00.000Z",
+        lastScanCompletedAt: null,
+        listedCount: 500,
+        quarantinedCount: 2,
+        deletedCount: 1,
+        missingCount: 0,
+        retryCount: 1,
+        lastErrorCode: null
+      };
+    }
+  };
+}
 
 function createConfig(input: { modelEnabled: boolean }): RuntimeConfig {
   return {
@@ -445,6 +592,12 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
   public readonly models = new Map<string, RuntimeModelConfigPrivate>();
   public runningModelInvocationCount = 0;
   public runningSourceFileJobCount = 0;
+  public readonly auditLogs: Array<{
+    settingKey: string;
+    action: string;
+    actor?: string | null | undefined;
+    value: unknown;
+  }> = [];
 
   public async listSettings() {
     return [...this.settings.values()];
@@ -473,8 +626,13 @@ class MemoryRuntimeSettingsRepository implements RuntimeSettingsRepository {
     return record;
   }
 
-  public async createAuditLog() {
-    return;
+  public async createAuditLog(input: {
+    settingKey: string;
+    action: string;
+    actor?: string | null | undefined;
+    value: unknown;
+  }) {
+    this.auditLogs.push(input);
   }
 
   public async listModels() {

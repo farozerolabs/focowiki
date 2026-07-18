@@ -127,6 +127,9 @@ function createScope(): ActiveGenerationReadScope {
         }
       };
     },
+    async getGraphSummary() {
+      return { nodeCount: 3, edgeCount: 2, graphIndexAvailable: true, persisted: true };
+    },
     async listTree() {
       return { items: [], nextCursor: null };
     },

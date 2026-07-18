@@ -93,11 +93,27 @@ Graph settings control body-grounded file relationship discovery, graph search, 
 | Max search depth | Maximum graph expansion depth accepted by OpenAPI. | `2`. |
 | Default search fanout | Related files followed per graph hop by default. | `10`. |
 | Max search fanout | Maximum related files followed per graph hop. | `25`. |
-| Graph insights | Publishes optional graph insight files. | Enabled. |
 | Model relationship review | Allows the active model to review candidate relationships. | Enable when the model service is stable. |
 | Graph publication shard size | Graph nodes and edges assigned to one generated shard. | 5000 to 20000. |
 | Graph cache TTL seconds | Redis cache lifetime for graph search and expansion. | 5 to 60 seconds. |
 | Generic phrase threshold | Minimum normalized phrase length used by generic phrase filtering. | `4`. |
+
+## Maintenance
+
+Maintenance settings control bounded reconciliation of Focowiki-managed generated objects. Reconciliation runs only in the maintenance worker. It does not scan source uploads, upload-session objects, unrelated prefixes, or user-managed storage paths.
+
+| Field | Meaning | Recommended value |
+| --- | --- | --- |
+| Storage reconciliation | Enables bounded generated-object reconciliation. | Keep enabled for normal deployments. |
+| Scan interval seconds | Time between complete reconciliation cycles. | `21600` seconds. |
+| Scan batch size | Generated-object metadata records listed in one bounded page. | `500`; maximum `1000`. |
+| Deletion batch size | Confirmed orphan objects deleted in one bounded batch. | `100`; maximum `1000`. |
+| Quarantine grace seconds | Minimum time an unregistered candidate remains quarantined before deletion. | `86400` seconds or longer. |
+| Confirmation passes | Completed discovery passes required before deletion eligibility. | `2` or more. |
+| Maximum attempts | Deletion attempts retained for one candidate. | `5`. |
+| Retry delay ms | Delay after a transient reconciliation failure. | `30000` to `300000` ms. |
+
+The status section reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
 
 ## Models
 

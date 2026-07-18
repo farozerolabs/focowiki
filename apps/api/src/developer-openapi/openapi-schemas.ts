@@ -237,7 +237,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       ["generationId", "fileId", "sourceFileId", "items", "nextCursor"]
     ),
     GraphExpansionResponse: graphExpansionResponseSchema(),
-    GraphInsightsResponse: graphInsightsResponseSchema(),
+    GraphOverviewResponse: graphOverviewResponseSchema(),
     DeleteResponse: objectSchema(
       {
         deleted: { type: "boolean" },
@@ -308,50 +308,59 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
   };
 }
 
-function graphInsightsResponseSchema(): SchemaObject {
+function graphOverviewResponseSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation used for this graph insight response."),
-      file: {
-        oneOf: [ref("GeneratedFile"), { type: "null" }],
-        description: "Optional generated graph insight file. It is null when insights are not available."
-      },
-      contentPath: {
+      generationId: idSchema("Active generation used for this graph overview."),
+      availability: {
         type: "string",
-        const: "_graph/insights.json",
-        description: "Logical generated graph insights file path."
+        enum: ["available", "empty", "unavailable"],
+        description: "Availability of active graph projections. Empty graph results do not imply an empty knowledge base."
       },
-      insights: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: true
-        },
-        description: "Published graph quality or navigation insight records."
-      },
-      generatedAt: nullableString("Timestamp from the generated graph insights file."),
-      resultSummary: objectSchema(
+      summary: objectSchema(
         {
-          insightCount: { type: "integer", minimum: 0 },
-          meaning: { type: "string" }
+          nodeCount: { type: "integer", minimum: 0 },
+          edgeCount: { type: "integer", minimum: 0 }
         },
-        ["insightCount", "meaning"]
+        ["nodeCount", "edgeCount"]
+      ),
+      resources: objectSchema(
+        {
+          graphIndexPath: nullableString("Generated graph index path when available."),
+          nodeDirectoryPath: nullableString("Generated graph-node directory when nodes are available."),
+          edgeDirectoryPath: nullableString("Generated graph-edge directory when edges are available."),
+          byFileDirectoryPath: nullableString("Generated per-file graph directory when nodes are available.")
+        },
+        ["graphIndexPath", "nodeDirectoryPath", "edgeDirectoryPath", "byFileDirectoryPath"]
       ),
       readActions: objectSchema(
         {
-          graphIndex: { type: "string" },
-          graphManifest: { type: "string" },
-          graphInsightsFile: { type: "string" },
-          graphInsightsContent: { type: "string" }
+          readIndexContent: { type: "string" },
+          graphIndexContent: nullableString("Read the real graph index file when available."),
+          listGraphRoot: { type: "string" },
+          listGraphNodes: nullableString("List generated graph-node files when available."),
+          listGraphEdges: nullableString("List generated graph-edge files when available."),
+          listByFileGraph: nullableString("List per-file graph records when available."),
+          searchGraph: { type: "string" },
+          expandGraphByFileId: { type: "string" },
+          fileDetailById: { type: "string" },
+          fileContentById: { type: "string" },
+          fileContentByPath: { type: "string" },
+          relatedFilesById: { type: "string" }
         },
-        ["graphIndex", "graphManifest", "graphInsightsFile", "graphInsightsContent"]
+        [
+          "readIndexContent", "graphIndexContent", "listGraphRoot", "listGraphNodes",
+          "listGraphEdges", "listByFileGraph", "searchGraph", "expandGraphByFileId",
+          "fileDetailById", "fileContentById", "fileContentByPath", "relatedFilesById"
+        ]
       ),
+      message: { type: "string" },
       nextActions: {
         type: "array",
         items: { type: "string" }
       }
     },
-    ["generationId", "file", "contentPath", "insights", "generatedAt", "resultSummary", "readActions", "nextActions"]
+    ["generationId", "availability", "summary", "resources", "readActions", "message", "nextActions"]
   );
 }
 
@@ -513,7 +522,6 @@ function sourceResourceFileSchema(): SchemaObject {
       generatedPath: nullableString("Canonical generated Markdown path when published."),
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
-      checksumSha256: { type: "string" },
       resourceRevision: { type: "integer", minimum: 1 },
       contentRevision: { type: "integer", minimum: 1 },
       activeRevisionId: idSchema("Identifier of the source content version currently in use."),
@@ -553,7 +561,6 @@ function sourceResourceFileSchema(): SchemaObject {
       "generatedPath",
       "contentType",
       "sizeBytes",
-      "checksumSha256",
       "resourceRevision",
       "contentRevision",
       "activeRevisionId",
@@ -725,11 +732,12 @@ function generatedTreeEntrySchema(): SchemaObject {
       },
       entryType: { type: "string", enum: ["file", "directory"] },
       fileKind: nullableString("Generated file classification."),
-      childCount: {
+      directEntryCount: {
         type: "integer",
         minimum: 0,
-        description: "Direct child count for directory entries. File entries return 0."
+        description: "Direct directory and file entry count. File entries return 0."
       },
+      directDirectoryCount: { type: "integer", minimum: 0 },
       directFileCount: { type: "integer", minimum: 0 },
       descendantFileCount: { type: "integer", minimum: 0 },
       resourceRevision: {
@@ -763,7 +771,8 @@ function generatedTreeEntrySchema(): SchemaObject {
       "sortKey",
       "entryType",
       "fileKind",
-      "childCount",
+      "directEntryCount",
+      "directDirectoryCount",
       "directFileCount",
       "descendantFileCount",
       "resourceRevision",
@@ -788,7 +797,6 @@ function generatedFileSchema(): SchemaObject {
       fileKind: { type: "string" },
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
-      checksumSha256: { type: "string" },
       okfType: nullableString("OKF document type when available."),
       title: nullableString("Resolved title when available."),
       description: nullableString("Resolved description when available."),
@@ -807,7 +815,6 @@ function generatedFileSchema(): SchemaObject {
       "fileKind",
       "contentType",
       "sizeBytes",
-      "checksumSha256",
       "okfType",
       "title",
       "description",
@@ -1207,7 +1214,6 @@ function uploadSessionEntrySchema(): SchemaObject {
       name: { type: "string", example: "guide.md" },
       declaredSize: { type: "integer", minimum: 0 },
       receivedSize: { type: ["integer", "null"], minimum: 0 },
-      checksumSha256: { type: "string" },
       disposition: {
         type: "string",
         enum: [
@@ -1235,7 +1241,6 @@ function uploadSessionEntrySchema(): SchemaObject {
       "name",
       "declaredSize",
       "receivedSize",
-      "checksumSha256",
       "disposition",
       "transferState",
       "sourceDirectoryId",

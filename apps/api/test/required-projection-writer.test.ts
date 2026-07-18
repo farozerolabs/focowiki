@@ -54,7 +54,6 @@ describe("required projection writer", () => {
         record: expect.objectContaining({
           fileId: "source-file-1",
           path: "pages/docs/guide.md",
-          contentPath: "pages/docs/guide.md",
           resource: "https://docs.example.com/guide",
           timestamp: "2026-07-17T00:00:00Z",
           tags: ["operations", "current"],
@@ -181,7 +180,11 @@ describe("required projection writer", () => {
       parentPath: "pages",
       payload: expect.objectContaining({
         kind: "directory",
-        sourceDirectoryId: "source-directory-docs"
+        sourceDirectoryId: "source-directory-docs",
+        directEntryCount: 2,
+        directDirectoryCount: 1,
+        directFileCount: 1,
+        descendantFileCount: 3
       })
     }));
   });
@@ -208,7 +211,11 @@ describe("required projection writer", () => {
       payload: expect.objectContaining({
         kind: "directory",
         name: "pages",
-        sourceDirectoryId: null
+        sourceDirectoryId: null,
+        directEntryCount: 2,
+        directDirectoryCount: 1,
+        directFileCount: 1,
+        descendantFileCount: 3
       })
     }));
   });
@@ -423,8 +430,9 @@ function directorySnapshot(relativePath: string) {
     generatedPath: relativePath ? `pages/${relativePath}/index.md` : "pages/index.md",
     kind: "directory" as const,
     resourceRevision: relativePath ? 2 : 1,
-    childCount: relativePath ? 1 : 0,
-    directFileCount: relativePath ? 1 : 0,
-    descendantFileCount: 1
+    directEntryCount: 2,
+    directDirectoryCount: 1,
+    directFileCount: 1,
+    descendantFileCount: 3
   };
 }

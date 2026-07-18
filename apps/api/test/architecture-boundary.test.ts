@@ -169,6 +169,20 @@ describe("lightweight architecture boundaries", () => {
     ).toBe(false);
   });
 
+  it("cleans package build directories before compiling", () => {
+    const apiPackage = JSON.parse(readWorkspaceFile("apps/api/package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const okfPackage = JSON.parse(readWorkspaceFile("packages/okf/package.json")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(apiPackage.scripts?.prebuild).toBe("node scripts/clean-dist.mjs");
+    expect(okfPackage.scripts?.prebuild).toBe("node scripts/clean-dist.mjs");
+    expect(existsSync(resolve(workspaceRoot, "apps/api/scripts/clean-dist.mjs"))).toBe(true);
+    expect(existsSync(resolve(workspaceRoot, "packages/okf/scripts/clean-dist.mjs"))).toBe(true);
+  });
+
   it("keeps Focowiki validation independent from downstream Demo and Skill runtimes", () => {
     const packageJson = readWorkspaceFile("package.json");
     const forbiddenScripts = [
@@ -349,6 +363,16 @@ describe("lightweight architecture boundaries", () => {
     expect(redisCoordination).not.toContain("const seenKeys = new Set<string>()");
   });
 
+  it("persists each reconciliation scan page with one bounded bulk upsert", () => {
+    const repository = readWorkspaceFile(
+      "apps/api/src/infrastructure/postgres/storage-reconciliation-repository.ts"
+    );
+
+    expect(repository).toContain("FROM unnest(");
+    expect(repository).toContain("orphanObjects.map((object) => object.key)");
+    expect(repository).not.toContain("for (const object of orphanObjects)");
+  });
+
   it("keeps role worker queue state restartable and bounded", () => {
     const migration = readWorkspaceFile("apps/api/migrations/001_production_admin_web.sql");
     const repository = readWorkspaceFile(
@@ -373,6 +397,15 @@ describe("lightweight architecture boundaries", () => {
     expect(sourceMain).toContain('role: "source"');
     expect(publicationMain).toContain('role: "publication"');
     expect(maintenanceMain).toContain('role: "maintenance"');
+  });
+
+  it("keeps paged maintenance work on stable process-scoped lease tokens", () => {
+    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
+
+    expect(maintenanceMain).toContain("const repairLeaseToken");
+    expect(maintenanceMain).toContain("leaseToken: repairLeaseToken");
+    expect(maintenanceMain).toContain("const reconciliationLeaseToken");
+    expect(maintenanceMain).toContain("leaseToken: reconciliationLeaseToken");
   });
 
   it("keeps source-file completion from running publication inline", () => {

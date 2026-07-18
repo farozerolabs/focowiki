@@ -52,11 +52,13 @@ import {
   pauseRuntimeModel,
   resumeRuntimeModel,
   updateGraphSettings,
+  updateMaintenanceSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
   updateWorkerSettings,
   type ApiFailure,
   type GraphSettings,
+  type MaintenanceSettings,
   type PublicationSettings,
   type RateLimitSettings,
   type RuntimeModelConfig,
@@ -144,12 +146,21 @@ const graphNumberFields = [
   "publicationShardSize",
   "cacheTtlSeconds",
   "genericPhraseThreshold"
-] as const satisfies readonly (keyof Omit<GraphSettings, "insightEnabled" | "modelReviewEnabled">)[];
+] as const satisfies readonly (keyof Omit<GraphSettings, "modelReviewEnabled">)[];
 
 const graphBooleanFields = [
-  "insightEnabled",
   "modelReviewEnabled"
-] as const satisfies readonly (keyof Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">)[];
+] as const satisfies readonly (keyof Pick<GraphSettings, "modelReviewEnabled">)[];
+
+const maintenanceNumberFields = [
+  "scanIntervalSeconds",
+  "scanBatchSize",
+  "deletionBatchSize",
+  "quarantineGracePeriodSeconds",
+  "confirmationPasses",
+  "maxAttempts",
+  "retryDelayMs"
+] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
@@ -194,6 +205,11 @@ const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) 
   descriptionKey: `settings.tips.graph.${field}`
 }));
 
+const maintenanceTipItems = ["reconciliationEnabled", ...maintenanceNumberFields].map((field) => ({
+  labelKey: `settings.fields.${field}`,
+  descriptionKey: `settings.tips.maintenance.${field}`
+}));
+
 const modelTipItems = [
   "displayName",
   "apiMode",
@@ -211,6 +227,7 @@ type RateLimitGroup = (typeof rateLimitGroups)[number];
 type WorkerNumberField = (typeof workerNumberFields)[number];
 type PublicationField = (typeof publicationFields)[number];
 type GraphNumberField = (typeof graphNumberFields)[number];
+type MaintenanceNumberField = (typeof maintenanceNumberFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
 
@@ -227,7 +244,9 @@ type EditablePublicationSettings = {
   mode: PublicationSettings["mode"];
 } & Record<PublicationField, EditableNumber>;
 type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
-  Pick<GraphSettings, "insightEnabled" | "modelReviewEnabled">;
+  Pick<GraphSettings, "modelReviewEnabled">;
+type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber> &
+  Pick<MaintenanceSettings, "reconciliationEnabled">;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -244,6 +263,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   const [worker, setWorker] = useState<EditableWorkerSettings | null>(null);
   const [publication, setPublication] = useState<EditablePublicationSettings | null>(null);
   const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
+  const [maintenance, setMaintenance] = useState<EditableMaintenanceSettings | null>(null);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -324,6 +344,19 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     await saveSettings("graph", () => updateGraphSettings(payload));
   }
 
+  async function handleMaintenanceSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!maintenance) {
+      return;
+    }
+    const payload = buildMaintenanceSettings(maintenance);
+    if (!payload) {
+      showNumberValidationError();
+      return;
+    }
+    await saveSettings("maintenance", () => updateMaintenanceSettings(payload));
+  }
+
   async function saveSettings(
     key: string,
     submit: () => Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure>
@@ -343,6 +376,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
+    setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
     showAdminToast({ title: t("settings.toast.saveSuccess") });
   }
 
@@ -388,6 +422,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
     setWorker(toEditableWorkerSettings(result.settings.worker));
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
+    setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
   }
 
   function showNumberValidationError() {
@@ -485,6 +520,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                 <TabsTrigger value="worker">{t("settings.tabs.worker")}</TabsTrigger>
                 <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
                 <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
+                <TabsTrigger value="maintenance">{t("settings.tabs.maintenance")}</TabsTrigger>
                 <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
               </TabsList>
             </div>
@@ -694,6 +730,102 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                     </form>
                   </SettingsCard>
                   <PlainTips items={graphTipItems} />
+                </div>
+              ) : null}
+            </TabsContent>
+            <TabsContent value="maintenance">
+              {maintenance ? (
+                <div className="space-y-3">
+                  <SettingsCard
+                    title={t("settings.maintenance.title")}
+                    description={t("settings.maintenance.description")}
+                  >
+                    <form noValidate onSubmit={handleMaintenanceSave}>
+                      <FieldGroup>
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          <Field>
+                            <FieldLabel htmlFor="maintenance-reconciliationEnabled">
+                              <RequiredLabel
+                                label={t("settings.fields.reconciliationEnabled")}
+                                required
+                              />
+                            </FieldLabel>
+                            <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm">
+                              <Checkbox
+                                id="maintenance-reconciliationEnabled"
+                                checked={maintenance.reconciliationEnabled}
+                                onCheckedChange={(checked) =>
+                                  setMaintenance({
+                                    ...maintenance,
+                                    reconciliationEnabled: checked === true
+                                  })
+                                }
+                              />
+                              <span>{t("settings.fields.reconciliationEnabled")}</span>
+                            </label>
+                          </Field>
+                          {maintenanceNumberFields.map((field) => (
+                            <NumberField
+                              key={field}
+                              id={`maintenance-${field}`}
+                              label={t(`settings.fields.${field}`)}
+                              min={field === "confirmationPasses" ? 2 : 1}
+                              {...(field === "scanBatchSize" || field === "deletionBatchSize"
+                                ? { max: 1_000 }
+                                : {})}
+                              value={maintenance[field]}
+                              required
+                              onChange={(value) =>
+                                setMaintenance({ ...maintenance, [field]: value })
+                              }
+                            />
+                          ))}
+                        </div>
+                        <SaveButton isSaving={isSaving === "maintenance"} />
+                      </FieldGroup>
+                    </form>
+                  </SettingsCard>
+                  <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.state")}
+                      value={data?.maintenanceStatus
+                        ? t(`settings.maintenance.status.states.${data.maintenanceStatus.state}`)
+                        : t("settings.maintenance.status.notRun")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.completedAt")}
+                      value={formatMaintenanceTime(
+                        data?.maintenanceStatus?.lastScanCompletedAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.scanned")}
+                      value={String(data?.maintenanceStatus?.listedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.quarantined")}
+                      value={String(data?.maintenanceStatus?.quarantinedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.deleted")}
+                      value={String(data?.maintenanceStatus?.deletedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.missing")}
+                      value={String(data?.maintenanceStatus?.missingCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.retries")}
+                      value={String(data?.maintenanceStatus?.retryCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.lastError")}
+                      value={data?.maintenanceStatus?.lastErrorCode
+                        ?? t("settings.maintenance.status.none")}
+                    />
+                  </div>
+                  <PlainTips items={maintenanceTipItems} />
                 </div>
               ) : null}
             </TabsContent>
@@ -949,6 +1081,21 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   );
 }
 
+function MaintenanceStatusItem({ label, value }: { label: string; value: string }) {
+  return (
+    <p>
+      <span className="font-medium text-foreground">{label}: </span>
+      <span>{value}</span>
+    </p>
+  );
+}
+
+function formatMaintenanceTime(value: string | null, fallback: string): string {
+  if (!value) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
 function SettingsCard({
   title,
   description,
@@ -1007,6 +1154,7 @@ function NumberField({
   label,
   value,
   min = 1,
+  max,
   required = false,
   onChange
 }: {
@@ -1014,6 +1162,7 @@ function NumberField({
   label: string;
   value: EditableNumber;
   min?: number;
+  max?: number;
   required?: boolean;
   onChange: (value: EditableNumber) => void;
 }) {
@@ -1026,6 +1175,7 @@ function NumberField({
         id={id}
         type="number"
         min={min}
+        max={max}
         step={1}
         required={required}
         value={value === "" ? "" : String(value)}
@@ -1108,6 +1258,12 @@ function toEditableGraphSettings(settings: GraphSettings): EditableGraphSettings
   return { ...settings };
 }
 
+function toEditableMaintenanceSettings(
+  settings: MaintenanceSettings
+): EditableMaintenanceSettings {
+  return { ...settings };
+}
+
 function buildRateLimitSettings(input: EditableRateLimitSettings): RateLimitSettings | null {
   const adminLogin = buildRateLimitGroup(input.adminLogin);
   const adminApi = buildRateLimitGroup(input.adminApi);
@@ -1170,8 +1326,28 @@ function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null 
     ...(settings as Record<GraphNumberField, number>),
     searchDefaultDepth: settings.searchDefaultDepth,
     searchMaxDepth: settings.searchMaxDepth,
-    insightEnabled: input.insightEnabled,
     modelReviewEnabled: input.modelReviewEnabled
+  };
+}
+
+function buildMaintenanceSettings(
+  input: EditableMaintenanceSettings
+): MaintenanceSettings | null {
+  const settings = buildNumberRecord(input, maintenanceNumberFields);
+  if (!settings) {
+    return null;
+  }
+  if (
+    settings.scanBatchSize > 1_000 ||
+    settings.deletionBatchSize > 1_000 ||
+    settings.confirmationPasses < 2
+  ) {
+    return null;
+  }
+
+  return {
+    reconciliationEnabled: input.reconciliationEnabled,
+    ...settings
   };
 }
 

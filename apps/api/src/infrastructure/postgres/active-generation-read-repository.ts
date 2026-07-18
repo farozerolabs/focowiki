@@ -134,6 +134,51 @@ function createScope(
       return rows[0] ? mapProjection(generationId, rows[0]) : null;
     },
 
+    async getGraphSummary() {
+      const persisted = await sql<Array<{
+        node_count: number;
+        edge_count: number;
+        graph_index_available: boolean;
+      }>>`
+        SELECT node_count, edge_count, graph_index_available
+        FROM focowiki.generation_graph_summaries
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND generation_id = ${generationId}
+        LIMIT 1
+      `;
+      if (persisted[0]) {
+        return {
+          nodeCount: Number(persisted[0].node_count),
+          edgeCount: Number(persisted[0].edge_count),
+          graphIndexAvailable: persisted[0].graph_index_available,
+          persisted: true
+        };
+      }
+      const compatibility = await sql<Array<{
+        node_count: number;
+        edge_count: number;
+        graph_index_available: boolean;
+      }>>`
+        SELECT
+          count(*) FILTER (WHERE projection_kind = 'graph_node')::int AS node_count,
+          count(*) FILTER (WHERE projection_kind = 'graph_edge')::int AS edge_count,
+          EXISTS (
+            SELECT 1 FROM focowiki.active_object_refs reference
+            WHERE reference.knowledge_base_id = ${knowledgeBaseId}
+              AND reference.logical_path = '_graph/index.md'
+          ) AS graph_index_available
+        FROM focowiki.active_projection_records
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND projection_kind IN ('graph_node', 'graph_edge')
+      `;
+      return {
+        nodeCount: Number(compatibility[0]?.node_count ?? 0),
+        edgeCount: Number(compatibility[0]?.edge_count ?? 0),
+        graphIndexAvailable: compatibility[0]?.graph_index_available ?? false,
+        persisted: false
+      };
+    },
+
     async listTree(input) {
       assertLimit(input.limit);
       return listActiveTree(sql, knowledgeBaseId, generationId, input);

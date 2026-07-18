@@ -18,6 +18,7 @@ import type { ChangeFactKind } from "../../domain/generation.js";
 import { generatedPagePath } from "../../domain/source-path.js";
 import type { PublicationImpact } from "../../publication/impact-planner.js";
 import type { SerializableJson } from "../../application/ports/source-dispatch-repository.js";
+import { createDirectoryStatistics } from "../../domain/tree-statistics.js";
 
 const MAX_SNAPSHOT_RELATIONSHIPS = 100;
 
@@ -83,7 +84,7 @@ type DirectoryRow = {
   id: string;
   name: string;
   resource_revision: number;
-  child_count: number;
+  direct_directory_count: number;
   direct_file_count: number;
   descendant_file_count: number;
 };
@@ -448,7 +449,8 @@ async function captureDirectories(
            (SELECT count(*)::int FROM focowiki.source_directories child
             WHERE child.knowledge_base_id = directory.knowledge_base_id
               AND coalesce(child.candidate_parent_id, child.parent_id) = directory.id
-              AND child.deleted_at IS NULL AND child.deletion_intent_id IS NULL) AS child_count,
+              AND child.deleted_at IS NULL AND child.deletion_intent_id IS NULL)
+             AS direct_directory_count,
            (SELECT count(*)::int FROM focowiki.source_files child
             WHERE child.knowledge_base_id = directory.knowledge_base_id
               AND coalesce(child.candidate_directory_id, child.directory_id) = directory.id
@@ -481,16 +483,23 @@ async function captureDirectories(
     generatedPath: `pages/${row.relative_path}/index.md`,
     kind: "directory" as const,
     resourceRevision: Number(row.resource_revision),
-    childCount: Number(row.child_count),
-    directFileCount: Number(row.direct_file_count),
-    descendantFileCount: Number(row.descendant_file_count)
+    ...createDirectoryStatistics({
+      directDirectoryCount: Number(row.direct_directory_count),
+      directFileCount: Number(row.direct_file_count),
+      descendantFileCount: Number(row.descendant_file_count)
+    })
   }]));
 }
 
 async function captureKnowledgeBase(
   transaction: TransactionSql<Record<string, never>>,
   knowledgeBaseId: string
-): Promise<{ descriptor: PublicationKnowledgeBaseSnapshot; rootEntryCount: number } | null> {
+): Promise<{
+  descriptor: PublicationKnowledgeBaseSnapshot;
+  rootEntryCount: number;
+  rootDirectoryCount: number;
+  rootFileCount: number;
+} | null> {
   const rows = await transaction<Array<{
     id: string;
     name: string;
@@ -498,6 +507,8 @@ async function captureKnowledgeBase(
     source_file_count: number;
     graph_edge_count: number;
     root_entry_count: number;
+    root_directory_count: number;
+    root_file_count: number;
   }>>`
     SELECT knowledge_base.id, knowledge_base.name, knowledge_base.description,
            (SELECT count(*)::int FROM focowiki.source_files source
@@ -511,17 +522,27 @@ async function captureKnowledgeBase(
             WHERE edge.knowledge_base_id = knowledge_base.id AND edge.status = 'accepted'
               AND source.deleted_at IS NULL AND source.deletion_intent_id IS NULL
               AND target.deleted_at IS NULL AND target.deletion_intent_id IS NULL) AS graph_edge_count,
-           ((SELECT count(*)::int FROM focowiki.source_directories directory
+           (SELECT count(*)::int FROM focowiki.source_directories directory
              WHERE directory.knowledge_base_id = knowledge_base.id
                AND coalesce(directory.candidate_parent_id, directory.parent_id) IS NULL
                AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL)
-            +
-            (SELECT count(*)::int FROM focowiki.source_files source
+             AS root_directory_count,
+           (SELECT count(*)::int FROM focowiki.source_files source
              WHERE source.knowledge_base_id = knowledge_base.id
                AND coalesce(source.candidate_directory_id, source.directory_id) IS NULL
                AND source.processing_status = 'completed'
                AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
-               AND source.deletion_intent_id IS NULL)) AS root_entry_count
+               AND source.deletion_intent_id IS NULL) AS root_file_count,
+           ((SELECT count(*)::int FROM focowiki.source_directories directory
+             WHERE directory.knowledge_base_id = knowledge_base.id
+               AND coalesce(directory.candidate_parent_id, directory.parent_id) IS NULL
+               AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL)
+            + (SELECT count(*)::int FROM focowiki.source_files source
+               WHERE source.knowledge_base_id = knowledge_base.id
+                 AND coalesce(source.candidate_directory_id, source.directory_id) IS NULL
+                 AND source.processing_status = 'completed'
+                 AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+                 AND source.deletion_intent_id IS NULL)) AS root_entry_count
     FROM focowiki.knowledge_bases knowledge_base
     WHERE knowledge_base.id = ${knowledgeBaseId} AND knowledge_base.deleted_at IS NULL
   `;
@@ -535,7 +556,9 @@ async function captureKnowledgeBase(
       sourceFileCount: Number(row.source_file_count),
       graphEdgeCount: Number(row.graph_edge_count)
     },
-    rootEntryCount: Number(row.root_entry_count)
+    rootEntryCount: Number(row.root_entry_count),
+    rootDirectoryCount: Number(row.root_directory_count),
+    rootFileCount: Number(row.root_file_count)
   };
 }
 
@@ -609,9 +632,11 @@ function rootDirectorySnapshot(
     generatedPath: "pages/index.md",
     kind: "directory",
     resourceRevision: 1,
-    childCount: knowledgeBase?.rootEntryCount ?? 0,
-    directFileCount: 0,
-    descendantFileCount: knowledgeBase?.descriptor.sourceFileCount ?? 0
+    ...createDirectoryStatistics({
+      directDirectoryCount: knowledgeBase?.rootDirectoryCount ?? 0,
+      directFileCount: knowledgeBase?.rootFileCount ?? 0,
+      descendantFileCount: knowledgeBase?.descriptor.sourceFileCount ?? 0
+    })
   };
 }
 

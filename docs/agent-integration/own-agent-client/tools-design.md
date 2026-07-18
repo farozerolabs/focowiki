@@ -109,7 +109,7 @@ Output:
 }
 ```
 
-Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_graph/manifest.json`, a returned `graphRef`, a visible `generatedFilePath`, or pages discovered from links.
+Use readable file IDs returned by tree, search, file detail, or a visible `generatedFileId` field when calling `read_file` by `fileId`. Use logical paths for known generated files such as `index.md`, `schema.md`, `log.md`, `_graph/index.md`, `_index/catalog.json`, a returned `graphRef`, a visible `generatedFilePath`, or pages discovered from links.
 
 ## `read_related`
 

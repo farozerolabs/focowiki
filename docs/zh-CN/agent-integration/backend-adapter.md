@@ -38,7 +38,7 @@ title: 后端适配
 | Markdown 入库 | `createUploadSession`、`addUploadManifestEntries`、`sealUploadManifest`、`uploadSessionContentBatch`、`getUploadSession`、`finalizeUploadSession` |
 | 来源状态查看 | `listKnowledgeBaseSourceFiles`、`getKnowledgeBaseSourceFile`、`listKnowledgeBaseSourceFileEvents`、`retryKnowledgeBaseSourceFile` |
 | 来源内容维护 | `moveSourceFile`、`replaceSourceFileContent`、`deleteSourceFile`、`listSourceDirectories`、`moveSourceDirectory`、`deleteSourceDirectory`、`listResourceOperations`、`getResourceOperation` |
-| 文件读取与探索 | `listKnowledgeBaseTree`、`getFileById`、`getFileContentById`、`getFileContentByPath`、`searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphInsights` |
+| 文件读取与探索 | `listKnowledgeBaseTree`、`getFileById`、`getFileContentById`、`getFileContentByPath`、`searchGeneratedFiles`、`listRelatedFiles`、`expandGraph`、`getGraphOverview` |
 | Webhooks | `listWebhooks`、`createWebhook`、`deleteWebhook`、`listWebhookDeliveries`、`redeliverWebhook` |
 
 这些能力属于开发者后端。Agent-facing layer 默认只暴露探索所需的读取能力。只有产品明确支持 Agent 维护知识库时，才向 Agent 开放写入或删除能力。

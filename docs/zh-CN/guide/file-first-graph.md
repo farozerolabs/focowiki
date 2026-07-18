@@ -31,12 +31,10 @@ Focowiki 把关系生成拆成两层：
 ```text
 _graph/
   index.md
-  manifest.json
-  nodes.jsonl
-  nodes/
-    0000.jsonl
-  edges/
-    0000.jsonl
+  graph_node/v1/
+    {shard}.json
+  graph_edge/v1/
+    {shard}.json
   by-file/
     {fileId}.json
 ```
@@ -44,10 +42,9 @@ _graph/
 | 文件 | 作用 |
 | --- | --- |
 | `_graph/index.md` | 给人和 Agent 使用的图关系入口。 |
-| `_graph/manifest.json` | 记录数量、路径模式、生成时间和图元数据。 |
-| `_graph/nodes.jsonl` | 节点索引入口。小知识库在这里保存节点记录，大知识库在这里保存分片描述。 |
-| `_graph/nodes/*.jsonl` | 大规模生成知识库的分片节点记录。 |
-| `_graph/edges/*.jsonl` | 分片关系记录，适合导出和审计。 |
+| `_index/catalog.json` | 当前图节点和图边投影分片的有界目录。 |
+| `_graph/graph_node/v1/*.json` | 分片图节点记录。 |
+| `_graph/graph_edge/v1/*.json` | 分片关系记录，适合导出和审计。 |
 | `_graph/by-file/{fileId}.json` | 单个生成页面的有界本地关系，这是 Agent 探索关系的主要文件。 |
 
 存在图输出时，根目录 `index.md` 会链接 `_graph/index.md`。Agent 的常规读取路径从生成后的 Markdown 页面开始，再读取 `_graph/by-file/{fileId}.json`。完整 edge shards 通常用于导出和检查。
@@ -72,7 +69,7 @@ graph: "../_graph/by-file/source-file-123.json"
 | `fileId` | 相关 source-backed file identifier。 |
 | `path` | 相关生成 Markdown 路径，例如 `pages/example.md`。 |
 | `title` | 相关文件标题。 |
-| `relationType` | 关系类型，例如 `direct_reference`、`direct_reference`、`same_entity`、`same_specific_subject`、`metadata_supported_content` 或 `same_specific_subject`。 |
+| `relationType` | 关系类型，例如 `direct_reference`、`same_entity`、`same_specific_subject` 或 `metadata_supported_content`。 |
 | `direction` | 当前文件指向相关文件时为 `outgoing`，其他文件指向当前文件时为 `incoming`。 |
 | `weight` | `0` 到 `1` 的有界优先级分数。 |
 | `reason` | 面向用户、开发者和 Agent 的安全解释。 |

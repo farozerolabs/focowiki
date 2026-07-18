@@ -7,13 +7,14 @@ import type { ClaimedPublicationImpact } from "../application/ports/publication-
 import type { PublicationProjectionInput } from "../application/ports/publication-projection-input.js";
 import type { ImmutableObjectWriteResult } from "./immutable-object-writer.js";
 import { createGeneratedFileId } from "../domain/generated-file-id.js";
+import { GENERATED_GRAPH_RESOURCES } from "../okf/generated-graph-resources.js";
 
 const ROOT_PATHS = new Set([
   "index.md",
   "schema.md",
   "log.md",
   "_index/index.md",
-  "_graph/index.md"
+  GENERATED_GRAPH_RESOURCES.index.path
 ]);
 
 export function createBoundedRootWriter(input: {
@@ -102,7 +103,7 @@ export function renderBoundedRootFile(input: {
       "## Explore",
       "",
       `- [Browse documents](${toBundleMarkdownHref("pages/index.md")}) - ${input.rootEntryCount} top-level entries.`,
-      `- [Relationship graph](${toBundleMarkdownHref("_graph/index.md")}) - ${input.knowledgeBase.graphEdgeCount} accepted relationships.`,
+      `- [${GENERATED_GRAPH_RESOURCES.index.label}](${toBundleMarkdownHref(GENERATED_GRAPH_RESOURCES.index.path)}) - ${input.knowledgeBase.graphEdgeCount} accepted relationships.`,
       `- [Metadata schema](${toBundleMarkdownHref("schema.md")})`,
       `- [Update history](${toBundleMarkdownHref("log.md")})`,
       `- [Machine-readable indexes](${toBundleMarkdownHref("_index/index.md")})`,
@@ -132,14 +133,18 @@ export function renderBoundedRootFile(input: {
       ""
     ]);
   }
-  if (input.path === "_graph/index.md") {
+  if (input.path === GENERATED_GRAPH_RESOURCES.index.path) {
     return markdown([
       "# Relationship graph",
       "",
       `The active generation contains ${input.knowledgeBase.graphEdgeCount} accepted relationships.`,
       "",
-      `- [Machine-readable graph catalog](${toBundleMarkdownHref("_index/catalog.json")})`,
+      `- [Machine-readable graph catalog](${toBundleMarkdownHref(GENERATED_GRAPH_RESOURCES.catalogPath)})`,
       `- [Browse source-backed files](${toBundleMarkdownHref("pages/index.md")})`,
+      "",
+      "Use the Developer OpenAPI graph overview for bounded graph status, then continue with graph expansion or related-file reads.",
+      "Source-backed pages and catalog records expose per-file graph references without listing the complete graph here.",
+      "Follow returned logical paths and read the related Markdown files as evidence.",
       ""
     ]);
   }

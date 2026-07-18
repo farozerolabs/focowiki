@@ -11,6 +11,7 @@ import {
   publicationModeValues,
   rateLimitKeys,
   type RuntimeGraphSettings,
+  type RuntimeMaintenanceSettings,
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
@@ -22,6 +23,17 @@ import {
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 
+export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
+  reconciliationEnabled: true,
+  scanIntervalSeconds: 21_600,
+  scanBatchSize: 500,
+  deletionBatchSize: 100,
+  quarantineGracePeriodSeconds: 86_400,
+  confirmationPasses: 2,
+  maxAttempts: 5,
+  retryDelayMs: 30_000
+};
+
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
   return {
     rateLimits: resolveSecurityConfig(config).rateLimits,
@@ -32,6 +44,7 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
       okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES
     },
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
+    maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
     model: config.model.enabled
         ? {
           displayName: config.model.modelName,
@@ -250,13 +263,6 @@ export function validateGraphSettings(input: unknown): RuntimeSettingsValidation
     });
   }
 
-  if (typeof value.insightEnabled !== "boolean") {
-    issues.push({
-      field: "insightEnabled",
-      message: "insightEnabled must be true or false"
-    });
-  }
-
   if (typeof value.modelReviewEnabled !== "boolean") {
     issues.push({
       field: "modelReviewEnabled",
@@ -285,6 +291,61 @@ export function validateModelDraft(input: RuntimeModelConfigDraft): RuntimeSetti
   requireNonNegativeInteger(input.requestMinIntervalMs, "requestMinIntervalMs", issues);
 
   return issues;
+}
+
+export function validateMaintenanceSettings(input: unknown): RuntimeSettingsValidationIssue[] {
+  const issues: RuntimeSettingsValidationIssue[] = [];
+  const value = objectValue(input);
+
+  if (typeof value.reconciliationEnabled !== "boolean") {
+    issues.push({
+      field: "reconciliationEnabled",
+      message: "reconciliationEnabled must be true or false"
+    });
+  }
+
+  [
+    "scanIntervalSeconds",
+    "scanBatchSize",
+    "deletionBatchSize",
+    "quarantineGracePeriodSeconds",
+    "confirmationPasses",
+    "maxAttempts",
+    "retryDelayMs"
+  ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  for (const field of ["scanBatchSize", "deletionBatchSize"] as const) {
+    if (Number.isInteger(value[field]) && Number(value[field]) > 1_000) {
+      issues.push({
+        field,
+        message: `${field} must be less than or equal to 1000`
+      });
+    }
+  }
+
+  if (Number.isInteger(value.confirmationPasses) && Number(value.confirmationPasses) < 2) {
+    issues.push({
+      field: "confirmationPasses",
+      message: "confirmationPasses must be greater than or equal to 2"
+    });
+  }
+
+  return issues;
+}
+
+export function sanitizeMaintenanceSettings(
+  input: RuntimeMaintenanceSettings
+): RuntimeMaintenanceSettings {
+  return {
+    reconciliationEnabled: input.reconciliationEnabled,
+    scanIntervalSeconds: input.scanIntervalSeconds,
+    scanBatchSize: Math.min(input.scanBatchSize, 1_000),
+    deletionBatchSize: Math.min(input.deletionBatchSize, 1_000),
+    quarantineGracePeriodSeconds: input.quarantineGracePeriodSeconds,
+    confirmationPasses: input.confirmationPasses,
+    maxAttempts: input.maxAttempts,
+    retryDelayMs: input.retryDelayMs
+  };
 }
 
 export function sanitizePublicationSettings(
@@ -327,7 +388,6 @@ export function sanitizeGraphSettings(input: RuntimeGraphSettings): RuntimeGraph
     searchMaxDepth: input.searchMaxDepth,
     searchDefaultFanout: input.searchDefaultFanout,
     searchMaxFanout: input.searchMaxFanout,
-    insightEnabled: input.insightEnabled,
     modelReviewEnabled: input.modelReviewEnabled,
     publicationShardSize: input.publicationShardSize,
     cacheTtlSeconds: input.cacheTtlSeconds,

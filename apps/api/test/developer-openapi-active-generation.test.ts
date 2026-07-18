@@ -11,6 +11,10 @@ import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
 import { createPublicOpenApiApp } from "../src/server.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 import type { StorageAdapter } from "../src/storage/s3.js";
+import {
+  toDeveloperActiveFile,
+  toDeveloperActiveTreeEntry
+} from "../src/developer-openapi/active-generation-serializers.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
 const rawKey = "fwok_active-generation-http-test-key";
@@ -69,6 +73,9 @@ describe("Developer OpenAPI active generation reads", () => {
         }
       }
     });
+    expect((file.body as { file: Record<string, unknown> }).file).not.toHaveProperty(
+      "checksumSha256"
+    );
 
     const content = await getJson(
       fixture.app,
@@ -120,41 +127,194 @@ describe("Developer OpenAPI active generation reads", () => {
     });
   });
 
-  it("returns optional graph insight absence without hiding the active graph", async () => {
+  it("returns the active graph overview with real continuation actions", async () => {
+    const fixture = createFixture();
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      generationId: "generation-a",
+      availability: "available",
+      summary: { nodeCount: 2, edgeCount: 1 },
+      resources: {
+        graphIndexPath: "_graph/index.md",
+        nodeDirectoryPath: "_graph/graph_node/v1",
+        edgeDirectoryPath: "_graph/graph_edge/v1"
+      },
+      readActions: {
+        graphIndexContent: expect.stringContaining("path=_graph%2Findex.md"),
+        listGraphNodes: expect.stringContaining("parentPath=_graph%2Fgraph_node%2Fv1"),
+        listGraphEdges: expect.stringContaining("parentPath=_graph%2Fgraph_edge%2Fv1")
+      }
+    });
+
+    expect(response.body).not.toHaveProperty("contentPath");
+    expect(response.body).not.toHaveProperty("graphManifest");
+    expect(response.body).not.toHaveProperty("graphInsightsFile");
+    expect(response.body).not.toHaveProperty("graphInsightsContent");
+
+    const overview = response.body as {
+      readActions: {
+        readIndexContent: string;
+        graphIndexContent: string;
+        listGraphRoot: string;
+        searchGraph: string;
+        expandGraphByFileId: string;
+        fileDetailById: string;
+        fileContentById: string;
+        fileContentByPath: string;
+        relatedFilesById: string;
+      };
+    };
+    const graphIndex = await getJson(fixture.app, overview.readActions.graphIndexContent);
+    expect(graphIndex).toMatchObject({
+      status: 200,
+      body: { content: "# Relationship graph\n\nFollow real files." }
+    });
+    const graphRoot = await getJson(fixture.app, overview.readActions.listGraphRoot);
+    expect(graphRoot.status).toBe(200);
+
+    const concreteActions = [
+      overview.readActions.readIndexContent,
+      overview.readActions.searchGraph.replace("{query}", "shared"),
+      overview.readActions.expandGraphByFileId.replace("{fileId}", "source-a"),
+      overview.readActions.fileDetailById.replace("{fileId}", "source-a"),
+      overview.readActions.fileContentById.replace("{fileId}", "source-a"),
+      overview.readActions.fileContentByPath.replace("{path}", "pages%2Fa.md"),
+      overview.readActions.relatedFilesById.replace("{fileId}", "source-a")
+    ];
+    for (const action of concreteActions) {
+      expect((await getJson(fixture.app, action)).status, action).toBe(200);
+    }
+  });
+
+  it("reports an empty graph without ending file exploration", async () => {
+    const fixture = createFixture({ graphState: "empty" });
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
+    );
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        availability: "empty",
+        summary: { nodeCount: 0, edgeCount: 0 },
+        resources: { graphIndexPath: "_graph/index.md" },
+        readActions: {
+          readIndexContent: expect.stringContaining("path=index.md"),
+          graphIndexContent: expect.stringContaining("path=_graph%2Findex.md"),
+          searchGraph: expect.stringContaining("mode=graph")
+        }
+      }
+    });
+  });
+
+  it("does not expose the retired graph insights route", async () => {
     const fixture = createFixture();
     const response = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/insights`
     );
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      generationId: "generation-a",
-      file: null,
-      insights: [],
-      resultSummary: { insightCount: 0 }
+    expect(response.status).toBe(404);
+  });
+
+  it("does not advertise source-only actions for generated navigation files", () => {
+    const file = toDeveloperActiveFile(
+      knowledgeBaseId,
+      generatedFile("directory-leaf", "pages/index-directory-leaf-a.md", "generated/leaf")
+    );
+    expect(file.readActions).toMatchObject({
+      fileDetailById: expect.any(String),
+      fileContentById: expect.any(String),
+      fileContentByPath: expect.any(String),
+      relatedFilesById: null,
+      graphExpansionByFileId: null
+    });
+
+    const tree = toDeveloperActiveTreeEntry(knowledgeBaseId, {
+      ...projection(
+        "generation-a",
+        "generated-file-directory-leaf",
+        "pages/index-directory-leaf-a.md",
+        "Directory entries"
+      ),
+      sourceFileId: null,
+      payload: {
+        fileId: "generated-file-directory-leaf",
+        fileKind: "directory_index_page",
+        kind: "file",
+        name: "index-directory-leaf-a.md"
+      }
+    });
+    expect(tree).toMatchObject({
+      fileKind: "directory_index_page",
+      readActions: {
+        relatedFilesById: null,
+        graphExpansionByFileId: null
+      }
+    });
+  });
+
+  it("returns safe graph guidance when projections are unavailable", async () => {
+    const fixture = createFixture({ graphState: "unavailable" });
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
+    );
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        availability: "unavailable",
+        summary: { nodeCount: 0, edgeCount: 0 },
+        resources: {
+          graphIndexPath: null,
+          nodeDirectoryPath: null,
+          edgeDirectoryPath: null,
+          byFileDirectoryPath: null
+        },
+        readActions: {
+          graphIndexContent: null,
+          listGraphNodes: null,
+          listGraphEdges: null,
+          listByFileGraph: null
+        }
+      }
     });
   });
 });
 
-function createFixture() {
+function createFixture(options: { graphState?: "available" | "empty" | "unavailable" } = {}) {
+  const graphState = options.graphState ?? "available";
   let generationId = "generation-a";
   const treeParentPaths: string[] = [];
   const files = new Map([
     ["source-a", file("source-a", "pages/a.md", "generated/a")],
-    ["source-b", file("source-b", "pages/b.md", "generated/b")]
+    ["source-b", file("source-b", "pages/b.md", "generated/b")],
+    ["root-index", generatedFile("root-index", "index.md", "generated/root-index")],
+    ["graph-index", generatedFile("graph-index", "_graph/index.md", "generated/graph-index")]
   ]);
   const storage: StorageAdapter = {
     keyspace: createStorageKeyspace("test"),
     async putObject() {},
+    async headObjectMetadata() { return null; },
     async getObjectText(key) {
       if (key === "generated/a") return "# A\n\nShared subject.";
       if (key === "generated/b") return "# B\n\nShared subject.";
+      if (key === "generated/root-index") return "# Knowledge base\n\nBrowse documents.";
+      if (key === "generated/graph-index") return "# Relationship graph\n\nFollow real files.";
       return null;
     }
   };
   const activeGenerationReads: ActiveGenerationReadRepository = {
     async withActiveGeneration(_knowledgeBaseId, reader) {
-      return reader(createScope(generationId, files, (parentPath) => treeParentPaths.push(parentPath)));
+      return reader(createScope(
+        generationId,
+        files,
+        (parentPath) => treeParentPaths.push(parentPath),
+        graphState
+      ));
     }
   };
   const repositories = {
@@ -200,7 +360,8 @@ function createFixture() {
 function createScope(
   generationId: string,
   files: Map<string, ActiveGenerationFile>,
-  recordTreeParentPath: (parentPath: string) => void = () => undefined
+  recordTreeParentPath: (parentPath: string) => void = () => undefined,
+  graphState: "available" | "empty" | "unavailable" = "available"
 ): ActiveGenerationReadScope {
   const tree = [
     projection(generationId, "source-a", "pages/a.md", "A"),
@@ -227,6 +388,17 @@ function createScope(
       return input.projectionKind === "graph_edge" && input.recordId === "edge-a-b"
         ? relation
         : null;
+    },
+    async getGraphSummary() {
+      if (graphState === "available") {
+        return { nodeCount: 2, edgeCount: 1, graphIndexAvailable: true, persisted: true };
+      }
+      return {
+        nodeCount: 0,
+        edgeCount: 0,
+        graphIndexAvailable: graphState === "empty",
+        persisted: true
+      };
     },
     async listTree(input) {
       recordTreeParentPath(input.parentPath);
@@ -274,6 +446,25 @@ function file(fileId: string, path: string, objectKey: string): ActiveGeneration
     title: fileId === "source-a" ? "A" : "B",
     summary: "Shared subject",
     payload: { type: "page" }
+  };
+}
+
+function generatedFile(fileId: string, path: string, objectKey: string): ActiveGenerationFile {
+  return {
+    generationId: "generation-a",
+    fileId,
+    refKind: "root",
+    refKey: path,
+    lastChangedGenerationId: "generation-a",
+    path,
+    sourceFileId: null,
+    objectKey,
+    contentType: "text/markdown",
+    sizeBytes: 41,
+    checksumSha256: fileId,
+    title: "Relationship graph",
+    summary: null,
+    payload: { type: "index" }
   };
 }
 

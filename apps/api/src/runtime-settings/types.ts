@@ -6,7 +6,7 @@ import type {
   WorkerRuntimeConfig
 } from "../config.js";
 
-export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "graph";
+export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "graph" | "maintenance";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
@@ -20,12 +20,23 @@ export type RuntimePublicationSettings = Required<RuntimeConfig["publication"]> 
   okfLogMaxBytes: number;
 };
 export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
+export type RuntimeMaintenanceSettings = {
+  reconciliationEnabled: boolean;
+  scanIntervalSeconds: number;
+  scanBatchSize: number;
+  deletionBatchSize: number;
+  quarantineGracePeriodSeconds: number;
+  confirmationPasses: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+};
 
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
+  maintenance: RuntimeMaintenanceSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
 
@@ -99,6 +110,7 @@ export type RuntimeSettingsDefaults = {
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
+  maintenance: RuntimeMaintenanceSettings;
   model: RuntimeModelConfigDraft | null;
 };
 

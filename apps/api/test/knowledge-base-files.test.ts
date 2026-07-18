@@ -363,7 +363,14 @@ function createActiveGenerationReads(input: {
     parentPath: "",
     sortKey: "0:pages",
     title: "pages",
-    payload: { kind: "directory", name: "pages", childCount: 1 }
+    payload: {
+      kind: "directory",
+      name: "pages",
+      directEntryCount: 1,
+      directDirectoryCount: 0,
+      directFileCount: 1,
+      descendantFileCount: 1
+    }
   });
   const index = treeProjection({
     recordId: "tree-index",
@@ -423,6 +430,9 @@ function createActiveGenerationReads(input: {
         },
         async findProjection() {
           return null;
+        },
+        async getGraphSummary() {
+          return { nodeCount: 0, edgeCount: 0, graphIndexAvailable: false, persisted: true };
         },
         async listTree(request) {
           const cursor = request.cursor ? "1" : null;
@@ -546,9 +556,10 @@ describe("Knowledge base file Admin API", () => {
           generatedFileId: null,
           sourceFileId: null,
           fileKind: null,
-          childCount: 1,
-          directFileCount: 0,
-          descendantFileCount: 0,
+          directEntryCount: 1,
+          directDirectoryCount: 0,
+          directFileCount: 1,
+          descendantFileCount: 1,
           resourceRevision: null,
           sourceDirectoryId: null,
           deletable: false
@@ -563,7 +574,8 @@ describe("Knowledge base file Admin API", () => {
           generatedFileId: "bundle-file-index",
           sourceFileId: null,
           fileKind: "index",
-          childCount: 0,
+          directEntryCount: 0,
+          directDirectoryCount: 0,
           directFileCount: 0,
           descendantFileCount: 0,
           resourceRevision: null,
@@ -606,6 +618,7 @@ describe("Knowledge base file Admin API", () => {
       readOnly: true
     });
     expect(body.file).not.toHaveProperty("objectKey");
+    expect(body.file).not.toHaveProperty("checksumSha256");
     expect(records.generatedFile).not.toHaveProperty("content");
   });
 
@@ -718,7 +731,8 @@ describe("Knowledge base file Admin API", () => {
             generatedFileId: "bundle-file-001",
             sourceFileId: "source-001",
             fileKind: "page",
-            childCount: 0,
+            directEntryCount: 0,
+            directDirectoryCount: 0,
             directFileCount: 0,
             descendantFileCount: 0,
             resourceRevision: null,
@@ -736,9 +750,10 @@ describe("Knowledge base file Admin API", () => {
               generatedFileId: null,
               sourceFileId: null,
               fileKind: null,
-              childCount: 1,
-              directFileCount: 0,
-              descendantFileCount: 0,
+              directEntryCount: 1,
+              directDirectoryCount: 0,
+              directFileCount: 1,
+              descendantFileCount: 1,
               resourceRevision: null,
               sourceDirectoryId: null,
               deletable: false
@@ -821,6 +836,7 @@ describe("Knowledge base file Admin API", () => {
 
     expect(sourceFiles.status).toBe(200);
     expect(sourceBody.items[0]).not.toHaveProperty("objectKey");
+    expect(sourceBody.items[0]).not.toHaveProperty("checksumSha256");
     expect(sourceBody.refreshAfterMs).toBe(30_000);
     expect(sourceBody.items[0]).toMatchObject({
       generatedFileAvailable: true,

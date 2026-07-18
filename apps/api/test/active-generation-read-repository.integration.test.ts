@@ -202,6 +202,18 @@ describeDatabase("active generation read repository integration", () => {
       "_graph/graph_node",
       "_graph/index.md"
     ]));
+    expect(result?.root.items.find((item) => item.path === "_graph")?.payload).toMatchObject({
+      directEntryCount: 3,
+      directDirectoryCount: 2,
+      directFileCount: 1,
+      descendantFileCount: 5
+    });
+    expect(result?.graph.items.find((item) => item.path === "_graph/graph_node")?.payload).toMatchObject({
+      directEntryCount: 1,
+      directDirectoryCount: 1,
+      directFileCount: 0,
+      descendantFileCount: 1
+    });
     expect(result?.pages.items.map((item) => item.path)).toEqual(expect.arrayContaining([
       "pages/alpha.md",
       "pages/index.md"
@@ -464,8 +476,11 @@ describeDatabase("active generation read repository integration", () => {
       const checksum = "bb".repeat(32);
       await transaction`
         INSERT INTO focowiki.immutable_objects (
-          checksum_sha256, format_version, object_key, content_type, size_bytes
-        ) VALUES (${checksum}, 1, ${`generated/${checksum}`}, 'text/markdown', 4)
+          checksum_sha256, format_version, object_key, content_type, size_bytes,
+          verified_at
+        ) VALUES (
+          ${checksum}, 1, ${`generated/${checksum}`}, 'text/markdown', 4, now()
+        )
         ON CONFLICT (checksum_sha256, format_version) DO NOTHING
       `;
       await transaction`
@@ -501,8 +516,9 @@ describeDatabase("active generation read repository integration", () => {
   async function insertObject(checksum: string, objectKey: string): Promise<void> {
     await sql`
       INSERT INTO focowiki.immutable_objects (
-        checksum_sha256, format_version, object_key, content_type, size_bytes
-      ) VALUES (${checksum}, 1, ${objectKey}, 'text/markdown', 4)
+        checksum_sha256, format_version, object_key, content_type, size_bytes,
+        verified_at
+      ) VALUES (${checksum}, 1, ${objectKey}, 'text/markdown', 4, now())
       ON CONFLICT (checksum_sha256, format_version) DO NOTHING
     `;
   }

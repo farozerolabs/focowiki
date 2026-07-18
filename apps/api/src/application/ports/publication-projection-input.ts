@@ -5,6 +5,7 @@ import type {
   OkfGraphNode
 } from "@focowiki/okf";
 import type { SerializableJson } from "./source-dispatch-repository.js";
+import type { DirectoryStatistics } from "../../domain/tree-statistics.js";
 
 export type PublicationSourceSnapshot = {
   sourceFileId: string;
@@ -37,7 +38,7 @@ export type PublicationGraphEdgeSnapshot = {
   evidence: Record<string, unknown>;
 };
 
-export type PublicationDirectorySnapshot = {
+export type PublicationDirectorySnapshot = DirectoryStatistics & {
   id: string;
   sourceDirectoryId: string | null;
   name: string;
@@ -45,9 +46,6 @@ export type PublicationDirectorySnapshot = {
   generatedPath: string;
   kind: "directory";
   resourceRevision: number;
-  childCount: number;
-  directFileCount: number;
-  descendantFileCount: number;
 };
 
 export type PublicationKnowledgeBaseSnapshot = {

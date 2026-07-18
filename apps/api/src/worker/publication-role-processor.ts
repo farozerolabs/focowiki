@@ -4,6 +4,7 @@ import type { ClaimedPublicationImpact, PublicationImpactRepository } from "../a
 import type { PublicationValidationRepository } from "../application/ports/publication-validation-repository.js";
 import { RoleJobFailure, type RoleJobRecord } from "../domain/role-job.js";
 import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
+import { GENERATED_ROOT_MANIFEST_PATHS } from "../okf/generated-graph-resources.js";
 import {
   readPublicationWorkSettings,
   type PublicationWorkSettings
@@ -33,15 +34,6 @@ type PublicationFinalizer = {
 const GROUPED_PROJECTIONS = new Set([
   "directory", "search", "links", "manifest", "tree", "graph_node", "graph_edge"
 ]);
-
-const REQUIRED_ROOT_PATHS = [
-  "index.md",
-  "schema.md",
-  "log.md",
-  "_index/index.md",
-  "_index/catalog.json",
-  "_graph/index.md"
-];
 
 export function createPublicationRoleProcessor(input: {
   generations: PublicationGenerationRepository;
@@ -132,7 +124,7 @@ export function createPublicationRoleProcessor(input: {
     }
 
     const roots = [];
-    for (const path of REQUIRED_ROOT_PATHS) {
+    for (const path of GENERATED_ROOT_MANIFEST_PATHS) {
       const reference = await input.references.findStagedByRef({
         knowledgeBaseId: job.knowledgeBaseId,
         generationId,

@@ -19,7 +19,7 @@ test("recognizes reserved OKF index and log files at every directory depth", () 
 test("does not classify concept and numbered navigation files as reserved", () => {
   assert.equal(isReservedOkfMarkdownPath("pages/team/guide.md"), false);
   assert.equal(isReservedOkfMarkdownPath("pages/team/index-000001.md"), false);
-  assert.equal(isReservedOkfMarkdownPath("_graph/insights.md"), false);
+  assert.equal(isReservedOkfMarkdownPath("_graph/unpublished.md"), false);
 });
 
 test("limits source body comparison to source-backed page concepts", () => {

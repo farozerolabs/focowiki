@@ -99,6 +99,7 @@ export const resources = {
           worker: "Worker",
           publication: "Publication",
           graph: "Graph",
+          maintenance: "Maintenance",
           models: "Models"
         },
         rateLimits: {
@@ -116,6 +117,28 @@ export const resources = {
         graph: {
           title: "Graph",
           description: "Tune file relationship generation, graph search, graph publication, and graph caches."
+        },
+        maintenance: {
+          title: "Maintenance",
+          description: "Tune bounded generated-object reconciliation without restarting the service.",
+          status: {
+            state: "Last run state",
+            completedAt: "Last completed",
+            scanned: "Objects scanned",
+            quarantined: "Objects quarantined",
+            deleted: "Objects deleted",
+            missing: "Registered objects missing",
+            retries: "Retries",
+            lastError: "Last error",
+            notRun: "Not run",
+            none: "None",
+            states: {
+              idle: "Idle",
+              scanning: "Scanning",
+              verifying: "Verifying",
+              failed: "Failed"
+            }
+          }
         },
         publicationModes: {
           batch: "Batch",
@@ -219,11 +242,20 @@ export const resources = {
             searchMaxDepth: "Maximum graph expansion depth allowed by OpenAPI. Recommended: 2.",
             searchDefaultFanout: "Default related files explored per graph hop. Recommended: 10.",
             searchMaxFanout: "Maximum related files explored per graph hop. Recommended: 25.",
-            insightEnabled: "Whether generated graph insight files are published. Keep enabled unless storage must be minimized.",
             modelReviewEnabled: "Whether active model configuration can review candidate relationships. Keep enabled when model service is stable.",
             publicationShardSize: "Graph nodes and edges per generated shard. Recommended: 5000 to 20000.",
             cacheTtlSeconds: "Redis response cache TTL for graph search and expansion. Recommended: 5 to 60 seconds.",
             genericPhraseThreshold: "Minimum normalized phrase length for generic shared-phrase filtering. Recommended: 4."
+          },
+          maintenance: {
+            reconciliationEnabled: "Runs bounded reconciliation in the maintenance worker. Keep enabled for normal deployments.",
+            scanIntervalSeconds: "Time between complete reconciliation cycles. Recommended: 21600 seconds (6 hours).",
+            scanBatchSize: "Objects listed in one bounded storage page. The S3 page limit is 1,000 objects. Recommended: 500.",
+            deletionBatchSize: "Confirmed candidates deleted in one bounded pass. Maximum: 1,000. Recommended: 100.",
+            quarantineGracePeriodSeconds: "Minimum time an unregistered object remains quarantined before deletion can be considered. Recommended: 86400 seconds (24 hours).",
+            confirmationPasses: "Separate completed scan cycles that must observe the candidate before deletion. Minimum: 2. Recommended: 2.",
+            maxAttempts: "Maximum deletion attempts before a candidate remains failed for maintenance review. Recommended: 5.",
+            retryDelayMs: "Delay after a transient reconciliation failure. Recommended: 30000 to 300000 ms."
           },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
@@ -296,11 +328,18 @@ export const resources = {
           searchMaxDepth: "Max search depth",
           searchDefaultFanout: "Default search fanout",
           searchMaxFanout: "Max search fanout",
-          insightEnabled: "Graph insights",
           modelReviewEnabled: "Model relationship review",
           publicationShardSize: "Graph publication shard size",
           cacheTtlSeconds: "Graph cache TTL seconds",
           genericPhraseThreshold: "Generic phrase threshold",
+          reconciliationEnabled: "Storage reconciliation",
+          scanIntervalSeconds: "Scan interval seconds",
+          scanBatchSize: "Scan batch size",
+          deletionBatchSize: "Deletion batch size",
+          quarantineGracePeriodSeconds: "Quarantine grace seconds",
+          confirmationPasses: "Confirmation passes",
+          maxAttempts: "Maximum attempts",
+          retryDelayMs: "Retry delay ms",
           rootSummaryLimit: "Root summary limit",
           directoryIndexMaxEntries: "Directory index entries per page",
           directoryIndexMaxBytes: "Directory index bytes per page",
@@ -757,6 +796,7 @@ export const resources = {
           worker: "Worker",
           publication: "发布",
           graph: "图关系",
+          maintenance: "维护",
           models: "模型"
         },
         rateLimits: {
@@ -774,6 +814,28 @@ export const resources = {
         graph: {
           title: "图关系",
           description: "调整文件关系生成、图搜索、图发布和图缓存参数。"
+        },
+        maintenance: {
+          title: "维护",
+          description: "实时调整生成对象的有界存储对账参数，无需重启服务。",
+          status: {
+            state: "最近运行状态",
+            completedAt: "最近完成时间",
+            scanned: "已扫描对象",
+            quarantined: "已隔离对象",
+            deleted: "已删除对象",
+            missing: "缺失的登记对象",
+            retries: "重试次数",
+            lastError: "最近错误",
+            notRun: "尚未运行",
+            none: "无",
+            states: {
+              idle: "空闲",
+              scanning: "扫描中",
+              verifying: "校验中",
+              failed: "失败"
+            }
+          }
         },
         publicationModes: {
           batch: "批量",
@@ -877,11 +939,20 @@ export const resources = {
             searchMaxDepth: "OpenAPI 允许的最大图扩展深度。推荐 2。",
             searchDefaultFanout: "每一跳默认探索的相关文件数量。推荐 10。",
             searchMaxFanout: "每一跳最多探索的相关文件数量。推荐 25。",
-            insightEnabled: "是否发布图洞察文件。除非需要减少存储占用，否则推荐开启。",
             modelReviewEnabled: "是否允许生效模型复核候选关系。模型服务稳定时推荐开启。",
             publicationShardSize: "生成图节点和图边分片的条目数。推荐 5000 到 20000。",
             cacheTtlSeconds: "图搜索和图扩展响应的 Redis 缓存秒数。推荐 5 到 60 秒。",
             genericPhraseThreshold: "通用共享短语过滤的最小归一化长度。推荐 4。"
+          },
+          maintenance: {
+            reconciliationEnabled: "是否由维护 Worker 执行有界存储对账。正常部署推荐开启。",
+            scanIntervalSeconds: "完整对账周期之间的间隔。推荐 21600 秒，也就是 6 小时。",
+            scanBatchSize: "单个有界存储页列出的对象数量。S3 单页上限为 1000，推荐 500。",
+            deletionBatchSize: "单轮删除的已确认候选数量。最大 1000，推荐 100。",
+            quarantineGracePeriodSeconds: "未登记对象在允许删除前必须经过的最短隔离时间。推荐 86400 秒，也就是 24 小时。",
+            confirmationPasses: "候选对象必须被不同完整扫描周期重复发现的次数。最小 2，推荐 2。",
+            maxAttempts: "候选删除进入维护失败状态前的最大尝试次数。推荐 5。",
+            retryDelayMs: "存储对账遇到临时失败后的等待时间。推荐 30000 到 300000 毫秒。"
           },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
@@ -954,11 +1025,18 @@ export const resources = {
           searchMaxDepth: "最大搜索深度",
           searchDefaultFanout: "默认搜索扇出",
           searchMaxFanout: "最大搜索扇出",
-          insightEnabled: "图洞察",
           modelReviewEnabled: "模型关系复核",
           publicationShardSize: "图发布分片大小",
           cacheTtlSeconds: "图缓存 TTL 秒数",
           genericPhraseThreshold: "通用短语阈值",
+          reconciliationEnabled: "存储对账",
+          scanIntervalSeconds: "扫描间隔秒数",
+          scanBatchSize: "扫描批次大小",
+          deletionBatchSize: "删除批次大小",
+          quarantineGracePeriodSeconds: "隔离宽限秒数",
+          confirmationPasses: "确认扫描次数",
+          maxAttempts: "最大尝试次数",
+          retryDelayMs: "重试延迟毫秒",
           rootSummaryLimit: "根摘要上限",
           directoryIndexMaxEntries: "目录索引单页条目数",
           directoryIndexMaxBytes: "目录索引单页字节数",

@@ -37,6 +37,20 @@ type GeneratedFileRow = {
   logical_path: string;
 };
 
+type TreeStatisticsRow = {
+  path: string;
+  direct_entry_count: number;
+  direct_directory_count: number;
+  direct_file_count: number;
+  descendant_file_count: number;
+};
+
+type GeneratedDirectoryRow = {
+  path: string;
+  direct_file_count: number;
+  descendant_file_count: number;
+};
+
 const ROOT_GENERATED_FILES = ["index.md", "log.md", "schema.md"] as const;
 
 const GENERATED_DIRECTORIES = [
@@ -114,12 +128,25 @@ export async function listActiveTreeAncestors(
       AND payload_json->>'kind' = 'directory'
     ORDER BY length(logical_path), logical_path, record_id
   `;
-  const records = new Map(
-    rows.map((row) => [row.logical_path!, mapProjection(generationId, row)] as const)
+  const hydratedRows = await hydrateSourceDirectoryStatistics(
+    sql,
+    knowledgeBaseId,
+    generationId,
+    rows.map((row) => mapProjection(generationId, row))
   );
+  const records = new Map(
+    hydratedRows.map((row) => [row.path!, row] as const)
+  );
+  const generatedStatistics = await loadGeneratedDirectoryStatistics(sql, knowledgeBaseId);
   for (const directory of GENERATED_DIRECTORIES) {
     if (ancestorPaths.includes(directory.path)) {
-      records.set(directory.path, generatedDirectoryProjection(generationId, directory));
+      const statistics = generatedStatistics.get(directory.path);
+      if (statistics) {
+        records.set(
+          directory.path,
+          generatedDirectoryProjection(generationId, directory, statistics)
+        );
+      }
     }
   }
 
@@ -169,7 +196,12 @@ async function listSourceEntries(
     ORDER BY coalesce(sort_key, ''), record_id
     LIMIT ${input.limit + 1}
   `;
-  return rows.map((row) => mapProjection(generationId, row));
+  return hydrateSourceDirectoryStatistics(
+    sql,
+    knowledgeBaseId,
+    generationId,
+    rows.map((row) => mapProjection(generationId, row))
+  );
 }
 
 async function listGeneratedFiles(
@@ -239,9 +271,43 @@ async function listGeneratedDirectories(
 ): Promise<ActiveGenerationProjection[]> {
   const candidates = GENERATED_DIRECTORIES.filter((entry) => entry.parentPath === input.parentPath);
   if (candidates.length === 0) return [];
-  const candidatePaths = candidates.map((entry) => entry.path);
-  const rows = await sql<Array<{ path: string }>>`
-    SELECT candidate.path
+  const statistics = await loadGeneratedDirectoryStatistics(sql, knowledgeBaseId);
+  const normalizedQuery = query.toLocaleLowerCase("en-US");
+  return candidates
+    .filter((entry) => statistics.has(entry.path))
+    .map((entry) => generatedDirectoryProjection(
+      generationId,
+      entry,
+      statistics.get(entry.path)!
+    ))
+    .filter((entry) => !normalizedQuery || matchesQuery(entry, normalizedQuery))
+    .filter((entry) => isAfterCursor(entry, input.cursor));
+}
+
+async function loadGeneratedDirectoryStatistics(
+  sql: ReadSql,
+  knowledgeBaseId: string
+): Promise<Map<string, {
+  directDirectoryCount: number;
+  directFileCount: number;
+  descendantFileCount: number;
+}>> {
+  const candidatePaths = GENERATED_DIRECTORIES.map((entry) => entry.path);
+  const rows = await sql<GeneratedDirectoryRow[]>`
+    SELECT candidate.path,
+           (SELECT count(*)::int
+            FROM focowiki.active_object_refs direct
+            WHERE direct.knowledge_base_id = ${knowledgeBaseId}
+              AND direct.logical_path >= candidate.path || '/'
+              AND direct.logical_path < candidate.path || '0'
+              AND position('/' in substring(
+                direct.logical_path from (length(candidate.path) + 2)::integer
+              )) = 0) AS direct_file_count,
+           (SELECT count(*)::int
+            FROM focowiki.active_object_refs descendant
+            WHERE descendant.knowledge_base_id = ${knowledgeBaseId}
+              AND descendant.logical_path >= candidate.path || '/'
+              AND descendant.logical_path < candidate.path || '0') AS descendant_file_count
     FROM unnest(${candidatePaths}::text[]) AS candidate(path)
     WHERE EXISTS (
       SELECT 1
@@ -253,17 +319,29 @@ async function listGeneratedDirectories(
     )
   `;
   const available = new Set(rows.map((row) => row.path));
-  const normalizedQuery = query.toLocaleLowerCase("en-US");
-  return candidates
-    .filter((entry) => available.has(entry.path))
-    .map((entry) => generatedDirectoryProjection(generationId, entry))
-    .filter((entry) => !normalizedQuery || matchesQuery(entry, normalizedQuery))
-    .filter((entry) => isAfterCursor(entry, input.cursor));
+  return new Map(rows.map((row) => {
+    const directDirectoryCount = GENERATED_DIRECTORIES.filter((candidate) =>
+      candidate.parentPath === row.path && available.has(candidate.path)
+    ).length;
+    return [
+      row.path,
+      {
+        directDirectoryCount,
+        directFileCount: Number(row.direct_file_count),
+        descendantFileCount: Number(row.descendant_file_count)
+      }
+    ] as const;
+  }));
 }
 
 function generatedDirectoryProjection(
   generationId: string,
-  entry: (typeof GENERATED_DIRECTORIES)[number]
+  entry: (typeof GENERATED_DIRECTORIES)[number],
+  counts: {
+    directDirectoryCount: number;
+    directFileCount: number;
+    descendantFileCount: number;
+  } = { directDirectoryCount: 0, directFileCount: 0, descendantFileCount: 0 }
 ): ActiveGenerationProjection {
   const name = entry.path.split("/").at(-1) ?? entry.path;
   return {
@@ -282,7 +360,11 @@ function generatedDirectoryProjection(
       kind: "directory",
       name,
       parentPath: entry.parentPath,
-      path: entry.path
+      path: entry.path,
+      directEntryCount: counts.directDirectoryCount + counts.directFileCount,
+      directDirectoryCount: counts.directDirectoryCount,
+      directFileCount: counts.directFileCount,
+      descendantFileCount: counts.descendantFileCount
     }
   };
 }
@@ -311,9 +393,101 @@ function generatedFileProjection(
       kind: "file",
       name,
       parentPath,
-      path: row.logical_path
+      path: row.logical_path,
+      directEntryCount: 0,
+      directDirectoryCount: 0,
+      directFileCount: 0,
+      descendantFileCount: 0
     }
   };
+}
+
+async function hydrateSourceDirectoryStatistics(
+  sql: ReadSql,
+  knowledgeBaseId: string,
+  generationId: string,
+  entries: ActiveGenerationProjection[]
+): Promise<ActiveGenerationProjection[]> {
+  const directoryPaths = entries
+    .filter((entry) => readPayloadString(entry.payload, "kind") === "directory" && entry.path)
+    .map((entry) => entry.path!);
+  if (directoryPaths.length === 0) return entries;
+
+  const persistedRows = await sql<TreeStatisticsRow[]>`
+    SELECT path, direct_entry_count, direct_directory_count,
+           direct_file_count, descendant_file_count
+    FROM focowiki.generation_tree_directory_stats
+    WHERE knowledge_base_id = ${knowledgeBaseId}
+      AND generation_id = ${generationId}
+      AND path = ANY(${directoryPaths})
+  `;
+  const statistics = new Map(persistedRows.map((row) => [row.path, row] as const));
+  const missingPaths = directoryPaths.filter((path) => !statistics.has(path));
+  if (missingPaths.length > 0) {
+    const fallbackRows = await sql<TreeStatisticsRow[]>`
+      WITH requested(path) AS MATERIALIZED (
+        SELECT unnest(${missingPaths}::text[])
+      ),
+      direct_counts AS (
+        SELECT child.parent_path AS path,
+               count(*) FILTER (
+                 WHERE child.payload_json->>'kind' IN ('directory', 'file')
+               )::int AS direct_entry_count,
+               count(*) FILTER (
+                 WHERE child.payload_json->>'kind' = 'directory'
+               )::int AS direct_directory_count,
+               count(*) FILTER (
+                 WHERE child.payload_json->>'kind' = 'file'
+               )::int AS direct_file_count
+        FROM focowiki.active_projection_records child
+        WHERE child.knowledge_base_id = ${knowledgeBaseId}
+          AND child.projection_kind = 'tree'
+          AND child.parent_path = ANY(${missingPaths})
+        GROUP BY child.parent_path
+      ),
+      descendant_counts AS (
+        SELECT requested.path, count(descendant.record_id)::int AS descendant_file_count
+        FROM requested
+        LEFT JOIN focowiki.active_projection_records descendant
+          ON descendant.knowledge_base_id = ${knowledgeBaseId}
+         AND descendant.projection_kind = 'tree'
+         AND descendant.logical_path >= requested.path || '/'
+         AND descendant.logical_path < requested.path || '0'
+         AND descendant.payload_json->>'kind' = 'file'
+        GROUP BY requested.path
+      )
+      SELECT requested.path,
+             coalesce(direct.direct_entry_count, 0) AS direct_entry_count,
+             coalesce(direct.direct_directory_count, 0) AS direct_directory_count,
+             coalesce(direct.direct_file_count, 0) AS direct_file_count,
+             coalesce(descendant.descendant_file_count, 0) AS descendant_file_count
+      FROM requested
+      LEFT JOIN direct_counts direct USING (path)
+      LEFT JOIN descendant_counts descendant USING (path)
+    `;
+    for (const row of fallbackRows) statistics.set(row.path, row);
+  }
+
+  return entries.map((entry) => {
+    const row = entry.path ? statistics.get(entry.path) : null;
+    if (!row) return entry;
+    return {
+      ...entry,
+      payload: {
+        ...(entry.payload as Record<string, SerializableJson>),
+        directEntryCount: Number(row.direct_entry_count),
+        directDirectoryCount: Number(row.direct_directory_count),
+        directFileCount: Number(row.direct_file_count),
+        descendantFileCount: Number(row.descendant_file_count)
+      }
+    };
+  });
+}
+
+function readPayloadString(payload: SerializableJson, key: string): string | null {
+  if (!payload || Array.isArray(payload) || typeof payload !== "object") return null;
+  const value = (payload as Record<string, SerializableJson>)[key];
+  return typeof value === "string" ? value : null;
 }
 
 function generatedFileKind(refKind: string, path: string): string {

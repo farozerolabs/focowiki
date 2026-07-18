@@ -45,7 +45,7 @@ The backend usually calls these Focowiki interfaces:
 | Read file metadata | `getFileById` |
 | Read file content by stable identifier | `getFileContentById` |
 | Read file content by logical path | `getFileContentByPath` |
-| Search and explore related files | `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphInsights` |
+| Search and explore related files | `searchGeneratedFiles`, `listRelatedFiles`, `expandGraph`, `getGraphOverview` |
 | Manage webhooks | `listWebhooks`, `createWebhook`, `deleteWebhook`, `listWebhookDeliveries`, `redeliverWebhook` |
 
 These operations are for the developer backend and product workflows. The Agent-facing interface should stay read-focused by default. Expose write or delete capabilities to an Agent only when the product explicitly needs Agent-driven maintenance.

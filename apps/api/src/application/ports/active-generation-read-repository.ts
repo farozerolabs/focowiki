@@ -47,6 +47,13 @@ export type ActiveGenerationPage<T, TCursor> = {
   nextCursor: TCursor | null;
 };
 
+export type ActiveGenerationGraphSummary = {
+  nodeCount: number;
+  edgeCount: number;
+  graphIndexAvailable: boolean;
+  persisted: boolean;
+};
+
 export type ActiveGenerationReadScope = {
   knowledgeBaseId: string;
   generationId: string;
@@ -57,6 +64,7 @@ export type ActiveGenerationReadScope = {
     projectionKind: "graph_node" | "graph_edge";
     recordId: string;
   }) => Promise<ActiveGenerationProjection | null>;
+  getGraphSummary: () => Promise<ActiveGenerationGraphSummary>;
   listTree: (input: {
     parentPath: string;
     entryType: "file" | "directory" | null;

@@ -31,12 +31,10 @@ Graph files live under `_graph/` in the generated bundle.
 ```text
 _graph/
   index.md
-  manifest.json
-  nodes.jsonl
-  nodes/
-    0000.jsonl
-  edges/
-    0000.jsonl
+  graph_node/v1/
+    {shard}.json
+  graph_edge/v1/
+    {shard}.json
   by-file/
     {fileId}.json
 ```
@@ -44,10 +42,9 @@ _graph/
 | File | Purpose |
 | --- | --- |
 | `_graph/index.md` | Human and Agent entry point for graph navigation. |
-| `_graph/manifest.json` | Counts, path patterns, generation time, and graph metadata. |
-| `_graph/nodes.jsonl` | Node index entry. Small knowledge bases store node records here; large knowledge bases store shard descriptors here. |
-| `_graph/nodes/*.jsonl` | Sharded node records for large generated knowledge bases. |
-| `_graph/edges/*.jsonl` | Sharded relationship records. These are useful for exports and audits. |
+| `_index/catalog.json` | Bounded descriptors for active graph-node and graph-edge projection shards. |
+| `_graph/graph_node/v1/*.json` | Sharded graph-node records. |
+| `_graph/graph_edge/v1/*.json` | Sharded relationship records for exports and audits. |
 | `_graph/by-file/{fileId}.json` | Bounded local neighborhood for one generated source-backed page. This is the primary Agent exploration file. |
 
 The root `index.md` links to `_graph/index.md` whenever graph output is available. Normal Agent reading should start from generated Markdown pages and then use `_graph/by-file/{fileId}.json`. Agents rarely need to read full edge shards.
@@ -72,7 +69,7 @@ Each relationship record contains safe public fields.
 | `fileId` | Related source-backed file identifier. |
 | `path` | Related generated Markdown path, such as `pages/example.md`. |
 | `title` | Related file title. |
-| `relationType` | Relationship type, such as `direct_reference`, `direct_reference`, `same_entity`, `same_specific_subject`, `metadata_supported_content`, or `same_specific_subject`. |
+| `relationType` | Relationship type, such as `direct_reference`, `same_entity`, `same_specific_subject`, or `metadata_supported_content`. |
 | `direction` | `outgoing` when the current file points to the related file, `incoming` when another file points to the current file. |
 | `weight` | Bounded priority score from `0` to `1`. |
 | `reason` | Safe explanation for users, developers, and Agents. |
