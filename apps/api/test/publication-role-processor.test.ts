@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPublicationRoleProcessor } from "../src/worker/publication-role-processor.js";
 import type { ClaimedPublicationImpact } from "../src/application/ports/publication-impact-repository.js";
 import { RoleJobReschedule, type RoleJobRecord } from "../src/domain/role-job.js";
+import { PublicationGenerationBusyError } from "../src/domain/publication.js";
 import { ImmutableObjectWriteInProgressError } from "../src/publication/immutable-object-writer.js";
 
 describe("publication role processor", () => {
@@ -278,6 +279,32 @@ describe("publication role processor", () => {
       retryDelayMs: 1_000,
       validationIssueLimit: 20,
       now: () => new Date("2026-07-19T05:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("reschedules a queued generation while another generation is publishing", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({
+        freezeGeneration: vi.fn().mockRejectedValue(new PublicationGenerationBusyError()),
+        failGeneration
+      }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T05:30:00.000Z")
     });
 
     await expect(processor(

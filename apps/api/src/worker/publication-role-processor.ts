@@ -7,6 +7,7 @@ import {
   RoleJobReschedule,
   type RoleJobRecord
 } from "../domain/role-job.js";
+import { PublicationGenerationBusyError } from "../domain/publication.js";
 import {
   ImmutableObjectWriteInProgressError,
   type ImmutableObjectWriteResult
@@ -73,6 +74,9 @@ export function createPublicationRoleProcessor(input: {
       await processPublicationJob(input, job, signal, now);
     } catch (error) {
       if (error instanceof RoleJobReschedule) throw error;
+      if (error instanceof PublicationGenerationBusyError) {
+        throw continuation(now(), input.retryDelayMs);
+      }
       if (error instanceof ImmutableObjectWriteInProgressError) {
         throw continuation(now(), input.retryDelayMs);
       }

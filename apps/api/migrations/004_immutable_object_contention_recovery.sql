@@ -28,18 +28,8 @@ WHERE impact.knowledge_base_id = migrated.knowledge_base_id
   AND impact.generation_id = migrated.generation_id
   AND impact.status IN ('failed', 'cancelled');
 
-UPDATE focowiki.publication_generations generation
-SET state = 'building',
-    failed_at = NULL,
-    safe_error_code = NULL,
-    safe_error_message = NULL,
-    updated_at = now()
-FROM focowiki_migration_contention_generations migrated
-WHERE generation.knowledge_base_id = migrated.knowledge_base_id
-  AND generation.id = migrated.generation_id;
-
 UPDATE focowiki.publication_progress progress
-SET stage = 'projection',
+SET stage = 'pending',
     processed_impact_count = counts.completed_count,
     heartbeat_at = now(),
     completed_at = NULL,
