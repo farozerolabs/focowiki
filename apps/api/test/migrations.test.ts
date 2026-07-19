@@ -12,7 +12,8 @@ import {
 const FIRST_RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
-const LATEST_RELEASED_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
+const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
+const LATEST_RELEASED_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -41,20 +42,28 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
+  });
+
+  it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
+    const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(2);
@@ -154,6 +163,25 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("set state = 'building'");
     expect(migration).toContain("set status = 'queued'");
     expect(migration).toContain("publication-retry-budget-recovery-v5");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
+  });
+
+  it("recovers publication jobs exhausted by continuation-only states", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/006_publication_continuation_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("publication impacts are pending");
+    expect(migration).toContain("publication was interrupted");
+    expect(migration).toContain("publication generation state changed");
+    expect(migration).toContain("publication activation must be retried");
+    expect(migration).toContain("immutable object write is already in progress");
+    expect(migration).toContain("status in ('failed', 'cancelled')");
+    expect(migration).toContain("set state = 'building'");
+    expect(migration).toContain("set status = 'queued'");
+    expect(migration).toContain("publication-continuation-recovery-v6");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
   });

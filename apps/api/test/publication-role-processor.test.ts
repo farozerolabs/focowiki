@@ -155,6 +155,178 @@ describe("publication role processor", () => {
     expect(failGeneration).not.toHaveBeenCalled();
   });
 
+  it("reschedules pending impacts without exhausting the publication job", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: {
+        claimBatch: vi.fn().mockResolvedValue([]),
+        heartbeat: vi.fn(),
+        release: vi.fn(),
+        complete: vi.fn(),
+        fail: vi.fn(),
+        countIncomplete: vi.fn().mockResolvedValue({ pending: 1, running: 0, failed: 0 })
+      },
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T01:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("reschedules an interrupted publication without exhausting the publication job", async () => {
+    const failGeneration = vi.fn();
+    const controller = new AbortController();
+    controller.abort();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T02:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      controller.signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("reschedules a generation state race without exhausting the publication job", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({
+        failGeneration,
+        markGenerationState: vi.fn().mockResolvedValue(false)
+      }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T03:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("reschedules an activation race without exhausting the publication job", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({
+        failGeneration,
+        activateGeneration: vi.fn().mockResolvedValue(false)
+      }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn().mockResolvedValue([]) },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T04:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("reschedules finalization write contention without exhausting the publication job", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [{
+        finalize: vi.fn().mockRejectedValue(new ImmutableObjectWriteInProgressError())
+      }],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T05:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
+  it("keeps real finalization failures on the outer publication retry budget", async () => {
+    const failGeneration = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: impactRepositoryFor([]),
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [{
+        finalize: vi.fn().mockRejectedValue(new Error("Storage is unavailable"))
+      }],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T06:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 1, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toThrow("Storage is unavailable");
+    expect(failGeneration).not.toHaveBeenCalled();
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toMatchObject({
+      code: "PUBLICATION_RETRIES_EXHAUSTED",
+      retryable: false
+    });
+    expect(failGeneration).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-1",
+      generationId: "generation-1",
+      code: "PUBLICATION_RETRIES_EXHAUSTED",
+      message: "Storage is unavailable",
+      failedAt: "2026-07-19T06:00:00.000Z"
+    });
+  });
+
   it("fails the generation immediately when publication reaches a terminal error", async () => {
     const failGeneration = vi.fn().mockResolvedValue(undefined);
     const references = referenceRepository();

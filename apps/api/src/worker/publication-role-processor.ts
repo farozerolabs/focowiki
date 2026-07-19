@@ -73,6 +73,9 @@ export function createPublicationRoleProcessor(input: {
       await processPublicationJob(input, job, signal, now);
     } catch (error) {
       if (error instanceof RoleJobReschedule) throw error;
+      if (error instanceof ImmutableObjectWriteInProgressError) {
+        throw continuation(now(), input.retryDelayMs);
+      }
       const retryable = isRetryableFailure(error);
       if (retryable && job.attemptCount < job.maxAttempts) {
         throw error;
@@ -142,7 +145,7 @@ async function processPublicationJob(
       updatedAt: now().toISOString()
     });
     if (!transitioned) {
-      throw retryable("GENERATION_STATE_CHANGED", "Publication generation state changed");
+      throw continuation(now(), input.retryDelayMs);
     }
   }
 
@@ -220,7 +223,7 @@ async function processPublicationJob(
     activatedAt: now().toISOString()
   });
   if (!activated) {
-    throw retryable("GENERATION_ACTIVATION_CONFLICT", "Publication activation must be retried");
+    throw continuation(now(), input.retryDelayMs);
   }
 }
 
@@ -266,7 +269,7 @@ async function processImpacts(input: {
         });
       }
       if (remaining.pending > 0 || remaining.running > 0) {
-        throw retryable("PUBLICATION_IMPACT_PENDING", "Publication impacts are pending");
+        throw continuation(input.now(), input.retryDelayMs);
       }
       return;
     }
@@ -312,7 +315,7 @@ async function processImpacts(input: {
       );
     }
   }
-  throw retryable("PUBLICATION_ABORTED", "Publication was interrupted");
+  throw continuation(input.now(), input.retryDelayMs);
 }
 
 async function processImpactGroup(
@@ -459,8 +462,8 @@ function assertPublicationJob(job: RoleJobRecord): void {
   }
 }
 
-function retryable(code: string, message: string, cause?: unknown): RoleJobFailure {
-  return new RoleJobFailure({ code, message, retryable: true, cause });
+function continuation(now: Date, delayMs: number): RoleJobReschedule {
+  return new RoleJobReschedule(new Date(now.getTime() + delayMs).toISOString());
 }
 
 function assertPositiveInteger(value: number, name: string): void {
