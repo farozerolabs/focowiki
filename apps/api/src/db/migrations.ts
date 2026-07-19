@@ -5,14 +5,17 @@ import type { DatabaseClient } from "./client.js";
 export const MIGRATION_FILES = [
   "001_production_admin_web.sql",
   "002_tree_graph_storage_reconciliation.sql",
-  "003_bounded_publication_recovery.sql"
+  "003_bounded_publication_recovery.sql",
+  "004_immutable_object_contention_recovery.sql"
 ] as const;
-export const RELEASED_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
-export const RUNTIME_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
+const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
+export const RELEASED_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
+export const RUNTIME_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
-  [RELEASED_SCHEMA_GENERATION, 2]
+  [TREE_GRAPH_SCHEMA_GENERATION, 2],
+  [RELEASED_SCHEMA_GENERATION, 3]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {

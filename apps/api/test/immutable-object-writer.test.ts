@@ -4,7 +4,10 @@ import type {
   ImmutableObjectRecord,
   ImmutableObjectRepository
 } from "../src/application/ports/immutable-object-repository.js";
-import { createImmutableObjectWriter } from "../src/publication/immutable-object-writer.js";
+import {
+  createImmutableObjectWriter,
+  ImmutableObjectWriteInProgressError
+} from "../src/publication/immutable-object-writer.js";
 import { createStorageKeyspace } from "../src/storage/keys.js";
 
 describe("immutable object writer", () => {
@@ -35,6 +38,36 @@ describe("immutable object writer", () => {
     expect(first.objectKey).toMatch(/^test\/generated\/v1\/objects\/[a-f0-9]{2}\/[a-f0-9]{64}$/);
     expect(calls).toEqual(["reserve", "upload", "verify", "activate"]);
     expect(putObject).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces concurrent writes for the same immutable object", async () => {
+    const calls: string[] = [];
+    const repository = createMemoryRepository(calls);
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const putObject = vi.fn(async () => uploadGate);
+    const writer = createImmutableObjectWriter({
+      repository,
+      storage: {
+        keyspace: createStorageKeyspace("test"),
+        putObject,
+        headObjectMetadata: vi.fn(async (key: string) =>
+          storedMetadata(key, repository.record()!)
+        )
+      }
+    });
+
+    const first = writer.write({ body: "# Concurrent", contentType: "text/markdown" });
+    await vi.waitFor(() => expect(putObject).toHaveBeenCalledOnce());
+    const second = writer.write({ body: "# Concurrent", contentType: "text/markdown" });
+    releaseUpload();
+
+    await expect(first).resolves.toMatchObject({ reused: false });
+    await expect(second).resolves.toMatchObject({ reused: true });
+    expect(putObject).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["reserve", "activate"]);
   });
 
   it("keeps a durable writing reservation when upload fails", async () => {
@@ -171,6 +204,45 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Stable", contentType: "text/markdown" }))
       .resolves.toMatchObject({ reused: true, lifecycleState: "active" });
+  });
+
+  it("returns a typed deferral when another process still owns the write lease", async () => {
+    const repository: ImmutableObjectRepository = {
+      find: vi.fn(async () => null),
+      findAny: vi.fn(async () => null),
+      reserve: vi.fn(async (input) => ({
+        status: "pending" as const,
+        record: {
+          checksumSha256: input.checksumSha256,
+          formatVersion: input.formatVersion,
+          objectKey: input.objectKey,
+          contentType: input.contentType,
+          sizeBytes: input.sizeBytes,
+          lifecycleState: "writing" as const,
+          writeToken: "another-process",
+          writeStartedAt: input.writeStartedAt,
+          writeAttemptCount: 1,
+          createdAt: input.writeStartedAt,
+          verifiedAt: null
+        }
+      })),
+      activate: vi.fn(),
+      markWriteFailure: vi.fn()
+    };
+    const writer = createImmutableObjectWriter({
+      repository,
+      storage: {
+        keyspace: createStorageKeyspace("test"),
+        putObject: vi.fn(),
+        headObjectMetadata: vi.fn()
+      },
+      sleep: async () => undefined,
+      pendingWaitMs: 20
+    });
+
+    await expect(writer.write({ body: "# Busy", contentType: "text/markdown" }))
+      .rejects.toBeInstanceOf(ImmutableObjectWriteInProgressError);
+    expect(repository.markWriteFailure).not.toHaveBeenCalled();
   });
 
   it("rejects a conflicting catalog identity without uploading", async () => {

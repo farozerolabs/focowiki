@@ -2,8 +2,15 @@ import type { GenerationObjectReferenceRepository } from "../application/ports/g
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
 import type { ClaimedPublicationImpact, PublicationImpactRepository } from "../application/ports/publication-impact-repository.js";
 import type { PublicationValidationRepository } from "../application/ports/publication-validation-repository.js";
-import { RoleJobFailure, type RoleJobRecord } from "../domain/role-job.js";
-import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
+import {
+  RoleJobFailure,
+  RoleJobReschedule,
+  type RoleJobRecord
+} from "../domain/role-job.js";
+import {
+  ImmutableObjectWriteInProgressError,
+  type ImmutableObjectWriteResult
+} from "../publication/immutable-object-writer.js";
 import { GENERATED_ROOT_MANIFEST_PATHS } from "../okf/generated-graph-resources.js";
 import {
   readPublicationWorkSettings,
@@ -32,7 +39,8 @@ type PublicationFinalizer = {
 };
 
 const GROUPED_PROJECTIONS = new Set([
-  "directory", "search", "links", "manifest", "tree", "graph_node", "graph_edge"
+  "directory", "root", "search", "links", "manifest", "tree", "graph_node", "graph_edge",
+  "graph_reverse_neighbor", "related_files"
 ]);
 
 export function createPublicationRoleProcessor(input: {
@@ -64,6 +72,7 @@ export function createPublicationRoleProcessor(input: {
     try {
       await processPublicationJob(input, job, signal, now);
     } catch (error) {
+      if (error instanceof RoleJobReschedule) throw error;
       const retryable = isRetryableFailure(error);
       if (retryable && job.attemptCount < job.maxAttempts) {
         throw error;
@@ -275,8 +284,8 @@ async function processImpacts(input: {
       const results = await Promise.all(groupPage.map((group) =>
         processImpactGroup(input, group)
       ));
-      const failed = results.find((result) => result !== null);
-      if (!failed) continue;
+      const interrupted = results.filter((result) => result !== null);
+      if (interrupted.length === 0) continue;
 
       const failedAt = input.now();
       await input.impacts.release({
@@ -287,13 +296,22 @@ async function processImpacts(input: {
         workerId: input.workerId,
         releasedAt: failedAt.toISOString()
       });
-      if (results.some((result) => result?.terminal)) {
+      const terminal = interrupted.find((result) =>
+        result.kind === "failure" && result.terminal
+      );
+      if (terminal) {
         throw new RoleJobFailure({
           code: "PROJECTION_WRITE_FAILED",
-          message: failed.message,
+          message: terminal.message,
           retryable: false,
-          cause: failed.error
+          cause: terminal.error
         });
+      }
+      const failed = interrupted.find((result) => result.kind === "failure");
+      if (!failed) {
+        throw new RoleJobReschedule(
+          new Date(failedAt.getTime() + input.retryDelayMs).toISOString()
+        );
       }
       throw retryable(
         "PROJECTION_WRITE_RETRY",
@@ -308,7 +326,11 @@ async function processImpacts(input: {
 async function processImpactGroup(
   input: Parameters<typeof processImpacts>[0],
   group: ClaimedPublicationImpact[]
-): Promise<{ error: unknown; message: string; terminal: boolean } | null> {
+): Promise<
+  | { kind: "failure"; error: unknown; message: string; terminal: boolean }
+  | { kind: "deferred"; error: ImmutableObjectWriteInProgressError; message: string }
+  | null
+> {
   try {
     const result = await dispatchImpactGroup(input.writers, group, input.workSettings);
     for (let index = 0; index < group.length; index += 1) {
@@ -325,6 +347,18 @@ async function processImpactGroup(
     return null;
   } catch (error) {
     const failedAt = input.now();
+    if (error instanceof ImmutableObjectWriteInProgressError) {
+      await input.impacts.release({
+        impactIds: group.map((impact) => impact.id),
+        workerId: input.workerId,
+        releasedAt: failedAt.toISOString()
+      });
+      return {
+        kind: "deferred",
+        error,
+        message: error.message
+      };
+    }
     const message = error instanceof Error ? error.message : "Projection write failed";
     const failures = await Promise.all(group.map((impact) => input.impacts.fail({
       knowledgeBaseId: impact.knowledgeBaseId,
@@ -338,6 +372,7 @@ async function processImpactGroup(
       failedAt: failedAt.toISOString()
     })));
     return {
+      kind: "failure",
       error,
       message,
       terminal: failures.some((failure) => failure.terminal)
@@ -396,7 +431,7 @@ function groupImpacts(
       groups.push([impact]);
       continue;
     }
-    const key = `${impact.projectionKind}\u0000${impact.projectionKey}`;
+    const key = effectiveProjectionTarget(impact);
     const group = byShard.get(key);
     if (group) {
       group.push(impact);
@@ -407,6 +442,16 @@ function groupImpacts(
     }
   }
   return groups;
+}
+
+function effectiveProjectionTarget(impact: ClaimedPublicationImpact): string {
+  if (impact.projectionKind === "graph_reverse_neighbor") {
+    return `related_files\u0000${impact.recordIdentity}`;
+  }
+  if (impact.projectionKind === "related_files") {
+    return `related_files\u0000${impact.projectionKey}`;
+  }
+  return `${impact.projectionKind}\u0000${impact.projectionKey}`;
 }
 
 function assertPublicationJob(job: RoleJobRecord): void {
