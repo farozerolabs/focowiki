@@ -6,6 +6,9 @@ import {
   readMigrationSql,
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
+import { PublicationGenerationBusyError } from "../src/domain/publication.js";
+import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresSourceFileRetryRepository } from "../src/infrastructure/postgres/source-file-retry-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -88,7 +91,8 @@ describeDatabase("publication failure recovery migration integration", () => {
     `;
     expect(generations).toEqual([
       { id: "generation-contention-active", state: "active" },
-      { id: "generation-contention-failed", state: "building" }
+      { id: "generation-contention-current", state: "building" },
+      { id: "generation-contention-failed", state: "failed" }
     ]);
 
     const impacts = await sql<Array<{
@@ -125,7 +129,7 @@ describeDatabase("publication failure recovery migration integration", () => {
         AND generation_id = 'generation-contention-failed'
     `;
     expect(progress).toEqual([{
-      stage: "projection",
+      stage: "pending",
       processed_impact_count: 1,
       safe_error_code: null
     }]);
@@ -159,7 +163,8 @@ describeDatabase("publication failure recovery migration integration", () => {
     `;
     expect(generations).toEqual([
       { id: "generation-retry-budget-active", state: "active" },
-      { id: "generation-retry-budget-failed", state: "building" }
+      { id: "generation-retry-budget-current", state: "building" },
+      { id: "generation-retry-budget-failed", state: "failed" }
     ]);
 
     const impacts = await sql<Array<{
@@ -211,7 +216,8 @@ describeDatabase("publication failure recovery migration integration", () => {
     `;
     expect(generations).toEqual([
       { id: "generation-continuation-active", state: "active" },
-      { id: "generation-continuation-failed", state: "building" }
+      { id: "generation-continuation-current", state: "building" },
+      { id: "generation-continuation-failed", state: "failed" }
     ]);
 
     const impacts = await sql<Array<{
@@ -252,6 +258,65 @@ describeDatabase("publication failure recovery migration integration", () => {
       generated_output_status: "pending",
       terminal_failure_code: null
     }]);
+  });
+
+  it("resumes recovered generations serially after the active publication finishes", async () => {
+    const generations = createPostgresPublicationGenerationRepository(sql);
+
+    await expect(generations.freezeGeneration({
+      knowledgeBaseId: "kb-continuation",
+      generationId: "generation-continuation-failed",
+      frozenAt: "2026-07-19T12:00:00.000Z"
+    })).rejects.toBeInstanceOf(PublicationGenerationBusyError);
+
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET state = 'superseded'
+      WHERE id = 'generation-continuation-current'
+    `;
+    const resumed = await generations.freezeGeneration({
+      knowledgeBaseId: "kb-continuation",
+      generationId: "generation-continuation-failed",
+      frozenAt: "2026-07-19T12:00:01.000Z"
+    });
+
+    expect(resumed).toMatchObject({
+      generationId: "generation-continuation-failed",
+      predecessorGenerationId: "generation-continuation-active",
+      state: "building"
+    });
+  });
+
+  it("queues a manual publication retry behind the current generation", async () => {
+    await seedPublicationExhaustion(sql, {
+      key: "manual-retry",
+      message: "Storage is temporarily unavailable"
+    });
+    const retries = createPostgresSourceFileRetryRepository(sql);
+    const runAfter = new Date(Date.now() + 1_000).toISOString();
+
+    const accepted = await retries.accept({
+      knowledgeBaseId: "kb-manual-retry",
+      sourceFileId: "source-manual-retry",
+      runAfter,
+      maxAttempts: 3
+    });
+
+    expect(accepted).toMatchObject({
+      outcome: "accepted",
+      kind: "publication",
+      coalesced: false
+    });
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state
+      FROM focowiki.publication_generations
+      WHERE id = 'generation-manual-retry-failed'
+    `)[0]?.state).toBe("failed");
+    expect((await sql<Array<{ status: string }>>`
+      SELECT status
+      FROM focowiki.role_jobs
+      WHERE generation_id = 'generation-manual-retry-failed'
+    `)[0]?.status).toBe("queued");
   });
 });
 
@@ -317,6 +382,8 @@ async function seedImmutableObjectContention(sql: postgres.Sql): Promise<void> {
     ) VALUES
       ('generation-contention-active', 'kb-contention', NULL, 'active', 'normal',
        ${"cd".repeat(32)}, 'objects/contention-active', now(), NULL, NULL, NULL),
+      ('generation-contention-current', 'kb-contention', 'generation-contention-active',
+       'building', 'normal', NULL, NULL, NULL, NULL, NULL, NULL),
       ('generation-contention-failed', 'kb-contention', 'generation-contention-active',
        'failed', 'normal', NULL, NULL, NULL, now(), 'PROJECTION_WRITE_FAILED',
        'Immutable object write is already in progress')
@@ -416,6 +483,7 @@ async function seedPublicationExhaustion(
 ): Promise<void> {
   const knowledgeBaseId = `kb-${input.key}`;
   const activeGenerationId = `generation-${input.key}-active`;
+  const currentGenerationId = `generation-${input.key}-current`;
   const failedGenerationId = `generation-${input.key}-failed`;
   const sourceFileId = `source-${input.key}`;
   const sourceRevisionId = `revision-${input.key}`;
@@ -432,6 +500,8 @@ async function seedPublicationExhaustion(
     ) VALUES
       (${activeGenerationId}, ${knowledgeBaseId}, NULL, 'active', 'normal',
        ${"12".repeat(32)}, ${`objects/${input.key}-active`}, now(), NULL, NULL, NULL),
+      (${currentGenerationId}, ${knowledgeBaseId}, ${activeGenerationId}, 'building',
+       'normal', NULL, NULL, NULL, NULL, NULL, NULL),
       (${failedGenerationId}, ${knowledgeBaseId},
        ${activeGenerationId}, 'failed', 'normal', NULL, NULL, NULL, now(),
        'PUBLICATION_RETRIES_EXHAUSTED', ${input.message})

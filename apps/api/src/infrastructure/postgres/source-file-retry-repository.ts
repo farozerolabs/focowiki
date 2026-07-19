@@ -184,16 +184,8 @@ async function retryPublication(
       AND status IN ('failed', 'cancelled')
   `;
   await transaction`
-    UPDATE focowiki.publication_generations
-    SET state = 'building', failed_at = NULL, safe_error_code = NULL,
-        safe_error_message = NULL, updated_at = ${input.runAfter}
-    WHERE id = ${generationId}
-      AND knowledge_base_id = ${input.knowledgeBaseId}
-      AND state = 'failed'
-  `;
-  await transaction`
     UPDATE focowiki.publication_progress
-    SET stage = 'projection', completed_at = NULL, safe_error_code = NULL,
+    SET stage = 'pending', completed_at = NULL, safe_error_code = NULL,
         safe_error_message = NULL, heartbeat_at = ${input.runAfter},
         processed_impact_count = (
           SELECT count(*) FROM focowiki.publication_impacts impact
