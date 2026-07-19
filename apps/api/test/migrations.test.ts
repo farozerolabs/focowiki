@@ -11,7 +11,8 @@ import {
 
 const FIRST_RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
-const LATEST_RELEASED_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
+const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
+const LATEST_RELEASED_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -40,12 +41,20 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
+  });
+
+  it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
+    const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(2);
@@ -129,6 +138,22 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("set state = 'building'");
     expect(migration).toContain("set status = 'queued'");
     expect(migration).toContain("immutable-object-contention-recovery-v4");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
+  });
+
+  it("recovers publication jobs whose outer retry budget ended before their impacts", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/005_publication_retry_budget_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("publication_retries_exhausted");
+    expect(migration).toContain("projection write will be retried");
+    expect(migration).toContain("status in ('failed', 'cancelled')");
+    expect(migration).toContain("set state = 'building'");
+    expect(migration).toContain("set status = 'queued'");
+    expect(migration).toContain("publication-retry-budget-recovery-v5");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
   });

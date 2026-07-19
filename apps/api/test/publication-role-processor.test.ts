@@ -125,7 +125,7 @@ describe("publication role processor", () => {
     expect(activateGeneration).not.toHaveBeenCalled();
   });
 
-  it("fails the generation when the final publication job attempt cannot complete", async () => {
+  it("reschedules a retryable impact failure without exhausting the publication job", async () => {
     const failGeneration = vi.fn().mockResolvedValue(undefined);
     const processor = createPublicationRoleProcessor({
       generations: generationRepository({ failGeneration }),
@@ -148,18 +148,11 @@ describe("publication role processor", () => {
       now: () => new Date("2026-07-19T00:00:00.000Z")
     });
 
-    await expect(processor(createJob({ attemptCount: 3, maxAttempts: 3 }), new AbortController().signal))
-      .rejects.toMatchObject({
-        code: "PUBLICATION_RETRIES_EXHAUSTED",
-        retryable: false
-      });
-    expect(failGeneration).toHaveBeenCalledWith({
-      knowledgeBaseId: "kb-1",
-      generationId: "generation-1",
-      code: "PUBLICATION_RETRIES_EXHAUSTED",
-      message: "Projection write will be retried",
-      failedAt: "2026-07-19T00:00:00.000Z"
-    });
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(failGeneration).not.toHaveBeenCalled();
   });
 
   it("fails the generation immediately when publication reaches a terminal error", async () => {
