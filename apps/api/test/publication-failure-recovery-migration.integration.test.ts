@@ -23,6 +23,8 @@ describeDatabase("publication failure recovery migration integration", () => {
     await seedStalledPublication(sql);
     await sql.unsafe(readMigrationSql("003_bounded_publication_recovery.sql"));
     await seedImmutableObjectContention(sql);
+    await sql.unsafe(readMigrationSql("004_immutable_object_contention_recovery.sql"));
+    await seedPublicationRetryExhaustion(sql);
     await applyMigrations(sql);
   });
 
@@ -141,6 +143,58 @@ describeDatabase("publication failure recovery migration integration", () => {
     expect(sources).toEqual([{
       processing_status: "completed",
       processing_stage: "projection_generation",
+      generated_output_status: "pending",
+      terminal_failure_code: null
+    }]);
+  });
+
+  it("requeues a generation that exhausted the outer job before its impacts", async () => {
+    const generations = await sql<Array<{ id: string; state: string }>>`
+      SELECT id, state
+      FROM focowiki.publication_generations
+      WHERE knowledge_base_id = 'kb-retry-budget'
+      ORDER BY id
+    `;
+    expect(generations).toEqual([
+      { id: "generation-retry-budget-active", state: "active" },
+      { id: "generation-retry-budget-failed", state: "building" }
+    ]);
+
+    const impacts = await sql<Array<{
+      id: string;
+      status: string;
+      attempt_count: number;
+    }>>`
+      SELECT id, status, attempt_count
+      FROM focowiki.publication_impacts
+      WHERE knowledge_base_id = 'kb-retry-budget'
+      ORDER BY id
+    `;
+    expect(impacts).toEqual([
+      { id: "impact-retry-budget-cancelled", status: "pending", attempt_count: 0 },
+      { id: "impact-retry-budget-completed", status: "completed", attempt_count: 1 }
+    ]);
+
+    const jobs = await sql<Array<{ status: string; attempt_count: number }>>`
+      SELECT status, attempt_count
+      FROM focowiki.role_jobs
+      WHERE knowledge_base_id = 'kb-retry-budget'
+        AND generation_id = 'generation-retry-budget-failed'
+    `;
+    expect(jobs).toEqual([{ status: "queued", attempt_count: 0 }]);
+
+    const sources = await sql<Array<{
+      processing_status: string;
+      generated_output_status: string;
+      terminal_failure_code: string | null;
+    }>>`
+      SELECT processing_status, generated_output_status, terminal_failure_code
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = 'kb-retry-budget'
+        AND id = 'source-retry-budget'
+    `;
+    expect(sources).toEqual([{
+      processing_status: "completed",
       generated_output_status: "pending",
       terminal_failure_code: null
     }]);
@@ -284,6 +338,107 @@ async function seedImmutableObjectContention(sql: postgres.Sql): Promise<void> {
       'job-contention', 'publication', 'generation_publication', 'kb-contention',
       'generation-contention-failed', 'dead_letter', 3, 3, now(),
       'PROJECTION_WRITE_FAILED', 'Immutable object write is already in progress'
+    )
+  `;
+}
+
+async function seedPublicationRetryExhaustion(sql: postgres.Sql): Promise<void> {
+  await sql`
+    INSERT INTO focowiki.knowledge_bases (id, name)
+    VALUES ('kb-retry-budget', 'Retry budget recovery test')
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_generations (
+      id, knowledge_base_id, predecessor_generation_id, state,
+      generation_kind, root_manifest_checksum_sha256,
+      root_manifest_object_key, activated_at, failed_at,
+      safe_error_code, safe_error_message
+    ) VALUES
+      ('generation-retry-budget-active', 'kb-retry-budget', NULL, 'active', 'normal',
+       ${"12".repeat(32)}, 'objects/retry-budget-active', now(), NULL, NULL, NULL),
+      ('generation-retry-budget-failed', 'kb-retry-budget',
+       'generation-retry-budget-active', 'failed', 'normal', NULL, NULL, NULL, now(),
+      'PUBLICATION_RETRIES_EXHAUSTED', 'Projection write will be retried')
+  `;
+  await sql`
+    UPDATE focowiki.knowledge_bases
+    SET active_generation_id = 'generation-retry-budget-active'
+    WHERE id = 'kb-retry-budget'
+  `;
+  await sql.begin(async (transaction) => {
+    await transaction`
+      INSERT INTO focowiki.source_files (
+        id, knowledge_base_id, object_key, content_type, size_bytes,
+        checksum_sha256, processing_status, processing_stage,
+        processing_started_at, processing_ended_at, generated_output_status,
+        terminal_failure_stage, terminal_failure_code, terminal_failure_message,
+        terminal_failure_at, terminal_failure_retry_kind,
+        terminal_failure_correlation_id, name, relative_path, path_key,
+        active_revision_id
+      ) VALUES (
+        'source-retry-budget', 'kb-retry-budget', 'source/retry-budget.md',
+        'text/markdown', 10, ${"34".repeat(32)}, 'failed',
+        'projection_generation', now(), now(), 'unavailable',
+        'projection_generation', 'PUBLICATION_RETRIES_EXHAUSTED',
+        'Projection write will be retried', now(), 'publication',
+        'generation-retry-budget-failed', 'retry-budget.md', 'retry-budget.md',
+        'retry-budget.md', 'revision-retry-budget'
+      )
+    `;
+    await transaction`
+      INSERT INTO focowiki.source_revisions (
+        id, knowledge_base_id, source_file_id, revision, object_key,
+        content_type, size_bytes, checksum_sha256, processing_status
+      ) VALUES (
+        'revision-retry-budget', 'kb-retry-budget', 'source-retry-budget', 1,
+        'source/retry-budget.md', 'text/markdown', 10, ${"34".repeat(32)},
+        'completed'
+      )
+    `;
+  });
+  await sql`
+    INSERT INTO focowiki.publication_change_facts (
+      id, knowledge_base_id, source_file_id, source_revision_id, kind,
+      path, resource_revision, generation_id
+    ) VALUES (
+      'fact-retry-budget', 'kb-retry-budget', 'source-retry-budget',
+      'revision-retry-budget', 'source_created', 'retry-budget.md', 1,
+      'generation-retry-budget-failed'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_progress (
+      knowledge_base_id, generation_id, stage, processed_impact_count,
+      total_impact_count, completed_at, safe_error_code, safe_error_message
+    ) VALUES (
+      'kb-retry-budget', 'generation-retry-budget-failed', 'failed', 1, 2, now(),
+      'PUBLICATION_RETRIES_EXHAUSTED', 'Projection write will be retried'
+    )
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_impacts (
+      id, knowledge_base_id, generation_id, projection_kind,
+      projection_key, record_identity, action, status,
+      attempt_count, completed_at, last_error_code, last_error_message
+    ) VALUES
+      ('impact-retry-budget-completed', 'kb-retry-budget',
+       'generation-retry-budget-failed', 'root', 'index.md', 'index.md',
+       'upsert', 'completed', 1, now(), NULL, NULL),
+      ('impact-retry-budget-cancelled', 'kb-retry-budget',
+       'generation-retry-budget-failed', 'root', 'schema.md', 'schema.md',
+       'upsert', 'cancelled', 2, now(), 'PUBLICATION_RETRIES_EXHAUSTED',
+       'Projection write will be retried')
+  `;
+  await sql`
+    INSERT INTO focowiki.role_jobs (
+      id, role, kind, knowledge_base_id, generation_id, status,
+      attempt_count, max_attempts, failed_at, last_error_code,
+      last_error_message
+    ) VALUES (
+      'job-retry-budget', 'publication', 'generation_publication',
+      'kb-retry-budget', 'generation-retry-budget-failed', 'dead_letter',
+      3, 3, now(), 'PUBLICATION_RETRIES_EXHAUSTED',
+      'Projection write will be retried'
     )
   `;
 }

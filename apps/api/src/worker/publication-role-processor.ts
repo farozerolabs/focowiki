@@ -307,16 +307,8 @@ async function processImpacts(input: {
           cause: terminal.error
         });
       }
-      const failed = interrupted.find((result) => result.kind === "failure");
-      if (!failed) {
-        throw new RoleJobReschedule(
-          new Date(failedAt.getTime() + input.retryDelayMs).toISOString()
-        );
-      }
-      throw retryable(
-        "PROJECTION_WRITE_RETRY",
-        "Projection write will be retried",
-        failed.error
+      throw new RoleJobReschedule(
+        new Date(failedAt.getTime() + input.retryDelayMs).toISOString()
       );
     }
   }
