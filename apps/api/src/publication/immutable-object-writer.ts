@@ -169,11 +169,10 @@ export function createImmutableObjectWriter(input: {
       });
       return { ...active, reused: false };
     } catch (error) {
-      await input.repository.markWriteFailure({
+      await input.repository.releaseFailedWrite({
         checksumSha256,
         formatVersion,
-        writeToken,
-        errorCode: writeErrorCode(error)
+        writeToken
       });
       throw error;
     }
@@ -222,11 +221,4 @@ function assertStoredObject(
   if (!matchesImmutableStorageIdentity(stored, expected)) {
     throw new Error("Immutable object upload metadata verification failed");
   }
-}
-
-function writeErrorCode(error: unknown): string {
-  if (error instanceof Error && error.message.includes("verification")) {
-    return "IMMUTABLE_OBJECT_VERIFICATION_FAILED";
-  }
-  return "IMMUTABLE_OBJECT_WRITE_FAILED";
 }

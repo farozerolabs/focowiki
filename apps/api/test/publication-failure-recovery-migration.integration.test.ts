@@ -30,6 +30,8 @@ describeDatabase("publication failure recovery migration integration", () => {
     await seedPublicationRetryExhaustion(sql);
     await sql.unsafe(readMigrationSql("005_publication_retry_budget_recovery.sql"));
     await seedPublicationContinuationExhaustion(sql);
+    await sql.unsafe(readMigrationSql("006_publication_continuation_recovery.sql"));
+    await seedPublicationWriteLivelock(sql);
     await applyMigrations(sql);
   });
 
@@ -318,7 +320,138 @@ describeDatabase("publication failure recovery migration integration", () => {
       WHERE generation_id = 'generation-manual-retry-failed'
     `)[0]?.status).toBe("queued");
   });
+
+  it("releases unreferenced writes and resumes the current projection", async () => {
+    expect((await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+      FROM focowiki.immutable_objects
+      WHERE lifecycle_state = 'writing'
+        AND object_key = 'objects/write-livelock'
+    `)[0]?.count).toBe(0);
+
+    expect(await sql<Array<{ status: string; attempt_count: number }>>`
+      SELECT status, attempt_count
+      FROM focowiki.publication_impacts
+      WHERE generation_id = 'generation-write-livelock-current'
+      ORDER BY id
+    `).toEqual([
+      { status: "completed", attempt_count: 1 },
+      { status: "pending", attempt_count: 0 }
+    ]);
+    expect(await sql<Array<{
+      status: string;
+      attempt_count: number;
+      last_error_code: string | null;
+    }>>`
+      SELECT status, attempt_count, last_error_code
+      FROM focowiki.role_jobs
+      WHERE generation_id = 'generation-write-livelock-current'
+    `).toEqual([{ status: "queued", attempt_count: 0, last_error_code: null }]);
+  });
+
+  it("requeues historical byte-budget failures without competing with a current generation", async () => {
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state FROM focowiki.publication_generations
+      WHERE id = 'generation-byte-budget-failed'
+    `)[0]?.state).toBe("failed");
+    expect(await sql<Array<{ status: string; attempt_count: number }>>`
+      SELECT status, attempt_count FROM focowiki.role_jobs
+      WHERE generation_id = 'generation-byte-budget-failed'
+    `).toEqual([{ status: "queued", attempt_count: 0 }]);
+    expect(await sql<Array<{ status: string }>>`
+      SELECT status FROM focowiki.publication_impacts
+      WHERE generation_id = 'generation-byte-budget-failed'
+    `).toEqual([{ status: "pending" }]);
+  });
 });
+
+async function seedPublicationWriteLivelock(sql: postgres.Sql): Promise<void> {
+  await sql`
+    INSERT INTO focowiki.knowledge_bases (id, name, active_generation_id)
+    VALUES
+      ('kb-write-livelock', 'Write livelock recovery', NULL),
+      ('kb-byte-budget', 'Byte budget recovery', NULL)
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_generations (
+      id, knowledge_base_id, predecessor_generation_id, state,
+      generation_kind, root_manifest_checksum_sha256,
+      root_manifest_object_key, activated_at, failed_at,
+      safe_error_code, safe_error_message
+    ) VALUES
+      ('generation-write-livelock-active', 'kb-write-livelock', NULL, 'active', 'normal',
+       ${"21".repeat(32)}, 'objects/write-livelock-active', now(), NULL, NULL, NULL),
+      ('generation-write-livelock-current', 'kb-write-livelock',
+       'generation-write-livelock-active', 'building', 'normal',
+       NULL, NULL, NULL, NULL, NULL, NULL),
+      ('generation-byte-budget-active', 'kb-byte-budget', NULL, 'active', 'normal',
+       ${"22".repeat(32)}, 'objects/byte-budget-active', now(), NULL, NULL, NULL),
+      ('generation-byte-budget-failed', 'kb-byte-budget',
+       'generation-byte-budget-active', 'failed', 'normal', NULL, NULL, NULL, now(),
+       'PROJECTION_WRITE_FAILED', 'Projection shard exceeds the configured byte budget')
+  `;
+  await sql`
+    UPDATE focowiki.knowledge_bases
+    SET active_generation_id = CASE id
+      WHEN 'kb-write-livelock' THEN 'generation-write-livelock-active'
+      WHEN 'kb-byte-budget' THEN 'generation-byte-budget-active'
+    END
+    WHERE id IN ('kb-write-livelock', 'kb-byte-budget')
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_progress (
+      knowledge_base_id, generation_id, stage,
+      processed_impact_count, total_impact_count,
+      safe_error_code, safe_error_message
+    ) VALUES
+      ('kb-write-livelock', 'generation-write-livelock-current', 'projection', 1, 2,
+       'PROJECTION_WRITE_RETRY', 'Projection write will be retried'),
+      ('kb-byte-budget', 'generation-byte-budget-failed', 'failed', 0, 1,
+       'PROJECTION_WRITE_FAILED', 'Projection shard exceeds the configured byte budget')
+  `;
+  await sql`
+    INSERT INTO focowiki.publication_impacts (
+      id, knowledge_base_id, generation_id, projection_kind,
+      projection_key, record_identity, action, status, attempt_count,
+      claimed_by, claimed_at, heartbeat_at, last_error_code, last_error_message
+    ) VALUES
+      ('impact-write-completed', 'kb-write-livelock', 'generation-write-livelock-current',
+       'search', 'search/v2/0001', 'record-completed', 'upsert', 'completed', 1,
+       NULL, NULL, NULL, NULL, NULL),
+      ('impact-write-running', 'kb-write-livelock', 'generation-write-livelock-current',
+       'search', 'search/v2/0001', 'record-running', 'upsert', 'running', 17,
+       'publication-worker-old', now() - interval '1 hour', now() - interval '1 hour',
+       'PROJECTION_WRITE_RETRY', 'Projection write will be retried'),
+      ('impact-byte-budget', 'kb-byte-budget', 'generation-byte-budget-failed',
+       'search', 'search/v2/0002', 'record-byte-budget', 'upsert', 'failed', 3,
+       NULL, NULL, NULL, 'PROJECTION_WRITE_FAILED',
+       'Projection shard exceeds the configured byte budget')
+  `;
+  await sql`
+    INSERT INTO focowiki.role_jobs (
+      id, role, kind, knowledge_base_id, generation_id, status,
+      attempt_count, max_attempts, run_after, failed_at,
+      last_error_code, last_error_message
+    ) VALUES
+      ('job-write-livelock', 'publication', 'generation_publication',
+       'kb-write-livelock', 'generation-write-livelock-current', 'queued', 2, 3, now(), NULL,
+       'PROJECTION_WRITE_RETRY', 'Projection write will be retried'),
+      ('job-byte-budget', 'publication', 'generation_publication',
+       'kb-byte-budget', 'generation-byte-budget-failed', 'dead_letter', 3, 3, now(), now(),
+       'PROJECTION_WRITE_FAILED', 'Projection shard exceeds the configured byte budget')
+  `;
+  await sql`
+    INSERT INTO focowiki.immutable_objects (
+      checksum_sha256, format_version, object_key, content_type, size_bytes,
+      lifecycle_state, verified_at, write_token, write_started_at,
+      write_attempt_count, last_write_error_code
+    ) VALUES (
+      ${"23".repeat(32)}, 1, 'objects/write-livelock', 'application/json', 128,
+      'writing', NULL, 'stale-write-token', now() - interval '1 hour', 17,
+      'IMMUTABLE_OBJECT_RECOVERY_STORAGE_FAILED'
+    )
+  `;
+}
 
 async function seedStalledPublication(sql: postgres.Sql): Promise<void> {
   await sql`
