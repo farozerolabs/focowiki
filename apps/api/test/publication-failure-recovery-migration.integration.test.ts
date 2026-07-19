@@ -293,11 +293,12 @@ describeDatabase("publication failure recovery migration integration", () => {
       message: "Storage is temporarily unavailable"
     });
     const retries = createPostgresSourceFileRetryRepository(sql);
+    const runAfter = new Date(Date.now() + 1_000).toISOString();
 
     const accepted = await retries.accept({
       knowledgeBaseId: "kb-manual-retry",
       sourceFileId: "source-manual-retry",
-      runAfter: "2026-07-19T12:30:00.000Z",
+      runAfter,
       maxAttempts: 3
     });
 
