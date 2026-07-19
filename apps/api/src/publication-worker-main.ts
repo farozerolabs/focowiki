@@ -102,9 +102,7 @@ async function runPublicationWorker(): Promise<void> {
       catalog: createPostgresProjectionCatalogRepository(sql),
       references,
       immutableObjects,
-      maxShardDescriptors: Object.values(
-        INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner
-      ).reduce((total, count) => total + count, 0)
+      maxShardDescriptors: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardDescriptors
     });
     const directoryWriter = {
       async write(

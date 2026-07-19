@@ -116,6 +116,56 @@ describeDatabase("publication generation repository integration", () => {
     expect(memberships.map((row) => row.count).sort((a, b) => a - b)).toEqual([1, 2]);
   });
 
+  it("cancels unfinished impacts when a generation fails", async () => {
+    const source = await registerSource(1);
+    const committed = await commit(source);
+    await generations.freezeGeneration({
+      knowledgeBaseId,
+      generationId: committed.generationId,
+      frozenAt: "2026-07-17T02:00:00.000Z"
+    });
+    await generations.markGenerationState({
+      knowledgeBaseId,
+      generationId: committed.generationId,
+      expectedState: "frozen",
+      state: "building",
+      updatedAt: "2026-07-17T02:00:01.000Z"
+    });
+    await publicationImpacts.claimBatch({
+      knowledgeBaseId,
+      generationId: committed.generationId,
+      workerId: "failed-generation-worker",
+      limit: 1,
+      now: "2026-07-17T02:00:02.000Z",
+      staleBefore: "2026-07-17T01:55:00.000Z"
+    });
+
+    await generations.failGeneration({
+      knowledgeBaseId,
+      generationId: committed.generationId,
+      code: "PUBLICATION_RETRIES_EXHAUSTED",
+      message: "Publication retries are exhausted",
+      failedAt: "2026-07-17T02:00:03.000Z"
+    });
+
+    const impacts = await sql<Array<{
+      status: string;
+      claimed_by: string | null;
+      completed_at: Date | null;
+    }>>`
+      SELECT status, claimed_by, completed_at
+      FROM focowiki.publication_impacts
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${committed.generationId}
+    `;
+    expect(impacts.length).toBeGreaterThan(0);
+    expect(impacts.every((impact) =>
+      impact.status === "cancelled"
+      && impact.claimed_by === null
+      && impact.completed_at !== null
+    )).toBe(true);
+  });
+
   it("keeps frozen projection inputs stable after mutable source state advances", async () => {
     const source = await registerSource(1);
     const committed = await commit(source);

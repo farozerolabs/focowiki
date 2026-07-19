@@ -842,6 +842,17 @@ export function createPostgresPublicationGenerationRepository(
             AND state IN ('open', 'frozen', 'building', 'validating')
         `;
         await transaction`
+          UPDATE focowiki.publication_impacts
+          SET status = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+              heartbeat_at = NULL, completed_at = ${input.failedAt},
+              last_error_code = ${input.code.slice(0, 128)},
+              last_error_message = ${input.message.slice(0, 1_000)},
+              updated_at = ${input.failedAt}
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND generation_id = ${input.generationId}
+            AND status IN ('pending', 'running')
+        `;
+        await transaction`
           UPDATE focowiki.publication_progress
           SET stage = 'failed', safe_error_code = ${input.code},
               safe_error_message = ${input.message.slice(0, 1_000)},
