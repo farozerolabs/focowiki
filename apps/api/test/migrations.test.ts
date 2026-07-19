@@ -144,7 +144,8 @@ describe("runtime schema generation guard", () => {
 
     expect(migration).toContain("immutable object write is already in progress");
     expect(migration).toContain("status in ('failed', 'cancelled')");
-    expect(migration).toContain("set state = 'building'");
+    expect(migration).not.toContain("set state = 'building'");
+    expect(migration).toContain("set stage = 'pending'");
     expect(migration).toContain("set status = 'queued'");
     expect(migration).toContain("immutable-object-contention-recovery-v4");
     expect(migration).not.toContain("delete from focowiki.source_files");
@@ -160,7 +161,8 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("publication_retries_exhausted");
     expect(migration).toContain("projection write will be retried");
     expect(migration).toContain("status in ('failed', 'cancelled')");
-    expect(migration).toContain("set state = 'building'");
+    expect(migration).not.toContain("set state = 'building'");
+    expect(migration).toContain("set stage = 'pending'");
     expect(migration).toContain("set status = 'queued'");
     expect(migration).toContain("publication-retry-budget-recovery-v5");
     expect(migration).not.toContain("delete from focowiki.source_files");
@@ -179,7 +181,8 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("publication activation must be retried");
     expect(migration).toContain("immutable object write is already in progress");
     expect(migration).toContain("status in ('failed', 'cancelled')");
-    expect(migration).toContain("set state = 'building'");
+    expect(migration).not.toContain("set state = 'building'");
+    expect(migration).toContain("set stage = 'pending'");
     expect(migration).toContain("set status = 'queued'");
     expect(migration).toContain("publication-continuation-recovery-v6");
     expect(migration).not.toContain("delete from focowiki.source_files");

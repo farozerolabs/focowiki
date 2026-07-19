@@ -7,6 +7,7 @@ import type {
 } from "../../application/ports/publication-generation-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
 import { resolveGenerationSchedule } from "../../publication/generation-schedule.js";
+import { PublicationGenerationBusyError } from "../../domain/publication.js";
 import {
   capturePublicationProjectionInputs,
   persistCapturedProjectionInputs
@@ -407,12 +408,25 @@ export function createPostgresPublicationGenerationRepository(
             AND knowledge_base_id = ${input.knowledgeBaseId}
           FOR UPDATE
         `;
-        const generation = generations[0];
+        let generation = generations[0];
         if (
           !generation ||
-          !["open", "frozen", "building", "validating"].includes(generation.state)
+          !["open", "frozen", "building", "validating", "failed"].includes(generation.state)
         ) {
           return null;
+        }
+        if (generation.state === "open" || generation.state === "failed") {
+          const inProgress = await transaction<Array<{ id: string }>>`
+            SELECT id
+            FROM focowiki.publication_generations
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND id <> ${input.generationId}
+              AND state IN ('frozen', 'building', 'validating')
+            LIMIT 1
+          `;
+          if (inProgress[0]) {
+            throw new PublicationGenerationBusyError();
+          }
         }
         const totals = await transaction<Array<{ count: number }>>`
           SELECT count(*)::int AS count
@@ -424,16 +438,39 @@ export function createPostgresPublicationGenerationRepository(
           await transaction`
             UPDATE focowiki.publication_generations
             SET state = 'superseded', updated_at = ${input.frozenAt}
-            WHERE id = ${input.generationId} AND state = 'open'
+            WHERE id = ${input.generationId} AND state IN ('open', 'failed')
           `;
           return null;
         }
-        await transaction`
-          UPDATE focowiki.publication_generations
-          SET state = 'frozen', frozen_at = coalesce(frozen_at, ${input.frozenAt}),
-              updated_at = ${input.frozenAt}
-          WHERE id = ${input.generationId} AND state = 'open'
-        `;
+        if (generation.state === "failed") {
+          const resumed = await transaction<GenerationRow[]>`
+            UPDATE focowiki.publication_generations generation
+            SET state = 'building',
+                predecessor_generation_id = knowledge_base.active_generation_id,
+                frozen_at = coalesce(generation.frozen_at, ${input.frozenAt}),
+                failed_at = NULL,
+                safe_error_code = NULL,
+                safe_error_message = NULL,
+                updated_at = ${input.frozenAt}
+            FROM focowiki.knowledge_bases knowledge_base
+            WHERE generation.id = ${input.generationId}
+              AND generation.knowledge_base_id = ${input.knowledgeBaseId}
+              AND generation.state = 'failed'
+              AND knowledge_base.id = generation.knowledge_base_id
+              AND knowledge_base.deleted_at IS NULL
+            RETURNING generation.id, generation.predecessor_generation_id,
+                      generation.state, generation.created_at
+          `;
+          if (!resumed[0]) return null;
+          generation = resumed[0];
+        } else if (generation.state === "open") {
+          await transaction`
+            UPDATE focowiki.publication_generations
+            SET state = 'frozen', frozen_at = coalesce(frozen_at, ${input.frozenAt}),
+                updated_at = ${input.frozenAt}
+            WHERE id = ${input.generationId} AND state = 'open'
+          `;
+        }
         await transaction`
           INSERT INTO focowiki.publication_progress (
             knowledge_base_id, generation_id, stage,
@@ -445,7 +482,14 @@ export function createPostgresPublicationGenerationRepository(
             ${input.frozenAt}, ${input.frozenAt}
           )
           ON CONFLICT (knowledge_base_id, generation_id) DO UPDATE
-          SET total_impact_count = EXCLUDED.total_impact_count,
+          SET stage = CASE
+                WHEN focowiki.publication_progress.stage = 'failed' THEN 'projection'
+                ELSE focowiki.publication_progress.stage
+              END,
+              total_impact_count = EXCLUDED.total_impact_count,
+              completed_at = NULL,
+              safe_error_code = NULL,
+              safe_error_message = NULL,
               heartbeat_at = EXCLUDED.heartbeat_at,
               updated_at = EXCLUDED.updated_at
         `;
