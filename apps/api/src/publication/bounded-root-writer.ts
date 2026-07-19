@@ -27,46 +27,61 @@ export function createBoundedRootWriter(input: {
     }) => Promise<ImmutableObjectWriteResult>;
   };
 }) {
-  return {
-    async write(impact: ClaimedPublicationImpact): Promise<{
-      handled: boolean;
-      touchedShardCount: number;
-    }> {
-      if (impact.projectionKind !== "root") {
-        return { handled: false, touchedShardCount: 0 };
-      }
-      if (!ROOT_PATHS.has(impact.projectionKey)) {
-        throw new Error("Root projection path is unsupported");
-      }
-      const projectionInput = requireKnowledgeBaseInput(impact);
-      const rendered = renderBoundedRootFile({
-        path: impact.projectionKey,
-        knowledgeBase: projectionInput.descriptor,
-        rootEntryCount: projectionInput.rootEntryCount,
-        generationId: impact.generationId
-      });
-      const object = await input.immutableObjects.write({
-        body: rendered.body,
-        contentType: rendered.contentType
-      });
-      await input.references.stageUpsert({
-        knowledgeBaseId: impact.knowledgeBaseId,
-        generationId: impact.generationId,
+  const writeBatch = async (impacts: ClaimedPublicationImpact[]): Promise<{
+    handled: boolean;
+    touchedShardCount: number;
+  }> => {
+    if (impacts.length === 0 || impacts.some((impact) => impact.projectionKind !== "root")) {
+      return { handled: false, touchedShardCount: 0 };
+    }
+    const first = impacts[0]!;
+    if (impacts.some((impact) =>
+      impact.knowledgeBaseId !== first.knowledgeBaseId
+      || impact.generationId !== first.generationId
+      || impact.projectionKey !== first.projectionKey
+    )) {
+      throw new Error("Root projection batch must target one root path");
+    }
+    const impact = impacts.reduce((latest, candidate) =>
+      candidate.resourceRevision > latest.resourceRevision ? candidate : latest
+    );
+    if (!ROOT_PATHS.has(impact.projectionKey)) {
+      throw new Error("Root projection path is unsupported");
+    }
+    const projectionInput = requireKnowledgeBaseInput(impact);
+    const rendered = renderBoundedRootFile({
+      path: impact.projectionKey,
+      knowledgeBase: projectionInput.descriptor,
+      rootEntryCount: projectionInput.rootEntryCount,
+      generationId: impact.generationId
+    });
+    const object = await input.immutableObjects.write({
+      body: rendered.body,
+      contentType: rendered.contentType
+    });
+    await input.references.stageUpsert({
+      knowledgeBaseId: impact.knowledgeBaseId,
+      generationId: impact.generationId,
+      refKind: "root",
+      refKey: impact.projectionKey,
+      fileId: createGeneratedFileId({
         refKind: "root",
         refKey: impact.projectionKey,
-        fileId: createGeneratedFileId({
-          refKind: "root",
-          refKey: impact.projectionKey,
-          sourceFileId: null
-        }),
-        checksumSha256: object.checksumSha256,
-        formatVersion: object.formatVersion,
-        logicalPath: impact.projectionKey,
-        sourceFileId: null,
-        projectionShardId: null
-      });
-      return { handled: true, touchedShardCount: 1 };
-    }
+        sourceFileId: null
+      }),
+      checksumSha256: object.checksumSha256,
+      formatVersion: object.formatVersion,
+      logicalPath: impact.projectionKey,
+      sourceFileId: null,
+      projectionShardId: null
+    });
+    return { handled: true, touchedShardCount: 1 };
+  };
+  return {
+    write(impact: ClaimedPublicationImpact) {
+      return writeBatch([impact]);
+    },
+    writeBatch
   };
 }
 

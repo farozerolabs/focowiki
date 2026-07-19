@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { renderBoundedRootFile } from "../src/publication/bounded-root-writer.js";
+import { describe, expect, it, vi } from "vitest";
+import type { ClaimedPublicationImpact } from "../src/application/ports/publication-impact-repository.js";
+import {
+  createBoundedRootWriter,
+  renderBoundedRootFile
+} from "../src/publication/bounded-root-writer.js";
 
 describe("bounded root writer", () => {
   const base = {
@@ -53,4 +57,74 @@ describe("bounded root writer", () => {
       /^---\ntype: "Schema Reference"\ntitle: "Metadata and navigation schema"\n/u
     );
   });
+
+  it("writes a repeated root path once from the latest resource revision", async () => {
+    const stageUpsert = vi.fn(async () => undefined);
+    const write = vi.fn(async (_input: {
+      body: string | Uint8Array;
+      contentType: string;
+      formatVersion?: number;
+    }) => ({
+      checksumSha256: "ab".repeat(32),
+      formatVersion: 1,
+      objectKey: "test/generated/v1/objects/ab/checksum",
+      contentType: "text/markdown; charset=utf-8",
+      sizeBytes: 100,
+      createdAt: "2026-07-19T00:00:00.000Z",
+      verifiedAt: "2026-07-19T00:00:00.000Z",
+      reused: false
+    }));
+    const writer = createBoundedRootWriter({
+      references: { stageUpsert } as never,
+      immutableObjects: { write }
+    });
+
+    const result = await writer.writeBatch([
+      rootImpact({ id: "impact-old", resourceRevision: 1, name: "Old name" }),
+      rootImpact({ id: "impact-new", resourceRevision: 2, name: "Current name" })
+    ]);
+
+    expect(result).toEqual({ handled: true, touchedShardCount: 1 });
+    expect(write).toHaveBeenCalledOnce();
+    expect(String(write.mock.calls[0]?.[0].body)).toContain("# Current name");
+    expect(String(write.mock.calls[0]?.[0].body)).not.toContain("# Old name");
+    expect(stageUpsert).toHaveBeenCalledOnce();
+  });
 });
+
+function rootImpact(input: {
+  id: string;
+  resourceRevision: number;
+  name: string;
+}): ClaimedPublicationImpact {
+  return {
+    id: input.id,
+    knowledgeBaseId: "kb-1",
+    generationId: "generation-1",
+    changeFactId: `fact-${input.id}`,
+    changeKind: "knowledge_base_metadata_changed",
+    sourceFileId: null,
+    sourceRevisionId: null,
+    previousPath: null,
+    path: null,
+    resourceRevision: input.resourceRevision,
+    projectionKind: "root",
+    projectionKey: "index.md",
+    recordIdentity: "index.md",
+    action: "upsert",
+    retryCursor: {},
+    attemptCount: 1,
+    maxAttempts: 3,
+    projectionInput: {
+      kind: "knowledge_base",
+      descriptor: {
+        id: "kb-1",
+        name: input.name,
+        description: null,
+        sourceFileCount: 10,
+        graphEdgeCount: 5
+      },
+      rootEntryCount: 2
+    }
+  };
+}

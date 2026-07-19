@@ -30,6 +30,13 @@ export type ImmutableObjectWriteResult = Pick<
 const DEFAULT_STALE_WRITE_MS = 5 * 60_000;
 const DEFAULT_PENDING_WAIT_MS = 5_000;
 
+export class ImmutableObjectWriteInProgressError extends Error {
+  public constructor() {
+    super("Immutable object write is already in progress");
+    this.name = "ImmutableObjectWriteInProgressError";
+  }
+}
+
 export function createImmutableObjectWriter(input: {
   repository: ImmutableObjectRepository;
   storage: Pick<StorageAdapter, "keyspace" | "putObject"> & {
@@ -46,6 +53,7 @@ export function createImmutableObjectWriter(input: {
   }));
   const staleWriteMs = input.staleWriteMs ?? DEFAULT_STALE_WRITE_MS;
   const pendingWaitMs = input.pendingWaitMs ?? DEFAULT_PENDING_WAIT_MS;
+  const inFlightWrites = new Map<string, Promise<ImmutableObjectWriteResult>>();
   return {
     async write(object: {
       body: string | Uint8Array;
@@ -62,78 +70,114 @@ export function createImmutableObjectWriter(input: {
         checksumSha256,
         formatVersion
       });
-      const existing = await input.repository.find({ checksumSha256, formatVersion });
-      if (existing) {
-        assertRegisteredObject(existing, {
-          objectKey,
-          contentType: object.contentType,
-          sizeBytes: body.byteLength
-        });
-        return { ...existing, reused: true };
+      const identityKey = `${formatVersion}:${checksumSha256}:${object.contentType}`;
+      const inFlight = inFlightWrites.get(identityKey);
+      if (inFlight) {
+        return { ...await inFlight, reused: true };
       }
-      const writeToken = randomUUID();
-      const startedAt = now();
-      const expected = {
+      const operation = writePreparedObject({
+        body,
         checksumSha256,
         formatVersion,
         objectKey,
-        contentType: object.contentType,
-        sizeBytes: body.byteLength
-      };
-      const reservation = await input.repository.reserve({
-        ...expected,
-        writeToken,
-        writeStartedAt: startedAt.toISOString(),
-        staleBefore: new Date(startedAt.getTime() - staleWriteMs).toISOString()
+        contentType: object.contentType
       });
-      if (reservation.status === "active") {
-        const active = await input.repository.find({ checksumSha256, formatVersion });
-        if (!active) throw new Error("Active immutable object reservation is unavailable");
-        assertRegisteredObject(active, expected);
-        return { ...active, reused: true };
-      }
-      if (reservation.status === "pending") {
-        const active = await waitForActiveObject({
-          repository: input.repository,
-          identity: { checksumSha256, formatVersion },
-          pendingWaitMs,
-          sleep
-        });
-        if (!active) throw new Error("Immutable object write is already in progress");
-        assertRegisteredObject(active, expected);
-        return { ...active, reused: true };
-      }
-
+      inFlightWrites.set(identityKey, operation);
       try {
-        await input.storage.putObject({
-          key: objectKey,
-          body,
-          contentType: object.contentType,
-          cacheControl: "public, max-age=31536000, immutable",
-          metadata: {
-            [IMMUTABLE_CHECKSUM_METADATA_KEY]: checksumSha256,
-            [IMMUTABLE_FORMAT_METADATA_KEY]: String(formatVersion)
-          }
-        });
-        const stored = await input.storage.headObjectMetadata(objectKey);
-        assertStoredObject(stored, expected);
-        const active = await input.repository.activate({
-          ...expected,
-          writeToken,
-          verifiedAt: now().toISOString()
-        });
-        return { ...active, reused: false };
-      } catch (error) {
-        await input.repository.markWriteFailure({
-          checksumSha256,
-          formatVersion,
-          writeToken,
-          errorCode: writeErrorCode(error)
-        });
-        throw error;
+        return await operation;
+      } finally {
+        if (inFlightWrites.get(identityKey) === operation) {
+          inFlightWrites.delete(identityKey);
+        }
       }
     }
   };
+
+  async function writePreparedObject(prepared: {
+    body: Buffer;
+    checksumSha256: string;
+    formatVersion: number;
+    objectKey: string;
+    contentType: string;
+  }): Promise<ImmutableObjectWriteResult> {
+    const {
+      body,
+      checksumSha256,
+      formatVersion,
+      objectKey,
+      contentType
+    } = prepared;
+    const existing = await input.repository.find({ checksumSha256, formatVersion });
+    if (existing) {
+      assertRegisteredObject(existing, {
+        objectKey,
+        contentType,
+        sizeBytes: body.byteLength
+      });
+      return { ...existing, reused: true };
+    }
+    const writeToken = randomUUID();
+    const startedAt = now();
+    const expected = {
+      checksumSha256,
+      formatVersion,
+      objectKey,
+      contentType,
+      sizeBytes: body.byteLength
+    };
+    const reservation = await input.repository.reserve({
+      ...expected,
+      writeToken,
+      writeStartedAt: startedAt.toISOString(),
+      staleBefore: new Date(startedAt.getTime() - staleWriteMs).toISOString()
+    });
+    if (reservation.status === "active") {
+      const active = await input.repository.find({ checksumSha256, formatVersion });
+      if (!active) throw new Error("Active immutable object reservation is unavailable");
+      assertRegisteredObject(active, expected);
+      return { ...active, reused: true };
+    }
+    if (reservation.status === "pending") {
+      const active = await waitForActiveObject({
+        repository: input.repository,
+        identity: { checksumSha256, formatVersion },
+        pendingWaitMs,
+        sleep
+      });
+      if (!active) throw new ImmutableObjectWriteInProgressError();
+      assertRegisteredObject(active, expected);
+      return { ...active, reused: true };
+    }
+
+    try {
+      await input.storage.putObject({
+        key: objectKey,
+        body,
+        contentType,
+        cacheControl: "public, max-age=31536000, immutable",
+        metadata: {
+          [IMMUTABLE_CHECKSUM_METADATA_KEY]: checksumSha256,
+          [IMMUTABLE_FORMAT_METADATA_KEY]: String(formatVersion)
+        }
+      });
+      const stored = await input.storage.headObjectMetadata(objectKey);
+      assertStoredObject(stored, expected);
+      const active = await input.repository.activate({
+        ...expected,
+        writeToken,
+        verifiedAt: now().toISOString()
+      });
+      return { ...active, reused: false };
+    } catch (error) {
+      await input.repository.markWriteFailure({
+        checksumSha256,
+        formatVersion,
+        writeToken,
+        errorCode: writeErrorCode(error)
+      });
+      throw error;
+    }
+  }
 }
 
 function assertRegisteredObject(

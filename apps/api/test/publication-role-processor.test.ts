@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPublicationRoleProcessor } from "../src/worker/publication-role-processor.js";
 import type { ClaimedPublicationImpact } from "../src/application/ports/publication-impact-repository.js";
-import type { RoleJobRecord } from "../src/domain/role-job.js";
+import { RoleJobReschedule, type RoleJobRecord } from "../src/domain/role-job.js";
+import { ImmutableObjectWriteInProgressError } from "../src/publication/immutable-object-writer.js";
 
 describe("publication role processor", () => {
   it("uses the immutable publication settings snapshot attached to the claimed job", async () => {
@@ -250,6 +251,117 @@ describe("publication role processor", () => {
     expect(complete.mock.calls.map((call) => call[0].touchedShardCount)).toEqual([1, 0]);
   });
 
+  it("groups repeated root impacts by their effective root path", async () => {
+    const first = createImpact({
+      id: "impact-root-1",
+      projectionKind: "root",
+      projectionKey: "index.md",
+      recordIdentity: "index.md",
+      resourceRevision: 1
+    });
+    const second = createImpact({
+      id: "impact-root-2",
+      projectionKind: "root",
+      projectionKey: "index.md",
+      recordIdentity: "index.md",
+      resourceRevision: 2
+    });
+    const write = vi.fn().mockResolvedValue({ handled: false, touchedShardCount: 0 });
+    const writeBatch = vi.fn().mockResolvedValue({ handled: true, touchedShardCount: 1 });
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository(),
+      impacts: impactRepositoryFor([first, second]),
+      validation: { validateChangedClosure: vi.fn().mockResolvedValue([]) },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [{ write, writeBatch }],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20
+    });
+
+    await processor(createJob(), new AbortController().signal);
+
+    expect(writeBatch).toHaveBeenCalledOnce();
+    expect(writeBatch).toHaveBeenCalledWith([first, second], expect.any(Object));
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("groups forward and reverse related-file impacts by their effective shard", async () => {
+    const direct = createImpact({
+      id: "impact-related-direct",
+      projectionKind: "related_files",
+      projectionKey: "source-2",
+      recordIdentity: "source-2"
+    });
+    const reverse = createImpact({
+      id: "impact-related-reverse",
+      projectionKind: "graph_reverse_neighbor",
+      projectionKey: "ignored-planner-key",
+      recordIdentity: "source-2"
+    });
+    const write = vi.fn().mockResolvedValue({ handled: false, touchedShardCount: 0 });
+    const writeBatch = vi.fn().mockResolvedValue({ handled: true, touchedShardCount: 1 });
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository(),
+      impacts: impactRepositoryFor([direct, reverse]),
+      validation: { validateChangedClosure: vi.fn().mockResolvedValue([]) },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [{ write, writeBatch }],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20
+    });
+
+    await processor(createJob(), new AbortController().signal);
+
+    expect(writeBatch).toHaveBeenCalledOnce();
+    expect(writeBatch).toHaveBeenCalledWith([direct, reverse], expect.any(Object));
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("reschedules write-lease contention without consuming failure attempts", async () => {
+    const impact = createImpact({ attemptCount: 3, maxAttempts: 3 });
+    const failGeneration = vi.fn();
+    const release = vi.fn().mockResolvedValue(1);
+    const fail = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: {
+        ...impactRepositoryFor([impact]),
+        release,
+        fail
+      },
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [{
+        write: vi.fn().mockRejectedValue(new ImmutableObjectWriteInProgressError())
+      }],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T10:00:00.000Z")
+    });
+
+    await expect(processor(
+      createJob({ attemptCount: 3, maxAttempts: 3 }),
+      new AbortController().signal
+    )).rejects.toBeInstanceOf(RoleJobReschedule);
+
+    expect(release).toHaveBeenCalledWith({
+      impactIds: [impact.id],
+      workerId: "publication-worker-1",
+      releasedAt: "2026-07-19T10:00:00.000Z"
+    });
+    expect(fail).not.toHaveBeenCalled();
+    expect(failGeneration).not.toHaveBeenCalled();
+  });
+
   it("processes independent impact groups with bounded snapshot concurrency", async () => {
     const impacts = ["source-1", "source-2", "source-3"].map((sourceFileId, index) =>
       createImpact({
@@ -444,6 +556,19 @@ function createJob(overrides: Partial<RoleJobRecord> = {}): RoleJobRecord {
     createdAt: "2026-07-17T12:00:00.000Z",
     updatedAt: "2026-07-17T12:00:00.000Z",
     ...overrides
+  };
+}
+
+function impactRepositoryFor(firstBatch: ClaimedPublicationImpact[]) {
+  return {
+    claimBatch: vi.fn()
+      .mockResolvedValueOnce(firstBatch)
+      .mockResolvedValueOnce([]),
+    heartbeat: vi.fn(),
+    release: vi.fn().mockResolvedValue(0),
+    complete: vi.fn().mockResolvedValue(true),
+    fail: vi.fn(),
+    countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
   };
 }
 
