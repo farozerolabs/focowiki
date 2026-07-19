@@ -8,20 +8,23 @@ export const MIGRATION_FILES = [
   "003_bounded_publication_recovery.sql",
   "004_immutable_object_contention_recovery.sql",
   "005_publication_retry_budget_recovery.sql",
-  "006_publication_continuation_recovery.sql"
+  "006_publication_continuation_recovery.sql",
+  "007_publication_write_livelock_recovery.sql"
 ] as const;
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
 export const RELEASED_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
-export const RUNTIME_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
+const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
+export const RUNTIME_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
   [TREE_GRAPH_SCHEMA_GENERATION, 2],
   [BOUNDED_PUBLICATION_SCHEMA_GENERATION, 3],
   [IMMUTABLE_CONTENTION_SCHEMA_GENERATION, 4],
-  [RELEASED_SCHEMA_GENERATION, 5]
+  [RELEASED_SCHEMA_GENERATION, 5],
+  [CONTINUATION_SCHEMA_GENERATION, 6]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {

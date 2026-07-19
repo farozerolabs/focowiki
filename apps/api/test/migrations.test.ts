@@ -13,7 +13,8 @@ const FIRST_RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
-const LATEST_RELEASED_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
+const RETRY_BUDGET_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
+const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -42,36 +43,44 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
+  });
+
+  it("upgrades the retry-budget generation with its pending migrations", async () => {
+    const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(2);
     expect(database.beginCalls).toBe(2);
   });
 
-  it("upgrades the latest released generation with only the pending migration", async () => {
-    const database = createGenerationDatabase(LATEST_RELEASED_SCHEMA_GENERATION);
+  it("upgrades the continuation generation with only the pending migration", async () => {
+    const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
@@ -187,6 +196,24 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("publication-continuation-recovery-v6");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
+  });
+
+  it("recovers publication write livelocks without replaying completed impacts", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/007_publication_write_livelock_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("projection write will be retried");
+    expect(migration).toContain("projection shard exceeds the configured byte budget");
+    expect(migration).toContain("delete from focowiki.immutable_objects object");
+    expect(migration).toContain("not exists ( select 1 from focowiki.generation_object_refs");
+    expect(migration).toContain("not exists ( select 1 from focowiki.active_object_refs");
+    expect(migration).toContain("impact.status <> 'completed'");
+    expect(migration).toContain("set status = 'queued'");
+    expect(migration).not.toContain("set state = 'building'");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).toContain("publication-write-livelock-recovery-v7");
   });
 });
 

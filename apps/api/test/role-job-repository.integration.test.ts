@@ -116,6 +116,48 @@ describeDatabase("role job repository integration", () => {
     expect(running[0]?.count).toBe(1);
   });
 
+  it("clears stale failure diagnostics when a job is rescheduled", async () => {
+    await insertJob("publication-reschedule", "publication", "generation_publication");
+    await sql`
+      UPDATE focowiki.role_jobs
+      SET last_error_code = 'PROJECTION_WRITE_RETRY',
+          last_error_message = 'Projection write will be retried'
+      WHERE id = 'publication-reschedule'
+    `;
+    const jobs = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-reschedule",
+      limit: 1,
+      now: "2026-07-17T01:00:00.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(jobs[0]?.id).toBe("publication-reschedule");
+
+    await repository.reschedule({
+      jobId: "publication-reschedule",
+      workerId: "integration-publication-reschedule",
+      runAfter: "2026-07-17T01:00:05.000Z",
+      rescheduledAt: "2026-07-17T01:00:01.000Z"
+    });
+
+    const rows = await sql<Array<{
+      status: string;
+      attempt_count: number;
+      last_error_code: string | null;
+      last_error_message: string | null;
+    }>>`
+      SELECT status, attempt_count, last_error_code, last_error_message
+      FROM focowiki.role_jobs
+      WHERE id = 'publication-reschedule'
+    `;
+    expect(rows).toEqual([{
+      status: "queued",
+      attempt_count: 0,
+      last_error_code: null,
+      last_error_message: null
+    }]);
+  });
+
   it("enqueues idempotent role work and fences queued source work for deletion", async () => {
     const sourceFileId = "source-file-role-delete";
     const sourceRevisionId = "source-revision-role-delete";

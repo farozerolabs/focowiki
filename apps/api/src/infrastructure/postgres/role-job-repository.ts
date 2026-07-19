@@ -196,6 +196,7 @@ export function createPostgresRoleJobRepository(
         SET status = 'queued', run_after = ${input.runAfter},
             locked_by = NULL, locked_at = NULL, heartbeat_at = NULL,
             attempt_count = greatest(0, attempt_count - 1),
+            last_error_code = NULL, last_error_message = NULL,
             updated_at = ${input.rescheduledAt}
         WHERE id = ${input.jobId}
           AND locked_by = ${input.workerId}

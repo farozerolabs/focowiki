@@ -5,6 +5,7 @@ import type { StorageAdapter } from "../storage/s3.js";
 
 const DEFAULT_STALE_WRITE_MS = 5 * 60_000;
 const DEFAULT_BATCH_SIZE = 100;
+const DEFAULT_CONCURRENCY = 8;
 
 export async function runImmutableWriteRecoverySlice(input: {
   repository: ImmutableObjectRecoveryRepository;
@@ -15,21 +16,22 @@ export async function runImmutableWriteRecoverySlice(input: {
   recoveryToken?: string;
   staleWriteMs?: number;
   batchSize?: number;
+  concurrency?: number;
 }): Promise<{ claimed: number; activated: number; expired: number; failed: number }> {
   const now = input.now ?? (() => new Date());
   const current = now();
   const recoveryToken = input.recoveryToken ?? randomUUID();
+  const concurrency = boundedConcurrency(input.concurrency ?? DEFAULT_CONCURRENCY);
+  const claimLimit = Math.min(input.batchSize ?? DEFAULT_BATCH_SIZE, concurrency);
   const reservations = await input.repository.claimStaleWriting({
     staleBefore: new Date(
       current.getTime() - (input.staleWriteMs ?? DEFAULT_STALE_WRITE_MS)
     ).toISOString(),
     claimedAt: current.toISOString(),
     recoveryToken,
-    limit: input.batchSize ?? DEFAULT_BATCH_SIZE
+    limit: claimLimit
   });
-  const result = { claimed: reservations.length, activated: 0, expired: 0, failed: 0 };
-
-  for (const reservation of reservations) {
+  const outcomes = await Promise.all(reservations.map(async (reservation) => {
     try {
       const stored = await input.storage.headObjectMetadata(reservation.objectKey);
       if (!stored) {
@@ -38,38 +40,46 @@ export async function runImmutableWriteRecoverySlice(input: {
           formatVersion: reservation.formatVersion,
           recoveryToken
         })) {
-          result.expired += 1;
+          return "expired" as const;
         }
-        continue;
+        return "unchanged" as const;
       }
       if (!matchesImmutableStorageIdentity(stored, reservation)) {
-        await input.repository.markRecoveryFailure({
+        await input.repository.releaseRecoveryFailure({
           checksumSha256: reservation.checksumSha256,
           formatVersion: reservation.formatVersion,
-          recoveryToken,
-          errorCode: "IMMUTABLE_OBJECT_RECOVERY_IDENTITY_MISMATCH",
-          failedAt: now().toISOString()
+          recoveryToken
         });
-        result.failed += 1;
-        continue;
+        return "failed" as const;
       }
       if (await input.repository.activateRecovered({
         ...reservation,
         recoveryToken,
         verifiedAt: now().toISOString()
       })) {
-        result.activated += 1;
+        return "activated" as const;
       }
+      return "unchanged" as const;
     } catch {
-      await input.repository.markRecoveryFailure({
+      await input.repository.releaseRecoveryFailure({
         checksumSha256: reservation.checksumSha256,
         formatVersion: reservation.formatVersion,
-        recoveryToken,
-        errorCode: "IMMUTABLE_OBJECT_RECOVERY_STORAGE_FAILED",
-        failedAt: now().toISOString()
+        recoveryToken
       });
-      result.failed += 1;
+      return "failed" as const;
     }
+  }));
+  return {
+    claimed: reservations.length,
+    activated: outcomes.filter((outcome) => outcome === "activated").length,
+    expired: outcomes.filter((outcome) => outcome === "expired").length,
+    failed: outcomes.filter((outcome) => outcome === "failed").length
+  };
+}
+
+function boundedConcurrency(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 32) {
+    throw new Error("Immutable object recovery concurrency must be between 1 and 32");
   }
-  return result;
+  return value;
 }
