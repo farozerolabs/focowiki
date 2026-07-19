@@ -181,7 +181,7 @@ async function retryPublication(
         completed_at = NULL, last_error_code = NULL, last_error_message = NULL,
         updated_at = ${input.runAfter}
     WHERE generation_id = ${generationId}
-      AND status = 'failed'
+      AND status IN ('failed', 'cancelled')
   `;
   await transaction`
     UPDATE focowiki.publication_generations

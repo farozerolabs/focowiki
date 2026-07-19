@@ -10,7 +10,8 @@ import {
 } from "../src/db/migrations.js";
 
 const FIRST_RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
-const LATEST_RELEASED_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
+const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
+const LATEST_RELEASED_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -37,6 +38,14 @@ describe("runtime schema generation guard", () => {
 
   it("upgrades the first released generation without replaying the baseline", async () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
+  });
+
+  it("upgrades the tree and graph generation without replaying prior migrations", async () => {
+    const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(2);
@@ -107,6 +116,21 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("bounded-publication-recovery-v3");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).not.toContain("update focowiki.publication_generations generation set state = 'active'");
+  });
+
+  it("recovers immutable-object contention without replaying completed impacts", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/004_immutable_object_contention_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("immutable object write is already in progress");
+    expect(migration).toContain("status in ('failed', 'cancelled')");
+    expect(migration).toContain("set state = 'building'");
+    expect(migration).toContain("set status = 'queued'");
+    expect(migration).toContain("immutable-object-contention-recovery-v4");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).toContain("count(*) filter (where impact.status = 'completed')");
   });
 });
 
