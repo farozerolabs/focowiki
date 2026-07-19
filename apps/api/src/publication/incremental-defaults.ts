@@ -8,6 +8,7 @@ export const INCREMENTAL_PUBLICATION_DEFAULTS = {
     graphEdgeShardCount: 128
   },
   maxShardBytes: 1_048_576,
+  maxShardDescriptors: 65_536,
   impactBatchSize: 100,
   impactConcurrency: 8
 } as const;

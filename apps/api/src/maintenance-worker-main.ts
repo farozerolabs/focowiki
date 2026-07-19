@@ -95,9 +95,7 @@ async function runMaintenanceWorker(): Promise<void> {
       catalog: createPostgresProjectionCatalogRepository(sql),
       references,
       immutableObjects,
-      maxShardDescriptors: Object.values(
-        INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner
-      ).reduce((total, count) => total + count, 0)
+      maxShardDescriptors: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardDescriptors
     });
     const repair = createPostgresProjectionRepairRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
