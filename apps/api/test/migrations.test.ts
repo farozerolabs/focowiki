@@ -9,7 +9,8 @@ import {
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 
-const RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
+const FIRST_RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
+const LATEST_RELEASED_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -34,8 +35,16 @@ describe("runtime schema generation guard", () => {
     expect(database.beginCalls).toBe(MIGRATION_FILES.length);
   });
 
-  it("upgrades the latest released generation without replaying the baseline", async () => {
-    const database = createGenerationDatabase(RELEASED_SCHEMA_GENERATION);
+  it("upgrades the first released generation without replaying the baseline", async () => {
+    const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades the latest released generation with only the pending migration", async () => {
+    const database = createGenerationDatabase(LATEST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
@@ -83,6 +92,21 @@ describe("runtime schema generation guard", () => {
     expect(migration).toContain("incremental-sharded-publication-v1");
     expect(migration).not.toContain("generated_bundle_file_id");
     expect(migration).not.toContain("publication_dirty_at");
+  });
+
+  it("recovers stalled publication state without replacing active generations", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/003_bounded_publication_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("create temp table focowiki_migration_failed_generations");
+    expect(migration).toContain("status = 'cancelled'");
+    expect(migration).toContain("status = 'queued'");
+    expect(migration).toContain("generation.state = 'open'");
+    expect(migration).toContain("bounded-publication-recovery-v3");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).not.toContain("update focowiki.publication_generations generation set state = 'active'");
   });
 });
 

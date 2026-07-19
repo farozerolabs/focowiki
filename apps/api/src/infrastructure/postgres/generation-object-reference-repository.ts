@@ -136,6 +136,49 @@ export function createPostgresGenerationObjectReferenceRepository(
         LIMIT 1
       `;
       return rows[0] ? mapActiveReference(rows[0]) : null;
+    },
+
+    async findEffectiveByRef(input) {
+      const rows = await sql<ActiveReferenceRow[]>`
+        WITH staged AS (
+          SELECT change.knowledge_base_id, change.ref_kind, change.ref_key,
+                 change.file_id,
+                 change.generation_id AS last_changed_generation_id,
+                 change.checksum_sha256, change.format_version,
+                 change.logical_path, change.source_file_id,
+                 change.projection_shard_id, change.action
+          FROM focowiki.generation_object_refs change
+          WHERE change.knowledge_base_id = ${input.knowledgeBaseId}
+            AND change.generation_id = ${input.generationId}
+            AND change.ref_kind = ${input.refKind}
+            AND change.ref_key = ${input.refKey}
+        )
+        SELECT staged.knowledge_base_id, staged.ref_kind, staged.ref_key,
+               staged.file_id, staged.last_changed_generation_id,
+               staged.checksum_sha256, staged.format_version,
+               staged.logical_path, staged.source_file_id,
+               staged.projection_shard_id, object.object_key,
+               object.content_type, object.size_bytes
+        FROM staged
+        JOIN focowiki.immutable_objects object
+          ON object.checksum_sha256 = staged.checksum_sha256
+         AND object.format_version = staged.format_version
+        WHERE staged.action = 'upsert'
+
+        UNION ALL
+
+        SELECT ${sql.unsafe(ACTIVE_REFERENCE_COLUMNS)}
+        FROM focowiki.active_object_refs active
+        JOIN focowiki.immutable_objects object
+          ON object.checksum_sha256 = active.checksum_sha256
+         AND object.format_version = active.format_version
+        WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
+          AND active.ref_kind = ${input.refKind}
+          AND active.ref_key = ${input.refKey}
+          AND NOT EXISTS (SELECT 1 FROM staged)
+        LIMIT 1
+      `;
+      return rows[0] ? mapActiveReference(rows[0]) : null;
     }
   };
 }

@@ -61,129 +61,162 @@ export function createPublicationRoleProcessor(input: {
 
   return async (job: RoleJobRecord, signal: AbortSignal): Promise<void> => {
     assertPublicationJob(job);
-    const generationId = job.generationId!;
-    const workerId = job.lockedBy!;
-    const workSettings = readPublicationWorkSettings(job.settingsSnapshot);
-    const generation = await input.generations.freezeGeneration({
-      knowledgeBaseId: job.knowledgeBaseId,
-      generationId,
-      frozenAt: now().toISOString()
-    });
-    if (!generation) return;
-    if (generation.state === "frozen") {
-      await input.generations.markGenerationState({
-        knowledgeBaseId: job.knowledgeBaseId,
-        generationId,
-        expectedState: "frozen",
-        state: "building",
-        updatedAt: now().toISOString()
-      });
-    }
-
-    if (generation.state !== "validating") {
-      await processImpacts({ ...input, job, generationId, workerId, signal, now, workSettings });
-      for (const finalizer of input.finalizers) {
-        await finalizer.finalize({
-          knowledgeBaseId: job.knowledgeBaseId,
-          generationId
-        });
+    try {
+      await processPublicationJob(input, job, signal, now);
+    } catch (error) {
+      const retryable = isRetryableFailure(error);
+      if (retryable && job.attemptCount < job.maxAttempts) {
+        throw error;
       }
-      const transitioned = await input.generations.markGenerationState({
-        knowledgeBaseId: job.knowledgeBaseId,
-        generationId,
-        expectedState: "building",
-        state: "validating",
-        updatedAt: now().toISOString()
-      });
-      if (!transitioned) {
-        throw retryable("GENERATION_STATE_CHANGED", "Publication generation state changed");
-      }
-    }
-
-    const issues = await input.validation.validateChangedClosure({
-      knowledgeBaseId: job.knowledgeBaseId,
-      generationId,
-      issueLimit: input.validationIssueLimit
-    });
-    if (issues.length > 0) {
-      const message = issues
-        .map((issue) => `${issue.code}:${issue.reference ?? "-"}`)
-        .join(", ");
+      const message = error instanceof Error ? error.message : "Publication retries are exhausted";
+      const code = retryable
+        ? "PUBLICATION_RETRIES_EXHAUSTED"
+        : error instanceof RoleJobFailure
+          ? error.code
+          : "PUBLICATION_FAILED";
       await input.generations.failGeneration({
         knowledgeBaseId: job.knowledgeBaseId,
-        generationId,
-        code: "GENERATION_VALIDATION_FAILED",
+        generationId: job.generationId!,
+        code,
         message,
         failedAt: now().toISOString()
       });
+      if (!retryable) throw error;
       throw new RoleJobFailure({
-        code: "GENERATION_VALIDATION_FAILED",
+        code: "PUBLICATION_RETRIES_EXHAUSTED",
         message,
+        retryable: false,
+        cause: error
+      });
+    }
+  };
+}
+
+async function processPublicationJob(
+  input: Parameters<typeof createPublicationRoleProcessor>[0],
+  job: RoleJobRecord,
+  signal: AbortSignal,
+  now: () => Date
+): Promise<void> {
+  const generationId = job.generationId!;
+  const workerId = job.lockedBy!;
+  const workSettings = readPublicationWorkSettings(job.settingsSnapshot);
+  const generation = await input.generations.freezeGeneration({
+    knowledgeBaseId: job.knowledgeBaseId,
+    generationId,
+    frozenAt: now().toISOString()
+  });
+  if (!generation) return;
+  if (generation.state === "frozen") {
+    await input.generations.markGenerationState({
+      knowledgeBaseId: job.knowledgeBaseId,
+      generationId,
+      expectedState: "frozen",
+      state: "building",
+      updatedAt: now().toISOString()
+    });
+  }
+
+  if (generation.state !== "validating") {
+    await processImpacts({ ...input, job, generationId, workerId, signal, now, workSettings });
+    for (const finalizer of input.finalizers) {
+      await finalizer.finalize({
+        knowledgeBaseId: job.knowledgeBaseId,
+        generationId
+      });
+    }
+    const transitioned = await input.generations.markGenerationState({
+      knowledgeBaseId: job.knowledgeBaseId,
+      generationId,
+      expectedState: "building",
+      state: "validating",
+      updatedAt: now().toISOString()
+    });
+    if (!transitioned) {
+      throw retryable("GENERATION_STATE_CHANGED", "Publication generation state changed");
+    }
+  }
+
+  const issues = await input.validation.validateChangedClosure({
+    knowledgeBaseId: job.knowledgeBaseId,
+    generationId,
+    issueLimit: input.validationIssueLimit
+  });
+  if (issues.length > 0) {
+    const message = issues
+      .map((issue) => `${issue.code}:${issue.reference ?? "-"}`)
+      .join(", ");
+    throw new RoleJobFailure({
+      code: "GENERATION_VALIDATION_FAILED",
+      message,
+      retryable: false
+    });
+  }
+
+  const roots = [];
+  for (const path of GENERATED_ROOT_MANIFEST_PATHS) {
+    const reference = await input.references.findStagedByRef({
+      knowledgeBaseId: job.knowledgeBaseId,
+      generationId,
+      refKind: "root",
+      refKey: path
+    }) ?? await input.references.findActiveByRef({
+      knowledgeBaseId: job.knowledgeBaseId,
+      refKind: "root",
+      refKey: path
+    });
+    if (!reference) {
+      throw new RoleJobFailure({
+        code: "ROOT_REFERENCE_MISSING",
+        message: `Required root reference is unavailable: ${path}`,
         retryable: false
       });
     }
+    roots.push({
+      path,
+      checksumSha256: reference.checksumSha256,
+      objectKey: reference.objectKey,
+      contentType: reference.contentType,
+      sizeBytes: reference.sizeBytes
+    });
+  }
+  const manifest = await input.immutableObjects.write({
+    body: `${JSON.stringify({
+      formatVersion: 1,
+      knowledgeBaseId: job.knowledgeBaseId,
+      generationId,
+      predecessorGenerationId: generation.predecessorGenerationId,
+      roots
+    })}\n`,
+    contentType: "application/json; charset=utf-8"
+  });
+  await input.references.stageUpsert({
+    knowledgeBaseId: job.knowledgeBaseId,
+    generationId,
+    refKind: "generation_manifest",
+    refKey: "root",
+    fileId: `generation-manifest-${generationId}`,
+    checksumSha256: manifest.checksumSha256,
+    formatVersion: manifest.formatVersion,
+    logicalPath: null,
+    sourceFileId: null,
+    projectionShardId: null
+  });
+  const activated = await input.generations.activateGeneration({
+    knowledgeBaseId: job.knowledgeBaseId,
+    generationId,
+    expectedPredecessorGenerationId: generation.predecessorGenerationId,
+    rootManifestChecksumSha256: manifest.checksumSha256,
+    rootManifestObjectKey: manifest.objectKey,
+    activatedAt: now().toISOString()
+  });
+  if (!activated) {
+    throw retryable("GENERATION_ACTIVATION_CONFLICT", "Publication activation must be retried");
+  }
+}
 
-    const roots = [];
-    for (const path of GENERATED_ROOT_MANIFEST_PATHS) {
-      const reference = await input.references.findStagedByRef({
-        knowledgeBaseId: job.knowledgeBaseId,
-        generationId,
-        refKind: "root",
-        refKey: path
-      }) ?? await input.references.findActiveByRef({
-        knowledgeBaseId: job.knowledgeBaseId,
-        refKind: "root",
-        refKey: path
-      });
-      if (!reference) {
-        throw new RoleJobFailure({
-          code: "ROOT_REFERENCE_MISSING",
-          message: `Required root reference is unavailable: ${path}`,
-          retryable: false
-        });
-      }
-      roots.push({
-        path,
-        checksumSha256: reference.checksumSha256,
-        objectKey: reference.objectKey,
-        contentType: reference.contentType,
-        sizeBytes: reference.sizeBytes
-      });
-    }
-    const manifest = await input.immutableObjects.write({
-      body: `${JSON.stringify({
-        formatVersion: 1,
-        knowledgeBaseId: job.knowledgeBaseId,
-        generationId,
-        predecessorGenerationId: generation.predecessorGenerationId,
-        roots
-      })}\n`,
-      contentType: "application/json; charset=utf-8"
-    });
-    await input.references.stageUpsert({
-      knowledgeBaseId: job.knowledgeBaseId,
-      generationId,
-      refKind: "generation_manifest",
-      refKey: "root",
-      fileId: `generation-manifest-${generationId}`,
-      checksumSha256: manifest.checksumSha256,
-      formatVersion: manifest.formatVersion,
-      logicalPath: null,
-      sourceFileId: null,
-      projectionShardId: null
-    });
-    const activated = await input.generations.activateGeneration({
-      knowledgeBaseId: job.knowledgeBaseId,
-      generationId,
-      expectedPredecessorGenerationId: generation.predecessorGenerationId,
-      rootManifestChecksumSha256: manifest.checksumSha256,
-      rootManifestObjectKey: manifest.objectKey,
-      activatedAt: now().toISOString()
-    });
-    if (!activated) {
-      throw retryable("GENERATION_ACTIVATION_CONFLICT", "Publication activation must be retried");
-    }
-  };
+function isRetryableFailure(error: unknown): boolean {
+  return !(error instanceof RoleJobFailure) || error.retryable;
 }
 
 async function processImpacts(input: {
@@ -217,10 +250,9 @@ async function processImpacts(input: {
         generationId: input.generationId
       });
       if (remaining.failed > 0) {
-        await failGeneration(input, "PUBLICATION_IMPACT_FAILED", `${remaining.failed} publication impacts failed`);
         throw new RoleJobFailure({
           code: "PUBLICATION_IMPACT_FAILED",
-          message: "Publication impact retries are exhausted",
+          message: `${remaining.failed} publication impacts failed`,
           retryable: false
         });
       }
@@ -256,7 +288,6 @@ async function processImpacts(input: {
         releasedAt: failedAt.toISOString()
       });
       if (results.some((result) => result?.terminal)) {
-        await failGeneration(input, "PROJECTION_WRITE_FAILED", failed.message);
         throw new RoleJobFailure({
           code: "PROJECTION_WRITE_FAILED",
           message: failed.message,
@@ -376,25 +407,6 @@ function groupImpacts(
     }
   }
   return groups;
-}
-
-async function failGeneration(
-  input: {
-    generations: PublicationGenerationRepository;
-    job: RoleJobRecord;
-    generationId: string;
-    now: () => Date;
-  },
-  code: string,
-  message: string
-): Promise<void> {
-  await input.generations.failGeneration({
-    knowledgeBaseId: input.job.knowledgeBaseId,
-    generationId: input.generationId,
-    code,
-    message,
-    failedAt: input.now().toISOString()
-  });
 }
 
 function assertPublicationJob(job: RoleJobRecord): void {

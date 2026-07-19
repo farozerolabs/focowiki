@@ -124,6 +124,80 @@ describe("publication role processor", () => {
     expect(activateGeneration).not.toHaveBeenCalled();
   });
 
+  it("fails the generation when the final publication job attempt cannot complete", async () => {
+    const failGeneration = vi.fn().mockResolvedValue(undefined);
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: {
+        claimBatch: vi.fn().mockResolvedValueOnce([createImpact()]),
+        heartbeat: vi.fn(),
+        release: vi.fn(),
+        complete: vi.fn(),
+        fail: vi.fn().mockResolvedValue({ terminal: false, attemptCount: 1, maxAttempts: 3 }),
+        countIncomplete: vi.fn()
+      },
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [{ write: vi.fn().mockRejectedValue(new Error("Temporary object failure")) }],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T00:00:00.000Z")
+    });
+
+    await expect(processor(createJob({ attemptCount: 3, maxAttempts: 3 }), new AbortController().signal))
+      .rejects.toMatchObject({
+        code: "PUBLICATION_RETRIES_EXHAUSTED",
+        retryable: false
+      });
+    expect(failGeneration).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-1",
+      generationId: "generation-1",
+      code: "PUBLICATION_RETRIES_EXHAUSTED",
+      message: "Projection write will be retried",
+      failedAt: "2026-07-19T00:00:00.000Z"
+    });
+  });
+
+  it("fails the generation immediately when publication reaches a terminal error", async () => {
+    const failGeneration = vi.fn().mockResolvedValue(undefined);
+    const references = referenceRepository();
+    references.findStagedByRef.mockResolvedValue(null);
+    references.findActiveByRef.mockResolvedValue(null);
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ failGeneration }),
+      impacts: {
+        claimBatch: vi.fn().mockResolvedValue([]),
+        heartbeat: vi.fn(),
+        release: vi.fn(),
+        complete: vi.fn(),
+        fail: vi.fn(),
+        countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
+      },
+      validation: { validateChangedClosure: vi.fn().mockResolvedValue([]) },
+      references,
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-19T00:00:00.000Z")
+    });
+
+    await expect(processor(createJob(), new AbortController().signal))
+      .rejects.toMatchObject({ code: "ROOT_REFERENCE_MISSING", retryable: false });
+    expect(failGeneration).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-1",
+      generationId: "generation-1",
+      code: "ROOT_REFERENCE_MISSING",
+      message: "Required root reference is unavailable: index.md",
+      failedAt: "2026-07-19T00:00:00.000Z"
+    });
+  });
+
   it("writes one machine shard once for all claimed records in that shard", async () => {
     const first = createImpact({
       id: "impact-search-1",

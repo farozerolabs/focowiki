@@ -43,4 +43,10 @@ export type GenerationObjectReferenceRepository = {
     refKind: string;
     refKey: string;
   }) => Promise<ActiveObjectReference | null>;
+  findEffectiveByRef?: (input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    refKind: string;
+    refKey: string;
+  }) => Promise<ActiveObjectReference | null>;
 };

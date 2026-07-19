@@ -4,10 +4,16 @@ import type { DatabaseClient } from "./client.js";
 
 export const MIGRATION_FILES = [
   "001_production_admin_web.sql",
-  "002_tree_graph_storage_reconciliation.sql"
+  "002_tree_graph_storage_reconciliation.sql",
+  "003_bounded_publication_recovery.sql"
 ] as const;
-export const RELEASED_SCHEMA_GENERATION = "incremental-sharded-publication-v1";
-export const RUNTIME_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
+export const RELEASED_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
+export const RUNTIME_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
+
+const MIGRATION_START_BY_GENERATION = new Map<string, number>([
+  ["incremental-sharded-publication-v1", 1],
+  [RELEASED_SCHEMA_GENERATION, 2]
+]);
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {
@@ -42,11 +48,14 @@ export async function applyMigrations(sql: DatabaseClient): Promise<void> {
     return;
   }
 
-  const pendingFiles = state === "absent"
-    ? MIGRATION_FILES
-    : state === RELEASED_SCHEMA_GENERATION
-      ? MIGRATION_FILES.slice(1)
-      : null;
+  const migrationStart = state === "absent"
+    ? 0
+    : typeof state === "string"
+      ? MIGRATION_START_BY_GENERATION.get(state)
+      : undefined;
+  const pendingFiles = migrationStart === undefined
+    ? null
+    : MIGRATION_FILES.slice(migrationStart);
 
   if (!pendingFiles) {
     throw new RuntimeSchemaGenerationError(state);
