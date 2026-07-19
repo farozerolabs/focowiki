@@ -70,7 +70,7 @@ describe("immutable object writer", () => {
     expect(calls).toEqual(["reserve", "activate"]);
   });
 
-  it("keeps a durable writing reservation when upload fails", async () => {
+  it("releases its durable writing reservation when upload fails", async () => {
     const calls: string[] = [];
     const repository = createMemoryRepository(calls);
     const writer = createImmutableObjectWriter({
@@ -84,10 +84,7 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Interrupted", contentType: "text/markdown" }))
       .rejects.toThrow("storage unavailable");
-    expect(repository.record()).toMatchObject({
-      lifecycleState: "writing",
-      writeAttemptCount: 1
-    });
+    expect(repository.record()).toBeNull();
     expect(calls).toEqual(["reserve", "failure"]);
   });
 
@@ -113,7 +110,7 @@ describe("immutable object writer", () => {
     expect(calls).toEqual([]);
   });
 
-  it("leaves the verified upload recoverable when catalog activation fails", async () => {
+  it("releases the reservation when catalog activation fails", async () => {
     const calls: string[] = [];
     const repository = createMemoryRepository(calls);
     repository.activate = vi.fn(async () => {
@@ -134,7 +131,7 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Recoverable", contentType: "text/markdown" }))
       .rejects.toThrow("catalog unavailable");
-    expect(repository.record()).toMatchObject({ lifecycleState: "writing" });
+    expect(repository.record()).toBeNull();
     expect(calls).toEqual(["reserve", "upload", "verify", "activate", "failure"]);
   });
 
@@ -159,7 +156,7 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Unverified", contentType: "text/markdown" }))
       .rejects.toThrow("verification failed");
-    expect(repository.record()?.lifecycleState).toBe("writing");
+    expect(repository.record()).toBeNull();
     expect(calls).toEqual(["reserve", "failure"]);
   });
 
@@ -189,7 +186,7 @@ describe("immutable object writer", () => {
         };
       }),
       activate: vi.fn(async () => active!),
-      markWriteFailure: vi.fn(async () => undefined)
+      releaseFailedWrite: vi.fn(async () => true)
     };
     const writer = createImmutableObjectWriter({
       repository,
@@ -227,7 +224,7 @@ describe("immutable object writer", () => {
         }
       })),
       activate: vi.fn(),
-      markWriteFailure: vi.fn()
+      releaseFailedWrite: vi.fn()
     };
     const writer = createImmutableObjectWriter({
       repository,
@@ -242,7 +239,7 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Busy", contentType: "text/markdown" }))
       .rejects.toBeInstanceOf(ImmutableObjectWriteInProgressError);
-    expect(repository.markWriteFailure).not.toHaveBeenCalled();
+    expect(repository.releaseFailedWrite).not.toHaveBeenCalled();
   });
 
   it("rejects a conflicting catalog identity without uploading", async () => {
@@ -253,10 +250,13 @@ describe("immutable object writer", () => {
       storage: {
         keyspace: createStorageKeyspace("test"),
         putObject: vi.fn(),
-        headObjectMetadata: vi.fn()
+        headObjectMetadata: vi.fn(async (key: string) => {
+          const record = repository.record();
+          return record ? storedMetadata(key, record) : null;
+        })
       }
     }).write({ body: "# Conflict", contentType: "text/markdown" }).catch(() => null);
-    expect(expected).toBeNull();
+    expect(expected).not.toBeNull();
 
     const active = repository.record()!;
     repository.find = vi.fn(async () => ({
@@ -320,8 +320,11 @@ function createMemoryRepository(calls: string[]): ImmutableObjectRepository & {
       };
       return record as ActiveImmutableObjectRecord;
     },
-    async markWriteFailure() {
+    async releaseFailedWrite(input) {
       calls.push("failure");
+      if (record?.writeToken !== input.writeToken) return false;
+      record = null;
+      return true;
     }
   };
 }

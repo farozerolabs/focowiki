@@ -43,10 +43,9 @@ export type ImmutableObjectRepository = {
     writeToken: string;
     verifiedAt: string;
   }) => Promise<ActiveImmutableObjectRecord>;
-  markWriteFailure: (input: ImmutableObjectIdentity & {
+  releaseFailedWrite: (input: ImmutableObjectIdentity & {
     writeToken: string;
-    errorCode: string;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
 };
 
 export type ImmutableObjectRecoveryRepository = {
@@ -63,9 +62,7 @@ export type ImmutableObjectRecoveryRepository = {
   expireMissing: (input: ImmutableObjectIdentity & {
     recoveryToken: string;
   }) => Promise<boolean>;
-  markRecoveryFailure: (input: ImmutableObjectIdentity & {
+  releaseRecoveryFailure: (input: ImmutableObjectIdentity & {
     recoveryToken: string;
-    errorCode: string;
-    failedAt: string;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
 };

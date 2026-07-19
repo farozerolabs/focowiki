@@ -40,6 +40,32 @@ export function createPostgresImmutableObjectRepository(
     return rows[0] ? mapActiveRow(rows[0]) : null;
   }
 
+  async function deleteUnreferencedWriting(input: {
+    checksumSha256: string;
+    formatVersion: number;
+    writeToken: string;
+  }): Promise<boolean> {
+    const rows = await sql<Array<{ checksum_sha256: string }>>`
+      DELETE FROM focowiki.immutable_objects object
+      WHERE checksum_sha256 = ${input.checksumSha256}
+        AND format_version = ${input.formatVersion}
+        AND lifecycle_state = 'writing'
+        AND write_token = ${input.writeToken}
+        AND NOT EXISTS (
+          SELECT 1 FROM focowiki.generation_object_refs reference
+          WHERE reference.checksum_sha256 = object.checksum_sha256
+            AND reference.format_version = object.format_version
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM focowiki.active_object_refs reference
+          WHERE reference.checksum_sha256 = object.checksum_sha256
+            AND reference.format_version = object.format_version
+        )
+      RETURNING checksum_sha256
+    `;
+    return rows.length === 1;
+  }
+
   return {
     find: findActive,
 
@@ -150,15 +176,8 @@ export function createPostgresImmutableObjectRepository(
       throw new Error("Immutable object reservation is unavailable for activation");
     },
 
-    async markWriteFailure(input) {
-      await sql`
-        UPDATE focowiki.immutable_objects
-        SET last_write_error_code = ${input.errorCode}
-        WHERE checksum_sha256 = ${input.checksumSha256}
-          AND format_version = ${input.formatVersion}
-          AND lifecycle_state = 'writing'
-          AND write_token = ${input.writeToken}
-      `;
+    async releaseFailedWrite(input) {
+      return deleteUnreferencedWriting(input);
     },
 
     async claimStaleWriting(input) {
@@ -223,37 +242,17 @@ export function createPostgresImmutableObjectRepository(
     },
 
     async expireMissing(input) {
-      const rows = await sql<Array<{ checksum_sha256: string }>>`
-        DELETE FROM focowiki.immutable_objects object
-        WHERE checksum_sha256 = ${input.checksumSha256}
-          AND format_version = ${input.formatVersion}
-          AND lifecycle_state = 'writing'
-          AND write_token = ${input.recoveryToken}
-          AND NOT EXISTS (
-            SELECT 1 FROM focowiki.generation_object_refs reference
-            WHERE reference.checksum_sha256 = object.checksum_sha256
-              AND reference.format_version = object.format_version
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM focowiki.active_object_refs reference
-            WHERE reference.checksum_sha256 = object.checksum_sha256
-              AND reference.format_version = object.format_version
-          )
-        RETURNING checksum_sha256
-      `;
-      return rows.length === 1;
+      return deleteUnreferencedWriting({
+        ...input,
+        writeToken: input.recoveryToken
+      });
     },
 
-    async markRecoveryFailure(input) {
-      await sql`
-        UPDATE focowiki.immutable_objects
-        SET write_token = NULL, write_started_at = ${input.failedAt},
-            last_write_error_code = ${input.errorCode}
-        WHERE checksum_sha256 = ${input.checksumSha256}
-          AND format_version = ${input.formatVersion}
-          AND lifecycle_state = 'writing'
-          AND write_token = ${input.recoveryToken}
-      `;
+    async releaseRecoveryFailure(input) {
+      return deleteUnreferencedWriting({
+        ...input,
+        writeToken: input.recoveryToken
+      });
     }
   };
 }

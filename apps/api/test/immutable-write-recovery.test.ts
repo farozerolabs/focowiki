@@ -38,7 +38,7 @@ describe("immutable write recovery", () => {
     expect(repository.activateRecovered).not.toHaveBeenCalled();
   });
 
-  it("records an identity failure without activating a conflicting object", async () => {
+  it("releases an identity failure without activating a conflicting object", async () => {
     const repository = createRepository();
     const storage = createStorage({
       headObjectMetadata: vi.fn().mockResolvedValue(stored({ sizeBytes: 13 }))
@@ -47,13 +47,13 @@ describe("immutable write recovery", () => {
     const result = await runImmutableWriteRecoverySlice({ repository, storage });
 
     expect(result.failed).toBe(1);
-    expect(repository.markRecoveryFailure).toHaveBeenCalledWith(expect.objectContaining({
-      errorCode: "IMMUTABLE_OBJECT_RECOVERY_IDENTITY_MISMATCH"
+    expect(repository.releaseRecoveryFailure).toHaveBeenCalledWith(expect.objectContaining({
+      recoveryToken: expect.any(String)
     }));
     expect(repository.activateRecovered).not.toHaveBeenCalled();
   });
 
-  it("records a retryable failure when storage verification fails", async () => {
+  it("releases a retryable failure when storage verification fails", async () => {
     const repository = createRepository();
     const storage = createStorage({
       headObjectMetadata: vi.fn().mockRejectedValue(new Error("provider unavailable"))
@@ -62,9 +62,42 @@ describe("immutable write recovery", () => {
     const result = await runImmutableWriteRecoverySlice({ repository, storage });
 
     expect(result.failed).toBe(1);
-    expect(repository.markRecoveryFailure).toHaveBeenCalledWith(expect.objectContaining({
-      errorCode: "IMMUTABLE_OBJECT_RECOVERY_STORAGE_FAILED"
+    expect(repository.releaseRecoveryFailure).toHaveBeenCalledWith(expect.objectContaining({
+      recoveryToken: expect.any(String)
     }));
+  });
+
+  it("claims only objects that can be verified concurrently in the current slice", async () => {
+    const repository = createRepository();
+    const second = { ...reservation, checksumSha256: "b".repeat(64), objectKey: reservation.objectKey.replace(/a/g, "b") };
+    vi.mocked(repository.claimStaleWriting).mockResolvedValue([reservation, second]);
+    let active = 0;
+    let maximumActive = 0;
+    const storage = createStorage({
+      headObjectMetadata: vi.fn(async (key: string) => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await Promise.resolve();
+        active -= 1;
+        return key === reservation.objectKey
+          ? stored()
+          : { ...stored(), key, metadata: {
+              "focowiki-checksum-sha256": second.checksumSha256,
+              "focowiki-format-version": String(second.formatVersion)
+            } };
+      })
+    });
+
+    const result = await runImmutableWriteRecoverySlice({
+      repository,
+      storage,
+      batchSize: 500,
+      concurrency: 2
+    });
+
+    expect(repository.claimStaleWriting).toHaveBeenCalledWith(expect.objectContaining({ limit: 2 }));
+    expect(result).toEqual({ claimed: 2, activated: 2, expired: 0, failed: 0 });
+    expect(maximumActive).toBe(2);
   });
 });
 
@@ -73,7 +106,7 @@ function createRepository(): ImmutableObjectRecoveryRepository {
     claimStaleWriting: vi.fn().mockResolvedValue([reservation]),
     activateRecovered: vi.fn().mockResolvedValue(true),
     expireMissing: vi.fn().mockResolvedValue(true),
-    markRecoveryFailure: vi.fn()
+    releaseRecoveryFailure: vi.fn(async () => true)
   };
 }
 
