@@ -57,71 +57,6 @@ FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
 
-## 升级前备份
-
-已有部署拉取新镜像或执行迁移前，先创建冷备份。在 `.env` 和 `docker-compose.yml` 所在的部署目录中执行命令。
-
-```bash
-docker compose -f docker-compose.yml down
-backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
-```
-
-这个压缩包包含当前部署的 Compose 文件、`.env`、PostgreSQL 数据、Redis 数据、runtime secrets 和产品日志文件。
-
-外部 S3 兼容 bucket 或 prefix 需要通过存储服务的 snapshot、replication、export 或 S3 兼容复制工具备份。PostgreSQL 备份和 S3 备份应来自同一个部署时间点。
-
-新部署验证完成前，应保留旧应用镜像和同一部署时间点的 PostgreSQL、Redis、runtime secrets 与 S3 备份。回滚时需要成套恢复这些数据。
-
-继续升级前，先检查备份文件。
-
-```bash
-ls -lh "backups/focowiki-$backup_id.tar.gz"
-```
-
-目录备份适用于当前 Compose 模板。仍在使用 Docker named volumes 的旧部署可以继续使用原有 Compose 文件，也可以先创建数据库 dump，再迁移到目录挂载。
-
-只需要备份数据库时，可以使用 `pg_dump`。
-
-```bash
-docker compose -f docker-compose.yml exec -T postgres \
-  sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > "backups/postgres-$(date +%Y%m%d-%H%M%S).dump"
-```
-
-数据库单独备份需要在启动 PostgreSQL 后使用 `pg_restore` 还原。
-
-## 升级已有部署
-
-当前版本执行增量数据库迁移。已有知识库、来源文件、逻辑路径、活动 generation、生成对象引用和已配置的 S3 prefix 都会保留。升级时不要清理 PostgreSQL、Redis 或 S3，也不需要重新上传来源 Markdown。
-
-```bash
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml down
-docker compose -f docker-compose.yml run --rm migrate
-docker compose -f docker-compose.yml up -d
-docker compose -f docker-compose.yml ps
-```
-
-启动后，维护 Worker 会在后台有界修复 Focowiki 管理的文件树统计和生成导航。修复会复用未变化的不可变对象，不调用模型，并在修复 generation 校验和激活前保持原活动 generation 可读。历史遗留的仅存储生成对象会按 Admin 维护配置先隔离，再执行对账。
-
-升级后检查知识库列表、文件预览、活动文件树、搜索、图概览、图扩展和 Developer OpenAPI 文件读取。Admin 的**设置 > 维护**只展示汇总对账状态，不展示存储对象键。
-
-## 执行迁移检查
-
-```bash
-docker compose -f docker-compose.yml run --rm migrate
-```
-
-迁移容器与 HTTP 和 Worker 角色使用同一个 API 镜像，数据库初始化完成后退出。生产 Compose 模板会在迁移完成后再启动 API 和三个 Worker 角色。
-
-迁移命令会初始化当前应用需要的数据库结构和默认 Admin 配置。重复执行迁移命令是安全的。
-
-### 回滚
-
-迁移不会修改已有活动 generation 指针。修复 generation 激活前出现启动或验证失败时，保持部署停止，并将协调备份中的 PostgreSQL、Redis、runtime secrets 和 S3 与旧应用镜像一起恢复。
-
-修复 generation 已经激活时，旧的不可变 generation 仍会按 generation 保留策略继续保存。完整回退应用版本仍应恢复升级前的协调备份，因为旧运行时可能无法识别新的数据结构代际标记。在生成文件、来源文件列表、文件树统计、搜索、图探索和直接文件读取完成验证前，继续保留原备份。
-
 ## 启动服务
 
 ```bash
@@ -172,6 +107,17 @@ pnpm compose:clean
 来源文件处理失败时使用“重试处理”。必要投影校验或 generation 激活失败时使用“重试发布”。发布重试会保留已完成的来源事实并继续合并后的 generation。确定性的校验失败需要在修正原因后显式重试。
 
 文件只有在 `state=visible` 后才能读取生成内容。候选 generation 通过变更投影校验并成功激活前不会进入正常读取。候选 generation 失败时，之前的活动 generation 继续保持可读。
+
+## 备份
+
+在 `.env` 和 `docker-compose.yml` 所在的部署目录中停止服务并打包本地持久化目录。
+
+```bash
+docker compose -f docker-compose.yml down
+backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
+```
+
+外部 S3 兼容 bucket 或 prefix 需要通过存储服务提供的快照、复制或导出功能单独备份。PostgreSQL 和 S3 备份应来自同一个时间点。
 
 ## 从备份还原
 

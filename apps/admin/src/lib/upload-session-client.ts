@@ -235,6 +235,7 @@ async function transferMissingEntries(input: {
   );
   let cursor: string | null = null;
   let session = input.session;
+  let completedUploads = session.counts.uploaded;
   do {
     const page = await getUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -247,34 +248,44 @@ async function transferMissingEntries(input: {
       return { ok: false, failure: page, sessionId: input.sessionId };
     }
     session = page.session;
-    for (const entry of page.entries.items) {
-      const file = fileByPath.get(normalizeUploadRelativePath(entry.relativePath));
-      if (!file) {
-        throw new Error("UPLOAD_SELECTION_CHANGED");
-      }
-      const response = await uploadSessionContent({
-        knowledgeBaseId: input.knowledgeBaseId,
-        sessionId: input.sessionId,
-        entryId: entry.id,
-        file
-      });
-      if (isFailure(response)) {
-        return { ok: false, failure: response, sessionId: input.sessionId };
-      }
-      session = {
-        ...session,
-        counts: {
-          ...session.counts,
-          uploaded: session.counts.uploaded + 1
+    const results = await mapWithConcurrency(
+      page.entries.items,
+      input.transport.contentUploadConcurrency,
+      async (entry) => {
+        const file = fileByPath.get(normalizeUploadRelativePath(entry.relativePath));
+        if (!file) {
+          throw new Error("UPLOAD_SELECTION_CHANGED");
         }
-      };
-      input.onProgress({
-        stage: "uploading",
-        completed: session.counts.uploaded,
-        total: session.counts.uploadRequired,
-        session
-      });
+        const response = await uploadSessionContent({
+          knowledgeBaseId: input.knowledgeBaseId,
+          sessionId: input.sessionId,
+          entryId: entry.id,
+          file
+        });
+        if (isFailure(response)) {
+          return response;
+        }
+        completedUploads += 1;
+        input.onProgress({
+          stage: "uploading",
+          completed: completedUploads,
+          total: session.counts.uploadRequired,
+          session: {
+            ...session,
+            counts: { ...session.counts, uploaded: completedUploads }
+          }
+        });
+        return null;
+      }
+    );
+    const failure = results.find(isFailure);
+    if (failure) {
+      return { ok: false, failure, sessionId: input.sessionId };
     }
+    session = {
+      ...session,
+      counts: { ...session.counts, uploaded: completedUploads }
+    };
     cursor = page.entries.nextCursor;
   } while (cursor);
   return { ok: true, session };
@@ -282,4 +293,29 @@ async function transferMissingEntries(input: {
 
 function isFailure(value: unknown): value is ApiFailure {
   return Boolean(value && typeof value === "object" && "messageKey" in value);
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  requestedConcurrency: number | undefined,
+  mapper: (value: T) => Promise<R>
+): Promise<R[]> {
+  const concurrency = Number.isSafeInteger(requestedConcurrency) && Number(requestedConcurrency) > 0
+    ? Math.min(Number(requestedConcurrency), 16)
+    : 1;
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index]!);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, () => worker())
+  );
+  return results;
 }

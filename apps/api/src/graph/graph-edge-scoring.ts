@@ -7,10 +7,16 @@ import {
 } from "@focowiki/okf";
 import { stripGeneratedSections } from "./content-profile.js";
 import {
-  findSharedSpecificPhrases,
+  createCandidateTermFrequency,
+  type CandidateTermFrequency
+} from "./graph-candidate-frequency.js";
+import {
+  createSpecificPhraseIndex,
+  findSharedSpecificPhrasesFromIndex,
   isSpecificSharedSignal,
   isStrongContentSignal,
-  listStrongGraphNodeTerms
+  listStrongGraphNodeTerms,
+  type SpecificPhraseIndex
 } from "./relationship-signals.js";
 import {
   intersectUseful,
@@ -19,6 +25,16 @@ import {
   readContentProfileStringArray,
   stripMarkdownExtension
 } from "./graph-utils.js";
+
+type GraphEdgeScoringContext = {
+  normalizedBody: string;
+  semanticBody: string;
+  sourceVersionHints: string[];
+  sourceTitle: string;
+  sourcePhraseIndex: SpecificPhraseIndex;
+  sourceNormalizedTerms: Set<string>;
+  candidateTermFrequency: CandidateTermFrequency;
+};
 
 export function buildGraphEdges(input: {
   source: OkfGraphNode;
@@ -32,21 +48,36 @@ export function buildGraphEdges(input: {
   acceptedEdgeLimit: number;
   genericPhraseThreshold: number;
 }): OkfGraphEdge[] {
-  const candidateDocumentTerms = [input.source, ...input.candidates].map(
-    (node) => new Set(listStrongGraphNodeTerms(node).map(normalizeCompactTerm).filter(Boolean))
-  );
+  const sourceStrongTerms = listStrongGraphNodeTerms(input.source);
+  const candidateStrongTerms = input.candidates.map(listStrongGraphNodeTerms);
+  const sourceVersionHints = readContentProfileStringArray(input.source, "versionHints");
+  const normalizedBody = normalizeSearchText(stripGeneratedSections(input.body));
+  const context: GraphEdgeScoringContext = {
+    normalizedBody,
+    semanticBody: removeVersionContext(normalizedBody, sourceVersionHints),
+    sourceVersionHints,
+    sourceTitle: normalizeSearchText(input.source.title),
+    sourcePhraseIndex: createSpecificPhraseIndex(sourceStrongTerms),
+    sourceNormalizedTerms: normalizedStrongTerms(sourceStrongTerms),
+    candidateTermFrequency: createCandidateTermFrequency([
+      new Set(sourceStrongTerms.map(normalizeCompactTerm).filter(Boolean)),
+      ...candidateStrongTerms.map(
+        (terms) => new Set(terms.map(normalizeCompactTerm).filter(Boolean))
+      )
+    ])
+  };
   const suggestedPaths = new Set(
     (input.suggestions?.related_links ?? []).map((link) => normalizePublicPath(link.path))
   );
 
   return input.candidates
-    .map((candidate) =>
+    .map((candidate, index) =>
       bestEdgeForCandidate({
         source: input.source,
-        body: input.body,
+        context,
         suggestedPaths,
         candidate,
-        candidateDocumentTerms,
+        candidateStrongTerms: candidateStrongTerms[index] ?? [],
         genericPhraseThreshold: input.genericPhraseThreshold
       })
     )
@@ -149,21 +180,19 @@ export function createRejectedEdge(edge: OkfGraphEdge, reason: string): OkfGraph
 
 function bestEdgeForCandidate(input: {
   source: OkfGraphNode;
-  body: string;
+  context: GraphEdgeScoringContext;
   suggestedPaths: Set<string>;
   candidate: OkfGraphNode;
-  candidateDocumentTerms: Array<Set<string>>;
+  candidateStrongTerms: string[];
   genericPhraseThreshold: number;
 }): OkfGraphEdge | null {
-  const { source, body, suggestedPaths, candidate, candidateDocumentTerms } = input;
+  const { source, context, suggestedPaths, candidate } = input;
   const signals: OkfGraphEdge[] = [];
-  const normalizedBody = normalizeSearchText(stripGeneratedSections(body));
-  const sourceVersionHints = readContentProfileStringArray(source, "versionHints");
+  const { normalizedBody, semanticBody, sourceVersionHints } = context;
   const candidateVersionHints = readContentProfileStringArray(candidate, "versionHints");
-  const semanticBody = removeVersionContext(normalizedBody, sourceVersionHints);
   const sameDocumentTitle =
-    normalizeSearchText(source.title).length > 0 &&
-    normalizeSearchText(source.title) === normalizeSearchText(candidate.title);
+    context.sourceTitle.length > 0 &&
+    context.sourceTitle === normalizeSearchText(candidate.title);
   const hasDistinctVersionEvidence =
     sameDocumentTitle &&
     hasDifferentVersionEvidence(source, candidate, sourceVersionHints, candidateVersionHints);
@@ -171,6 +200,7 @@ function bestEdgeForCandidate(input: {
   const candidateStem = normalizeSearchText(
     stripMarkdownExtension(candidate.path.split("/").at(-1) ?? candidate.title)
   );
+  const candidateNormalizedTerms = normalizedStrongTerms(input.candidateStrongTerms);
   const sharedSubjects = intersectUseful(source.subjects ?? [], candidate.subjects ?? []).filter(
     isSpecificSharedSignal
   );
@@ -192,7 +222,7 @@ function bestEdgeForCandidate(input: {
     isSpecificSharedSignal
   );
   const isCorpusSpecific = (term: string) =>
-    !isFrequentCandidateTerm(term, candidateDocumentTerms);
+    !context.candidateTermFrequency.isFrequent(term);
   const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal).filter(isCorpusSpecific);
   const strongSharedEntities = sharedEntities.filter(isStrongContentSignal).filter(isCorpusSpecific);
   const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal).filter(isCorpusSpecific);
@@ -205,7 +235,10 @@ function bestEdgeForCandidate(input: {
   const titleSupportedSharedEntities = strongSharedEntities.filter((term) =>
     isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
   );
-  const sharedKeyPhrases = findSharedSpecificPhrases(source, candidate).filter((term) =>
+  const sharedKeyPhrases = findSharedSpecificPhrasesFromIndex(
+    context.sourcePhraseIndex,
+    input.candidateStrongTerms
+  ).filter((term) =>
     normalizedBody.includes(normalizeSearchText(term))
   );
   const strongSharedKeyPhrases = compactSharedPhrases(
@@ -216,7 +249,9 @@ function bestEdgeForCandidate(input: {
           term,
           source,
           candidate,
-          candidateDocumentTerms,
+          context.candidateTermFrequency,
+          context.sourceNormalizedTerms,
+          candidateNormalizedTerms,
           input.genericPhraseThreshold
         )
     )
@@ -467,7 +502,9 @@ function isStrongSharedKeyPhrase(
   term: string,
   source: OkfGraphNode,
   candidate: OkfGraphNode,
-  candidateDocumentTerms: Array<Set<string>>,
+  candidateTermFrequency: CandidateTermFrequency,
+  sourceTerms: Set<string>,
+  candidateTerms: Set<string>,
   genericPhraseThreshold: number
 ): boolean {
   const normalized = normalizeSearchText(term).replace(/\s+/gu, "");
@@ -480,7 +517,7 @@ function isStrongSharedKeyPhrase(
     return false;
   }
 
-  if (isFrequentCandidateTerm(normalized, candidateDocumentTerms)) {
+  if (candidateTermFrequency.isFrequent(normalized)) {
     return false;
   }
 
@@ -491,39 +528,7 @@ function isStrongSharedKeyPhrase(
     return isDiscriminativeSharedTitlePhrase(term, source, candidate, genericPhraseThreshold);
   }
 
-  const sourceTerms = normalizedStrongNodeTerms(source);
-  const candidateTerms = normalizedStrongNodeTerms(candidate);
-
   return normalized.length > genericPhraseThreshold && sourceTerms.has(normalized) && candidateTerms.has(normalized);
-}
-
-function isFrequentCandidateTerm(
-  value: string,
-  candidateDocumentTerms: Array<Set<string>>
-): boolean {
-  if (candidateDocumentTerms.length < 3) {
-    return false;
-  }
-
-  const normalized = normalizeCompactTerm(value);
-
-  if (!normalized) {
-    return false;
-  }
-
-  let documentFrequency = 0;
-
-  for (const terms of candidateDocumentTerms) {
-    if ([...terms].some((term) => term === normalized || term.includes(normalized))) {
-      documentFrequency += 1;
-    }
-  }
-
-  const maximumCommonDocuments = Math.max(
-    2,
-    Math.ceil(candidateDocumentTerms.length * 0.15)
-  );
-  return documentFrequency > maximumCommonDocuments;
 }
 
 function normalizeCompactTerm(value: string): string {
@@ -573,14 +578,9 @@ function compactSharedPhrases(values: string[]): string[] {
   return kept;
 }
 
-function normalizedStrongNodeTerms(node: OkfGraphNode): Set<string> {
+function normalizedStrongTerms(terms: string[]): Set<string> {
   return new Set(
-    [
-      ...(node.subjects ?? []),
-      ...(node.entities ?? []),
-      ...(node.keywords ?? []),
-      ...(node.relationshipHints ?? [])
-    ]
+    terms
       .map((term) => normalizeSearchText(term).replace(/\s+/gu, ""))
       .filter((term) => term && isStrongContentSignal(term) && !isLowInformationSharedGraphTerm(term))
   );

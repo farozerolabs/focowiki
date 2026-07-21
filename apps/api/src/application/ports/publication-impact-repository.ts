@@ -38,6 +38,15 @@ export type PublicationImpactRepository = {
     now: string;
     staleBefore: string;
   }) => Promise<ClaimedPublicationImpact[]>;
+  claimPartitionBatch: (input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    physicalPartition: string;
+    workerId: string;
+    limit: number;
+    now: string;
+    staleBefore: string;
+  }) => Promise<ClaimedPublicationImpact[]>;
   heartbeat: (input: {
     impactIds: string[];
     workerId: string;
@@ -56,6 +65,16 @@ export type PublicationImpactRepository = {
     touchedShardCount: number;
     completedAt: string;
   }) => Promise<boolean>;
+  completeBatch: (input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    workerId: string;
+    completions: Array<{
+      impactId: string;
+      touchedShardCount: number;
+    }>;
+    completedAt: string;
+  }) => Promise<number>;
   fail: (input: {
     knowledgeBaseId: string;
     generationId: string;
@@ -71,4 +90,9 @@ export type PublicationImpactRepository = {
     knowledgeBaseId: string;
     generationId: string;
   }) => Promise<{ pending: number; running: number; failed: number }>;
+  countPartitionIncomplete: (input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    physicalPartition: string;
+  }) => Promise<{ pending: number; running: number; failed: number; completed: number }>;
 };

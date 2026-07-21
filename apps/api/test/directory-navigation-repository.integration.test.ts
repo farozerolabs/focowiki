@@ -99,6 +99,29 @@ describeDatabase("directory navigation repository integration", () => {
     expect(outer?.previousLeafId).toBe("leaf-4");
   });
 
+  it("materializes one directory batch in one durable mutation result", async () => {
+    const result = await repository.applyEntries({
+      knowledgeBaseId,
+      directoryPath: "pages",
+      entries: [
+        entryMutation("source-a", "a.md"),
+        entryMutation("source-b", "b.md"),
+        entryMutation("source-c", "c.md")
+      ],
+      limits
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.summary).toMatchObject({ entryCount: 3, firstLeafId: "leaf-1" });
+    expect(result.touchedLeaves).toHaveLength(2);
+    const rows = await sql<Array<{ entry_count: number }>>`
+      SELECT entry_count::int AS entry_count
+      FROM focowiki.directory_navigation_summaries
+      WHERE knowledge_base_id = ${knowledgeBaseId} AND directory_path = 'pages'
+    `;
+    expect(rows).toEqual([{ entry_count: 3 }]);
+  });
+
   function apply(entryId: string, name: string) {
     return repository.applyEntry({
       knowledgeBaseId,
@@ -113,5 +136,18 @@ describeDatabase("directory navigation repository integration", () => {
       },
       limits
     });
+  }
+
+  function entryMutation(entryId: string, name: string) {
+    return {
+      entryId,
+      desiredEntry: {
+        id: entryId,
+        sortKey: name.toLowerCase(),
+        name,
+        targetPath: `pages/${name}`,
+        kind: "file" as const
+      }
+    };
   }
 });

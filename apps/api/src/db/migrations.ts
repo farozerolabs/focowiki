@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DatabaseClient } from "./client.js";
+import { assertMigrationWorkDrained } from "./migration-preflight.js";
 
 export const MIGRATION_FILES = [
   "001_production_admin_web.sql",
@@ -9,14 +10,16 @@ export const MIGRATION_FILES = [
   "004_immutable_object_contention_recovery.sql",
   "005_publication_retry_budget_recovery.sql",
   "006_publication_continuation_recovery.sql",
-  "007_publication_write_livelock_recovery.sql"
+  "007_publication_write_livelock_recovery.sql",
+  "008_large_scale_ingestion_runtime.sql"
 ] as const;
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
 export const RELEASED_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
 const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
-export const RUNTIME_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
+const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
+export const RUNTIME_SCHEMA_GENERATION = "large-scale-ingestion-runtime-v8";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
@@ -24,7 +27,8 @@ const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   [BOUNDED_PUBLICATION_SCHEMA_GENERATION, 3],
   [IMMUTABLE_CONTENTION_SCHEMA_GENERATION, 4],
   [RELEASED_SCHEMA_GENERATION, 5],
-  [CONTINUATION_SCHEMA_GENERATION, 6]
+  [CONTINUATION_SCHEMA_GENERATION, 6],
+  [WRITE_LIVELOCK_SCHEMA_GENERATION, 7]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {
@@ -37,6 +41,11 @@ export class RuntimeSchemaGenerationError extends Error {
     this.name = "RuntimeSchemaGenerationError";
   }
 }
+
+export type MigrationPreflightResult = {
+  currentGeneration: string | "absent";
+  pendingFiles: Array<(typeof MIGRATION_FILES)[number]>;
+};
 
 export function readMigrationSql(fileName: (typeof MIGRATION_FILES)[number]): string {
   for (const migrationUrl of [
@@ -54,32 +63,40 @@ export function readMigrationSql(fileName: (typeof MIGRATION_FILES)[number]): st
 }
 
 export async function applyMigrations(sql: DatabaseClient): Promise<void> {
-  const state = await inspectRuntimeSchemaGeneration(sql);
+  const plan = await preflightMigrations(sql);
 
-  if (state === RUNTIME_SCHEMA_GENERATION) {
-    return;
-  }
-
-  const migrationStart = state === "absent"
-    ? 0
-    : typeof state === "string"
-      ? MIGRATION_START_BY_GENERATION.get(state)
-      : undefined;
-  const pendingFiles = migrationStart === undefined
-    ? null
-    : MIGRATION_FILES.slice(migrationStart);
-
-  if (!pendingFiles) {
-    throw new RuntimeSchemaGenerationError(state);
-  }
-
-  for (const fileName of pendingFiles) {
+  for (const fileName of plan.pendingFiles) {
     await sql.begin(async (transaction) => {
       await transaction.unsafe(readMigrationSql(fileName));
     });
   }
 
   await assertRuntimeSchemaGeneration(sql);
+}
+
+export async function preflightMigrations(
+  sql: DatabaseClient
+): Promise<MigrationPreflightResult> {
+  const state = await inspectRuntimeSchemaGeneration(sql);
+  if (state === RUNTIME_SCHEMA_GENERATION) {
+    return { currentGeneration: state, pendingFiles: [] };
+  }
+
+  if (state !== "absent" && typeof state !== "string") {
+    throw new RuntimeSchemaGenerationError(state);
+  }
+  const migrationStart = state === "absent"
+    ? 0
+    : MIGRATION_START_BY_GENERATION.get(state);
+  if (migrationStart === undefined) {
+    throw new RuntimeSchemaGenerationError(state);
+  }
+
+  if (state !== "absent") await assertMigrationWorkDrained(sql);
+  return {
+    currentGeneration: state,
+    pendingFiles: MIGRATION_FILES.slice(migrationStart)
+  };
 }
 
 export async function assertRuntimeSchemaGeneration(sql: DatabaseClient): Promise<void> {

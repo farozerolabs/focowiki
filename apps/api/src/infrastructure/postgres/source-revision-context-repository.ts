@@ -30,6 +30,9 @@ export function createPostgresSourceRevisionContextRepository(
                CASE WHEN source.candidate_revision_id = revision.id
                  THEN source.candidate_operation_id ELSE NULL END AS operation_id
         FROM focowiki.source_files source
+        JOIN focowiki.knowledge_bases knowledge_base
+          ON knowledge_base.id = source.knowledge_base_id
+         AND knowledge_base.deleted_at IS NULL
         JOIN focowiki.source_revisions revision
           ON revision.id = CASE
             WHEN source.candidate_revision_id = ${input.sourceRevisionId}

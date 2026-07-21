@@ -28,7 +28,9 @@ describeDatabase("source resource list integration", () => {
         id, knowledge_base_id, parent_id, name, relative_path, path_key, depth
       ) VALUES
         ('source-directory-list-guides', ${knowledgeBaseId}, NULL, 'guides', 'guides', 'guides', 1),
-        ('source-directory-list-notes', ${knowledgeBaseId}, NULL, 'notes', 'notes', 'notes', 1)
+        ('source-directory-list-notes', ${knowledgeBaseId}, NULL, 'notes', 'notes', 'notes', 1),
+        ('source-directory-list-nested', ${knowledgeBaseId}, 'source-directory-list-guides',
+         'nested', 'guides/nested', 'guides/nested', 2)
     `;
     await sql.begin(async (transaction) => {
       await transaction`
@@ -52,6 +54,11 @@ describeDatabase("source resource list integration", () => {
           ('source-file-list-c', ${knowledgeBaseId}, 'note.md', 'notes/note.md', 'notes/note.md',
            'source-directory-list-notes', 'objects/list-c', 'text/markdown', 1, 'c',
            'source-revision-list-c', 'queued', 'upload_storage', 'pending',
+           NULL, NULL, NULL, NULL, NULL, NULL),
+          ('source-file-list-d', ${knowledgeBaseId}, 'nested.md', 'guides/nested/nested.md',
+           'guides/nested/nested.md', 'source-directory-list-nested', 'objects/list-d',
+           'text/markdown', 1, 'd', 'source-revision-list-d', 'completed',
+           'generation_activation', 'visible',
            NULL, NULL, NULL, NULL, NULL, NULL)
       `;
       await transaction`
@@ -61,7 +68,8 @@ describeDatabase("source resource list integration", () => {
         ) VALUES
           ('source-revision-list-a', ${knowledgeBaseId}, 'source-file-list-a', 1, 'objects/list-a', 'text/markdown', 1, 'a'),
           ('source-revision-list-b', ${knowledgeBaseId}, 'source-file-list-b', 1, 'objects/list-b', 'text/markdown', 1, 'b'),
-          ('source-revision-list-c', ${knowledgeBaseId}, 'source-file-list-c', 1, 'objects/list-c', 'text/markdown', 1, 'c')
+          ('source-revision-list-c', ${knowledgeBaseId}, 'source-file-list-c', 1, 'objects/list-c', 'text/markdown', 1, 'c'),
+          ('source-revision-list-d', ${knowledgeBaseId}, 'source-file-list-d', 1, 'objects/list-d', 'text/markdown', 1, 'd')
       `;
     });
   });
@@ -129,6 +137,49 @@ describeDatabase("source resource list integration", () => {
     expect(first.nextCursor).toBe(first.items[0]?.id);
     expect(second.items).toHaveLength(1);
     expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
+  });
+
+  it("reads direct and descendant file counts from maintained statistics", async () => {
+    const page = await repository.listDirectories({
+      knowledgeBaseId,
+      parentDirectoryId: null,
+      limit: 10,
+      cursor: null
+    });
+
+    expect(page.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "source-directory-list-guides",
+        directFileCount: 2,
+        descendantFileCount: 3
+      }),
+      expect.objectContaining({
+        id: "source-directory-list-notes",
+        directFileCount: 1,
+        descendantFileCount: 1
+      })
+    ]));
+
+    await sql`
+      UPDATE focowiki.source_files
+      SET directory_id = 'source-directory-list-notes',
+          relative_path = 'notes/nested.md', path_key = 'notes/nested.md'
+      WHERE id = 'source-file-list-d'
+    `;
+    await expect(repository.getDirectory({
+      knowledgeBaseId,
+      directoryId: "source-directory-list-guides"
+    })).resolves.toMatchObject({ directFileCount: 2, descendantFileCount: 2 });
+    await expect(repository.getDirectory({
+      knowledgeBaseId,
+      directoryId: "source-directory-list-notes"
+    })).resolves.toMatchObject({ directFileCount: 2, descendantFileCount: 2 });
+
+    await sql`DELETE FROM focowiki.source_files WHERE id = 'source-file-list-d'`;
+    await expect(repository.getDirectory({
+      knowledgeBaseId,
+      directoryId: "source-directory-list-notes"
+    })).resolves.toMatchObject({ directFileCount: 1, descendantFileCount: 1 });
   });
 
   async function cleanup(): Promise<void> {

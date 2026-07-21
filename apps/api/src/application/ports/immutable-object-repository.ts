@@ -35,10 +35,16 @@ export type ImmutableObjectRepository = {
     writeToken: string;
     writeStartedAt: string;
     staleBefore: string;
-  }) => Promise<{
-    status: "reserved" | "active" | "pending";
-    record: ImmutableObjectRecord;
-  }>;
+  }) => Promise<
+    | {
+      status: "reserved" | "active" | "pending";
+      record: ImmutableObjectRecord;
+    }
+    | {
+      status: "deleting";
+      record: null;
+    }
+  >;
   activate: (input: ImmutableObjectExpectedMetadata & {
     writeToken: string;
     verifiedAt: string;

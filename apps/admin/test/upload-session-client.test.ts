@@ -147,9 +147,58 @@ describe("folder upload session client", () => {
     expect(reconcileUploadSession).toHaveBeenCalledTimes(1);
     expect(uploadSessionContent).not.toHaveBeenCalled();
   });
+
+  it("transfers independent entry bodies with the server-provided concurrency", async () => {
+    const relativePaths = ["a.md", "b.md", "c.md", "d.md"];
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 4,
+        uploadRequired: 4
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 4,
+        uploadRequired: 4
+      }),
+      entries: {
+        items: relativePaths.map((relativePath, index) =>
+          uploadEntry(`upload-entry-${index}`, relativePath)
+        ),
+        nextCursor: null
+      }
+    });
+    let activeTransfers = 0;
+    let maxActiveTransfers = 0;
+    vi.mocked(uploadSessionContent).mockImplementation(async (input) => {
+      activeTransfers += 1;
+      maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeTransfers -= 1;
+      return { entry: uploadEntry(input.entryId, input.file.name, "uploaded") };
+    });
+    const onProgress = vi.fn();
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: relativePaths.map((relativePath) => nestedFile(relativePath, relativePath)),
+      onProgress
+    });
+
+    expect(result.ok).toBe(true);
+    expect(maxActiveTransfers).toBe(2);
+    expect(uploadSessionContent).toHaveBeenCalledTimes(4);
+    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "uploading",
+      completed: 4,
+      total: 4
+    }));
+  });
 });
 
-const uploadTransport = { manifestPageSize: 500 };
+const uploadTransport = { manifestPageSize: 500, contentUploadConcurrency: 2 };
 
 function uploadSession(
   state: "draft" | "manifest_building" | "manifest_sealed" | "uploading" | "completed",

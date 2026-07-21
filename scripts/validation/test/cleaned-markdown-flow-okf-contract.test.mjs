@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateOkfPublicArtifactBodies } from "../cleaned-markdown-flow.mjs";
+import {
+  findDeletedPageReferences,
+  validateOkfPublicArtifactBodies
+} from "../cleaned-markdown-flow.mjs";
 
 test("accepts the OKF version declaration on the bundle-root index", () => {
   const bodies = new Map([
@@ -57,4 +60,31 @@ test("accepts the OKF version declaration on the bundle-root index", () => {
     report,
     indexes: { manifest, search, links }
   }));
+});
+
+test("deletion evidence ignores historical segment payloads and checks effective records", () => {
+  const deletedPagePath = "pages/deleted.md";
+  const publicBodies = new Map([
+    ["index.md", "# Knowledge base"],
+    ["log.md", "# Updates"],
+    ["_index/catalog.json", "{}"],
+    ["_segments/search/search/v1/0001/base-1.json", JSON.stringify({ path: deletedPagePath })]
+  ]);
+
+  assert.deepEqual(findDeletedPageReferences({
+    deletedPagePath,
+    publicBodies,
+    manifest: { files: [] },
+    search: { items: [] },
+    links: { links: [] }
+  }), []);
+
+  publicBodies.set("index.md", `[Deleted](${deletedPagePath})`);
+  assert.deepEqual(findDeletedPageReferences({
+    deletedPagePath,
+    publicBodies,
+    manifest: { files: [] },
+    search: { items: [] },
+    links: { links: [] }
+  }), ["index.md"]);
 });

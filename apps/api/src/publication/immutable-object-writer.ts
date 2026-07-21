@@ -9,10 +9,10 @@ import {
 } from "../domain/generation.js";
 import {
   IMMUTABLE_CHECKSUM_METADATA_KEY,
-  IMMUTABLE_FORMAT_METADATA_KEY,
-  matchesImmutableStorageIdentity
+  IMMUTABLE_FORMAT_METADATA_KEY
 } from "../domain/immutable-object-storage-identity.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import { verifyImmutableStorageObject } from "./immutable-object-verifier.js";
 
 export type ImmutableObjectWriteResult = Pick<
   ActiveImmutableObjectRecord,
@@ -41,6 +41,7 @@ export function createImmutableObjectWriter(input: {
   repository: ImmutableObjectRepository;
   storage: Pick<StorageAdapter, "keyspace" | "putObject"> & {
     headObjectMetadata: NonNullable<StorageAdapter["headObjectMetadata"]>;
+    getObjectBytes?: NonNullable<StorageAdapter["getObjectBytes"]>;
   };
   now?: (() => Date) | undefined;
   sleep?: ((milliseconds: number) => Promise<void>) | undefined;
@@ -137,6 +138,9 @@ export function createImmutableObjectWriter(input: {
       assertRegisteredObject(active, expected);
       return { ...active, reused: true };
     }
+    if (reservation.status === "deleting") {
+      throw new ImmutableObjectWriteInProgressError();
+    }
     if (reservation.status === "pending") {
       const active = await waitForActiveObject({
         repository: input.repository,
@@ -160,8 +164,11 @@ export function createImmutableObjectWriter(input: {
           [IMMUTABLE_FORMAT_METADATA_KEY]: String(formatVersion)
         }
       });
-      const stored = await input.storage.headObjectMetadata(objectKey);
-      assertStoredObject(stored, expected);
+      await verifyImmutableStorageObject({
+        objectKey,
+        expected,
+        storage: input.storage
+      });
       const active = await input.repository.activate({
         ...expected,
         writeToken,
@@ -206,19 +213,4 @@ async function waitForActiveObject(input: {
     if (active) return active;
   }
   return null;
-}
-
-function assertStoredObject(
-  stored: Awaited<ReturnType<NonNullable<StorageAdapter["headObjectMetadata"]>>>,
-  expected: {
-    checksumSha256: string;
-    formatVersion: number;
-    contentType: string;
-    sizeBytes: number;
-  }
-): void {
-  if (!stored) throw new Error("Immutable object upload could not be verified");
-  if (!matchesImmutableStorageIdentity(stored, expected)) {
-    throw new Error("Immutable object upload metadata verification failed");
-  }
 }

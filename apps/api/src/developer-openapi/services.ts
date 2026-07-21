@@ -60,6 +60,7 @@ import type {
   ActiveGenerationProjection,
   ActiveGenerationReadRepository
 } from "../application/ports/active-generation-read-repository.js";
+import { createActiveReadCacheScope } from "../active-read-cache-scope.js";
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import {
   toDeveloperActiveFile,
@@ -636,8 +637,13 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const active = await requireActiveGenerationReads().withActiveGeneration(
         input.knowledgeBaseId,
         async (scope) => {
-          const cacheScope = "developer-openapi:graph-overview";
-          const cacheId = `${input.knowledgeBaseId}:${scope.generationId}`;
+          const cacheScope = createActiveReadCacheScope({
+            authorizationScope: "developer-openapi",
+            operation: "graph-overview",
+            knowledgeBaseId: input.knowledgeBaseId,
+            generationId: scope.generationId
+          });
+          const cacheId = "summary";
           const cached = await redis?.getPageCache<{
             nodeCount: number;
             edgeCount: number;

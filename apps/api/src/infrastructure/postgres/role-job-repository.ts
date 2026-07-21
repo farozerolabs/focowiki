@@ -167,13 +167,46 @@ export function createPostgresRoleJobRepository(
 
     async complete(input) {
       await sql`
-        UPDATE focowiki.role_jobs
-        SET status = 'completed', completed_at = ${input.completedAt},
+        UPDATE focowiki.role_jobs job
+        SET status = CASE
+            WHEN job.kind = 'generation_assembly' AND EXISTS (
+              SELECT 1
+              FROM focowiki.publication_change_facts fact
+              WHERE fact.knowledge_base_id = job.knowledge_base_id
+                AND fact.generation_id IS NULL
+                AND fact.assembly_state = 'pending'
+            ) THEN 'queued'
+              ELSE 'completed'
+            END,
+            run_after = CASE
+            WHEN job.kind = 'generation_assembly' AND EXISTS (
+              SELECT 1
+              FROM focowiki.publication_change_facts fact
+              WHERE fact.knowledge_base_id = job.knowledge_base_id
+                AND fact.generation_id IS NULL
+                AND fact.assembly_state = 'pending'
+            ) THEN ${input.completedAt}::timestamptz
+              ELSE job.run_after
+            END,
+            attempt_count = CASE
+              WHEN job.kind = 'generation_assembly' THEN 0
+              ELSE job.attempt_count
+            END,
+            completed_at = CASE
+            WHEN job.kind = 'generation_assembly' AND EXISTS (
+              SELECT 1
+              FROM focowiki.publication_change_facts fact
+              WHERE fact.knowledge_base_id = job.knowledge_base_id
+                AND fact.generation_id IS NULL
+                AND fact.assembly_state = 'pending'
+            ) THEN NULL
+              ELSE ${input.completedAt}::timestamptz
+            END,
             locked_by = NULL, locked_at = NULL, heartbeat_at = NULL,
             updated_at = ${input.completedAt}
-        WHERE id = ${input.jobId}
-          AND locked_by = ${input.workerId}
-          AND status = 'running'
+        WHERE job.id = ${input.jobId}
+          AND job.locked_by = ${input.workerId}
+          AND job.status = 'running'
       `;
     },
 
@@ -181,6 +214,7 @@ export function createPostgresRoleJobRepository(
       await sql`
         UPDATE focowiki.role_jobs
         SET status = 'queued', run_after = ${input.runAfter},
+            early_claim_on_upstream_drain = false,
             locked_by = NULL, locked_at = NULL, heartbeat_at = NULL,
             last_error_code = ${input.code}, last_error_message = ${boundedMessage(input.message)},
             updated_at = ${input.failedAt}
@@ -194,6 +228,7 @@ export function createPostgresRoleJobRepository(
       await sql`
         UPDATE focowiki.role_jobs
         SET status = 'queued', run_after = ${input.runAfter},
+            early_claim_on_upstream_drain = false,
             locked_by = NULL, locked_at = NULL, heartbeat_at = NULL,
             attempt_count = greatest(0, attempt_count - 1),
             last_error_code = NULL, last_error_message = NULL,
@@ -273,15 +308,69 @@ async function claimPublicationJobs(
   input: Parameters<RoleJobRepository["claim"]>[0]
 ): Promise<RoleJobRow[]> {
   return sql.begin(async (transaction) => transaction<RoleJobRow[]>`
-    WITH candidates AS MATERIALIZED (
+    WITH eligible AS MATERIALIZED (
       SELECT job.id
       FROM focowiki.role_jobs job
       WHERE job.role = 'publication'
-        AND job.run_after <= ${input.now}
         AND (
           job.status = 'queued'
           OR (job.status = 'running' AND coalesce(job.heartbeat_at, job.locked_at) < ${input.staleBefore})
         )
+        AND (
+          job.run_after <= ${input.now}
+          OR (
+            job.kind = 'generation_publication'
+            AND job.status = 'queued'
+            AND job.early_claim_on_upstream_drain
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.upload_sessions upload
+              WHERE upload.knowledge_base_id = job.knowledge_base_id
+                AND upload.state IN (
+                  'draft', 'manifest_building', 'manifest_sealed', 'uploading', 'finalizing'
+                )
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.source_dispatch_markers marker
+              WHERE marker.knowledge_base_id = job.knowledge_base_id
+                AND marker.status IN ('pending', 'claimed')
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.role_jobs upstream
+              WHERE upstream.knowledge_base_id = job.knowledge_base_id
+                AND upstream.status IN ('queued', 'running')
+                AND (
+                  upstream.role = 'source'
+                  OR upstream.kind = 'generation_assembly'
+                )
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.publication_change_facts fact
+              WHERE fact.knowledge_base_id = job.knowledge_base_id
+                AND fact.assembly_state IN ('pending', 'claimed')
+            )
+          )
+        )
+    ), ranked AS MATERIALIZED (
+      SELECT job.id,
+             row_number() OVER (
+               PARTITION BY job.knowledge_base_id
+               ORDER BY CASE WHEN job.status = 'running' THEN 0 ELSE 1 END,
+                        job.run_after, job.created_at, job.id
+             ) AS knowledge_base_rank
+      FROM focowiki.role_jobs job
+      JOIN eligible ON eligible.id = job.id
+      WHERE job.role = 'publication'
+    ), candidates AS MATERIALIZED (
+      SELECT job.id
+      FROM focowiki.role_jobs job
+      JOIN ranked
+        ON ranked.id = job.id
+       AND ranked.knowledge_base_rank = 1
+      WHERE job.role = 'publication'
         AND NOT EXISTS (
           SELECT 1
           FROM focowiki.role_jobs owner
@@ -296,12 +385,13 @@ async function claimPublicationJobs(
       ORDER BY
         CASE WHEN job.status = 'running' THEN 0 ELSE 1 END,
         job.run_after ASC, job.created_at ASC, job.id ASC
-      LIMIT ${Math.min(input.limit, 1)}
-      FOR UPDATE SKIP LOCKED
+      LIMIT ${input.limit}
+      FOR UPDATE OF job SKIP LOCKED
     )
     UPDATE focowiki.role_jobs job
     SET status = 'running', locked_by = ${input.workerId}, locked_at = ${input.now},
         heartbeat_at = ${input.now}, attempt_count = job.attempt_count + 1,
+        run_after = least(job.run_after, ${input.now}::timestamptz),
         completed_at = NULL, failed_at = NULL, updated_at = ${input.now}
     FROM candidates
     WHERE job.id = candidates.id

@@ -38,17 +38,20 @@ import { registerAdminFileTreeSearchRoutes } from "./file-tree-search-routes.js"
 import { registerAdminKnowledgeBaseListRoutes } from "./knowledge-base-list-routes.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
 import { readPageLimit } from "./pagination.js";
+import { readPageResponseCache, writePageResponseCache } from "../page-response-cache.js";
 import {
-  createPageResponseCacheId,
-  readPageResponseCache,
-  writePageResponseCache
-} from "../page-response-cache.js";
+  createActiveReadCacheScope,
+  createActiveReadPageCacheId
+} from "../active-read-cache-scope.js";
 import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
 import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
 import { registerAdminRuntimeSettingsRoutes } from "./runtime-settings-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
 import { registerAdminSourceFileTaskDeletionRoutes } from "./source-file-task-deletion-routes.js";
-import { createSourceFileCursorScope } from "./source-file-list-filter-signature.js";
+import {
+  createSourceFileCursorScope,
+  createSourceFileFilterSignature
+} from "./source-file-list-filter-signature.js";
 import {
   readSourceFileListFiltersFromQuery,
   type SourceFileListFilterErrorCode
@@ -67,6 +70,7 @@ import type { SourceDispatchRepository } from "../application/ports/source-dispa
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
 import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
+import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -86,6 +90,7 @@ export type AdminApiServices = {
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
   storageReconciliation: StorageReconciliationRepository | null;
+  maintenanceProgress: MaintenanceProgressRepository | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -202,7 +207,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       repositories,
       roleJobs: services.roleJobs,
       publicationGenerations: services.publicationGenerations,
-      sourceDispatch: services.sourceDispatch
+      sourceDispatch: services.sourceDispatch,
+      maintenanceProgress: services.maintenanceProgress
     },
     {
       requireAuth
@@ -544,6 +550,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       const cursorToken = context.req.query("cursor") ?? null;
       const cursorScope = createSourceFileCursorScope(knowledgeBase.id, filters.filters);
+      const filterSignature = createSourceFileFilterSignature(filters.filters);
+      const cacheScope = createActiveReadCacheScope({
+        authorizationScope: "admin",
+        operation: "source-file-list",
+        knowledgeBaseId: knowledgeBase.id,
+        generationId: knowledgeBase.activeGenerationId,
+        filters: { signature: filterSignature }
+      });
       const repositoryCursor = cursorToken
         ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
         : null;
@@ -552,9 +566,10 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidPagination(context);
       }
 
-      const cacheId = createPageResponseCacheId({
+      const cacheId = createActiveReadPageCacheId({
         cursorToken,
-        limit
+        limit,
+        input: { signature: filterSignature }
       });
       const cachedResponse = await readPageResponseCache<{
         items: ReturnType<typeof toAdminSourceFile>[];
@@ -562,7 +577,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         refreshAfterMs: number;
       }>({
         redis,
-        scope: cursorScope,
+        scope: cacheScope,
         cacheId,
         invalidationScopes: [`source-files:${knowledgeBase.id}`]
       });
@@ -600,7 +615,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
       await writePageResponseCache({
         redis,
-        scope: cursorScope,
+        scope: cacheScope,
         cacheId,
         value: responseBody,
         refreshAfterMs: responseBody.refreshAfterMs

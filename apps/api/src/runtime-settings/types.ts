@@ -11,13 +11,21 @@ export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
 export type RuntimeRateLimitSettings = RuntimeSecurityConfig["rateLimits"];
-export type RuntimeWorkerSettings = Required<WorkerRuntimeConfig>;
+export type RuntimeWorkerSettings = Required<WorkerRuntimeConfig> & {
+  sourceObjectReadConcurrency: number;
+  graphQueryConcurrency: number;
+  databaseMutationConcurrency: number;
+};
 
 export type RuntimePublicationSettings = Required<RuntimeConfig["publication"]> & {
   directoryIndexMaxEntries: number;
   directoryIndexMaxBytes: number;
   okfLogMaxEntries: number;
   okfLogMaxBytes: number;
+  generationAssemblyConcurrency: number;
+  projectionPartitionConcurrency: number;
+  generatedObjectWriteConcurrency: number;
+  directoryMaterializationConcurrency: number;
 };
 export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
 export type RuntimeMaintenanceSettings = {
@@ -29,6 +37,8 @@ export type RuntimeMaintenanceSettings = {
   confirmationPasses: number;
   maxAttempts: number;
   retryDelayMs: number;
+  migrationBackfillConcurrency: number;
+  compactionConcurrency: number;
 };
 
 export type RuntimeSettingsSnapshot = {

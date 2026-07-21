@@ -3,8 +3,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   applyMigrations,
-  readMigrationSql,
-  RUNTIME_SCHEMA_GENERATION
+  readMigrationSql
 } from "../src/db/migrations.js";
 import { PublicationGenerationBusyError } from "../src/domain/publication.js";
 import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
@@ -12,6 +11,7 @@ import { createPostgresSourceFileRetryRepository } from "../src/infrastructure/p
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
+const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
 
 describeDatabase("publication failure recovery migration integration", () => {
   const connectionUrl = databaseUrl ?? "postgres://unused:unused@127.0.0.1:5432/unused";
@@ -32,7 +32,7 @@ describeDatabase("publication failure recovery migration integration", () => {
     await seedPublicationContinuationExhaustion(sql);
     await sql.unsafe(readMigrationSql("006_publication_continuation_recovery.sql"));
     await seedPublicationWriteLivelock(sql);
-    await applyMigrations(sql);
+    await sql.unsafe(readMigrationSql("007_publication_write_livelock_recovery.sql"));
   });
 
   afterAll(async () => {
@@ -81,7 +81,16 @@ describeDatabase("publication failure recovery migration integration", () => {
     ]);
     expect((await sql<Array<{ generation: string }>>`
       SELECT generation FROM focowiki.runtime_generation WHERE singleton = true
-    `)[0]?.generation).toBe(RUNTIME_SCHEMA_GENERATION);
+    `)[0]?.generation).toBe(WRITE_LIVELOCK_SCHEMA_GENERATION);
+  });
+
+  it("refuses the optimized migration until recovered publication work drains", async () => {
+    await expect(applyMigrations(sql)).rejects.toMatchObject({
+      code: "MIGRATION_WORK_NOT_DRAINED"
+    });
+    expect((await sql<Array<{ generation: string }>>`
+      SELECT generation FROM focowiki.runtime_generation WHERE singleton = true
+    `)[0]?.generation).toBe(WRITE_LIVELOCK_SCHEMA_GENERATION);
   });
 
   it("requeues the failed generation affected by immutable-object contention", async () => {

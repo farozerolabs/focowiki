@@ -29,6 +29,8 @@ const report = {
   concurrency,
   requestCount: 0,
   endpoints: {},
+  metadataAggregate: null,
+  contentTransfer: null,
   aggregate: null,
   failures: []
 };
@@ -80,12 +82,18 @@ try {
   }));
 
   const aggregate = [];
+  const metadata = [];
+  const contentTransfers = [];
   for (const [name, values] of timings) {
     const summary = summarize(values);
     report.endpoints[name] = summary;
     aggregate.push(...values);
+    if (name === "content") contentTransfers.push(...values);
+    else metadata.push(...values);
   }
   report.requestCount = aggregate.length;
+  report.metadataAggregate = summarize(metadata);
+  report.contentTransfer = summarize(contentTransfers);
   report.aggregate = summarize(aggregate);
   report.ok = report.aggregate.p95Ms < 2_000 && report.aggregate.maxMs < 5_000;
   if (!report.ok) report.failures.push("Concurrent read latency exceeded the validation budget.");

@@ -26,6 +26,11 @@ describeDatabase("active generation read repository integration", () => {
 
   it("keeps candidate objects and projections invisible", async () => {
     await insertGeneration("generation-candidate", "building");
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = 'generation-candidate'
+      WHERE id = ${knowledgeBaseId}
+    `;
     await insertObject("11".repeat(32), "generated/11/page.md");
     await sql`
       INSERT INTO focowiki.generation_object_refs (
@@ -55,6 +60,51 @@ describeDatabase("active generation read repository integration", () => {
       file: await scope.findFileById("source-file-candidate"),
       search: await scope.search({ query: "candidate", mode: "file", limit: 10, cursor: null })
     }))).resolves.toBeNull();
+  });
+
+  it("does not scan active graph records when an optimized summary is missing", async () => {
+    await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
+    await sql`
+      INSERT INTO focowiki.knowledge_base_optimization_migrations (
+        knowledge_base_id, state, prior_active_generation_id,
+        optimized_active_generation_id, completed_at
+      ) VALUES (
+        ${knowledgeBaseId}, 'optimized_active', 'generation-active-a',
+        'generation-active-a', now()
+      )
+      ON CONFLICT (knowledge_base_id) DO UPDATE
+      SET state = EXCLUDED.state,
+          prior_active_generation_id = EXCLUDED.prior_active_generation_id,
+          optimized_active_generation_id = EXCLUDED.optimized_active_generation_id,
+          completed_at = EXCLUDED.completed_at
+    `;
+
+    await expect(repository.withActiveGeneration(knowledgeBaseId, async (scope) => (
+      scope.getGraphSummary()
+    ))).rejects.toThrow("Active graph summary is unavailable");
+  });
+
+  it("does not scan descendants when optimized directory statistics are missing", async () => {
+    await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
+    await seedActiveTreeDirectory("generation-active-a", "pages");
+    await sql`
+      INSERT INTO focowiki.knowledge_base_optimization_migrations (
+        knowledge_base_id, state, prior_active_generation_id,
+        optimized_active_generation_id, completed_at
+      ) VALUES (
+        ${knowledgeBaseId}, 'optimized_active', 'generation-active-a',
+        'generation-active-a', now()
+      )
+      ON CONFLICT (knowledge_base_id) DO UPDATE
+      SET state = EXCLUDED.state,
+          prior_active_generation_id = EXCLUDED.prior_active_generation_id,
+          optimized_active_generation_id = EXCLUDED.optimized_active_generation_id,
+          completed_at = EXCLUDED.completed_at
+    `;
+
+    await expect(repository.withActiveGeneration(knowledgeBaseId, async (scope) => (
+      scope.listTree({ parentPath: "", entryType: "directory", query: null, limit: 10, cursor: null })
+    ))).rejects.toThrow("Active directory statistics are unavailable");
   });
 
   it("resolves stable file identity and bounded projection pages in one generation", async () => {
@@ -100,6 +150,94 @@ describeDatabase("active generation read repository integration", () => {
           path: "pages/alpha.md"
         })]]
       ])
+    });
+  });
+
+  it("hides logically deleted sources from every active read path immediately", async () => {
+    await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
+    await seedAdditionalActiveFile("generation-active-a", "source-file-b", "pages/beta.md", "Beta");
+    await seedRelatedProjection("generation-active-a", "source-file-a", "source-file-b");
+    await seedActiveGeneratedFile("generation-active-a", "root", "index.md");
+
+    await sql`
+      UPDATE focowiki.source_files
+      SET deleted_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = 'source-file-a'
+    `;
+
+    const result = await repository.withActiveGeneration(knowledgeBaseId, async (scope) => ({
+      byId: await scope.findFileById("source-file-a"),
+      byPath: await scope.findFileByPath("pages/alpha.md"),
+      generatedRoot: await scope.findFileByPath("index.md"),
+      tree: await scope.listTree({
+        parentPath: "pages",
+        entryType: "file",
+        query: null,
+        limit: 10,
+        cursor: null
+      }),
+      search: await scope.search({ query: "Alpha", mode: "hybrid", limit: 10, cursor: null }),
+      edge: await scope.findProjection({ projectionKind: "graph_edge", recordId: "relationship-a-b" }),
+      outgoing: await scope.listRelated({ sourceFileId: "source-file-a", limit: 10, cursor: null }),
+      incoming: await scope.listRelated({ sourceFileId: "source-file-b", limit: 10, cursor: null }),
+      relatedBySource: await scope.listRelatedForSources({
+        sourceFileIds: ["source-file-a", "source-file-b"],
+        limitPerSource: 10
+      })
+    }));
+
+    expect(result).toMatchObject({
+      byId: null,
+      byPath: null,
+      generatedRoot: { path: "index.md", sourceFileId: null },
+      tree: { items: [] },
+      search: { items: [] },
+      edge: null,
+      outgoing: { items: [] },
+      incoming: { items: [] },
+      relatedBySource: new Map([
+        ["source-file-a", []],
+        ["source-file-b", []]
+      ])
+    });
+  });
+
+  it("hides all nested files as soon as a directory deletion marks its sources", async () => {
+    await seedActiveGeneration(
+      "generation-active-a",
+      "source-file-a",
+      "pages/archive/alpha.md",
+      "Alpha"
+    );
+    await seedAdditionalActiveFile(
+      "generation-active-a",
+      "source-file-b",
+      "pages/archive/beta.md",
+      "Beta"
+    );
+
+    await sql`
+      UPDATE focowiki.source_files
+      SET deleted_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ANY(${["source-file-a", "source-file-b"]})
+    `;
+
+    await expect(repository.withActiveGeneration(knowledgeBaseId, async (scope) => ({
+      tree: await scope.listTree({
+        parentPath: "pages/archive",
+        entryType: "file",
+        query: null,
+        limit: 10,
+        cursor: null
+      }),
+      search: await scope.search({ query: "Alpha", mode: "hybrid", limit: 10, cursor: null }),
+      files: await scope.findFilesBySourceIds(["source-file-a", "source-file-b"])
+    }))).resolves.toMatchObject({
+      tree: { items: [] },
+      search: { items: [] },
+      files: []
     });
   });
 
@@ -315,6 +453,7 @@ describeDatabase("active generation read repository integration", () => {
     path: string,
     title: string
   ): Promise<void> {
+    const parentPath = path.slice(0, path.lastIndexOf("/"));
     await insertGeneration(generationId, "active");
     await insertSource(sourceFileId, path);
     const checksum = sourceFileId === "source-file-a" ? "aa".repeat(32) : "bb".repeat(32);
@@ -344,7 +483,7 @@ describeDatabase("active generation read repository integration", () => {
         ) VALUES (
           ${knowledgeBaseId}, ${projectionKind}, ${sourceFileId},
           ${generationId}, ${`${projectionKind}/v1/0001`}, ${sourceFileId},
-          ${path}, 'pages', ${path.toLowerCase()}, ${title},
+          ${path}, ${parentPath}, ${path.toLowerCase()}, ${title},
           ${`${title} summary`}, ${`${title} searchable body`},
           ${sql.json({ fileId: sourceFileId, path, title, kind: "file" })}
         )
@@ -430,6 +569,7 @@ describeDatabase("active generation read repository integration", () => {
     path: string,
     title: string
   ): Promise<void> {
+    const parentPath = path.slice(0, path.lastIndexOf("/"));
     await insertSource(sourceFileId, path);
     const checksum = "cc".repeat(32);
     await insertObject(checksum, `generated/${checksum}`);
@@ -451,7 +591,7 @@ describeDatabase("active generation read repository integration", () => {
         searchable_text, payload_json
       ) VALUES (
         ${knowledgeBaseId}, 'search', ${sourceFileId}, ${generationId},
-        'search/v1/0002', ${sourceFileId}, ${path}, 'pages', ${path},
+        'search/v1/0002', ${sourceFileId}, ${path}, ${parentPath}, ${path},
         ${title}, ${`${title} summary`}, ${`${title} searchable body`},
         ${sql.json({ fileId: sourceFileId, path, title, kind: "file" })}
       )

@@ -101,6 +101,7 @@ function sourceFile(overrides: Partial<SourceFileRecord>): SourceFileRecord {
   return {
     id: "source-file-1",
     knowledgeBaseId: "kb-1",
+    sourceRevisionId: "source-revision-1",
     name: "guide.md",
     relativePath: "guides/guide.md",
     resourceRevision: 1,

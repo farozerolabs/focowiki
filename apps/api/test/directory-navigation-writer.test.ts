@@ -36,7 +36,7 @@ describe("directory navigation writer", () => {
   it("writes only touched leaves, their root, and removed leaf tombstones", async () => {
     const stageUpsert = vi.fn().mockResolvedValue(undefined);
     const stageDelete = vi.fn().mockResolvedValue(undefined);
-    const applyEntry = vi.fn().mockResolvedValue({
+    const applyEntries = vi.fn().mockResolvedValue({
       changed: true,
       touchedLeaves: [{
         id: "leaf-a",
@@ -56,7 +56,8 @@ describe("directory navigation writer", () => {
     });
     const writer = createDirectoryNavigationWriter({
       navigation: {
-        applyEntry,
+        applyEntry: vi.fn(),
+        applyEntries,
         getSummary: vi.fn()
       },
       references: {
@@ -106,19 +107,20 @@ describe("directory navigation writer", () => {
       logicalPath: "pages/index-leaf-old.md"
     }));
     expect(stageUpsert).toHaveBeenCalledTimes(2);
-    expect(applyEntry).toHaveBeenCalledWith(expect.objectContaining({
-      desiredEntry: expect.objectContaining({ sortKey: "guide.md/source-1" })
+    expect(applyEntries).toHaveBeenCalledWith(expect.objectContaining({
+      entries: [expect.objectContaining({
+        desiredEntry: expect.objectContaining({ sortKey: "guide.md/source-1" })
+      })]
     }));
-    expect(applyEntry.mock.calls[0]?.[0].desiredEntry.sortKey).not.toMatch(/[\u0000-\u001f\u007f]/u);
+    expect(applyEntries.mock.calls[0]?.[0].entries[0].desiredEntry.sortKey)
+      .not.toMatch(/[\u0000-\u001f\u007f]/u);
   });
 
   it("coalesces repeated mutations of one directory into one final leaf and root write", async () => {
     const stageUpsert = vi.fn().mockResolvedValue(undefined);
-    const applyEntry = vi.fn()
-      .mockResolvedValueOnce(directoryMutation("source-1", 1))
-      .mockResolvedValueOnce(directoryMutation("source-2", 2));
+    const applyEntries = vi.fn().mockResolvedValue(directoryMutation("source-2", 2));
     const writer = createDirectoryNavigationWriter({
-      navigation: { applyEntry, getSummary: vi.fn() },
+      navigation: { applyEntry: vi.fn(), applyEntries, getSummary: vi.fn() },
       references: {
         stageUpsert,
         stageDelete: vi.fn(),
@@ -147,7 +149,13 @@ describe("directory navigation writer", () => {
       handled: true,
       touchedShardCount: 2
     });
-    expect(applyEntry).toHaveBeenCalledTimes(2);
+    expect(applyEntries).toHaveBeenCalledOnce();
+    expect(applyEntries).toHaveBeenCalledWith(expect.objectContaining({
+      entries: [
+        expect.objectContaining({ entryId: "source-1" }),
+        expect.objectContaining({ entryId: "source-2" })
+      ]
+    }));
     expect(stageUpsert).toHaveBeenCalledTimes(2);
   });
 });

@@ -8,6 +8,7 @@ import type {
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
 import type { SourceFileStageMarker, SourceFileStageRecorder } from "./source-file-stage-types.js";
+import type { ResourceBudget } from "../runtime/resource-budget.js";
 
 export async function processSourceFileGraphStage(input: {
   repositories: AdminRepositories;
@@ -27,6 +28,8 @@ export async function processSourceFileGraphStage(input: {
   progressClock: () => string;
   mark: SourceFileStageMarker;
   recordStage: SourceFileStageRecorder;
+  graphQueryBudget?: ResourceBudget;
+  databaseMutationBudget?: ResourceBudget;
 }): Promise<{
   affectedSourceFileIds: string[];
   edgeIds: string[];
@@ -34,8 +37,8 @@ export async function processSourceFileGraphStage(input: {
 }> {
   const stage: SourceFileProcessingStage = "graph_generation";
   const startedAt = input.progressClock();
-  let graphJobId: string | null = null;
   let graphLockAcquired = false;
+  let severity: "info" | "warning" = "info";
 
   await input.mark({ status: "running", stage, endedAt: null });
   await input.recordStage(stage, { startedAt, endedAt: null, severity: "info" });
@@ -78,12 +81,6 @@ export async function processSourceFileGraphStage(input: {
       input.ttlSeconds
     );
 
-    const graphJob = await input.repositories.graph.createGraphJob?.({
-      knowledgeBaseId: input.knowledgeBaseId,
-      sourceFileId: input.source.id,
-      startedAt
-    });
-    graphJobId = graphJob?.id ?? null;
     const graphResult = await buildSourceFileGraph({
       graph: input.repositories.graph,
       knowledgeBaseId: input.knowledgeBaseId,
@@ -104,20 +101,16 @@ export async function processSourceFileGraphStage(input: {
             contextWindowTokens: input.modelAssistance.contextWindowTokens,
             receiveTimeouts: input.modelAssistance.receiveTimeouts
           }
-        : null
+        : null,
+      ...(input.graphQueryBudget ? { graphQueryBudget: input.graphQueryBudget } : {}),
+      ...(input.databaseMutationBudget
+        ? { databaseMutationBudget: input.databaseMutationBudget }
+        : {})
     });
     affectedSourceFileIds = graphResult.affectedSourceFileIds;
     edgeIds = graphResult.edgeIds;
     removedEdgeIds = graphResult.removedEdgeIds;
-
-    if (graphJobId) {
-      await input.repositories.graph.completeGraphJob?.({
-        id: graphJobId,
-        status: "completed",
-        endedAt: input.progressClock(),
-        errorCode: null
-      });
-    }
+    severity = graphResult.warnings.length > 0 ? "warning" : "info";
 
     await input.redis.recordSourceFileGraphState(
       { knowledgeBaseId: input.knowledgeBaseId, sourceFileId: input.source.id },
@@ -130,22 +123,7 @@ export async function processSourceFileGraphStage(input: {
       input.ttlSeconds
     );
 
-    if (graphResult.warnings.length > 0) {
-      await input.recordStage(stage, {
-        startedAt: null,
-        endedAt: input.progressClock(),
-        severity: "warning"
-      });
-    }
   } catch (error) {
-    if (graphJobId) {
-      await input.repositories.graph.completeGraphJob?.({
-        id: graphJobId,
-        status: "failed",
-        endedAt: input.progressClock(),
-        errorCode: "GRAPH_GENERATION_FAILED"
-      });
-    }
     await input.redis
       .recordSourceFileGraphState(
         { knowledgeBaseId: input.knowledgeBaseId, sourceFileId: input.source.id },
@@ -168,7 +146,7 @@ export async function processSourceFileGraphStage(input: {
   await input.recordStage(stage, {
     startedAt: null,
     endedAt: input.progressClock(),
-    severity: "info"
+    severity
   });
 
   return { affectedSourceFileIds, edgeIds, removedEdgeIds };

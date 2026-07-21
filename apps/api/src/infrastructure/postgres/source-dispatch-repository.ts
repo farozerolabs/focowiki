@@ -5,15 +5,7 @@ import {
   type DispatchPressureSnapshot
 } from "../../dispatch/source-dispatch-pressure.js";
 import type { DatabaseClient } from "../../db/client.js";
-
-type PressureRow = {
-  source_queue_depth: number;
-  oldest_source_queue_age_seconds: number;
-  dirty_file_count: number;
-  oldest_dirty_age_seconds: number;
-  pending_impact_count: number;
-  pending_marker_count: number;
-};
+import { readRuntimePressureSnapshot } from "./runtime-pressure-repository.js";
 
 export function createPostgresSourceDispatchRepository(
   sql: DatabaseClient
@@ -51,36 +43,14 @@ export function createPostgresSourceDispatchRepository(
 
       return sql.begin(async (transaction) => {
         await transaction`SELECT pg_advisory_xact_lock(hashtext('focowiki:source-dispatch'))`;
-        const pressureRows = await transaction<PressureRow[]>`
-          SELECT
-            count(*) FILTER (
-              WHERE job.role = 'source' AND job.status IN ('queued', 'running')
-            )::int AS source_queue_depth,
-            coalesce(max(extract(epoch FROM (${input.now}::timestamptz - job.created_at))) FILTER (
-              WHERE job.role = 'source' AND job.status IN ('queued', 'running')
-            ), 0)::int AS oldest_source_queue_age_seconds,
-            (SELECT count(*)::int
-             FROM focowiki.publication_change_facts fact
-             WHERE fact.generation_id IS NULL) AS dirty_file_count,
-            coalesce((SELECT max(extract(epoch FROM (${input.now}::timestamptz - fact.created_at)))::int
-                      FROM focowiki.publication_change_facts fact
-                      WHERE fact.generation_id IS NULL), 0) AS oldest_dirty_age_seconds,
-            (SELECT count(*)::int
-             FROM focowiki.publication_impacts impact
-             WHERE impact.status IN ('pending', 'running')) AS pending_impact_count,
-            (SELECT count(*)::int
-             FROM focowiki.source_dispatch_markers marker
-             WHERE marker.status = 'pending') AS pending_marker_count
-          FROM focowiki.role_jobs job
-        `;
-        const row = requirePressureRow(pressureRows[0]);
+        const pressure = await readRuntimePressureSnapshot(transaction, input.now);
         const snapshots = await transaction<Array<{ paused: boolean }>>`
           SELECT paused
           FROM focowiki.dispatch_pressure_state
           WHERE scope = 'global'
           FOR UPDATE
         `;
-        const snapshot = mapPressure(row);
+        const snapshot = pressure.snapshot;
         const decision = decideDispatchPressure({
           currentlyPaused: snapshots[0]?.paused ?? false,
           snapshot,
@@ -105,7 +75,7 @@ export function createPostgresSourceDispatchRepository(
             paused: true,
             reason: decision.reason,
             dispatchedCount: 0,
-            pendingMarkerCount: row.pending_marker_count,
+            pendingMarkerCount: pressure.pendingMarkerCount,
             snapshot
           };
         }
@@ -117,6 +87,12 @@ export function createPostgresSourceDispatchRepository(
             FROM focowiki.source_dispatch_markers marker
             WHERE marker.status = 'pending'
               AND marker.run_after <= ${input.now}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM focowiki.knowledge_base_optimization_migrations migration
+                WHERE migration.knowledge_base_id = marker.knowledge_base_id
+                  AND migration.state <> 'optimized_active'
+              )
             ORDER BY marker.sequence_number ASC, marker.id ASC
             LIMIT ${input.batchSize}
             FOR UPDATE SKIP LOCKED
@@ -146,35 +122,21 @@ export function createPostgresSourceDispatchRepository(
               )
             RETURNING marker.id
           )
-          SELECT count(*)::int AS count FROM marked
+          SELECT coalesce(sum(1), 0)::int AS count FROM marked
         `;
 
         return {
           paused: false,
           reason: null,
           dispatchedCount: dispatched[0]?.count ?? 0,
-          pendingMarkerCount: Math.max(0, row.pending_marker_count - (dispatched[0]?.count ?? 0)),
+          pendingMarkerCount: Math.max(
+            0,
+            pressure.pendingMarkerCount - (dispatched[0]?.count ?? 0)
+          ),
           snapshot
         };
       });
     }
-  };
-}
-
-function requirePressureRow(row: PressureRow | undefined): PressureRow {
-  if (!row) {
-    throw new Error("Dispatch pressure query returned no row");
-  }
-  return row;
-}
-
-function mapPressure(row: PressureRow): DispatchPressureSnapshot {
-  return {
-    sourceQueueDepth: row.source_queue_depth,
-    oldestSourceQueueAgeSeconds: row.oldest_source_queue_age_seconds,
-    dirtyFileCount: row.dirty_file_count,
-    oldestDirtyAgeSeconds: row.oldest_dirty_age_seconds,
-    pendingImpactCount: row.pending_impact_count
   };
 }
 

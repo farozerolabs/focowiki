@@ -33,17 +33,10 @@ describe("source file processor support", () => {
     expect(attempts).toBe(3);
   });
 
-  it("checks task deletion eligibility at every source-file processing boundary", () => {
+  it("checks deletion eligibility before storage and graph work without per-stage reads", () => {
     const processor = readProcessor();
 
-    for (const stage of [
-      "upload_storage",
-      "metadata_resolution",
-      "llm_suggestion",
-      "graph_generation",
-      "projection_generation",
-      "projection_generation"
-    ]) {
+    for (const stage of ["upload_storage", "graph_generation"]) {
       const stageOffset = processor.indexOf(`currentstage = \"${stage}\"`);
       const boundary = processor.slice(stageOffset, stageOffset + 220);
 
@@ -51,8 +44,7 @@ describe("source file processor support", () => {
       expect(boundary).toContain("await assertsourcefileprocessingeligible()");
     }
     expect(processor).toContain("sourcefileprocessingcancellederror");
-    expect(processor).toContain(
-      "if (!currentsource || currentsource.deletedat || currentsource.taskdeletedat)"
-    );
+    expect(processor).toContain("completion.complete({");
+    expect(processor).not.toContain("repositories.knowledgebases.getknowledgebase");
   });
 });

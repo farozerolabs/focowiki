@@ -16,6 +16,17 @@ import type { TransactionSql } from "postgres";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
+type ActiveGenerationRow = {
+  active_generation_id: string;
+  format_version: number;
+  optimization_state: "legacy_readable" | "backfilling" | "verifying" | "optimized_active" | "failed";
+};
+
+type ActiveReadVersion = {
+  formatVersion: number;
+  optimizationState: ActiveGenerationRow["optimization_state"];
+};
+
 type FileRow = {
   file_id: string;
   ref_kind: string;
@@ -50,6 +61,10 @@ type RelatedProjectionRow = ProjectionRow & {
   seed_source_file_id: string;
 };
 
+const SEARCH_CANDIDATE_MIN = 100;
+const SEARCH_CANDIDATE_MAX = 2_000;
+const SEARCH_CANDIDATE_MULTIPLIER = 10;
+
 export function createPostgresActiveGenerationReadRepository(
   sql: DatabaseClient
 ): ActiveGenerationReadRepository {
@@ -58,16 +73,27 @@ export function createPostgresActiveGenerationReadRepository(
     reader: (scope: ActiveGenerationReadScope) => Promise<T>
   ): Promise<T | null> {
     const result = await sql.begin("isolation level repeatable read read only", async (transaction) => {
-      const rows = await transaction<Array<{ active_generation_id: string | null }>>`
-        SELECT active_generation_id
-        FROM focowiki.knowledge_bases
-        WHERE id = ${knowledgeBaseId}
-          AND deleted_at IS NULL
+      const rows = await transaction<ActiveGenerationRow[]>`
+        SELECT knowledge_base.active_generation_id,
+               generation.format_version,
+               coalesce(migration.state, 'legacy_readable') AS optimization_state
+        FROM focowiki.knowledge_bases knowledge_base
+        JOIN focowiki.publication_generations generation
+          ON generation.id = knowledge_base.active_generation_id
+         AND generation.knowledge_base_id = knowledge_base.id
+         AND generation.state = 'active'
+        LEFT JOIN focowiki.knowledge_base_optimization_migrations migration
+          ON migration.knowledge_base_id = knowledge_base.id
+        WHERE knowledge_base.id = ${knowledgeBaseId}
+          AND knowledge_base.deleted_at IS NULL
         LIMIT 1
       `;
-      const generationId = rows[0]?.active_generation_id;
-      if (!generationId) return null;
-      return reader(createScope(transaction, knowledgeBaseId, generationId));
+      const active = rows[0];
+      if (!active) return null;
+      return reader(createScope(transaction, knowledgeBaseId, active.active_generation_id, {
+        formatVersion: Number(active.format_version),
+        optimizationState: active.optimization_state
+      }));
     });
     return result as T | null;
   }
@@ -79,7 +105,8 @@ export function createPostgresActiveGenerationReadRepository(
 function createScope(
   sql: ReadSql,
   knowledgeBaseId: string,
-  generationId: string
+  generationId: string,
+  version: ActiveReadVersion
 ): ActiveGenerationReadScope {
   return {
     knowledgeBaseId,
@@ -154,6 +181,9 @@ function createScope(
           persisted: true
         };
       }
+      if (version.optimizationState === "optimized_active") {
+        throw new Error("Active graph summary is unavailable");
+      }
       const compatibility = await sql<Array<{
         node_count: number;
         edge_count: number;
@@ -181,11 +211,23 @@ function createScope(
 
     async listTree(input) {
       assertLimit(input.limit);
-      return listActiveTree(sql, knowledgeBaseId, generationId, input);
+      return listActiveTree(
+        sql,
+        knowledgeBaseId,
+        generationId,
+        version.optimizationState !== "optimized_active",
+        input
+      );
     },
 
     async listTreeAncestors(paths) {
-      return listActiveTreeAncestors(sql, knowledgeBaseId, generationId, paths);
+      return listActiveTreeAncestors(
+        sql,
+        knowledgeBaseId,
+        generationId,
+        version.optimizationState !== "optimized_active",
+        paths
+      );
     },
 
     async search(input) {
@@ -193,8 +235,47 @@ function createScope(
       const query = input.query.trim();
       if (!query) return { items: [], nextCursor: null };
       const pattern = `%${escapeLikePattern(query)}%`;
+      const normalizedPattern = pattern.toLocaleLowerCase("en-US");
+      const candidateLimit = Math.min(
+        SEARCH_CANDIDATE_MAX,
+        Math.max(SEARCH_CANDIDATE_MIN, input.limit * SEARCH_CANDIDATE_MULTIPLIER)
+      );
       const rows = await sql<ProjectionRow[]>`
-        WITH raw_candidates AS (
+        WITH file_matches AS MATERIALIZED (
+          SELECT record.*
+          FROM focowiki.active_projection_records record
+          WHERE record.knowledge_base_id = ${knowledgeBaseId}
+            AND record.projection_kind = 'search'
+            AND ${input.mode} IN ('file', 'hybrid')
+            AND (
+              to_tsvector('simple', coalesce(record.searchable_text, ''))
+                @@ plainto_tsquery('simple', ${query})
+              OR lower(coalesce(record.searchable_text, ''))
+                LIKE ${normalizedPattern} ESCAPE '\\'
+            )
+          ORDER BY
+            (lower(coalesce(record.title, '')) = lower(${query})) DESC,
+            similarity(lower(coalesce(record.searchable_text, '')), lower(${query})) DESC,
+            record.record_id
+          LIMIT ${candidateLimit}
+        ), graph_matches AS MATERIALIZED (
+          SELECT record.*
+          FROM focowiki.active_projection_records record
+          WHERE record.knowledge_base_id = ${knowledgeBaseId}
+            AND record.projection_kind IN ('graph_node', 'graph_edge')
+            AND ${input.mode} IN ('graph', 'hybrid')
+            AND (
+              to_tsvector('simple', coalesce(record.searchable_text, ''))
+                @@ plainto_tsquery('simple', ${query})
+              OR lower(coalesce(record.searchable_text, ''))
+                LIKE ${normalizedPattern} ESCAPE '\\'
+            )
+          ORDER BY
+            (lower(coalesce(record.title, '')) = lower(${query})) DESC,
+            similarity(lower(coalesce(record.searchable_text, '')), lower(${query})) DESC,
+            record.record_id
+          LIMIT ${candidateLimit}
+        ), raw_candidates AS (
           SELECT record.projection_kind, record.record_id,
                  record.source_file_id, record.related_source_file_id,
                  file.logical_path, record.parent_path, record.sort_key,
@@ -204,7 +285,7 @@ function createScope(
                    'path', file.logical_path,
                    'matchType', 'file_direct'
                  ) AS payload_json
-          FROM focowiki.active_projection_records record
+          FROM file_matches record
           JOIN focowiki.active_object_refs file
             ON file.knowledge_base_id = record.knowledge_base_id
            AND file.source_file_id = record.source_file_id
@@ -214,9 +295,6 @@ function createScope(
            AND source.knowledge_base_id = record.knowledge_base_id
            AND source.deleted_at IS NULL
            AND source.deletion_intent_id IS NULL
-          WHERE record.knowledge_base_id = ${knowledgeBaseId}
-            AND record.projection_kind = 'search'
-            AND ${input.mode} IN ('file', 'hybrid')
           UNION ALL
           SELECT record.projection_kind, record.record_id,
                  record.source_file_id, record.related_source_file_id,
@@ -227,7 +305,7 @@ function createScope(
                    'path', file.logical_path,
                    'matchType', 'graph_node'
                  ) AS payload_json
-          FROM focowiki.active_projection_records record
+          FROM graph_matches record
           JOIN focowiki.active_object_refs file
             ON file.knowledge_base_id = record.knowledge_base_id
            AND file.source_file_id = record.source_file_id
@@ -237,9 +315,7 @@ function createScope(
            AND source.knowledge_base_id = record.knowledge_base_id
            AND source.deleted_at IS NULL
            AND source.deletion_intent_id IS NULL
-          WHERE record.knowledge_base_id = ${knowledgeBaseId}
-            AND record.projection_kind = 'graph_node'
-            AND ${input.mode} IN ('graph', 'hybrid')
+          WHERE record.projection_kind = 'graph_node'
           UNION ALL
           SELECT record.projection_kind,
                  candidate.source_file_id AS record_id,
@@ -254,7 +330,7 @@ function createScope(
                    'matchType', 'graph_edge',
                    'graphEdgeId', record.record_id
                  ) AS payload_json
-          FROM focowiki.active_projection_records record
+          FROM graph_matches record
           CROSS JOIN LATERAL (
             VALUES
               (record.source_file_id, record.related_source_file_id, record.payload_json->>'fromTitle'),
@@ -274,10 +350,8 @@ function createScope(
            AND related.knowledge_base_id = record.knowledge_base_id
            AND related.deleted_at IS NULL
            AND related.deletion_intent_id IS NULL
-          WHERE record.knowledge_base_id = ${knowledgeBaseId}
-            AND record.projection_kind = 'graph_edge'
+          WHERE record.projection_kind = 'graph_edge'
             AND candidate.source_file_id IS NOT NULL
-            AND ${input.mode} IN ('graph', 'hybrid')
         ), matched AS (
           SELECT *, (
             CASE WHEN lower(coalesce(title, '')) = lower(${query}) THEN 100 ELSE 0 END
@@ -290,10 +364,6 @@ function createScope(
             + similarity(lower(coalesce(searchable_text, '')), lower(${query}))
           )::real AS score
           FROM raw_candidates
-          WHERE to_tsvector('simple', coalesce(searchable_text, '')) @@ plainto_tsquery('simple', ${query})
-             OR coalesce(searchable_text, '') ILIKE ${pattern} ESCAPE '\\'
-             OR coalesce(title, '') ILIKE ${pattern} ESCAPE '\\'
-             OR coalesce(logical_path, '') ILIKE ${pattern} ESCAPE '\\'
         ), deduplicated AS (
           SELECT *, row_number() OVER (
             PARTITION BY source_file_id
@@ -323,36 +393,36 @@ function createScope(
       assertLimit(input.limit);
       const rows = await sql<ProjectionRow[]>`
         WITH ranked AS (
-          SELECT projection_kind, record_id, source_file_id,
-                 related_source_file_id, logical_path, parent_path, sort_key,
+          SELECT edge.projection_kind, edge.record_id, edge.source_file_id,
+                 edge.related_source_file_id, edge.logical_path, edge.parent_path, edge.sort_key,
                  CASE
-                   WHEN source_file_id = ${input.sourceFileId}
-                     THEN coalesce(payload_json->>'toTitle', title)
-                   ELSE coalesce(payload_json->>'fromTitle', title)
+                   WHEN edge.source_file_id = ${input.sourceFileId}
+                     THEN coalesce(edge.payload_json->>'toTitle', edge.title)
+                   ELSE coalesce(edge.payload_json->>'fromTitle', edge.title)
                  END AS title,
-                 coalesce(payload_json->>'reason', summary) AS summary,
-                 payload_json,
-                 coalesce((payload_json->>'weight')::real, 0) AS score
-          FROM focowiki.active_projection_records
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND projection_kind = 'graph_edge'
+                 coalesce(edge.payload_json->>'reason', edge.summary) AS summary,
+                 edge.payload_json,
+                 coalesce((edge.payload_json->>'weight')::real, 0) AS score
+          FROM focowiki.active_projection_records edge
+          WHERE edge.knowledge_base_id = ${knowledgeBaseId}
+            AND edge.projection_kind = 'graph_edge'
             AND EXISTS (
               SELECT 1 FROM focowiki.source_files source
-              WHERE source.id = source_file_id
+              WHERE source.id = edge.source_file_id
                 AND source.knowledge_base_id = ${knowledgeBaseId}
                 AND source.deleted_at IS NULL
                 AND source.deletion_intent_id IS NULL
             )
             AND EXISTS (
               SELECT 1 FROM focowiki.source_files related
-              WHERE related.id = related_source_file_id
+              WHERE related.id = edge.related_source_file_id
                 AND related.knowledge_base_id = ${knowledgeBaseId}
                 AND related.deleted_at IS NULL
                 AND related.deletion_intent_id IS NULL
             )
             AND (
-              source_file_id = ${input.sourceFileId}
-              OR related_source_file_id = ${input.sourceFileId}
+              edge.source_file_id = ${input.sourceFileId}
+              OR edge.related_source_file_id = ${input.sourceFileId}
             )
         )
         SELECT *

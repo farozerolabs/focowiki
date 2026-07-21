@@ -2,7 +2,10 @@ import {
   renderMarkdownIdentityLabel,
   toBundleMarkdownHref
 } from "@focowiki/okf";
-import type { DirectoryNavigationRepository, PersistentDirectoryLeaf } from "../application/ports/directory-navigation-repository.js";
+import type {
+  DirectoryNavigationRepository,
+  PersistentDirectoryLeaf
+} from "../application/ports/directory-navigation-repository.js";
 import type { GenerationObjectReferenceRepository } from "../application/ports/generation-object-reference-repository.js";
 import type { ClaimedPublicationImpact } from "../application/ports/publication-impact-repository.js";
 import type { PublicationProjectionInput } from "../application/ports/publication-projection-input.js";
@@ -34,34 +37,14 @@ export function createDirectoryNavigationWriter(input: {
         throw new Error("Directory projection batch must target one directory");
       }
       const directoryPath = generatedDirectoryPath(first.projectionKey);
-      const touchedLeaves = new Map<string, PersistentDirectoryLeaf>();
-      const removedLeafIds = new Set<string>();
-      let summary = null as Awaited<ReturnType<typeof input.navigation.getSummary>>;
-      let changed = false;
-      for (const impact of impacts) {
-        const projectionInput = requireNavigationInput(impact);
-        for (const target of projectionInput.targets) {
-        const mutation = await input.navigation.applyEntry({
-          knowledgeBaseId: impact.knowledgeBaseId,
-          directoryPath,
-          entryId: target.entryId,
-          desiredEntry: target.desiredEntry,
-          limits: input.limits
-        });
-        if (!mutation.changed) continue;
-        changed = true;
-        summary = mutation.summary;
-        for (const leafId of mutation.removedLeafIds) {
-          removedLeafIds.add(leafId);
-          touchedLeaves.delete(leafId);
-        }
-        for (const leaf of mutation.touchedLeaves) {
-          if (!removedLeafIds.has(leaf.id)) touchedLeaves.set(leaf.id, leaf);
-        }
-        }
-      }
-      if (!changed || !summary) return { handled: true, touchedShardCount: 0 };
-      for (const leafId of removedLeafIds) {
+      const mutation = await input.navigation.applyEntries({
+        knowledgeBaseId: first.knowledgeBaseId,
+        directoryPath,
+        entries: impacts.flatMap((impact) => requireNavigationInput(impact).targets),
+        limits: input.limits
+      });
+      if (!mutation.changed) return { handled: true, touchedShardCount: 0 };
+      for (const leafId of mutation.removedLeafIds) {
         await input.references.stageDelete({
           knowledgeBaseId: first.knowledgeBaseId,
           generationId: first.generationId,
@@ -71,7 +54,7 @@ export function createDirectoryNavigationWriter(input: {
           sourceFileId: null
         });
       }
-      for (const leaf of touchedLeaves.values()) {
+      for (const leaf of mutation.touchedLeaves) {
         await writeReference(input, first, {
           refKind: "directory_leaf",
           refKey: directoryLeafRefKey(directoryPath, leaf.id),
@@ -85,11 +68,11 @@ export function createDirectoryNavigationWriter(input: {
         logicalPath: `${directoryPath}/index.md`,
         body: renderDirectoryRootMarkdown({
           directoryPath,
-          entryCount: summary.entryCount,
-          firstLeafId: summary.firstLeafId
+          entryCount: mutation.summary.entryCount,
+          firstLeafId: mutation.summary.firstLeafId
         })
       });
-      return { handled: true, touchedShardCount: touchedLeaves.size + 1 };
+      return { handled: true, touchedShardCount: mutation.touchedLeaves.length + 1 };
     };
   return {
     write(impact: ClaimedPublicationImpact) {

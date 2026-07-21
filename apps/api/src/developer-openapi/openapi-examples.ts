@@ -43,7 +43,7 @@ const uploadSession = {
   updatedAt: exampleTimestamp
 };
 
-const uploadSessionTransport = { manifestPageSize: 500 };
+const uploadSessionTransport = { manifestPageSize: 500, contentUploadConcurrency: 8 };
 
 const uploadSessionEntry = {
   id: "upload-entry-11111111-1111-4111-8111-111111111111",

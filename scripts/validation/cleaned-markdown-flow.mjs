@@ -34,6 +34,7 @@ import {
   hydrateReachableMarkdownBodies
 } from "./lib/progressive-navigation.mjs";
 import { findInCursorPages } from "./lib/cursor-search.mjs";
+import { readProjectionCatalogRecords } from "./lib/projection-catalog-reader.mjs";
 
 export {
   selectSamples,
@@ -48,6 +49,7 @@ const CHANGE_ID =
 const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
+const PROJECTION_READ_CONCURRENCY_ENV = "FOCOWIKI_VALIDATION_PROJECTION_READ_CONCURRENCY";
 const REQUIRE_MODEL_ENV = "FOCOWIKI_VALIDATION_REQUIRE_MODEL";
 const KEEP_KNOWLEDGE_BASE_ENV = "FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE";
 const WHITE_BOX = "white-box";
@@ -3199,18 +3201,17 @@ async function validatePublicDeletionState({
     projectionKind: "links"
   }) };
 
-  for (const [logicalPath, body] of publicBodies) {
-    if (body.includes(deletedPagePath) || body.includes(encodeURIComponent(path.basename(deletedPagePath)))) {
-      throw new Error(`Public ${logicalPath} still references deleted page ${deletedPagePath}.`);
-    }
-  }
-
-  if (
-    manifest.files.some((file) => file.path === deletedPagePath) ||
-    search.items.some((item) => item.path === deletedPagePath) ||
-    links.links.some((link) => link.path === deletedPagePath)
-  ) {
-    throw new Error("Generated indexes still contain deleted page graph or metadata references.");
+  const deletedReferences = findDeletedPageReferences({
+    deletedPagePath,
+    publicBodies,
+    manifest,
+    search,
+    links
+  });
+  if (deletedReferences.length > 0) {
+    throw new Error(
+      `Active public outputs still reference deleted page ${deletedPagePath}: ${deletedReferences.join(", ")}.`
+    );
   }
 
   report.checks.push(
@@ -3219,6 +3220,27 @@ async function validatePublicDeletionState({
       remainingPagePath
     })
   );
+}
+
+export function findDeletedPageReferences({
+  deletedPagePath,
+  publicBodies,
+  manifest,
+  search,
+  links
+}) {
+  const references = [];
+  const encodedBasename = encodeURIComponent(path.basename(deletedPagePath));
+  for (const logicalPath of ["index.md", "log.md", "_index/catalog.json"]) {
+    const body = publicBodies.get(logicalPath);
+    if (typeof body === "string" && (body.includes(deletedPagePath) || body.includes(encodedBasename))) {
+      references.push(logicalPath);
+    }
+  }
+  if (manifest.files.some((file) => file.path === deletedPagePath)) references.push("manifest");
+  if (search.items.some((item) => item.path === deletedPagePath)) references.push("search");
+  if (links.links.some((link) => link.path === deletedPagePath)) references.push("links");
+  return references;
 }
 
 async function validateKnowledgeBaseDeletion({ admin, publicApi, env, knowledgeBaseId, report }) {
@@ -3457,7 +3479,7 @@ async function validateModelInvocationBoundaries(
       return;
     }
 
-    const expectedLlmPhaseEvents = samples.length * 2;
+    const expectedLlmPhaseEvents = expectedModelStageEventCount(samples.length);
 
     if (
       shape.llm_phase_events !== expectedLlmPhaseEvents ||
@@ -3514,6 +3536,13 @@ async function validateModelInvocationBoundaries(
   } finally {
     await sql.end({ timeout: 5 });
   }
+}
+
+export function expectedModelStageEventCount(sampleCount) {
+  if (!Number.isSafeInteger(sampleCount) || sampleCount < 0) {
+    throw new Error("Model stage sample count must be a non-negative integer.");
+  }
+  return sampleCount;
 }
 
 async function validateDatabaseBoundaries(
@@ -3864,27 +3893,25 @@ async function readProjectionRecordsFromCatalog({
   if (!descriptor || !Array.isArray(descriptor.shards)) {
     throw new Error(`Projection catalog is missing ${projectionName} shard descriptors.`);
   }
-  const records = [];
-  for (const shard of descriptor.shards) {
-    if (!shard || typeof shard.path !== "string" || !Number.isSafeInteger(shard.recordCount)) {
-      throw new Error(`Projection catalog includes an invalid ${projectionName} shard descriptor.`);
+  const projectionReadConcurrency = readPositiveInteger(
+    process.env[PROJECTION_READ_CONCURRENCY_ENV],
+    4
+  );
+  return readProjectionCatalogRecords({
+    shards: descriptor.shards,
+    projectionKind,
+    shardReadConcurrency: projectionReadConcurrency,
+    segmentReadConcurrency: projectionReadConcurrency,
+    readText: async (logicalPath) => {
+      const body = await readPublicText(
+        publicApi,
+        developerFileContentPath(knowledgeBaseId, logicalPath),
+        authHeaders
+      );
+      bodies.set(logicalPath, body);
+      return body;
     }
-    const body = await readPublicText(
-      publicApi,
-      developerFileContentPath(knowledgeBaseId, shard.path),
-      authHeaders
-    );
-    bodies.set(shard.path, body);
-    const parsed = parseJsonIndex(body, shard.path);
-    if (parsed.projection !== projectionKind || !Array.isArray(parsed.records)) {
-      throw new Error(`Projection shard payload is malformed: ${shard.path}`);
-    }
-    if (parsed.records.length !== shard.recordCount) {
-      throw new Error(`Projection shard count differs from its catalog descriptor: ${shard.path}`);
-    }
-    records.push(...parsed.records);
-  }
-  return records;
+  });
 }
 
 async function getS3ObjectText(client, bucket, key) {

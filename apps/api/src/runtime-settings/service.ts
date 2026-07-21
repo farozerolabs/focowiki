@@ -186,7 +186,10 @@ export function createRuntimeSettingsService(input: {
         } as RuntimeSettingsSnapshot["worker"]
       ),
       publication: sanitizePublicationSettings(
-        (publicationRecord?.value ?? defaults.publication) as RuntimePublicationSettings
+        {
+          ...defaults.publication,
+          ...(publicationRecord?.value ?? {})
+        } as RuntimePublicationSettings
       ),
       graph: sanitizeGraphSettings(
         {

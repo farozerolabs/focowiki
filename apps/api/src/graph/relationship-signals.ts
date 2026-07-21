@@ -1,14 +1,50 @@
 import { isLowInformationSharedGraphTerm, type OkfGraphNode } from "@focowiki/okf";
 import { isUsefulTerm, normalizeTerm } from "./content-profile.js";
 
+export type SpecificPhraseIndex = {
+  exactTerms: Set<string>;
+  cjkTerms: string[];
+};
+
 export function findSharedSpecificPhrases(source: OkfGraphNode, candidate: OkfGraphNode): string[] {
-  const sourceTerms = listStrongGraphNodeTerms(source);
-  const candidateTerms = listStrongGraphNodeTerms(candidate);
+  return findSharedSpecificPhrasesFromIndex(
+    createSpecificPhraseIndex(listStrongGraphNodeTerms(source)),
+    listStrongGraphNodeTerms(candidate)
+  );
+}
+
+export function findSharedSpecificPhrasesFromTerms(
+  sourceTerms: string[],
+  candidateTerms: string[]
+): string[] {
+  return findSharedSpecificPhrasesFromIndex(
+    createSpecificPhraseIndex(sourceTerms),
+    candidateTerms
+  );
+}
+
+export function createSpecificPhraseIndex(sourceTerms: string[]): SpecificPhraseIndex {
+  return {
+    exactTerms: new Set(sourceTerms),
+    cjkTerms: sourceTerms.filter(isCjkTerm)
+  };
+}
+
+export function findSharedSpecificPhrasesFromIndex(
+  source: SpecificPhraseIndex,
+  candidateTerms: string[]
+): string[] {
   const matches: string[] = [];
 
-  for (const sourceTerm of sourceTerms) {
-    for (const candidateTerm of candidateTerms) {
-      const match = matchSpecificPhrase(sourceTerm, candidateTerm);
+  for (const candidateTerm of candidateTerms) {
+    if (source.exactTerms.has(candidateTerm)) matches.push(candidateTerm);
+  }
+
+  const candidateCjkTerms = candidateTerms.filter(isCjkTerm);
+  for (const sourceTerm of source.cjkTerms) {
+    for (const candidateTerm of candidateCjkTerms) {
+      if (sourceTerm === candidateTerm) continue;
+      const match = matchNormalizedCjkPhrase(sourceTerm, candidateTerm);
 
       if (match) {
         matches.push(match);
@@ -80,24 +116,9 @@ export function isStrongContentSignal(value: string): boolean {
   return true;
 }
 
-function matchSpecificPhrase(left: string, right: string): string | null {
-  const normalizedLeft = normalizeTerm(left);
-  const normalizedRight = normalizeTerm(right);
-
-  if (!isStrongContentSignal(normalizedLeft) || !isStrongContentSignal(normalizedRight)) {
-    return null;
-  }
-
-  if (normalizedLeft === normalizedRight) {
-    return normalizedLeft;
-  }
-
-  if (!isCjkTerm(normalizedLeft) || !isCjkTerm(normalizedRight)) {
-    return null;
-  }
-
-  const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
-  const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
+function matchNormalizedCjkPhrase(left: string, right: string): string | null {
+  const shorter = left.length <= right.length ? left : right;
+  const longer = shorter === left ? right : left;
 
   if (shorter.length >= 4 && longer.includes(shorter)) {
     return shorter;

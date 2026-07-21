@@ -21,6 +21,7 @@ export type SourceFileModelInvocationFilter = ModelInvocationStatus | "not_recor
 export type SourceFileRecord = {
   id: string;
   knowledgeBaseId: string;
+  sourceRevisionId: string;
   name: string;
   relativePath: string;
   resourceRevision?: number;

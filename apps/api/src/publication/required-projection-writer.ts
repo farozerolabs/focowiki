@@ -11,7 +11,7 @@ import { generatedPagePath } from "../domain/source-path.js";
 import { createGeneratedFileId } from "../domain/generated-file-id.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import type { ImmutableObjectWriteResult } from "./immutable-object-writer.js";
-import type { JsonProjectionRecord } from "./json-projection-shard-writer.js";
+import type { JsonProjectionRecord } from "./projection-shard-partitioning.js";
 import {
   applyPresentationSuggestions,
   renderPageFile

@@ -7,12 +7,15 @@ import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createPostgresDirectoryNavigationRepository } from "./infrastructure/postgres/directory-navigation-repository.js";
 import { createPostgresGenerationObjectReferenceRepository } from "./infrastructure/postgres/generation-object-reference-repository.js";
+import { createPostgresGenerationAssemblyDispatchRepository } from "./infrastructure/postgres/generation-assembly-dispatch-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresProjectionRecordRepository } from "./infrastructure/postgres/projection-record-repository.js";
 import { createPostgresProjectionCatalogRepository } from "./infrastructure/postgres/projection-catalog-repository.js";
-import { createPostgresProjectionShardRepository } from "./infrastructure/postgres/projection-shard-repository.js";
+import { createPostgresProjectionSegmentRepository } from "./infrastructure/postgres/projection-segment-repository.js";
 import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
 import { createPostgresPublicationImpactRepository } from "./infrastructure/postgres/publication-impact-repository.js";
+import { createPostgresPublicationSubtaskRepository } from "./infrastructure/postgres/publication-subtask-repository.js";
+import { createPostgresPublicationActivationStateRepository } from "./infrastructure/postgres/publication-activation-state-repository.js";
 import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
 import { createRuntimeLogger } from "./logger.js";
@@ -20,17 +23,25 @@ import { createBoundedRootWriter } from "./publication/bounded-root-writer.js";
 import { createDirectoryNavigationWriter } from "./publication/directory-navigation-writer.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from "./publication/incremental-defaults.js";
-import { createJsonProjectionShardWriter } from "./publication/json-projection-shard-writer.js";
+import { createProjectionSegmentWriter } from "./publication/projection-segment-writer.js";
 import { createProjectionCatalogWriter } from "./publication/projection-catalog-writer.js";
 import { createRequiredProjectionWriter } from "./publication/required-projection-writer.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
+import { resolveResourceBudgetLimits } from "./runtime-settings/resource-budget-settings.js";
+import { createProcessResourceBudgets } from "./runtime/resource-budget.js";
+import { createResourceBudgetReporter } from "./runtime/resource-budget-reporter.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createPublicationRoleProcessor } from "./worker/publication-role-processor.js";
+import { createGenerationAssemblyProcessor } from "./worker/generation-assembly-processor.js";
 import { createRoleWorkerRuntime } from "./worker/role-runtime.js";
+import { createPublicationSubtaskRuntime } from "./worker/publication-subtask-runtime.js";
+import { resolvePublicationSubtaskWorkerSettings } from "./worker/publication-subtask-settings.js";
+import { createPublicationTerminalPhaseHandlers } from "./worker/publication-terminal-phase-handler.js";
+import { RoleJobReschedule } from "./domain/role-job.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -71,20 +82,33 @@ async function runPublicationWorker(): Promise<void> {
       redis
     });
     await runtimeSettings.ensureBootstrapped();
+    const initialSnapshot = await runtimeSettings.getSnapshot();
+    const resourceBudgets = createProcessResourceBudgets(
+      resolveResourceBudgetLimits(initialSnapshot)
+    );
+    const resourceBudgetReporter = createResourceBudgetReporter({ logger });
 
     const storage = createS3StorageAdapter(config.storage);
     const references = createPostgresGenerationObjectReferenceRepository(sql);
-    const immutableObjects = createImmutableObjectWriter({
+    const unboundedImmutableObjects = createImmutableObjectWriter({
       repository: createPostgresImmutableObjectRepository(sql),
       storage
     });
+    const immutableObjects = {
+      write(object: Parameters<typeof unboundedImmutableObjects.write>[0]) {
+        return resourceBudgets.generatedObjectWrite.run(
+          () => unboundedImmutableObjects.write(object)
+        );
+      }
+    };
     const navigation = createPostgresDirectoryNavigationRepository(sql);
-    const shards = createJsonProjectionShardWriter({
+    const shards = createProjectionSegmentWriter({
       references,
-      shards: createPostgresProjectionShardRepository(sql),
+      segments: createPostgresProjectionSegmentRepository(sql),
       immutableObjects,
-      storage,
-      maxShardBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardBytes
+      maxSegmentEntries: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentEntries,
+      maxSegmentBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentBytes,
+      maxObjectBytes: config.pagination.generatedContentMaxBytes
     });
     const requiredWriter = createRequiredProjectionWriter({
       records: createPostgresProjectionRecordRepository(sql),
@@ -136,10 +160,16 @@ async function runPublicationWorker(): Promise<void> {
         }).writeBatch(impacts);
       }
     };
-    const processor = createPublicationRoleProcessor({
-      generations: createPostgresPublicationGenerationRepository(sql),
-      impacts: createPostgresPublicationImpactRepository(sql),
-      validation: createPostgresPublicationValidationRepository(sql),
+    const generations = createPostgresPublicationGenerationRepository(sql);
+    const assemblyDispatch = createPostgresGenerationAssemblyDispatchRepository(sql);
+    const impacts = createPostgresPublicationImpactRepository(sql);
+    const subtasks = createPostgresPublicationSubtaskRepository(sql);
+    const validation = createPostgresPublicationValidationRepository(sql);
+    const publicationProcessor = createPublicationRoleProcessor({
+      generations,
+      impacts,
+      subtasks,
+      validation,
       references,
       immutableObjects,
       writers: [requiredWriter, directoryWriter, rootWriter],
@@ -148,13 +178,29 @@ async function runPublicationWorker(): Promise<void> {
       retryDelayMs: 5_000,
       validationIssueLimit: 50
     });
+    const assemblyProcessor = createGenerationAssemblyProcessor({
+      generations,
+      async settings() {
+        const snapshot = await runtimeSettings.getSnapshot();
+        return { batchSize: snapshot.worker.generationBatchSize };
+      }
+    });
     const workerId = `publication-worker-${randomUUID()}`;
     const runtime = createRoleWorkerRuntime({
       role: "publication",
       workerId,
       repository: createPostgresRoleJobRepository(sql),
+      async beforeClaim() {
+        const snapshot = await runtimeSettings.getSnapshot();
+        await assemblyDispatch.dispatchPending({
+          now: new Date().toISOString(),
+          limit: snapshot.worker.generationBatchSize
+        });
+      },
       async settings() {
         const snapshot = await runtimeSettings.getSnapshot();
+        resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+        resourceBudgetReporter.report(resourceBudgets);
         const worker = snapshot.worker;
         return {
           claimBatchSize: snapshot.publication.claimBatchSize,
@@ -165,10 +211,60 @@ async function runPublicationWorker(): Promise<void> {
           retryDelayMs: worker.jobRetryDelayMs
         };
       },
-      process: processor,
+      async process(job, signal) {
+        if (job.kind === "generation_assembly") {
+          try {
+            return await resourceBudgets.generationAssembly.run(
+              () => assemblyProcessor(job, signal)
+            );
+          } catch (error) {
+            if (error instanceof RoleJobReschedule) {
+              resourceBudgets.generationAssembly.recordRetry();
+            }
+            throw error;
+          }
+        }
+        return publicationProcessor(job, signal);
+      },
       logger
     });
-    await runtime.run(abort.signal);
+    const subtaskRuntime = createPublicationSubtaskRuntime({
+      subtasks,
+      impacts,
+      writers: [requiredWriter, directoryWriter, rootWriter],
+      terminalHandlers: createPublicationTerminalPhaseHandlers({
+        generations,
+        state: createPostgresPublicationActivationStateRepository(sql),
+        validation,
+        references,
+        immutableObjects,
+        finalizers: [catalogWriter],
+        validationIssueLimit: 50
+      }),
+      resourceBudgets: {
+        projectionPartition: resourceBudgets.projectionPartition,
+        directory: resourceBudgets.directory
+      },
+      workerId: `${workerId}-partition`,
+      async settings() {
+        const snapshot = await runtimeSettings.getSnapshot();
+        resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+        resourceBudgetReporter.report(resourceBudgets);
+        return resolvePublicationSubtaskWorkerSettings({
+          generationClaimBatchSize: snapshot.publication.claimBatchSize,
+          projectionPartitionConcurrency: snapshot.publication.projectionPartitionConcurrency,
+          pollIntervalMs: snapshot.worker.pollIntervalMs,
+          lockTtlSeconds: snapshot.worker.lockTtlSeconds,
+          heartbeatIntervalMs: snapshot.worker.heartbeatIntervalMs,
+          retryDelayMs: snapshot.worker.jobRetryDelayMs
+        });
+      },
+      logger
+    });
+    await Promise.all([
+      runtime.run(abort.signal),
+      subtaskRuntime.run(abort.signal)
+    ]);
   } finally {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);

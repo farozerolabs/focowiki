@@ -122,6 +122,35 @@ describe("role worker runtime", () => {
       jobIds: ["job-maintenance"]
     }));
   });
+
+  it("serializes process heartbeats while concurrent jobs are running", async () => {
+    const jobs = Array.from({ length: 4 }, (_, index) => createJob("source", {
+      id: `job-source-${index}`,
+      sourceFileId: `source-file-${index}`
+    }));
+    const repository = createFakeRepository(jobs);
+    let activeHeartbeats = 0;
+    let maximumActiveHeartbeats = 0;
+    repository.heartbeat.mockImplementation(async () => {
+      activeHeartbeats += 1;
+      maximumActiveHeartbeats = Math.max(maximumActiveHeartbeats, activeHeartbeats);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeHeartbeats -= 1;
+    });
+    const runtime = createRoleWorkerRuntime({
+      role: "source",
+      workerId: "source-worker-heartbeat",
+      repository,
+      process: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      },
+      settings: settings()
+    });
+
+    await expect(runtime.tick()).resolves.toBe(4);
+
+    expect(maximumActiveHeartbeats).toBe(1);
+  });
 });
 
 function settings() {

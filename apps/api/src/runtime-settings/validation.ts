@@ -3,8 +3,7 @@ import {
   resolveGraphConfig,
   resolvePublicationConfig,
   resolveWorkerConfig,
-  type RuntimeConfig,
-  type WorkerRuntimeConfig
+  type RuntimeConfig
 } from "../config.js";
 import {
   modelApiModeValues,
@@ -22,6 +21,9 @@ import {
 
 const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
 const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
+const MAX_WORKER_RESOURCE_CONCURRENCY = 32;
+const MAX_PUBLICATION_RESOURCE_CONCURRENCY = 32;
+const MAX_MAINTENANCE_RESOURCE_CONCURRENCY = 16;
 
 export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   reconciliationEnabled: true,
@@ -31,17 +33,34 @@ export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   quarantineGracePeriodSeconds: 86_400,
   confirmationPasses: 2,
   maxAttempts: 5,
-  retryDelayMs: 30_000
+  retryDelayMs: 30_000,
+  migrationBackfillConcurrency: 2,
+  compactionConcurrency: 1
 };
 
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
   return {
     rateLimits: resolveSecurityConfig(config).rateLimits,
-    worker: sanitizeWorkerSettings(resolveWorkerConfig(config)),
+    worker: sanitizeWorkerSettings({
+      ...resolveWorkerConfig(config),
+      sourceObjectReadConcurrency: resolveWorkerConfig(config).sourceFileConcurrency,
+      graphQueryConcurrency: resolveWorkerConfig(config).sourceFileConcurrency,
+      databaseMutationConcurrency: Math.min(
+        4,
+        resolveWorkerConfig(config).sourceFileConcurrency
+      )
+    }),
     publication: {
       ...resolvePublicationConfig(config),
       okfLogMaxEntries: config.okf?.log.maxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES,
-      okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES
+      okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES,
+      generationAssemblyConcurrency: resolvePublicationConfig(config).roleConcurrency,
+      projectionPartitionConcurrency: resolvePublicationConfig(config).impactConcurrency,
+      generatedObjectWriteConcurrency: resolvePublicationConfig(config).impactConcurrency,
+      directoryMaterializationConcurrency: Math.min(
+        4,
+        resolvePublicationConfig(config).impactConcurrency
+      )
     },
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
@@ -91,6 +110,9 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
 
   [
     "sourceFileConcurrency",
+    "sourceObjectReadConcurrency",
+    "graphQueryConcurrency",
+    "databaseMutationConcurrency",
     "claimBatchSize",
     "generationBatchSize",
     "pollIntervalMs",
@@ -114,6 +136,50 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     "hardDeleteRetryDelayMs",
     "hardDeleteFailedRetentionDays"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  if (
+    Number.isInteger(value.sourceFileConcurrency)
+    && Number(value.sourceFileConcurrency) > MAX_WORKER_RESOURCE_CONCURRENCY
+  ) {
+    issues.push({
+      field: "sourceFileConcurrency",
+      message: `sourceFileConcurrency must be less than or equal to ${MAX_WORKER_RESOURCE_CONCURRENCY}`
+    });
+  }
+
+  if (
+    Number.isInteger(value.claimBatchSize)
+    && Number.isInteger(value.sourceFileConcurrency)
+    && Number(value.claimBatchSize) < Number(value.sourceFileConcurrency)
+  ) {
+    issues.push({
+      field: "claimBatchSize",
+      message: "claimBatchSize must be greater than or equal to sourceFileConcurrency"
+    });
+  }
+
+  for (const field of [
+    "sourceObjectReadConcurrency",
+    "graphQueryConcurrency",
+    "databaseMutationConcurrency"
+  ] as const) {
+    if (Number.isInteger(value[field]) && Number(value[field]) > MAX_WORKER_RESOURCE_CONCURRENCY) {
+      issues.push({
+        field,
+        message: `${field} must be less than or equal to ${MAX_WORKER_RESOURCE_CONCURRENCY}`
+      });
+    }
+    if (
+      Number.isInteger(value[field])
+      && Number.isInteger(value.sourceFileConcurrency)
+      && Number(value[field]) > Number(value.sourceFileConcurrency)
+    ) {
+      issues.push({
+        field,
+        message: `${field} must be less than or equal to sourceFileConcurrency`
+      });
+    }
+  }
 
   if (value.hardDeleteObjectBatchSize && Number(value.hardDeleteObjectBatchSize) > 1_000) {
     issues.push({
@@ -140,9 +206,12 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
   return issues;
 }
 
-export function sanitizeWorkerSettings(input: Required<WorkerRuntimeConfig>): RuntimeWorkerSettings {
+export function sanitizeWorkerSettings(input: RuntimeWorkerSettings): RuntimeWorkerSettings {
   return {
     sourceFileConcurrency: input.sourceFileConcurrency,
+    sourceObjectReadConcurrency: input.sourceObjectReadConcurrency,
+    graphQueryConcurrency: input.graphQueryConcurrency,
+    databaseMutationConcurrency: input.databaseMutationConcurrency,
     claimBatchSize: input.claimBatchSize,
     generationBatchSize: input.generationBatchSize,
     pollIntervalMs: input.pollIntervalMs,
@@ -202,8 +271,43 @@ export function validatePublicationSettings(input: unknown): RuntimeSettingsVali
     "directoryIndexMaxEntries",
     "directoryIndexMaxBytes",
     "okfLogMaxEntries",
-    "okfLogMaxBytes"
+    "okfLogMaxBytes",
+    "generationAssemblyConcurrency",
+    "projectionPartitionConcurrency",
+    "generatedObjectWriteConcurrency",
+    "directoryMaterializationConcurrency"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  for (const field of [
+    "generationAssemblyConcurrency",
+    "projectionPartitionConcurrency",
+    "generatedObjectWriteConcurrency",
+    "directoryMaterializationConcurrency"
+  ] as const) {
+    if (
+      Number.isInteger(value[field])
+      && Number(value[field]) > MAX_PUBLICATION_RESOURCE_CONCURRENCY
+    ) {
+      issues.push({
+        field,
+        message: `${field} must be less than or equal to ${MAX_PUBLICATION_RESOURCE_CONCURRENCY}`
+      });
+    }
+  }
+  validateAtMost(value, "generationAssemblyConcurrency", "roleConcurrency", issues);
+  validateAtMost(value, "projectionPartitionConcurrency", "impactConcurrency", issues);
+  validateAtMost(
+    value,
+    "generatedObjectWriteConcurrency",
+    "projectionPartitionConcurrency",
+    issues
+  );
+  validateAtMost(
+    value,
+    "directoryMaterializationConcurrency",
+    "projectionPartitionConcurrency",
+    issues
+  );
 
   if (Number.isInteger(value.impactConcurrency) && Number(value.impactConcurrency) > 32) {
     issues.push({
@@ -311,8 +415,22 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
     "quarantineGracePeriodSeconds",
     "confirmationPasses",
     "maxAttempts",
-    "retryDelayMs"
+    "retryDelayMs",
+    "migrationBackfillConcurrency",
+    "compactionConcurrency"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  for (const field of ["migrationBackfillConcurrency", "compactionConcurrency"] as const) {
+    if (
+      Number.isInteger(value[field])
+      && Number(value[field]) > MAX_MAINTENANCE_RESOURCE_CONCURRENCY
+    ) {
+      issues.push({
+        field,
+        message: `${field} must be less than or equal to ${MAX_MAINTENANCE_RESOURCE_CONCURRENCY}`
+      });
+    }
+  }
 
   for (const field of ["scanBatchSize", "deletionBatchSize"] as const) {
     if (Number.isInteger(value[field]) && Number(value[field]) > 1_000) {
@@ -344,7 +462,9 @@ export function sanitizeMaintenanceSettings(
     quarantineGracePeriodSeconds: input.quarantineGracePeriodSeconds,
     confirmationPasses: input.confirmationPasses,
     maxAttempts: input.maxAttempts,
-    retryDelayMs: input.retryDelayMs
+    retryDelayMs: input.retryDelayMs,
+    migrationBackfillConcurrency: input.migrationBackfillConcurrency,
+    compactionConcurrency: input.compactionConcurrency
   };
 }
 
@@ -376,7 +496,11 @@ export function sanitizePublicationSettings(
     directoryIndexMaxEntries: input.directoryIndexMaxEntries,
     directoryIndexMaxBytes: input.directoryIndexMaxBytes,
     okfLogMaxEntries: input.okfLogMaxEntries,
-    okfLogMaxBytes: input.okfLogMaxBytes
+    okfLogMaxBytes: input.okfLogMaxBytes,
+    generationAssemblyConcurrency: input.generationAssemblyConcurrency,
+    projectionPartitionConcurrency: input.projectionPartitionConcurrency,
+    generatedObjectWriteConcurrency: input.generatedObjectWriteConcurrency,
+    directoryMaterializationConcurrency: input.directoryMaterializationConcurrency
   };
 }
 
@@ -425,6 +549,24 @@ function requireGraphDepth(
 ) {
   if (!Number.isInteger(value) || Number(value) < 0 || Number(value) > 2) {
     issues.push({ field, message: `${field} must be 0, 1, or 2` });
+  }
+}
+
+function validateAtMost(
+  value: Record<string, unknown>,
+  field: string,
+  maximumField: string,
+  issues: RuntimeSettingsValidationIssue[]
+): void {
+  if (
+    Number.isInteger(value[field])
+    && Number.isInteger(value[maximumField])
+    && Number(value[field]) > Number(value[maximumField])
+  ) {
+    issues.push({
+      field,
+      message: `${field} must be less than or equal to ${maximumField}`
+    });
   }
 }
 

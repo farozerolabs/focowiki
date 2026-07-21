@@ -53,6 +53,9 @@ vi.mock("@/lib/admin-api", () => ({
       },
       worker: {
         sourceFileConcurrency: 2,
+        sourceObjectReadConcurrency: 2,
+        graphQueryConcurrency: 2,
+        databaseMutationConcurrency: 2,
         claimBatchSize: 10,
         generationBatchSize: 50,
         pollIntervalMs: 1000,
@@ -85,6 +88,10 @@ vi.mock("@/lib/admin-api", () => ({
         claimBatchSize: 1,
         impactBatchSize: 100,
         impactConcurrency: 8,
+        generationAssemblyConcurrency: 1,
+        projectionPartitionConcurrency: 8,
+        generatedObjectWriteConcurrency: 8,
+        directoryMaterializationConcurrency: 4,
         dirtyFileHardCount: 2000,
         dirtyFileResumeCount: 1000,
         dirtyAgeHardSeconds: 900,
@@ -124,7 +131,9 @@ vi.mock("@/lib/admin-api", () => ({
         quarantineGracePeriodSeconds: 86400,
         confirmationPasses: 2,
         maxAttempts: 5,
-        retryDelayMs: 30000
+        retryDelayMs: 30000,
+        migrationBackfillConcurrency: 2,
+        compactionConcurrency: 1
       },
       activeModel: {
         id: "model-001"

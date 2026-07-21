@@ -168,6 +168,7 @@ function createProcessor(
 
 function createCleanup(overrides: Partial<GenerationCleanupRepository> = {}): GenerationCleanupRepository {
   return {
+    supersedeTargetWork: vi.fn(),
     getCheckpoint: vi.fn().mockResolvedValue(null),
     saveCheckpoint: vi.fn(),
     isReady: vi.fn().mockResolvedValue(true),

@@ -3,6 +3,7 @@ import type { SerializableJson } from "./serializable-json.js";
 
 export type RoleJobKind =
   | "source_processing"
+  | "generation_assembly"
   | "generation_publication"
   | "resource_operation"
   | "hard_delete"

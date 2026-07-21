@@ -279,7 +279,7 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
   const progress = summary.publicationProgress;
 
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
       <SummaryItem
         label={t("tasks.summary.pendingDispatch")}
         value={t("tasks.summary.pendingCount", { count: summary.pendingDispatch.pendingCount })}
@@ -316,7 +316,64 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
           ? t("tasks.summary.publicationFailed", { code: progress.safeErrorCode })
           : summary.activeGenerationId ?? t("tasks.summary.waitingForFirstGeneration")}
       />
+      <MaintenanceSummaryItem summary={summary} />
     </div>
+  );
+}
+
+function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
+  const { t } = useTranslation();
+  const migration = summary.maintenanceProgress.migration;
+  const compaction = summary.maintenanceProgress.compaction.active;
+  const failedCode = compaction?.safeErrorCode ?? migration?.safeErrorCode;
+
+  if (failedCode) {
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t("tasks.summary.maintenanceFailed")}
+        detail={failedCode}
+      />
+    );
+  }
+
+  if (compaction) {
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t("tasks.summary.compactionActive")}
+        detail={t("tasks.summary.maintenanceState", {
+          state: compaction.state,
+          attempt: compaction.attemptCount,
+          maximum: compaction.maxAttempts
+        })}
+      />
+    );
+  }
+
+  if (migration && !["optimized_active", "legacy_readable"].includes(migration.state)) {
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t("tasks.summary.migrationActive")}
+        detail={t("tasks.summary.migrationState", {
+          state: migration.state,
+          phase: migration.phase
+        })}
+      />
+    );
+  }
+
+  return (
+    <SummaryItem
+      label={t("tasks.summary.maintenance")}
+      value={t("tasks.summary.maintenanceIdle")}
+      detail={migration?.updatedAt
+        ? t("tasks.summary.maintenanceUpdated", {
+            time: new Date(migration.updatedAt).toLocaleString()
+          })
+        : t("tasks.summary.noMaintenanceHistory")}
+    />
   );
 }
 

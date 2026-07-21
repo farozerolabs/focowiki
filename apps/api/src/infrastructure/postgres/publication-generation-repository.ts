@@ -1,17 +1,13 @@
-import { randomUUID } from "node:crypto";
-import type { TransactionSql } from "postgres";
 import type {
   FrozenGeneration,
   PublicationGenerationRepository,
   SourceCompletionCommitResult
 } from "../../application/ports/publication-generation-repository.js";
+import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
-import { resolveGenerationSchedule } from "../../publication/generation-schedule.js";
 import { PublicationGenerationBusyError } from "../../domain/publication.js";
-import {
-  capturePublicationProjectionInputs,
-  persistCapturedProjectionInputs
-} from "./publication-projection-input-capture.js";
+import { appendPublicationChangeFact } from "./publication-change-fact-writer.js";
+import { assemblePendingPublicationChanges } from "./generation-assembler.js";
 
 type GenerationRow = {
   id: string;
@@ -71,6 +67,11 @@ export function createPostgresPublicationGenerationRepository(
         processedImpactCount: Number(row.processed_impact_count),
         totalImpactCount: Number(row.total_impact_count),
         touchedShardCount: Number(row.touched_shard_count),
+        throughputPerMinute: calculateThroughputPerMinute({
+          processedCount: Number(row.processed_impact_count),
+          startedAt: row.started_at,
+          heartbeatAt: row.completed_at ?? row.heartbeat_at
+        }),
         oldestDirtyAt: row.oldest_dirty_at?.toISOString() ?? null,
         queuedAt: row.queued_at?.toISOString() ?? null,
         startedAt: row.started_at?.toISOString() ?? null,
@@ -84,30 +85,9 @@ export function createPostgresPublicationGenerationRepository(
 
     async commitSourceCompletion(input) {
       return sql.begin(async (transaction) => {
-        await transaction`
-          SELECT pg_advisory_xact_lock(
-            hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
-          )
-        `;
-        const replay = await transaction<Array<{
-          generation_id: string;
-          impact_count: number;
-        }>>`
-          SELECT fact.generation_id,
-                 count(cause.impact_id)::int AS impact_count
-          FROM focowiki.publication_change_facts fact
-          LEFT JOIN focowiki.publication_impact_causes cause ON cause.change_fact_id = fact.id
-          WHERE fact.id = ${input.changeFactId}
-          GROUP BY fact.generation_id
-        `;
-        if (replay[0]?.generation_id) {
-          return {
-            generationId: replay[0].generation_id,
-            changeFactId: input.changeFactId,
-            impactCount: replay[0].impact_count,
-            replayed: true
-          } satisfies SourceCompletionCommitResult;
-        }
+        await lockChangeFact(transaction, input.changeFactId);
+        const replay = await findChangeFactReplay(transaction, input.changeFactId);
+        if (replay) return replay;
 
         const revision = await transaction<Array<{ revision: number }>>`
           SELECT revision.revision
@@ -117,18 +97,32 @@ export function createPostgresPublicationGenerationRepository(
             AND revision.knowledge_base_id = ${input.knowledgeBaseId}
             AND revision.source_file_id = ${input.sourceFileId}
             AND (source.active_revision_id = revision.id OR source.candidate_revision_id = revision.id)
+            AND source.resource_revision + CASE
+                  WHEN source.candidate_revision_id = revision.id THEN 1 ELSE 0
+                END = ${input.resourceRevision}
+            AND CASE
+                  WHEN source.candidate_revision_id = revision.id
+                    THEN source.candidate_relative_path
+                  ELSE source.relative_path
+                END = ${input.path}
+            AND CASE
+                  WHEN source.candidate_revision_id = revision.id
+                    THEN source.relative_path
+                  ELSE NULL
+                END IS NOT DISTINCT FROM ${input.previousPath}
+            AND CASE
+                  WHEN source.candidate_revision_id = revision.id
+                    THEN source.candidate_operation_id
+                  ELSE NULL
+                END IS NOT DISTINCT FROM ${input.operationId}
             AND source.deleted_at IS NULL
             AND source.task_deleted_at IS NULL
-          FOR UPDATE OF revision, source
+          FOR NO KEY UPDATE OF revision, source
         `;
         if (!revision[0]) {
           throw new Error("Source revision is no longer eligible for publication");
         }
 
-        const generation = await requireOpenGeneration(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          now: input.completedAt
-        });
         await transaction`
           UPDATE focowiki.source_revisions
           SET processing_status = 'completed'
@@ -156,134 +150,47 @@ export function createPostgresPublicationGenerationRepository(
             throw new Error("Source operation is no longer eligible for publication");
           }
         }
-        const capturedInputs = await capturePublicationProjectionInputs(transaction, {
+        const planning = input.planningContext;
+        if (!input.impacts && !planning) {
+          throw new Error("Source completion planning context is required");
+        }
+        const inserted = await appendPublicationChangeFact(transaction, {
+          changeFactId: input.changeFactId,
           knowledgeBaseId: input.knowledgeBaseId,
-          generationId: generation.id,
-          changeKind: input.kind,
           sourceFileId: input.sourceFileId,
           sourceRevisionId: input.sourceRevisionId,
+          operationId: input.operationId,
+          deletionIntentId: null,
+          kind: input.kind,
           previousPath: input.previousPath,
           path: input.path,
-          impacts: input.impacts,
-          now: input.completedAt
+          resourceRevision: input.resourceRevision,
+          planningPayload: {
+            ...(input.impacts ? { preplannedImpacts: input.impacts } : {}),
+            ...(planning ?? {}),
+            schedulePublication: true,
+            allowDeletedKnowledgeBase: false
+          },
+          publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+          publicationMaxAttempts: input.publicationMaxAttempts,
+          committedAt: input.completedAt
         });
-        await persistCapturedProjectionInputs(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          generationId: generation.id,
-          captured: capturedInputs,
-          now: input.completedAt
-        });
-        await transaction`
-          INSERT INTO focowiki.publication_change_facts (
-            id, knowledge_base_id, source_file_id, source_revision_id, operation_id, kind,
-            previous_path, path, resource_revision, generation_id, created_at
-          ) VALUES (
-            ${input.changeFactId}, ${input.knowledgeBaseId}, ${input.sourceFileId},
-            ${input.sourceRevisionId}, ${input.operationId}, ${input.kind},
-            ${input.previousPath}, ${input.path},
-            ${input.resourceRevision}, ${generation.id}, ${input.completedAt}
-          )
-        `;
-        for (const impact of input.impacts) {
-          const rows = await transaction<Array<{ id: string }>>`
-            INSERT INTO focowiki.publication_impacts (
-              id, knowledge_base_id, generation_id,
-              projection_kind, projection_key, record_identity, action, projection_input_key,
-              run_after, created_at, updated_at
-            ) VALUES (
-              ${impact.id}, ${input.knowledgeBaseId}, ${generation.id},
-              ${impact.projectionKind}, ${impact.projectionKey}, ${impact.recordIdentity},
-              ${impact.action}, ${capturedInputs.get(impact.id)?.inputKey ?? null},
-              ${input.completedAt}, ${input.completedAt}, ${input.completedAt}
-            )
-            ON CONFLICT (
-              generation_id, projection_kind, projection_key, record_identity
-            ) DO UPDATE SET action = EXCLUDED.action,
-              projection_input_key = EXCLUDED.projection_input_key,
-              run_after = least(focowiki.publication_impacts.run_after, EXCLUDED.run_after),
-              updated_at = EXCLUDED.updated_at
-            RETURNING id
-          `;
-          await transaction`
-            INSERT INTO focowiki.publication_impact_causes (
-              impact_id, change_fact_id, created_at
-            ) VALUES (${rows[0]!.id}, ${input.changeFactId}, ${input.completedAt})
-            ON CONFLICT (impact_id, change_fact_id) DO NOTHING
-          `;
-        }
-        const factCounts = await transaction<Array<{ count: number }>>`
-          SELECT count(*)::int AS count
-          FROM focowiki.publication_change_facts
-          WHERE generation_id = ${generation.id}
-        `;
-        const schedule = resolveGenerationSchedule({
-          settingsSnapshot: input.publicationSettingsSnapshot,
-          generationCreatedAt: generation.created_at.toISOString(),
-          completedAt: input.completedAt,
-          changeCount: factCounts[0]?.count ?? 0
-        });
-        if (schedule.enqueue) await transaction`
-          INSERT INTO focowiki.role_jobs (
-            id, role, kind, knowledge_base_id, generation_id,
-            payload_json, settings_snapshot_json, run_after, max_attempts,
-            created_at, updated_at
-          ) VALUES (
-            ${`role-job-publication-${generation.id}`}, 'publication',
-            'generation_publication', ${input.knowledgeBaseId}, ${generation.id},
-            ${transaction.json({ generationId: generation.id })},
-            ${transaction.json(input.publicationSettingsSnapshot)},
-            ${schedule.runAfter!}, ${input.publicationMaxAttempts},
-            ${input.completedAt}, ${input.completedAt}
-          )
-          ON CONFLICT (generation_id) WHERE role = 'publication' AND generation_id IS NOT NULL
-          DO UPDATE SET
-            run_after = least(focowiki.role_jobs.run_after, EXCLUDED.run_after),
-            settings_snapshot_json = EXCLUDED.settings_snapshot_json,
-            max_attempts = EXCLUDED.max_attempts,
-            updated_at = EXCLUDED.updated_at
-        `;
 
         return {
-          generationId: generation.id,
+          generationId: null,
           changeFactId: input.changeFactId,
-          impactCount: input.impacts.length,
-          replayed: false
+          impactCount: 0,
+          replayed: !inserted
         } satisfies SourceCompletionCommitResult;
       });
     },
 
     async commitMutation(input) {
       return sql.begin(async (transaction) => {
-        await transaction`
-          SELECT pg_advisory_xact_lock(
-            hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
-          )
-        `;
-        const replay = await transaction<Array<{
-          generation_id: string;
-          impact_count: number;
-        }>>`
-          SELECT fact.generation_id,
-                 count(cause.impact_id)::int AS impact_count
-          FROM focowiki.publication_change_facts fact
-          LEFT JOIN focowiki.publication_impact_causes cause ON cause.change_fact_id = fact.id
-          WHERE fact.id = ${input.changeFactId}
-          GROUP BY fact.generation_id
-        `;
-        if (replay[0]?.generation_id) {
-          return {
-            generationId: replay[0].generation_id,
-            changeFactId: input.changeFactId,
-            impactCount: replay[0].impact_count,
-            replayed: true
-          };
-        }
+        await lockChangeFact(transaction, input.changeFactId);
+        const replay = await findChangeFactReplay(transaction, input.changeFactId);
+        if (replay) return replay;
 
-        const generation = await requireOpenGeneration(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          now: input.committedAt,
-          allowDeletedKnowledgeBase: input.kind === "knowledge_base_deleted"
-        });
         if (input.operationId && input.kind !== "knowledge_base_deleted") {
           await transaction`
             UPDATE focowiki.resource_operations
@@ -293,105 +200,39 @@ export function createPostgresPublicationGenerationRepository(
               AND state IN ('accepted', 'processing')
           `;
         }
-        const capturedInputs = await capturePublicationProjectionInputs(transaction, {
+        const inserted = await appendPublicationChangeFact(transaction, {
+          changeFactId: input.changeFactId,
           knowledgeBaseId: input.knowledgeBaseId,
-          generationId: generation.id,
-          changeKind: input.kind,
           sourceFileId: input.sourceFileId,
           sourceRevisionId: input.sourceRevisionId,
+          operationId: input.operationId,
+          deletionIntentId: input.deletionIntentId,
+          kind: input.kind,
           previousPath: input.previousPath,
           path: input.path,
-          impacts: input.impacts,
-          now: input.committedAt
+          resourceRevision: input.resourceRevision,
+          planningPayload: {
+            preplannedImpacts: input.impacts,
+            schedulePublication: input.schedulePublication !== false,
+            skipGeneration: input.kind === "knowledge_base_deleted",
+            allowDeletedKnowledgeBase: input.kind === "knowledge_base_deleted"
+          },
+          publicationSettingsSnapshot: input.publicationSettingsSnapshot,
+          publicationMaxAttempts: input.publicationMaxAttempts,
+          committedAt: input.committedAt
         });
-        await persistCapturedProjectionInputs(transaction, {
-          knowledgeBaseId: input.knowledgeBaseId,
-          generationId: generation.id,
-          captured: capturedInputs,
-          now: input.committedAt
-        });
-        await transaction`
-          INSERT INTO focowiki.publication_change_facts (
-            id, knowledge_base_id, source_file_id, source_revision_id,
-            operation_id, deletion_intent_id, kind,
-            previous_path, path, resource_revision, generation_id, created_at
-          ) VALUES (
-            ${input.changeFactId}, ${input.knowledgeBaseId}, ${input.sourceFileId},
-            ${input.sourceRevisionId}, ${input.operationId}, ${input.deletionIntentId},
-            ${input.kind}, ${input.previousPath}, ${input.path},
-            ${input.resourceRevision}, ${generation.id}, ${input.committedAt}
-          )
-        `;
-        for (const impact of input.impacts) {
-          const rows = await transaction<Array<{ id: string }>>`
-            INSERT INTO focowiki.publication_impacts (
-              id, knowledge_base_id, generation_id,
-              projection_kind, projection_key, record_identity, action, projection_input_key,
-              run_after, created_at, updated_at
-            ) VALUES (
-              ${impact.id}, ${input.knowledgeBaseId}, ${generation.id},
-              ${impact.projectionKind}, ${impact.projectionKey}, ${impact.recordIdentity},
-              ${impact.action}, ${capturedInputs.get(impact.id)?.inputKey ?? null},
-              ${input.committedAt}, ${input.committedAt}, ${input.committedAt}
-            )
-            ON CONFLICT (
-              generation_id, projection_kind, projection_key, record_identity
-            ) DO UPDATE SET action = EXCLUDED.action,
-              projection_input_key = EXCLUDED.projection_input_key,
-              run_after = least(focowiki.publication_impacts.run_after, EXCLUDED.run_after),
-              updated_at = EXCLUDED.updated_at
-            RETURNING id
-          `;
-          await transaction`
-            INSERT INTO focowiki.publication_impact_causes (
-              impact_id, change_fact_id, created_at
-            ) VALUES (${rows[0]!.id}, ${input.changeFactId}, ${input.committedAt})
-            ON CONFLICT (impact_id, change_fact_id) DO NOTHING
-          `;
-        }
-        const factCounts = input.schedulePublication === false
-          ? []
-          : await transaction<Array<{ count: number }>>`
-              SELECT count(*)::int AS count
-              FROM focowiki.publication_change_facts
-              WHERE generation_id = ${generation.id}
-            `;
-        const schedule = input.schedulePublication === false
-          ? { enqueue: false, runAfter: null }
-          : resolveGenerationSchedule({
-              settingsSnapshot: input.publicationSettingsSnapshot,
-              generationCreatedAt: generation.created_at.toISOString(),
-              completedAt: input.committedAt,
-              changeCount: factCounts[0]?.count ?? 0
-            });
-        if (schedule.enqueue) await transaction`
-          INSERT INTO focowiki.role_jobs (
-            id, role, kind, knowledge_base_id, generation_id,
-            payload_json, settings_snapshot_json, run_after, max_attempts,
-            created_at, updated_at
-          ) VALUES (
-            ${`role-job-publication-${generation.id}`}, 'publication',
-            'generation_publication', ${input.knowledgeBaseId}, ${generation.id},
-            ${transaction.json({ generationId: generation.id })},
-            ${transaction.json(input.publicationSettingsSnapshot)},
-            ${schedule.runAfter!}, ${input.publicationMaxAttempts},
-            ${input.committedAt}, ${input.committedAt}
-          )
-          ON CONFLICT (generation_id) WHERE role = 'publication' AND generation_id IS NOT NULL
-          DO UPDATE SET
-            run_after = least(focowiki.role_jobs.run_after, EXCLUDED.run_after),
-            settings_snapshot_json = EXCLUDED.settings_snapshot_json,
-            max_attempts = EXCLUDED.max_attempts,
-            updated_at = EXCLUDED.updated_at
-        `;
 
         return {
-          generationId: generation.id,
+          generationId: null,
           changeFactId: input.changeFactId,
-          impactCount: input.impacts.length,
-          replayed: false
+          impactCount: 0,
+          replayed: !inserted
         };
       });
+    },
+
+    async assemblePendingChanges(input) {
+      return assemblePendingPublicationChanges(sql, input);
     },
 
     async freezeGeneration(input) {
@@ -428,13 +269,13 @@ export function createPostgresPublicationGenerationRepository(
             throw new PublicationGenerationBusyError();
           }
         }
-        const totals = await transaction<Array<{ count: number }>>`
-          SELECT count(*)::int AS count
+        const totals = await transaction<Array<{ total: number }>>`
+          SELECT count(id)::int AS total
           FROM focowiki.publication_impacts
           WHERE generation_id = ${input.generationId}
             AND status <> 'cancelled'
         `;
-        if ((totals[0]?.count ?? 0) === 0) {
+        if ((totals[0]?.total ?? 0) === 0) {
           await transaction`
             UPDATE focowiki.publication_generations
             SET state = 'superseded', updated_at = ${input.frozenAt}
@@ -478,7 +319,7 @@ export function createPostgresPublicationGenerationRepository(
             queued_at, started_at, heartbeat_at, updated_at
           ) VALUES (
             ${input.knowledgeBaseId}, ${input.generationId}, 'planning',
-            0, ${totals[0]!.count}, 0, ${input.frozenAt}, ${input.frozenAt},
+            0, ${totals[0]!.total}, 0, ${input.frozenAt}, ${input.frozenAt},
             ${input.frozenAt}, ${input.frozenAt}
           )
           ON CONFLICT (knowledge_base_id, generation_id) DO UPDATE
@@ -499,7 +340,7 @@ export function createPostgresPublicationGenerationRepository(
           state: generation.state === "open"
             ? "frozen"
             : generation.state as FrozenGeneration["state"],
-          totalImpactCount: totals[0]!.count,
+          totalImpactCount: totals[0]!.total,
           frozenAt: input.frozenAt
         } satisfies FrozenGeneration;
       });
@@ -547,8 +388,8 @@ export function createPostgresPublicationGenerationRepository(
         if (candidates.length !== 1) {
           return false;
         }
-        const invalidObjectReferences = await transaction<Array<{ count: number }>>`
-          SELECT count(*)::int AS count
+        const invalidObjectReferences = await transaction<Array<{ total: number }>>`
+          SELECT count(reference.ref_key)::int AS total
           FROM focowiki.generation_object_refs reference
           LEFT JOIN focowiki.immutable_objects object
             ON object.checksum_sha256 = reference.checksum_sha256
@@ -561,7 +402,7 @@ export function createPostgresPublicationGenerationRepository(
               OR object.lifecycle_state <> 'active'
             )
         `;
-        if (Number(invalidObjectReferences[0]?.count ?? 0) > 0) {
+        if (Number(invalidObjectReferences[0]?.total ?? 0) > 0) {
           throw new Error("Candidate generation contains an unverified immutable object");
         }
         if (input.expectedPredecessorGenerationId) {
@@ -636,6 +477,20 @@ export function createPostgresPublicationGenerationRepository(
             AND active.knowledge_base_id = change.knowledge_base_id
             AND active.ref_kind = change.ref_kind
             AND active.ref_key = change.ref_key
+        `;
+        await transaction`
+          DELETE FROM focowiki.active_object_refs active
+          USING focowiki.generation_object_refs change
+          WHERE change.generation_id = ${input.generationId}
+            AND change.knowledge_base_id = ${input.knowledgeBaseId}
+            AND change.action = 'upsert'
+            AND change.logical_path IS NOT NULL
+            AND active.knowledge_base_id = change.knowledge_base_id
+            AND active.logical_path = change.logical_path
+            AND NOT (
+              active.ref_kind = change.ref_kind
+              AND active.ref_key = change.ref_key
+            )
         `;
         await transaction`
           INSERT INTO focowiki.active_object_refs (
@@ -723,6 +578,55 @@ export function createPostgresPublicationGenerationRepository(
           SET node_count = EXCLUDED.node_count,
               edge_count = EXCLUDED.edge_count,
               graph_index_available = EXCLUDED.graph_index_available,
+              updated_at = EXCLUDED.updated_at
+        `;
+        await transaction`
+          WITH touched AS MATERIALIZED (
+            SELECT DISTINCT segment.projection_kind, segment.logical_partition
+            FROM focowiki.generation_projection_segments lineage
+            JOIN focowiki.projection_segments segment ON segment.id = lineage.segment_id
+            WHERE lineage.generation_id = ${input.generationId}
+              AND segment.knowledge_base_id = ${input.knowledgeBaseId}
+          )
+          DELETE FROM focowiki.active_projection_segments active
+          USING touched
+          WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
+            AND active.projection_kind = touched.projection_kind
+            AND active.logical_partition = touched.logical_partition
+        `;
+        await transaction`
+          INSERT INTO focowiki.active_projection_segments (
+            knowledge_base_id, projection_kind, logical_partition,
+            segment_id, ordinal, updated_at
+          )
+          SELECT segment.knowledge_base_id, segment.projection_kind,
+                 segment.logical_partition, lineage.segment_id,
+                 lineage.ordinal, ${input.activatedAt}
+          FROM focowiki.generation_projection_segments lineage
+          JOIN focowiki.projection_segments segment ON segment.id = lineage.segment_id
+          WHERE lineage.generation_id = ${input.generationId}
+            AND segment.knowledge_base_id = ${input.knowledgeBaseId}
+            AND lineage.effective = true
+            AND segment.lifecycle_state IN ('active', 'retained')
+          ON CONFLICT (
+            knowledge_base_id, projection_kind, logical_partition, segment_id
+          ) DO UPDATE
+          SET ordinal = EXCLUDED.ordinal, updated_at = EXCLUDED.updated_at
+        `;
+        await transaction`
+          INSERT INTO focowiki.active_projection_partition_stats (
+            knowledge_base_id, projection_kind, logical_partition,
+            record_count, last_changed_generation_id, updated_at
+          )
+          SELECT statistics.knowledge_base_id, statistics.projection_kind,
+                 statistics.logical_partition, statistics.record_count,
+                 statistics.generation_id, ${input.activatedAt}
+          FROM focowiki.generation_projection_partition_stats statistics
+          WHERE statistics.generation_id = ${input.generationId}
+            AND statistics.knowledge_base_id = ${input.knowledgeBaseId}
+          ON CONFLICT (knowledge_base_id, projection_kind, logical_partition) DO UPDATE
+          SET record_count = EXCLUDED.record_count,
+              last_changed_generation_id = EXCLUDED.last_changed_generation_id,
               updated_at = EXCLUDED.updated_at
         `;
         await transaction`
@@ -935,6 +839,43 @@ export function createPostgresPublicationGenerationRepository(
   };
 }
 
+async function lockChangeFact(
+  transaction: TransactionSql<Record<string, never>>,
+  changeFactId: string
+): Promise<void> {
+  await transaction`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended('focowiki:change-fact:' || ${changeFactId}, 0)
+    )
+  `;
+}
+
+async function findChangeFactReplay(
+  transaction: TransactionSql<Record<string, never>>,
+  changeFactId: string
+): Promise<SourceCompletionCommitResult | null> {
+  const rows = await transaction<Array<{
+    generation_id: string | null;
+    impact_count: number;
+  }>>`
+    SELECT fact.generation_id,
+           count(cause.impact_id)::int AS impact_count
+    FROM focowiki.publication_change_facts fact
+    LEFT JOIN focowiki.publication_impact_causes cause ON cause.change_fact_id = fact.id
+    WHERE fact.id = ${changeFactId}
+    GROUP BY fact.generation_id
+  `;
+  const replay = rows[0];
+  return replay
+    ? {
+        generationId: replay.generation_id,
+        changeFactId,
+        impactCount: replay.impact_count,
+        replayed: true
+      }
+    : null;
+}
+
 function emptyProgressSummary() {
   return {
     generationId: null,
@@ -942,6 +883,7 @@ function emptyProgressSummary() {
     processedImpactCount: 0,
     totalImpactCount: 0,
     touchedShardCount: 0,
+    throughputPerMinute: null,
     oldestDirtyAt: null,
     queuedAt: null,
     startedAt: null,
@@ -953,38 +895,13 @@ function emptyProgressSummary() {
   };
 }
 
-async function requireOpenGeneration(
-  transaction: TransactionSql<{}>,
-  input: { knowledgeBaseId: string; now: string; allowDeletedKnowledgeBase?: boolean }
-): Promise<GenerationRow> {
-  const existing = await transaction<GenerationRow[]>`
-    SELECT id, predecessor_generation_id, state, created_at
-    FROM focowiki.publication_generations
-    WHERE knowledge_base_id = ${input.knowledgeBaseId} AND state = 'open'
-    FOR UPDATE
-  `;
-  if (existing[0]) {
-    return existing[0];
-  }
-  const active = await transaction<Array<{ active_generation_id: string | null }>>`
-    SELECT active_generation_id
-    FROM focowiki.knowledge_bases
-    WHERE id = ${input.knowledgeBaseId}
-      AND (${input.allowDeletedKnowledgeBase ?? false} OR deleted_at IS NULL)
-    FOR UPDATE
-  `;
-  if (!active[0]) {
-    throw new Error("Knowledge base is unavailable");
-  }
-  const id = `generation-${randomUUID()}`;
-  const created = await transaction<GenerationRow[]>`
-    INSERT INTO focowiki.publication_generations (
-      id, knowledge_base_id, predecessor_generation_id, state, created_at, updated_at
-    ) VALUES (
-      ${id}, ${input.knowledgeBaseId}, ${active[0].active_generation_id}, 'open',
-      ${input.now}, ${input.now}
-    )
-    RETURNING id, predecessor_generation_id, state, created_at
-  `;
-  return created[0]!;
+function calculateThroughputPerMinute(input: {
+  processedCount: number;
+  startedAt: Date | null;
+  heartbeatAt: Date | null;
+}): number | null {
+  if (input.processedCount <= 0 || !input.startedAt || !input.heartbeatAt) return null;
+  const elapsedMilliseconds = input.heartbeatAt.getTime() - input.startedAt.getTime();
+  if (elapsedMilliseconds <= 0) return null;
+  return Math.round((input.processedCount * 60_000 / elapsedMilliseconds) * 10) / 10;
 }

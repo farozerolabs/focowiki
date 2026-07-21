@@ -4,6 +4,7 @@ import {
   createCleanupPlanTargets,
   createGenerationValidationPlanTargets,
   createLargeScaleReadPlanTargets,
+  createMaintenanceProgressPlanTargets,
   createRoleQueuePlanTargets,
   summarizeQueryPlan
 } from "../src/db/query-plan-validation.js";
@@ -13,7 +14,9 @@ describe("query plan validation helpers", () => {
     const targets = createLargeScaleReadPlanTargets();
     expect(targets.map((target) => target.name)).toEqual(expect.arrayContaining([
       "active-generation-resolve",
+      "active-file-by-id",
       "active-file-by-path",
+      "active-file-metadata-by-source",
       "active-tree-page",
       "active-tree-search",
       "active-file-search",
@@ -49,6 +52,18 @@ describe("query plan validation helpers", () => {
     expect(normalize(target!.sql)).toContain("task_deleted_at is null");
   });
 
+  it("matches active text-index expressions before bounded search joins", () => {
+    const targets = createLargeScaleReadPlanTargets();
+    for (const name of ["active-tree-search", "active-file-search", "active-graph-search"]) {
+      const target = targets.find((item) => item.name === name);
+      expect(target).toBeDefined();
+      const sql = normalize(target!.sql);
+      expect(sql).toContain("lower(");
+      expect(sql).toContain(" like '%example%'");
+      expect(sql).toContain("limit 51");
+    }
+  });
+
   it("defines role-isolated bounded claim targets", () => {
     const targets = createRoleQueuePlanTargets();
     expect(targets.map((target) => target.name)).toEqual([
@@ -64,6 +79,21 @@ describe("query plan validation helpers", () => {
       expect(buildExplainAnalyzeSql(target.sql)).toContain("EXPLAIN");
       expect(sql).not.toContain("worker_jobs");
       expect(sql).not.toContain(" offset ");
+    }
+  });
+
+  it("defines bounded maintenance summaries without internal payload columns", () => {
+    const targets = createMaintenanceProgressPlanTargets();
+    expect(targets).toHaveLength(3);
+    expect(normalize(targets[0]!.sql)).toContain("knowledge_base_id = 'kb-plan'");
+    for (const target of targets.slice(1)) {
+      const sql = normalize(target.sql);
+      expect(sql).toContain("order by updated_at desc, id");
+      expect(sql).toContain("limit 1");
+    }
+    for (const target of targets) {
+      const sql = normalize(target.sql);
+      expect(sql).not.toMatch(/object_key|segment_ids|lease_token|payload_json|high_water/);
     }
   });
 

@@ -11,7 +11,7 @@ import {
 } from "../okf/generated-graph-resources.js";
 import { renderBoundedRootFile } from "../publication/bounded-root-writer.js";
 import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
-import type { JsonProjectionRecord } from "../publication/json-projection-shard-writer.js";
+import type { JsonProjectionRecord } from "../publication/projection-shard-partitioning.js";
 
 const REPAIR_ROOT_PATHS = [
   "index.md",

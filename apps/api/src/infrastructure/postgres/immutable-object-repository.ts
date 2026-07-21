@@ -92,7 +92,7 @@ export function createPostgresImmutableObjectRepository(
           FOR UPDATE
         `;
         if (deletionCandidates.some((candidate) => candidate.state === "deleting")) {
-          throw new Error("Immutable object is pending storage reconciliation deletion");
+          return { status: "deleting" as const, record: null };
         }
         const existingRows = await transaction<ImmutableObjectRow[]>`
           SELECT checksum_sha256, format_version, object_key, content_type,
@@ -126,7 +126,7 @@ export function createPostgresImmutableObjectRepository(
           return { status: "active" as const, record: mapRow(existing) };
         }
         if (existing.lifecycle_state === "deleting") {
-          throw new Error("Immutable object is pending deletion");
+          return { status: "deleting" as const, record: null };
         }
         if (
           existing.write_token !== input.writeToken

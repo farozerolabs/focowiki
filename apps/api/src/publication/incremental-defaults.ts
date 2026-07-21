@@ -9,6 +9,8 @@ export const INCREMENTAL_PUBLICATION_DEFAULTS = {
   },
   maxShardBytes: 1_048_576,
   maxShardDescriptors: 65_536,
+  maxSegmentEntries: 250,
+  maxSegmentBytes: 262_144,
   impactBatchSize: 100,
   impactConcurrency: 8
 } as const;
