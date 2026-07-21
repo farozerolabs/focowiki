@@ -8,6 +8,7 @@ import type {
   ReferencedMigrationObject
 } from "../../application/ports/optimization-migration-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
+import { registerProjectionSegmentsByIdentity } from "./projection-segment-registration.js";
 
 type MigrationRow = {
   knowledge_base_id: string;
@@ -216,42 +217,44 @@ export function createPostgresOptimizationMigrationRepository(
       }));
       const activeGenerationId = items[0]?.generationId;
       if (!activeGenerationId) throw new Error("Legacy segment batch has no generation");
+      if (items.some((item) => item.generationId !== activeGenerationId)) {
+        throw new Error("Legacy segment batch spans multiple generations");
+      }
       await sql.begin(async (transaction) => {
         await assertOwnedMigration(transaction, input);
+        const resolved = await registerProjectionSegmentsByIdentity(
+          transaction,
+          items.map((item) => ({
+            id: item.segmentId,
+            knowledgeBaseId: item.knowledgeBaseId,
+            projectionKind: item.projectionKind,
+            logicalPartition: item.logicalPartition,
+            segmentKind: "base",
+            sequenceNumber: 0,
+            formatVersion: item.formatVersion,
+            checksumSha256: item.checksumSha256,
+            objectKey: item.objectKey,
+            logicalPath: item.logicalPath,
+            entryCount: item.entryCount,
+            encodedBytes: item.encodedBytes,
+            firstRecordIdentity: null,
+            lastRecordIdentity: null,
+            baseSegmentId: null,
+            lifecycleState: "retained",
+            createdAt: input.updatedAt
+          }))
+        );
+        const resolvedItems = resolved.map((entry, index) => ({
+          ...items[index]!,
+          segmentId: entry.segment.id
+        }));
         await transaction`
-          INSERT INTO focowiki.projection_segments (
-            id, knowledge_base_id, projection_kind, logical_partition,
-            segment_kind, sequence_number, format_version, checksum_sha256,
-            object_key, logical_path, entry_count, encoded_bytes,
-            lifecycle_state, ownership_count, created_at
-          )
-          SELECT item.segment_id, item.knowledge_base_id, item.projection_kind,
-                 item.logical_partition, 'base', 0, item.format_version,
-                 item.checksum_sha256, item.object_key, item.logical_path,
-                 item.entry_count, item.encoded_bytes, 'retained', 1, ${input.updatedAt}
-          FROM unnest(
-            ${items.map((item) => item.segmentId)}::text[],
-            ${items.map((item) => item.knowledgeBaseId)}::text[],
-            ${items.map((item) => item.projectionKind)}::text[],
-            ${items.map((item) => item.logicalPartition)}::text[],
-            ${items.map((item) => item.formatVersion)}::int[],
-            ${items.map((item) => item.checksumSha256)}::text[],
-            ${items.map((item) => item.objectKey)}::text[],
-            ${items.map((item) => item.logicalPath)}::text[],
-            ${items.map((item) => item.entryCount)}::int[],
-            ${items.map((item) => item.encodedBytes)}::bigint[]
-          ) AS item(
-            segment_id, knowledge_base_id, projection_kind, logical_partition,
-            format_version, checksum_sha256, object_key, logical_path,
-            entry_count, encoded_bytes
-          )
-          ON CONFLICT (id) DO UPDATE
+          UPDATE focowiki.projection_segments
           SET lifecycle_state = CASE
-                WHEN focowiki.projection_segments.lifecycle_state = 'writing'
-                  THEN 'retained'
-                ELSE focowiki.projection_segments.lifecycle_state
-              END,
-              ownership_count = greatest(focowiki.projection_segments.ownership_count, 1)
+                WHEN lifecycle_state = 'writing' THEN 'retained'
+                ELSE lifecycle_state
+              END
+          WHERE id = ANY(${resolvedItems.map((item) => item.segmentId)}::text[])
         `;
         await transaction`
           INSERT INTO focowiki.generation_projection_segments (
@@ -259,8 +262,8 @@ export function createPostgresOptimizationMigrationRepository(
           )
           SELECT item.generation_id, item.segment_id, 0, true, ${input.updatedAt}
           FROM unnest(
-            ${items.map((item) => item.generationId)}::text[],
-            ${items.map((item) => item.segmentId)}::text[]
+            ${resolvedItems.map((item) => item.generationId)}::text[],
+            ${resolvedItems.map((item) => item.segmentId)}::text[]
           ) AS item(generation_id, segment_id)
           ON CONFLICT (generation_id, segment_id) DO UPDATE SET effective = true
         `;
@@ -272,10 +275,10 @@ export function createPostgresOptimizationMigrationRepository(
           SELECT item.knowledge_base_id, item.projection_kind,
                  item.logical_partition, item.segment_id, 0, ${input.updatedAt}
           FROM unnest(
-            ${items.map((item) => item.knowledgeBaseId)}::text[],
-            ${items.map((item) => item.projectionKind)}::text[],
-            ${items.map((item) => item.logicalPartition)}::text[],
-            ${items.map((item) => item.segmentId)}::text[]
+            ${resolvedItems.map((item) => item.knowledgeBaseId)}::text[],
+            ${resolvedItems.map((item) => item.projectionKind)}::text[],
+            ${resolvedItems.map((item) => item.logicalPartition)}::text[],
+            ${resolvedItems.map((item) => item.segmentId)}::text[]
           ) AS item(knowledge_base_id, projection_kind, logical_partition, segment_id)
           ON CONFLICT (knowledge_base_id, projection_kind, logical_partition, segment_id)
           DO UPDATE SET updated_at = EXCLUDED.updated_at
@@ -357,6 +360,18 @@ export function createPostgresOptimizationMigrationRepository(
           AND lease_owner = ${input.workerId}
           AND lease_token = ${input.leaseToken}
       `;
+    },
+
+    async rebaseIfActiveGenerationChanged(input) {
+      return sql.begin(async (transaction) => {
+        const context = await lockMigrationActivationContext(transaction, input);
+        if (context.activeGenerationId === context.priorActiveGenerationId) return false;
+        await rebaseMigration(transaction, {
+          ...input,
+          activeGenerationId: context.activeGenerationId
+        });
+        return true;
+      });
     },
 
     async reconcileStats(input) {
@@ -554,26 +569,20 @@ export function createPostgresOptimizationMigrationRepository(
     },
 
     async activate(input) {
-      await sql.begin(async (transaction) => {
-        const rows = await transaction<Array<{ active_generation_id: string | null }>>`
-          SELECT knowledge_base.active_generation_id
-          FROM focowiki.knowledge_bases knowledge_base
-          JOIN focowiki.knowledge_base_optimization_migrations migration
-            ON migration.knowledge_base_id = knowledge_base.id
-          WHERE knowledge_base.id = ${input.knowledgeBaseId}
-            AND migration.lease_owner = ${input.workerId}
-            AND migration.lease_token = ${input.leaseToken}
-            AND migration.phase = 'verifying'
-            AND knowledge_base.active_generation_id IS NOT DISTINCT FROM migration.prior_active_generation_id
-          FOR UPDATE OF knowledge_base, migration
-        `;
-        if (rows.length !== 1) {
-          throw new Error("Optimization migration activation ownership changed");
+      return sql.begin(async (transaction) => {
+        const context = await lockMigrationActivationContext(transaction, input);
+        if (context.activeGenerationId !== context.priorActiveGenerationId) {
+          await rebaseMigration(transaction, {
+            ...input,
+            updatedAt: input.activatedAt,
+            activeGenerationId: context.activeGenerationId
+          });
+          return "rebased" as const;
         }
         await transaction`
           UPDATE focowiki.knowledge_base_optimization_migrations
           SET state = 'optimized_active',
-              optimized_active_generation_id = ${rows[0]!.active_generation_id},
+              optimized_active_generation_id = ${context.activeGenerationId},
               parity_evidence_json = ${transaction.json(input.parityEvidence as never)},
               verified_at = ${input.activatedAt}, completed_at = ${input.activatedAt},
               lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
@@ -581,6 +590,7 @@ export function createPostgresOptimizationMigrationRepository(
               updated_at = ${input.activatedAt}
           WHERE knowledge_base_id = ${input.knowledgeBaseId}
         `;
+        return "activated" as const;
       });
     },
 
@@ -654,6 +664,65 @@ async function assertOwnedMigration(
     FOR UPDATE
   `;
   if (rows.length !== 1) throw new Error("Optimization migration lease is no longer owned");
+}
+
+async function lockMigrationActivationContext(
+  transaction: TransactionSql<Record<string, never>>,
+  input: { knowledgeBaseId: string; workerId: string; leaseToken: string }
+): Promise<{
+  activeGenerationId: string | null;
+  priorActiveGenerationId: string | null;
+}> {
+  const rows = await transaction<Array<{
+    active_generation_id: string | null;
+    prior_active_generation_id: string | null;
+  }>>`
+    SELECT knowledge_base.active_generation_id,
+           migration.prior_active_generation_id
+    FROM focowiki.knowledge_bases knowledge_base
+    JOIN focowiki.knowledge_base_optimization_migrations migration
+      ON migration.knowledge_base_id = knowledge_base.id
+    WHERE knowledge_base.id = ${input.knowledgeBaseId}
+      AND knowledge_base.deleted_at IS NULL
+      AND migration.lease_owner = ${input.workerId}
+      AND migration.lease_token = ${input.leaseToken}
+      AND migration.phase = 'verifying'
+    FOR UPDATE OF knowledge_base, migration
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("Optimization migration activation ownership changed");
+  return {
+    activeGenerationId: row.active_generation_id,
+    priorActiveGenerationId: row.prior_active_generation_id
+  };
+}
+
+async function rebaseMigration(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    workerId: string;
+    leaseToken: string;
+    activeGenerationId: string | null;
+    updatedAt: string;
+  }
+): Promise<void> {
+  const rows = await transaction<Array<{ knowledge_base_id: string }>>`
+    UPDATE focowiki.knowledge_base_optimization_migrations
+    SET state = 'verifying', phase = 'verifying',
+        prior_active_generation_id = ${input.activeGenerationId},
+        optimized_active_generation_id = NULL,
+        parity_evidence_json = '{}'::jsonb,
+        attempt_count = 0, last_error_code = NULL, last_error_message = NULL,
+        verified_at = NULL, completed_at = NULL,
+        lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+        updated_at = ${input.updatedAt}
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND lease_owner = ${input.workerId}
+      AND lease_token = ${input.leaseToken}
+    RETURNING knowledge_base_id
+  `;
+  if (rows.length !== 1) throw new Error("Optimization migration rebase ownership changed");
 }
 
 function mapClaim(row: MigrationRow): OptimizationMigrationClaim {

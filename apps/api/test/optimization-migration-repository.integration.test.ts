@@ -155,6 +155,122 @@ describeDatabase("optimization migration repository integration", () => {
     });
   });
 
+  it("rebases verification when publication activates a newer generation", async () => {
+    const replacementGenerationId = "generation-optimization-migration-replacement";
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'superseded', successor_generation_id = ${replacementGenerationId}
+        WHERE id = ${generationId}
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id, state, format_version
+        ) VALUES (
+          ${replacementGenerationId}, ${knowledgeBaseId}, ${generationId}, 'active', 2
+        )
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET active_generation_id = ${replacementGenerationId}
+        WHERE id = ${knowledgeBaseId}
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_base_optimization_migrations
+        SET state = 'verifying', phase = 'verifying', attempt_count = 0,
+            last_error_code = 'MIGRATION_SLICE_FAILED',
+            last_error_message = 'Knowledge base optimization migration failed'
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+      `;
+    });
+
+    const result = await runOptimizationMigrationSlice({
+      repository,
+      graph,
+      storage: { async getObjectText() { return "# Existing source"; } },
+      workerId: "maintenance-migration-worker",
+      leaseToken: "replacement-lease",
+      now: "2026-07-20T00:05:00.000Z",
+      leaseExpiresAt: "2026-07-20T00:06:00.000Z",
+      batchSize: 10,
+      sourceReadConcurrency: 1
+    });
+
+    expect(result).toMatchObject({ phase: "verifying", failed: false, completed: false });
+    expect(await sql<Array<{
+      state: string;
+      prior_active_generation_id: string | null;
+      attempt_count: number;
+      last_error_code: string | null;
+    }>>`
+      SELECT state, prior_active_generation_id, attempt_count, last_error_code
+      FROM focowiki.knowledge_base_optimization_migrations
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `).toEqual([{
+      state: "verifying",
+      prior_active_generation_id: replacementGenerationId,
+      attempt_count: 0,
+      last_error_code: null
+    }]);
+  });
+
+  it("reuses a segment registered under the same immutable identity", async () => {
+    const existingSegmentId = "segment-existing-legacy-identity";
+    await sql`
+      INSERT INTO focowiki.projection_segments (
+        id, knowledge_base_id, projection_kind, logical_partition,
+        segment_kind, sequence_number, format_version, checksum_sha256,
+        object_key, logical_path, entry_count, encoded_bytes,
+        lifecycle_state, ownership_count
+      ) VALUES (
+        ${existingSegmentId}, ${knowledgeBaseId}, 'search', 'search/v2/0001',
+        'base', 0, 2, ${checksum}, 'generated/legacy-search.json',
+        '_index/search/search-v2-0001.json', 1, 256, 'retained', 1
+      )
+    `;
+    const claim = await repository.claimNext({
+      workerId: "migration-worker-identity",
+      leaseToken: "lease-identity",
+      now: "2026-07-20T00:00:00.000Z",
+      leaseExpiresAt: "2026-07-20T00:01:00.000Z"
+    });
+    expect(claim).not.toBeNull();
+    await repository.advancePhase({
+      knowledgeBaseId,
+      workerId: "migration-worker-identity",
+      leaseToken: "lease-identity",
+      phase: "projection_segments",
+      updatedAt: "2026-07-20T00:00:01.000Z"
+    });
+    const projectionClaim = await repository.claimNext({
+      workerId: "migration-worker-identity",
+      leaseToken: "lease-identity-projection",
+      now: "2026-07-20T00:00:02.000Z",
+      leaseExpiresAt: "2026-07-20T00:01:02.000Z"
+    });
+    expect(projectionClaim).not.toBeNull();
+    const items = await repository.listLegacyProjectionBatch({
+      knowledgeBaseId,
+      generationId,
+      afterProjectionRecordId: null,
+      limit: 10
+    });
+
+    await expect(repository.registerLegacyBaseSegments({
+      knowledgeBaseId,
+      workerId: "migration-worker-identity",
+      leaseToken: "lease-identity-projection",
+      items: items.filter((item) => item.shardId === "projection-shard-legacy"),
+      updatedAt: "2026-07-20T00:00:03.000Z"
+    })).resolves.toBeUndefined();
+
+    expect(await sql<Array<{ segment_id: string }>>`
+      SELECT segment_id
+      FROM focowiki.generation_projection_segments
+      WHERE generation_id = ${generationId}
+    `).toEqual([{ segment_id: existingSegmentId }]);
+  });
+
   async function seedLegacyKnowledgeBase(): Promise<void> {
     await sql.begin(async (transaction) => {
       await transaction`

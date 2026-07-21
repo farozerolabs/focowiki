@@ -177,6 +177,52 @@ describeDatabase("projection compaction repository integration", () => {
     })).toBe("superseded");
   });
 
+  it("activates an existing segment with the same immutable identity", async () => {
+    const existingId = "segment-compaction-existing-identity";
+    await sql`
+      INSERT INTO focowiki.projection_segments (
+        id, knowledge_base_id, projection_kind, logical_partition,
+        segment_kind, sequence_number, format_version, checksum_sha256,
+        object_key, logical_path, entry_count, encoded_bytes,
+        first_record_identity, last_record_identity, base_segment_id,
+        lifecycle_state
+      ) VALUES (
+        ${existingId}, ${knowledgeBaseId}, 'search', 'search/v1/0001',
+        'compacted', 0, 2, ${"cc".repeat(32)}, 'objects/existing-compacted',
+        '_segments/existing-compacted.json', 2, 256, 'a', 'b',
+        'segment-compaction-base', 'retained'
+      )
+    `;
+    await repository.discoverCandidates({
+      limits: {
+        maxDepth: 1,
+        maxEncodedBytes: 1024,
+        maxTombstoneRatio: 1,
+        maxReadAmplification: 1
+      },
+      partitionLimit: 10,
+      maxAttempts: 3,
+      discoveredAt: "2026-07-20T00:00:00.000Z"
+    });
+    const job = (await repository.claim({
+      workerId: "maintenance-worker",
+      limit: 1,
+      now: "2026-07-20T00:00:01.000Z",
+      leaseExpiresAt: "2026-07-20T00:01:01.000Z"
+    }))[0]!;
+
+    expect(await repository.activateCompactedSegments({
+      job,
+      segments: [compactedSegment()],
+      completedAt: "2026-07-20T00:00:03.000Z"
+    })).toBe("completed");
+    expect(await sql<Array<{ segment_id: string }>>`
+      SELECT segment_id
+      FROM focowiki.active_projection_segments
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `).toEqual([{ segment_id: existingId }]);
+  });
+
   it("resets the bounded scan cursor after reaching the final partition", async () => {
     await repository.discoverCandidates({
       limits: {

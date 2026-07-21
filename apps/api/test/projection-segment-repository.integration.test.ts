@@ -146,6 +146,51 @@ describeDatabase("projection segment repository integration", () => {
     expect(Number(statistics[0]?.record_count)).toBe(2);
   });
 
+  it("attaches the existing segment when immutable identity already has another id", async () => {
+    const existingId = "projection-segment-existing-identity";
+    const checksum = "dd".repeat(32);
+    await sql`
+      INSERT INTO focowiki.projection_segments (
+        id, knowledge_base_id, projection_kind, logical_partition,
+        segment_kind, sequence_number, format_version, checksum_sha256,
+        object_key, logical_path, entry_count, encoded_bytes,
+        lifecycle_state
+      ) VALUES (
+        ${existingId}, ${knowledgeBaseId}, 'search', 'search/v1/0001',
+        'base', 0, 2, ${checksum}, 'objects/existing-identity',
+        '_segments/existing-identity.json', 1, 128, 'retained'
+      )
+    `;
+
+    const registered = await segments.registerAndAttach({
+      id: "projection-segment-requested-identity",
+      knowledgeBaseId,
+      generationId: candidateGenerationId,
+      projectionKind: "search",
+      logicalPartition: "search/v1/0001",
+      segmentKind: "base",
+      sequenceNumber: 0,
+      ordinal: 0,
+      formatVersion: 2,
+      checksumSha256: checksum,
+      objectKey: "objects/requested-identity",
+      logicalPath: "_segments/requested-identity.json",
+      entryCount: 1,
+      encodedBytes: 128,
+      firstRecordIdentity: null,
+      lastRecordIdentity: null,
+      baseSegmentId: null,
+      lifecycleState: "active"
+    });
+
+    expect(registered.id).toBe(existingId);
+    expect(await sql<Array<{ segment_id: string }>>`
+      SELECT segment_id
+      FROM focowiki.generation_projection_segments
+      WHERE generation_id = ${candidateGenerationId}
+    `).toEqual([{ segment_id: existingId }]);
+  });
+
   async function cleanup(): Promise<void> {
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
   }
