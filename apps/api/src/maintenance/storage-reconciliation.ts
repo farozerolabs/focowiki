@@ -10,6 +10,18 @@ type ReconciliationStorage = StorageAdapter & {
   headObjectMetadata: NonNullable<StorageAdapter["headObjectMetadata"]>;
 };
 
+type StorageReconciliationSettings = Pick<
+  RuntimeMaintenanceSettings,
+  | "reconciliationEnabled"
+  | "scanIntervalSeconds"
+  | "scanBatchSize"
+  | "deletionBatchSize"
+  | "quarantineGracePeriodSeconds"
+  | "confirmationPasses"
+  | "maxAttempts"
+  | "retryDelayMs"
+>;
+
 export type StorageReconciliationSliceResult = {
   claimed: boolean;
   phase: "idle" | "scanning" | "deleting" | "verifying" | "completed" | "failed";
@@ -45,7 +57,7 @@ export function parseManagedImmutableObjectKey(
 export async function runStorageReconciliationSlice(input: {
   repository: StorageReconciliationRepository;
   storage: ReconciliationStorage;
-  settings: RuntimeMaintenanceSettings;
+  settings: StorageReconciliationSettings;
   versionPurgeEnabled: boolean;
   now?: () => Date;
   leaseToken?: string;

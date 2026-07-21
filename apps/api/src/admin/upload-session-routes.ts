@@ -1,6 +1,7 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import {
   createUploadSessionService,
+  UPLOAD_CONTENT_TRANSFER_CONCURRENCY,
   UPLOAD_MANIFEST_PAGE_SIZE,
   UPLOAD_SESSION_TTL_SECONDS
 } from "../application/upload-sessions.js";
@@ -61,7 +62,8 @@ export function registerAdminUploadSessionRoutes(
         {
           session,
           transport: {
-            manifestPageSize: UPLOAD_MANIFEST_PAGE_SIZE
+            manifestPageSize: UPLOAD_MANIFEST_PAGE_SIZE,
+            contentUploadConcurrency: UPLOAD_CONTENT_TRANSFER_CONCURRENCY
           }
         },
         201

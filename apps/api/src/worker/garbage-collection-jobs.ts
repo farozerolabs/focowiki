@@ -15,47 +15,76 @@ export function createGarbageCollectionJobProcessor(input: {
   const now = input.now ?? (() => new Date());
   return async (job: RoleJobRecord): Promise<void> => {
     const current = now();
-    const olderThan = new Date(
-      current.getTime() - input.retentionDays * 24 * 60 * 60 * 1_000
-    ).toISOString();
-    const expired = await input.cleanup.deleteExpiredGenerations({
+    const result = await runGarbageCollectionSlice({
+      cleanup: input.cleanup,
+      storage: input.storage,
+      jobId: job.id,
+      batchSize: input.batchSize,
+      retentionDays: input.retentionDays,
+      versionPurgeEnabled: input.versionPurgeEnabled,
+      now: current
+    });
+    if (result.hasMore) throw continuation(current, input.continuationDelayMs);
+  };
+}
+
+export async function runGarbageCollectionSlice(input: {
+  cleanup: GenerationCleanupRepository;
+  storage: StorageAdapter;
+  jobId: string;
+  batchSize: number;
+  retentionDays: number;
+  versionPurgeEnabled: boolean;
+  now: Date;
+}): Promise<{
+  expiredGenerations: number;
+  deletedObjects: number;
+  hasMore: boolean;
+}> {
+  const olderThan = new Date(
+    input.now.getTime() - input.retentionDays * 24 * 60 * 60 * 1_000
+  ).toISOString();
+  const expiredGenerations = await input.cleanup.deleteExpiredGenerations({
+    olderThan,
+    limit: input.batchSize
+  });
+  if (expiredGenerations >= input.batchSize) {
+    return { expiredGenerations, deletedObjects: 0, hasMore: true };
+  }
+
+  let objects = await input.cleanup.listClaimedImmutableObjects({
+    jobId: input.jobId,
+    limit: input.batchSize
+  });
+  if (objects.length === 0) {
+    const claimed = await input.cleanup.claimUnreferencedImmutableObjects({
+      jobId: input.jobId,
+      cursor: null,
       olderThan,
       limit: input.batchSize
     });
-    if (expired >= input.batchSize) {
-      throw continuation(current, input.continuationDelayMs);
-    }
+    objects = claimed.objects;
+  }
+  if (objects.length === 0) {
+    return { expiredGenerations, deletedObjects: 0, hasMore: false };
+  }
 
-    let objects = await input.cleanup.listClaimedImmutableObjects({
-      jobId: job.id,
-      limit: input.batchSize
-    });
-    if (objects.length === 0) {
-      const claimed = await input.cleanup.claimUnreferencedImmutableObjects({
-        jobId: job.id,
-        cursor: null,
-        olderThan,
-        limit: input.batchSize
-      });
-      objects = claimed.objects;
-    }
-    if (objects.length === 0) return;
-
-    await deleteStorageObjectBatch({
-      storage: input.storage,
-      objectKeys: objects.map((object) => object.objectKey),
-      versionPurgeEnabled: input.versionPurgeEnabled
-    });
-    await input.cleanup.completeImmutableObjectDeletions({
-      jobId: job.id,
-      objects: objects.map((object) => ({
-        checksumSha256: object.checksumSha256,
-        formatVersion: object.formatVersion
-      }))
-    });
-    if (objects.length >= input.batchSize) {
-      throw continuation(current, input.continuationDelayMs);
-    }
+  await deleteStorageObjectBatch({
+    storage: input.storage,
+    objectKeys: objects.map((object) => object.objectKey),
+    versionPurgeEnabled: input.versionPurgeEnabled
+  });
+  const deletedObjects = await input.cleanup.completeImmutableObjectDeletions({
+    jobId: input.jobId,
+    objects: objects.map((object) => ({
+      checksumSha256: object.checksumSha256,
+      formatVersion: object.formatVersion
+    }))
+  });
+  return {
+    expiredGenerations,
+    deletedObjects,
+    hasMore: objects.length >= input.batchSize
   };
 }
 

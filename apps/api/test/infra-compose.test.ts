@@ -190,6 +190,7 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/maintenance-worker.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
     expect(dockerfile).not.toMatch(/pnpm\s+--filter\s+@focowiki\/admin\s+dev|vite\s+--host|pnpm\s+dev/);
   });
@@ -202,7 +203,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
+    expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(workflow).toContain("apps/api/runtime/main.mjs");
+    expect(workflow).toContain("Validate compatible migration paths");
+    expect(workflow).toContain("Validate current schema idempotence");
   });
 
   it("proves migrations, role health, and source-to-activation flow in CI", () => {
@@ -227,6 +231,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("Validate published API image roles");
     expect(workflow).toContain("Start S3 health fixture");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
+    expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs --healthcheck");

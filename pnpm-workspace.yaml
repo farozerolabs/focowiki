@@ -3,6 +3,8 @@ packages:
   - "packages/*"
 overrides:
   "@modelcontextprotocol/sdk>zod": ^3.25.76
+  "brace-expansion@2.1.1": 2.1.2
+  "js-yaml@4.2.0": 4.3.0
   "shadcn>zod": ^3.25.76
   "@redocly/openapi-core@1.34.15>js-yaml": 4.2.0
   "@vitejs/plugin-vue>vite": 6.4.3

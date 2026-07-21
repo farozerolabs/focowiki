@@ -1,5 +1,16 @@
 const PER_FILE_TRANSFER_BUDGET_MS = 1_000;
 
+export function isSuccessfulUploadFinalizationResponse({ method, url, status }) {
+  return (
+    method === "POST" &&
+    url.includes("/admin/api/knowledge-bases/") &&
+    url.includes("/upload-sessions/") &&
+    url.includes("/finalize") &&
+    status >= 200 &&
+    status < 300
+  );
+}
+
 export function resolveUploadResponseTimeoutMs({
   sampleCount,
   configuredTimeoutMs,

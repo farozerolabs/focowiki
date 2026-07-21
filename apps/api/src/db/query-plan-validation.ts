@@ -1,3 +1,11 @@
+import { buildGraphQueryTerms } from "../graph/graph-term-document.js";
+import {
+  GRAPH_COMMON_TERM_ABSOLUTE_MAX_DOCUMENTS,
+  GRAPH_COMMON_TERM_MAX_DOCUMENT_RATIO,
+  GRAPH_LEXICAL_QUERY_TERM_LIMIT,
+  GRAPH_QUERY_TERM_LIMIT
+} from "../graph/graph-term-frequency.js";
+
 export type QueryPlanTargetName =
   | "knowledge-base-card-search"
   | "source-file-list"
@@ -5,17 +13,23 @@ export type QueryPlanTargetName =
   | "source-resource-list-filter"
   | "resource-operation-page"
   | "active-generation-resolve"
+  | "active-file-by-id"
   | "active-file-by-path"
+  | "active-file-metadata-by-source"
   | "active-tree-page"
   | "active-tree-search"
   | "active-file-search"
   | "active-graph-search"
   | "active-related-page"
+  | "graph-candidate-terms"
   | "role-job-source-cancellation"
   | "role-job-claim"
   | "source-dispatch-claim"
   | "publication-impact-claim"
   | "publication-progress-summary"
+  | "optimization-migration-progress-summary"
+  | "projection-compaction-active-summary"
+  | "projection-compaction-completed-summary"
   | "generation-freeze"
   | "generation-validation-ref-page"
   | "generation-validation-projection-page"
@@ -167,6 +181,17 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       WHERE id = 'kb-plan' AND deleted_at IS NULL
       LIMIT 1
     `),
+    target("active-file-by-id", "Generated content resolves directly through the active object file identity.", `
+      SELECT reference.file_id, reference.logical_path, object.object_key,
+             object.content_type, object.size_bytes, object.checksum_sha256
+      FROM focowiki.active_object_refs reference
+      JOIN focowiki.immutable_objects object
+        ON object.checksum_sha256 = reference.checksum_sha256
+       AND object.format_version = reference.format_version
+      WHERE reference.knowledge_base_id = 'kb-plan'
+        AND reference.file_id = 'bundle-file-plan'
+      LIMIT 1
+    `),
     target("active-file-by-path", "Generated content resolves directly through the active object catalog.", `
       SELECT reference.file_id, reference.logical_path, object.object_key,
              object.content_type, object.size_bytes, object.checksum_sha256
@@ -176,6 +201,15 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
        AND object.format_version = reference.format_version
       WHERE reference.knowledge_base_id = 'kb-plan'
         AND reference.logical_path = 'pages/example.md'
+      LIMIT 1
+    `),
+    target("active-file-metadata-by-source", "Generated file metadata resolves from one active search record.", `
+      SELECT record_id, title, summary, payload_json
+      FROM focowiki.active_projection_records
+      WHERE knowledge_base_id = 'kb-plan'
+        AND projection_kind = 'search'
+        AND source_file_id = 'source-file-plan'
+      ORDER BY record_id
       LIMIT 1
     `),
     target("active-tree-page", "Tree children use active projection keyset pagination.", `
@@ -194,8 +228,8 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       FROM focowiki.active_projection_records
       WHERE knowledge_base_id = 'kb-plan'
         AND projection_kind = 'tree'
-        AND (coalesce(title, '') ILIKE '%example%'
-          OR coalesce(logical_path, '') ILIKE '%example%')
+        AND lower(coalesce(title, '') || ' ' || coalesce(logical_path, ''))
+          LIKE '%example%'
       ORDER BY coalesce(sort_key, ''), record_id
       LIMIT 51
     `),
@@ -209,7 +243,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
        AND file.ref_kind = 'page'
       WHERE record.knowledge_base_id = 'kb-plan'
         AND record.projection_kind = 'search'
-        AND record.searchable_text ILIKE '%example%'
+        AND lower(coalesce(record.searchable_text, '')) LIKE '%example%'
       ORDER BY record.record_id
       LIMIT 51
     `),
@@ -223,7 +257,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
        AND file.ref_kind = 'page'
       WHERE record.knowledge_base_id = 'kb-plan'
         AND record.projection_kind IN ('graph_node', 'graph_edge')
-        AND record.searchable_text ILIKE '%example%'
+        AND lower(coalesce(record.searchable_text, '')) LIKE '%example%'
       ORDER BY record.record_id
       LIMIT 51
     `),
@@ -239,6 +273,137 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       LIMIT 51
     `)
   ];
+}
+
+export function createMaintenanceProgressPlanTargets(): QueryPlanTarget[] {
+  return [
+    target("optimization-migration-progress-summary", "Migration progress resolves by knowledge-base primary key.", `
+      SELECT state, phase, attempt_count, max_attempts, started_at,
+             updated_at, completed_at, last_error_code, last_error_message
+      FROM focowiki.knowledge_base_optimization_migrations
+      WHERE knowledge_base_id = 'kb-plan'
+    `),
+    target("projection-compaction-active-summary", "Active compaction progress resolves from one partial-index row.", `
+      SELECT state, attempt_count, max_attempts, created_at, updated_at,
+             completed_at, last_error_code
+      FROM focowiki.projection_compaction_jobs
+      WHERE knowledge_base_id = 'kb-plan'
+        AND state IN ('pending', 'running', 'failed')
+      ORDER BY updated_at DESC, id
+      LIMIT 1
+    `),
+    target("projection-compaction-completed-summary", "Completed compaction progress resolves from one partial-index row.", `
+      SELECT state, attempt_count, max_attempts, created_at, updated_at,
+             completed_at, last_error_code
+      FROM focowiki.projection_compaction_jobs
+      WHERE knowledge_base_id = 'kb-plan'
+        AND state IN ('completed', 'superseded')
+      ORDER BY updated_at DESC, id
+      LIMIT 1
+    `)
+  ];
+}
+
+export function createGraphCandidatePlanTarget(input: {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  terms: string[];
+  limit: number;
+}): QueryPlanTarget {
+  const terms = buildGraphQueryTerms(input.terms.slice(0, 100));
+  const sqlTerms = terms.exactTerms.map(sqlLiteral).join(", ");
+  const sqlPhrases = terms.phraseTerms.map(sqlLiteral).join(", ");
+  const sqlReferences = terms.explicitReferences.map(sqlLiteral).join(", ");
+  const optionalMatches = [
+    terms.phraseTerms.length > 0 ? `
+      UNION ALL
+      SELECT document.source_file_id
+      FROM focowiki.source_file_graph_term_documents document
+      CROSS JOIN bounded_query query
+      WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND document.source_file_id <> ${sqlLiteral(input.sourceFileId)}
+        AND document.phrase_terms && ARRAY[${sqlPhrases}]::text[]
+        AND cardinality(query.exact_terms) > 0
+        AND document.exact_terms && query.exact_terms
+    ` : "",
+    terms.explicitReferences.length > 0 ? `
+      UNION ALL
+      SELECT document.source_file_id
+      FROM focowiki.source_file_graph_term_documents document
+      WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND document.source_file_id <> ${sqlLiteral(input.sourceFileId)}
+        AND document.explicit_references && ARRAY[${sqlReferences}]::text[]
+    ` : ""
+  ].join("");
+
+  return target("graph-candidate-terms", "Graph candidates use indexed body-derived terms.", `
+    WITH query_term_frequencies AS MATERIALIZED (
+      SELECT frequency.term, sum(frequency.document_count)::bigint AS document_count
+      FROM focowiki.source_file_graph_term_frequencies frequency
+      WHERE frequency.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND frequency.term = ANY(ARRAY[${sqlTerms}]::text[])
+      GROUP BY frequency.term
+    ), selected_query_terms AS MATERIALIZED (
+      SELECT query_term.term,
+             coalesce(frequency.document_count, 0)::bigint AS document_count
+      FROM unnest(ARRAY[${sqlTerms}]::text[]) AS query_term(term)
+      LEFT JOIN query_term_frequencies frequency
+        ON frequency.term = query_term.term
+      LEFT JOIN (
+        SELECT coalesce(sum(source_file_count), 0)::bigint AS source_file_count
+        FROM focowiki.knowledge_base_incremental_stat_shards
+        WHERE knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+      ) stats ON true
+      WHERE coalesce(frequency.document_count, 0) <= greatest(
+        1::bigint,
+        least(
+          ${GRAPH_COMMON_TERM_ABSOLUTE_MAX_DOCUMENTS}::bigint,
+          ceil(
+            coalesce(stats.source_file_count, 0)
+            * ${GRAPH_COMMON_TERM_MAX_DOCUMENT_RATIO}::numeric
+          )::bigint
+        )
+      )
+      ORDER BY coalesce(frequency.document_count, 0), query_term.term
+      LIMIT ${GRAPH_QUERY_TERM_LIMIT}
+    ), bounded_query AS MATERIALIZED (
+      SELECT coalesce(
+               array_agg(term ORDER BY document_count, term),
+               ARRAY[]::text[]
+             ) AS exact_terms,
+             coalesce(
+               array_to_string(
+                 (array_agg(term ORDER BY document_count, term))
+                   [1:${GRAPH_LEXICAL_QUERY_TERM_LIMIT}],
+                 ' '
+               ),
+               ''
+             ) AS lexical_text
+      FROM selected_query_terms
+    ), candidate_matches AS MATERIALIZED (
+      SELECT document.source_file_id
+      FROM focowiki.source_file_graph_term_documents document
+      CROSS JOIN bounded_query query
+      WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND document.source_file_id <> ${sqlLiteral(input.sourceFileId)}
+        AND cardinality(query.exact_terms) > 0
+        AND document.exact_terms && query.exact_terms
+      ${optionalMatches}
+      UNION ALL
+      SELECT document.source_file_id
+      FROM focowiki.source_file_graph_term_documents document
+      CROSS JOIN bounded_query query
+      WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND document.source_file_id <> ${sqlLiteral(input.sourceFileId)}
+        AND query.lexical_text <> ''
+        AND document.lexical_vector @@ websearch_to_tsquery('simple', query.lexical_text)
+    )
+    SELECT candidate.source_file_id
+    FROM candidate_matches candidate
+    GROUP BY candidate.source_file_id
+    ORDER BY candidate.source_file_id
+    LIMIT ${Math.max(1, Math.min(1_000, input.limit))}
+  `);
 }
 
 export function createRoleQueuePlanTargets(): QueryPlanTarget[] {
@@ -358,6 +523,10 @@ export function createCleanupPlanTargets(): QueryPlanTarget[] {
 
 function target(name: QueryPlanTargetName, description: string, sql: string): QueryPlanTarget {
   return { name, description, sql };
+}
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function readExplainRecord(planJson: unknown): JsonExplainRecord {

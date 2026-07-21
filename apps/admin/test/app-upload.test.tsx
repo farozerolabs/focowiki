@@ -64,9 +64,13 @@ vi.mock("../src/lib/admin-api", () => ({
     },
     publicationProgress: {
       generationId: null, stage: null, processedImpactCount: 0, totalImpactCount: 0,
-      touchedShardCount: 0, oldestDirtyAt: null, queuedAt: null, startedAt: null,
+      touchedShardCount: 0, throughputPerMinute: null, oldestDirtyAt: null, queuedAt: null, startedAt: null,
       heartbeatAt: null, completedAt: null, lastSuccessAt: null,
       safeErrorCode: null, safeErrorMessage: null
+    },
+    maintenanceProgress: {
+      migration: null,
+      compaction: { active: null, latestCompleted: null }
     },
     dirtySourceFiles: {
       count: 0,

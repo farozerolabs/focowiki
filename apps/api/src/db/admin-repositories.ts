@@ -24,6 +24,7 @@ import {
   type RuntimeSettingsRepository
 } from "../runtime-settings/repository.js";
 import type { ModelApiMode } from "../runtime-settings/types.js";
+import type { GraphTermDocument } from "../graph/graph-term-document.js";
 export type {
   GeneratedSourceFileOutputRecord,
   GeneratedOutputStatus,
@@ -202,54 +203,27 @@ export type FileGraphSummaryRecord = {
   relationships: FileGraphRelatedRecord[];
 };
 
-export type FileGraphJobRecord = {
-  id: string;
-  knowledgeBaseId: string;
-  sourceFileId: string;
-  status: "running" | "completed" | "failed";
-  startedAt: string;
-  endedAt: string | null;
-  errorCode: string | null;
-  createdAt: string;
-};
-
 export type FileGraphRepository = {
-  createGraphJob?: (input: {
-    id?: string;
-    knowledgeBaseId: string;
-    sourceFileId: string;
-    startedAt: string;
-  }) => Promise<FileGraphJobRecord>;
-  completeGraphJob?: (input: {
-    id: string;
-    status: FileGraphJobRecord["status"];
-    endedAt: string;
-    errorCode?: string | null;
-  }) => Promise<FileGraphJobRecord | null>;
   upsertGraphNode: (input: {
     knowledgeBaseId: string;
     node: OkfGraphNode;
   }) => Promise<void>;
-  upsertGraphEdges: (input: {
+  upsertGraphTermDocument: (input: {
     knowledgeBaseId: string;
-    edges: OkfGraphEdge[];
-  }) => Promise<string[] | void>;
-  upsertRejectedGraphEdges?: (input: {
-    knowledgeBaseId: string;
-    edges: OkfGraphEdge[];
+    document: GraphTermDocument;
   }) => Promise<void>;
-  replaceGraphEdgesForSourceFile?: (input: {
+  applyGraphMutationSet: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
-  }) => Promise<{ sourceFileIds: string[]; edgeIds: string[] } | void>;
-  reconcileExplicitReferenceEdgesForTarget?: (input: {
-    knowledgeBaseId: string;
     target: OkfGraphNode;
+    acceptedEdges: OkfGraphEdge[];
+    rejectedEdges: OkfGraphEdge[];
     limit: number;
   }) => Promise<{
     edgeCount: number;
-    sourceFileIds: string[];
+    affectedSourceFileIds: string[];
     edgeIds: string[];
+    removedEdgeIds: string[];
   }>;
   listGraphNodes: (request: {
     knowledgeBaseId: string;
@@ -289,11 +263,6 @@ export type FileGraphRepository = {
     neighborSourceFileIds: string[];
     edgeIds: string[];
   }>>;
-  refreshGraphSummariesForSourceFiles?: (request: {
-    knowledgeBaseId: string;
-    sourceFileIds: string[];
-    limit: number;
-  }) => Promise<void>;
   deleteGraphForSourceFile: (input: {
     knowledgeBaseId: string;
     sourceFileId: string;
@@ -444,11 +413,32 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
         };
       },
       async createKnowledgeBase(input) {
-        const rows = await sql<KnowledgeBaseRow[]>`
-          INSERT INTO focowiki.knowledge_bases (id, name, description)
-          VALUES (${createKnowledgeBaseId()}, ${input.name}, ${input.description})
-          RETURNING id, name, description, active_generation_id, resource_revision, catalog_generation, created_at, updated_at
-        `;
+        const rows = await sql.begin(async (transaction) => {
+          const created = await transaction<KnowledgeBaseRow[]>`
+            INSERT INTO focowiki.knowledge_bases (id, name, description)
+            VALUES (${createKnowledgeBaseId()}, ${input.name}, ${input.description})
+            RETURNING id, name, description, active_generation_id, resource_revision, catalog_generation, created_at, updated_at
+          `;
+          const knowledgeBase = created[0];
+          if (!knowledgeBase) return created;
+          await transaction`
+            INSERT INTO focowiki.knowledge_base_incremental_stats (
+              knowledge_base_id, stats_revision, reconciled_at
+            ) VALUES (${knowledgeBase.id}, 1, now())
+            ON CONFLICT (knowledge_base_id) DO NOTHING
+          `;
+          await transaction`
+            INSERT INTO focowiki.knowledge_base_optimization_migrations (
+              knowledge_base_id, state, phase, parity_evidence_json,
+              verified_at, completed_at
+            ) VALUES (
+              ${knowledgeBase.id}, 'optimized_active', 'verifying',
+              ${transaction.json({ initializedEmpty: true })}, now(), now()
+            )
+            ON CONFLICT (knowledge_base_id) DO NOTHING
+          `;
+          return created;
+        });
         const row = rows[0];
 
         if (!row) {

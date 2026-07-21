@@ -31,6 +31,7 @@ export async function seedSourceFileFixtures(input: {
       return {
         id: sourceFileId,
         knowledgeBaseId: input.knowledgeBaseId,
+        sourceRevisionId: `source-revision-${sourceFileId}`,
         name: file.fileName,
         relativePath: file.fileName,
         objectKey,

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertRuntimeProcessingSettingsShape,
   createAdminTreeSearchQuery,
+  expectedModelStageEventCount,
   shouldKeepValidationKnowledgeBase
 } from "../cleaned-markdown-flow.mjs";
 
@@ -68,4 +69,8 @@ test("keeps the validation knowledge base only when explicitly requested", () =>
     shouldKeepValidationKnowledgeBase({ FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE: "true" }),
     true
   );
+});
+
+test("expects one complete model stage event per source file", () => {
+  assert.equal(expectedModelStageEventCount(24), 24);
 });

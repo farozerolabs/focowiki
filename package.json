@@ -12,6 +12,7 @@
     "compose:config": "docker compose -f docker-compose.yml config",
     "compose:example:config": "docker compose --env-file .env.example -f docker-compose.yml.example config --no-env-resolution --quiet",
     "compose:pull": "docker compose -f docker-compose.yml pull",
+    "compose:preflight": "docker compose -f docker-compose.yml run --rm --entrypoint node migrate apps/api/runtime/migration-preflight.mjs",
     "compose:migrate": "docker compose -f docker-compose.yml run --rm migrate",
     "compose:up": "docker compose -f docker-compose.yml up -d",
     "compose:down": "docker compose -f docker-compose.yml down",

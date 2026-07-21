@@ -38,14 +38,28 @@ export function createRoleWorkerRuntime(input: {
   }
   const now = input.now ?? (() => new Date());
   const activeJobIds = new Set<string>();
+  let heartbeatInFlight: Promise<void> | null = null;
+  let heartbeatRequested = false;
 
   async function recordHeartbeat(): Promise<void> {
-    await input.repository.heartbeat({
-      role: input.role,
-      workerId: input.workerId,
-      jobIds: [...activeJobIds],
-      now: now().toISOString()
-    });
+    heartbeatRequested = true;
+    if (!heartbeatInFlight) {
+      const operation = (async () => {
+        while (heartbeatRequested) {
+          heartbeatRequested = false;
+          await input.repository.heartbeat({
+            role: input.role,
+            workerId: input.workerId,
+            jobIds: [...activeJobIds],
+            now: now().toISOString()
+          });
+        }
+      })();
+      heartbeatInFlight = operation.finally(() => {
+        heartbeatInFlight = null;
+      });
+    }
+    await heartbeatInFlight;
   }
 
   async function tick(signal: AbortSignal = neverAbortedSignal()): Promise<number> {
@@ -76,6 +90,15 @@ export function createRoleWorkerRuntime(input: {
       return 0;
     }
 
+    for (const job of claimed) {
+      activeJobIds.add(job.id);
+    }
+    await recordHeartbeat();
+    const heartbeatTimer = setInterval(() => {
+      void recordHeartbeat().catch(() => undefined);
+    }, settings.heartbeatIntervalMs);
+    heartbeatTimer.unref?.();
+
     let nextIndex = 0;
     let processedCount = 0;
     const runners = Array.from(
@@ -87,37 +110,37 @@ export function createRoleWorkerRuntime(input: {
           if (!job) {
             return;
           }
-          activeJobIds.add(job.id);
-          await recordHeartbeat();
           try {
-            await processWithHeartbeat(job, signal, settings);
+            await processJob(job, signal, settings);
             processedCount += 1;
           } finally {
             activeJobIds.delete(job.id);
-            await recordHeartbeat();
           }
         }
       }
     );
 
-    await Promise.all(runners);
-    const unstarted = claimed.slice(nextIndex);
-    if (unstarted.length > 0) {
-      await release(unstarted);
+    try {
+      await Promise.all(runners);
+      const unstarted = claimed.slice(nextIndex);
+      if (unstarted.length > 0) {
+        await release(unstarted);
+        for (const job of unstarted) {
+          activeJobIds.delete(job.id);
+        }
+      }
+    } finally {
+      clearInterval(heartbeatTimer);
+      await recordHeartbeat();
     }
     return processedCount;
   }
 
-  async function processWithHeartbeat(
+  async function processJob(
     job: RoleJobRecord,
     signal: AbortSignal,
     settings: RoleWorkerSettings
   ): Promise<void> {
-    const timer = setInterval(() => {
-      void recordHeartbeat().catch(() => undefined);
-    }, settings.heartbeatIntervalMs);
-    timer.unref?.();
-
     try {
       await input.process(job, signal);
       await input.repository.complete({
@@ -164,8 +187,6 @@ export function createRoleWorkerRuntime(input: {
         safeErrorCode: failure.code,
         terminal
       });
-    } finally {
-      clearInterval(timer);
     }
   }
 

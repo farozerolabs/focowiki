@@ -3,7 +3,10 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { chromium } from "playwright";
 import { selectSingleAndBatchSamplesFromEnvironment } from "./cleaned-markdown-flow.mjs";
-import { resolveUploadResponseTimeoutMs } from "./lib/browser-timeouts.mjs";
+import {
+  isSuccessfulUploadFinalizationResponse,
+  resolveUploadResponseTimeoutMs
+} from "./lib/browser-timeouts.mjs";
 import { redactReportText } from "./lib/redaction.mjs";
 
 const CHANGE_ID =
@@ -319,11 +322,11 @@ async function uploadFilesFromDialog(page, samples, { checkName, message }) {
   const [uploadResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.request().method() === "POST" &&
-        response.url().includes("/admin/api/knowledge-bases/") &&
-        response.url().includes("/upload-sessions/") &&
-        response.url().includes("/finalize") &&
-        response.status() === 202,
+        isSuccessfulUploadFinalizationResponse({
+          method: response.request().method(),
+          url: response.url(),
+          status: response.status()
+        }),
       {
         timeout: resolveUploadResponseTimeoutMs({
           sampleCount: samples.length,
@@ -589,8 +592,8 @@ async function validateSourceFileRows(page, sourceFileIds, samples, timeout, { c
     const row = page.getByTestId(`source-file-row-${sourceFileId}`);
     await row.waitFor({ timeout: 30_000 });
     await row.getByText(samples[index].basename, { exact: true }).waitFor({ timeout: 30_000 });
-    await row.getByText("Completed", { exact: true }).waitFor({ timeout: 30_000 });
-    await row.getByText("Release activation", { exact: true }).waitFor({ timeout });
+    await row.getByText("Visible", { exact: true }).waitFor({ timeout: 30_000 });
+    await row.getByText("Generation activation", { exact: true }).waitFor({ timeout });
     await row.getByText("Available", { exact: true }).waitFor({ timeout });
   }
 
@@ -786,7 +789,8 @@ async function validateGraphFilePreview(page, sourceFileId) {
   await graphFileButton.waitFor({ timeout: 30_000 });
   await graphFileButton.click();
   await waitForPreviewText(page, sourceFileId);
-  await waitForPreviewText(page, "relationships");
+  await waitForPreviewText(page, "related_files");
+  await waitForPreviewText(page, "segments");
   report.checks.push(okCheck("graph-file-preview", "Opened generated file-first graph JSON preview in browser."));
 }
 

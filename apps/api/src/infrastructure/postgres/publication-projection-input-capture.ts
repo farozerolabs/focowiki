@@ -94,6 +94,15 @@ export type CapturedProjectionInput = {
   payload: SerializableJson;
 };
 
+export type PublicationProjectionCaptureChange = {
+  changeKind: ChangeFactKind;
+  sourceFileId: string | null;
+  sourceRevisionId: string | null;
+  previousPath: string | null;
+  path: string | null;
+  impacts: PublicationImpact[];
+};
+
 export async function capturePublicationProjectionInputs(
   transaction: TransactionSql<Record<string, never>>,
   input: {
@@ -108,31 +117,82 @@ export async function capturePublicationProjectionInputs(
     now: string;
   }
 ): Promise<Map<string, CapturedProjectionInput>> {
-  const sourceIds = unique(input.impacts.flatMap((impact) =>
+  return capturePublicationProjectionInputsBatch(transaction, {
+    knowledgeBaseId: input.knowledgeBaseId,
+    generationId: input.generationId,
+    changes: [{
+      changeKind: input.changeKind,
+      sourceFileId: input.sourceFileId,
+      sourceRevisionId: input.sourceRevisionId,
+      previousPath: input.previousPath,
+      path: input.path,
+      impacts: input.impacts
+    }],
+    now: input.now
+  });
+}
+
+export async function capturePublicationProjectionInputsBatch(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    changes: PublicationProjectionCaptureChange[];
+    now: string;
+  }
+): Promise<Map<string, CapturedProjectionInput>> {
+  const effective = new Map<string, {
+    impact: PublicationImpact;
+    change: PublicationProjectionCaptureChange;
+  }>();
+  for (const change of input.changes) {
+    for (const impact of change.impacts) {
+      effective.set(projectionTargetKey(impact), { impact, change });
+    }
+  }
+  const entries = [...effective.values()];
+  const impacts = entries.map((entry) => entry.impact);
+  const sourceIds = unique(impacts.flatMap((impact) =>
     requiresSourceInput(impact) ? [impact.recordIdentity] : []
   ));
-  const edgeIds = unique(input.impacts.flatMap((impact) =>
+  const edgeIds = unique(impacts.flatMap((impact) =>
     requiresGraphEdgeInput(impact) ? [impact.recordIdentity] : []
   ));
-  const directoryPaths = unique(input.impacts.flatMap((impact) =>
+  const directoryPaths = unique(impacts.flatMap((impact) =>
     requiresDirectoryInput(impact)
       ? [impact.recordIdentity.slice("directory:".length)]
       : []
   ));
-  const sourceInputs = await captureSources(transaction, input, sourceIds);
+  const sourceOverrides = new Map<string, {
+    sourceRevisionId: string | null;
+    path: string | null;
+  }>();
+  for (const { impact, change } of entries) {
+    if (change.sourceFileId !== impact.recordIdentity) continue;
+    sourceOverrides.set(impact.recordIdentity, {
+      sourceRevisionId: change.sourceRevisionId,
+      path: change.path
+    });
+  }
+  const sourceInputs = await captureSources(
+    transaction,
+    input.knowledgeBaseId,
+    sourceIds,
+    sourceOverrides
+  );
   const edgeInputs = await captureGraphEdges(transaction, input.knowledgeBaseId, edgeIds);
   const directoryInputs = await captureDirectories(
     transaction,
     input.knowledgeBaseId,
     directoryPaths
   );
-  const knowledgeBaseInput = input.impacts.some((impact) => impact.projectionKind === "root")
+  const knowledgeBaseInput = impacts.some((impact) => impact.projectionKind === "root")
     || directoryPaths.includes("")
     ? await captureKnowledgeBase(transaction, input.knowledgeBaseId)
     : null;
   const result = new Map<string, CapturedProjectionInput>();
 
-  for (const impact of input.impacts) {
+  for (const { impact, change } of entries) {
     let projectionInput: PublicationProjectionInput | null = null;
     if (requiresSourceInput(impact)) {
       projectionInput = sourceInputs.get(impact.recordIdentity) ?? null;
@@ -150,7 +210,7 @@ export async function capturePublicationProjectionInputs(
     } else if (impact.projectionKind === "directory") {
       projectionInput = {
         kind: "navigation",
-        targets: buildNavigationTargets({ ...input, impact })
+        targets: buildNavigationTargets({ ...change, impact })
       };
     } else if (impact.projectionKind === "root" && knowledgeBaseInput) {
       projectionInput = {
@@ -186,18 +246,25 @@ export async function persistCapturedProjectionInputs(
 ): Promise<void> {
   const uniqueInputs = new Map<string, SerializableJson>();
   for (const item of input.captured.values()) uniqueInputs.set(item.inputKey, item.payload);
-  for (const [inputKey, payload] of uniqueInputs) {
-    await transaction`
-      INSERT INTO focowiki.publication_projection_inputs (
-        knowledge_base_id, generation_id, input_key, payload_json, created_at, updated_at
-      ) VALUES (
-        ${input.knowledgeBaseId}, ${input.generationId}, ${inputKey},
-        ${transaction.json(payload as never)}, ${input.now}, ${input.now}
+  if (uniqueInputs.size === 0) return;
+  const rows = Array.from(uniqueInputs, ([inputKey, payload]) => ({ inputKey, payload }));
+  await transaction`
+    WITH inputs AS (
+      SELECT item.*
+      FROM jsonb_to_recordset(${transaction.json(rows as never)}) AS item(
+        "inputKey" text,
+        "payload" jsonb
       )
-      ON CONFLICT (generation_id, input_key) DO UPDATE
-      SET payload_json = EXCLUDED.payload_json, updated_at = EXCLUDED.updated_at
-    `;
-  }
+    )
+    INSERT INTO focowiki.publication_projection_inputs (
+      knowledge_base_id, generation_id, input_key, payload_json, created_at, updated_at
+    )
+    SELECT ${input.knowledgeBaseId}, ${input.generationId}, item."inputKey",
+           item."payload", ${input.now}, ${input.now}
+    FROM inputs item
+    ON CONFLICT (generation_id, input_key) DO UPDATE
+    SET payload_json = EXCLUDED.payload_json, updated_at = EXCLUDED.updated_at
+  `;
 }
 
 function requiresSourceInput(impact: PublicationImpact): boolean {
@@ -234,23 +301,37 @@ function projectionInputKey(impact: PublicationImpact): string {
   return `navigation:${impact.projectionKey}:${impact.recordIdentity}`;
 }
 
+function projectionTargetKey(impact: PublicationImpact): string {
+  return `${impact.projectionKind}\u0000${impact.projectionKey}\u0000${impact.recordIdentity}`;
+}
+
 async function captureSources(
   transaction: TransactionSql<Record<string, never>>,
-  input: {
-    knowledgeBaseId: string;
-    sourceFileId: string | null;
-    sourceRevisionId: string | null;
-    path: string | null;
-  },
-  sourceIds: string[]
+  knowledgeBaseId: string,
+  sourceIds: string[],
+  sourceOverrides: Map<string, { sourceRevisionId: string | null; path: string | null }>
 ): Promise<Map<string, Extract<PublicationProjectionInput, { kind: "source" }>>> {
   if (sourceIds.length === 0) return new Map();
+  const requests = sourceIds.map((sourceFileId) => ({
+    sourceFileId,
+    sourceRevisionId: sourceOverrides.get(sourceFileId)?.sourceRevisionId ?? null,
+    path: sourceOverrides.get(sourceFileId)?.path ?? null
+  }));
   const rows = await transaction<SourceRow[]>`
+    WITH requested AS (
+      SELECT item.*
+      FROM jsonb_to_recordset(${transaction.json(requests as never)}) AS item(
+        "sourceFileId" text,
+        "sourceRevisionId" text,
+        "path" text
+      )
+    )
     SELECT source.id AS source_file_id, revision.id AS source_revision_id,
            source.resource_revision + CASE WHEN operation.id IS NULL THEN 0 ELSE 1 END
              AS resource_revision,
            coalesce(source.candidate_name, source.name) AS name,
-           coalesce(source.candidate_relative_path, source.relative_path) AS relative_path,
+           coalesce(requested."path", source.candidate_relative_path, source.relative_path)
+             AS relative_path,
            revision.object_key, revision.content_type, revision.size_bytes,
            revision.checksum_sha256, revision.metadata_json,
            CASE WHEN operation.id IS NULL THEN source.model_suggestions_json
@@ -264,15 +345,18 @@ async function captureSources(
            node.headings_json AS node_headings, node.keywords_json AS node_keywords,
            node.language AS node_language, node.profile_version AS node_profile_version,
            node.profile_source AS node_profile_source, node.metadata_json AS node_metadata
-    FROM focowiki.source_files source
+    FROM requested
+    JOIN focowiki.source_files source
+      ON source.id = requested."sourceFileId"
+     AND source.knowledge_base_id = ${knowledgeBaseId}
     LEFT JOIN focowiki.resource_operations operation
       ON operation.id = source.candidate_operation_id
      AND operation.knowledge_base_id = source.knowledge_base_id
      AND operation.state = 'publishing'
     JOIN focowiki.source_revisions revision
       ON revision.id = CASE
-        WHEN source.id = ${input.sourceFileId} AND ${input.sourceRevisionId}::text IS NOT NULL
-          THEN ${input.sourceRevisionId}
+        WHEN requested."sourceRevisionId" IS NOT NULL
+          THEN requested."sourceRevisionId"
         WHEN operation.id IS NULL THEN source.active_revision_id
         ELSE coalesce(source.candidate_revision_id, source.active_revision_id)
       END
@@ -281,17 +365,13 @@ async function captureSources(
     LEFT JOIN focowiki.source_file_graph_nodes node
       ON node.knowledge_base_id = source.knowledge_base_id
      AND node.source_file_id = source.id
-    WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-      AND source.id = ANY(${sourceIds})
-      AND source.deleted_at IS NULL
+    WHERE source.deleted_at IS NULL
       AND source.task_deleted_at IS NULL
       AND source.deletion_intent_id IS NULL
   `;
-  const relationships = await captureRelationships(transaction, input.knowledgeBaseId, sourceIds);
+  const relationships = await captureRelationships(transaction, knowledgeBaseId, sourceIds);
   return new Map(rows.map((row) => {
-    const relativePath = row.source_file_id === input.sourceFileId && input.path
-      ? input.path
-      : row.relative_path;
+    const relativePath = row.relative_path;
     const document: PublicationSourceSnapshot = {
       sourceFileId: row.source_file_id,
       sourceRevisionId: row.source_revision_id,

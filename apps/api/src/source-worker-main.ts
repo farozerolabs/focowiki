@@ -18,6 +18,10 @@ import { createRedisClient, createRedisCoordinator } from "./redis/coordination.
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
+import { createModelAssistanceGateway } from "./runtime-settings/model-assistance-gateway.js";
+import { resolveResourceBudgetLimits } from "./runtime-settings/resource-budget-settings.js";
+import { createProcessResourceBudgets } from "./runtime/resource-budget.js";
+import { createResourceBudgetReporter } from "./runtime/resource-budget-reporter.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createRoleWorkerRuntime } from "./worker/role-runtime.js";
 import { createSourceRoleProcessor } from "./worker/source-role-processor.js";
@@ -61,6 +65,14 @@ async function runSourceWorker(): Promise<void> {
       redis
     });
     await runtimeSettings.ensureBootstrapped();
+    const initialSnapshot = await runtimeSettings.getSnapshot();
+    const resourceBudgets = createProcessResourceBudgets(
+      resolveResourceBudgetLimits(initialSnapshot)
+    );
+    const resourceBudgetReporter = createResourceBudgetReporter({ logger });
+    const modelGateway = createModelAssistanceGateway({
+      budget: resourceBudgets.model
+    });
     const generations = createPostgresPublicationGenerationRepository(sql);
     const completion = createSourceProcessingCompletion({
       revisions: createPostgresSourceRevisionContextRepository(sql),
@@ -74,7 +86,13 @@ async function runSourceWorker(): Promise<void> {
       repositories,
       storage,
       redis,
-      completion
+      completion,
+      null,
+      {
+        sourceObjectRead: resourceBudgets.sourceObjectRead,
+        graphQuery: resourceBudgets.graphQuery,
+        databaseMutation: resourceBudgets.databaseMutation
+      }
     );
     if (!sourceProcessor) {
       throw new Error("Source processor is unavailable");
@@ -90,6 +108,7 @@ async function runSourceWorker(): Promise<void> {
       roleJobs,
       generations,
       impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
+      modelGateway,
       async cleanupObjectKeys(keys) {
         if (keys.length === 0) return;
         if (storage.deleteObjects) {
@@ -107,6 +126,8 @@ async function runSourceWorker(): Promise<void> {
       repository: roleJobs,
       async beforeClaim() {
         const snapshot = await runtimeSettings.getSnapshot();
+        resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+        resourceBudgetReporter.report(resourceBudgets);
         await dispatcher.dispatchPending({
           dispatcherId: workerId,
           now: new Date().toISOString(),
@@ -136,7 +157,9 @@ async function runSourceWorker(): Promise<void> {
         });
       },
       async settings() {
-        const worker = (await runtimeSettings.getSnapshot()).worker;
+        const snapshot = await runtimeSettings.getSnapshot();
+        resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+        const worker = snapshot.worker;
         return {
           claimBatchSize: worker.claimBatchSize,
           concurrency: worker.sourceFileConcurrency,
@@ -149,7 +172,11 @@ async function runSourceWorker(): Promise<void> {
       process,
       logger
     });
-    await runtime.run(abort.signal);
+    try {
+      await runtime.run(abort.signal);
+    } finally {
+      resourceBudgetReporter.report(resourceBudgets, { force: true });
+    }
   } finally {
     if (redisConnected) {
       await redisClient.close();

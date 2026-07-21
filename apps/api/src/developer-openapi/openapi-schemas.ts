@@ -120,9 +120,10 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     UploadSessionEntry: uploadSessionEntrySchema(),
     UploadSessionTransport: objectSchema(
       {
-        manifestPageSize: { type: "integer", minimum: 1 }
+        manifestPageSize: { type: "integer", minimum: 1 },
+        contentUploadConcurrency: { type: "integer", minimum: 1, maximum: 16 }
       },
-      ["manifestPageSize"]
+      ["manifestPageSize", "contentUploadConcurrency"]
     ),
     UploadSessionResponse: objectSchema(
       {

@@ -34,6 +34,16 @@ export interface DirectoryNavigationRepository {
     limits: OrderedDirectoryLeafLimits;
   }): Promise<DirectoryNavigationMutationResult>;
 
+  applyEntries(input: {
+    knowledgeBaseId: string;
+    directoryPath: string;
+    entries: Array<{
+      entryId: string;
+      desiredEntry: OrderedDirectoryEntry | null;
+    }>;
+    limits: OrderedDirectoryLeafLimits;
+  }): Promise<DirectoryNavigationMutationResult>;
+
   getSummary(input: {
     knowledgeBaseId: string;
     directoryPath: string;

@@ -97,6 +97,19 @@ jobs:
           -e REDIS_URL="${REDIS_URL}"
           focowiki-api:ci node apps/api/runtime/migrate.mjs
 
+      - name: Validate current schema idempotence
+        run: |
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/migration-preflight.mjs
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/migrate.mjs
+
+      - name: Validate compatible migration paths
+        run: >-
+          pnpm --filter @focowiki/api exec vitest run
+          test/migrations.test.ts
+          test/migration-preflight.test.ts
+          test/migration-preflight.integration.test.ts
+          test/tree-graph-storage-migration.integration.test.ts
+
       - name: Start S3 health fixture
         run: |
           node scripts/ci/s3-health-fixture.mjs &
@@ -126,7 +139,7 @@ jobs:
         run: pnpm openapi:validate
 
       - name: Validate API Docker worker runtimes
-        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
 
       - name: Validate API image role health
         run: |

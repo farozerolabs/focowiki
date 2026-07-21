@@ -21,6 +21,7 @@ import { createSourceFileListFilterPredicate } from "../../db/source-file-list-p
 const SOURCE_FILE_SELECT_COLUMNS = `
   source.id,
   source.knowledge_base_id,
+  source.active_revision_id AS source_revision_id,
   source.relative_path,
   source.resource_revision,
   source.object_key,
@@ -57,6 +58,8 @@ const SOURCE_FILE_SELECT_COLUMNS = `
 const SOURCE_FILE_PROCESSING_SELECT_COLUMNS = `
   source.id,
   source.knowledge_base_id,
+  CASE WHEN source.candidate_operation_id IS NULL
+    THEN source.active_revision_id ELSE source.candidate_revision_id END AS source_revision_id,
   COALESCE(source.candidate_relative_path, source.relative_path) AS relative_path,
   source.resource_revision,
   COALESCE(source.candidate_object_key, source.object_key) AS object_key,
@@ -94,6 +97,7 @@ const SOURCE_FILE_PROCESSING_SELECT_COLUMNS = `
 type SourceFileRow = {
   id: string;
   knowledge_base_id: string;
+  source_revision_id: string;
   relative_path: string;
   resource_revision: number;
   object_key: string;
@@ -171,22 +175,26 @@ export function createPostgresSourceFileRepository(sql: DatabaseClient): SourceF
           AND deleted_at IS NULL
           AND task_deleted_at IS NULL
       `;
-      await sql`
-        UPDATE focowiki.source_revisions revision
-        SET processing_status = CASE
-              WHEN ${input.status} = 'queued' THEN 'queued'
-              WHEN ${input.status} = 'running' THEN 'running'
-              WHEN ${input.status} = 'completed' THEN 'completed'
-              ELSE 'failed'
+      const shouldUpdateRevision = input.status === "queued"
+        || input.status === "failed"
+        || (input.status === "running" && input.startedAt !== null);
+      if (shouldUpdateRevision) {
+        await sql`
+          UPDATE focowiki.source_revisions revision
+          SET processing_status = CASE
+                WHEN ${input.status} = 'queued' THEN 'queued'
+                WHEN ${input.status} = 'running' THEN 'running'
+                ELSE 'failed'
+              END
+          FROM focowiki.source_files source
+          WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+            AND source.id = ANY(${input.sourceFileIds})
+            AND revision.id = CASE
+              WHEN source.candidate_operation_id IS NULL THEN source.active_revision_id
+              ELSE source.candidate_revision_id
             END
-        FROM focowiki.source_files source
-        WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-          AND source.id = ANY(${input.sourceFileIds})
-          AND revision.id = CASE
-            WHEN source.candidate_operation_id IS NULL THEN source.active_revision_id
-            ELSE source.candidate_revision_id
-          END
-      `;
+        `;
+      }
     },
     async updateSourceFileMetadata(input) {
       await sql`
@@ -371,6 +379,7 @@ function mapSourceFileRow(row: SourceFileRow): SourceFileRecord {
   return {
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
+    sourceRevisionId: row.source_revision_id,
     name: row.relative_path.split("/").at(-1) ?? row.relative_path,
     relativePath: row.relative_path,
     resourceRevision: row.resource_revision,

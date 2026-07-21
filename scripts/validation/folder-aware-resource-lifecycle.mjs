@@ -169,6 +169,7 @@ try {
     }
   );
   await waitForOperation(moveOperation.operationId);
+  await waitForFiles([moveTarget.sourceFileId]);
   const moved = await getSourceFile(moveTarget.sourceFileId);
   assert(moved.relativePath === movedRelativePath, "File move did not preserve the source ID at the new path.");
   await expectStatus(
@@ -198,6 +199,11 @@ try {
     }
   );
   await waitForOperation(directoryMove.operationId);
+  const movedDirectoryFiles = (await listSourceFiles()).filter((file) =>
+    file.relativePath.startsWith(`${movedDirectoryPath}/`)
+  );
+  assert(movedDirectoryFiles.length > 0, "Directory move did not expose its descendant files.");
+  await waitForFiles(movedDirectoryFiles.map((file) => file.sourceFileId));
   const movedDirectory = await developer.json(
     `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-directories/${encodeURIComponent(directoryTarget.directoryId)}`
   );
@@ -611,9 +617,14 @@ async function checkConnectedReadOperations(sourceFile) {
   const base = `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`;
   const events = await developer.json(`${base}/source-files/${encodeURIComponent(sourceFile.sourceFileId)}/events?limit=100`);
   assert(events.items.length > 0, "Source-file events are empty.");
-  const tree = await developer.json(`${base}/tree?parentPath=${encodeURIComponent(path.posix.dirname(sourceFile.generatedPath))}&limit=100`);
-  const entry = tree.items.find((item) => item.sourceFileId === sourceFile.sourceFileId);
-  assert(entry?.fileId, "Generated tree did not preserve source-file identity continuity.");
+  const treeItems = await listAll(
+    `${base}/tree?parentPath=${encodeURIComponent(path.posix.dirname(sourceFile.generatedPath))}&limit=100`
+  );
+  const entry = treeItems.find((item) => item.sourceFileId === sourceFile.sourceFileId);
+  assert(
+    entry?.fileId,
+    `Generated tree did not preserve source-file identity continuity for ${sourceFile.sourceFileId} at ${sourceFile.generatedPath}; tree returned ${treeItems.length} entries.`
+  );
   const file = await developer.json(`${base}/files/${encodeURIComponent(entry.fileId)}`);
   const byId = await developer.text(`${base}/files/${encodeURIComponent(entry.fileId)}/content`);
   const byPath = await developer.text(`${base}/files/content?path=${encodeURIComponent(entry.path)}`);

@@ -17,6 +17,7 @@ import { createPostgresSourceDispatchRepository } from "./infrastructure/postgre
 import { createPostgresSourceFileRetryRepository } from "./infrastructure/postgres/source-file-retry-repository.js";
 import { createPostgresSourceFileTaskDeletionRepository } from "./infrastructure/postgres/source-file-task-deletion-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
+import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
 
 loadLocalEnvFile();
 
@@ -33,6 +34,7 @@ const sourceDispatch = createPostgresSourceDispatchRepository(sql);
 const sourceFileRetries = createPostgresSourceFileRetryRepository(sql);
 const sourceFileTaskDeletions = createPostgresSourceFileTaskDeletionRepository(sql);
 const storageReconciliation = createPostgresStorageReconciliationRepository(sql);
+const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
 const redis = await connectApiRedis({ config, logger });
 const sharedServices = {
   config,
@@ -45,6 +47,7 @@ const sharedServices = {
   sourceFileRetries,
   sourceFileTaskDeletions,
   storageReconciliation,
+  maintenanceProgress,
   logger,
   ...(redis ? { redis } : {})
 };

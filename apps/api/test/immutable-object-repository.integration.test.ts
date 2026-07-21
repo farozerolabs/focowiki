@@ -95,6 +95,30 @@ describeDatabase("immutable object repository integration", () => {
       .resolves.toBeNull();
   });
 
+  it("returns a non-owning deferral while the immutable object is being deleted", async () => {
+    await sql`
+      INSERT INTO focowiki.immutable_objects (
+        checksum_sha256, format_version, object_key, content_type, size_bytes,
+        lifecycle_state, deletion_job_id, created_at
+      ) VALUES (
+        ${checksumSha256}, 1, ${`test/objects/v1/${checksumSha256}`},
+        'application/json', 128, 'deleting', 'cleanup-test',
+        '2026-07-19T12:00:00.000Z'
+      )
+    `;
+
+    await expect(repository.reserve({
+      checksumSha256,
+      formatVersion: 1,
+      objectKey: `test/objects/v1/${checksumSha256}`,
+      contentType: "application/json",
+      sizeBytes: 128,
+      writeToken: "replacement-token",
+      writeStartedAt: "2026-07-19T12:01:00.000Z",
+      staleBefore: "2026-07-19T11:56:00.000Z"
+    })).resolves.toEqual({ status: "deleting", record: null });
+  });
+
   async function reserve(writeToken: string): Promise<void> {
     const result = await repository.reserve({
       checksumSha256,

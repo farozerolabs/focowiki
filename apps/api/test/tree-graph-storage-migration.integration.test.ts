@@ -43,6 +43,24 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
   it("preserves released data and active reads while upgrading in place", async () => {
     const after = await releasedSnapshot(sql);
     expect(after).toEqual(before);
+    expect(after.model).toMatchObject({
+      id: "model-released-migration",
+      model_name: "fixture-model",
+      is_active: true
+    });
+    expect(after.projectionKinds).toEqual([
+      "graph_edge",
+      "graph_node",
+      "search",
+      "tree"
+    ]);
+    expect(after.generationReferences).toEqual([
+      {
+        ref_kind: "page",
+        ref_key: "source-file-released",
+        logical_path: "pages/guides/released.md"
+      }
+    ]);
     expect((await sql<Array<{ generation: string }>>`
       SELECT generation FROM focowiki.runtime_generation WHERE singleton = true
     `)[0]?.generation).toBe(RUNTIME_SCHEMA_GENERATION);
@@ -293,7 +311,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       writeToken: "write-during-delete",
       writeStartedAt: "2026-07-18T14:00:02.000Z",
       staleBefore: "2026-07-18T13:55:02.000Z"
-    })).rejects.toThrow("pending storage reconciliation deletion");
+    })).resolves.toEqual({ status: "deleting", record: null });
 
     await reconciliation.completeCandidateDeletion({
       prefix,
@@ -473,6 +491,20 @@ async function seedReleasedSchema(sql: ReturnType<typeof postgres>): Promise<voi
   await sql.begin(async (transaction) => {
     await transaction`SET CONSTRAINTS ALL DEFERRED`;
     await transaction`
+      INSERT INTO focowiki.model_configs (
+        id, display_name, base_url, encrypted_api_key, api_key_fingerprint,
+        model_name, context_window_tokens, request_max_timeout_ms,
+        request_idle_timeout_ms, suggestion_concurrency,
+        transient_retry_delay_ms, request_min_interval_ms,
+        status, is_active
+      ) VALUES (
+        'model-released-migration', 'Fixture model',
+        'https://model.invalid/v1', 'fixture-encrypted-key',
+        ${"ef".repeat(32)}, 'fixture-model', 8192, 30000, 10000, 2,
+        1000, 0, 'active', true
+      )
+    `;
+    await transaction`
       INSERT INTO focowiki.knowledge_bases (
         id, name, description, resource_revision, catalog_generation
       ) VALUES (
@@ -568,7 +600,53 @@ async function seedReleasedSchema(sql: ReturnType<typeof postgres>): Promise<voi
             path: "pages/guides/released.md",
             childCount: 9
           })}
+        ),
+        (
+          'kb-released-migration', 'search', 'source-file-released',
+          'generation-released-active', 'search/v1/0000',
+          'pages/guides/released.md', NULL, 'released source',
+          'Released source', 'released source migration fixture',
+          ${transaction.json({ path: "pages/guides/released.md" })}
+        ),
+        (
+          'kb-released-migration', 'graph_node', 'source-file-released',
+          'generation-released-active', 'graph_node/v1/0000',
+          'pages/guides/released.md', NULL, 'released source',
+          'Released source', 'released source migration fixture',
+          ${transaction.json({ sourceFileId: "source-file-released" })}
+        ),
+        (
+          'kb-released-migration', 'graph_edge',
+          'source-file-released:source-file-released',
+          'generation-released-active', 'graph_edge/v1/0000',
+          NULL, NULL, 'released source relation', 'Released relation',
+          'released source explicit relation',
+          ${transaction.json({
+            sourceFileId: "source-file-released",
+            relatedSourceFileId: "source-file-released",
+            relationType: "explicit_reference"
+          })}
         )
+    `;
+    await transaction`
+      UPDATE focowiki.active_projection_records
+      SET source_file_id = 'source-file-released',
+          related_source_file_id = CASE
+            WHEN projection_kind = 'graph_edge' THEN 'source-file-released'
+            ELSE NULL
+          END
+      WHERE knowledge_base_id = 'kb-released-migration'
+        AND projection_kind IN ('search', 'graph_node', 'graph_edge')
+    `;
+    await transaction`
+      INSERT INTO focowiki.generation_object_refs (
+        generation_id, knowledge_base_id, ref_kind, ref_key, file_id,
+        action, checksum_sha256, format_version, logical_path, source_file_id
+      ) VALUES (
+        'generation-released-active', 'kb-released-migration', 'page',
+        'source-file-released', 'source-file-released', 'upsert', ${checksum}, 1,
+        'pages/guides/released.md', 'source-file-released'
+      )
     `;
     await transaction`
       INSERT INTO focowiki.role_jobs (
@@ -629,7 +707,39 @@ async function releasedSnapshot(sql: ReturnType<typeof postgres>) {
     SELECT key, value_json, version, source
     FROM focowiki.runtime_settings WHERE key = 'worker'
   `;
-  return { knowledgeBase, source, revision, object, reference, job, setting };
+  const [model] = await sql<Array<Record<string, unknown>>>`
+    SELECT id, model_name, status, is_active
+    FROM focowiki.model_configs
+    WHERE id = 'model-released-migration'
+  `;
+  const projectionKinds = (await sql<Array<{ projection_kind: string }>>`
+    SELECT DISTINCT projection_kind
+    FROM focowiki.active_projection_records
+    WHERE knowledge_base_id = 'kb-released-migration'
+    ORDER BY projection_kind
+  `).map((row) => row.projection_kind);
+  const generationReferences = await sql<Array<{
+    ref_kind: string;
+    ref_key: string;
+    logical_path: string | null;
+  }>>`
+    SELECT ref_kind, ref_key, logical_path
+    FROM focowiki.generation_object_refs
+    WHERE knowledge_base_id = 'kb-released-migration'
+    ORDER BY ref_kind, ref_key
+  `;
+  return {
+    knowledgeBase,
+    source,
+    revision,
+    object,
+    reference,
+    job,
+    setting,
+    model,
+    projectionKinds,
+    generationReferences
+  };
 }
 
 function databaseConnectionUrl(value: string, databaseName: string): string {

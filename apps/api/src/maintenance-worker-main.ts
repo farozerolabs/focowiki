@@ -10,29 +10,45 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
 import { createPostgresGenerationObjectReferenceRepository } from "./infrastructure/postgres/generation-object-reference-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
+import { createPostgresIncrementalStatisticsRepository } from "./infrastructure/postgres/incremental-statistics-repository.js";
+import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
 import { createPostgresProjectionCatalogRepository } from "./infrastructure/postgres/projection-catalog-repository.js";
+import { createPostgresProjectionCompactionRepository } from "./infrastructure/postgres/projection-compaction-repository.js";
 import { createPostgresProjectionRecordRepository } from "./infrastructure/postgres/projection-record-repository.js";
 import { createPostgresProjectionRepairRepository } from "./infrastructure/postgres/projection-repair-repository.js";
-import { createPostgresProjectionShardRepository } from "./infrastructure/postgres/projection-shard-repository.js";
+import { createPostgresProjectionSegmentRepository } from "./infrastructure/postgres/projection-segment-repository.js";
 import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
 import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import {
+  createPostgresRuntimePressureRepository,
+  RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
+} from "./infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
 import { createRuntimeLogger } from "./logger.js";
 import { runImmutableWriteRecoverySlice } from "./maintenance/immutable-write-recovery.js";
+import { runIncrementalStatisticsReconciliationSlice } from "./maintenance/incremental-statistics-reconciliation.js";
 import { runProjectionRepairSlice } from "./maintenance/projection-repair.js";
+import { runProjectionCompactionSlice } from "./maintenance/projection-compaction.js";
 import { runMaintenanceBackground } from "./maintenance/runtime.js";
+import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
-import { createJsonProjectionShardWriter } from "./publication/json-projection-shard-writer.js";
 import { createProjectionCatalogWriter } from "./publication/projection-catalog-writer.js";
+import { createProjectionSegmentWriter } from "./publication/projection-segment-writer.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from "./publication/incremental-defaults.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
+import { resolveResourceBudgetLimits } from "./runtime-settings/resource-budget-settings.js";
+import { createProcessResourceBudgets } from "./runtime/resource-budget.js";
+import { createResourceBudgetReporter } from "./runtime/resource-budget-reporter.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
-import { createGarbageCollectionJobProcessor } from "./worker/garbage-collection-jobs.js";
+import {
+  createGarbageCollectionJobProcessor,
+  runGarbageCollectionSlice
+} from "./worker/garbage-collection-jobs.js";
 import { createHardDeleteJobProcessor } from "./worker/hard-delete-jobs.js";
 import { createRoleWorkerRuntime } from "./worker/role-runtime.js";
 
@@ -69,27 +85,44 @@ async function runMaintenanceWorker(): Promise<void> {
     if (!repositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
+    if (!repositories.graph) {
+      throw new Error("File graph repository is unavailable");
+    }
+    const graph = repositories.graph;
     const runtimeSettings = createRuntimeSettingsService({
       config,
       repository: repositories.runtimeSettings,
       redis
     });
     await runtimeSettings.ensureBootstrapped();
+    const initialSnapshot = await runtimeSettings.getSnapshot();
+    const resourceBudgets = createProcessResourceBudgets(
+      resolveResourceBudgetLimits(initialSnapshot)
+    );
+    const resourceBudgetReporter = createResourceBudgetReporter({ logger });
     const cleanup = createPostgresGenerationCleanupRepository(sql);
     const storage = createS3StorageAdapter(config.storage);
     const immutableRepository = createPostgresImmutableObjectRepository(sql);
-    const immutableObjects = createImmutableObjectWriter({
+    const unboundedImmutableObjects = createImmutableObjectWriter({
       repository: immutableRepository,
       storage
     });
+    const immutableObjects = {
+      write(object: Parameters<typeof unboundedImmutableObjects.write>[0]) {
+        return resourceBudgets.generatedObjectWrite.run(
+          () => unboundedImmutableObjects.write(object)
+        );
+      }
+    };
     const references = createPostgresGenerationObjectReferenceRepository(sql);
     const records = createPostgresProjectionRecordRepository(sql);
-    const shards = createJsonProjectionShardWriter({
+    const shards = createProjectionSegmentWriter({
       references,
-      shards: createPostgresProjectionShardRepository(sql),
+      segments: createPostgresProjectionSegmentRepository(sql),
       immutableObjects,
-      storage,
-      maxShardBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardBytes
+      maxSegmentEntries: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentEntries,
+      maxSegmentBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentBytes,
+      maxObjectBytes: config.pagination.generatedContentMaxBytes
     });
     const catalog = createProjectionCatalogWriter({
       catalog: createPostgresProjectionCatalogRepository(sql),
@@ -98,15 +131,21 @@ async function runMaintenanceWorker(): Promise<void> {
       maxShardDescriptors: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardDescriptors
     });
     const repair = createPostgresProjectionRepairRepository(sql);
+    const compaction = createPostgresProjectionCompactionRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
     const generations = createPostgresPublicationGenerationRepository(sql);
     const validation = createPostgresPublicationValidationRepository(sql);
+    const optimizationMigrations = createPostgresOptimizationMigrationRepository(sql);
+    const incrementalStatistics = createPostgresIncrementalStatisticsRepository(sql);
+    const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
       role: "maintenance",
       workerId: `maintenance-worker-${randomUUID()}`,
       repository: createPostgresRoleJobRepository(sql),
       async settings() {
-        const worker = (await runtimeSettings.getSnapshot()).worker;
+        const snapshot = await runtimeSettings.getSnapshot();
+        resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+        const worker = snapshot.worker;
         return {
           claimBatchSize: worker.claimBatchSize,
           concurrency: worker.hardDeleteConcurrency,
@@ -175,6 +214,8 @@ async function runMaintenanceWorker(): Promise<void> {
     const maintenanceOwner = `maintenance-sweep-${randomUUID()}`;
     const repairLeaseToken = `projection-repair-${randomUUID()}`;
     const reconciliationLeaseToken = `storage-reconciliation-${randomUUID()}`;
+    const optimizationMigrationLeaseToken = `optimization-migration-${randomUUID()}`;
+    const statisticsLeaseToken = `incremental-statistics-${randomUUID()}`;
     await Promise.all([
       runtime.run(abort.signal),
       runMaintenanceBackground({
@@ -199,7 +240,23 @@ async function runMaintenanceWorker(): Promise<void> {
                 reconciliationScanned: 0,
                 reconciliationDeleted: 0,
                 reconciliationVerified: 0,
-                reconciliationFailed: 0
+                reconciliationFailed: 0,
+                migrationPhase: "contended",
+                migrationProcessed: 0,
+                migrationCompleted: false,
+                migrationFailed: false,
+                statisticsClaimed: false,
+                statisticsChanged: false,
+                statisticsFailed: false,
+                pressureReconciled: false,
+                compactionDiscovered: 0,
+                compactionClaimed: 0,
+                compactionCompleted: 0,
+                compactionSuperseded: 0,
+                compactionFailed: 0,
+                garbageCollectionExpired: 0,
+                garbageCollectionDeleted: 0,
+                garbageCollectionPending: false
               };
             }
           } catch {
@@ -207,6 +264,56 @@ async function runMaintenanceWorker(): Promise<void> {
           }
           try {
             const snapshot = await runtimeSettings.getSnapshot();
+            resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
+            resourceBudgetReporter.report(resourceBudgets);
+            const migrationNow = new Date();
+            const migrationResult = await resourceBudgets.migrationBackfill.run(
+              () => runOptimizationMigrationSlice({
+                repository: optimizationMigrations,
+                storage,
+                graph,
+                workerId: maintenanceOwner,
+                leaseToken: optimizationMigrationLeaseToken,
+                now: migrationNow.toISOString(),
+                leaseExpiresAt: new Date(
+                  migrationNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
+                ).toISOString(),
+                batchSize: snapshot.maintenance.scanBatchSize,
+                sourceReadConcurrency: Math.min(
+                  snapshot.maintenance.migrationBackfillConcurrency,
+                  snapshot.maintenance.scanBatchSize
+                )
+              })
+            );
+            const statisticsNow = new Date();
+            const statisticsResult = await runIncrementalStatisticsReconciliationSlice({
+              repository: incrementalStatistics,
+              workerId: maintenanceOwner,
+              leaseToken: statisticsLeaseToken,
+              now: statisticsNow.toISOString(),
+              leaseExpiresAt: new Date(
+                statisticsNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
+              ).toISOString(),
+              reconciledBefore: new Date(
+                statisticsNow.getTime() - snapshot.maintenance.scanIntervalSeconds * 1_000
+              ).toISOString()
+            });
+            const pressureResult = await runtimePressure.reconcileIfDue({
+              now: statisticsNow.toISOString(),
+              intervalSeconds: RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
+            });
+            const compactionResult = await runProjectionCompactionSlice({
+              repository: compaction,
+              immutableObjects,
+              budget: resourceBudgets.compaction,
+              workerId: maintenanceOwner,
+              concurrency: snapshot.maintenance.compactionConcurrency,
+              partitionScanLimit: snapshot.maintenance.scanBatchSize,
+              recordPageSize: snapshot.maintenance.scanBatchSize,
+              maxAttempts: snapshot.maintenance.maxAttempts,
+              retryDelayMs: snapshot.maintenance.retryDelayMs,
+              lockTtlSeconds: snapshot.worker.lockTtlSeconds
+            });
             const repairResult = await runProjectionRepairSlice({
               repair,
               records,
@@ -228,6 +335,17 @@ async function runMaintenanceWorker(): Promise<void> {
               storage,
               batchSize: snapshot.maintenance.scanBatchSize
             });
+            const garbageCollectionResult = await resourceBudgets.generatedObjectWrite.run(
+              () => runGarbageCollectionSlice({
+                cleanup,
+                storage,
+                jobId: "maintenance-garbage-collection",
+                batchSize: snapshot.worker.retentionCleanupBatchSize,
+                retentionDays: snapshot.publication.generationRetentionDays,
+                versionPurgeEnabled: snapshot.worker.hardDeleteVersionPurgeEnabled,
+                now: new Date()
+              })
+            );
             const reconciliationResult = await runStorageReconciliationSlice({
               repository: reconciliation,
               storage,
@@ -242,7 +360,23 @@ async function runMaintenanceWorker(): Promise<void> {
               reconciliationScanned: reconciliationResult.scanned,
               reconciliationDeleted: reconciliationResult.deleted,
               reconciliationVerified: reconciliationResult.verified,
-              reconciliationFailed: reconciliationResult.failed
+              reconciliationFailed: reconciliationResult.failed,
+              migrationPhase: migrationResult.phase,
+              migrationProcessed: migrationResult.processed,
+              migrationCompleted: migrationResult.completed,
+              migrationFailed: migrationResult.failed,
+              statisticsClaimed: statisticsResult.claimed,
+              statisticsChanged: statisticsResult.changed,
+              statisticsFailed: statisticsResult.failed,
+              pressureReconciled: pressureResult.reconciled,
+              compactionDiscovered: compactionResult.discovered,
+              compactionClaimed: compactionResult.claimed,
+              compactionCompleted: compactionResult.completed,
+              compactionSuperseded: compactionResult.superseded,
+              compactionFailed: compactionResult.failed,
+              garbageCollectionExpired: garbageCollectionResult.expiredGenerations,
+              garbageCollectionDeleted: garbageCollectionResult.deletedObjects,
+              garbageCollectionPending: garbageCollectionResult.hasMore
             };
           } finally {
             if (redisLock) {

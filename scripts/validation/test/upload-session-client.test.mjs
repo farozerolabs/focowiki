@@ -146,6 +146,56 @@ test("validation waits for asynchronous finalization before returning source fil
   assert.equal(result.files[0]?.sourceFileId, "source-file-1");
 });
 
+test("validation uploads entry bodies with the advertised bounded concurrency", async () => {
+  const entries = Array.from({ length: 4 }, (_, index) => ({
+    id: `entry-${index + 1}`,
+    relativePath: `guides/${index + 1}.md`,
+    name: `${index + 1}.md`,
+    disposition: "upload_required",
+    transferState: "missing",
+    sourceFileId: `source-file-${index + 1}`,
+    generatedPath: `pages/guides/${index + 1}.md`
+  }));
+  let activeTransfers = 0;
+  let maxActiveTransfers = 0;
+  const request = async (pathname, options = {}) => {
+    if (pathname.endsWith("/upload-sessions") && options.method === "POST") {
+      return {
+        session: { id: "upload-session-concurrent", state: "draft", counts: {} },
+        transport: { manifestPageSize: 10, contentUploadConcurrency: 2 }
+      };
+    }
+    if (pathname.endsWith("/entries")) return { session: { state: "manifest_building" } };
+    if (pathname.endsWith("/seal")) {
+      return { session: { state: "manifest_sealed", counts: { waitingReservation: 0, rejectedDeleting: 0 } } };
+    }
+    if (/\/entries\/entry-[1-4]\/content$/u.test(pathname)) {
+      activeTransfers += 1;
+      maxActiveTransfers = Math.max(maxActiveTransfers, activeTransfers);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      activeTransfers -= 1;
+      const entry = entries.find((candidate) => pathname.includes(candidate.id));
+      if (entry) entry.transferState = "uploaded";
+      return { entry };
+    }
+    if (pathname.endsWith("/finalize")) {
+      return { session: { id: "upload-session-concurrent", state: "completed" } };
+    }
+    if (options.query?.transferState === "missing") {
+      return { session: { state: "uploading" }, entries: { items: entries, nextCursor: null } };
+    }
+    return { session: { state: "completed" }, entries: { items: entries, nextCursor: null } };
+  };
+
+  await uploadMarkdownFilesWithSession({
+    request,
+    routeBase: "/openapi/v2/knowledge-bases/kb-test/upload-sessions",
+    files: entries.map((entry) => ({ relativePath: entry.relativePath, bytes: Buffer.from("# Test") }))
+  });
+
+  assert.equal(maxActiveTransfers, 2);
+});
+
 test("validation rejects the removed upload limits contract", async () => {
   await assert.rejects(
     uploadMarkdownFilesWithSession({

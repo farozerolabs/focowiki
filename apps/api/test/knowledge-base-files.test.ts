@@ -141,6 +141,7 @@ function createRepositories() {
   const queueSummaryCalls: Array<{ knowledgeBaseId: string; role: string }> = [];
   const dispatchSummaryCalls: Array<{ knowledgeBaseId: string }> = [];
   const publicationProgressCalls: Array<{ knowledgeBaseId: string }> = [];
+  const maintenanceProgressCalls: Array<{ knowledgeBaseId: string }> = [];
   const generatedFile = {
     id: "bundle-file-001",
     knowledgeBaseId: "kb-001",
@@ -171,7 +172,8 @@ function createRepositories() {
       graphSummaryCalls,
       queueSummaryCalls,
       dispatchSummaryCalls,
-      publicationProgressCalls
+      publicationProgressCalls,
+      maintenanceProgressCalls
     },
     repositories: {
       knowledgeBases: {
@@ -210,6 +212,7 @@ function createRepositories() {
               {
                 id: "source-001",
                 knowledgeBaseId: "kb-001",
+                sourceRevisionId: "source-revision-001",
                 name: "intro.md",
                 relativePath: "intro.md",
                 objectKey: "tenant/demo/source/intro.md",
@@ -303,6 +306,7 @@ function createRepositories() {
           processedImpactCount: 3,
           totalImpactCount: 5,
           touchedShardCount: 2,
+          throughputPerMinute: 90,
           oldestDirtyAt: "2026-06-14T00:00:00.000Z",
           queuedAt: "2026-06-14T00:00:00.000Z",
           startedAt: "2026-06-14T00:00:01.000Z",
@@ -311,6 +315,36 @@ function createRepositories() {
           lastSuccessAt: null,
           safeErrorCode: null,
           safeErrorMessage: null
+        };
+      }
+    },
+    maintenanceProgress: {
+      async getSummary(input: { knowledgeBaseId: string }) {
+        maintenanceProgressCalls.push(input);
+        return {
+          migration: {
+            state: "backfilling",
+            phase: "projection_segments",
+            attemptCount: 1,
+            maxAttempts: 5,
+            startedAt: "2026-06-14T00:00:00.000Z",
+            updatedAt: "2026-06-14T00:00:02.000Z",
+            completedAt: null,
+            safeErrorCode: null,
+            safeErrorMessage: null
+          },
+          compaction: {
+            active: {
+              state: "running",
+              attemptCount: 1,
+              maxAttempts: 5,
+              queuedAt: "2026-06-14T00:00:01.000Z",
+              updatedAt: "2026-06-14T00:00:02.000Z",
+              completedAt: null,
+              safeErrorCode: null
+            },
+            latestCompleted: null
+          }
         };
       }
     }
@@ -524,7 +558,8 @@ function createFileTestApp(
     activeGenerationReads: fixture.activeGenerationReads,
     roleJobs: fixture.roleJobs as never,
     sourceDispatch: fixture.sourceDispatch as never,
-    publicationGenerations: fixture.publicationGenerations as never
+    publicationGenerations: fixture.publicationGenerations as never,
+    maintenanceProgress: fixture.maintenanceProgress as never
   });
 }
 
@@ -797,7 +832,7 @@ describe("Knowledge base file Admin API", () => {
     expect(records.treeSearchCalls).toHaveLength(1);
     expect(
       Array.from(redisClient.values.keys()).some((key) =>
-        key.startsWith("focowiki-test:page-cache:file-tree-search:kb-001:generation-001:")
+        key.startsWith("focowiki-test:page-cache:active-read:admin:tree-search:kb-001:generation-001:")
       )
     ).toBe(true);
   });
@@ -855,6 +890,24 @@ describe("Knowledge base file Admin API", () => {
     expect(records.graphSummaryCalls).toEqual([]);
   });
 
+  it("scopes source-file list caches to the active generation and admin authorization", async () => {
+    const fixture = createRepositories();
+    const redisClient = new MemoryRedisCommandClient();
+    const app = createFileTestApp(
+      fixture,
+      createRedisCoordinator(redisClient, { keyPrefix: "focowiki-test" })
+    );
+    const cookie = await loginAndReadSessionCookie(app);
+    const path = "/admin/api/knowledge-bases/kb-001/source-files?limit=1";
+
+    expect((await app.request(path, { headers: { cookie } })).status).toBe(200);
+    expect((await app.request(path, { headers: { cookie } })).status).toBe(200);
+    expect(fixture.records.sourceCalls).toHaveLength(1);
+    expect(Array.from(redisClient.values.keys()).some((key) => key.startsWith(
+      "focowiki-test:page-cache:active-read:admin:source-file-list:kb-001:generation-001:"
+    ))).toBe(true);
+  });
+
   it("returns publication terminal failure and authorized actions from the Admin route", async () => {
     const { app, cookie, repositories } = await createAuthenticatedFileApp();
     repositories.files!.listSourceFiles = async () => ({
@@ -862,6 +915,7 @@ describe("Knowledge base file Admin API", () => {
         {
           id: "source-001",
           knowledgeBaseId: "kb-001",
+          sourceRevisionId: "source-revision-001",
           name: "intro.md",
           relativePath: "intro.md",
           resourceRevision: 1,
@@ -1058,7 +1112,20 @@ describe("Knowledge base file Admin API", () => {
         stage: "building",
         processedImpactCount: 3,
         totalImpactCount: 5,
-        touchedShardCount: 2
+        touchedShardCount: 2,
+        throughputPerMinute: 90
+      },
+      maintenanceProgress: {
+        migration: {
+          state: "backfilling",
+          phase: "projection_segments"
+        },
+        compaction: {
+          active: {
+            state: "running"
+          },
+          latestCompleted: null
+        }
       },
       dirtySourceFiles: {
         count: 2,
@@ -1072,6 +1139,7 @@ describe("Knowledge base file Admin API", () => {
     ]);
     expect(records.dispatchSummaryCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
     expect(records.publicationProgressCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
+    expect(records.maintenanceProgressCalls).toEqual([{ knowledgeBaseId: "kb-001" }]);
   });
 
   it("keeps high Admin read traffic from enqueueing worker jobs", async () => {

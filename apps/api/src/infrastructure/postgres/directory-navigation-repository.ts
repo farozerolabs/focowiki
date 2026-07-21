@@ -44,96 +44,56 @@ export function createPostgresDirectoryNavigationRepository(
     async applyEntry(input) {
       validateInput(input);
       return sql.begin(async (transaction) => {
-        await transaction`
-          SELECT pg_advisory_xact_lock(
-            hashtextextended(${`${input.knowledgeBaseId}\u001f${input.directoryPath}`}, 0)
-          )
-        `;
+        await lockDirectory(transaction, input.knowledgeBaseId, input.directoryPath);
         await ensureSummary(transaction, input.knowledgeBaseId, input.directoryPath);
+        return applyEntryInTransaction(transaction, input, createLeafId);
+      });
+    },
 
-        const existingLeaf = await findLeafContainingEntry(
-          transaction,
-          input.knowledgeBaseId,
-          input.directoryPath,
-          input.entryId
-        );
-        const existingEntry = existingLeaf?.entries.find((entry) => entry.id === input.entryId);
-        if (existingEntry && input.desiredEntry && entriesEqual(existingEntry, input.desiredEntry)) {
-          return unchangedResult(transaction, input.knowledgeBaseId, input.directoryPath);
-        }
-        if (!existingEntry && !input.desiredEntry) {
-          return unchangedResult(transaction, input.knowledgeBaseId, input.directoryPath);
-        }
-
+    async applyEntries(input) {
+      for (const entry of input.entries) {
+        validateInput({ ...input, ...entry });
+      }
+      return sql.begin(async (transaction) => {
+        await lockDirectory(transaction, input.knowledgeBaseId, input.directoryPath);
+        await ensureSummary(transaction, input.knowledgeBaseId, input.directoryPath);
         const touchedIds = new Set<string>();
         const removedIds = new Set<string>();
-        if (existingLeaf) {
-          const removalWindow = await loadRemovalWindow(
-            transaction,
-            input.knowledgeBaseId,
-            input.directoryPath,
-            existingLeaf
-          );
-          const mutation = removeDirectoryEntry({
-            leaves: removalWindow.map(toOrderedLeaf),
-            entryId: input.entryId,
-            limits: input.limits
-          });
-          const adjacentTouchedIds = await persistMutation({
-            transaction,
-            knowledgeBaseId: input.knowledgeBaseId,
-            directoryPath: input.directoryPath,
-            originalRows: removalWindow,
-            mutation
-          });
-          mutation.touchedLeafIds.forEach((id) => touchedIds.add(id));
-          adjacentTouchedIds.forEach((id) => touchedIds.add(id));
-          mutation.removedLeafIds.forEach((id) => removedIds.add(id));
-        }
-
-        if (input.desiredEntry) {
-          const target = await findInsertionLeaf(
-            transaction,
-            input.knowledgeBaseId,
-            input.directoryPath,
-            input.desiredEntry.sortKey
-          );
-          const originalRows = target ? [target] : [];
-          const mutation = insertDirectoryEntry({
-            leaves: originalRows.map(toOrderedLeaf),
-            entry: input.desiredEntry,
-            limits: input.limits,
-            createLeafId
-          });
-          const adjacentTouchedIds = await persistMutation({
-            transaction,
-            knowledgeBaseId: input.knowledgeBaseId,
-            directoryPath: input.directoryPath,
-            originalRows,
-            mutation
-          });
-          mutation.touchedLeafIds.forEach((id) => touchedIds.add(id));
-          adjacentTouchedIds.forEach((id) => touchedIds.add(id));
-          mutation.removedLeafIds.forEach((id) => removedIds.add(id));
-        }
-
-        for (const id of removedIds) touchedIds.delete(id);
-        const entryDelta = existingEntry ? (input.desiredEntry ? 0 : -1) : 1;
-        const summary = await updateSummary({
-          transaction,
-          knowledgeBaseId: input.knowledgeBaseId,
-          directoryPath: input.directoryPath,
-          entryDelta
-        });
-        const touchedLeaves = await loadLeavesById(
+        let changed = false;
+        let summary = await readSummary(
           transaction,
           input.knowledgeBaseId,
-          input.directoryPath,
-          [...touchedIds]
+          input.directoryPath
         );
+        for (const entry of input.entries) {
+          const mutation = await applyEntryInTransaction(transaction, {
+            knowledgeBaseId: input.knowledgeBaseId,
+            directoryPath: input.directoryPath,
+            entryId: entry.entryId,
+            desiredEntry: entry.desiredEntry,
+            limits: input.limits
+          }, createLeafId);
+          if (!mutation.changed) continue;
+          changed = true;
+          summary = mutation.summary;
+          for (const id of mutation.removedLeafIds) {
+            removedIds.add(id);
+            touchedIds.delete(id);
+          }
+          for (const leaf of mutation.touchedLeaves) {
+            if (!removedIds.has(leaf.id)) touchedIds.add(leaf.id);
+          }
+        }
         return {
-          changed: true,
-          touchedLeaves,
+          changed,
+          touchedLeaves: changed
+            ? await loadLeavesById(
+                transaction,
+                input.knowledgeBaseId,
+                input.directoryPath,
+                [...touchedIds]
+              )
+            : [],
           removedLeafIds: [...removedIds],
           summary
         };
@@ -149,6 +109,111 @@ export function createPostgresDirectoryNavigationRepository(
       `;
       return rows[0] ? mapSummary(rows[0]) : null;
     }
+  };
+}
+
+async function lockDirectory(
+  transaction: TransactionClient,
+  knowledgeBaseId: string,
+  directoryPath: string
+): Promise<void> {
+  await transaction`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${`${knowledgeBaseId}\u001f${directoryPath}`}, 0)
+    )
+  `;
+}
+
+async function applyEntryInTransaction(
+  transaction: TransactionClient,
+  input: Parameters<DirectoryNavigationRepository["applyEntry"]>[0],
+  createLeafId: () => string
+): Promise<DirectoryNavigationMutationResult> {
+  const existingLeaf = await findLeafContainingEntry(
+    transaction,
+    input.knowledgeBaseId,
+    input.directoryPath,
+    input.entryId
+  );
+  const existingEntry = existingLeaf?.entries.find((entry) => entry.id === input.entryId);
+  if (existingEntry && input.desiredEntry && entriesEqual(existingEntry, input.desiredEntry)) {
+    return unchangedResult(transaction, input.knowledgeBaseId, input.directoryPath);
+  }
+  if (!existingEntry && !input.desiredEntry) {
+    return unchangedResult(transaction, input.knowledgeBaseId, input.directoryPath);
+  }
+
+  const touchedIds = new Set<string>();
+  const removedIds = new Set<string>();
+  if (existingLeaf) {
+    const removalWindow = await loadRemovalWindow(
+      transaction,
+      input.knowledgeBaseId,
+      input.directoryPath,
+      existingLeaf
+    );
+    const mutation = removeDirectoryEntry({
+      leaves: removalWindow.map(toOrderedLeaf),
+      entryId: input.entryId,
+      limits: input.limits
+    });
+    const adjacentTouchedIds = await persistMutation({
+      transaction,
+      knowledgeBaseId: input.knowledgeBaseId,
+      directoryPath: input.directoryPath,
+      originalRows: removalWindow,
+      mutation
+    });
+    mutation.touchedLeafIds.forEach((id) => touchedIds.add(id));
+    adjacentTouchedIds.forEach((id) => touchedIds.add(id));
+    mutation.removedLeafIds.forEach((id) => removedIds.add(id));
+  }
+
+  if (input.desiredEntry) {
+    const target = await findInsertionLeaf(
+      transaction,
+      input.knowledgeBaseId,
+      input.directoryPath,
+      input.desiredEntry.sortKey
+    );
+    const originalRows = target ? [target] : [];
+    const mutation = insertDirectoryEntry({
+      leaves: originalRows.map(toOrderedLeaf),
+      entry: input.desiredEntry,
+      limits: input.limits,
+      createLeafId
+    });
+    const adjacentTouchedIds = await persistMutation({
+      transaction,
+      knowledgeBaseId: input.knowledgeBaseId,
+      directoryPath: input.directoryPath,
+      originalRows,
+      mutation
+    });
+    mutation.touchedLeafIds.forEach((id) => touchedIds.add(id));
+    adjacentTouchedIds.forEach((id) => touchedIds.add(id));
+    mutation.removedLeafIds.forEach((id) => removedIds.add(id));
+  }
+
+  for (const id of removedIds) touchedIds.delete(id);
+  const entryDelta = existingEntry ? (input.desiredEntry ? 0 : -1) : 1;
+  const summary = await updateSummary({
+    transaction,
+    knowledgeBaseId: input.knowledgeBaseId,
+    directoryPath: input.directoryPath,
+    entryDelta
+  });
+  const touchedLeaves = await loadLeavesById(
+    transaction,
+    input.knowledgeBaseId,
+    input.directoryPath,
+    [...touchedIds]
+  );
+  return {
+    changed: true,
+    touchedLeaves,
+    removedLeafIds: [...removedIds],
+    summary
   };
 }
 
@@ -373,6 +438,20 @@ async function unchangedResult(
   knowledgeBaseId: string,
   directoryPath: string
 ): Promise<DirectoryNavigationMutationResult> {
+  const summary = await readSummary(transaction, knowledgeBaseId, directoryPath);
+  return {
+    changed: false,
+    touchedLeaves: [],
+    removedLeafIds: [],
+    summary
+  };
+}
+
+async function readSummary(
+  transaction: TransactionClient,
+  knowledgeBaseId: string,
+  directoryPath: string
+): Promise<DirectoryNavigationSummary> {
   const rows = await transaction<SummaryRow[]>`
     SELECT directory_path, entry_count, first_leaf_id, revision
     FROM focowiki.directory_navigation_summaries
@@ -380,12 +459,7 @@ async function unchangedResult(
       AND directory_path = ${directoryPath}
   `;
   if (!rows[0]) throw new Error("Directory navigation summary is unavailable");
-  return {
-    changed: false,
-    touchedLeaves: [],
-    removedLeafIds: [],
-    summary: mapSummary(rows[0])
-  };
+  return mapSummary(rows[0]);
 }
 
 async function loadLeavesById(

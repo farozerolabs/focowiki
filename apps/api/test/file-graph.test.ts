@@ -19,8 +19,13 @@ describe("file graph", () => {
       async upsertGraphNode(input) {
         storedNodes.set(input.node.fileId, input.node);
       },
-      async upsertGraphEdges(input) {
-        storedEdges.push(...input.edges);
+      async upsertGraphTermDocument() {},
+      async applyGraphMutationSet(input) {
+        storedEdges.push(...input.acceptedEdges);
+        return mutationResult(input.sourceFileId, input.acceptedEdges);
+      },
+      async listGraphCandidates(input) {
+        return candidates.slice(0, input.limit);
       },
       async listGraphNodes(input) {
         nodePageCalls += 1;
@@ -67,7 +72,7 @@ describe("file graph", () => {
     expect(storedEdges.every((edge) => !/current file|target file|this document/iu.test(edge.reason))).toBe(
       true
     );
-    expect(nodePageCalls).toBe(2);
+    expect(nodePageCalls).toBe(0);
   });
 
   it("preserves nested source paths without using directory names as the fallback title", async () => {
@@ -77,7 +82,10 @@ describe("file graph", () => {
       async upsertGraphNode(input) {
         storedNodes.push(input.node);
       },
-      async upsertGraphEdges() {},
+      async upsertGraphTermDocument() {},
+      async applyGraphMutationSet(input) {
+        return mutationResult(input.sourceFileId, []);
+      },
       async listGraphNodes() {
         return { items: [], nextCursor: null };
       },
@@ -169,7 +177,7 @@ describe("file graph", () => {
     );
   });
 
-  it("prefers indexed graph candidates before falling back to node pages", async () => {
+  it("uses indexed graph candidates without falling back to node pages", async () => {
     const source = createSourceFile("source-current", "current.md");
     const target = {
       ...createGraphNode("source-target", "target-policy.md"),
@@ -186,8 +194,10 @@ describe("file graph", () => {
       async upsertGraphNode() {
         return undefined;
       },
-      async upsertGraphEdges(input) {
-        storedEdges.push(...input.edges);
+      async upsertGraphTermDocument() {},
+      async applyGraphMutationSet(input) {
+        storedEdges.push(...input.acceptedEdges);
+        return mutationResult(input.sourceFileId, input.acceptedEdges);
       },
       async listGraphCandidates(input) {
         candidateCalls += 1;
@@ -239,8 +249,10 @@ describe("file graph", () => {
       async upsertGraphNode() {
         return undefined;
       },
-      async upsertGraphEdges(input) {
-        storedEdges.push(...input.edges);
+      async upsertGraphTermDocument() {},
+      async applyGraphMutationSet(input) {
+        storedEdges.push(...input.acceptedEdges);
+        return mutationResult(input.sourceFileId, input.acceptedEdges);
       },
       async listGraphCandidates() {
         return [];
@@ -1644,42 +1656,37 @@ function createMemoryGraphRepository(input: {
     async upsertGraphNode(request) {
       input.storedNodes?.set(request.node.fileId, request.node);
     },
-    async upsertGraphEdges(request) {
-      input.storedEdges?.push(...request.edges);
-    },
-    async upsertRejectedGraphEdges() {
-      return undefined;
-    },
-    async replaceGraphEdgesForSourceFile(request) {
-      if (!input.storedEdges) {
-        return {
-          sourceFileIds: input.replacedTargetFileIds ?? [],
-          edgeIds: []
-        };
+    async upsertGraphTermDocument() {},
+    async applyGraphMutationSet(request) {
+      const removedEdges = input.storedEdges?.filter(
+        (edge) => edge.fromFileId === request.sourceFileId
+      ) ?? [];
+      if (input.storedEdges) {
+        input.storedEdges.splice(
+          0,
+          input.storedEdges.length,
+          ...input.storedEdges.filter((edge) => edge.fromFileId !== request.sourceFileId),
+          ...request.acceptedEdges
+        );
       }
-
-      for (let index = input.storedEdges.length - 1; index >= 0; index -= 1) {
-        if (input.storedEdges[index]?.fromFileId === request.sourceFileId) {
-          input.storedEdges.splice(index, 1);
-        }
-      }
-      return {
-        sourceFileIds: input.replacedTargetFileIds ?? [],
-        edgeIds: []
-      };
-    },
-    async reconcileExplicitReferenceEdgesForTarget() {
       if (input.explicitReconciliationResult?.edge) {
         input.storedEdges?.push(input.explicitReconciliationResult.edge);
       }
-      return input.explicitReconciliationResult ? {
-        ...input.explicitReconciliationResult,
-        edgeIds: []
-      } : {
-        edgeCount: 0,
-        sourceFileIds: [],
-        edgeIds: []
+      const explicitCount = input.explicitReconciliationResult?.edgeCount ?? 0;
+      return {
+        edgeCount: request.acceptedEdges.length + explicitCount,
+        affectedSourceFileIds: Array.from(new Set([
+          request.sourceFileId,
+          ...(input.replacedTargetFileIds ?? []),
+          ...(input.explicitReconciliationResult?.sourceFileIds ?? []),
+          ...request.acceptedEdges.flatMap((edge) => [edge.fromFileId, edge.toFileId])
+        ])),
+        edgeIds: [],
+        removedEdgeIds: removedEdges.map((_, index) => `removed-${index}`)
       };
+    },
+    async listGraphCandidates(request) {
+      return input.candidates.slice(0, request.limit);
     },
     async listGraphNodes(request) {
       const offset = request.cursor ? Number(request.cursor) : 0;
@@ -1707,6 +1714,7 @@ function createSourceFile(id: string, relativePath: string): SourceFileRecord {
   return {
     id,
     knowledgeBaseId: "kb-graph",
+    sourceRevisionId: `revision-${id}`,
     name,
     relativePath,
     objectKey: `tenant/demo/knowledge-bases/kb-graph/sources/${id}/${relativePath}`,
@@ -1723,6 +1731,18 @@ function createSourceFile(id: string, relativePath: string): SourceFileRecord {
     retryCount: 0,
     createdAt: now,
     deletedAt: null
+  };
+}
+
+function mutationResult(sourceFileId: string, edges: OkfGraphEdge[]) {
+  return {
+    edgeCount: edges.length,
+    affectedSourceFileIds: Array.from(new Set([
+      sourceFileId,
+      ...edges.flatMap((edge) => [edge.fromFileId, edge.toFileId])
+    ])),
+    edgeIds: edges.map((_, index) => `edge-${index}`),
+    removedEdgeIds: []
   };
 }
 

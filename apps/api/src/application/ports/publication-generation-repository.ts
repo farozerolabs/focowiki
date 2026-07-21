@@ -3,7 +3,7 @@ import type { ChangeFactKind } from "../../domain/generation.js";
 import type { PublicationImpact } from "../../publication/impact-planner.js";
 
 export type SourceCompletionCommitResult = {
-  generationId: string;
+  generationId: string | null;
   changeFactId: string;
   impactCount: number;
   replayed: boolean;
@@ -17,6 +17,7 @@ export type PublicationProgressSummary = {
   processedImpactCount: number;
   totalImpactCount: number;
   touchedShardCount: number;
+  throughputPerMinute: number | null;
   oldestDirtyAt: string | null;
   queuedAt: string | null;
   startedAt: string | null;
@@ -49,7 +50,20 @@ export type PublicationGenerationRepository = {
     resourceRevision: number;
     operationId: string | null;
     changeFactId: string;
-    impacts: PublicationImpact[];
+    impacts?: PublicationImpact[];
+    planningContext?: {
+      graphNeighborSourceFileIds: string[];
+      graphEdgeIds: string[];
+      removedGraphEdgeIds: string[];
+      impactPlanner: {
+        searchShardCount: number;
+        linkShardCount: number;
+        manifestShardCount: number;
+        treeShardCount: number;
+        graphNodeShardCount: number;
+        graphEdgeShardCount: number;
+      };
+    };
     publicationSettingsSnapshot: SerializableJson;
     publicationMaxAttempts: number;
     completedAt: string;
@@ -71,6 +85,17 @@ export type PublicationGenerationRepository = {
     schedulePublication?: boolean | undefined;
     committedAt: string;
   }) => Promise<PublicationMutationCommitResult>;
+  assemblePendingChanges: (input: {
+    knowledgeBaseId: string;
+    assemblerJobId: string;
+    limit: number;
+    assembledAt: string;
+  }) => Promise<{
+    generationId: string | null;
+    assembledChangeCount: number;
+    impactCount: number;
+    hasMore: boolean;
+  }>;
   freezeGeneration: (input: {
     knowledgeBaseId: string;
     generationId: string;

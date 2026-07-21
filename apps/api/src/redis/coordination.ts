@@ -400,6 +400,8 @@ async function clearKnowledgeBaseRuntimeKeys(
   const normalizedKnowledgeBaseId = normalizeKeyPart(knowledgeBaseId);
   const exactKeys = [buildKey("knowledge-base-publication-locks", normalizedKnowledgeBaseId)];
   const patterns = [
+    `${buildKey("pagination-cursors", "knowledge-bases")}:*`,
+    `${buildKey("page-cache", "knowledge-bases")}:*`,
     `${buildKey("pagination-invalid")}:*${normalizedKnowledgeBaseId}*`,
     `${buildKey("pagination-cursors")}:*${normalizedKnowledgeBaseId}*`,
     `${buildKey("page-cache")}:*${normalizedKnowledgeBaseId}*`

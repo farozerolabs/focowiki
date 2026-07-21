@@ -105,16 +105,17 @@ export function createPostgresStorageReconciliationRepository(
         const orphanObjects = [];
         if (input.objects.length > 0) {
           const owned = await transaction<Array<{ object_key: string }>>`
-            SELECT listed.object_key
+            SELECT DISTINCT listed.object_key
             FROM unnest(
               ${input.objects.map((object) => object.key)}::text[],
               ${input.objects.map((object) => object.checksumSha256)}::text[],
               ${input.objects.map((object) => object.formatVersion)}::int[]
             ) AS listed(object_key, checksum_sha256, format_version)
-            JOIN focowiki.immutable_objects object
-              ON object.checksum_sha256 = listed.checksum_sha256
-             AND object.format_version = listed.format_version
-             AND object.object_key = listed.object_key
+            JOIN focowiki.storage_object_protection protection
+              ON protection.checksum_sha256 = listed.checksum_sha256
+             AND protection.format_version = listed.format_version
+             AND protection.object_key = listed.object_key
+             AND protection.protection_class <> 'unreferenced'
           `;
           ownedKeys.push(...owned.map((row) => row.object_key));
           const ownedSet = new Set(ownedKeys);
@@ -128,6 +129,15 @@ export function createPostgresStorageReconciliationRepository(
                   integrity_error_code = NULL,
                   integrity_checked_at = ${input.recordedAt}
               WHERE object.object_key = ANY(${ownedKeys})
+            `;
+            await transaction`
+              UPDATE focowiki.projection_segments segment
+              SET last_storage_seen_cycle_id = ${input.cycle.cycleId},
+                  last_storage_seen_at = ${input.recordedAt},
+                  integrity_error_code = NULL,
+                  integrity_checked_at = ${input.recordedAt}
+              WHERE segment.object_key = ANY(${ownedKeys})
+                AND segment.lifecycle_state <> 'deleted'
             `;
             await transaction`
               UPDATE focowiki.storage_reconciliation_candidates candidate
@@ -221,10 +231,14 @@ export function createPostgresStorageReconciliationRepository(
           SET state = 'resolved', resolved_at = ${input.now}, updated_at = ${input.now}
           WHERE candidate.prefix = ${input.cycle.prefix}
             AND candidate.state IN ('quarantined', 'failed')
-            AND EXISTS (
-              SELECT 1 FROM focowiki.immutable_objects object
-              WHERE object.checksum_sha256 = candidate.checksum_sha256
-                AND object.format_version = candidate.format_version
+            AND (
+              EXISTS (
+                SELECT 1 FROM focowiki.storage_object_protection protection
+                WHERE protection.checksum_sha256 = candidate.checksum_sha256
+                  AND protection.format_version = candidate.format_version
+                  AND protection.object_key = candidate.object_key
+                  AND protection.protection_class <> 'unreferenced'
+              )
             )
         `;
         const rows = await transaction<CandidateRow[]>`
@@ -247,19 +261,11 @@ export function createPostgresStorageReconciliationRepository(
                   AND cycle.lease_expires_at > ${input.now}
               )
               AND NOT EXISTS (
-                SELECT 1 FROM focowiki.immutable_objects object
-                WHERE object.checksum_sha256 = candidate.checksum_sha256
-                  AND object.format_version = candidate.format_version
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM focowiki.generation_object_refs reference
-                WHERE reference.checksum_sha256 = candidate.checksum_sha256
-                  AND reference.format_version = candidate.format_version
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM focowiki.active_object_refs reference
-                WHERE reference.checksum_sha256 = candidate.checksum_sha256
-                  AND reference.format_version = candidate.format_version
+                SELECT 1 FROM focowiki.storage_object_protection protection
+                WHERE protection.checksum_sha256 = candidate.checksum_sha256
+                  AND protection.format_version = candidate.format_version
+                  AND protection.object_key = candidate.object_key
+                  AND protection.protection_class <> 'unreferenced'
               )
             ORDER BY candidate.first_seen_at, candidate.object_key
             LIMIT ${boundedLimit(input.limit)}
@@ -304,17 +310,11 @@ export function createPostgresStorageReconciliationRepository(
         const conflicts = await transaction<Array<{ conflict: number }>>`
           SELECT 1 AS conflict
           WHERE EXISTS (
-            SELECT 1 FROM focowiki.immutable_objects object
-            WHERE object.checksum_sha256 = ${input.checksumSha256}
-              AND object.format_version = ${input.formatVersion}
-          ) OR EXISTS (
-            SELECT 1 FROM focowiki.generation_object_refs reference
-            WHERE reference.checksum_sha256 = ${input.checksumSha256}
-              AND reference.format_version = ${input.formatVersion}
-          ) OR EXISTS (
-            SELECT 1 FROM focowiki.active_object_refs reference
-            WHERE reference.checksum_sha256 = ${input.checksumSha256}
-              AND reference.format_version = ${input.formatVersion}
+            SELECT 1 FROM focowiki.storage_object_protection protection
+            WHERE protection.checksum_sha256 = ${input.checksumSha256}
+              AND protection.format_version = ${input.formatVersion}
+              AND protection.object_key = ${input.objectKey}
+              AND protection.protection_class <> 'unreferenced'
           )
         `;
         if (conflicts.length === 0) return true;
@@ -354,6 +354,22 @@ export function createPostgresStorageReconciliationRepository(
         `;
         if (updated.length > 0) {
           await transaction`
+            UPDATE focowiki.projection_segments
+            SET lifecycle_state = 'deleted', integrity_error_code = NULL,
+                integrity_checked_at = ${input.completedAt}
+            WHERE object_key = ${input.objectKey}
+              AND lifecycle_state = 'quarantined'
+              AND ownership_count = 0
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.active_projection_segments active
+                WHERE active.segment_id = focowiki.projection_segments.id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.generation_projection_segments retained
+                WHERE retained.segment_id = focowiki.projection_segments.id
+              )
+          `;
+          await transaction`
             UPDATE focowiki.storage_reconciliation_cycles
             SET deleted_count = deleted_count + 1, updated_at = ${input.completedAt}
             WHERE prefix = ${input.prefix}
@@ -386,13 +402,25 @@ export function createPostgresStorageReconciliationRepository(
         format_version: number;
         object_key: string;
       }>>`
-        SELECT checksum_sha256, format_version, object_key
-        FROM focowiki.immutable_objects
-        WHERE lifecycle_state IN ('writing', 'active')
-          AND object_key >= ${input.cycle.prefix}
-          AND object_key < ${prefixUpperBound}
-          AND (${input.cycle.verificationCursor}::text IS NULL OR object_key > ${input.cycle.verificationCursor})
-          AND coalesce(last_storage_seen_cycle_id, '') <> ${input.cycle.cycleId}
+        SELECT DISTINCT checksum_sha256, format_version, object_key
+        FROM focowiki.storage_object_protection protection
+        WHERE protection.protection_class <> 'unreferenced'
+          AND protection.object_key >= ${input.cycle.prefix}
+          AND protection.object_key < ${prefixUpperBound}
+          AND (${input.cycle.verificationCursor}::text IS NULL OR protection.object_key > ${input.cycle.verificationCursor})
+          AND (
+            EXISTS (
+              SELECT 1 FROM focowiki.immutable_objects object
+              WHERE object.checksum_sha256 = protection.checksum_sha256
+                AND object.format_version = protection.format_version
+                AND coalesce(object.last_storage_seen_cycle_id, '') <> ${input.cycle.cycleId}
+            ) OR EXISTS (
+              SELECT 1 FROM focowiki.projection_segments segment
+              WHERE segment.checksum_sha256 = protection.checksum_sha256
+                AND segment.format_version = protection.format_version
+                AND coalesce(segment.last_storage_seen_cycle_id, '') <> ${input.cycle.cycleId}
+            )
+          )
         ORDER BY object_key
         LIMIT ${boundedLimit(input.limit)}
       `;
@@ -405,7 +433,7 @@ export function createPostgresStorageReconciliationRepository(
 
     async recordRegisteredObjectCheck(input) {
       return sql.begin(async (transaction) => {
-        const rows = await transaction<Array<{ checksum_sha256: string }>>`
+        const objectRows = await transaction<Array<{ checksum_sha256: string }>>`
           UPDATE focowiki.immutable_objects
           SET last_storage_seen_cycle_id = ${input.exists ? input.cycle.cycleId : null},
               last_storage_seen_at = ${input.exists ? input.checkedAt : null},
@@ -416,10 +444,25 @@ export function createPostgresStorageReconciliationRepository(
             AND object_key = ${input.object.objectKey}
           RETURNING checksum_sha256
         `;
+        const segmentRows = await transaction<Array<{ id: string }>>`
+          UPDATE focowiki.projection_segments
+          SET last_storage_seen_cycle_id = ${input.exists ? input.cycle.cycleId : null},
+              last_storage_seen_at = ${input.exists ? input.checkedAt : null},
+              integrity_error_code = ${input.exists ? null : "STORAGE_OBJECT_MISSING"},
+              integrity_checked_at = ${input.checkedAt}
+          WHERE checksum_sha256 = ${input.object.checksumSha256}
+            AND format_version = ${input.object.formatVersion}
+            AND object_key = ${input.object.objectKey}
+            AND lifecycle_state <> 'deleted'
+          RETURNING id
+        `;
+        const missingIncrement = !input.exists && (objectRows.length > 0 || segmentRows.length > 0)
+          ? 1
+          : 0;
         const cycleRows = await transaction<Array<{ prefix: string }>>`
           UPDATE focowiki.storage_reconciliation_cycles
           SET verification_cursor = ${input.object.objectKey},
-              missing_count = missing_count + ${rows.length > 0 && !input.exists ? 1 : 0},
+              missing_count = missing_count + ${missingIncrement},
               updated_at = ${input.checkedAt}
           WHERE prefix = ${input.cycle.prefix}
             AND cycle_id = ${input.cycle.cycleId}

@@ -30,6 +30,7 @@ import type { SourceDispatchRepository } from "./application/ports/source-dispat
 import type { SourceFileRetryRepository } from "./application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "./application/ports/source-file-task-deletion-repository.js";
 import type { StorageReconciliationRepository } from "./application/ports/storage-reconciliation-repository.js";
+import type { MaintenanceProgressRepository } from "./application/ports/maintenance-progress-repository.js";
 
 export type ApiAppOptions = {
   config: RuntimeConfig;
@@ -46,6 +47,7 @@ export type ApiAppOptions = {
   sourceFileRetries?: SourceFileRetryRepository;
   sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
   storageReconciliation?: StorageReconciliationRepository;
+  maintenanceProgress?: MaintenanceProgressRepository;
 };
 
 type ApiAppServices = {
@@ -66,12 +68,12 @@ type ApiAppServices = {
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
   storageReconciliation: StorageReconciliationRepository | null;
+  maintenanceProgress: MaintenanceProgressRepository | null;
 };
 
 export function createAdminApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config, services.logger);
-
   registerAdminApiRoutes(app, services);
 
   return app;
@@ -141,6 +143,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     sourceDispatch: options.sourceDispatch ?? null,
     sourceFileRetries: options.sourceFileRetries ?? null,
     sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null,
-    storageReconciliation: options.storageReconciliation ?? null
+    storageReconciliation: options.storageReconciliation ?? null,
+    maintenanceProgress: options.maintenanceProgress ?? null
   };
 }

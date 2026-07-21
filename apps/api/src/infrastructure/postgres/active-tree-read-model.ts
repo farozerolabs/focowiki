@@ -75,11 +75,19 @@ export async function listActiveTree(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
+  allowCompatibilityFallback: boolean,
   input: TreeInput
 ): Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationCursor>> {
   const query = input.query?.trim() ?? "";
   const [sourceEntries, generatedFiles, generatedDirectories] = await Promise.all([
-    listSourceEntries(sql, knowledgeBaseId, generationId, input, query),
+    listSourceEntries(
+      sql,
+      knowledgeBaseId,
+      generationId,
+      allowCompatibilityFallback,
+      input,
+      query
+    ),
     input.entryType === "directory"
       ? Promise.resolve([])
       : listGeneratedFiles(sql, knowledgeBaseId, generationId, input, query),
@@ -107,6 +115,7 @@ export async function listActiveTreeAncestors(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
+  allowCompatibilityFallback: boolean,
   paths: string[]
 ): Promise<Map<string, ActiveGenerationProjection[]>> {
   const ancestorsByPath = new Map(
@@ -132,6 +141,7 @@ export async function listActiveTreeAncestors(
     sql,
     knowledgeBaseId,
     generationId,
+    allowCompatibilityFallback,
     rows.map((row) => mapProjection(generationId, row))
   );
   const records = new Map(
@@ -162,27 +172,29 @@ async function listSourceEntries(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
+  allowCompatibilityFallback: boolean,
   input: TreeInput,
   query: string
 ): Promise<ActiveGenerationProjection[]> {
   const queryPattern = `%${escapeLikePattern(query)}%`;
+  const normalizedQueryPattern = queryPattern.toLocaleLowerCase("en-US");
   const rows = await sql<ProjectionRow[]>`
-    SELECT projection_kind, record_id, source_file_id,
-           related_source_file_id, logical_path, parent_path, sort_key,
-           title, summary, NULL::real AS score, payload_json
-    FROM focowiki.active_projection_records
-    WHERE knowledge_base_id = ${knowledgeBaseId}
-      AND projection_kind = 'tree'
-      AND (${query} <> '' OR coalesce(parent_path, '') = ${input.parentPath})
-      AND (${query} = '' OR (
-        coalesce(title, '') ILIKE ${queryPattern} ESCAPE '\\'
-        OR coalesce(logical_path, '') ILIKE ${queryPattern} ESCAPE '\\'
-      ))
-      AND (${input.entryType}::text IS NULL OR payload_json->>'kind' = ${input.entryType})
+    SELECT record.projection_kind, record.record_id, record.source_file_id,
+           record.related_source_file_id, record.logical_path,
+           record.parent_path, record.sort_key, record.title, record.summary,
+           NULL::real AS score, record.payload_json
+    FROM focowiki.active_projection_records record
+    WHERE record.knowledge_base_id = ${knowledgeBaseId}
+      AND record.projection_kind = 'tree'
+      AND (${query} <> '' OR coalesce(record.parent_path, '') = ${input.parentPath})
+      AND (${query} = '' OR lower(
+        coalesce(record.title, '') || ' ' || coalesce(record.logical_path, '')
+      ) LIKE ${normalizedQueryPattern} ESCAPE '\\')
+      AND (${input.entryType}::text IS NULL OR record.payload_json->>'kind' = ${input.entryType})
       AND (
-        source_file_id IS NULL OR EXISTS (
+        record.source_file_id IS NULL OR EXISTS (
           SELECT 1 FROM focowiki.source_files source
-          WHERE source.id = source_file_id
+          WHERE source.id = record.source_file_id
             AND source.knowledge_base_id = ${knowledgeBaseId}
             AND source.deleted_at IS NULL
             AND source.deletion_intent_id IS NULL
@@ -190,16 +202,17 @@ async function listSourceEntries(
       )
       AND (
         ${input.cursor?.sortKey ?? null}::text IS NULL
-        OR (coalesce(sort_key, ''), record_id) >
+        OR (coalesce(record.sort_key, ''), record.record_id) >
            (${input.cursor?.sortKey ?? null}, ${input.cursor?.recordId ?? null})
       )
-    ORDER BY coalesce(sort_key, ''), record_id
+    ORDER BY coalesce(record.sort_key, ''), record.record_id
     LIMIT ${input.limit + 1}
   `;
   return hydrateSourceDirectoryStatistics(
     sql,
     knowledgeBaseId,
     generationId,
+    allowCompatibilityFallback,
     rows.map((row) => mapProjection(generationId, row))
   );
 }
@@ -294,29 +307,10 @@ async function loadGeneratedDirectoryStatistics(
 }>> {
   const candidatePaths = GENERATED_DIRECTORIES.map((entry) => entry.path);
   const rows = await sql<GeneratedDirectoryRow[]>`
-    SELECT candidate.path,
-           (SELECT count(*)::int
-            FROM focowiki.active_object_refs direct
-            WHERE direct.knowledge_base_id = ${knowledgeBaseId}
-              AND direct.logical_path >= candidate.path || '/'
-              AND direct.logical_path < candidate.path || '0'
-              AND position('/' in substring(
-                direct.logical_path from (length(candidate.path) + 2)::integer
-              )) = 0) AS direct_file_count,
-           (SELECT count(*)::int
-            FROM focowiki.active_object_refs descendant
-            WHERE descendant.knowledge_base_id = ${knowledgeBaseId}
-              AND descendant.logical_path >= candidate.path || '/'
-              AND descendant.logical_path < candidate.path || '0') AS descendant_file_count
-    FROM unnest(${candidatePaths}::text[]) AS candidate(path)
-    WHERE EXISTS (
-      SELECT 1
-      FROM focowiki.active_object_refs active
-      WHERE active.knowledge_base_id = ${knowledgeBaseId}
-        AND active.logical_path >= candidate.path || '/'
-        AND active.logical_path < candidate.path || '0'
-      LIMIT 1
-    )
+    SELECT path, direct_file_count::int, descendant_file_count::int
+    FROM focowiki.active_generated_directory_stats
+    WHERE knowledge_base_id = ${knowledgeBaseId}
+      AND path = ANY(${candidatePaths})
   `;
   const available = new Set(rows.map((row) => row.path));
   return new Map(rows.map((row) => {
@@ -406,6 +400,7 @@ async function hydrateSourceDirectoryStatistics(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
+  allowCompatibilityFallback: boolean,
   entries: ActiveGenerationProjection[]
 ): Promise<ActiveGenerationProjection[]> {
   const directoryPaths = entries
@@ -423,6 +418,9 @@ async function hydrateSourceDirectoryStatistics(
   `;
   const statistics = new Map(persistedRows.map((row) => [row.path, row] as const));
   const missingPaths = directoryPaths.filter((path) => !statistics.has(path));
+  if (missingPaths.length > 0 && !allowCompatibilityFallback) {
+    throw new Error("Active directory statistics are unavailable");
+  }
   if (missingPaths.length > 0) {
     const fallbackRows = await sql<TreeStatisticsRow[]>`
       WITH requested(path) AS MATERIALIZED (
