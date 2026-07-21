@@ -3,6 +3,7 @@ import type {
   ProjectionSegmentRepository
 } from "../../application/ports/projection-segment-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
+import { registerProjectionSegmentsByIdentity } from "./projection-segment-registration.js";
 
 type SegmentRow = {
   id: string;
@@ -57,27 +58,16 @@ export function createPostgresProjectionSegmentRepository(
 
     async registerAndAttach(input) {
       const rows = await sql.begin(async (transaction) => {
+        const resolved = await registerProjectionSegmentsByIdentity(transaction, [input]);
+        const segmentId = resolved[0]?.segment.id;
+        if (!segmentId) throw new Error("Projection segment registration failed");
         const registered = await transaction<SegmentRow[]>`
-          INSERT INTO focowiki.projection_segments (
-            id, knowledge_base_id, projection_kind, logical_partition,
-            segment_kind, sequence_number, format_version, checksum_sha256,
-            object_key, logical_path, entry_count, encoded_bytes,
-            first_record_identity, last_record_identity, base_segment_id,
-            lifecycle_state
-          ) VALUES (
-            ${input.id}, ${input.knowledgeBaseId}, ${input.projectionKind},
-            ${input.logicalPartition}, ${input.segmentKind}, ${input.sequenceNumber},
-            ${input.formatVersion}, ${input.checksumSha256}, ${input.objectKey},
-            ${input.logicalPath}, ${input.entryCount}, ${input.encodedBytes},
-            ${input.firstRecordIdentity}, ${input.lastRecordIdentity},
-            ${input.baseSegmentId}, ${input.lifecycleState}
-          )
-          ON CONFLICT (id) DO UPDATE
+          UPDATE focowiki.projection_segments
           SET lifecycle_state = CASE
-                WHEN focowiki.projection_segments.lifecycle_state = 'writing'
-                  THEN EXCLUDED.lifecycle_state
-                ELSE focowiki.projection_segments.lifecycle_state
+                WHEN lifecycle_state = 'writing' THEN ${input.lifecycleState}
+                ELSE lifecycle_state
               END
+          WHERE id = ${segmentId}
           RETURNING id, knowledge_base_id, projection_kind, logical_partition,
                     segment_kind, sequence_number, format_version, checksum_sha256,
                     object_key, logical_path, entry_count, encoded_bytes,
@@ -87,7 +77,7 @@ export function createPostgresProjectionSegmentRepository(
         await transaction`
           INSERT INTO focowiki.generation_projection_segments (
             generation_id, segment_id, ordinal, effective
-          ) VALUES (${input.generationId}, ${input.id}, ${input.ordinal}, true)
+          ) VALUES (${input.generationId}, ${segmentId}, ${input.ordinal}, true)
           ON CONFLICT (generation_id, segment_id) DO UPDATE
           SET ordinal = EXCLUDED.ordinal, effective = true
         `;

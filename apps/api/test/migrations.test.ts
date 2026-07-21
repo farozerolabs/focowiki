@@ -17,6 +17,7 @@ const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-reco
 const RETRY_BUDGET_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
 const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
 const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
+const LARGE_SCALE_SCHEMA_GENERATION = "large-scale-ingestion-runtime-v8";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -38,7 +39,10 @@ describe("runtime schema generation guard", () => {
 
     await expect(preflightMigrations(database.sql)).resolves.toEqual({
       currentGeneration: WRITE_LIVELOCK_SCHEMA_GENERATION,
-      pendingFiles: ["008_large_scale_ingestion_runtime.sql"]
+      pendingFiles: [
+        "008_large_scale_ingestion_runtime.sql",
+        "009_optimization_migration_rebase_recovery.sql"
+      ]
     });
     expect(database.unsafeCalls).toBe(0);
     expect(database.beginCalls).toBe(0);
@@ -66,52 +70,60 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(7);
-    expect(database.beginCalls).toBe(7);
+    expect(database.unsafeCalls).toBe(8);
+    expect(database.beginCalls).toBe(8);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(6);
-    expect(database.beginCalls).toBe(6);
+    expect(database.unsafeCalls).toBe(7);
+    expect(database.beginCalls).toBe(7);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the retry-budget generation with its pending migrations", async () => {
     const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades the continuation generation with only the pending migration", async () => {
     const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
   });
 
   it("upgrades the write-livelock generation with only the optimized migration", async () => {
     const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades the large-scale generation with only the migration recovery", async () => {
+    const database = createGenerationDatabase(LARGE_SCALE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
@@ -281,6 +293,21 @@ describe("runtime schema generation guard", () => {
     expect(migration).not.toContain("runtime_generation set generation = 'large-scale-ingestion-runtime-v8', updated_at");
     expect(migration).not.toContain("delete from focowiki.knowledge_bases");
     expect(migration).not.toContain("delete from focowiki.source_files");
+  });
+
+  it("recovers exhausted optimization migrations without replacing business data", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/009_optimization_migration_rebase_recovery.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("last_error_code = 'migration_slice_failed'");
+    expect(migration).toContain("attempt_count = 0");
+    expect(migration).toContain("prior_active_generation_id = knowledge_base.active_generation_id");
+    expect(migration).toContain("optimization-migration-rebase-recovery-v9");
+    expect(migration).not.toContain("delete from focowiki.knowledge_bases");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).not.toContain("delete from focowiki.projection_segments");
   });
 });
 

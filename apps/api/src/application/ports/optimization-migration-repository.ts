@@ -99,6 +99,9 @@ export type OptimizationMigrationRepository = {
     phase: OptimizationMigrationPhase;
     updatedAt: string;
   }) => Promise<void>;
+  rebaseIfActiveGenerationChanged: (input: OwnedMigrationInput & {
+    updatedAt: string;
+  }) => Promise<boolean>;
   reconcileStats: (input: OwnedMigrationInput & { updatedAt: string }) => Promise<void>;
   verifyParity: (input: OwnedMigrationInput) => Promise<{
     passed: boolean;
@@ -107,7 +110,7 @@ export type OptimizationMigrationRepository = {
   activate: (input: OwnedMigrationInput & {
     parityEvidence: Record<string, unknown>;
     activatedAt: string;
-  }) => Promise<void>;
+  }) => Promise<"activated" | "rebased">;
   fail: (input: OwnedMigrationInput & {
     errorCode: string;
     errorMessage: string;

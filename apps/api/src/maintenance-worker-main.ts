@@ -282,7 +282,14 @@ async function runMaintenanceWorker(): Promise<void> {
                 sourceReadConcurrency: Math.min(
                   snapshot.maintenance.migrationBackfillConcurrency,
                   snapshot.maintenance.scanBatchSize
-                )
+                ),
+                onUnexpectedError(error, context) {
+                  logger.error(
+                    "Optimization migration slice failed",
+                    { code: "MIGRATION_SLICE_FAILED", ...context },
+                    error
+                  );
+                }
               })
             );
             const statisticsNow = new Date();
