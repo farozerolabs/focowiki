@@ -144,6 +144,7 @@ function createSourceFile(): SourceFileRecord {
   return {
     id: "source-retry",
     knowledgeBaseId: "kb-retry",
+    sourceRevisionId: "source-revision-retry",
     name: "retry.md",
     relativePath: "retry.md",
     resourceRevision: 1,

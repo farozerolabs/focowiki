@@ -24,7 +24,10 @@ describe("public generated path policy", () => {
     "_graph/index.md",
     "_graph/graph_node/v1/0001.json",
     "_graph/graph_edge/v1/0002.json",
-    "_graph/by-file/source-file-1.json"
+    "_graph/by-file/source-file-1.json",
+    "_segments/manifest/manifest/v1/0014/delta-000000-30a1ba882fb494f8.json",
+    "_segments/related_files/source-file-1/compacted-000004-aabbccddeeff0011.json",
+    "_segments/compacted/projection-segment-aabbccdd.json"
   ])("allows generated file %s", (path) => {
     expect(isAllowedPublicGeneratedFilePath(path)).toBe(true);
   });
@@ -54,6 +57,9 @@ describe("public generated path policy", () => {
     "_graph/communities.json",
     "_graph/edges/private.jsonl",
     "_graph/by-file/nested/file.json",
+    "_segments/private/manifest.json",
+    "_segments/search/../secret.json",
+    "_segments/search/search/v1/0001/private.txt",
     "unsupported.txt"
   ])("rejects unsupported path %s", (path) => {
     expect(isAllowedPublicGeneratedFilePath(path)).toBe(false);

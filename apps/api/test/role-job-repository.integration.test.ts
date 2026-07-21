@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createPostgresRoleJobRepository } from "../src/infrastructure/postgres/role-job-repository.js";
+import { createPostgresGenerationAssemblyDispatchRepository } from "../src/infrastructure/postgres/generation-assembly-dispatch-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -8,7 +9,9 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describeDatabase("role job repository integration", () => {
   const sql = postgres(databaseUrl!, { max: 4 });
   const repository = createPostgresRoleJobRepository(sql);
+  const assemblyDispatcher = createPostgresGenerationAssemblyDispatchRepository(sql);
   const knowledgeBaseId = "kb-role-job-integration";
+  const secondKnowledgeBaseId = "kb-role-job-integration-b";
 
   beforeEach(async () => {
     await sql`DELETE FROM focowiki.role_heartbeats WHERE worker_id LIKE 'integration-%'`;
@@ -16,6 +19,7 @@ describeDatabase("role job repository integration", () => {
     await sql`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.deletion_intents WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${secondKnowledgeBaseId}`;
     await sql`
       INSERT INTO focowiki.knowledge_bases (id, name)
       VALUES (${knowledgeBaseId}, 'Role job integration')
@@ -28,6 +32,7 @@ describeDatabase("role job repository integration", () => {
     await sql`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.deletion_intents WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${secondKnowledgeBaseId}`;
     await sql.end({ timeout: 5 });
   });
 
@@ -116,6 +121,191 @@ describeDatabase("role job repository integration", () => {
     expect(running[0]?.count).toBe(1);
   });
 
+  it("claims independent knowledge bases up to the publication batch limit", async () => {
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${secondKnowledgeBaseId}, 'Role job integration B')
+    `;
+    await insertJob("publication-independent-a", "publication", "generation_publication");
+    await sql`
+      INSERT INTO focowiki.role_jobs (
+        id, role, kind, knowledge_base_id, payload_json, settings_snapshot_json,
+        run_after, max_attempts
+      ) VALUES (
+        'publication-independent-b', 'publication', 'generation_publication',
+        ${secondKnowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T00:00:00.000Z', 3
+      )
+    `;
+
+    const claimed = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-independent",
+      limit: 4,
+      now: "2099-07-17T01:00:00.000Z",
+      staleBefore: "2099-07-17T00:59:00.000Z"
+    });
+
+    expect(claimed.map((job) => job.knowledgeBaseId).sort()).toEqual(
+      [knowledgeBaseId, secondKnowledgeBaseId].sort()
+    );
+  });
+
+  it("claims a scheduled batch publication immediately after upstream work drains", async () => {
+    await sql`
+      INSERT INTO focowiki.role_jobs (
+        id, role, kind, knowledge_base_id, payload_json, settings_snapshot_json,
+        run_after, max_attempts, early_claim_on_upstream_drain
+      ) VALUES (
+        'publication-drain-aware', 'publication', 'generation_publication',
+        ${knowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T02:00:00.000Z', 3, true
+      )
+    `;
+
+    const claimed = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-drain-aware",
+      limit: 1,
+      now: "2026-07-17T01:00:00.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+
+    expect(claimed.map((job) => job.id)).toEqual(["publication-drain-aware"]);
+    expect(claimed[0]?.runAfter).toBe("2026-07-17T01:00:00.000Z");
+  });
+
+  it("keeps a future batch publication queued until every upstream lane drains", async () => {
+    await sql`
+      INSERT INTO focowiki.role_jobs (
+        id, role, kind, knowledge_base_id, payload_json, settings_snapshot_json,
+        run_after, max_attempts, early_claim_on_upstream_drain
+      ) VALUES (
+        'publication-upstream-blocked', 'publication', 'generation_publication',
+        ${knowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T02:00:00.000Z', 3, true
+      ), (
+        'source-upstream-blocker', 'source', 'source_processing',
+        ${knowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T00:00:00.000Z', 3, false
+      ), (
+        'assembly-upstream-blocker', 'publication', 'generation_assembly',
+        ${knowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T02:00:00.000Z', 3, false
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.upload_sessions (
+        id, knowledge_base_id, state, idempotency_key,
+        declared_file_count, declared_byte_count, expires_at
+      ) VALUES (
+        'upload-upstream-blocker', ${knowledgeBaseId}, 'uploading',
+        'upload-upstream-blocker', 1, 1, '2026-07-18T00:00:00.000Z'
+      )
+    `;
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.source_files (
+          id, knowledge_base_id, name, relative_path, path_key, object_key,
+          content_type, size_bytes, checksum_sha256, processing_status,
+          active_revision_id
+        ) VALUES (
+          'source-file-upstream-blocker', ${knowledgeBaseId}, 'blocked.md',
+          'blocked.md', 'blocked.md', 'source/blocked.md', 'text/markdown', 1,
+          ${"b".repeat(64)}, 'queued', 'source-revision-upstream-blocker'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          id, knowledge_base_id, source_file_id, revision, object_key,
+          content_type, size_bytes, checksum_sha256, metadata_json,
+          processing_status
+        ) VALUES (
+          'source-revision-upstream-blocker', ${knowledgeBaseId},
+          'source-file-upstream-blocker', 1, 'source/blocked.md',
+          'text/markdown', 1, ${"b".repeat(64)}, '{}'::jsonb, 'queued'
+        )
+      `;
+    });
+    await sql`
+      INSERT INTO focowiki.source_dispatch_markers (
+        id, knowledge_base_id, source_file_id, source_revision_id, status
+      ) VALUES (
+        'dispatch-upstream-blocker', ${knowledgeBaseId},
+        'source-file-upstream-blocker', 'source-revision-upstream-blocker', 'pending'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_change_facts (
+        id, knowledge_base_id, kind, resource_revision, assembly_state,
+        planning_payload_json, settings_snapshot_json, publication_max_attempts
+      ) VALUES (
+        'fact-upstream-blocker', ${knowledgeBaseId}, 'knowledge_base_metadata_changed',
+        1, 'pending', '{}'::jsonb, '{}'::jsonb, 3
+      )
+    `;
+    const blocked = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-upstream-blocked",
+      limit: 1,
+      now: "2026-07-17T01:00:00.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(blocked).toEqual([]);
+
+    await sql`UPDATE focowiki.role_jobs SET status = 'completed' WHERE id IN ('source-upstream-blocker', 'assembly-upstream-blocker')`;
+    await sql`UPDATE focowiki.upload_sessions SET state = 'completed' WHERE id = 'upload-upstream-blocker'`;
+    await sql`UPDATE focowiki.source_dispatch_markers SET status = 'dispatched' WHERE id = 'dispatch-upstream-blocker'`;
+    await sql`UPDATE focowiki.publication_change_facts SET assembly_state = 'assembled' WHERE id = 'fact-upstream-blocker'`;
+
+    const claimed = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-upstream-drained",
+      limit: 1,
+      now: "2026-07-17T01:00:01.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(claimed.map((job) => job.id)).toEqual(["publication-upstream-blocked"]);
+  });
+
+  it("does not bypass publication retry backoff after an early claim", async () => {
+    await sql`
+      INSERT INTO focowiki.role_jobs (
+        id, role, kind, knowledge_base_id, payload_json, settings_snapshot_json,
+        run_after, max_attempts, early_claim_on_upstream_drain
+      ) VALUES (
+        'publication-retry-backoff', 'publication', 'generation_publication',
+        ${knowledgeBaseId}, '{}'::jsonb, '{}'::jsonb,
+        '2026-07-17T02:00:00.000Z', 3, true
+      )
+    `;
+    const first = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-retry-first",
+      limit: 1,
+      now: "2026-07-17T01:00:00.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(first.map((job) => job.id)).toEqual(["publication-retry-backoff"]);
+    await repository.retry({
+      jobId: "publication-retry-backoff",
+      workerId: "integration-publication-retry-first",
+      code: "TRANSIENT",
+      message: "retry later",
+      failedAt: "2026-07-17T01:00:01.000Z",
+      runAfter: "2026-07-17T01:01:00.000Z"
+    });
+
+    const blocked = await repository.claim({
+      role: "publication",
+      workerId: "integration-publication-retry-second",
+      limit: 1,
+      now: "2026-07-17T01:00:30.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(blocked).toEqual([]);
+  });
+
   it("clears stale failure diagnostics when a job is rescheduled", async () => {
     await insertJob("publication-reschedule", "publication", "generation_publication");
     await sql`
@@ -156,6 +346,68 @@ describeDatabase("role job repository integration", () => {
       last_error_code: null,
       last_error_message: null
     }]);
+  });
+
+  it("dispatches and requeues generation assembly directly from pending change facts", async () => {
+    await sql`
+      INSERT INTO focowiki.publication_change_facts (
+        id, knowledge_base_id, kind, resource_revision, assembly_state,
+        planning_payload_json, settings_snapshot_json, publication_max_attempts
+      ) VALUES (
+        'fact-generation-assembly-dispatch', ${knowledgeBaseId},
+        'knowledge_base_metadata_changed', 1, 'pending',
+        '{}'::jsonb, '{}'::jsonb, 3
+      )
+    `;
+    await expect(assemblyDispatcher.dispatchPending({
+      now: "2026-07-17T01:00:00.000Z",
+      limit: 10
+    })).resolves.toBe(1);
+    const first = await repository.claim({
+      role: "publication",
+      workerId: "integration-assembly-a",
+      limit: 1,
+      now: "2026-07-17T01:00:00.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(first).toHaveLength(1);
+    await repository.complete({
+      jobId: first[0]!.id,
+      workerId: "integration-assembly-a",
+      completedAt: "2026-07-17T01:00:01.000Z"
+    });
+    const pending = await sql<Array<{ status: string; attempt_count: number }>>`
+      SELECT status, attempt_count
+      FROM focowiki.role_jobs
+      WHERE id = ${first[0]!.id}
+    `;
+    expect(pending).toEqual([{ status: "queued", attempt_count: 0 }]);
+
+    await sql`
+      UPDATE focowiki.publication_change_facts
+      SET assembly_state = 'assembled', assembled_at = now()
+      WHERE id = 'fact-generation-assembly-dispatch'
+    `;
+    const second = await repository.claim({
+      role: "publication",
+      workerId: "integration-assembly-b",
+      limit: 1,
+      now: "2026-07-17T01:00:02.000Z",
+      staleBefore: "2026-07-17T00:59:00.000Z"
+    });
+    expect(second).toHaveLength(1);
+    await repository.complete({
+      jobId: second[0]!.id,
+      workerId: "integration-assembly-b",
+      completedAt: "2026-07-17T01:00:03.000Z"
+    });
+    const completed = await sql<Array<{ status: string; completed_at: Date | null }>>`
+      SELECT status, completed_at
+      FROM focowiki.role_jobs
+      WHERE id = ${second[0]!.id}
+    `;
+    expect(completed[0]?.status).toBe("completed");
+    expect(completed[0]?.completed_at).not.toBeNull();
   });
 
   it("enqueues idempotent role work and fences queued source work for deletion", async () => {

@@ -19,6 +19,7 @@ export type UploadManifestEntryDraft = {
 export type UploadSessionService = ReturnType<typeof createUploadSessionService>;
 export const UPLOAD_SESSION_TTL_SECONDS = 86_400;
 export const UPLOAD_MANIFEST_PAGE_SIZE = 500;
+export const UPLOAD_CONTENT_TRANSFER_CONCURRENCY = 8;
 
 export function createUploadSessionService(input: {
   repository: UploadSessionRepository;

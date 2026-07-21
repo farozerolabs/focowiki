@@ -5,8 +5,14 @@ import {
   type OkfGraphNode
 } from "@focowiki/okf";
 import type { DatabaseClient } from "./client.js";
+import { buildGraphQueryTerms } from "../graph/graph-term-document.js";
+import {
+  GRAPH_COMMON_TERM_ABSOLUTE_MAX_DOCUMENTS,
+  GRAPH_COMMON_TERM_MAX_DOCUMENT_RATIO,
+  GRAPH_LEXICAL_QUERY_TERM_LIMIT,
+  GRAPH_QUERY_TERM_LIMIT
+} from "../graph/graph-term-frequency.js";
 import type {
-  FileGraphJobRecord,
   FileGraphRelatedRecord,
   FileGraphRepository
 } from "./admin-repositories.js";
@@ -63,77 +69,8 @@ type RelatedRow = {
   content_available: boolean;
 };
 
-type GraphJobRow = {
-  id: string;
-  knowledge_base_id: string;
-  source_file_id: string;
-  status: FileGraphJobRecord["status"];
-  started_at: Date;
-  ended_at: Date | null;
-  error_code: string | null;
-  created_at: Date;
-};
-
 export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGraphRepository {
-  const refreshGraphSummariesForSourceFiles = async (input: {
-    knowledgeBaseId: string;
-    sourceFileIds: string[];
-    limit: number;
-  }) => {
-    for (const sourceFileId of unique(input.sourceFileIds)) {
-      const countRows = await sql<Array<{ count: number | string }>>`
-        SELECT count(*)::int AS count
-        FROM focowiki.source_file_graph_edges edge
-        WHERE edge.knowledge_base_id = ${input.knowledgeBaseId}
-          AND edge.status = 'accepted'
-          AND (edge.from_source_file_id = ${sourceFileId} OR edge.to_source_file_id = ${sourceFileId})
-      `;
-      const related = await listSourceNeighborhood(sql, {
-        knowledgeBaseId: input.knowledgeBaseId,
-        sourceFileId,
-        limit: input.limit,
-        cursor: null
-      });
-      await sql`
-        UPDATE focowiki.source_files
-        SET graph_relationship_count = ${Number(countRows[0]?.count ?? 0)},
-            graph_top_relationships_json = ${sql.json(related.items as never)}
-        WHERE knowledge_base_id = ${input.knowledgeBaseId}
-          AND id = ${sourceFileId}
-          AND deleted_at IS NULL
-      `;
-    }
-  };
-
   return {
-    async createGraphJob(input) {
-      const rows = await sql<GraphJobRow[]>`
-        INSERT INTO focowiki.source_file_graph_jobs (
-          id, knowledge_base_id, source_file_id, status, started_at
-        )
-        SELECT ${input.id ?? `graph-job-${randomUUID()}`}, ${input.knowledgeBaseId},
-               ${input.sourceFileId}, 'running', ${input.startedAt}
-        FROM focowiki.source_files source
-        WHERE source.id = ${input.sourceFileId}
-          AND source.knowledge_base_id = ${input.knowledgeBaseId}
-          AND source.deleted_at IS NULL
-          AND source.deletion_intent_id IS NULL
-        RETURNING id, knowledge_base_id, source_file_id, status, started_at,
-                  ended_at, error_code, created_at
-      `;
-      return mapGraphJob(requireRow(rows[0]));
-    },
-    async completeGraphJob(input) {
-      const rows = await sql<GraphJobRow[]>`
-        UPDATE focowiki.source_file_graph_jobs
-        SET status = ${input.status}, ended_at = ${input.endedAt},
-            error_code = ${input.errorCode ?? null}
-        WHERE id = ${input.id}
-        RETURNING id, knowledge_base_id, source_file_id, status, started_at,
-                  ended_at, error_code, created_at
-      `;
-      return rows[0] ? mapGraphJob(rows[0]) : null;
-    },
     async upsertGraphNode({ knowledgeBaseId, node }) {
       await sql`
         INSERT INTO focowiki.source_file_graph_nodes (
@@ -181,119 +118,41 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           updated_at = now()
       `;
     },
-    async upsertGraphEdges({ knowledgeBaseId, edges }) {
-      const edgeIds = await upsertSourceEdges(sql, knowledgeBaseId, edges, "accepted");
-      await refreshGraphSummariesForSourceFiles({
-        knowledgeBaseId,
-        sourceFileIds: edges.flatMap((edge) => [edge.fromFileId, edge.toFileId]),
-        limit: 3
-      });
-      return edgeIds;
-    },
-    async upsertRejectedGraphEdges({ knowledgeBaseId, edges }) {
-      await upsertSourceEdges(sql, knowledgeBaseId, edges, "rejected");
-    },
-    async replaceGraphEdgesForSourceFile({ knowledgeBaseId, sourceFileId }) {
-      const rows = await sql<Array<{ source_file_id: string; edge_id: string }>>`
-        WITH removed AS (
-          DELETE FROM focowiki.source_file_graph_edges
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND from_source_file_id = ${sourceFileId}
-          RETURNING id, to_source_file_id
+    async upsertGraphTermDocument({ knowledgeBaseId, document }) {
+      await sql`
+        INSERT INTO focowiki.source_file_graph_term_documents (
+          knowledge_base_id, source_file_id, source_revision_id,
+          term_fingerprint, lexical_text, exact_terms, phrase_terms,
+          explicit_references, updated_at
         )
-        SELECT to_source_file_id AS source_file_id, id AS edge_id FROM removed
+        SELECT ${knowledgeBaseId}, ${document.sourceFileId}, ${document.sourceRevisionId},
+               ${document.fingerprint}, ${document.lexicalText}, ${document.exactTerms},
+               ${document.phraseTerms}, ${document.explicitReferences}, now()
+        FROM focowiki.source_files source
+        JOIN focowiki.source_revisions revision
+          ON revision.id = ${document.sourceRevisionId}
+         AND revision.knowledge_base_id = source.knowledge_base_id
+         AND revision.source_file_id = source.id
+        WHERE source.knowledge_base_id = ${knowledgeBaseId}
+          AND source.id = ${document.sourceFileId}
+          AND source.deleted_at IS NULL
+          AND source.deletion_intent_id IS NULL
+          AND ${document.sourceRevisionId} = CASE
+            WHEN source.candidate_operation_id IS NULL THEN source.active_revision_id
+            ELSE source.candidate_revision_id
+          END
+        ON CONFLICT (knowledge_base_id, source_file_id) DO UPDATE SET
+          source_revision_id = EXCLUDED.source_revision_id,
+          term_fingerprint = EXCLUDED.term_fingerprint,
+          lexical_text = EXCLUDED.lexical_text,
+          exact_terms = EXCLUDED.exact_terms,
+          phrase_terms = EXCLUDED.phrase_terms,
+          explicit_references = EXCLUDED.explicit_references,
+          updated_at = now()
       `;
-      await refreshGraphSummariesForSourceFiles({
-        knowledgeBaseId,
-        sourceFileIds: [sourceFileId, ...rows.map((row) => row.source_file_id)],
-        limit: 3
-      });
-      return {
-        sourceFileIds: unique(rows.map((row) => row.source_file_id)),
-        edgeIds: unique(rows.map((row) => row.edge_id))
-      };
     },
-    async reconcileExplicitReferenceEdgesForTarget({ knowledgeBaseId, target, limit }) {
-      const targetPath = normalizeGraphReferencePath(target.path);
-      const referenceTerms = unique([
-        targetPath,
-        `/${targetPath}`,
-        target.title.trim()
-      ]).filter(Boolean);
-      const rows = await sql.begin(async (transaction) => {
-        await transaction`
-          DELETE FROM focowiki.source_file_graph_edges
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-            AND to_source_file_id = ${target.fileId}
-            AND relation_type = 'direct_reference'
-            AND evidence_json ->> 'reconciliation' = 'explicit_reference'
-        `;
-
-        return transaction<Array<{ source_file_id: string; edge_id: string }>>`
-          WITH matching_referrers AS (
-            SELECT node.source_file_id
-            FROM focowiki.source_file_graph_nodes node
-            JOIN focowiki.source_files source
-              ON source.id = node.source_file_id
-             AND source.knowledge_base_id = node.knowledge_base_id
-            WHERE node.knowledge_base_id = ${knowledgeBaseId}
-              AND node.source_file_id <> ${target.fileId}
-              AND source.deleted_at IS NULL
-              AND source.deletion_intent_id IS NULL
-              AND node.explicit_references_json ?| ${referenceTerms}
-            ORDER BY node.source_file_id ASC
-            LIMIT ${limit}
-          ), inserted AS (
-            INSERT INTO focowiki.source_file_graph_edges (
-              id, knowledge_base_id, from_source_file_id, to_source_file_id,
-              relation_type, weight, reason, source, status, evidence_json, updated_at
-            )
-            SELECT
-              'source-graph-edge-' || md5(
-                ${knowledgeBaseId} || ':' || referrer.source_file_id || ':' ||
-                ${target.fileId} || ':direct_reference'
-              ),
-              ${knowledgeBaseId}, referrer.source_file_id, ${target.fileId},
-              'direct_reference', 0.95,
-              'The source explicitly references this file.',
-              'deterministic', 'accepted',
-              ${transaction.json({
-                signal: "direct_reference",
-                reconciliation: "explicit_reference",
-                targetPath,
-                targetTitle: target.title
-              } as never)},
-              now()
-            FROM matching_referrers referrer
-            ON CONFLICT (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type)
-            DO UPDATE SET
-              weight = EXCLUDED.weight,
-              reason = EXCLUDED.reason,
-              source = EXCLUDED.source,
-              status = EXCLUDED.status,
-              evidence_json = EXCLUDED.evidence_json,
-              updated_at = now()
-            RETURNING from_source_file_id AS source_file_id, id AS edge_id
-          )
-          SELECT source_file_id, edge_id FROM inserted
-        `;
-      });
-      const sourceFileIds = unique(rows.map((row) => row.source_file_id));
-      const edgeIds = unique(rows.map((row) => row.edge_id));
-
-      if (sourceFileIds.length > 0) {
-        await refreshGraphSummariesForSourceFiles({
-          knowledgeBaseId,
-          sourceFileIds: [...sourceFileIds, target.fileId],
-          limit: 3
-        });
-      }
-
-      return {
-        edgeCount: sourceFileIds.length,
-        sourceFileIds,
-        edgeIds
-      };
+    async applyGraphMutationSet(input) {
+      return applyGraphMutationSet(sql, input);
     },
     async listGraphNodes(input) {
       return listSourceNodes(sql, input);
@@ -315,23 +174,120 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       return listSourceNeighborhood(sql, input);
     },
     async listGraphCandidates({ knowledgeBaseId, sourceFileId, terms, limit }) {
-      const cleanTerms = unique(terms).slice(0, 100);
-      if (cleanTerms.length === 0 || limit <= 0) return [];
-      const patterns = cleanTerms.map((term) => `%${escapeLike(term.toLowerCase())}%`);
-      const rows = await sql<SourceGraphNodeRow[]>`
-        ${sourceNodeSelect(sql, knowledgeBaseId)}
-          AND node.source_file_id <> ${sourceFileId}
-          AND (
-            lower(node.title) LIKE ANY(${patterns})
-            OR lower(COALESCE(node.summary, node.description, '')) LIKE ANY(${patterns})
-            OR lower(node.profile_json::text) LIKE ANY(${patterns})
-            OR node.subjects_json ?| ${cleanTerms}
-            OR node.entities_json ?| ${cleanTerms}
-            OR node.keywords_json ?| ${cleanTerms}
-          )
-        ORDER BY node.updated_at DESC, node.source_file_id ASC
-        LIMIT ${limit}
-      `;
+      const query = buildGraphQueryTerms(terms.slice(0, 100));
+      if (query.exactTerms.length === 0 || limit <= 0) return [];
+      const rows = await sql.begin(async (transaction) => {
+        await transaction`SET LOCAL enable_seqscan = off`;
+        return transaction<Array<SourceGraphNodeRow & { candidate_score: number | string }>>`
+          WITH query_term_frequencies AS MATERIALIZED (
+            SELECT frequency.term, sum(frequency.document_count)::bigint AS document_count
+            FROM focowiki.source_file_graph_term_frequencies frequency
+            WHERE frequency.knowledge_base_id = ${knowledgeBaseId}
+              AND frequency.term = ANY(${query.exactTerms})
+            GROUP BY frequency.term
+          ), selected_query_terms AS MATERIALIZED (
+            SELECT query_term.term,
+                   coalesce(frequency.document_count, 0)::bigint AS document_count
+            FROM unnest(${query.exactTerms}::text[]) AS query_term(term)
+            LEFT JOIN query_term_frequencies frequency
+              ON frequency.term = query_term.term
+            LEFT JOIN (
+              SELECT coalesce(sum(source_file_count), 0)::bigint AS source_file_count
+              FROM focowiki.knowledge_base_incremental_stat_shards
+              WHERE knowledge_base_id = ${knowledgeBaseId}
+            ) stats ON true
+            WHERE coalesce(frequency.document_count, 0) <= greatest(
+              1::bigint,
+              least(
+                ${GRAPH_COMMON_TERM_ABSOLUTE_MAX_DOCUMENTS}::bigint,
+                ceil(
+                  coalesce(stats.source_file_count, 0)
+                  * ${GRAPH_COMMON_TERM_MAX_DOCUMENT_RATIO}::numeric
+                )::bigint
+              )
+            )
+            ORDER BY coalesce(frequency.document_count, 0), query_term.term
+            LIMIT ${GRAPH_QUERY_TERM_LIMIT}
+          ), bounded_query AS MATERIALIZED (
+            SELECT coalesce(
+                     array_agg(term ORDER BY document_count, term),
+                     ARRAY[]::text[]
+                   ) AS exact_terms,
+                   coalesce(
+                     array_to_string(
+                       (array_agg(term ORDER BY document_count, term))
+                         [1:${GRAPH_LEXICAL_QUERY_TERM_LIMIT}],
+                       ' '
+                     ),
+                     ''
+                   ) AS lexical_text
+            FROM selected_query_terms
+          ), candidate_matches AS MATERIALIZED (
+          SELECT document.source_file_id, 100::real AS score
+          FROM focowiki.source_file_graph_term_documents document
+          WHERE document.knowledge_base_id = ${knowledgeBaseId}
+            AND document.source_file_id <> ${sourceFileId}
+            AND cardinality(${query.explicitReferences}::text[]) > 0
+            AND document.explicit_references && ${query.explicitReferences}
+
+          UNION ALL
+
+          SELECT document.source_file_id, 20::real AS score
+          FROM focowiki.source_file_graph_term_documents document
+          CROSS JOIN bounded_query query
+          WHERE document.knowledge_base_id = ${knowledgeBaseId}
+            AND document.source_file_id <> ${sourceFileId}
+            AND cardinality(${query.phraseTerms}::text[]) > 0
+            AND document.phrase_terms && ${query.phraseTerms}
+            AND cardinality(query.exact_terms) > 0
+            AND document.exact_terms && query.exact_terms
+
+          UNION ALL
+
+          SELECT document.source_file_id, 10::real AS score
+          FROM focowiki.source_file_graph_term_documents document
+          CROSS JOIN bounded_query query
+          WHERE document.knowledge_base_id = ${knowledgeBaseId}
+            AND document.source_file_id <> ${sourceFileId}
+            AND cardinality(query.exact_terms) > 0
+            AND document.exact_terms && query.exact_terms
+
+          UNION ALL
+
+          SELECT document.source_file_id,
+                 ts_rank_cd(
+                   document.lexical_vector,
+                   websearch_to_tsquery('simple', query.lexical_text)
+                 ) AS score
+          FROM focowiki.source_file_graph_term_documents document
+          CROSS JOIN bounded_query query
+          WHERE document.knowledge_base_id = ${knowledgeBaseId}
+            AND document.source_file_id <> ${sourceFileId}
+            AND query.lexical_text <> ''
+            AND document.lexical_vector @@ websearch_to_tsquery('simple', query.lexical_text)
+        ), candidate_documents AS (
+          SELECT candidate.source_file_id, sum(candidate.score) AS candidate_score
+          FROM candidate_matches candidate
+          GROUP BY candidate.source_file_id
+          ORDER BY candidate_score DESC, candidate.source_file_id ASC
+          LIMIT ${Math.max(1, Math.min(1_000, limit))}
+        )
+        SELECT node.knowledge_base_id, node.source_file_id, node.path, node.title, node.type,
+               node.description, node.summary, node.subjects_json, node.tags_json,
+               node.entities_json, node.explicit_references_json, node.relationship_hints_json,
+               node.headings_json, node.keywords_json, node.language, node.profile_json,
+               node.metadata_json, node.updated_at, candidate.candidate_score
+        FROM candidate_documents candidate
+        JOIN focowiki.source_file_graph_nodes node
+          ON node.knowledge_base_id = ${knowledgeBaseId}
+         AND node.source_file_id = candidate.source_file_id
+        JOIN focowiki.source_files source
+          ON source.knowledge_base_id = node.knowledge_base_id
+         AND source.id = node.source_file_id
+        WHERE source.deleted_at IS NULL AND source.deletion_intent_id IS NULL
+          ORDER BY candidate.candidate_score DESC, node.source_file_id ASC
+        `;
+      });
       return rows.map(mapNode);
     },
     async getGraphSummary({ knowledgeBaseId, sourceFileId, limit }) {
@@ -398,13 +354,16 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       }
       return closures;
     },
-    refreshGraphSummariesForSourceFiles,
     async deleteGraphForSourceFile({ knowledgeBaseId, sourceFileId }) {
       await sql.begin(async (transaction) => {
         await transaction`
           DELETE FROM focowiki.source_file_graph_edges
           WHERE knowledge_base_id = ${knowledgeBaseId}
             AND (from_source_file_id = ${sourceFileId} OR to_source_file_id = ${sourceFileId})
+        `;
+        await transaction`
+          DELETE FROM focowiki.source_file_graph_term_documents
+          WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ${sourceFileId}
         `;
         await transaction`
           DELETE FROM focowiki.source_file_graph_nodes
@@ -415,43 +374,187 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
   };
 }
 
-async function upsertSourceEdges(
+type GraphMutationInput = {
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  target: OkfGraphNode;
+  acceptedEdges: OkfGraphEdge[];
+  rejectedEdges: OkfGraphEdge[];
+  limit: number;
+};
+
+type GraphMutationEdgeRow = {
+  id: string;
+  from_source_file_id: string;
+  to_source_file_id: string;
+  status: "accepted" | "rejected";
+};
+
+async function applyGraphMutationSet(
+  sql: DatabaseClient,
+  input: GraphMutationInput
+): Promise<{
+  edgeCount: number;
+  affectedSourceFileIds: string[];
+  edgeIds: string[];
+  removedEdgeIds: string[];
+}> {
+  return sql.begin(async (transaction) => {
+    const removed = await transaction<GraphMutationEdgeRow[]>`
+      DELETE FROM focowiki.source_file_graph_edges
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+        AND (
+          from_source_file_id = ${input.sourceFileId}
+          OR (
+            to_source_file_id = ${input.target.fileId}
+            AND relation_type = 'direct_reference'
+            AND evidence_json ->> 'reconciliation' = 'explicit_reference'
+          )
+        )
+      RETURNING id, from_source_file_id, to_source_file_id, status
+    `;
+    const accepted = await bulkUpsertSourceEdges(
+      transaction as unknown as DatabaseClient,
+      input.knowledgeBaseId,
+      input.acceptedEdges,
+      "accepted"
+    );
+    const acceptedIdentities = new Set(input.acceptedEdges.map(edgeIdentity));
+    const rejected = await bulkUpsertSourceEdges(
+      transaction as unknown as DatabaseClient,
+      input.knowledgeBaseId,
+      input.rejectedEdges.filter((edge) => !acceptedIdentities.has(edgeIdentity(edge))),
+      "rejected"
+    );
+    const referenceTerms = buildGraphQueryTerms([input.target.path]).explicitReferences;
+    const explicit = referenceTerms.length === 0
+      ? []
+      : await transaction<GraphMutationEdgeRow[]>`
+          WITH matching_referrers AS (
+            SELECT document.source_file_id
+            FROM focowiki.source_file_graph_term_documents document
+            JOIN focowiki.source_files source
+              ON source.knowledge_base_id = document.knowledge_base_id
+             AND source.id = document.source_file_id
+            WHERE document.knowledge_base_id = ${input.knowledgeBaseId}
+              AND document.source_file_id <> ${input.target.fileId}
+              AND document.explicit_references && ${referenceTerms}
+              AND source.deleted_at IS NULL
+              AND source.deletion_intent_id IS NULL
+            ORDER BY document.source_file_id ASC
+            LIMIT ${Math.max(1, Math.min(1_000, input.limit))}
+          )
+          INSERT INTO focowiki.source_file_graph_edges (
+            id, knowledge_base_id, from_source_file_id, to_source_file_id,
+            relation_type, weight, reason, source, status, evidence_json, updated_at
+          )
+          SELECT
+            'source-graph-edge-' || md5(
+              ${input.knowledgeBaseId} || ':' || referrer.source_file_id || ':' ||
+              ${input.target.fileId} || ':direct_reference'
+            ),
+            ${input.knowledgeBaseId}, referrer.source_file_id, ${input.target.fileId},
+            'direct_reference', 0.95,
+            'The source explicitly references this file.',
+            'deterministic', 'accepted',
+            jsonb_build_object(
+              'signal', 'direct_reference',
+              'reconciliation', 'explicit_reference',
+              'targetPath', ${normalizeGraphReferencePath(input.target.path)}::text,
+              'targetTitle', ${input.target.title}::text
+            ),
+            now()
+          FROM matching_referrers referrer
+          ON CONFLICT (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type)
+          DO UPDATE SET
+            weight = EXCLUDED.weight,
+            reason = EXCLUDED.reason,
+            source = EXCLUDED.source,
+            status = EXCLUDED.status,
+            evidence_json = EXCLUDED.evidence_json,
+            updated_at = now()
+          RETURNING id, from_source_file_id, to_source_file_id, status
+        `;
+    const affectedSourceFileIds = unique([
+      input.sourceFileId,
+      ...removed.flatMap((edge) => [edge.from_source_file_id, edge.to_source_file_id]),
+      ...accepted.flatMap((edge) => [edge.from_source_file_id, edge.to_source_file_id]),
+      ...rejected.flatMap((edge) => [edge.from_source_file_id, edge.to_source_file_id]),
+      ...explicit.flatMap((edge) => [edge.from_source_file_id, edge.to_source_file_id])
+    ]);
+
+    return {
+      edgeCount: accepted.length + explicit.length,
+      affectedSourceFileIds,
+      edgeIds: unique([...accepted, ...explicit].map((edge) => edge.id)),
+      removedEdgeIds: unique(removed.map((edge) => edge.id))
+    };
+  });
+}
+
+async function bulkUpsertSourceEdges(
   sql: DatabaseClient,
   knowledgeBaseId: string,
   edges: OkfGraphEdge[],
   status: "accepted" | "rejected"
-): Promise<string[]> {
-  const edgeIds: string[] = [];
-  for (const edge of edges) {
-    const rows = await sql<Array<{ id: string }>>`
+): Promise<GraphMutationEdgeRow[]> {
+  if (edges.length === 0) return [];
+  const rows = edges.map((edge) => ({
+    id: `source-graph-edge-${randomUUID()}`,
+    fromFileId: edge.fromFileId,
+    toFileId: edge.toFileId,
+    relationType: edge.relationType,
+    weight: Math.max(0, Math.min(1, edge.weight)),
+    reason: edge.reason,
+    source: edge.source,
+    evidence: normalizeEvidence(edge.evidence)
+  }));
+
+  return sql<GraphMutationEdgeRow[]>`
+      WITH input_edges AS (
+        SELECT edge.*
+        FROM jsonb_to_recordset(${sql.json(rows as never)}) AS edge(
+          "id" text,
+          "fromFileId" text,
+          "toFileId" text,
+          "relationType" text,
+          "weight" double precision,
+          "reason" text,
+          "source" text,
+          "evidence" jsonb
+        )
+      ), valid_edges AS (
+        SELECT edge.*
+        FROM input_edges edge
+        JOIN focowiki.source_files source
+          ON source.knowledge_base_id = ${knowledgeBaseId}
+         AND source.id = edge."fromFileId"
+         AND source.deleted_at IS NULL
+         AND source.deletion_intent_id IS NULL
+        JOIN focowiki.source_files target
+          ON target.knowledge_base_id = ${knowledgeBaseId}
+         AND target.id = edge."toFileId"
+         AND target.deleted_at IS NULL
+         AND target.deletion_intent_id IS NULL
+      )
       INSERT INTO focowiki.source_file_graph_edges (
         id, knowledge_base_id, from_source_file_id, to_source_file_id,
         relation_type, weight, reason, source, status, evidence_json, updated_at
       )
-      SELECT ${`source-graph-edge-${randomUUID()}`}, ${knowledgeBaseId},
-             ${edge.fromFileId}, ${edge.toFileId}, ${edge.relationType},
-             ${Math.max(0, Math.min(1, edge.weight))}, ${edge.reason}, ${edge.source},
-             ${status}, ${sql.json(normalizeEvidence(edge.evidence) as never)}, now()
-      WHERE EXISTS (
-        SELECT 1 FROM focowiki.source_files source
-        WHERE source.id = ${edge.fromFileId} AND source.knowledge_base_id = ${knowledgeBaseId}
-          AND source.deleted_at IS NULL AND source.deletion_intent_id IS NULL
-      ) AND EXISTS (
-        SELECT 1 FROM focowiki.source_files target
-        WHERE target.id = ${edge.toFileId} AND target.knowledge_base_id = ${knowledgeBaseId}
-          AND target.deleted_at IS NULL AND target.deletion_intent_id IS NULL
-      )
+      SELECT edge."id", ${knowledgeBaseId}, edge."fromFileId", edge."toFileId",
+             edge."relationType", edge."weight", edge."reason", edge."source",
+             ${status}, edge."evidence", now()
+      FROM valid_edges edge
       ON CONFLICT (knowledge_base_id, from_source_file_id, to_source_file_id, relation_type)
       DO UPDATE SET weight = EXCLUDED.weight, reason = EXCLUDED.reason,
                     source = EXCLUDED.source, status = EXCLUDED.status,
                     evidence_json = EXCLUDED.evidence_json, updated_at = now()
-      RETURNING id
+      RETURNING id, from_source_file_id, to_source_file_id, status
     `;
-    if (rows[0]) {
-      edgeIds.push(rows[0].id);
-    }
-  }
-  return edgeIds;
+}
+
+function edgeIdentity(edge: OkfGraphEdge): string {
+  return `${edge.fromFileId}\u0000${edge.toFileId}\u0000${edge.relationType}`;
 }
 
 async function listSourceNodes(
@@ -661,19 +764,6 @@ function mapRelated(row: RelatedRow): FileGraphRelatedRecord {
   };
 }
 
-function mapGraphJob(row: GraphJobRow): FileGraphJobRecord {
-  return {
-    id: row.id,
-    knowledgeBaseId: row.knowledge_base_id,
-    sourceFileId: row.source_file_id,
-    status: row.status,
-    startedAt: row.started_at.toISOString(),
-    endedAt: row.ended_at?.toISOString() ?? null,
-    errorCode: row.error_code,
-    createdAt: row.created_at.toISOString()
-  };
-}
-
 function normalizeEvidence(value: unknown): Record<string, unknown> {
   if (Array.isArray(value)) return { items: value };
   return record(value);
@@ -702,15 +792,6 @@ function record(value: unknown): Record<string, unknown> {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
-}
-
-function requireRow<T>(row: T | undefined): T {
-  if (!row) throw new Error("Graph database mutation did not return a row");
-  return row;
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/gu, (match) => `\\${match}`);
 }
 
 function serializeIdCursor(id: string): string {

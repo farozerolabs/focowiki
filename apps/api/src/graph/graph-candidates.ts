@@ -40,7 +40,6 @@ export async function listCandidateNodes(input: {
   knowledgeBaseId: string;
   sourceFileId: string;
   candidateTerms: string[];
-  pageSize: number;
   maxCandidateNodes: number;
 }): Promise<OkfGraphNode[]> {
   const candidatesById = new Map<string, OkfGraphNode>();
@@ -71,28 +70,6 @@ export async function listCandidateNodes(input: {
       if (related.sourceFileId !== input.sourceFileId && !candidatesById.has(related.sourceFileId)) {
         candidatesById.set(related.sourceFileId, graphNodeFromRelatedRecord(related));
       }
-    }
-  }
-
-  let cursor: string | null = null;
-
-  while (candidatesById.size < input.maxCandidateNodes) {
-    const page = await input.graph.listGraphNodes({
-      knowledgeBaseId: input.knowledgeBaseId,
-      limit: input.pageSize,
-      cursor
-    });
-
-    for (const node of page.items.filter((node) => node.fileId !== input.sourceFileId)) {
-      if (candidatesById.size >= input.maxCandidateNodes) {
-        break;
-      }
-      candidatesById.set(node.fileId, node);
-    }
-    cursor = page.nextCursor;
-
-    if (!cursor) {
-      break;
     }
   }
 

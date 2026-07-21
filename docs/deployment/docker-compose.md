@@ -57,71 +57,6 @@ FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
 
-## Backup Before Upgrade
-
-Create a cold backup before pulling new images or running migrations on an existing deployment. Run the command from the deployment directory that contains `.env` and `docker-compose.yml`.
-
-```bash
-docker compose -f docker-compose.yml down
-backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
-```
-
-This archive contains the Compose file, `.env`, PostgreSQL data, Redis data, runtime secrets, and product log files for the local deployment.
-
-Back up the external S3-compatible bucket or prefix with your storage provider snapshot, replication, export, or S3-compatible copy tool. PostgreSQL and S3 backups should come from the same deployment point.
-
-Keep previous application images with the matching PostgreSQL and S3 backups until the new deployment has been verified. Rollback requires restoring the image, PostgreSQL data, Redis data, runtime secrets, and S3 prefix from the same deployment point.
-
-Check the backup file before continuing.
-
-```bash
-ls -lh "backups/focowiki-$backup_id.tar.gz"
-```
-
-The directory backup applies to deployments using the current Compose template. Older deployments that still use Docker named volumes can continue using their existing Compose file, or create a database dump before moving to directory mounts.
-
-For database-only backups, use `pg_dump`.
-
-```bash
-docker compose -f docker-compose.yml exec -T postgres \
-  sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-  > "backups/postgres-$(date +%Y%m%d-%H%M%S).dump"
-```
-
-Restore database-only backups with `pg_restore` after starting PostgreSQL.
-
-## Upgrade an Existing Deployment
-
-This release applies an additive database migration. Existing knowledge bases, source files, logical paths, active generations, generated object references, and the configured S3 prefix remain in place. Do not clear PostgreSQL, Redis, or S3, and do not re-upload source Markdown.
-
-```bash
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml down
-docker compose -f docker-compose.yml run --rm migrate
-docker compose -f docker-compose.yml up -d
-docker compose -f docker-compose.yml ps
-```
-
-After startup, the maintenance worker repairs bounded Focowiki-owned tree statistics and generated navigation in the background. The repair reuses unchanged immutable objects, does not call the model, and keeps the previous active generation readable until a repaired generation validates and activates. Historical storage-only generated objects are quarantined and reconciled under the Admin maintenance settings.
-
-Verify the knowledge-base list, file preview, active file tree, search, graph overview, graph expansion, and Developer OpenAPI file reads. Admin **Settings > Maintenance** shows aggregate reconciliation status without exposing storage keys.
-
-## Run Migration Check
-
-```bash
-docker compose -f docker-compose.yml run --rm migrate
-```
-
-The migration container uses the same API image as the HTTP and Worker roles and exits after database initialization. The production template starts the API and all three Worker roles only after migration completes.
-
-The migration command initializes the database schema and default Admin settings required by the current application. Running it more than once is safe.
-
-### Rollback
-
-The migration does not change the existing active-generation pointer. If startup or verification fails before a repaired generation activates, keep the deployment stopped and restore the coordinated PostgreSQL, Redis, runtime-secret, and S3 backup together with the previous application images.
-
-If a repaired generation has already activated, the previous immutable generation remains retained under the configured generation-retention policy. A full binary rollback still uses the coordinated pre-upgrade backup because an older runtime may not understand newer schema-generation markers. Keep the backup until generated files, source rows, tree statistics, search, graph exploration, and direct file reads have been verified.
-
 ## Start Services
 
 ```bash
@@ -172,6 +107,17 @@ The source-file list exposes one lifecycle state, current stage, safe failure de
 Use **Retry processing** for a source-processing failure. Use **Retry publication** for required projection validation or generation activation failure. Publication retry keeps completed source facts and resumes the coalesced generation. A deterministic validation failure requires an explicit retry after its cause is corrected.
 
 Generated content becomes readable only after the row reaches `state=visible`. A candidate generation remains hidden until changed projections pass validation and activation succeeds. The previous active generation remains readable when a candidate fails.
+
+## Backup
+
+From the deployment directory that contains `.env` and `docker-compose.yml`, stop the services and archive the local persistent directories.
+
+```bash
+docker compose -f docker-compose.yml down
+backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis runtime-secrets logs && tar -czf "backups/focowiki-$backup_id.tar.gz" .env docker-compose.yml data runtime-secrets logs
+```
+
+Back up the external S3-compatible bucket or prefix separately with the storage provider's snapshot, replication, or export feature. PostgreSQL and S3 backups should represent the same point in time.
 
 ## Restore From Backup
 

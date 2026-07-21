@@ -25,8 +25,11 @@ Worker settings control source processing, durable dispatch, retries, retention,
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
-| Source file concurrency | Source files processed concurrently. | 2 to 4 on an 8C/32G server. |
-| Claim batch size | Source jobs claimed per polling cycle. | 10 to 50 and close to actual concurrency. |
+| Source file concurrency | Source files processed concurrently. | 8 to 16 on an 8C/32G server after measuring database and storage latency. |
+| Source object read concurrency | Source Markdown objects read concurrently by one source-worker process. | 8 to 16 and no higher than source file concurrency. |
+| Graph query concurrency | Graph-candidate database queries running concurrently in one source-worker process. | 8 to 16 and no higher than source file concurrency. |
+| Database mutation concurrency | Source-processing database mutation groups running concurrently in one source-worker process. | 4 to 8 and no higher than source file concurrency. |
+| Claim batch size | Source jobs claimed per polling cycle. | At least source file concurrency; use 32 on an 8C/32G server. |
 | Generation batch size | Source records committed in one bounded generation-input batch. | 50 to 200. |
 | Poll interval ms | Delay between queue polls. | 1000 to 3000 ms. |
 | Lock TTL seconds | Validity period for a claimed job lock. | Longer than normal processing time; commonly 900 seconds. |
@@ -60,6 +63,10 @@ Publication creates immutable generated objects, updates affected projection sha
 | Batch size | Completed source changes that make a batch immediately eligible. | 100 to 500. |
 | Interval seconds | Maximum batching wait from the generation creation time. | 120 to 600 seconds. |
 | Role concurrency | Publication jobs processed concurrently by the role. | `1` until database and S3 capacity are measured. |
+| Generation assembly concurrency | Bounded generation-input pages assembled concurrently. | 1 to 2 and no higher than role concurrency. |
+| Projection partition concurrency | Independent physical projection partitions processed concurrently. | 8 to 16 and no higher than impact concurrency. |
+| Generated object write concurrency | Immutable generated objects uploaded and verified concurrently. | 8 to 16 and no higher than projection partition concurrency. |
+| Directory materialization concurrency | Independent directory navigation outputs generated concurrently. | 4 to 8 and no higher than projection partition concurrency. |
 | Claim batch size | Publication jobs claimed per polling cycle. | 1 to 4 and no lower than role concurrency. |
 | Impact batch size | Projection impacts processed in one bounded page. | 100 to 500. |
 | Dirty file hard count | Dirty source-file count that pauses source dispatch. | 2000 to 10000. |
@@ -112,6 +119,8 @@ Maintenance settings control bounded reconciliation of Focowiki-managed generate
 | Confirmation passes | Completed discovery passes required before deletion eligibility. | `2` or more. |
 | Maximum attempts | Deletion attempts retained for one candidate. | `5`. |
 | Retry delay ms | Delay after a transient reconciliation failure. | `30000` to `300000` ms. |
+| Migration backfill concurrency | Bounded source and projection pages processed concurrently during compatible optimization migration. | 1 to 2. |
+| Projection compaction concurrency | Independent projection partitions compacted concurrently. | 1 to 2. |
 
 The status section reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
 

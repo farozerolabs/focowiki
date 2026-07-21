@@ -88,6 +88,10 @@ export type StorageAdapter = {
   purgePrefix?: (prefix: string) => Promise<{ deleted: number; remaining: number }>;
   countPrefix?: (prefix: string) => Promise<number>;
   getObjectBody?: (key: string) => Promise<BodyInit | null>;
+  getObjectBytes?: (
+    key: string,
+    options?: { maxBytes?: number }
+  ) => Promise<Uint8Array | null>;
   getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
 };
 
@@ -452,6 +456,24 @@ export class S3StorageAdapter implements StorageAdapter {
     }
   }
 
+  public async getObjectBytes(
+    key: string,
+    options: { maxBytes?: number } = {}
+  ): Promise<Uint8Array | null> {
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: key
+        })
+      );
+      return await responseBodyToBytes(response.Body, options.maxBytes, key);
+    } catch (error) {
+      if (error instanceof NoSuchKey || isNoSuchKeyError(error)) return null;
+      throw error;
+    }
+  }
+
   public async getObjectBody(key: string): Promise<BodyInit | null> {
     try {
       const response = await this.client.send(
@@ -613,6 +635,52 @@ async function responseBodyToString(body: unknown): Promise<string> {
   }
 
   throw new TypeError("Unsupported S3 response body");
+}
+
+async function responseBodyToBytes(
+  body: unknown,
+  maxBytes: number | undefined,
+  key: string
+): Promise<Uint8Array> {
+  if (!body) return new Uint8Array();
+  if (typeof body === "string") {
+    return assertByteLimit(new TextEncoder().encode(body), maxBytes, key);
+  }
+  if (body instanceof Uint8Array) {
+    return assertByteLimit(body, maxBytes, key);
+  }
+  const streamBody = body as {
+    transformToByteArray?: () => Promise<Uint8Array>;
+    [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array | string>;
+  };
+  if (typeof streamBody.transformToByteArray === "function") {
+    return assertByteLimit(await streamBody.transformToByteArray(), maxBytes, key);
+  }
+  if (typeof streamBody[Symbol.asyncIterator] === "function") {
+    const chunks: Uint8Array[] = [];
+    let sizeBytes = 0;
+    for await (const chunk of streamBody as AsyncIterable<Uint8Array | string>) {
+      const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+      sizeBytes += bytes.byteLength;
+      if (maxBytes !== undefined && sizeBytes > maxBytes) {
+        throw new StorageObjectTooLargeError({ key, sizeBytes, maxBytes });
+      }
+      chunks.push(bytes);
+    }
+    return concatUint8Arrays(chunks);
+  }
+  throw new TypeError("Unsupported S3 response body");
+}
+
+function assertByteLimit(
+  bytes: Uint8Array,
+  maxBytes: number | undefined,
+  key: string
+): Uint8Array {
+  if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+    throw new StorageObjectTooLargeError({ key, sizeBytes: bytes.byteLength, maxBytes });
+  }
+  return bytes;
 }
 
 function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {

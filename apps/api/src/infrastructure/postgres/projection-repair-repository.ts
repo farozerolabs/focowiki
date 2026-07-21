@@ -129,7 +129,7 @@ export function createPostgresProjectionRepairRepository(
               format_version, generation_kind, frozen_at, created_at, updated_at
             ) VALUES (
               ${targetGenerationId}, ${selected.knowledge_base_id}, ${activeGenerationId},
-              'building', 1, 'projection_repair', ${input.claimedAt},
+              'building', 2, 'projection_repair', ${input.claimedAt},
               ${input.claimedAt}, ${input.claimedAt}
             )
           `;

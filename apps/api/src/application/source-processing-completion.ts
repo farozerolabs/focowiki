@@ -2,10 +2,7 @@ import type { PublicationGenerationRepository } from "./ports/publication-genera
 import type { SerializableJson } from "./ports/source-dispatch-repository.js";
 import type { SourceRevisionContextRepository } from "./ports/source-revision-context-repository.js";
 import { createChangeFactIdentity } from "../domain/generation.js";
-import {
-  planPublicationImpacts,
-  type ImpactPlannerConfig
-} from "../publication/impact-planner.js";
+import type { ImpactPlannerConfig } from "../publication/impact-planner.js";
 
 export type SourceProcessingCompletion = {
   assertCurrent: (input: {
@@ -54,17 +51,6 @@ export function createSourceProcessingCompletion(input: {
         previousPath: current.previousRelativePath,
         path: current.relativePath
       });
-      const impacts = planPublicationImpacts({
-        changeFactId,
-        kind,
-        sourceFileId: current.sourceFileId,
-        previousPath: current.previousRelativePath,
-        path: current.relativePath,
-        graphNeighborSourceFileIds: request.graphNeighborSourceFileIds,
-        graphEdgeIds: request.graphEdgeIds,
-        removedGraphEdgeIds: request.removedGraphEdgeIds,
-        config: input.impactPlanner
-      });
       await input.generations.commitSourceCompletion({
         knowledgeBaseId: current.knowledgeBaseId,
         sourceFileId: current.sourceFileId,
@@ -75,7 +61,12 @@ export function createSourceProcessingCompletion(input: {
         resourceRevision: current.resourceRevision,
         operationId: current.operationId,
         changeFactId,
-        impacts,
+        planningContext: {
+          graphNeighborSourceFileIds: request.graphNeighborSourceFileIds,
+          graphEdgeIds: request.graphEdgeIds,
+          removedGraphEdgeIds: request.removedGraphEdgeIds,
+          impactPlanner: input.impactPlanner
+        },
         publicationSettingsSnapshot:
           request.publicationSettingsSnapshot ?? input.publicationSettingsSnapshot,
         publicationMaxAttempts:

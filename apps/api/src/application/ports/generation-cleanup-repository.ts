@@ -24,6 +24,11 @@ export type CleanupCheckpoint = {
 };
 
 export type GenerationCleanupRepository = {
+  supersedeTargetWork: (input: {
+    jobId: string;
+    target: CleanupTarget;
+    supersededAt: string;
+  }) => Promise<void>;
   getCheckpoint: (jobId: string) => Promise<CleanupCheckpoint | null>;
   saveCheckpoint: (input: {
     jobId: string;

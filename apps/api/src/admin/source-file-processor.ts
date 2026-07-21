@@ -23,8 +23,9 @@ import { processSourceFileGraphStage } from "./source-file-graph-stage.js";
 import { processSourceFileMetadataStage } from "./source-file-metadata-stage.js";
 import { processSourceFileModelStage } from "./source-file-model-stage.js";
 import { readSourceFileContent } from "./source-file-storage-stage.js";
-import { sourceFileStageMessageKey } from "./source-file-processor-support.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
+import type { ResourceBudget } from "../runtime/resource-budget.js";
+import { createSourceFileStageRecorder } from "./source-file-stage-recorder.js";
 
 export type SourceFileQueueProcessor = {
   processFile: (input: SourceFileProcessInput) => Promise<SourceFileRecord>;
@@ -57,7 +58,12 @@ export function createSourceFileQueueProcessor(
   storage: StorageAdapter,
   redis: RedisCoordinator,
   completion: SourceProcessingCompletion,
-  modelAssistance: ModelAssistanceOptions | null = null
+  modelAssistance: ModelAssistanceOptions | null = null,
+  resourceBudgets?: {
+    sourceObjectRead: ResourceBudget;
+    graphQuery: ResourceBudget;
+    databaseMutation: ResourceBudget;
+  }
 ): SourceFileQueueProcessor | null {
   const files = repositories.files;
 
@@ -105,33 +111,20 @@ export function createSourceFileQueueProcessor(
         });
       };
 
-      const recordStage = async (stage: SourceFileProcessingStage, event: {
-        startedAt: string | null;
-        endedAt: string | null;
-        severity: "info" | "warning" | "error";
-      }) => {
-        await createSourceFileEvent({
-          knowledgeBaseId: input.knowledgeBaseId,
-          sourceFileId: input.sourceFileId,
-          stageKey: stage,
-          messageKey: sourceFileStageMessageKey(stage),
-          startedAt: event.startedAt,
-          endedAt: event.endedAt,
-          severity: event.severity
-        });
-        await redis.recordSourceFileEvent(
+      const recordStage = createSourceFileStageRecorder({
+        knowledgeBaseId: input.knowledgeBaseId,
+        sourceFileId: input.sourceFileId,
+        ttlSeconds: input.cursorTtlSeconds,
+        createEvent: createSourceFileEvent,
+        recordRedisEvent: (value, ttlSeconds) => redis.recordSourceFileEvent(
           {
             knowledgeBaseId: input.knowledgeBaseId,
             sourceFileId: input.sourceFileId
           },
-          {
-            knowledgeBaseId: input.knowledgeBaseId,
-            stage,
-            severity: event.severity
-          },
-          input.cursorTtlSeconds
-        );
-      };
+          value,
+          ttlSeconds
+        )
+      });
 
       try {
         sourceLockAcquired = await redis.acquireSourceFileLock(
@@ -166,7 +159,10 @@ export function createSourceFileQueueProcessor(
           startedAt: uploadStartedAt,
           endedAt: null
         });
-        const content = await readSourceFileContent({ storage, source });
+        const content = await runBudgeted(
+          resourceBudgets?.sourceObjectRead,
+          () => readSourceFileContent({ storage, source })
+        );
         await recordStage(currentStage, {
           startedAt: uploadStartedAt,
           endedAt: progressClock(),
@@ -174,7 +170,6 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "metadata_resolution";
-        await assertSourceFileProcessingEligible();
         await mark({ status: "running", stage: currentStage, endedAt: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
@@ -194,7 +189,6 @@ export function createSourceFileQueueProcessor(
         });
 
         currentStage = "llm_suggestion";
-        await assertSourceFileProcessingEligible();
         await mark({ status: "running", stage: currentStage, endedAt: null });
         await recordStage(currentStage, {
           startedAt: progressClock(),
@@ -248,14 +242,20 @@ export function createSourceFileQueueProcessor(
           modelAssistance: input.graph?.modelReviewEnabled === false ? null : effectiveModelAssistance,
           progressClock,
           mark,
-          recordStage
+          recordStage,
+          ...(resourceBudgets?.graphQuery
+            ? { graphQueryBudget: resourceBudgets.graphQuery }
+            : {}),
+          ...(resourceBudgets?.databaseMutation
+            ? { databaseMutationBudget: resourceBudgets.databaseMutation }
+            : {})
         });
 
         if (!input.sourceRevisionId) {
           throw new Error("Source revision ID is required");
         }
+        const sourceRevisionId = input.sourceRevisionId;
         currentStage = "projection_generation";
-        await assertSourceFileProcessingEligible();
         const completionStartedAt = progressClock();
         await mark({ status: "running", stage: currentStage, endedAt: null });
         await recordStage(currentStage, {
@@ -264,10 +264,10 @@ export function createSourceFileQueueProcessor(
           severity: "info"
         });
         try {
-          await completion.complete({
+          await runBudgeted(resourceBudgets?.databaseMutation, () => completion.complete({
             knowledgeBaseId: input.knowledgeBaseId,
             sourceFileId: source.id,
-            sourceRevisionId: input.sourceRevisionId,
+            sourceRevisionId,
             graphNeighborSourceFileIds: graphStageResult.affectedSourceFileIds.filter(
               (sourceFileId) => sourceFileId !== source.id
             ),
@@ -276,7 +276,7 @@ export function createSourceFileQueueProcessor(
             publicationSettingsSnapshot: input.publicationSettingsSnapshot,
             publicationMaxAttempts: input.publicationMaxAttempts,
             completedAt: progressClock()
-          });
+          }));
         } catch (error) {
           if (error instanceof SourceRevisionSupersededError) {
             throw new SourceFileProcessingCancelledError();
@@ -289,7 +289,6 @@ export function createSourceFileQueueProcessor(
           endedAt: completedAt,
           severity: "info"
         });
-        await mark({ status: "completed", stage: currentStage, endedAt: completedAt });
 
         const completedSource = await getSourceFile({
           knowledgeBaseId: input.knowledgeBaseId,
@@ -352,23 +351,11 @@ export function createSourceFileQueueProcessor(
           }
           throw error;
         }
-        const currentKnowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-          input.knowledgeBaseId
-        );
-
-        if (!currentKnowledgeBase) {
-          throw new SourceFileProcessingCancelledError();
-        }
-
-        const currentSource = await getSourceFile({
-          knowledgeBaseId: input.knowledgeBaseId,
-          sourceFileId: input.sourceFileId
-        });
-
-        if (!currentSource || currentSource.deletedAt || currentSource.taskDeletedAt) {
-          throw new SourceFileProcessingCancelledError();
-        }
       }
     }
   };
+}
+
+function runBudgeted<T>(budget: ResourceBudget | undefined, operation: () => Promise<T>): Promise<T> {
+  return budget ? budget.run(operation) : operation();
 }

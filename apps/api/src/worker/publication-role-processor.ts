@@ -1,6 +1,7 @@
 import type { GenerationObjectReferenceRepository } from "../application/ports/generation-object-reference-repository.js";
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { ClaimedPublicationImpact, PublicationImpactRepository } from "../application/ports/publication-impact-repository.js";
+import type { PublicationImpactRepository } from "../application/ports/publication-impact-repository.js";
+import type { PublicationSubtaskRepository } from "../application/ports/publication-subtask-repository.js";
 import type { PublicationValidationRepository } from "../application/ports/publication-validation-repository.js";
 import {
   RoleJobFailure,
@@ -17,20 +18,17 @@ import {
   readPublicationWorkSettings,
   type PublicationWorkSettings
 } from "../publication/publication-settings-snapshot.js";
+import { createContinuousSlotScheduler } from "./continuous-slot-scheduler.js";
+import {
+  executePublicationImpactGroup,
+  groupPublicationImpacts,
+  type PublicationImpactWriter
+} from "./publication-impact-executor.js";
 
-type ImpactWriter = {
-  write: (impact: ClaimedPublicationImpact, settings: PublicationWorkSettings) => Promise<{
-    handled: boolean;
-    touchedShardCount: number;
-  }>;
-  writeBatch?: (
-    impacts: ClaimedPublicationImpact[],
-    settings: PublicationWorkSettings
-  ) => Promise<{
-    handled: boolean;
-    touchedShardCount: number;
-  }>;
-};
+type PublicationImpactProcessorRepository = Omit<
+  PublicationImpactRepository,
+  "claimPartitionBatch" | "countPartitionIncomplete"
+>;
 
 type PublicationFinalizer = {
   finalize: (input: {
@@ -39,14 +37,10 @@ type PublicationFinalizer = {
   }) => Promise<void>;
 };
 
-const GROUPED_PROJECTIONS = new Set([
-  "directory", "root", "search", "links", "manifest", "tree", "graph_node", "graph_edge",
-  "graph_reverse_neighbor", "related_files"
-]);
-
 export function createPublicationRoleProcessor(input: {
   generations: PublicationGenerationRepository;
-  impacts: PublicationImpactRepository;
+  impacts: PublicationImpactProcessorRepository;
+  subtasks?: PublicationSubtaskRepository;
   validation: PublicationValidationRepository;
   references: GenerationObjectReferenceRepository;
   immutableObjects: {
@@ -56,7 +50,7 @@ export function createPublicationRoleProcessor(input: {
       formatVersion?: number;
     }) => Promise<ImmutableObjectWriteResult>;
   };
-  writers: ImpactWriter[];
+  writers: PublicationImpactWriter[];
   finalizers: PublicationFinalizer[];
   impactLockTtlSeconds: number;
   retryDelayMs: number;
@@ -134,7 +128,32 @@ async function processPublicationJob(
   }
 
   if (generation.state !== "validating") {
-    await processImpacts({ ...input, job, generationId, workerId, signal, now, workSettings });
+    if (input.subtasks) {
+      await input.subtasks.ensureGenerationTasks({
+        knowledgeBaseId: job.knowledgeBaseId,
+        generationId,
+        settingsSnapshot: job.settingsSnapshot,
+        maxAttempts: Math.max(3, job.maxAttempts),
+        createdAt: now().toISOString()
+      });
+      const status = await input.subtasks.getGenerationStatus({
+        knowledgeBaseId: job.knowledgeBaseId,
+        generationId
+      });
+      if (status.failed > 0) {
+        throw new RoleJobFailure({
+          code: "PUBLICATION_SUBTASK_FAILED",
+          message: `${status.failed} publication partition tasks failed`,
+          retryable: false
+        });
+      }
+      if (status.remaining > 0) {
+        throw continuation(now(), input.retryDelayMs);
+      }
+      return;
+    } else {
+      await processImpacts({ ...input, job, generationId, workerId, signal, now, workSettings });
+    }
     for (const finalizer of input.finalizers) {
       await finalizer.finalize({
         knowledgeBaseId: job.knowledgeBaseId,
@@ -237,8 +256,8 @@ function isRetryableFailure(error: unknown): boolean {
 
 async function processImpacts(input: {
   generations: PublicationGenerationRepository;
-  impacts: PublicationImpactRepository;
-  writers: ImpactWriter[];
+  impacts: PublicationImpactProcessorRepository;
+  writers: PublicationImpactWriter[];
   job: RoleJobRecord;
   generationId: string;
   workerId: string;
@@ -278,179 +297,50 @@ async function processImpacts(input: {
       return;
     }
 
-    const groups = groupImpacts(claimed);
-    for (
-      let groupIndex = 0;
-      groupIndex < groups.length;
-      groupIndex += input.workSettings.impactConcurrency
-    ) {
-      const groupPage = groups.slice(
-        groupIndex,
-        groupIndex + input.workSettings.impactConcurrency
-      );
-      const results = await Promise.all(groupPage.map((group) =>
-        processImpactGroup(input, group)
-      ));
-      const interrupted = results.filter((result) => result !== null);
-      if (interrupted.length === 0) continue;
-
-      const failedAt = input.now();
-      await input.impacts.release({
-        impactIds: groups
-          .slice(groupIndex + groupPage.length)
-          .flat()
-          .map((impact) => impact.id),
-        workerId: input.workerId,
-        releasedAt: failedAt.toISOString()
-      });
-      const terminal = interrupted.find((result) =>
-        result.kind === "failure" && result.terminal
-      );
-      if (terminal) {
-        throw new RoleJobFailure({
-          code: "PROJECTION_WRITE_FAILED",
-          message: terminal.message,
-          retryable: false,
-          cause: terminal.error
+    const scheduler = createContinuousSlotScheduler({
+      concurrency: input.workSettings.impactConcurrency
+    });
+    const scheduled = await scheduler.run(
+      groupPublicationImpacts(claimed),
+      async (group) => {
+        const result = await executePublicationImpactGroup({
+          impacts: input.impacts,
+          writers: input.writers,
+          group,
+          workerId: input.workerId,
+          workSettings: input.workSettings,
+          retryDelayMs: input.retryDelayMs,
+          now: input.now
         });
-      }
-      throw new RoleJobReschedule(
-        new Date(failedAt.getTime() + input.retryDelayMs).toISOString()
-      );
+        return result.kind === "completed" ? null : result;
+      },
+      { shouldStop: (result) => result !== null }
+    );
+    const interrupted = scheduled.results.filter((result) => result !== null);
+    if (interrupted.length === 0) continue;
+
+    const failedAt = input.now();
+    await input.impacts.release({
+      impactIds: scheduled.unstarted.flat().map((impact) => impact.id),
+      workerId: input.workerId,
+      releasedAt: failedAt.toISOString()
+    });
+    const terminal = interrupted.find((result) =>
+      result.kind === "failure" && result.terminal
+    );
+    if (terminal) {
+      throw new RoleJobFailure({
+        code: "PROJECTION_WRITE_FAILED",
+        message: terminal.message,
+        retryable: false,
+        cause: terminal.error
+      });
     }
+    throw new RoleJobReschedule(
+      new Date(failedAt.getTime() + input.retryDelayMs).toISOString()
+    );
   }
   throw continuation(input.now(), input.retryDelayMs);
-}
-
-async function processImpactGroup(
-  input: Parameters<typeof processImpacts>[0],
-  group: ClaimedPublicationImpact[]
-): Promise<
-  | { kind: "failure"; error: unknown; message: string; terminal: boolean }
-  | { kind: "deferred"; error: ImmutableObjectWriteInProgressError; message: string }
-  | null
-> {
-  try {
-    const result = await dispatchImpactGroup(input.writers, group, input.workSettings);
-    for (let index = 0; index < group.length; index += 1) {
-      const impact = group[index]!;
-      await input.impacts.complete({
-        knowledgeBaseId: impact.knowledgeBaseId,
-        generationId: impact.generationId,
-        impactId: impact.id,
-        workerId: input.workerId,
-        touchedShardCount: index === 0 ? result.touchedShardCount : 0,
-        completedAt: input.now().toISOString()
-      });
-    }
-    return null;
-  } catch (error) {
-    const failedAt = input.now();
-    if (error instanceof ImmutableObjectWriteInProgressError) {
-      await input.impacts.release({
-        impactIds: group.map((impact) => impact.id),
-        workerId: input.workerId,
-        releasedAt: failedAt.toISOString()
-      });
-      return {
-        kind: "deferred",
-        error,
-        message: error.message
-      };
-    }
-    const message = error instanceof Error ? error.message : "Projection write failed";
-    const failures = await Promise.all(group.map((impact) => input.impacts.fail({
-      knowledgeBaseId: impact.knowledgeBaseId,
-      generationId: impact.generationId,
-      impactId: impact.id,
-      workerId: input.workerId,
-      code: "PROJECTION_WRITE_FAILED",
-      message,
-      retryCursor: impact.retryCursor,
-      retryAt: new Date(failedAt.getTime() + input.retryDelayMs).toISOString(),
-      failedAt: failedAt.toISOString()
-    })));
-    return {
-      kind: "failure",
-      error,
-      message,
-      terminal: failures.some((failure) => failure.terminal)
-    };
-  }
-}
-
-async function dispatchImpact(
-  writers: ImpactWriter[],
-  impact: ClaimedPublicationImpact,
-  settings: PublicationWorkSettings
-): Promise<{ touchedShardCount: number }> {
-  let result: { touchedShardCount: number } | null = null;
-  for (const writer of writers) {
-    const candidate = await writer.write(impact, settings);
-    if (!candidate.handled) continue;
-    if (result) throw new Error("Publication impact has multiple writers");
-    result = { touchedShardCount: candidate.touchedShardCount };
-  }
-  if (!result && impact.projectionKind === "cleanup" && impact.action === "validate") {
-    return { touchedShardCount: 0 };
-  }
-  if (!result) throw new Error(`Publication impact is unsupported: ${impact.projectionKind}`);
-  return result;
-}
-
-async function dispatchImpactGroup(
-  writers: ImpactWriter[],
-  impacts: ClaimedPublicationImpact[],
-  settings: PublicationWorkSettings
-): Promise<{ touchedShardCount: number }> {
-  if (impacts.length === 1) {
-    return dispatchImpact(writers, impacts[0]!, settings);
-  }
-  let result: { touchedShardCount: number } | null = null;
-  for (const writer of writers) {
-    if (!writer.writeBatch) continue;
-    const candidate = await writer.writeBatch(impacts, settings);
-    if (!candidate.handled) continue;
-    if (result) throw new Error("Publication impact batch has multiple writers");
-    result = { touchedShardCount: candidate.touchedShardCount };
-  }
-  if (!result) {
-    throw new Error("Publication impact batch is unsupported");
-  }
-  return result;
-}
-
-function groupImpacts(
-  impacts: ClaimedPublicationImpact[]
-): ClaimedPublicationImpact[][] {
-  const groups: ClaimedPublicationImpact[][] = [];
-  const byShard = new Map<string, ClaimedPublicationImpact[]>();
-  for (const impact of impacts) {
-    if (!GROUPED_PROJECTIONS.has(impact.projectionKind)) {
-      groups.push([impact]);
-      continue;
-    }
-    const key = effectiveProjectionTarget(impact);
-    const group = byShard.get(key);
-    if (group) {
-      group.push(impact);
-    } else {
-      const created = [impact];
-      byShard.set(key, created);
-      groups.push(created);
-    }
-  }
-  return groups;
-}
-
-function effectiveProjectionTarget(impact: ClaimedPublicationImpact): string {
-  if (impact.projectionKind === "graph_reverse_neighbor") {
-    return `related_files\u0000${impact.recordIdentity}`;
-  }
-  if (impact.projectionKind === "related_files") {
-    return `related_files\u0000${impact.projectionKey}`;
-  }
-  return `${impact.projectionKind}\u0000${impact.projectionKey}`;
 }
 
 function assertPublicationJob(job: RoleJobRecord): void {

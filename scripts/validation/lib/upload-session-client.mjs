@@ -58,7 +58,10 @@ export async function uploadMarkdownFilesWithSession(input) {
         }
       }
     );
-    for (const entry of page.entries?.items ?? []) {
+    await mapWithConcurrency(
+      page.entries?.items ?? [],
+      transport.contentUploadConcurrency,
+      async (entry) => {
       const file = fileByPath.get(entry.relativePath);
       if (!file) {
         throw new Error(`Upload entry has no matching local file: ${entry.relativePath}`);
@@ -72,7 +75,8 @@ export async function uploadMarkdownFilesWithSession(input) {
           rawBody: file.bytes
         }
       );
-    }
+      }
+    );
     cursor = page.entries?.nextCursor ?? null;
   } while (cursor);
 
@@ -195,4 +199,25 @@ function readPositiveInteger(value, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function mapWithConcurrency(values, requestedConcurrency, mapper) {
+  const concurrency = Number.isSafeInteger(requestedConcurrency) && requestedConcurrency > 0
+    ? Math.min(requestedConcurrency, 16)
+    : 1;
+  const results = new Array(values.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, () => worker())
+  );
+  return results;
 }

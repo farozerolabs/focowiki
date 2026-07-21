@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { ImmutableObjectRecoveryRepository } from "../src/application/ports/immutable-object-repository.js";
 import { runImmutableWriteRecoverySlice } from "../src/maintenance/immutable-write-recovery.js";
@@ -25,6 +26,29 @@ describe("immutable write recovery", () => {
       checksumSha256: reservation.checksumSha256,
       recoveryToken: expect.any(String)
     }));
+  });
+
+  it("activates a stale reservation by content when custom metadata is unavailable", async () => {
+    const body = Buffer.from("# recovery\n", "utf8");
+    const contentReservation = {
+      ...reservation,
+      checksumSha256: createHash("sha256").update(body).digest("hex"),
+      sizeBytes: body.byteLength,
+      contentType: "text/markdown; charset=utf-8"
+    };
+    const repository = createRepository([contentReservation]);
+    const storage = createStorage({
+      headObjectMetadata: vi.fn().mockResolvedValue(stored({
+        checksumSha256: contentReservation.checksumSha256,
+        sizeBytes: body.byteLength,
+        contentType: "text/markdown;charset=UTF-8",
+        metadata: {}
+      })),
+      getObjectBytes: vi.fn().mockResolvedValue(body)
+    });
+
+    await expect(runImmutableWriteRecoverySlice({ repository, storage }))
+      .resolves.toEqual({ claimed: 1, activated: 1, expired: 0, failed: 0 });
   });
 
   it("expires a stale reservation when storage confirms the object is missing", async () => {
@@ -101,9 +125,9 @@ describe("immutable write recovery", () => {
   });
 });
 
-function createRepository(): ImmutableObjectRecoveryRepository {
+function createRepository(claims = [reservation]): ImmutableObjectRecoveryRepository {
   return {
-    claimStaleWriting: vi.fn().mockResolvedValue([reservation]),
+    claimStaleWriting: vi.fn().mockResolvedValue(claims),
     activateRecovered: vi.fn().mockResolvedValue(true),
     expireMissing: vi.fn().mockResolvedValue(true),
     releaseRecoveryFailure: vi.fn(async () => true)
@@ -114,20 +138,25 @@ function createStorage(overrides: Partial<StorageAdapter> = {}) {
   return {
     headObjectMetadata: vi.fn().mockResolvedValue(null),
     ...overrides
-  } as Pick<StorageAdapter, "headObjectMetadata"> & {
+  } as Pick<StorageAdapter, "headObjectMetadata" | "getObjectBytes"> & {
     headObjectMetadata: NonNullable<StorageAdapter["headObjectMetadata"]>;
   };
 }
 
-function stored(overrides: { sizeBytes?: number } = {}) {
+function stored(overrides: {
+  checksumSha256?: string;
+  sizeBytes?: number;
+  contentType?: string;
+  metadata?: Record<string, string>;
+} = {}) {
   return {
     key: reservation.objectKey,
-    contentType: reservation.contentType,
+    contentType: overrides.contentType ?? reservation.contentType,
     sizeBytes: overrides.sizeBytes ?? reservation.sizeBytes,
     etag: "etag",
     lastModified: null,
-    metadata: {
-      "focowiki-checksum-sha256": reservation.checksumSha256,
+    metadata: overrides.metadata ?? {
+      "focowiki-checksum-sha256": overrides.checksumSha256 ?? reservation.checksumSha256,
       "focowiki-format-version": String(reservation.formatVersion)
     }
   };

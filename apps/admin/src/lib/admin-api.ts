@@ -261,6 +261,7 @@ export type ProcessingSummary = {
     processedImpactCount: number;
     totalImpactCount: number;
     touchedShardCount: number;
+    throughputPerMinute: number | null;
     oldestDirtyAt: string | null;
     queuedAt: string | null;
     startedAt: string | null;
@@ -270,10 +271,37 @@ export type ProcessingSummary = {
     safeErrorCode: string | null;
     safeErrorMessage: string | null;
   };
+  maintenanceProgress: {
+    migration: {
+      state: string;
+      phase: string;
+      attemptCount: number;
+      maxAttempts: number;
+      startedAt: string | null;
+      updatedAt: string;
+      completedAt: string | null;
+      safeErrorCode: string | null;
+      safeErrorMessage: string | null;
+    } | null;
+    compaction: {
+      active: MaintenanceCompactionProgress | null;
+      latestCompleted: MaintenanceCompactionProgress | null;
+    };
+  };
   dirtySourceFiles: {
     count: number;
     oldestDirtyAt: string | null;
   };
+};
+
+type MaintenanceCompactionProgress = {
+  state: string;
+  attemptCount: number;
+  maxAttempts: number;
+  queuedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  safeErrorCode: string | null;
 };
 
 export type KnowledgeBasePublicUrls = {
@@ -294,6 +322,9 @@ export type RateLimitSettings = {
 
 export type WorkerSettings = {
   sourceFileConcurrency: number;
+  sourceObjectReadConcurrency: number;
+  graphQueryConcurrency: number;
+  databaseMutationConcurrency: number;
   claimBatchSize: number;
   generationBatchSize: number;
   pollIntervalMs: number;
@@ -327,6 +358,10 @@ export type PublicationSettings = {
   claimBatchSize: number;
   impactBatchSize: number;
   impactConcurrency: number;
+  generationAssemblyConcurrency: number;
+  projectionPartitionConcurrency: number;
+  generatedObjectWriteConcurrency: number;
+  directoryMaterializationConcurrency: number;
   dirtyFileHardCount: number;
   dirtyFileResumeCount: number;
   dirtyAgeHardSeconds: number;
@@ -369,6 +404,8 @@ export type MaintenanceSettings = {
   confirmationPasses: number;
   maxAttempts: number;
   retryDelayMs: number;
+  migrationBackfillConcurrency: number;
+  compactionConcurrency: number;
 };
 
 export type RuntimeModelConfig = {
@@ -798,6 +835,7 @@ export type UploadSessionEntry = {
 
 export type UploadSessionTransport = {
   manifestPageSize: number;
+  contentUploadConcurrency?: number;
 };
 
 export async function createUploadSession(input: {

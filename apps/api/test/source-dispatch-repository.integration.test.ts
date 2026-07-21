@@ -3,6 +3,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { normalizeSourceRelativePath } from "../src/domain/source-path.js";
 import { createPostgresSourceDispatchRepository } from "../src/infrastructure/postgres/source-dispatch-repository.js";
+import { createPostgresRuntimePressureRepository } from "../src/infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresUploadSessionRepository } from "../src/infrastructure/postgres/upload-session-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
@@ -12,6 +13,7 @@ describeDatabase("source dispatch repository integration", () => {
   const sql = postgres(databaseUrl!, { max: 4 });
   const uploads = createPostgresUploadSessionRepository(sql);
   const dispatcher = createPostgresSourceDispatchRepository(sql);
+  const runtimePressure = createPostgresRuntimePressureRepository(sql);
   const knowledgeBaseId = "kb-source-dispatch-integration";
   const pressure = {
     hard: {
@@ -39,6 +41,7 @@ describeDatabase("source dispatch repository integration", () => {
     for (let index = 0; index < 3; index += 1) {
       await registerSource(index);
     }
+    await forcePressureReconciliation();
   });
 
   afterAll(async () => {
@@ -56,6 +59,7 @@ describeDatabase("source dispatch repository integration", () => {
       pressure
     });
     expect(first).toMatchObject({ paused: false, dispatchedCount: 2, pendingMarkerCount: 1 });
+    await expectPressureCountersToMatchFacts();
 
     const dispatchedSources = await sql<Array<{ source_file_id: string }>>`
       SELECT source_file_id
@@ -88,6 +92,31 @@ describeDatabase("source dispatch repository integration", () => {
       SET status = 'completed', completed_at = now(), updated_at = now()
       WHERE knowledge_base_id = ${knowledgeBaseId} AND role = 'source'
     `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_optimization_migrations (
+        knowledge_base_id, state, phase
+      ) VALUES (${knowledgeBaseId}, 'backfilling', 'source_terms')
+      ON CONFLICT (knowledge_base_id) DO UPDATE
+      SET state = 'backfilling', phase = 'source_terms', updated_at = now()
+    `;
+    const migrationPaused = await dispatcher.dispatchPending({
+      dispatcherId: "dispatcher-migration",
+      now: new Date().toISOString(),
+      batchSize: 10,
+      maxAttempts: 3,
+      settingsSnapshot: { sourceConcurrency: 2 },
+      pressure
+    });
+    expect(migrationPaused).toMatchObject({
+      paused: false,
+      dispatchedCount: 0,
+      pendingMarkerCount: 1
+    });
+    await sql`
+      UPDATE focowiki.knowledge_base_optimization_migrations
+      SET state = 'optimized_active', completed_at = now(), updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
     const resumed = await dispatcher.dispatchPending({
       dispatcherId: "dispatcher-c",
       now: new Date().toISOString(),
@@ -97,6 +126,7 @@ describeDatabase("source dispatch repository integration", () => {
       pressure
     });
     expect(resumed).toMatchObject({ paused: false, dispatchedCount: 1, pendingMarkerCount: 0 });
+    await expectPressureCountersToMatchFacts();
 
     const replay = await dispatcher.dispatchPending({
       dispatcherId: "dispatcher-d",
@@ -174,5 +204,24 @@ describeDatabase("source dispatch repository integration", () => {
       await transaction`DELETE FROM focowiki.source_directories WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
     });
+  }
+
+  async function forcePressureReconciliation() {
+    await sql`UPDATE focowiki.runtime_pressure_counters SET reconciled_at = NULL`;
+    await runtimePressure.reconcileIfDue({
+      now: new Date().toISOString(),
+      intervalSeconds: 60
+    });
+  }
+
+  async function expectPressureCountersToMatchFacts() {
+    const rows = await sql<Array<{ counter_value: number | string; actual_value: number | string }>>`
+      SELECT sum(counter.counter_value)::bigint AS counter_value,
+             (SELECT count(*) FROM focowiki.source_dispatch_markers
+              WHERE status = 'pending') AS actual_value
+      FROM focowiki.runtime_pressure_counter_shards counter
+      WHERE counter.counter_key = 'pending_marker_count'
+    `;
+    expect(Number(rows[0]?.counter_value)).toBe(Number(rows[0]?.actual_value));
   }
 });

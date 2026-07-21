@@ -262,8 +262,9 @@ describe("incremental publication database baseline", () => {
     const generationRepository = readNormalized(generationRepositoryPath);
     const activeReads = readNormalized(activeReadRepositoryPath);
 
-    expect(activeReads).toContain("select active_generation_id");
-    expect(activeReads).toContain("const generationid = rows[0]?.active_generation_id");
+    expect(activeReads).toContain("select knowledge_base.active_generation_id");
+    expect(activeReads).toContain("const active = rows[0]");
+    expect(activeReads).toContain("isolation level repeatable read read only");
     expect(generationRepository).toContain("select active_generation_id");
     expect(generationRepository).toContain("for update");
     expect(generationRepository).toContain("active_generation_id !== input.expectedpredecessorgenerationid");

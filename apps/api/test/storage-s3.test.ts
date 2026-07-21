@@ -49,6 +49,25 @@ describe("S3 storage adapter", () => {
     });
   });
 
+  it("reads immutable object bytes with a strict size bound", async () => {
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "GetObjectCommand") {
+        return { Body: Uint8Array.from([1, 2, 3, 4]) };
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.getObjectBytes("objects/value.bin", { maxBytes: 4 }))
+      .resolves.toEqual(Uint8Array.from([1, 2, 3, 4]));
+    await expect(storage.getObjectBytes("objects/value.bin", { maxBytes: 3 }))
+      .rejects.toBeInstanceOf(Error);
+  });
+
   it("lists bounded object metadata pages without loading the managed prefix", async () => {
     const send = vi.fn(async () => ({
       Contents: [

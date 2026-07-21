@@ -160,6 +160,34 @@ describe("immutable object writer", () => {
     expect(calls).toEqual(["reserve", "failure"]);
   });
 
+  it("activates a byte-verified object when custom metadata is unavailable", async () => {
+    const calls: string[] = [];
+    const repository = createMemoryRepository(calls);
+    const body = Buffer.from("# Provider compatible\n", "utf8");
+    const writer = createImmutableObjectWriter({
+      repository,
+      storage: {
+        keyspace: createStorageKeyspace("test"),
+        putObject: vi.fn(async () => undefined),
+        headObjectMetadata: vi.fn(async (key: string) => ({
+          key,
+          contentType: "text/markdown; charset=UTF-8",
+          sizeBytes: body.byteLength,
+          etag: null,
+          lastModified: null,
+          metadata: {}
+        })),
+        getObjectBytes: vi.fn(async () => body)
+      }
+    });
+
+    await expect(writer.write({
+      body,
+      contentType: "text/markdown; charset=utf-8"
+    })).resolves.toMatchObject({ reused: false });
+    expect(calls).toEqual(["reserve", "activate"]);
+  });
+
   it("waits for a concurrent identical reservation to become active", async () => {
     let active: ActiveImmutableObjectRecord | null = null;
     let findCalls = 0;
@@ -239,6 +267,30 @@ describe("immutable object writer", () => {
 
     await expect(writer.write({ body: "# Busy", contentType: "text/markdown" }))
       .rejects.toBeInstanceOf(ImmutableObjectWriteInProgressError);
+    expect(repository.releaseFailedWrite).not.toHaveBeenCalled();
+  });
+
+  it("defers without uploading while the same immutable object is being deleted", async () => {
+    const putObject = vi.fn();
+    const repository = {
+      find: vi.fn(async () => null),
+      findAny: vi.fn(async () => null),
+      reserve: vi.fn(async () => ({ status: "deleting", record: null })),
+      activate: vi.fn(),
+      releaseFailedWrite: vi.fn()
+    } as unknown as ImmutableObjectRepository;
+    const writer = createImmutableObjectWriter({
+      repository,
+      storage: {
+        keyspace: createStorageKeyspace("test"),
+        putObject,
+        headObjectMetadata: vi.fn()
+      }
+    });
+
+    await expect(writer.write({ body: "# Recreated", contentType: "text/markdown" }))
+      .rejects.toBeInstanceOf(ImmutableObjectWriteInProgressError);
+    expect(putObject).not.toHaveBeenCalled();
     expect(repository.releaseFailedWrite).not.toHaveBeenCalled();
   });
 

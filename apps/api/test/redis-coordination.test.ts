@@ -37,6 +37,8 @@ describe("redis coordination cleanup", () => {
     const deletedKeys: string[] = [];
     const client = createRedisClient({
       keys: [
+        "focowiki:page-cache:knowledge-bases:page-shared",
+        "focowiki:pagination-cursors:knowledge-bases:query-contract:cursor-shared",
         "focowiki:pagination-invalid:source-files:kb-test",
         "focowiki:pagination-cursors:file-tree:kb-test:generation-test:cursor-a",
         "focowiki:page-cache:active-files:kb-test:generation-test:page-a"
@@ -50,10 +52,12 @@ describe("redis coordination cleanup", () => {
       sourceFileIds: ["source-file-a"]
     });
 
-    expect(deleted).toBe(9);
+    expect(deleted).toBe(11);
     expect(deletedKeys).toEqual(
       expect.arrayContaining([
         "focowiki:knowledge-base-publication-locks:kb-test",
+        "focowiki:page-cache:knowledge-bases:page-shared",
+        "focowiki:pagination-cursors:knowledge-bases:query-contract:cursor-shared",
         "focowiki:pagination-invalid:source-files:kb-test",
         "focowiki:pagination-cursors:file-tree:kb-test:generation-test:cursor-a",
         "focowiki:page-cache:active-files:kb-test:generation-test:page-a",

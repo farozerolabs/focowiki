@@ -6,6 +6,7 @@ import {
   applyMigrations,
   assertRuntimeSchemaGeneration,
   MIGRATION_FILES,
+  preflightMigrations,
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 
@@ -15,6 +16,7 @@ const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
 const RETRY_BUDGET_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
 const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
+const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -31,6 +33,27 @@ describe("runtime schema generation guard", () => {
     expect(database.unsafeCalls).toBe(0);
   });
 
+  it("reports pending compatible migrations without mutating the database", async () => {
+    const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
+
+    await expect(preflightMigrations(database.sql)).resolves.toEqual({
+      currentGeneration: WRITE_LIVELOCK_SCHEMA_GENERATION,
+      pendingFiles: ["008_large_scale_ingestion_runtime.sql"]
+    });
+    expect(database.unsafeCalls).toBe(0);
+    expect(database.beginCalls).toBe(0);
+  });
+
+  it("allows an absent schema without querying runtime work tables", async () => {
+    const database = createGenerationDatabase("absent");
+
+    await expect(preflightMigrations(database.sql)).resolves.toEqual({
+      currentGeneration: "absent",
+      pendingFiles: [...MIGRATION_FILES]
+    });
+    expect(database.preflightCalls).toBe(0);
+  });
+
   it("initializes an absent schema exactly once and verifies its marker", async () => {
     const database = createGenerationDatabase("absent");
 
@@ -43,44 +66,52 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(6);
-    expect(database.beginCalls).toBe(6);
+    expect(database.unsafeCalls).toBe(7);
+    expect(database.beginCalls).toBe(7);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades the retry-budget generation with its pending migrations", async () => {
     const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
   });
 
   it("upgrades the continuation generation with only the pending migration", async () => {
     const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades the write-livelock generation with only the optimized migration", async () => {
+    const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
@@ -215,12 +246,49 @@ describe("runtime schema generation guard", () => {
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).toContain("publication-write-livelock-recovery-v7");
   });
+
+  it("adds the large-scale ingestion structures without replacing business data", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/008_large_scale_ingestion_runtime.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    for (const table of [
+      "source_file_graph_term_documents",
+      "knowledge_base_incremental_stats",
+      "knowledge_base_incremental_stat_shards",
+      "knowledge_base_optimization_migrations",
+      "projection_segments",
+      "generation_projection_segments",
+      "publication_subtasks",
+      "runtime_pressure_counters",
+      "runtime_pressure_counter_shards"
+    ]) {
+      expect(migration).toContain(`create table if not exists focowiki.${table}`);
+    }
+    expect(migration).toContain("large-scale-ingestion-runtime-v8");
+    expect(migration).toContain("create or replace function focowiki.apply_runtime_pressure_delta");
+    expect(migration).toContain("referencing old table as old_rows new table as new_rows");
+    expect(migration).toContain("role_jobs_source_pressure_age_idx");
+    expect(migration).toContain("early_claim_on_upstream_drain boolean default false not null");
+    expect(migration).toContain("role_jobs_kb_upstream_active_idx");
+    expect(migration).toContain("upload_sessions_kb_active_idx");
+    expect(migration).toContain("publication_change_facts_kb_unassembled_idx");
+    expect(migration).toContain("publication_change_facts_pressure_age_idx");
+    expect(migration).toContain("publication_impacts_pressure_active_idx");
+    expect(migration).toContain("source_dispatch_markers_pressure_active_idx");
+    expect(migration).toContain("source_revisions_migration_page_idx");
+    expect(migration).not.toContain("runtime_generation set generation = 'large-scale-ingestion-runtime-v8', updated_at");
+    expect(migration).not.toContain("delete from focowiki.knowledge_bases");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+  });
 });
 
 function createGenerationDatabase(initialGeneration: string | "absent" | null) {
   let generation = initialGeneration;
   let unsafeCalls = 0;
   let beginCalls = 0;
+  let preflightCalls = 0;
   const tagged = async (segments: TemplateStringsArray) => {
     const statement = segments.join(" ");
     if (statement.includes("to_regnamespace")) {
@@ -231,6 +299,21 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
     }
     if (statement.includes("FROM focowiki.runtime_generation")) {
       return generation && generation !== "absent" ? [{ generation }] : [];
+    }
+    if (statement.includes("WITH counts AS")) {
+      preflightCalls += 1;
+      return [{
+        source_files: 0,
+        dispatch_markers: 0,
+        role_jobs: 0,
+        publication_impacts: 0,
+        frozen_generations: 0,
+        resource_operations: 0,
+        deletion_intents: 0,
+        upload_sessions: 0,
+        cleanup_objects: 0,
+        capped: false
+      }];
     }
     throw new Error(`Unexpected SQL in generation test: ${statement}`);
   };
@@ -254,6 +337,9 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
     },
     get beginCalls() {
       return beginCalls;
+    },
+    get preflightCalls() {
+      return preflightCalls;
     }
   };
 }

@@ -6,6 +6,86 @@ import { PublicationGenerationBusyError } from "../src/domain/publication.js";
 import { ImmutableObjectWriteInProgressError } from "../src/publication/immutable-object-writer.js";
 
 describe("publication role processor", () => {
+  it("coordinates durable partition tasks without claiming projection impacts itself", async () => {
+    const claimBatch = vi.fn();
+    const ensureGenerationTasks = vi.fn().mockResolvedValue({ taskCount: 1 });
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository(),
+      impacts: {
+        claimBatch,
+        heartbeat: vi.fn(),
+        release: vi.fn(),
+        complete: vi.fn(),
+        completeBatch: vi.fn(),
+        fail: vi.fn(),
+        countIncomplete: vi.fn()
+      },
+      subtasks: {
+        ensureGenerationTasks,
+        claim: vi.fn(),
+        heartbeat: vi.fn(),
+        complete: vi.fn(),
+        reschedule: vi.fn(),
+        fail: vi.fn(),
+        getGenerationStatus: vi.fn().mockResolvedValue({
+          pending: 1,
+          running: 0,
+          failed: 0,
+          remaining: 1
+        })
+      },
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20,
+      now: () => new Date("2026-07-20T00:00:00.000Z")
+    });
+
+    await expect(processor(createJob(), new AbortController().signal))
+      .rejects.toBeInstanceOf(RoleJobReschedule);
+    expect(ensureGenerationTasks).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: "generation-1"
+    }));
+    expect(claimBatch).not.toHaveBeenCalled();
+  });
+
+  it("leaves terminal publication phases to durable subtasks", async () => {
+    const validateChangedClosure = vi.fn();
+    const activateGeneration = vi.fn();
+    const finalize = vi.fn();
+    const processor = createPublicationRoleProcessor({
+      generations: generationRepository({ activateGeneration }),
+      impacts: impactRepositoryFor([]),
+      subtasks: publicationSubtaskRepository({
+        ensureGenerationTasks: vi.fn().mockResolvedValue({ taskCount: 0 }),
+        getGenerationStatus: vi.fn().mockResolvedValue({
+          pending: 0,
+          running: 0,
+          failed: 0,
+          remaining: 0
+        })
+      }),
+      validation: { validateChangedClosure },
+      references: referenceRepository(),
+      immutableObjects: immutableWriter(),
+      writers: [],
+      finalizers: [{ finalize }],
+      impactLockTtlSeconds: 60,
+      retryDelayMs: 1_000,
+      validationIssueLimit: 20
+    });
+
+    await processor(createJob(), new AbortController().signal);
+
+    expect(finalize).not.toHaveBeenCalled();
+    expect(validateChangedClosure).not.toHaveBeenCalled();
+    expect(activateGeneration).not.toHaveBeenCalled();
+  });
+
   it("uses the immutable publication settings snapshot attached to the claimed job", async () => {
     const claimBatch = vi.fn()
       .mockResolvedValueOnce([]);
@@ -16,6 +96,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -46,7 +127,7 @@ describe("publication role processor", () => {
   it("builds, validates, and atomically activates one generation", async () => {
     const impact = createImpact();
     const activateGeneration = vi.fn().mockResolvedValue(true);
-    const complete = vi.fn().mockResolvedValue(true);
+    const completeBatch = vi.fn().mockResolvedValue(1);
     const generations = generationRepository({ activateGeneration });
     const references = referenceRepository();
     const claims = [[impact], []];
@@ -56,7 +137,8 @@ describe("publication role processor", () => {
         claimBatch: vi.fn(async () => claims.shift() ?? []),
         heartbeat: vi.fn(),
         release: vi.fn(),
-        complete,
+        complete: vi.fn(),
+        completeBatch,
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -73,9 +155,8 @@ describe("publication role processor", () => {
 
     await processor(createJob(), new AbortController().signal);
 
-    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
-      impactId: impact.id,
-      touchedShardCount: 1
+    expect(completeBatch).toHaveBeenCalledWith(expect.objectContaining({
+      completions: [{ impactId: impact.id, touchedShardCount: 1 }]
     }));
     expect(activateGeneration).toHaveBeenCalledWith(expect.objectContaining({
       generationId: "generation-1",
@@ -105,6 +186,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn().mockResolvedValue({ terminal: true, attemptCount: 3, maxAttempts: 3 }),
         countIncomplete: vi.fn()
       },
@@ -135,6 +217,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn().mockResolvedValue({ terminal: false, attemptCount: 1, maxAttempts: 3 }),
         countIncomplete: vi.fn()
       },
@@ -165,6 +248,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 1, running: 0, failed: 0 })
       },
@@ -366,6 +450,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -406,7 +491,7 @@ describe("publication role processor", () => {
     });
     const write = vi.fn().mockResolvedValue({ handled: false, touchedShardCount: 0 });
     const writeBatch = vi.fn().mockResolvedValue({ handled: true, touchedShardCount: 1 });
-    const complete = vi.fn().mockResolvedValue(true);
+    const completeBatch = vi.fn().mockResolvedValue(2);
     const processor = createPublicationRoleProcessor({
       generations: generationRepository(),
       impacts: {
@@ -415,7 +500,8 @@ describe("publication role processor", () => {
           .mockResolvedValueOnce([]),
         heartbeat: vi.fn(),
         release: vi.fn(),
-        complete,
+        complete: vi.fn(),
+        completeBatch,
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -439,8 +525,11 @@ describe("publication role processor", () => {
       directoryIndexMaxBytes: 65_536
     });
     expect(write).not.toHaveBeenCalled();
-    expect(complete).toHaveBeenCalledTimes(2);
-    expect(complete.mock.calls.map((call) => call[0].touchedShardCount)).toEqual([1, 0]);
+    expect(completeBatch).toHaveBeenCalledTimes(1);
+    expect(completeBatch.mock.calls[0]![0].completions).toEqual([
+      { impactId: first.id, touchedShardCount: 1 },
+      { impactId: second.id, touchedShardCount: 0 }
+    ]);
   });
 
   it("groups repeated root impacts by their effective root path", async () => {
@@ -582,6 +671,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn().mockResolvedValue(true),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -625,6 +715,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn().mockResolvedValue(true),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -665,6 +756,7 @@ describe("publication role processor", () => {
         heartbeat: vi.fn(),
         release: vi.fn(),
         complete: vi.fn(),
+        completeBatch: vi.fn().mockResolvedValue(1),
         fail: vi.fn(),
         countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
       },
@@ -759,9 +851,23 @@ function impactRepositoryFor(firstBatch: ClaimedPublicationImpact[]) {
     heartbeat: vi.fn(),
     release: vi.fn().mockResolvedValue(0),
     complete: vi.fn().mockResolvedValue(true),
+    completeBatch: vi.fn().mockResolvedValue(firstBatch.length),
     fail: vi.fn(),
     countIncomplete: vi.fn().mockResolvedValue({ pending: 0, running: 0, failed: 0 })
   };
+}
+
+function publicationSubtaskRepository(overrides: Record<string, unknown> = {}) {
+  return {
+    ensureGenerationTasks: vi.fn(),
+    claim: vi.fn(),
+    heartbeat: vi.fn(),
+    complete: vi.fn(),
+    reschedule: vi.fn(),
+    fail: vi.fn(),
+    getGenerationStatus: vi.fn(),
+    ...overrides
+  } as any;
 }
 
 function generationRepository(overrides: Record<string, unknown> = {}) {

@@ -2,11 +2,11 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import { readPageResponseCache, writePageResponseCache } from "../page-response-cache.js";
 import {
-  createPageResponseCacheId,
-  readPageResponseCache,
-  writePageResponseCache
-} from "../page-response-cache.js";
+  createActiveReadCacheScope,
+  createActiveReadPageCacheId
+} from "../active-read-cache-scope.js";
 import { readTreePageLimit } from "./pagination.js";
 import { readFileTreeSearchQuery } from "./file-tree-search-filters.js";
 import { createFileTreeSearchCursorScope } from "./file-tree-search-signature.js";
@@ -76,16 +76,17 @@ export function registerAdminFileTreeSearchRoutes(
           if (storedCursor && storedCursor.generationId !== scope.generationId) {
             return { invalidCursor: true as const };
           }
-          const cacheScope = createFileTreeSearchCursorScope({
+          const cacheScope = createActiveReadCacheScope({
+            authorizationScope: "admin",
+            operation: "tree-search",
             knowledgeBaseId: knowledgeBase.id,
             generationId: scope.generationId,
-            query: searchQuery.query,
-            limit
+            filters: { query: searchQuery.query }
           });
-          const cacheId = createPageResponseCacheId({
+          const cacheId = createActiveReadPageCacheId({
             cursorToken,
             limit,
-            extra: searchQuery.query
+            input: { query: searchQuery.query }
           });
           const cached = await readPageResponseCache<{
             items: Array<{

@@ -26,6 +26,11 @@ export function createHardDeleteJobProcessor(input: {
 
   return async (job: RoleJobRecord): Promise<void> => {
     const target = parseCleanupTarget(job);
+    await input.cleanup.supersedeTargetWork({
+      jobId: job.id,
+      target,
+      supersededAt: now().toISOString()
+    });
     const ready = await input.cleanup.isReady({ jobId: job.id, target });
     if (!ready) {
       throw continuation(now(), input.settings.continuationDelayMs);

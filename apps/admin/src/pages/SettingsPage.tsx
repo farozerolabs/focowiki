@@ -79,6 +79,9 @@ const rateLimitGroups = [
 
 const workerNumberFields = [
   "sourceFileConcurrency",
+  "sourceObjectReadConcurrency",
+  "graphQueryConcurrency",
+  "databaseMutationConcurrency",
   "claimBatchSize",
   "generationBatchSize",
   "pollIntervalMs",
@@ -114,6 +117,10 @@ const publicationFields = [
   "claimBatchSize",
   "impactBatchSize",
   "impactConcurrency",
+  "generationAssemblyConcurrency",
+  "projectionPartitionConcurrency",
+  "generatedObjectWriteConcurrency",
+  "directoryMaterializationConcurrency",
   "dirtyFileHardCount",
   "dirtyFileResumeCount",
   "dirtyAgeHardSeconds",
@@ -159,7 +166,9 @@ const maintenanceNumberFields = [
   "quarantineGracePeriodSeconds",
   "confirmationPasses",
   "maxAttempts",
-  "retryDelayMs"
+  "retryDelayMs",
+  "migrationBackfillConcurrency",
+  "compactionConcurrency"
 ] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
@@ -1292,18 +1301,42 @@ function buildRateLimitGroup(
 function buildWorkerSettings(input: EditableWorkerSettings): WorkerSettings | null {
   const settings = buildNumberRecord(input, workerNumberFields);
 
-  return settings
-    ? ({
-        ...settings,
-        hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled
-      } as WorkerSettings)
-    : null;
+  if (
+    !settings
+    || settings.sourceObjectReadConcurrency > settings.sourceFileConcurrency
+    || settings.graphQueryConcurrency > settings.sourceFileConcurrency
+    || settings.databaseMutationConcurrency > settings.sourceFileConcurrency
+    || settings.sourceObjectReadConcurrency > 32
+    || settings.graphQueryConcurrency > 32
+    || settings.databaseMutationConcurrency > 32
+  ) {
+    return null;
+  }
+
+  return {
+    ...settings,
+    hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled
+  } as WorkerSettings;
 }
 
 function buildPublicationSettings(input: EditablePublicationSettings): PublicationSettings | null {
   const settings = buildNumberRecord(input, publicationFields);
 
-  return settings ? { mode: input.mode, ...(settings as Record<PublicationField, number>) } : null;
+  if (
+    !settings
+    || settings.generationAssemblyConcurrency > settings.roleConcurrency
+    || settings.projectionPartitionConcurrency > settings.impactConcurrency
+    || settings.generatedObjectWriteConcurrency > settings.projectionPartitionConcurrency
+    || settings.directoryMaterializationConcurrency > settings.projectionPartitionConcurrency
+    || settings.generationAssemblyConcurrency > 32
+    || settings.projectionPartitionConcurrency > 32
+    || settings.generatedObjectWriteConcurrency > 32
+    || settings.directoryMaterializationConcurrency > 32
+  ) {
+    return null;
+  }
+
+  return { mode: input.mode, ...(settings as Record<PublicationField, number>) };
 }
 
 function buildGraphSettings(input: EditableGraphSettings): GraphSettings | null {
@@ -1340,7 +1373,9 @@ function buildMaintenanceSettings(
   if (
     settings.scanBatchSize > 1_000 ||
     settings.deletionBatchSize > 1_000 ||
-    settings.confirmationPasses < 2
+    settings.confirmationPasses < 2 ||
+    settings.migrationBackfillConcurrency > 16 ||
+    settings.compactionConcurrency > 16
   ) {
     return null;
   }

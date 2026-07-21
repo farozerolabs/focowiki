@@ -45,6 +45,9 @@ describe("runtime settings service", () => {
     expect(snapshot).not.toHaveProperty("uploadGeneration");
     expect(snapshot.worker).toMatchObject({
       sourceFileConcurrency: 2,
+      sourceObjectReadConcurrency: 2,
+      graphQueryConcurrency: 2,
+      databaseMutationConcurrency: 2,
       generationBatchSize: 50,
       sourceQueueHardDepth: 5_000,
       sourceQueueResumeDepth: 3_000,
@@ -56,6 +59,10 @@ describe("runtime settings service", () => {
       claimBatchSize: 1,
       impactBatchSize: 100,
       impactConcurrency: 8,
+      generationAssemblyConcurrency: 1,
+      projectionPartitionConcurrency: 8,
+      generatedObjectWriteConcurrency: 8,
+      directoryMaterializationConcurrency: 4,
       dirtyFileHardCount: 2_000,
       dirtyFileResumeCount: 1_000,
       dirtyAgeHardSeconds: 900,
@@ -72,9 +79,71 @@ describe("runtime settings service", () => {
       quarantineGracePeriodSeconds: 86_400,
       confirmationPasses: 2,
       maxAttempts: 5,
-      retryDelayMs: 30_000
+      retryDelayMs: 30_000,
+      migrationBackfillConcurrency: 2,
+      compactionConcurrency: 1
     });
     expect(snapshot.activeModel).toBeNull();
+  });
+
+  it("adds resource budget defaults to saved setting documents without rewriting history", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const config = createConfig({ modelEnabled: false });
+    const first = createRuntimeSettingsService({
+      config,
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const defaults = await first.getSnapshot();
+    const worker = { ...defaults.worker } as Record<string, unknown>;
+    const publication = { ...defaults.publication } as Record<string, unknown>;
+    const maintenance = { ...defaults.maintenance } as Record<string, unknown>;
+    delete worker.sourceObjectReadConcurrency;
+    delete worker.graphQueryConcurrency;
+    delete worker.databaseMutationConcurrency;
+    delete publication.generationAssemblyConcurrency;
+    delete publication.projectionPartitionConcurrency;
+    delete publication.generatedObjectWriteConcurrency;
+    delete publication.directoryMaterializationConcurrency;
+    delete maintenance.migrationBackfillConcurrency;
+    delete maintenance.compactionConcurrency;
+    worker.sourceFileConcurrency = 3;
+    await repository.upsertSetting({ key: "worker", value: worker, source: "admin" });
+    await repository.upsertSetting({ key: "publication", value: publication, source: "admin" });
+    await repository.upsertSetting({ key: "maintenance", value: maintenance, source: "admin" });
+    const versions = Object.fromEntries(
+      [...repository.settings].map(([key, value]) => [key, value.version])
+    );
+
+    const second = createRuntimeSettingsService({
+      config,
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const snapshot = await second.getSnapshot();
+
+    expect(snapshot.worker).toMatchObject({
+      sourceFileConcurrency: 3,
+      sourceObjectReadConcurrency: 2,
+      graphQueryConcurrency: 2,
+      databaseMutationConcurrency: 2
+    });
+    expect(snapshot.publication).toMatchObject({
+      generationAssemblyConcurrency: 1,
+      projectionPartitionConcurrency: 8,
+      generatedObjectWriteConcurrency: 8,
+      directoryMaterializationConcurrency: 4
+    });
+    expect(snapshot.maintenance).toMatchObject({
+      migrationBackfillConcurrency: 2,
+      compactionConcurrency: 1
+    });
+    expect(Object.fromEntries(
+      [...repository.settings].map(([key, value]) => [key, value.version])
+    )).toEqual(versions);
+    expect(repository.auditLogs).toEqual([]);
   });
 
   it("audits maintenance updates and notifies other runtimes through Redis", async () => {
@@ -124,6 +193,198 @@ describe("runtime settings service", () => {
       code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
     });
     expect((await service.getSnapshot()).maintenance).toEqual(updated.maintenance);
+  });
+
+  it("rejects resource budgets that exceed their owning role or I/O bounds", async () => {
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository: new MemoryRuntimeSettingsRepository(),
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const snapshot = await service.getSnapshot();
+
+    await expect(service.updateWorker({
+      value: {
+        ...snapshot.worker,
+        sourceObjectReadConcurrency: snapshot.worker.sourceFileConcurrency + 1
+      }
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+    await expect(service.updatePublication({
+      value: {
+        ...snapshot.publication,
+        generatedObjectWriteConcurrency:
+          snapshot.publication.projectionPartitionConcurrency + 1
+      }
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+    await expect(service.updateMaintenance({
+      value: {
+        ...snapshot.maintenance,
+        compactionConcurrency: 17
+      }
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+  });
+
+  it("accepts minimum and maximum resource-budget boundaries", async () => {
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository: new MemoryRuntimeSettingsRepository(),
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    const minimum = await service.updateWorker({
+      value: {
+        ...initial.worker,
+        sourceFileConcurrency: 1,
+        sourceObjectReadConcurrency: 1,
+        graphQueryConcurrency: 1,
+        databaseMutationConcurrency: 1
+      }
+    });
+    expect(minimum.worker).toMatchObject({
+      sourceFileConcurrency: 1,
+      sourceObjectReadConcurrency: 1,
+      graphQueryConcurrency: 1,
+      databaseMutationConcurrency: 1
+    });
+
+    const maximumWorker = await service.updateWorker({
+      value: {
+        ...minimum.worker,
+        sourceFileConcurrency: 32,
+        sourceObjectReadConcurrency: 32,
+        graphQueryConcurrency: 32,
+        databaseMutationConcurrency: 32,
+        claimBatchSize: 32
+      }
+    });
+    const maximumPublication = await service.updatePublication({
+      value: {
+        ...maximumWorker.publication,
+        roleConcurrency: 32,
+        impactConcurrency: 32,
+        generationAssemblyConcurrency: 32,
+        projectionPartitionConcurrency: 32,
+        generatedObjectWriteConcurrency: 32,
+        directoryMaterializationConcurrency: 32
+      }
+    });
+    const maximumMaintenance = await service.updateMaintenance({
+      value: {
+        ...maximumPublication.maintenance,
+        migrationBackfillConcurrency: 16,
+        compactionConcurrency: 16
+      }
+    });
+
+    expect(maximumMaintenance.worker.sourceObjectReadConcurrency).toBe(32);
+    expect(maximumMaintenance.worker.databaseMutationConcurrency).toBe(32);
+    expect(maximumMaintenance.publication.projectionPartitionConcurrency).toBe(32);
+    expect(maximumMaintenance.maintenance.compactionConcurrency).toBe(16);
+  });
+
+  it("rejects source concurrency above the process budget and undersized claim batches", async () => {
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository: new MemoryRuntimeSettingsRepository(),
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    await expect(service.updateWorker({
+      value: {
+        ...initial.worker,
+        sourceFileConcurrency: 33,
+        sourceObjectReadConcurrency: 32,
+        graphQueryConcurrency: 32,
+        databaseMutationConcurrency: 32,
+        claimBatchSize: 33
+      }
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+
+    await expect(service.updateWorker({
+      value: {
+        ...initial.worker,
+        sourceFileConcurrency: 16,
+        sourceObjectReadConcurrency: 16,
+        graphQueryConcurrency: 16,
+        databaseMutationConcurrency: 16,
+        claimBatchSize: 10
+      }
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+  });
+
+  it("rejects empty and malformed setting documents without changing saved values", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    await expect(service.updateWorker({ value: {} as never })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+    await expect(service.updatePublication({
+      value: { ...initial.publication, projectionPartitionConcurrency: "eight" } as never
+    })).rejects.toMatchObject({ code: "RUNTIME_SETTINGS_VALIDATION_FAILED" });
+    await expect(service.updateMaintenance({ value: [] as never })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
+
+    expect((await service.getSnapshot()).worker).toEqual(initial.worker);
+    expect((await service.getSnapshot()).publication).toEqual(initial.publication);
+    expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
+  });
+
+  it("propagates concurrent live updates and preserves them after service restart", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const redis = createTestRedisCoordinator();
+    const config = createConfig({ modelEnabled: false });
+    const first = createRuntimeSettingsService({
+      config,
+      repository,
+      redis,
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const second = createRuntimeSettingsService({
+      config,
+      repository,
+      redis,
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await first.getSnapshot();
+    await second.getSnapshot();
+
+    await Promise.all([
+      first.updateWorker({
+        actor: "worker-admin",
+        value: { ...initial.worker, sourceFileConcurrency: 4 }
+      }),
+      second.updateMaintenance({
+        actor: "maintenance-admin",
+        value: { ...initial.maintenance, compactionConcurrency: 3 }
+      })
+    ]);
+
+    const liveSnapshot = await first.getSnapshot();
+    expect(liveSnapshot.worker.sourceFileConcurrency).toBe(4);
+    expect(liveSnapshot.maintenance.compactionConcurrency).toBe(3);
+
+    const restarted = createRuntimeSettingsService({
+      config,
+      repository,
+      redis,
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const restartedSnapshot = await restarted.getSnapshot();
+    expect(restartedSnapshot.worker.sourceFileConcurrency).toBe(4);
+    expect(restartedSnapshot.maintenance.compactionConcurrency).toBe(3);
   });
 
   it("creates a model without exposing the raw key and blocks deleting a running model", async () => {

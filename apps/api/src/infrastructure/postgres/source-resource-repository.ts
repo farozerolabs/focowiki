@@ -138,82 +138,47 @@ export function createPostgresSourceResourceRepository(
 
     async listDirectories(input) {
       const rows = await sql<DirectoryRow[]>`
-        WITH RECURSIVE visible_directories AS (
-          SELECT directory.id, directory.parent_id
+        WITH directory_page AS MATERIALIZED (
+          SELECT directory.id, directory.knowledge_base_id, directory.parent_id,
+                 directory.name, directory.relative_path, directory.depth,
+                 directory.resource_revision, directory.deletion_intent_id,
+                 directory.created_at, directory.updated_at
           FROM focowiki.source_directories directory
           WHERE directory.knowledge_base_id = ${input.knowledgeBaseId}
+            AND directory.parent_id IS NOT DISTINCT FROM ${input.parentDirectoryId}
             AND directory.deleted_at IS NULL
-        ),
-        descendants AS (
-          SELECT visible.id AS root_id, visible.id
-          FROM visible_directories visible
-          UNION ALL
-          SELECT descendants.root_id, child.id
-          FROM descendants
-          JOIN visible_directories child ON child.parent_id = descendants.id
-        ),
-        descendant_counts AS (
-          SELECT descendants.root_id, count(source.id)::int AS file_count
-          FROM descendants
-          LEFT JOIN focowiki.source_files source
-            ON source.directory_id = descendants.id
-           AND source.deleted_at IS NULL
-           AND source.deletion_intent_id IS NULL
-          GROUP BY descendants.root_id
-        ),
-        direct_counts AS (
-          SELECT source.directory_id, count(*)::int AS file_count
-          FROM focowiki.source_files source
-          WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-            AND source.deleted_at IS NULL
-            AND source.deletion_intent_id IS NULL
-          GROUP BY source.directory_id
+            AND directory.deletion_intent_id IS NULL
+            AND (${input.cursor}::text IS NULL OR directory.id > ${input.cursor})
+          ORDER BY directory.id ASC
+          LIMIT ${input.limit + 1}
         )
         SELECT directory.id, directory.knowledge_base_id, directory.parent_id,
                directory.name, directory.relative_path, directory.depth,
                directory.resource_revision,
-               COALESCE(direct.file_count, 0)::int AS direct_file_count,
-               COALESCE(total.file_count, 0)::int AS descendant_file_count,
+               COALESCE(statistics.direct_file_count, 0)::int AS direct_file_count,
+               COALESCE(statistics.descendant_file_count, 0)::int AS descendant_file_count,
                directory.deletion_intent_id, directory.created_at, directory.updated_at
-        FROM focowiki.source_directories directory
-        LEFT JOIN direct_counts direct ON direct.directory_id = directory.id
-        LEFT JOIN descendant_counts total ON total.root_id = directory.id
-        WHERE directory.knowledge_base_id = ${input.knowledgeBaseId}
-          AND directory.parent_id IS NOT DISTINCT FROM ${input.parentDirectoryId}
-          AND directory.deleted_at IS NULL
-          AND directory.deletion_intent_id IS NULL
-          AND (${input.cursor}::text IS NULL OR directory.id > ${input.cursor})
+        FROM directory_page directory
+        LEFT JOIN focowiki.source_directory_statistics statistics
+          ON statistics.knowledge_base_id = directory.knowledge_base_id
+         AND statistics.directory_id = directory.id
         ORDER BY directory.id ASC
-        LIMIT ${input.limit + 1}
       `;
       return directoryPage(rows, input.limit);
     },
 
     async getDirectory(input) {
       const rows = await sql<DirectoryRow[]>`
-        WITH RECURSIVE descendants AS (
-          SELECT directory.id
-          FROM focowiki.source_directories directory
-          WHERE directory.id = ${input.directoryId}
-            AND directory.knowledge_base_id = ${input.knowledgeBaseId}
-            AND directory.deleted_at IS NULL
-          UNION ALL
-          SELECT child.id
-          FROM descendants
-          JOIN focowiki.source_directories child ON child.parent_id = descendants.id
-          WHERE child.deleted_at IS NULL
-        )
         SELECT directory.id, directory.knowledge_base_id, directory.parent_id,
                directory.name, directory.relative_path, directory.depth,
                directory.resource_revision,
-               (SELECT count(*)::int FROM focowiki.source_files source
-                WHERE source.directory_id = directory.id AND source.deleted_at IS NULL
-                  AND source.deletion_intent_id IS NULL) AS direct_file_count,
-               (SELECT count(*)::int FROM focowiki.source_files source
-                WHERE source.directory_id IN (SELECT id FROM descendants)
-                  AND source.deleted_at IS NULL AND source.deletion_intent_id IS NULL) AS descendant_file_count,
+               COALESCE(statistics.direct_file_count, 0)::int AS direct_file_count,
+               COALESCE(statistics.descendant_file_count, 0)::int AS descendant_file_count,
                directory.deletion_intent_id, directory.created_at, directory.updated_at
         FROM focowiki.source_directories directory
+        LEFT JOIN focowiki.source_directory_statistics statistics
+          ON statistics.knowledge_base_id = directory.knowledge_base_id
+         AND statistics.directory_id = directory.id
         WHERE directory.id = ${input.directoryId}
           AND directory.knowledge_base_id = ${input.knowledgeBaseId}
           AND directory.deleted_at IS NULL

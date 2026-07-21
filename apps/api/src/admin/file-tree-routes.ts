@@ -7,11 +7,11 @@ import {
   readTreeEntryTypeFilter
 } from "../tree-entry-filters.js";
 import { readTreePageLimit } from "./pagination.js";
+import { readPageResponseCache, writePageResponseCache } from "../page-response-cache.js";
 import {
-  createPageResponseCacheId,
-  readPageResponseCache,
-  writePageResponseCache
-} from "../page-response-cache.js";
+  createActiveReadCacheScope,
+  createActiveReadPageCacheId
+} from "../active-read-cache-scope.js";
 import { toAdminActiveTreeEntry } from "./active-generation-serializers.js";
 import {
   readGenerationCursor,
@@ -87,17 +87,17 @@ export function registerAdminFileTreeRoutes(
           if (storedCursor && storedCursor.generationId !== scope.generationId) {
             return { invalidCursor: true as const };
           }
-          const cacheScope = createGeneratedTreeCursorScope({
+          const cacheScope = createActiveReadCacheScope({
+            authorizationScope: "admin",
+            operation: "tree",
             knowledgeBaseId: knowledgeBase.id,
             generationId: scope.generationId,
-            parentPath,
-            entryType,
-            scopePrefix: "file-tree"
+            filters: { parentPath, entryType }
           });
-          const cacheId = createPageResponseCacheId({
+          const cacheId = createActiveReadPageCacheId({
             cursorToken,
             limit,
-            extra: parentPath
+            input: { parentPath, entryType }
           });
           const cached = await readPageResponseCache<{
             items: ReturnType<typeof toAdminActiveTreeEntry>[];

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ImmutableObjectRecoveryRepository } from "../application/ports/immutable-object-repository.js";
-import { matchesImmutableStorageIdentity } from "../domain/immutable-object-storage-identity.js";
+import { verifyImmutableStorageObject } from "../publication/immutable-object-verifier.js";
 import type { StorageAdapter } from "../storage/s3.js";
 
 const DEFAULT_STALE_WRITE_MS = 5 * 60_000;
@@ -9,8 +9,9 @@ const DEFAULT_CONCURRENCY = 8;
 
 export async function runImmutableWriteRecoverySlice(input: {
   repository: ImmutableObjectRecoveryRepository;
-  storage: Pick<StorageAdapter, "headObjectMetadata"> & {
+  storage: {
     headObjectMetadata: NonNullable<StorageAdapter["headObjectMetadata"]>;
+    getObjectBytes?: NonNullable<StorageAdapter["getObjectBytes"]>;
   };
   now?: () => Date;
   recoveryToken?: string;
@@ -44,14 +45,16 @@ export async function runImmutableWriteRecoverySlice(input: {
         }
         return "unchanged" as const;
       }
-      if (!matchesImmutableStorageIdentity(stored, reservation)) {
-        await input.repository.releaseRecoveryFailure({
-          checksumSha256: reservation.checksumSha256,
-          formatVersion: reservation.formatVersion,
-          recoveryToken
-        });
-        return "failed" as const;
-      }
+      await verifyImmutableStorageObject({
+        objectKey: reservation.objectKey,
+        expected: reservation,
+        storage: {
+          headObjectMetadata: async () => stored,
+          ...(input.storage.getObjectBytes
+            ? { getObjectBytes: input.storage.getObjectBytes.bind(input.storage) }
+            : {})
+        }
+      });
       if (await input.repository.activateRecovered({
         ...reservation,
         recoveryToken,

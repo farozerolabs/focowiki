@@ -14,7 +14,23 @@ describe("maintenance runtime", () => {
         reconciliationScanned: 500,
         reconciliationDeleted: 4,
         reconciliationVerified: 20,
-        reconciliationFailed: 1
+        reconciliationFailed: 1,
+        migrationPhase: "source_terms",
+        migrationProcessed: 100,
+        migrationCompleted: false,
+        migrationFailed: false,
+        statisticsClaimed: true,
+        statisticsChanged: true,
+        statisticsFailed: false,
+        pressureReconciled: true,
+        compactionDiscovered: 3,
+        compactionClaimed: 2,
+        compactionCompleted: 1,
+        compactionSuperseded: 1,
+        compactionFailed: 0,
+        garbageCollectionExpired: 3,
+        garbageCollectionDeleted: 4,
+        garbageCollectionPending: true
       };
     });
 
@@ -36,7 +52,23 @@ describe("maintenance runtime", () => {
       reconciliationScanned: 500,
       reconciliationDeleted: 4,
       reconciliationVerified: 20,
-      reconciliationFailed: 1
+      reconciliationFailed: 1,
+      migrationPhase: "source_terms",
+      migrationProcessed: 100,
+      migrationCompleted: false,
+      migrationFailed: false,
+      statisticsClaimed: true,
+      statisticsChanged: true,
+      statisticsFailed: false,
+      pressureReconciled: true,
+      compactionDiscovered: 3,
+      compactionClaimed: 2,
+      compactionCompleted: 1,
+      compactionSuperseded: 1,
+      compactionFailed: 0,
+      garbageCollectionExpired: 3,
+      garbageCollectionDeleted: 4,
+      garbageCollectionPending: true
     });
     expect(JSON.stringify(debug.mock.calls)).not.toContain("objectKey");
     expect(JSON.stringify(debug.mock.calls)).not.toContain("checksum");

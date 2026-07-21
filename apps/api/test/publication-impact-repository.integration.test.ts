@@ -114,6 +114,42 @@ describeDatabase("publication impact repository integration", () => {
     });
   });
 
+  it("completes a claimed impact group and advances progress in one batch", async () => {
+    const claimed = await repository.claimBatch({
+      knowledgeBaseId,
+      generationId,
+      workerId: "publication-worker-batch",
+      limit: 3,
+      now: "2026-07-17T04:00:00.000Z",
+      staleBefore: "2026-07-17T03:55:00.000Z"
+    });
+    expect(claimed).toHaveLength(3);
+
+    expect(await repository.completeBatch({
+      knowledgeBaseId,
+      generationId,
+      workerId: "publication-worker-batch",
+      completions: claimed.map((impact, index) => ({
+        impactId: impact.id,
+        touchedShardCount: index === 0 ? 2 : 0
+      })),
+      completedAt: "2026-07-17T04:00:01.000Z"
+    })).toBe(3);
+
+    const progress = await sql<Array<{
+      processed_impact_count: string;
+      touched_shard_count: string;
+    }>>`
+      SELECT processed_impact_count, touched_shard_count
+      FROM focowiki.publication_progress
+      WHERE generation_id = ${generationId}
+    `;
+    expect(progress).toEqual([{
+      processed_impact_count: "3",
+      touched_shard_count: "2"
+    }]);
+  });
+
   it("reclaims stale work and stops retrying at the durable attempt bound", async () => {
     const first = await repository.claimBatch({
       knowledgeBaseId,

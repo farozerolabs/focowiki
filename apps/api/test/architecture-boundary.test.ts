@@ -247,7 +247,7 @@ describe("lightweight architecture boundaries", () => {
     expect(graphEntry).toContain("confirmGraphEdges");
     expect(nodeProfile).toContain("buildSourceContentProfile");
     expect(candidates).toContain("listGraphCandidates");
-    expect(candidates).toContain("listGraphNodes");
+    expect(candidates).not.toContain("listGraphNodes");
     expect(scoring).toContain("bestEdgeForCandidate");
     expect(scoring).not.toContain("requestGraphRelationshipConfirmations");
     expect(confirmation).toContain("requestGraphRelationshipConfirmations");
@@ -308,7 +308,7 @@ describe("lightweight architecture boundaries", () => {
     expect(uploadSessions).not.toContain("sql`");
     expect(directoryIndexes).not.toContain("Hono");
     expect(directoryIndexes).not.toContain("sql`");
-    expect(directoryIndexes).toContain("navigation.applyEntry");
+    expect(directoryIndexes).toContain("navigation.applyEntries");
     expect(directoryIndexes).not.toContain("entries: DirectoryIndexEntry[]");
     expect(uploadSessions).toContain("UploadSessionStoragePort");
     expect(uploadSessions).toContain("ApplicationRuntime");
@@ -497,5 +497,34 @@ describe("lightweight architecture boundaries", () => {
     expect(detailPage).toContain("document.visibilityState");
     expect(detailPage).toContain("shouldScheduleSourceFileRefresh");
     expect(detailPage).not.toContain("window.setInterval");
+  });
+
+  it("keeps active read models out of queue, assembly, compaction, and migration advancement", () => {
+    const activeReadRepository = readWorkspaceFile(
+      "apps/api/src/infrastructure/postgres/active-generation-read-repository.ts"
+    );
+    const activeTreeReadModel = readWorkspaceFile(
+      "apps/api/src/infrastructure/postgres/active-tree-read-model.ts"
+    );
+    const readPlane = `${activeReadRepository}\n${activeTreeReadModel}`;
+
+    for (const forbidden of [
+      ".claimBatch(",
+      ".claimNext(",
+      ".assemble(",
+      ".compact(",
+      "advanceMigration",
+      "enqueueRoleJob",
+      "INSERT INTO focowiki.role_jobs",
+      "UPDATE focowiki.publication_change_facts"
+    ]) {
+      expect(readPlane).not.toContain(forbidden);
+    }
+    expect(activeReadRepository).toContain(
+      'if (version.optimizationState === "optimized_active")'
+    );
+    expect(activeTreeReadModel).toContain(
+      "if (missingPaths.length > 0 && !allowCompatibilityFallback)"
+    );
   });
 });

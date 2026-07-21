@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { GenerationCleanupRepository } from "../src/application/ports/generation-cleanup-repository.js";
 import type { RoleJobRecord } from "../src/domain/role-job.js";
 import type { StorageAdapter } from "../src/storage/s3.js";
-import { createGarbageCollectionJobProcessor } from "../src/worker/garbage-collection-jobs.js";
+import {
+  createGarbageCollectionJobProcessor,
+  runGarbageCollectionSlice
+} from "../src/worker/garbage-collection-jobs.js";
 
 describe("garbage collection job processor", () => {
   it("deletes retained generation references before immutable objects", async () => {
@@ -29,7 +32,8 @@ describe("garbage collection job processor", () => {
   it("removes database identities only after storage deletion succeeds", async () => {
     const object = { checksumSha256: "a".repeat(64), formatVersion: 1, objectKey: "generated/a" };
     const cleanup = createCleanup({
-      claimUnreferencedImmutableObjects: vi.fn().mockResolvedValue({ objects: [object], nextCursor: null })
+      claimUnreferencedImmutableObjects: vi.fn().mockResolvedValue({ objects: [object], nextCursor: null }),
+      completeImmutableObjectDeletions: vi.fn().mockResolvedValue(1)
     });
     const storage = createStorage();
     const processor = createProcessor(cleanup, 10, storage);
@@ -41,6 +45,30 @@ describe("garbage collection job processor", () => {
       jobId: "gc-job",
       objects: [{ checksumSha256: "a".repeat(64), formatVersion: 1 }]
     });
+  });
+
+  it("runs bounded maintenance garbage collection without a queued role job", async () => {
+    const object = { checksumSha256: "b".repeat(64), formatVersion: 1, objectKey: "generated/b" };
+    const cleanup = createCleanup({
+      claimUnreferencedImmutableObjects: vi.fn().mockResolvedValue({ objects: [object], nextCursor: null }),
+      completeImmutableObjectDeletions: vi.fn().mockResolvedValue(1)
+    });
+    const storage = createStorage();
+
+    await expect(runGarbageCollectionSlice({
+      cleanup,
+      storage,
+      jobId: "maintenance-garbage-collection",
+      batchSize: 10,
+      retentionDays: 7,
+      versionPurgeEnabled: false,
+      now: new Date("2026-07-17T12:00:00.000Z")
+    })).resolves.toEqual({
+      expiredGenerations: 0,
+      deletedObjects: 1,
+      hasMore: false
+    });
+    expect(storage.deleteObjects).toHaveBeenCalledWith(["generated/b"]);
   });
 });
 
@@ -62,6 +90,7 @@ function createProcessor(
 
 function createCleanup(overrides: Partial<GenerationCleanupRepository> = {}): GenerationCleanupRepository {
   return {
+    supersedeTargetWork: vi.fn(),
     getCheckpoint: vi.fn(), saveCheckpoint: vi.fn(), isReady: vi.fn(),
     discoverSourceObjectKeys: vi.fn(), trackObjectKeys: vi.fn(),
     listPendingObjectKeys: vi.fn(), markObjectKeysDeleted: vi.fn(),

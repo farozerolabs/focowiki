@@ -4,7 +4,10 @@ import { buildCandidateTerms, listCandidateNodes } from "./graph-candidates.js";
 import { confirmGraphEdges } from "./graph-edge-confirmation.js";
 import { buildGraphEdges } from "./graph-edge-scoring.js";
 import { createGraphNode } from "./graph-node-profile.js";
+import { buildGraphTermDocument } from "./graph-term-document.js";
 import type { GraphModelConfirmationOptions } from "./graph-types.js";
+import { readContentProfileStringArray } from "./graph-utils.js";
+import type { ResourceBudget } from "../runtime/resource-budget.js";
 
 export type BuildSourceFileGraphInput = {
   graph: FileGraphRepository;
@@ -18,6 +21,8 @@ export type BuildSourceFileGraphInput = {
   acceptedEdgeLimit?: number;
   genericPhraseThreshold?: number;
   modelConfirmation?: GraphModelConfirmationOptions | null;
+  graphQueryBudget?: ResourceBudget;
+  databaseMutationBudget?: ResourceBudget;
 };
 
 export type BuildSourceFileGraphResult = {
@@ -39,19 +44,45 @@ export async function buildSourceFileGraph(
     body: input.body,
     suggestions: input.suggestions
   });
-  await input.graph.upsertGraphNode({
-    knowledgeBaseId: input.knowledgeBaseId,
-    node
+  const termDocument = buildGraphTermDocument({
+    sourceFileId: input.source.id,
+    sourceRevisionId: input.source.sourceRevisionId,
+    title: node.title,
+    body: input.body,
+    headings: node.headings ?? [],
+    phrases: [
+      ...readContentProfileStringArray(node, "definitions"),
+      ...readContentProfileStringArray(node, "evidencePhrases"),
+      ...readContentProfileStringArray(node, "processHints"),
+      ...readContentProfileStringArray(node, "versionHints")
+    ],
+    entities: node.entities ?? [],
+    explicitReferences: node.explicitReferences ?? [],
+    supplementalTerms: [
+      ...(node.subjects ?? []),
+      ...(node.tags ?? []),
+      ...(node.keywords ?? []),
+      ...(node.relationshipHints ?? [])
+    ]
+  });
+  await runBudgeted(input.databaseMutationBudget, async () => {
+    await input.graph.upsertGraphNode({
+      knowledgeBaseId: input.knowledgeBaseId,
+      node
+    });
+    await input.graph.upsertGraphTermDocument({
+      knowledgeBaseId: input.knowledgeBaseId,
+      document: termDocument
+    });
   });
 
-  const candidates = await listCandidateNodes({
+  const candidates = await runBudgeted(input.graphQueryBudget, () => listCandidateNodes({
     graph: input.graph,
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFileId: input.source.id,
     candidateTerms: buildCandidateTerms(node),
-    pageSize: input.pageSize,
     maxCandidateNodes: resolveMaxCandidateNodes(input)
-  });
+  }));
   const edges = buildGraphEdges({
     source: node,
     body: input.body,
@@ -68,51 +99,28 @@ export async function buildSourceFileGraph(
     modelConfirmation: input.modelConfirmation ?? null
   });
 
-  const replaced = (await input.graph.replaceGraphEdgesForSourceFile?.({
-    knowledgeBaseId: input.knowledgeBaseId,
-    sourceFileId: input.source.id
-  })) ?? { sourceFileIds: [], edgeIds: [] };
-
-  const acceptedEdgeIds = confirmation.edges.length > 0
-    ? (await input.graph.upsertGraphEdges({
+  const mutation = await runBudgeted(input.databaseMutationBudget, () =>
+    input.graph.applyGraphMutationSet({
       knowledgeBaseId: input.knowledgeBaseId,
-      edges: confirmation.edges
-    })) ?? []
-    : [];
-
-  if (confirmation.rejectedEdges.length > 0) {
-    await input.graph.upsertRejectedGraphEdges?.({
-      knowledgeBaseId: input.knowledgeBaseId,
-      edges: confirmation.rejectedEdges
-    });
-  }
-
-  const explicitReferenceReconciliation = input.graph.reconcileExplicitReferenceEdgesForTarget
-    ? await input.graph.reconcileExplicitReferenceEdgesForTarget({
-        knowledgeBaseId: input.knowledgeBaseId,
-        target: node,
-        limit: resolveMaxCandidateNodes(input)
-      })
-    : { edgeCount: 0, sourceFileIds: [], edgeIds: [] };
+      sourceFileId: input.source.id,
+      target: node,
+      acceptedEdges: confirmation.edges,
+      rejectedEdges: confirmation.rejectedEdges,
+      limit: resolveMaxCandidateNodes(input)
+    }));
 
   return {
-    edgeCount: confirmation.edges.length + explicitReferenceReconciliation.edgeCount,
+    edgeCount: mutation.edgeCount,
     rejectedEdgeCount: confirmation.rejectedEdges.length,
-    affectedSourceFileIds: Array.from(
-      new Set([
-        input.source.id,
-        ...replaced.sourceFileIds,
-        ...explicitReferenceReconciliation.sourceFileIds,
-        ...confirmation.edges.flatMap((edge) => [edge.fromFileId, edge.toFileId])
-      ])
-    ),
-    edgeIds: Array.from(new Set([
-      ...acceptedEdgeIds,
-      ...explicitReferenceReconciliation.edgeIds
-    ])),
-    removedEdgeIds: replaced.edgeIds,
+    affectedSourceFileIds: mutation.affectedSourceFileIds,
+    edgeIds: mutation.edgeIds,
+    removedEdgeIds: mutation.removedEdgeIds,
     warnings: confirmation.warnings
   };
+}
+
+function runBudgeted<T>(budget: ResourceBudget | undefined, operation: () => Promise<T>): Promise<T> {
+  return budget ? budget.run(operation) : operation();
 }
 
 function resolveMaxCandidateNodes(input: BuildSourceFileGraphInput): number {

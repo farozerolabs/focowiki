@@ -5,6 +5,7 @@ import type { RuntimeConfig } from "../config.js";
 import type { AdminRepositories } from "../db/admin-repositories.js";
 import { RoleJobFailure, type RoleJobRecord } from "../domain/role-job.js";
 import { createModelAssistanceFromRuntimeSettings } from "../runtime-settings/model-assistance.js";
+import type { ModelAssistanceGateway } from "../runtime-settings/model-assistance-gateway.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
 import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
@@ -20,6 +21,7 @@ export function createSourceRoleProcessor(input: {
   generations: Pick<PublicationGenerationRepository, "commitMutation">;
   impactPlanner: ImpactPlannerConfig;
   cleanupObjectKeys: (keys: string[]) => Promise<void>;
+  modelGateway?: ModelAssistanceGateway;
 }) {
   return async (job: RoleJobRecord): Promise<void> => {
     if (job.role === "source" && job.kind === "resource_operation") {
@@ -66,7 +68,9 @@ export function createSourceRoleProcessor(input: {
         batchSize: snapshot.worker.generationBatchSize,
         cursorTtlSeconds: input.config.pagination.cursorTtlSeconds,
         graph: snapshot.graph,
-        modelAssistance: createModelAssistanceFromRuntimeSettings(snapshot),
+        modelAssistance: input.modelGateway
+          ? input.modelGateway.resolve(snapshot)
+          : createModelAssistanceFromRuntimeSettings(snapshot),
         publicationSettingsSnapshot: {
           publication: snapshot.publication,
           graph: snapshot.graph

@@ -4,11 +4,89 @@ import type {
   GenerationCleanupRepository
 } from "../../application/ports/generation-cleanup-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
+import { purgeOptimizedSourceState } from "./optimized-source-cleanup.js";
 
 export function createPostgresGenerationCleanupRepository(
   sql: DatabaseClient
 ): GenerationCleanupRepository {
   return {
+    async supersedeTargetWork(input) {
+      if (input.target.kind !== "knowledge_base") return;
+      await sql.begin(async (transaction) => {
+        await transaction`
+          UPDATE focowiki.role_jobs
+          SET status = 'cancelled', locked_by = NULL, locked_at = NULL,
+              heartbeat_at = NULL, completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded queued work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND id <> ${input.jobId}
+            AND status IN ('queued', 'running')
+        `;
+        await transaction`
+          UPDATE focowiki.source_file_graph_jobs
+          SET status = 'failed', ended_at = ${input.supersededAt},
+              error_code = 'KNOWLEDGE_BASE_DELETED'
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND status = 'running'
+        `;
+        await transaction`
+          UPDATE focowiki.publication_change_facts
+          SET assembly_state = 'cancelled', assembly_claimed_by = NULL,
+              assembly_claimed_at = NULL
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND assembly_state IN ('pending', 'claimed')
+        `;
+        await transaction`
+          UPDATE focowiki.publication_impacts
+          SET status = 'cancelled', claimed_by = NULL, claimed_at = NULL,
+              heartbeat_at = NULL, completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded publication work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND status IN ('pending', 'running')
+        `;
+        await transaction`
+          UPDATE focowiki.publication_subtasks
+          SET state = 'cancelled', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded publication work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running', 'retry')
+        `;
+        await transaction`
+          UPDATE focowiki.publication_generations
+          SET state = 'superseded', successor_generation_id = NULL,
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('open', 'frozen', 'building', 'validating')
+        `;
+        await transaction`
+          UPDATE focowiki.projection_compaction_jobs
+          SET state = 'superseded', locked_by = NULL, lease_token = NULL,
+              lease_expires_at = NULL, completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running')
+        `;
+        await transaction`
+          UPDATE focowiki.knowledge_base_optimization_migrations
+          SET state = 'failed', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded migration work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('legacy_readable', 'backfilling', 'verifying')
+        `;
+      });
+    },
+
     async getCheckpoint(jobId) {
       const rows = await sql<Array<{
         phase: CleanupCheckpoint["phase"];
@@ -173,6 +251,17 @@ export function createPostgresGenerationCleanupRepository(
               WHERE reference.checksum_sha256 = object.checksum_sha256
                 AND reference.format_version = object.format_version
             )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.publication_generations generation
+              WHERE generation.root_manifest_checksum_sha256 = object.checksum_sha256
+                AND generation.format_version = object.format_version
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.projection_segments segment
+              WHERE segment.checksum_sha256 = object.checksum_sha256
+                AND segment.format_version = object.format_version
+                AND segment.lifecycle_state <> 'deleted'
+            )
         `;
       });
     },
@@ -197,6 +286,17 @@ export function createPostgresGenerationCleanupRepository(
               SELECT reference.checksum_sha256, reference.format_version
               FROM focowiki.generation_object_refs reference
               WHERE reference.knowledge_base_id = ${input.target.knowledgeBaseId}
+              UNION
+              SELECT segment.checksum_sha256, segment.format_version
+              FROM focowiki.projection_segments segment
+              WHERE segment.knowledge_base_id = ${input.target.knowledgeBaseId}
+                AND segment.lifecycle_state <> 'deleted'
+              UNION
+              SELECT generation.root_manifest_checksum_sha256,
+                     generation.format_version
+              FROM focowiki.publication_generations generation
+              WHERE generation.knowledge_base_id = ${input.target.knowledgeBaseId}
+                AND generation.root_manifest_checksum_sha256 IS NOT NULL
             ) reference
               ON reference.checksum_sha256 = object.checksum_sha256
              AND reference.format_version = object.format_version
@@ -230,6 +330,19 @@ export function createPostgresGenerationCleanupRepository(
                 WHERE reference.checksum_sha256 = object.checksum_sha256
                   AND reference.format_version = object.format_version
               )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.publication_generations generation
+                WHERE generation.root_manifest_checksum_sha256 = object.checksum_sha256
+                  AND generation.format_version = object.format_version
+                  AND generation.knowledge_base_id <> ${input.target.knowledgeBaseId}
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.projection_segments segment
+                WHERE segment.checksum_sha256 = object.checksum_sha256
+                  AND segment.format_version = object.format_version
+                  AND segment.lifecycle_state <> 'deleted'
+                  AND segment.knowledge_base_id <> ${input.target.knowledgeBaseId}
+              )
           `;
           await transaction`
             DELETE FROM focowiki.cleanup_object_deletions candidate
@@ -259,6 +372,34 @@ export function createPostgresGenerationCleanupRepository(
                 WHERE id = ${input.target.knowledgeBaseId} AND deleted_at IS NOT NULL
                 RETURNING id
               `;
+          if (!hasMore) {
+            await transaction`
+              DELETE FROM focowiki.immutable_objects object
+              WHERE object.lifecycle_state = 'deleting'
+                AND object.deletion_job_id = ${input.jobId}
+                AND NOT EXISTS (
+                  SELECT 1 FROM focowiki.generation_object_refs reference
+                  WHERE reference.checksum_sha256 = object.checksum_sha256
+                    AND reference.format_version = object.format_version
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM focowiki.active_object_refs reference
+                  WHERE reference.checksum_sha256 = object.checksum_sha256
+                    AND reference.format_version = object.format_version
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM focowiki.publication_generations generation
+                  WHERE generation.root_manifest_checksum_sha256 = object.checksum_sha256
+                    AND generation.format_version = object.format_version
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM focowiki.projection_segments segment
+                  WHERE segment.checksum_sha256 = object.checksum_sha256
+                    AND segment.format_version = object.format_version
+                    AND segment.lifecycle_state <> 'deleted'
+                )
+            `;
+          }
           return {
             deletedRows: deleted.length,
             hasMore
@@ -341,7 +482,8 @@ export function createPostgresGenerationCleanupRepository(
 
     async claimUnreferencedImmutableObjects(input) {
       const limit = normalizeLimit(input.limit);
-      const rows = await sql.begin(async (transaction) => transaction<Array<{
+      const rows = await sql.begin(async (transaction) => {
+        const claimed = await transaction<Array<{
           checksum_sha256: string;
           format_version: number;
           object_key: string;
@@ -351,8 +493,20 @@ export function createPostgresGenerationCleanupRepository(
             SELECT object.checksum_sha256, object.format_version,
                    object.checksum_sha256 || ':' || lpad(object.format_version::text, 10, '0') AS cursor_key
             FROM focowiki.immutable_objects object
-            WHERE object.lifecycle_state = 'active'
-              AND object.created_at < ${input.olderThan}
+            WHERE (
+                (
+                  object.lifecycle_state = 'active'
+                  AND object.created_at < ${input.olderThan}
+                )
+                OR (
+                  object.lifecycle_state = 'deleting'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM focowiki.role_jobs owner_job
+                    WHERE owner_job.id = object.deletion_job_id
+                      AND owner_job.status IN ('queued', 'running')
+                  )
+                )
+              )
               AND (${input.cursor}::text IS NULL OR
                    object.checksum_sha256 || ':' || lpad(object.format_version::text, 10, '0') > ${input.cursor})
               AND NOT EXISTS (
@@ -364,6 +518,32 @@ export function createPostgresGenerationCleanupRepository(
                 SELECT 1 FROM focowiki.active_object_refs reference
                 WHERE reference.checksum_sha256 = object.checksum_sha256
                   AND reference.format_version = object.format_version
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.publication_generations generation
+                WHERE generation.root_manifest_checksum_sha256 = object.checksum_sha256
+                  AND generation.format_version = object.format_version
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.projection_segments segment
+                WHERE segment.checksum_sha256 = object.checksum_sha256
+                  AND segment.format_version = object.format_version
+                  AND (
+                    segment.lifecycle_state IN ('writing', 'active', 'retained')
+                    OR segment.ownership_count > 0
+                    OR EXISTS (
+                      SELECT 1 FROM focowiki.active_projection_segments active
+                      WHERE active.segment_id = segment.id
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM focowiki.generation_projection_segments retained
+                      WHERE retained.segment_id = segment.id
+                    )
+                    OR (
+                      segment.lifecycle_state = 'quarantined'
+                      AND coalesce(segment.compacted_at, segment.created_at) >= ${input.olderThan}
+                    )
+                  )
               )
             ORDER BY cursor_key
             LIMIT ${limit + 1}
@@ -386,9 +566,59 @@ export function createPostgresGenerationCleanupRepository(
               WHERE reference.checksum_sha256 = object.checksum_sha256
                 AND reference.format_version = object.format_version
             )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.publication_generations generation
+              WHERE generation.root_manifest_checksum_sha256 = object.checksum_sha256
+                AND generation.format_version = object.format_version
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.projection_segments segment
+              WHERE segment.checksum_sha256 = object.checksum_sha256
+                AND segment.format_version = object.format_version
+                AND (
+                  segment.lifecycle_state IN ('writing', 'active', 'retained')
+                  OR segment.ownership_count > 0
+                  OR EXISTS (
+                    SELECT 1 FROM focowiki.active_projection_segments active
+                    WHERE active.segment_id = segment.id
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM focowiki.generation_projection_segments retained
+                    WHERE retained.segment_id = segment.id
+                  )
+                  OR (
+                    segment.lifecycle_state = 'quarantined'
+                    AND coalesce(segment.compacted_at, segment.created_at) >= ${input.olderThan}
+                  )
+                )
+            )
           RETURNING object.checksum_sha256, object.format_version, object.object_key,
                     page.cursor_key
-        `);
+        `;
+        if (claimed.length > 0) {
+          await transaction`
+            UPDATE focowiki.projection_segments segment
+            SET lifecycle_state = 'deleted'
+            FROM unnest(
+              ${claimed.map((object) => object.checksum_sha256)}::text[],
+              ${claimed.map((object) => object.format_version)}::int[]
+            ) AS claimed(checksum_sha256, format_version)
+            WHERE segment.checksum_sha256 = claimed.checksum_sha256
+              AND segment.format_version = claimed.format_version
+              AND segment.lifecycle_state = 'quarantined'
+              AND segment.ownership_count = 0
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.active_projection_segments active
+                WHERE active.segment_id = segment.id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.generation_projection_segments retained
+                WHERE retained.segment_id = segment.id
+              )
+          `;
+        }
+        return claimed;
+      });
       const page = rows.slice(0, limit);
       return {
         objects: page.map((row) => ({
@@ -420,6 +650,28 @@ export function createPostgresGenerationCleanupRepository(
                 SELECT 1 FROM focowiki.active_object_refs reference
                 WHERE reference.checksum_sha256 = candidate.checksum_sha256
                   AND reference.format_version = candidate.format_version
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.publication_generations generation
+                WHERE generation.root_manifest_checksum_sha256 = candidate.checksum_sha256
+                  AND generation.format_version = candidate.format_version
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM focowiki.projection_segments segment
+                WHERE segment.checksum_sha256 = candidate.checksum_sha256
+                  AND segment.format_version = candidate.format_version
+                  AND (
+                    segment.lifecycle_state IN ('writing', 'active', 'retained')
+                    OR segment.ownership_count > 0
+                    OR EXISTS (
+                      SELECT 1 FROM focowiki.active_projection_segments active
+                      WHERE active.segment_id = segment.id
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM focowiki.generation_projection_segments retained
+                      WHERE retained.segment_id = segment.id
+                    )
+                  )
               )
             RETURNING checksum_sha256
           `;
@@ -460,6 +712,18 @@ export function createPostgresGenerationCleanupRepository(
               SELECT 1 FROM focowiki.knowledge_bases knowledge_base
               WHERE knowledge_base.active_generation_id = candidate.id
             )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.active_projection_records record
+              WHERE record.last_changed_generation_id = candidate.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.active_object_refs reference
+              WHERE reference.last_changed_generation_id = candidate.id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM focowiki.active_projection_partition_stats statistic
+              WHERE statistic.last_changed_generation_id = candidate.id
+            )
           ORDER BY candidate.updated_at, candidate.id
           LIMIT ${normalizeLimit(input.limit)}
         )
@@ -499,14 +763,11 @@ async function purgeSourceIds(
   cleanupJobId: string
 ): Promise<void> {
   await sql.begin(async (transaction) => {
-    await transaction`DELETE FROM focowiki.source_file_graph_edges WHERE knowledge_base_id = ${knowledgeBaseId} AND (from_source_file_id = ANY(${sourceIds}) OR to_source_file_id = ANY(${sourceIds}))`;
-    await transaction`DELETE FROM focowiki.source_file_events WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.source_file_graph_jobs WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.source_file_graph_nodes WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.source_file_retry_attempts WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.model_invocations WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.source_dispatch_markers WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds})`;
-    await transaction`DELETE FROM focowiki.role_jobs WHERE knowledge_base_id = ${knowledgeBaseId} AND source_file_id = ANY(${sourceIds}) AND id <> ${cleanupJobId}`;
+    await purgeOptimizedSourceState(transaction, {
+      knowledgeBaseId,
+      sourceIds,
+      cleanupJobId
+    });
     await transaction`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId} AND id = ANY(${sourceIds})`;
   });
 }
