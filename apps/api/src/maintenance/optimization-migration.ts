@@ -16,6 +16,11 @@ export type OptimizationMigrationSliceResult = {
   errorCode: string | null;
 };
 
+type UnexpectedMigrationErrorContext = {
+  knowledgeBaseId: string;
+  phase: OptimizationMigrationClaim["phase"];
+};
+
 export async function runOptimizationMigrationSlice(input: {
   repository: OptimizationMigrationRepository;
   storage: Pick<StorageAdapter, "getObjectText" | "headObjectMetadata">;
@@ -26,6 +31,7 @@ export async function runOptimizationMigrationSlice(input: {
   leaseExpiresAt: string;
   batchSize: number;
   sourceReadConcurrency: number;
+  onUnexpectedError?: (error: unknown, context: UnexpectedMigrationErrorContext) => void;
 }): Promise<OptimizationMigrationSliceResult> {
   assertPositiveInteger(input.batchSize, "Migration batch size");
   assertPositiveInteger(input.sourceReadConcurrency, "Migration source read concurrency");
@@ -43,6 +49,16 @@ export async function runOptimizationMigrationSlice(input: {
     if (claim.phase === "object_validation") return await validateReferencedObjects(input, claim);
     return await verifyAndActivate(input, claim);
   } catch (error) {
+    if (!(error instanceof OptimizationMigrationError)) {
+      try {
+        input.onUnexpectedError?.(error, {
+          knowledgeBaseId: claim.knowledgeBaseId,
+          phase: claim.phase
+        });
+      } catch {
+        // Diagnostics must not interrupt durable failure recording.
+      }
+    }
     const failure = safeMigrationFailure(error);
     await input.repository.fail({
       knowledgeBaseId: claim.knowledgeBaseId,
@@ -185,6 +201,12 @@ async function verifyAndActivate(
   input: Parameters<typeof runOptimizationMigrationSlice>[0],
   claim: OptimizationMigrationClaim
 ): Promise<OptimizationMigrationSliceResult> {
+  const rebased = await input.repository.rebaseIfActiveGenerationChanged({
+    ...owned(input, claim),
+    updatedAt: input.now
+  });
+  if (rebased) return success(claim, 0, false);
+
   await input.repository.reconcileStats({ ...owned(input, claim), updatedAt: input.now });
   const parity = await input.repository.verifyParity(owned(input, claim));
   if (!parity.passed) {
@@ -193,11 +215,12 @@ async function verifyAndActivate(
       "Optimized projection parity validation failed"
     );
   }
-  await input.repository.activate({
+  const activation = await input.repository.activate({
     ...owned(input, claim),
     parityEvidence: parity.evidence,
     activatedAt: input.now
   });
+  if (activation === "rebased") return success(claim, 0, false);
   return { ...success(claim, 0, true), completed: true };
 }
 

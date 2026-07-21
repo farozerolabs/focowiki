@@ -5,9 +5,9 @@ import type {
   ProjectionCompactionRecord,
   ProjectionCompactionRepository
 } from "../../application/ports/projection-compaction-repository.js";
-import type { ProjectionSegment } from "../../application/ports/projection-segment-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
 import { evaluateProjectionCompaction } from "../../maintenance/projection-compaction-policy.js";
+import { registerProjectionSegmentsByIdentity } from "./projection-segment-registration.js";
 
 type PartitionRow = {
   knowledge_base_id: string;
@@ -272,30 +272,21 @@ export function createPostgresProjectionCompactionRepository(
           await markSuperseded(transaction, input.job, input.completedAt);
           return "superseded" as const;
         }
+        let compactedSegments = input.segments;
         if (input.segments.length > 0) {
+          const registered = await registerProjectionSegmentsByIdentity(
+            transaction,
+            input.segments.map((segment) => ({
+              ...segment,
+              lifecycleState: "active",
+              createdAt: input.completedAt
+            }))
+          );
+          compactedSegments = registered.map((entry) => entry.segment);
           await transaction`
-            INSERT INTO focowiki.projection_segments (
-              id, knowledge_base_id, projection_kind, logical_partition,
-              segment_kind, sequence_number, format_version, checksum_sha256,
-              object_key, logical_path, entry_count, encoded_bytes,
-              first_record_identity, last_record_identity, base_segment_id,
-              lifecycle_state, created_at
-            )
-            SELECT item.id, item.knowledge_base_id, item.projection_kind,
-                   item.logical_partition, item.segment_kind, item.sequence_number,
-                   item.format_version, item.checksum_sha256, item.object_key,
-                   item.logical_path, item.entry_count, item.encoded_bytes,
-                   item.first_record_identity, item.last_record_identity,
-                   item.base_segment_id, 'active', ${input.completedAt}
-            FROM jsonb_to_recordset(${transaction.json(input.segments.map(segmentRow) as never)}) AS item(
-              id text, knowledge_base_id text, projection_kind text,
-              logical_partition text, segment_kind text, sequence_number integer,
-              format_version integer, checksum_sha256 text, object_key text,
-              logical_path text, entry_count integer, encoded_bytes bigint,
-              first_record_identity text, last_record_identity text,
-              base_segment_id text
-            )
-            ON CONFLICT (id) DO NOTHING
+            UPDATE focowiki.projection_segments
+            SET lifecycle_state = 'active'
+            WHERE id = ANY(${compactedSegments.map((segment) => segment.id)}::text[])
           `;
         }
         await transaction`
@@ -304,7 +295,7 @@ export function createPostgresProjectionCompactionRepository(
             AND projection_kind = ${input.job.projectionKind}
             AND logical_partition = ${input.job.logicalPartition}
         `;
-        if (input.segments.length > 0) {
+        if (compactedSegments.length > 0) {
           await transaction`
             INSERT INTO focowiki.active_projection_segments (
               knowledge_base_id, projection_kind, logical_partition,
@@ -313,7 +304,7 @@ export function createPostgresProjectionCompactionRepository(
             SELECT ${input.job.knowledgeBaseId}, ${input.job.projectionKind},
                    ${input.job.logicalPartition}, item.id, item.ordinal,
                    ${input.completedAt}
-            FROM jsonb_to_recordset(${transaction.json(input.segments.map((segment, ordinal) => ({
+            FROM jsonb_to_recordset(${transaction.json(compactedSegments.map((segment, ordinal) => ({
               id: segment.id,
               ordinal
             })) as never)}) AS item(id text, ordinal integer)
@@ -331,7 +322,7 @@ export function createPostgresProjectionCompactionRepository(
               END,
               compacted_at = ${input.completedAt}
           WHERE id = ANY(${input.job.expectedSegmentIds}::text[])
-            AND id <> ALL(${input.segments.map((segment) => segment.id)}::text[])
+            AND id <> ALL(${compactedSegments.map((segment) => segment.id)}::text[])
         `;
         await transaction`
           UPDATE focowiki.projection_compaction_jobs
@@ -383,26 +374,6 @@ function compactionJobId(row: PartitionRow): string {
     ].join("\u0000"))
     .digest("hex")
     .slice(0, 32)}`;
-}
-
-function segmentRow(segment: ProjectionSegment) {
-  return {
-    id: segment.id,
-    knowledge_base_id: segment.knowledgeBaseId,
-    projection_kind: segment.projectionKind,
-    logical_partition: segment.logicalPartition,
-    segment_kind: segment.segmentKind,
-    sequence_number: segment.sequenceNumber,
-    format_version: segment.formatVersion,
-    checksum_sha256: segment.checksumSha256,
-    object_key: segment.objectKey,
-    logical_path: segment.logicalPath,
-    entry_count: segment.entryCount,
-    encoded_bytes: segment.encodedBytes,
-    first_record_identity: segment.firstRecordIdentity,
-    last_record_identity: segment.lastRecordIdentity,
-    base_segment_id: segment.baseSegmentId
-  };
 }
 
 async function markSuperseded(
