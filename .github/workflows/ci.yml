@@ -118,6 +118,13 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Validate 100k graph candidate query plan
+        env:
+          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
+        run: >-
+          pnpm --filter @focowiki/api exec vitest run
+          test/graph-candidate-query-plan.integration.test.ts
+
       - name: Validate source-to-activation smoke flow
         run: >-
           pnpm --filter @focowiki/api exec vitest run
