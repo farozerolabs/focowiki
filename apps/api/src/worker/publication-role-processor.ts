@@ -184,7 +184,7 @@ async function processPublicationJob(
     throw new RoleJobFailure({
       code: "GENERATION_VALIDATION_FAILED",
       message,
-      retryable: false
+      retryable: true
     });
   }
 

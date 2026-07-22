@@ -6,6 +6,7 @@ import type {
 import type { SerializableJson } from "../../application/ports/source-dispatch-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
 import type { TransactionSql } from "postgres";
+import { hydrateActiveTreeStatistics } from "./active-tree-statistics.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -35,14 +36,6 @@ type GeneratedFileRow = {
   file_id: string;
   ref_kind: string;
   logical_path: string;
-};
-
-type TreeStatisticsRow = {
-  path: string;
-  direct_entry_count: number;
-  direct_directory_count: number;
-  direct_file_count: number;
-  descendant_file_count: number;
 };
 
 type GeneratedDirectoryRow = {
@@ -75,7 +68,6 @@ export async function listActiveTree(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
-  allowCompatibilityFallback: boolean,
   input: TreeInput
 ): Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationCursor>> {
   const query = input.query?.trim() ?? "";
@@ -84,7 +76,6 @@ export async function listActiveTree(
       sql,
       knowledgeBaseId,
       generationId,
-      allowCompatibilityFallback,
       input,
       query
     ),
@@ -115,7 +106,6 @@ export async function listActiveTreeAncestors(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
-  allowCompatibilityFallback: boolean,
   paths: string[]
 ): Promise<Map<string, ActiveGenerationProjection[]>> {
   const ancestorsByPath = new Map(
@@ -137,13 +127,12 @@ export async function listActiveTreeAncestors(
       AND payload_json->>'kind' = 'directory'
     ORDER BY length(logical_path), logical_path, record_id
   `;
-  const hydratedRows = await hydrateSourceDirectoryStatistics(
+  const hydratedRows = await hydrateActiveTreeStatistics({
     sql,
     knowledgeBaseId,
     generationId,
-    allowCompatibilityFallback,
-    rows.map((row) => mapProjection(generationId, row))
-  );
+    entries: rows.map((row) => mapProjection(generationId, row))
+  });
   const records = new Map(
     hydratedRows.map((row) => [row.path!, row] as const)
   );
@@ -172,7 +161,6 @@ async function listSourceEntries(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
-  allowCompatibilityFallback: boolean,
   input: TreeInput,
   query: string
 ): Promise<ActiveGenerationProjection[]> {
@@ -208,13 +196,12 @@ async function listSourceEntries(
     ORDER BY coalesce(record.sort_key, ''), record.record_id
     LIMIT ${input.limit + 1}
   `;
-  return hydrateSourceDirectoryStatistics(
+  return hydrateActiveTreeStatistics({
     sql,
     knowledgeBaseId,
     generationId,
-    allowCompatibilityFallback,
-    rows.map((row) => mapProjection(generationId, row))
-  );
+    entries: rows.map((row) => mapProjection(generationId, row))
+  });
 }
 
 async function listGeneratedFiles(
@@ -394,120 +381,6 @@ function generatedFileProjection(
       descendantFileCount: 0
     }
   };
-}
-
-async function hydrateSourceDirectoryStatistics(
-  sql: ReadSql,
-  knowledgeBaseId: string,
-  generationId: string,
-  allowCompatibilityFallback: boolean,
-  entries: ActiveGenerationProjection[]
-): Promise<ActiveGenerationProjection[]> {
-  const directoryPaths = entries
-    .filter((entry) => readPayloadString(entry.payload, "kind") === "directory" && entry.path)
-    .map((entry) => entry.path!);
-  if (directoryPaths.length === 0) return entries;
-
-  const persistedRows = await sql<TreeStatisticsRow[]>`
-    SELECT path, direct_entry_count, direct_directory_count,
-           direct_file_count, descendant_file_count
-    FROM focowiki.generation_tree_directory_stats
-    WHERE knowledge_base_id = ${knowledgeBaseId}
-      AND generation_id = ${generationId}
-      AND path = ANY(${directoryPaths})
-  `;
-  const statistics = new Map(persistedRows.map((row) => [row.path, row] as const));
-  const missingPaths = directoryPaths.filter((path) => !statistics.has(path));
-  if (missingPaths.length > 0 && !allowCompatibilityFallback) {
-    const entriesByPath = new Map(
-      entries
-        .filter((entry) => entry.path)
-        .map((entry) => [entry.path!, entry] as const)
-    );
-    const unresolvedPaths = missingPaths.filter((path) =>
-      !hasCompleteDirectoryStatistics(entriesByPath.get(path)?.payload)
-    );
-    if (unresolvedPaths.length > 0) {
-      throw new Error("Active directory statistics are unavailable");
-    }
-  }
-  if (missingPaths.length > 0 && allowCompatibilityFallback) {
-    const fallbackRows = await sql<TreeStatisticsRow[]>`
-      WITH requested(path) AS MATERIALIZED (
-        SELECT unnest(${missingPaths}::text[])
-      ),
-      direct_counts AS (
-        SELECT child.parent_path AS path,
-               count(*) FILTER (
-                 WHERE child.payload_json->>'kind' IN ('directory', 'file')
-               )::int AS direct_entry_count,
-               count(*) FILTER (
-                 WHERE child.payload_json->>'kind' = 'directory'
-               )::int AS direct_directory_count,
-               count(*) FILTER (
-                 WHERE child.payload_json->>'kind' = 'file'
-               )::int AS direct_file_count
-        FROM focowiki.active_projection_records child
-        WHERE child.knowledge_base_id = ${knowledgeBaseId}
-          AND child.projection_kind = 'tree'
-          AND child.parent_path = ANY(${missingPaths})
-        GROUP BY child.parent_path
-      ),
-      descendant_counts AS (
-        SELECT requested.path, count(descendant.record_id)::int AS descendant_file_count
-        FROM requested
-        LEFT JOIN focowiki.active_projection_records descendant
-          ON descendant.knowledge_base_id = ${knowledgeBaseId}
-         AND descendant.projection_kind = 'tree'
-         AND descendant.logical_path >= requested.path || '/'
-         AND descendant.logical_path < requested.path || '0'
-         AND descendant.payload_json->>'kind' = 'file'
-        GROUP BY requested.path
-      )
-      SELECT requested.path,
-             coalesce(direct.direct_entry_count, 0) AS direct_entry_count,
-             coalesce(direct.direct_directory_count, 0) AS direct_directory_count,
-             coalesce(direct.direct_file_count, 0) AS direct_file_count,
-             coalesce(descendant.descendant_file_count, 0) AS descendant_file_count
-      FROM requested
-      LEFT JOIN direct_counts direct USING (path)
-      LEFT JOIN descendant_counts descendant USING (path)
-    `;
-    for (const row of fallbackRows) statistics.set(row.path, row);
-  }
-
-  return entries.map((entry) => {
-    const row = entry.path ? statistics.get(entry.path) : null;
-    if (!row) return entry;
-    return {
-      ...entry,
-      payload: {
-        ...(entry.payload as Record<string, SerializableJson>),
-        directEntryCount: Number(row.direct_entry_count),
-        directDirectoryCount: Number(row.direct_directory_count),
-        directFileCount: Number(row.direct_file_count),
-        descendantFileCount: Number(row.descendant_file_count)
-      }
-    };
-  });
-}
-
-function hasCompleteDirectoryStatistics(payload: SerializableJson | undefined): boolean {
-  if (!payload || Array.isArray(payload) || typeof payload !== "object") return false;
-  const object = payload as Record<string, SerializableJson>;
-  const directEntryCount = object.directEntryCount;
-  const directDirectoryCount = object.directDirectoryCount;
-  const directFileCount = object.directFileCount;
-  const descendantFileCount = object.descendantFileCount;
-  const values = [directEntryCount, directDirectoryCount, directFileCount, descendantFileCount];
-  return values.every((value) => Number.isSafeInteger(value) && Number(value) >= 0)
-    && Number(directEntryCount) === Number(directDirectoryCount) + Number(directFileCount);
-}
-
-function readPayloadString(payload: SerializableJson, key: string): string | null {
-  if (!payload || Array.isArray(payload) || typeof payload !== "object") return null;
-  const value = (payload as Record<string, SerializableJson>)[key];
-  return typeof value === "string" ? value : null;
 }
 
 function generatedFileKind(refKind: string, path: string): string {

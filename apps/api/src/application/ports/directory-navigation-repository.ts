@@ -28,6 +28,7 @@ export type DirectoryNavigationMutationResult = {
 export interface DirectoryNavigationRepository {
   applyEntry(input: {
     knowledgeBaseId: string;
+    generationId: string;
     directoryPath: string;
     entryId: string;
     desiredEntry: OrderedDirectoryEntry | null;
@@ -36,6 +37,7 @@ export interface DirectoryNavigationRepository {
 
   applyEntries(input: {
     knowledgeBaseId: string;
+    generationId: string;
     directoryPath: string;
     entries: Array<{
       entryId: string;
@@ -46,6 +48,7 @@ export interface DirectoryNavigationRepository {
 
   getSummary(input: {
     knowledgeBaseId: string;
+    generationId: string;
     directoryPath: string;
   }): Promise<DirectoryNavigationSummary | null>;
 }

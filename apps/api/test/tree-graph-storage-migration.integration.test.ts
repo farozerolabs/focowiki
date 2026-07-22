@@ -254,6 +254,149 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
     });
   });
 
+  it("resumes generation-scoped navigation and graph repair from durable checkpoints", async () => {
+    const repair = createPostgresProjectionRepairRepository(sql);
+    const repairVersion = 2;
+    const leaseToken = "repair-lease-generation-consistency";
+    expect(await repair.bootstrap({
+      repairVersion,
+      bootstrappedAt: "2026-07-18T13:10:00.000Z"
+    })).toBe(1);
+    let job = await repair.claim({
+      repairVersion,
+      leaseToken,
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: "generation-repair-consistency",
+      claimedAt: "2026-07-18T13:10:01.000Z"
+    });
+    expect(job).not.toBeNull();
+    expect(await repair.advanceTreeCheckpoint({
+      job: job!,
+      leaseToken,
+      treeCursor: job!.checkpoint.treeCursor,
+      treeComplete: true,
+      updatedAt: "2026-07-18T13:10:02.000Z"
+    })).toBe(true);
+
+    job = await repair.claim({
+      repairVersion,
+      leaseToken,
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: "generation-repair-must-resume",
+      claimedAt: "2026-07-18T13:10:03.000Z"
+    });
+    expect(job?.checkpoint.treeComplete).toBe(true);
+    const directory = await repair.listNextNavigationDirectory({ job: job!, leaseToken });
+    expect(directory).toEqual({ recordId: "directory:pages", path: "pages" });
+    const entryPage = await repair.listNavigationEntryPage({
+      job: job!,
+      leaseToken,
+      directoryPath: directory!.path,
+      limit: 1
+    });
+    expect(entryPage.entries).toEqual([expect.objectContaining({
+      entryId: "directory:pages/guides",
+      desiredEntry: expect.objectContaining({
+        kind: "directory",
+        targetPath: "pages/guides/index.md"
+      })
+    })]);
+    expect(await repair.advanceNavigationCheckpoint({
+      job: job!,
+      leaseToken,
+      navigationDirectoryCursor: directory!.recordId,
+      navigationEntryCursor: null,
+      navigationPhase: "entries",
+      navigationComplete: true,
+      updatedAt: "2026-07-18T13:10:04.000Z"
+    })).toBe(true);
+
+    job = await repair.claim({
+      repairVersion,
+      leaseToken,
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: "generation-repair-must-resume-again",
+      claimedAt: "2026-07-18T13:10:05.000Z"
+    });
+    expect(job?.checkpoint.navigationComplete).toBe(true);
+    const firstGraphPage = await repair.listGraphPage({
+      job: job!,
+      leaseToken,
+      limit: 1
+    });
+    expect(firstGraphPage.records).toHaveLength(1);
+    expect(firstGraphPage.nextCursor).not.toBeNull();
+    expect(await repair.advanceGraphCheckpoint({
+      job: job!,
+      leaseToken,
+      graphCursor: firstGraphPage.nextCursor,
+      graphNodeCount: firstGraphPage.records.filter(
+        (record) => record.projectionKind === "graph_node"
+      ).length,
+      graphEdgeCount: firstGraphPage.records.filter(
+        (record) => record.projectionKind === "graph_edge"
+      ).length,
+      graphComplete: false,
+      updatedAt: "2026-07-18T13:10:06.000Z"
+    })).toBe(true);
+
+    job = await repair.claim({
+      repairVersion,
+      leaseToken,
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: "generation-repair-must-resume-final",
+      claimedAt: "2026-07-18T13:10:07.000Z"
+    });
+    const secondGraphPage = await repair.listGraphPage({
+      job: job!,
+      leaseToken,
+      limit: 10
+    });
+    const nodeCount = job!.checkpoint.graphNodeCount + secondGraphPage.records.filter(
+      (record) => record.projectionKind === "graph_node"
+    ).length;
+    const edgeCount = job!.checkpoint.graphEdgeCount + secondGraphPage.records.filter(
+      (record) => record.projectionKind === "graph_edge"
+    ).length;
+    expect(secondGraphPage.nextCursor).toBeNull();
+    expect({ nodeCount, edgeCount }).toEqual({ nodeCount: 1, edgeCount: 1 });
+    expect(await repair.stageGraphSummary({
+      job: job!,
+      leaseToken,
+      nodeCount,
+      edgeCount,
+      updatedAt: "2026-07-18T13:10:08.000Z"
+    })).toBe(true);
+    const summary = (await sql<Array<{ node_count: number; edge_count: number }>>`
+      SELECT node_count, edge_count
+      FROM focowiki.generation_graph_summaries
+      WHERE generation_id = ${job!.targetGenerationId}
+    `)[0];
+    expect({
+      node_count: Number(summary?.node_count),
+      edge_count: Number(summary?.edge_count)
+    }).toEqual({ node_count: 1, edge_count: 1 });
+
+    const preservedBeforeCompletion = await repairPreservationSnapshot(sql);
+    expect(await repair.complete({
+      job: job!,
+      leaseToken,
+      completedAt: "2026-07-18T13:10:09.000Z"
+    })).toBe(true);
+    expect(await repair.bootstrap({
+      repairVersion,
+      bootstrappedAt: "2026-07-18T13:10:10.000Z"
+    })).toBe(0);
+    await expect(repair.claim({
+      repairVersion,
+      leaseToken: "repair-lease-after-completion",
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: "generation-repair-must-not-run-again",
+      claimedAt: "2026-07-18T13:10:11.000Z"
+    })).resolves.toBeNull();
+    expect(await repairPreservationSnapshot(sql)).toEqual(preservedBeforeCompletion);
+  });
+
   it("serializes immutable reservations with reconciliation deletion authorization", async () => {
     const objects = createPostgresImmutableObjectRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
@@ -740,6 +883,46 @@ async function releasedSnapshot(sql: ReturnType<typeof postgres>) {
     projectionKinds,
     generationReferences
   };
+}
+
+async function repairPreservationSnapshot(sql: ReturnType<typeof postgres>) {
+  const [knowledgeBase] = await sql<Array<{
+    active_generation_id: string | null;
+  }>>`
+    SELECT active_generation_id
+    FROM focowiki.knowledge_bases
+    WHERE id = 'kb-released-migration'
+  `;
+  const [source] = await sql<Array<{
+    active_revision_id: string | null;
+    relative_path: string;
+    checksum_sha256: string;
+  }>>`
+    SELECT active_revision_id, relative_path, checksum_sha256
+    FROM focowiki.source_files
+    WHERE id = 'source-file-released'
+  `;
+  const [page] = await sql<Array<{
+    file_id: string;
+    checksum_sha256: string;
+    logical_path: string | null;
+  }>>`
+    SELECT file_id, checksum_sha256, logical_path
+    FROM focowiki.active_object_refs
+    WHERE knowledge_base_id = 'kb-released-migration'
+      AND ref_kind = 'page'
+      AND ref_key = 'source-file-released'
+  `;
+  const [object] = await sql<Array<{
+    lifecycle_state: string;
+    object_key: string;
+  }>>`
+    SELECT lifecycle_state, object_key
+    FROM focowiki.immutable_objects
+    WHERE checksum_sha256 = ${"ab".repeat(32)}
+      AND format_version = 1
+  `;
+  return { knowledgeBase, source, page, object };
 }
 
 function databaseConnectionUrl(value: string, databaseName: string): string {

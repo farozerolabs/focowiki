@@ -96,7 +96,9 @@ export function pageSchema(itemSchema: SchemaObject): SchemaObject {
     ...objectSchema(
       {
         items: { type: "array", items: itemSchema },
-        nextCursor: nullableString("Opaque cursor accepted only by the same list family.")
+        nextCursor: nullableString(
+          "Opaque cursor accepted only by the same list family and unchanged query. Restart without a cursor when it is rejected."
+        )
       },
       ["items", "nextCursor"]
     ),
@@ -278,7 +280,12 @@ function standardErrorResponses(additionalStatuses: AdditionalErrorStatus[] = []
       401
     ),
     "429": errorResponse("The request exceeded configured rate limits.", "RATE_LIMITED", 429),
-    "500": errorResponse("The API encountered an internal error.", "INTERNAL_ERROR", 500)
+    "500": errorResponse("The API encountered an internal error.", "INTERNAL_ERROR", 500),
+    "503": errorResponse(
+      "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation.",
+      "DATABASE_REPOSITORY_UNAVAILABLE",
+      503
+    )
   };
 
   const additional: Record<AdditionalErrorStatus, ResponseObject> = {
@@ -299,7 +306,7 @@ function standardErrorResponses(additionalStatuses: AdditionalErrorStatus[] = []
 
 function reorderResponses(responses: Record<string, ResponseObject>): Record<string, ResponseObject> {
   const ordered: Record<string, ResponseObject> = {};
-  for (const status of ["401", "404", "409", "413", "422", "429", "500"]) {
+  for (const status of ["401", "404", "409", "413", "422", "429", "500", "503"]) {
     if (responses[status]) ordered[status] = responses[status];
   }
   return ordered;

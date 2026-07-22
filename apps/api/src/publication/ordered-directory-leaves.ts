@@ -89,9 +89,10 @@ export function removeDirectoryEntry(input: {
   const touched = new Set<string>([target.id]);
   const removed: string[] = [];
 
-  if (target.entries.length === 0 && leaves.length > 1) {
+  if (target.entries.length === 0) {
     removed.push(target.id);
     leaves.splice(leafIndex, 1);
+    touched.delete(target.id);
     const neighbor = leaves[Math.min(leafIndex, leaves.length - 1)];
     if (neighbor) {
       touched.add(neighbor.id);

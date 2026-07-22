@@ -25,66 +25,90 @@ export function createDirectoryNavigationWriter(input: {
   };
   limits: OrderedDirectoryLeafLimits;
 }) {
-  const writeBatch = async (impacts: ClaimedPublicationImpact[]): Promise<{
-      handled: boolean;
-      touchedShardCount: number;
-    }> => {
-      if (impacts.length === 0 || impacts.some((impact) => impact.projectionKind !== "directory")) {
-        return { handled: false, touchedShardCount: 0 };
-      }
-      const first = impacts[0]!;
-      if (impacts.some((impact) => impact.projectionKey !== first.projectionKey)) {
-        throw new Error("Directory projection batch must target one directory");
-      }
-      const directoryPath = generatedDirectoryPath(first.projectionKey);
-      const mutation = await input.navigation.applyEntries({
-        knowledgeBaseId: first.knowledgeBaseId,
-        directoryPath,
-        entries: impacts.flatMap((impact) => requireNavigationInput(impact).targets),
-        limits: input.limits
+  const writeEntries = async (request: {
+    knowledgeBaseId: string;
+    generationId: string;
+    directoryPath: string;
+    entries: Array<{
+      entryId: string;
+      desiredEntry: PersistentDirectoryLeaf["entries"][number] | null;
+    }>;
+    writeRootWhenUnchanged?: boolean;
+  }): Promise<{ handled: true; touchedShardCount: number }> => {
+    const mutation = await input.navigation.applyEntries({
+      knowledgeBaseId: request.knowledgeBaseId,
+      generationId: request.generationId,
+      directoryPath: request.directoryPath,
+      entries: request.entries,
+      limits: input.limits
+    });
+    if (!mutation.changed && !request.writeRootWhenUnchanged) {
+      return { handled: true, touchedShardCount: 0 };
+    }
+    for (const leafId of mutation.removedLeafIds) {
+      await input.references.stageDelete({
+        knowledgeBaseId: request.knowledgeBaseId,
+        generationId: request.generationId,
+        refKind: "directory_leaf",
+        refKey: directoryLeafRefKey(request.directoryPath, leafId),
+        logicalPath: directoryLeafPath(request.directoryPath, leafId),
+        sourceFileId: null
       });
-      if (!mutation.changed) return { handled: true, touchedShardCount: 0 };
-      for (const leafId of mutation.removedLeafIds) {
-        await input.references.stageDelete({
-          knowledgeBaseId: first.knowledgeBaseId,
-          generationId: first.generationId,
-          refKind: "directory_leaf",
-          refKey: directoryLeafRefKey(directoryPath, leafId),
-          logicalPath: directoryLeafPath(directoryPath, leafId),
-          sourceFileId: null
-        });
-      }
-      for (const leaf of mutation.touchedLeaves) {
-        await writeReference(input, first, {
-          refKind: "directory_leaf",
-          refKey: directoryLeafRefKey(directoryPath, leaf.id),
-          logicalPath: directoryLeafPath(directoryPath, leaf.id),
-          body: renderDirectoryLeafMarkdown({ directoryPath, leaf })
-        });
-      }
-      await writeReference(input, first, {
-        refKind: "directory_root",
-        refKey: `directory-root:${directoryPath}`,
-        logicalPath: `${directoryPath}/index.md`,
-        body: renderDirectoryRootMarkdown({
-          directoryPath,
-          entryCount: mutation.summary.entryCount,
-          firstLeafId: mutation.summary.firstLeafId
-        })
+    }
+    for (const leaf of mutation.touchedLeaves) {
+      await writeReference(input, request, {
+        refKind: "directory_leaf",
+        refKey: directoryLeafRefKey(request.directoryPath, leaf.id),
+        logicalPath: directoryLeafPath(request.directoryPath, leaf.id),
+        body: renderDirectoryLeafMarkdown({ directoryPath: request.directoryPath, leaf })
       });
-      return { handled: true, touchedShardCount: mutation.touchedLeaves.length + 1 };
+    }
+    await writeReference(input, request, {
+      refKind: "directory_root",
+      refKey: `directory-root:${request.directoryPath}`,
+      logicalPath: `${request.directoryPath}/index.md`,
+      body: renderDirectoryRootMarkdown({
+        directoryPath: request.directoryPath,
+        entryCount: mutation.summary.entryCount,
+        firstLeafId: mutation.summary.firstLeafId
+      })
+    });
+    return {
+      handled: true,
+      touchedShardCount: mutation.touchedLeaves.length + 1
     };
+  };
+  const writeBatch = async (impacts: ClaimedPublicationImpact[]): Promise<{
+    handled: boolean;
+    touchedShardCount: number;
+  }> => {
+    if (impacts.length === 0 || impacts.some((impact) => impact.projectionKind !== "directory")) {
+      return { handled: false, touchedShardCount: 0 };
+    }
+    const first = impacts[0]!;
+    if (impacts.some((impact) => impact.projectionKey !== first.projectionKey)) {
+      throw new Error("Directory projection batch must target one directory");
+    }
+    const directoryPath = generatedDirectoryPath(first.projectionKey);
+    return writeEntries({
+      knowledgeBaseId: first.knowledgeBaseId,
+      generationId: first.generationId,
+      directoryPath,
+      entries: impacts.flatMap((impact) => requireNavigationInput(impact).targets)
+    });
+  };
   return {
     write(impact: ClaimedPublicationImpact) {
       return writeBatch([impact]);
     },
-    writeBatch
+    writeBatch,
+    writeEntries
   };
 }
 
 async function writeReference(
   input: Parameters<typeof createDirectoryNavigationWriter>[0],
-  impact: ClaimedPublicationImpact,
+  context: { knowledgeBaseId: string; generationId: string },
   file: {
     refKind: string;
     refKey: string;
@@ -97,8 +121,8 @@ async function writeReference(
     contentType: "text/markdown; charset=utf-8"
   });
   await input.references.stageUpsert({
-    knowledgeBaseId: impact.knowledgeBaseId,
-    generationId: impact.generationId,
+    knowledgeBaseId: context.knowledgeBaseId,
+    generationId: context.generationId,
     refKind: file.refKind,
     refKey: file.refKey,
     fileId: createGeneratedFileId({

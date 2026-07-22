@@ -84,7 +84,7 @@ describeDatabase("active generation read repository integration", () => {
     ))).rejects.toThrow("Active graph summary is unavailable");
   });
 
-  it("does not scan descendants when optimized directory statistics are missing", async () => {
+  it("hydrates missing optimized directory statistics with one bounded page query", async () => {
     await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
     await seedActiveTreeDirectory("generation-active-a", "pages");
     await sql`
@@ -104,7 +104,17 @@ describeDatabase("active generation read repository integration", () => {
 
     await expect(repository.withActiveGeneration(knowledgeBaseId, async (scope) => (
       scope.listTree({ parentPath: "", entryType: "directory", query: null, limit: 10, cursor: null })
-    ))).rejects.toThrow("Active directory statistics are unavailable");
+    ))).resolves.toMatchObject({
+      items: [{
+        path: "pages",
+        payload: {
+          directEntryCount: 1,
+          directDirectoryCount: 0,
+          directFileCount: 1,
+          descendantFileCount: 1
+        }
+      }]
+    });
   });
 
   it("uses complete directory statistics already stored in the active projection", async () => {

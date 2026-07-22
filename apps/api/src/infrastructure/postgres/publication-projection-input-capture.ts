@@ -92,6 +92,10 @@ type DirectoryRow = {
 export type CapturedProjectionInput = {
   inputKey: string;
   payload: SerializableJson;
+  graphSummary?: {
+    nodeCount: number;
+    edgeCount: number;
+  };
 };
 
 export type PublicationProjectionCaptureChange = {
@@ -228,7 +232,15 @@ export async function capturePublicationProjectionInputsBatch(
     if (!projectionInput) continue;
     result.set(impact.id, {
       inputKey: projectionInputKey(impact),
-      payload: toProjectionInputJson(projectionInput)
+      payload: toProjectionInputJson(projectionInput),
+      ...(impact.projectionKind === "root" && knowledgeBaseInput
+        ? {
+            graphSummary: {
+              nodeCount: knowledgeBaseInput.graphNodeCount,
+              edgeCount: knowledgeBaseInput.descriptor.graphEdgeCount
+            }
+          }
+        : {})
     });
   }
 
@@ -246,6 +258,24 @@ export async function persistCapturedProjectionInputs(
 ): Promise<void> {
   const uniqueInputs = new Map<string, SerializableJson>();
   for (const item of input.captured.values()) uniqueInputs.set(item.inputKey, item.payload);
+  const graphSummary = [...input.captured.values()]
+    .find((item) => item.graphSummary)?.graphSummary;
+  if (graphSummary) {
+    await transaction`
+      INSERT INTO focowiki.generation_graph_summaries (
+        knowledge_base_id, generation_id, node_count, edge_count,
+        graph_index_available, updated_at
+      ) VALUES (
+        ${input.knowledgeBaseId}, ${input.generationId},
+        ${graphSummary.nodeCount}, ${graphSummary.edgeCount}, true, ${input.now}
+      )
+      ON CONFLICT (generation_id) DO UPDATE
+      SET node_count = EXCLUDED.node_count,
+          edge_count = EXCLUDED.edge_count,
+          graph_index_available = EXCLUDED.graph_index_available,
+          updated_at = EXCLUDED.updated_at
+    `;
+  }
   if (uniqueInputs.size === 0) return;
   const rows = Array.from(uniqueInputs, ([inputKey, payload]) => ({ inputKey, payload }));
   await transaction`
@@ -579,6 +609,7 @@ async function captureKnowledgeBase(
   rootEntryCount: number;
   rootDirectoryCount: number;
   rootFileCount: number;
+  graphNodeCount: number;
 } | null> {
   const rows = await transaction<Array<{
     id: string;
@@ -586,6 +617,7 @@ async function captureKnowledgeBase(
     description: string | null;
     source_file_count: number;
     graph_edge_count: number;
+    graph_node_count: number;
     root_entry_count: number;
     root_directory_count: number;
     root_file_count: number;
@@ -602,6 +634,12 @@ async function captureKnowledgeBase(
             WHERE edge.knowledge_base_id = knowledge_base.id AND edge.status = 'accepted'
               AND source.deleted_at IS NULL AND source.deletion_intent_id IS NULL
               AND target.deleted_at IS NULL AND target.deletion_intent_id IS NULL) AS graph_edge_count,
+           (SELECT count(*)::int FROM focowiki.source_file_graph_nodes node
+            JOIN focowiki.source_files source ON source.id = node.source_file_id
+            WHERE node.knowledge_base_id = knowledge_base.id
+              AND source.knowledge_base_id = knowledge_base.id
+              AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+              AND source.deletion_intent_id IS NULL) AS graph_node_count,
            (SELECT count(*)::int FROM focowiki.source_directories directory
              WHERE directory.knowledge_base_id = knowledge_base.id
                AND coalesce(directory.candidate_parent_id, directory.parent_id) IS NULL
@@ -638,7 +676,8 @@ async function captureKnowledgeBase(
     },
     rootEntryCount: Number(row.root_entry_count),
     rootDirectoryCount: Number(row.root_directory_count),
-    rootFileCount: Number(row.root_file_count)
+    rootFileCount: Number(row.root_file_count),
+    graphNodeCount: Number(row.graph_node_count)
   };
 }
 

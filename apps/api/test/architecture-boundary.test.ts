@@ -506,7 +506,10 @@ describe("lightweight architecture boundaries", () => {
     const activeTreeReadModel = readWorkspaceFile(
       "apps/api/src/infrastructure/postgres/active-tree-read-model.ts"
     );
-    const readPlane = `${activeReadRepository}\n${activeTreeReadModel}`;
+    const activeTreeStatistics = readWorkspaceFile(
+      "apps/api/src/infrastructure/postgres/active-tree-statistics.ts"
+    );
+    const readPlane = `${activeReadRepository}\n${activeTreeReadModel}\n${activeTreeStatistics}`;
 
     for (const forbidden of [
       ".claimBatch(",
@@ -523,8 +526,8 @@ describe("lightweight architecture boundaries", () => {
     expect(activeReadRepository).toContain(
       'if (version.optimizationState === "optimized_active")'
     );
-    expect(activeTreeReadModel).toContain(
-      "if (missingPaths.length > 0 && !allowCompatibilityFallback)"
-    );
+    expect(activeTreeStatistics).toContain("WITH requested(path) AS MATERIALIZED");
+    expect(activeTreeStatistics).toContain("child.parent_path = ANY");
+    expect(activeTreeStatistics).toContain("descendant.logical_path >= requested.path || '/'");
   });
 });

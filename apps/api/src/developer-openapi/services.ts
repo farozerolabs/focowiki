@@ -56,11 +56,15 @@ import {
 import type { RuntimeLogger } from "../logger.js";
 import { readGeneratedContentWithMetrics } from "../application/generated-content-read.js";
 import { reportGeneratedContentRead } from "../app/generated-content-read-logger.js";
+import { ActiveTreeStatisticsUnavailableError } from "../infrastructure/postgres/active-tree-statistics.js";
 import type {
   ActiveGenerationProjection,
   ActiveGenerationReadRepository
 } from "../application/ports/active-generation-read-repository.js";
-import { createActiveReadCacheScope } from "../active-read-cache-scope.js";
+import {
+  createActiveReadCacheScope,
+  createActiveReadPageCacheId
+} from "../active-read-cache-scope.js";
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import {
   toDeveloperActiveFile,
@@ -68,6 +72,9 @@ import {
   toDeveloperActiveSearchResult,
   toDeveloperActiveTreeEntry
 } from "./active-generation-serializers.js";
+import { loadGenerationScopedPage } from "./generation-scoped-page-cache.js";
+
+const ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS = 30;
 
 export type DeveloperOpenApiServices = {
   config: RuntimeConfig;
@@ -351,20 +358,28 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         sortKey: string;
         recordId: string;
       }>>(redis, cursorScope, input.cursor);
-      const result = await requireActiveGenerationReads().withActiveGeneration(
-        input.knowledgeBaseId,
-        async (scope) => {
-          assertCursorGeneration(storedCursor, scope.generationId);
-          const page = await scope.listTree({
-            parentPath: input.parentPath,
-            entryType: input.entryType,
-            query: input.query,
-            limit: input.limit,
-            cursor: storedCursor?.value ?? null
-          });
-          return { generationId: scope.generationId, page };
+      let result;
+      try {
+        result = await requireActiveGenerationReads().withActiveGeneration(
+          input.knowledgeBaseId,
+          async (scope) => {
+            assertCursorGeneration(storedCursor, scope.generationId);
+            const page = await scope.listTree({
+              parentPath: input.parentPath,
+              entryType: input.entryType,
+              query: input.query,
+              limit: input.limit,
+              cursor: storedCursor?.value ?? null
+            });
+            return { generationId: scope.generationId, page };
+          }
+        );
+      } catch (error) {
+        if (error instanceof ActiveTreeStatisticsUnavailableError) {
+          throw repositoryUnavailable();
         }
-      );
+        throw error;
+      }
       if (!result) {
         return { generationId: null, items: [], nextCursor: null };
       }
@@ -417,20 +432,54 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         input.knowledgeBaseId,
         async (scope) => {
           assertCursorGeneration(storedCursor, scope.generationId);
-          const page = await scope.search({
-            query: normalizedQuery,
-            mode: input.mode,
-            limit: input.limit,
-            cursor: storedCursor?.value ?? null
+          const cacheScope = createActiveReadCacheScope({
+            authorizationScope: "developer-openapi",
+            operation: "file-search",
+            knowledgeBaseId: input.knowledgeBaseId,
+            generationId: scope.generationId,
+            filters: {
+              query: normalizedQuery,
+              scope: input.scope,
+              fileKind: input.fileKind,
+              mode: input.mode,
+              graphDepth: input.graphDepth,
+              graphFanout: input.graphFanout
+            }
           });
-          const relatedBySource = input.mode === "file"
-            ? new Map<string, ActiveGenerationProjection[]>()
-            : await scope.listRelatedForSources({
-                sourceFileIds: page.items
-                  .map((item) => item.sourceFileId)
-                  .filter((sourceFileId): sourceFileId is string => Boolean(sourceFileId)),
-                limitPerSource: input.graphFanout
+          const pageId = createActiveReadPageCacheId({
+            cursorToken: storedCursor?.value
+              ? JSON.stringify(storedCursor.value)
+              : null,
+            limit: input.limit
+          });
+          const cachedPage = await loadGenerationScopedPage({
+            redis,
+            scope: cacheScope,
+            pageId,
+            ttlSeconds: ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS,
+            load: async () => {
+              const page = await scope.search({
+                query: normalizedQuery,
+                mode: input.mode,
+                limit: input.limit,
+                cursor: storedCursor?.value ?? null
               });
+              const relatedBySource = input.mode === "file"
+                ? new Map<string, ActiveGenerationProjection[]>()
+                : await scope.listRelatedForSources({
+                    sourceFileIds: page.items
+                      .map((item) => item.sourceFileId)
+                      .filter((sourceFileId): sourceFileId is string => Boolean(sourceFileId)),
+                    limitPerSource: input.graphFanout
+                  });
+              return {
+                page,
+                relatedBySource: [...relatedBySource.entries()]
+              };
+            }
+          });
+          const page = cachedPage.page;
+          const relatedBySource = new Map(cachedPage.relatedBySource);
           return { generationId: scope.generationId, page, relatedBySource };
         }
       );

@@ -8,6 +8,7 @@ import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { RoleJobFailure } from "./domain/role-job.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
+import { createPostgresDirectoryNavigationRepository } from "./infrastructure/postgres/directory-navigation-repository.js";
 import { createPostgresGenerationObjectReferenceRepository } from "./infrastructure/postgres/generation-object-reference-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresIncrementalStatisticsRepository } from "./infrastructure/postgres/incremental-statistics-repository.js";
@@ -34,6 +35,7 @@ import { runMaintenanceBackground } from "./maintenance/runtime.js";
 import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
+import { createDirectoryNavigationWriter } from "./publication/directory-navigation-writer.js";
 import { createProjectionCatalogWriter } from "./publication/projection-catalog-writer.js";
 import { createProjectionSegmentWriter } from "./publication/projection-segment-writer.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from "./publication/incremental-defaults.js";
@@ -115,6 +117,7 @@ async function runMaintenanceWorker(): Promise<void> {
       }
     };
     const references = createPostgresGenerationObjectReferenceRepository(sql);
+    const directoryNavigation = createPostgresDirectoryNavigationRepository(sql);
     const records = createPostgresProjectionRecordRepository(sql);
     const shards = createProjectionSegmentWriter({
       references,
@@ -325,12 +328,25 @@ async function runMaintenanceWorker(): Promise<void> {
               repair,
               records,
               shards,
+              navigation: createDirectoryNavigationWriter({
+                navigation: directoryNavigation,
+                references,
+                immutableObjects,
+                limits: {
+                  maxEntries: snapshot.publication.directoryIndexMaxEntries,
+                  maxBytes: snapshot.publication.directoryIndexMaxBytes,
+                  mergeBelowEntries: Math.max(
+                    1,
+                    Math.floor(snapshot.publication.directoryIndexMaxEntries / 4)
+                  )
+                }
+              }),
               references,
               immutableObjects,
               catalog,
               validation,
               generations,
-              repairVersion: 1,
+              repairVersion: 2,
               leaseToken: repairLeaseToken,
               treePageSize: snapshot.maintenance.scanBatchSize,
               maxAttempts: snapshot.maintenance.maxAttempts,
