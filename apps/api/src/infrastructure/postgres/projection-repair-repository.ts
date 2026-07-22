@@ -1,5 +1,7 @@
 import type {
+  ProjectionRepairGraphCursor,
   ProjectionRepairJob,
+  ProjectionRepairNavigationCursor,
   ProjectionRepairRepository
 } from "../../application/ports/projection-repair-repository.js";
 import type { ProjectionRecord } from "../../application/ports/projection-record-repository.js";
@@ -42,6 +44,29 @@ type ProjectionRow = {
   summary: string | null;
   searchable_text: string | null;
   payload_json: SerializableJson;
+};
+
+type NavigationDirectoryRow = {
+  record_id: string;
+  logical_path: string;
+};
+
+type NavigationEntryRow = {
+  record_id: string;
+  sort_key: string;
+  logical_path: string;
+  title: string | null;
+  kind: "file" | "directory";
+};
+
+type StaleNavigationEntryRow = {
+  record_id: string;
+  sort_key: string;
+};
+
+type GraphRecordRow = {
+  projection_kind: "graph_node" | "graph_edge";
+  record_id: string;
 };
 
 export function createPostgresProjectionRepairRepository(
@@ -280,8 +305,219 @@ export function createPostgresProjectionRepairRepository(
       const rows = await sql<Array<{ knowledge_base_id: string }>>`
         UPDATE focowiki.knowledge_base_projection_repairs
         SET checkpoint_json = ${sql.json({
+          ...input.job.checkpoint,
           treeCursor: input.treeCursor,
           treeComplete: input.treeComplete
+        })}, updated_at = ${input.updatedAt}
+        WHERE knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND repair_version = ${input.job.repairVersion}
+          AND target_generation_id = ${input.job.targetGenerationId}
+          AND state = 'running' AND lease_token = ${input.leaseToken}
+          AND lease_expires_at > ${input.updatedAt}
+        RETURNING knowledge_base_id
+      `;
+      return rows.length === 1;
+    },
+
+    async listNextNavigationDirectory(input) {
+      const rows = await sql<NavigationDirectoryRow[]>`
+        SELECT record.record_id, record.logical_path
+        FROM focowiki.active_projection_records record
+        JOIN focowiki.knowledge_bases knowledge_base
+          ON knowledge_base.id = record.knowledge_base_id
+         AND knowledge_base.active_generation_id = ${input.job.baseGenerationId}
+         AND knowledge_base.deleted_at IS NULL
+        WHERE record.knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND record.projection_kind = 'tree'
+          AND record.payload_json->>'kind' = 'directory'
+          AND record.logical_path IS NOT NULL
+          AND (${input.job.checkpoint.navigationDirectoryCursor}::text IS NULL
+               OR record.record_id > ${input.job.checkpoint.navigationDirectoryCursor})
+          AND ${repairLeaseExists(sql, input.job, input.leaseToken)}
+        ORDER BY record.record_id
+        LIMIT 1
+      `;
+      const row = rows[0];
+      return row ? { recordId: row.record_id, path: row.logical_path } : null;
+    },
+
+    async listNavigationEntryPage(input) {
+      const cursor = input.job.checkpoint.navigationEntryCursor;
+      const limit = boundedRepairLimit(input.limit);
+      const rows = await sql<NavigationEntryRow[]>`
+        SELECT record.record_id, coalesce(record.sort_key, '') AS sort_key,
+               record.logical_path, record.title,
+               (record.payload_json->>'kind')::text AS kind
+        FROM focowiki.active_projection_records record
+        JOIN focowiki.knowledge_bases knowledge_base
+          ON knowledge_base.id = record.knowledge_base_id
+         AND knowledge_base.active_generation_id = ${input.job.baseGenerationId}
+         AND knowledge_base.deleted_at IS NULL
+        WHERE record.knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND record.projection_kind = 'tree'
+          AND record.parent_path = ${input.directoryPath}
+          AND record.logical_path IS NOT NULL
+          AND record.payload_json->>'kind' IN ('directory', 'file')
+          AND (
+            ${cursor?.sortKey ?? null}::text IS NULL
+            OR (coalesce(record.sort_key, ''), record.record_id)
+               > (${cursor?.sortKey ?? null}, ${cursor?.recordId ?? null})
+          )
+          AND ${repairLeaseExists(sql, input.job, input.leaseToken)}
+        ORDER BY coalesce(record.sort_key, ''), record.record_id
+        LIMIT ${limit + 1}
+      `;
+      const visible = rows.slice(0, limit);
+      const last = visible.at(-1);
+      return {
+        entries: visible.map((row) => ({
+          entryId: row.record_id,
+          desiredEntry: {
+            id: row.record_id,
+            sortKey: row.sort_key,
+            name: row.title ?? row.logical_path.split("/").at(-1) ?? row.logical_path,
+            targetPath: row.kind === "directory"
+              ? `${row.logical_path}/index.md`
+              : row.logical_path,
+            kind: row.kind
+          }
+        })),
+        nextCursor: rows.length > limit && last
+          ? { sortKey: last.sort_key, recordId: last.record_id }
+          : null
+      };
+    },
+
+    async listStaleNavigationEntryPage(input) {
+      const cursor = input.job.checkpoint.navigationEntryCursor;
+      const limit = boundedRepairLimit(input.limit);
+      const rows = await sql<StaleNavigationEntryRow[]>`
+        SELECT entry.value->>'id' AS record_id,
+               coalesce(entry.value->>'sortKey', '') AS sort_key
+        FROM focowiki.generation_directory_navigation_leaves leaf
+        CROSS JOIN LATERAL jsonb_array_elements(leaf.entries_json) entry(value)
+        WHERE leaf.generation_id = ${input.job.targetGenerationId}
+          AND leaf.knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND leaf.directory_path = ${input.directoryPath}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM focowiki.active_projection_records record
+            JOIN focowiki.knowledge_bases knowledge_base
+              ON knowledge_base.id = record.knowledge_base_id
+             AND knowledge_base.active_generation_id = ${input.job.baseGenerationId}
+             AND knowledge_base.deleted_at IS NULL
+            WHERE record.knowledge_base_id = ${input.job.knowledgeBaseId}
+              AND record.projection_kind = 'tree'
+              AND record.record_id = entry.value->>'id'
+              AND record.parent_path = ${input.directoryPath}
+              AND record.payload_json->>'kind' IN ('directory', 'file')
+          )
+          AND (
+            ${cursor?.sortKey ?? null}::text IS NULL
+            OR (coalesce(entry.value->>'sortKey', ''), entry.value->>'id')
+               > (${cursor?.sortKey ?? null}, ${cursor?.recordId ?? null})
+          )
+          AND ${repairLeaseExists(sql, input.job, input.leaseToken)}
+        ORDER BY coalesce(entry.value->>'sortKey', ''), entry.value->>'id'
+        LIMIT ${limit + 1}
+      `;
+      const visible = rows.slice(0, limit);
+      const last = visible.at(-1);
+      return {
+        entries: visible.map((row) => ({ entryId: row.record_id, desiredEntry: null })),
+        nextCursor: rows.length > limit && last
+          ? { sortKey: last.sort_key, recordId: last.record_id }
+          : null
+      };
+    },
+
+    async advanceNavigationCheckpoint(input) {
+      const rows = await sql<Array<{ knowledge_base_id: string }>>`
+        UPDATE focowiki.knowledge_base_projection_repairs
+        SET checkpoint_json = ${sql.json({
+          ...input.job.checkpoint,
+          navigationDirectoryCursor: input.navigationDirectoryCursor,
+          navigationEntryCursor: input.navigationEntryCursor,
+          navigationPhase: input.navigationPhase,
+          navigationComplete: input.navigationComplete
+        })}, updated_at = ${input.updatedAt}
+        WHERE knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND repair_version = ${input.job.repairVersion}
+          AND target_generation_id = ${input.job.targetGenerationId}
+          AND state = 'running' AND lease_token = ${input.leaseToken}
+          AND lease_expires_at > ${input.updatedAt}
+        RETURNING knowledge_base_id
+      `;
+      return rows.length === 1;
+    },
+
+    async listGraphPage(input) {
+      const cursor = input.job.checkpoint.graphCursor;
+      const limit = boundedRepairLimit(input.limit);
+      const rows = await sql<GraphRecordRow[]>`
+        SELECT record.projection_kind, record.record_id
+        FROM focowiki.active_projection_records record
+        JOIN focowiki.knowledge_bases knowledge_base
+          ON knowledge_base.id = record.knowledge_base_id
+         AND knowledge_base.active_generation_id = ${input.job.baseGenerationId}
+         AND knowledge_base.deleted_at IS NULL
+        WHERE record.knowledge_base_id = ${input.job.knowledgeBaseId}
+          AND record.projection_kind IN ('graph_node', 'graph_edge')
+          AND (
+            ${cursor?.projectionKind ?? null}::text IS NULL
+            OR (record.projection_kind, record.record_id)
+               > (${cursor?.projectionKind ?? null}, ${cursor?.recordId ?? null})
+          )
+          AND ${repairLeaseExists(sql, input.job, input.leaseToken)}
+        ORDER BY record.projection_kind, record.record_id
+        LIMIT ${limit + 1}
+      `;
+      const visible = rows.slice(0, limit);
+      const last = visible.at(-1);
+      return {
+        records: visible.map((row) => ({
+          projectionKind: row.projection_kind,
+          recordId: row.record_id
+        })),
+        nextCursor: rows.length > limit && last
+          ? { projectionKind: last.projection_kind, recordId: last.record_id }
+          : null
+      };
+    },
+
+    async stageGraphSummary(input) {
+      const rows = await sql<Array<{ generation_id: string }>>`
+        INSERT INTO focowiki.generation_graph_summaries (
+          knowledge_base_id, generation_id, node_count, edge_count,
+          graph_index_available, updated_at
+        )
+        SELECT ${input.job.knowledgeBaseId}, ${input.job.targetGenerationId},
+               ${input.nodeCount}, ${input.edgeCount},
+               EXISTS (
+                 SELECT 1 FROM focowiki.active_object_refs reference
+                 WHERE reference.knowledge_base_id = ${input.job.knowledgeBaseId}
+                   AND reference.logical_path = '_graph/index.md'
+               ), ${input.updatedAt}
+        WHERE ${repairLeaseExists(sql, input.job, input.leaseToken)}
+        ON CONFLICT (generation_id) DO UPDATE
+        SET node_count = EXCLUDED.node_count,
+            edge_count = EXCLUDED.edge_count,
+            graph_index_available = EXCLUDED.graph_index_available,
+            updated_at = EXCLUDED.updated_at
+        RETURNING generation_id
+      `;
+      return rows.length === 1;
+    },
+
+    async advanceGraphCheckpoint(input) {
+      const rows = await sql<Array<{ knowledge_base_id: string }>>`
+        UPDATE focowiki.knowledge_base_projection_repairs
+        SET checkpoint_json = ${sql.json({
+          ...input.job.checkpoint,
+          graphCursor: input.graphCursor,
+          graphNodeCount: input.graphNodeCount,
+          graphEdgeCount: input.graphEdgeCount,
+          graphComplete: input.graphComplete
         })}, updated_at = ${input.updatedAt}
         WHERE knowledge_base_id = ${input.job.knowledgeBaseId}
           AND repair_version = ${input.job.repairVersion}
@@ -352,16 +588,85 @@ async function targetCanResume(
 }
 
 function emptyCheckpoint() {
-  return { treeCursor: null, treeComplete: false };
+  return {
+    treeCursor: null,
+    treeComplete: false,
+    navigationDirectoryCursor: null,
+    navigationEntryCursor: null,
+    navigationPhase: "entries" as const,
+    navigationComplete: false,
+    graphCursor: null,
+    graphNodeCount: 0,
+    graphEdgeCount: 0,
+    graphComplete: false
+  };
 }
 
 function readCheckpoint(value: SerializableJson) {
   if (!value || Array.isArray(value) || typeof value !== "object") return emptyCheckpoint();
   const record = value as Record<string, SerializableJson>;
+  const navigationEntryCursor = readNavigationCursor(record.navigationEntryCursor);
+  const graphCursor = readGraphCursor(record.graphCursor);
   return {
     treeCursor: typeof record.treeCursor === "string" ? record.treeCursor : null,
-    treeComplete: record.treeComplete === true
+    treeComplete: record.treeComplete === true,
+    navigationDirectoryCursor: typeof record.navigationDirectoryCursor === "string"
+      ? record.navigationDirectoryCursor
+      : null,
+    navigationEntryCursor,
+    navigationPhase: record.navigationPhase === "stale" ? "stale" as const : "entries" as const,
+    navigationComplete: record.navigationComplete === true,
+    graphCursor,
+    graphNodeCount: readNonNegativeInteger(record.graphNodeCount),
+    graphEdgeCount: readNonNegativeInteger(record.graphEdgeCount),
+    graphComplete: record.graphComplete === true
   };
+}
+
+function readNavigationCursor(
+  value: SerializableJson | undefined
+): ProjectionRepairNavigationCursor | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+  const record = value as Record<string, SerializableJson>;
+  return typeof record.sortKey === "string" && typeof record.recordId === "string"
+    ? { sortKey: record.sortKey, recordId: record.recordId }
+    : null;
+}
+
+function readGraphCursor(
+  value: SerializableJson | undefined
+): ProjectionRepairGraphCursor | null {
+  if (!value || Array.isArray(value) || typeof value !== "object") return null;
+  const record = value as Record<string, SerializableJson>;
+  return (record.projectionKind === "graph_node" || record.projectionKind === "graph_edge")
+    && typeof record.recordId === "string"
+    ? {
+        projectionKind: record.projectionKind as "graph_node" | "graph_edge",
+        recordId: record.recordId
+      }
+    : null;
+}
+
+function readNonNegativeInteger(value: SerializableJson | undefined): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function repairLeaseExists(
+  sql: DatabaseClient,
+  job: ProjectionRepairJob,
+  leaseToken: string
+) {
+  return sql`
+    EXISTS (
+      SELECT 1 FROM focowiki.knowledge_base_projection_repairs repair
+      WHERE repair.knowledge_base_id = ${job.knowledgeBaseId}
+        AND repair.repair_version = ${job.repairVersion}
+        AND repair.target_generation_id = ${job.targetGenerationId}
+        AND repair.state = 'running'
+        AND repair.lease_token = ${leaseToken}
+        AND repair.lease_expires_at > now()
+    )
+  `;
 }
 
 function mapProjection(row: ProjectionRow): ProjectionRecord {

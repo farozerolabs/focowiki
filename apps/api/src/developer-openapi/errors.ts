@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { Context } from "hono";
+import { getDeveloperOpenApiRequestId } from "./diagnostic-context.js";
 
 export type DeveloperOpenApiErrorCode =
   | "UNAUTHORIZED"
@@ -51,7 +51,7 @@ export function repositoryUnavailable(): DeveloperOpenApiError {
   return createDeveloperOpenApiError(
     "DATABASE_REPOSITORY_UNAVAILABLE",
     503,
-    "Database repository is unavailable."
+    "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation."
   );
 }
 
@@ -95,7 +95,7 @@ export function writeDeveloperOpenApiError(
   context: Context,
   error: unknown
 ): Response {
-  const requestId = context.req.header("x-request-id") ?? `req-${randomUUID()}`;
+  const requestId = getDeveloperOpenApiRequestId(context);
   const normalized =
     error instanceof DeveloperOpenApiError
       ? error

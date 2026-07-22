@@ -81,6 +81,39 @@ describe("publication terminal phase handlers", () => {
       .resolves.toBeUndefined();
     expect(activateGeneration).not.toHaveBeenCalled();
   });
+
+  it("returns candidate consistency failures as safe retryable publication failures", async () => {
+    const handlers = createPublicationTerminalPhaseHandlers({
+      generations: {
+        markGenerationState: vi.fn().mockResolvedValue(true),
+        activateGeneration: vi.fn()
+      },
+      state: {
+        getActivationContext: vi.fn().mockResolvedValue({
+          state: "building",
+          predecessorGenerationId: "generation-active"
+        })
+      },
+      validation: {
+        validateChangedClosure: vi.fn().mockResolvedValue([{
+          code: "GRAPH_SUMMARY_MISMATCH",
+          message: "The candidate graph summary is incomplete.",
+          reference: "generation-1"
+        }])
+      },
+      references: referenceRepository(),
+      immutableObjects: { write: vi.fn() },
+      finalizers: [],
+      validationIssueLimit: 20
+    });
+
+    await expect(handlers.validation({ ...terminalTask(), taskKind: "validation" }))
+      .rejects.toMatchObject({
+        code: "GENERATION_VALIDATION_FAILED",
+        retryable: true,
+        message: "GRAPH_SUMMARY_MISMATCH:generation-1"
+      });
+  });
 });
 
 function terminalTask(): PublicationSubtask {

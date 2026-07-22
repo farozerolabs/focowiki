@@ -6,10 +6,18 @@ const repositoryPath = resolve(
   import.meta.dirname,
   "../src/infrastructure/postgres/active-generation-read-repository.ts"
 );
+const searchRepositoryPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/active-projection-search.ts"
+);
 const migrationPath = resolve(import.meta.dirname, "../migrations/001_production_admin_web.sql");
 const runtimeMigrationPath = resolve(
   import.meta.dirname,
   "../migrations/008_large_scale_ingestion_runtime.sql"
+);
+const readRepairMigrationPath = resolve(
+  import.meta.dirname,
+  "../migrations/010_generation_consistent_read_repair.sql"
 );
 
 function normalized(path: string): string {
@@ -19,23 +27,27 @@ function normalized(path: string): string {
 describe("active generation search read-model contract", () => {
   it("searches active file and graph projections with direct file continuity", () => {
     const repository = normalized(repositoryPath);
-    expect(repository).toContain("const search_candidate_multiplier = 10");
-    expect(repository).toContain("with file_matches as materialized");
-    expect(repository).toContain("graph_matches as materialized");
-    expect(repository).toContain("lower(coalesce(record.searchable_text, '')) like");
-    expect(repository).toContain("limit ${candidatelimit}");
-    expect(repository).toContain("from focowiki.active_projection_records record");
-    expect(repository).toContain("join focowiki.active_object_refs file");
-    expect(repository).toContain("file.ref_kind = 'page'");
-    expect(repository).toContain("'fileid', file.file_id");
-    expect(repository).toContain("'path', file.logical_path");
-    expect(repository).toContain("limit ${input.limit + 1}");
-    expect(repository).not.toContain(" offset ");
+    const search = normalized(searchRepositoryPath);
+    expect(repository).toContain("searchactiveprojections");
+    expect(search).toContain("retrieveexactcandidates");
+    expect(search).toContain("retrievefulltextcandidates");
+    expect(search).toContain("retrievetrigramcandidates");
+    expect(search).toContain("focowiki.similarity(");
+    expect(search).not.toMatch(/(?<!focowiki\.)\bsimilarity\(/u);
+    expect(search).toContain("lower(coalesce(record.searchable_text, '')) like");
+    expect(search).toContain("limit ${input.candidatelimit}");
+    expect(search).toContain("join focowiki.active_object_refs file");
+    expect(search).toContain("file.ref_kind = 'page'");
+    expect(search).toContain("'fileid', file.file_id");
+    expect(search).toContain("'path', file.logical_path");
+    expect(search).toContain("limit ${input.limit + 1}");
+    expect(search).not.toMatch(/and \( to_tsvector[^;]{0,300} or lower/u);
+    expect(search).not.toContain(" offset ");
   });
 
   it("bounds graph edge traversal with forward and reverse endpoint indexes", () => {
-    const repository = normalized(repositoryPath);
-    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)}`;
+    const repository = `${normalized(repositoryPath)} ${normalized(searchRepositoryPath)}`;
+    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)} ${normalized(readRepairMigrationPath)}`;
     expect(repository).toContain("edge.source_file_id = ${input.sourcefileid}");
     expect(repository).toContain("edge.related_source_file_id = ${input.sourcefileid}");
     expect(migration).toContain("active_projection_records_graph_edge_source_weight_idx");
@@ -44,7 +56,7 @@ describe("active generation search read-model contract", () => {
   });
 
   it("filters tombstoned endpoints from search and related traversal", () => {
-    const repository = normalized(repositoryPath);
+    const repository = `${normalized(repositoryPath)} ${normalized(searchRepositoryPath)}`;
     expect(repository).toContain("source.deleted_at is null");
     expect(repository).toContain("source.deletion_intent_id is null");
     expect(repository).toContain("related.deleted_at is null");
@@ -52,7 +64,7 @@ describe("active generation search read-model contract", () => {
   });
 
   it("defines active file, tree, file-search, and graph-search indexes", () => {
-    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)}`;
+    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)} ${normalized(readRepairMigrationPath)}`;
     expect(migration).toContain("active_object_refs_path_idx");
     expect(migration).toContain("active_object_refs_file_idx");
     expect(migration).toContain("active_projection_records_tree_idx");
@@ -61,6 +73,8 @@ describe("active generation search read-model contract", () => {
     expect(migration).toContain("active_projection_records_search_trgm_idx");
     expect(migration).toContain("active_projection_records_graph_search_fts_idx");
     expect(migration).toContain("active_projection_records_graph_search_trgm_idx");
+    expect(migration).toContain("active_projection_records_search_title_exact_idx");
+    expect(migration).toContain("active_projection_records_graph_title_exact_idx");
     expect(migration).toContain("active_generation_read_format_idx");
     expect(migration).toContain("source_directory_statistics_directory_idx");
     expect(migration).toContain("active_generated_directory_stats_lookup_idx");

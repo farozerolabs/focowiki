@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   ActiveGenerationFile,
   ActiveGenerationProjection,
@@ -71,6 +71,67 @@ describe("active generation graph expansion", () => {
       relatedSourceFileId: "source-b"
     }));
   });
+
+  it("loads one bounded relationship batch per graph depth", async () => {
+    const scope = createScope();
+    const listRelated = vi.spyOn(scope, "listRelated");
+    const listRelatedForSources = vi.spyOn(scope, "listRelatedForSources");
+
+    const result = await expandActiveGenerationGraph(scope, {
+      fileId: "source-a",
+      nodeId: null,
+      edgeId: null,
+      query: null,
+      depth: 2,
+      fanout: 5,
+      limit: 10,
+      cursor: null
+    });
+
+    expect(result?.relationships.map((item) => item.relatedSourceFileId)).toEqual([
+      "source-b",
+      "source-c"
+    ]);
+    expect(listRelated).not.toHaveBeenCalled();
+    expect(listRelatedForSources).toHaveBeenCalledTimes(2);
+    expect(listRelatedForSources).toHaveBeenNthCalledWith(1, {
+      sourceFileIds: ["source-a"],
+      limitPerSource: 5
+    });
+    expect(listRelatedForSources).toHaveBeenNthCalledWith(2, {
+      sourceFileIds: ["source-b", "source-c"],
+      limitPerSource: 5
+    });
+  });
+
+  it("continues a deterministic relationship page without duplicates", async () => {
+    const first = await expandActiveGenerationGraph(createScope(), {
+      fileId: "source-a",
+      nodeId: null,
+      edgeId: null,
+      query: null,
+      depth: 1,
+      fanout: 5,
+      limit: 1,
+      cursor: null
+    });
+    expect(first?.relationships).toHaveLength(1);
+    expect(first?.nextCursor).not.toBeNull();
+
+    const second = await expandActiveGenerationGraph(createScope(), {
+      fileId: "source-a",
+      nodeId: null,
+      edgeId: null,
+      query: null,
+      depth: 1,
+      fanout: 5,
+      limit: 1,
+      cursor: first?.nextCursor ?? null
+    });
+    expect(second?.relationships).toHaveLength(1);
+    expect(second?.relationships[0]?.relatedSourceFileId)
+      .not.toBe(first?.relationships[0]?.relatedSourceFileId);
+  });
 });
 
 function createScope(): ActiveGenerationReadScope {
@@ -80,7 +141,13 @@ function createScope(): ActiveGenerationReadScope {
     ["source-c", file("source-c", "pages/c.md")]
   ]);
   const related = new Map<string, ActiveGenerationProjection[]>([
-    ["source-a", [relationship("edge-a-b", "source-a", "source-b", "pages/b.md", 0.9)]],
+    [
+      "source-a",
+      [
+        relationship("edge-a-b", "source-a", "source-b", "pages/b.md", 0.9),
+        relationship("edge-a-c", "source-a", "source-c", "pages/c.md", 0.8)
+      ]
+    ],
     [
       "source-b",
       [

@@ -34,6 +34,8 @@ import type { ActiveGenerationReadRepository } from "../application/ports/active
 import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
+import type { RuntimeLogger } from "../logger.js";
+import { installDeveloperOpenApiDiagnosticBoundary } from "./route-helpers.js";
 
 export type DeveloperOpenApiRouteServices = {
   config: RuntimeConfig;
@@ -48,6 +50,7 @@ export type DeveloperOpenApiRouteServices = {
   roleJobs: RoleJobRepository | null;
   publicationGenerations: PublicationGenerationRepository | null;
   sourceFileRetries: SourceFileRetryRepository | null;
+  logger: RuntimeLogger;
 };
 
 export function registerDeveloperOpenApiRoutes(
@@ -58,6 +61,11 @@ export function registerDeveloperOpenApiRoutes(
   const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
   const api = createDeveloperOpenApiService(services);
   const openApiDocument = createDeveloperOpenApiDocument();
+
+  installDeveloperOpenApiDiagnosticBoundary(app, {
+    logger: services.logger,
+    operationIds: createOperationIdMap(openApiDocument.paths)
+  });
 
   app.use("/openapi/v2/*", requireAuth);
 
@@ -280,6 +288,21 @@ export function registerDeveloperOpenApiRoutes(
 
   app.all("/openapi/v2/*", (context) => writeDeveloperOpenApiError(context, unsupportedRoute()));
   app.all("/kb/*", (context) => writeDeveloperOpenApiError(context, unsupportedRoute()));
+}
+
+function createOperationIdMap(
+  paths: Record<string, Record<string, Record<string, unknown>>>
+): Map<string, string> {
+  const operationIds = new Map<string, string>();
+  for (const [path, methods] of Object.entries(paths)) {
+    const routeTemplate = path.replace(/\{([^}]+)\}/gu, ":$1");
+    for (const [method, operation] of Object.entries(methods)) {
+      if (typeof operation.operationId === "string") {
+        operationIds.set(`${method.toUpperCase()} ${routeTemplate}`, operation.operationId);
+      }
+    }
+  }
+  return operationIds;
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {

@@ -1005,6 +1005,12 @@ describeDatabase("publication generation repository integration", () => {
       logicalPath: source.path,
       payload: { path: source.path }
     });
+    const graphSummary = await sql<Array<{ graph_index_available: boolean }>>`
+      SELECT graph_index_available
+      FROM focowiki.generation_graph_summaries
+      WHERE generation_id = ${committed.generationId}
+    `;
+    expect(graphSummary).toEqual([{ graph_index_available: true }]);
     const activeSegments = await sql<Array<{ segment_id: string }>>`
       SELECT segment_id
       FROM focowiki.active_projection_segments

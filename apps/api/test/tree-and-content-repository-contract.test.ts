@@ -10,6 +10,10 @@ const treeReadModelPath = resolve(
   import.meta.dirname,
   "../src/infrastructure/postgres/active-tree-read-model.ts"
 );
+const treeStatisticsPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/active-tree-statistics.ts"
+);
 const routesPath = resolve(import.meta.dirname, "../src/developer-openapi/routes.ts");
 const projectionWriterPath = resolve(
   import.meta.dirname,
@@ -41,13 +45,17 @@ describe("active tree and generated-content repository contract", () => {
     );
   });
 
-  it("keeps optimized reads on active materialized projections without segment scans", () => {
+  it("keeps optimized reads on active materialized projections with one bounded fallback", () => {
     const repository = normalized(repositoryPath);
+    const statistics = normalized(treeStatisticsPath);
     expect(repository).toContain("coalesce(migration.state, 'legacy_readable') as optimization_state");
     expect(repository).toContain("active graph summary is unavailable");
-    expect(repository).toContain("version.optimizationstate !== \"optimized_active\"");
+    expect(statistics).toContain("with requested(path) as materialized");
+    expect(statistics).toContain("child.parent_path = any(${unresolvedpaths})");
+    expect(statistics).toContain("descendant.logical_path >= requested.path || '/'");
     expect(repository).not.toContain("from focowiki.projection_segments");
     expect(repository).not.toContain("from focowiki.generation_projection_segments");
+    expect(statistics).not.toContain("from focowiki.projection_segments");
   });
 
   it("lists and searches active tree projections with keyset pagination", () => {

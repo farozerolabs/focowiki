@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProjectionRepairCheckpoint } from "../src/application/ports/projection-repair-repository.js";
 import { runProjectionRepairSlice } from "../src/maintenance/projection-repair.js";
 
 describe("projection repair", () => {
@@ -25,7 +26,7 @@ describe("projection repair", () => {
   });
 
   it("builds and atomically activates a validated repair generation", async () => {
-    const input = createInput({ treeComplete: true });
+    const input = createInput(completedCheckpoint());
 
     const result = await runProjectionRepairSlice(input);
 
@@ -40,7 +41,7 @@ describe("projection repair", () => {
   });
 
   it("supersedes and retries when normal publication wins activation", async () => {
-    const input = createInput({ treeComplete: true });
+    const input = createInput(completedCheckpoint());
     input.generations.activateGeneration.mockResolvedValue(false);
 
     const result = await runProjectionRepairSlice(input);
@@ -51,15 +52,119 @@ describe("projection repair", () => {
     }));
     expect(input.repair.complete).not.toHaveBeenCalled();
   });
+
+  it("preserves the active generation and retries when candidate parity validation fails", async () => {
+    const input = createInput(completedCheckpoint());
+    input.validation.validateChangedClosure.mockResolvedValue([{
+      code: "DIRECTORY_NAVIGATION_MISSING",
+      message: "A visible directory has no navigation summary.",
+      reference: "pages/guides"
+    }]);
+
+    const result = await runProjectionRepairSlice(input);
+
+    expect(result).toEqual({ phase: "failed", records: 0 });
+    expect(input.generations.failGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: "generation-repair",
+      code: "PROJECTION_REPAIR_VALIDATION_FAILED"
+    }));
+    expect(input.generations.activateGeneration).not.toHaveBeenCalled();
+    expect(input.repair.retryFromLatest).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "PROJECTION_REPAIR_FAILED"
+    }));
+    expect(input.repair.complete).not.toHaveBeenCalled();
+  });
+
+  it("does no projection or object work when the repair version is already complete", async () => {
+    const input = createInput();
+    input.repair.claim.mockResolvedValue(null);
+
+    const result = await runProjectionRepairSlice(input);
+
+    expect(result).toEqual({ phase: "idle", records: 0 });
+    expect(input.records.stageUpsert).not.toHaveBeenCalled();
+    expect(input.shards.applyBatch).not.toHaveBeenCalled();
+    expect(input.navigation.writeEntries).not.toHaveBeenCalled();
+    expect(input.immutableObjects.write).not.toHaveBeenCalled();
+    expect(input.references.stageUpsert).not.toHaveBeenCalled();
+    expect(input.references.stageDelete).not.toHaveBeenCalled();
+  });
+
+  it("repairs one bounded directory-navigation page and persists its cursor", async () => {
+    const input = createInput({
+      treeComplete: true,
+      navigationDirectoryCursor: null,
+      navigationEntryCursor: null,
+      navigationPhase: "entries",
+      navigationComplete: false,
+      graphCursor: null,
+      graphNodeCount: 0,
+      graphEdgeCount: 0,
+      graphComplete: false
+    });
+    input.repair.listNextNavigationDirectory.mockResolvedValue({
+      recordId: "directory:pages",
+      path: "pages"
+    });
+    input.repair.listNavigationEntryPage.mockResolvedValue({
+      entries: [{
+        entryId: "source-1",
+        desiredEntry: {
+          id: "source-1",
+          sortKey: "guide.md/source-1",
+          name: "guide.md",
+          targetPath: "pages/guide.md",
+          kind: "file"
+        }
+      }],
+      nextCursor: { sortKey: "guide.md/source-1", recordId: "source-1" }
+    });
+
+    const result = await runProjectionRepairSlice(input);
+
+    expect(result).toEqual({ phase: "navigation", records: 1 });
+    expect(input.navigation.writeEntries).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: "generation-repair",
+      directoryPath: "pages"
+    }));
+    expect(input.repair.advanceNavigationCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      navigationEntryCursor: { sortKey: "guide.md/source-1", recordId: "source-1" },
+      navigationPhase: "entries",
+      navigationComplete: false
+    }));
+  });
+
+  it("persists a canonical graph summary after bounded graph counting", async () => {
+    const input = createInput({
+      ...completedCheckpoint(),
+      graphComplete: false,
+      graphCursor: { projectionKind: "graph_edge", recordId: "edge-2" },
+      graphNodeCount: 2,
+      graphEdgeCount: 3
+    });
+    input.repair.listGraphPage.mockResolvedValue({ records: [], nextCursor: null });
+
+    const result = await runProjectionRepairSlice(input);
+
+    expect(result).toEqual({ phase: "graph", records: 0 });
+    expect(input.repair.stageGraphSummary).toHaveBeenCalledWith(expect.objectContaining({
+      nodeCount: 2,
+      edgeCount: 3
+    }));
+    expect(input.repair.advanceGraphCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      graphComplete: true
+    }));
+    expect(input.generations.activateGeneration).not.toHaveBeenCalled();
+  });
 });
 
-function createInput(checkpoint = { treeComplete: false }) {
+function createInput(checkpoint: Partial<ProjectionRepairCheckpoint> = emptyCheckpoint()) {
   const job = {
     knowledgeBaseId: "kb-test",
     repairVersion: 1,
     baseGenerationId: "generation-active",
     targetGenerationId: "generation-repair",
-    checkpoint: { treeCursor: null, treeComplete: checkpoint.treeComplete },
+    checkpoint: { ...emptyCheckpoint(), ...checkpoint },
     attemptCount: 1,
     descriptor: {
       id: "kb-test",
@@ -75,6 +180,13 @@ function createInput(checkpoint = { treeComplete: false }) {
     claim: vi.fn().mockResolvedValue(job),
     listTreePage: vi.fn().mockResolvedValue([]),
     advanceTreeCheckpoint: vi.fn().mockResolvedValue(true),
+    listNextNavigationDirectory: vi.fn().mockResolvedValue(null),
+    listNavigationEntryPage: vi.fn().mockResolvedValue({ entries: [], nextCursor: null }),
+    listStaleNavigationEntryPage: vi.fn().mockResolvedValue({ entries: [], nextCursor: null }),
+    advanceNavigationCheckpoint: vi.fn().mockResolvedValue(true),
+    listGraphPage: vi.fn().mockResolvedValue({ records: [], nextCursor: null }),
+    stageGraphSummary: vi.fn().mockResolvedValue(true),
+    advanceGraphCheckpoint: vi.fn().mockResolvedValue(true),
     complete: vi.fn().mockResolvedValue(true),
     retryFromLatest: vi.fn()
   };
@@ -103,6 +215,7 @@ function createInput(checkpoint = { treeComplete: false }) {
     repair,
     records: { stageUpsert: vi.fn(), stageDelete: vi.fn(), findActive: vi.fn(), findStaged: vi.fn() },
     shards: { applyBatch: vi.fn().mockResolvedValue({ deleted: false, recordCount: 1, reused: false }) },
+    navigation: { writeEntries: vi.fn().mockResolvedValue({ handled: true, touchedShardCount: 1 }) },
     references,
     immutableObjects: {
       write: vi.fn().mockResolvedValue({
@@ -131,6 +244,30 @@ function createInput(checkpoint = { treeComplete: false }) {
     now: () => new Date("2026-07-18T12:00:00.000Z"),
     leaseToken: "lease-repair",
     targetGenerationId: "generation-repair"
+  };
+}
+
+function emptyCheckpoint() {
+  return {
+    treeCursor: null,
+    treeComplete: false,
+    navigationDirectoryCursor: null,
+    navigationEntryCursor: null,
+    navigationPhase: "entries" as const,
+    navigationComplete: false,
+    graphCursor: null,
+    graphNodeCount: 0,
+    graphEdgeCount: 0,
+    graphComplete: false
+  };
+}
+
+function completedCheckpoint() {
+  return {
+    ...emptyCheckpoint(),
+    treeComplete: true,
+    navigationComplete: true,
+    graphComplete: true
   };
 }
 
