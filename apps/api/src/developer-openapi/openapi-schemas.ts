@@ -438,6 +438,7 @@ function relatedFileSchema(): SchemaObject {
   return objectSchema(
     {
       generationId: idSchema("Active generation containing this relationship."),
+      edgeId: idSchema("Stable graph edge identifier accepted by graph expansion."),
       fileId: idSchema(
         "Related generated file identifier accepted by file detail, content, related-file, and graph-expansion operations."
       ),
@@ -455,6 +456,7 @@ function relatedFileSchema(): SchemaObject {
     },
     [
       "fileId",
+      "edgeId",
       "generationId",
       "sourceFileId",
       "path",
@@ -832,6 +834,8 @@ function fileSearchResultSchema(): SchemaObject {
   return objectSchema(
     {
       generationId: idSchema("Active generation searched for this result."),
+      nodeId: nullableString("Stable graph node identifier when this result matched a graph node."),
+      edgeId: nullableString("Stable graph edge identifier when this result matched a graph edge."),
       fileId: idSchema("Generated file identifier accepted by file detail, content, and related-file APIs."),
       generatedFileId: idSchema(
         "Generated file identifier. Same value as `fileId`; included to align with source-file list responses."
@@ -871,6 +875,8 @@ function fileSearchResultSchema(): SchemaObject {
     },
     [
       "generationId",
+      "nodeId",
+      "edgeId",
       "fileId",
       "generatedFileId",
       "knowledgeBaseId",

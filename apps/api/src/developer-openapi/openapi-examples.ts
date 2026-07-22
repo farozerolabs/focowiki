@@ -185,6 +185,8 @@ const generatedFile = {
 
 const fileSearchResult = {
   generationId,
+  nodeId: sourceFileId,
+  edgeId: null,
   fileId,
   generatedFileId: fileId,
   knowledgeBaseId,
@@ -255,6 +257,7 @@ const fileSearchNextRequestTemplates = {
 
 const relatedFile = {
   generationId,
+  edgeId: "graph-edge-11111111-1111-4111-8111-111111111111",
   fileId: "source-file-22222222-2222-4222-8222-222222222222",
   sourceFileId: "source-file-22222222-2222-4222-8222-222222222222",
   path: "pages/reference.md",

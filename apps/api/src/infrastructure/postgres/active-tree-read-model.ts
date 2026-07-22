@@ -419,9 +419,19 @@ async function hydrateSourceDirectoryStatistics(
   const statistics = new Map(persistedRows.map((row) => [row.path, row] as const));
   const missingPaths = directoryPaths.filter((path) => !statistics.has(path));
   if (missingPaths.length > 0 && !allowCompatibilityFallback) {
-    throw new Error("Active directory statistics are unavailable");
+    const entriesByPath = new Map(
+      entries
+        .filter((entry) => entry.path)
+        .map((entry) => [entry.path!, entry] as const)
+    );
+    const unresolvedPaths = missingPaths.filter((path) =>
+      !hasCompleteDirectoryStatistics(entriesByPath.get(path)?.payload)
+    );
+    if (unresolvedPaths.length > 0) {
+      throw new Error("Active directory statistics are unavailable");
+    }
   }
-  if (missingPaths.length > 0) {
+  if (missingPaths.length > 0 && allowCompatibilityFallback) {
     const fallbackRows = await sql<TreeStatisticsRow[]>`
       WITH requested(path) AS MATERIALIZED (
         SELECT unnest(${missingPaths}::text[])
@@ -480,6 +490,18 @@ async function hydrateSourceDirectoryStatistics(
       }
     };
   });
+}
+
+function hasCompleteDirectoryStatistics(payload: SerializableJson | undefined): boolean {
+  if (!payload || Array.isArray(payload) || typeof payload !== "object") return false;
+  const object = payload as Record<string, SerializableJson>;
+  const directEntryCount = object.directEntryCount;
+  const directDirectoryCount = object.directDirectoryCount;
+  const directFileCount = object.directFileCount;
+  const descendantFileCount = object.descendantFileCount;
+  const values = [directEntryCount, directDirectoryCount, directFileCount, descendantFileCount];
+  return values.every((value) => Number.isSafeInteger(value) && Number(value) >= 0)
+    && Number(directEntryCount) === Number(directDirectoryCount) + Number(directFileCount);
 }
 
 function readPayloadString(payload: SerializableJson, key: string): string | null {
