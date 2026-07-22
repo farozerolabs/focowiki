@@ -12,6 +12,7 @@ import {
 import { renderBoundedRootFile } from "../publication/bounded-root-writer.js";
 import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
 import type { JsonProjectionRecord } from "../publication/projection-shard-partitioning.js";
+import type { OrderedDirectoryEntry } from "../publication/ordered-directory-leaves.js";
 
 const REPAIR_ROOT_PATHS = [
   "index.md",
@@ -33,6 +34,15 @@ export async function runProjectionRepairSlice(input: {
       logicalPath: string;
       changes: Array<{ recordId: string; record: JsonProjectionRecord | null }>;
     }) => Promise<{ deleted: boolean; recordCount: number; reused: boolean }>;
+  };
+  navigation: {
+    writeEntries: (input: {
+      knowledgeBaseId: string;
+      generationId: string;
+      directoryPath: string;
+      entries: Array<{ entryId: string; desiredEntry: OrderedDirectoryEntry | null }>;
+      writeRootWhenUnchanged?: boolean;
+    }) => Promise<{ handled: true; touchedShardCount: number }>;
   };
   references: GenerationObjectReferenceRepository;
   immutableObjects: {
@@ -56,7 +66,10 @@ export async function runProjectionRepairSlice(input: {
   now?: () => Date;
   leaseToken?: string;
   targetGenerationId?: string;
-}): Promise<{ phase: "idle" | "tree" | "completed" | "retry" | "failed"; records: number }> {
+}): Promise<{
+  phase: "idle" | "tree" | "navigation" | "graph" | "completed" | "retry" | "failed";
+  records: number;
+}> {
   const now = input.now ?? (() => new Date());
   const startedAt = now();
   const leaseToken = input.leaseToken ?? randomUUID();
@@ -131,6 +144,127 @@ export async function runProjectionRepairSlice(input: {
         updatedAt: now().toISOString()
       }));
       return { phase: "tree", records: page.length };
+    }
+
+    if (!job.checkpoint.navigationComplete) {
+      const directory = await input.repair.listNextNavigationDirectory({
+        job,
+        leaseToken
+      });
+      if (!directory) {
+        await requireCheckpoint(input.repair.advanceNavigationCheckpoint({
+          job,
+          leaseToken,
+          navigationDirectoryCursor: job.checkpoint.navigationDirectoryCursor,
+          navigationEntryCursor: null,
+          navigationPhase: "entries",
+          navigationComplete: true,
+          updatedAt: now().toISOString()
+        }));
+        return { phase: "navigation", records: 0 };
+      }
+
+      if (job.checkpoint.navigationPhase === "entries") {
+        const page = await input.repair.listNavigationEntryPage({
+          job,
+          leaseToken,
+          directoryPath: directory.path,
+          limit: input.treePageSize
+        });
+        if (page.entries.length > 0) {
+          await input.navigation.writeEntries({
+            knowledgeBaseId: job.knowledgeBaseId,
+            generationId: job.targetGenerationId,
+            directoryPath: directory.path,
+            entries: page.entries
+          });
+        }
+        await requireCheckpoint(input.repair.advanceNavigationCheckpoint({
+          job,
+          leaseToken,
+          navigationDirectoryCursor: job.checkpoint.navigationDirectoryCursor,
+          navigationEntryCursor: page.nextCursor,
+          navigationPhase: page.nextCursor ? "entries" : "stale",
+          navigationComplete: false,
+          updatedAt: now().toISOString()
+        }));
+        return { phase: "navigation", records: page.entries.length };
+      }
+
+      const stalePage = await input.repair.listStaleNavigationEntryPage({
+        job,
+        leaseToken,
+        directoryPath: directory.path,
+        limit: input.treePageSize
+      });
+      if (stalePage.entries.length > 0) {
+        await input.navigation.writeEntries({
+          knowledgeBaseId: job.knowledgeBaseId,
+          generationId: job.targetGenerationId,
+          directoryPath: directory.path,
+          entries: stalePage.entries
+        });
+      }
+      if (stalePage.nextCursor) {
+        await requireCheckpoint(input.repair.advanceNavigationCheckpoint({
+          job,
+          leaseToken,
+          navigationDirectoryCursor: job.checkpoint.navigationDirectoryCursor,
+          navigationEntryCursor: stalePage.nextCursor,
+          navigationPhase: "stale",
+          navigationComplete: false,
+          updatedAt: now().toISOString()
+        }));
+      } else {
+        await input.navigation.writeEntries({
+          knowledgeBaseId: job.knowledgeBaseId,
+          generationId: job.targetGenerationId,
+          directoryPath: directory.path,
+          entries: [],
+          writeRootWhenUnchanged: true
+        });
+        await requireCheckpoint(input.repair.advanceNavigationCheckpoint({
+          job,
+          leaseToken,
+          navigationDirectoryCursor: directory.recordId,
+          navigationEntryCursor: null,
+          navigationPhase: "entries",
+          navigationComplete: false,
+          updatedAt: now().toISOString()
+        }));
+      }
+      return { phase: "navigation", records: stalePage.entries.length };
+    }
+
+    if (!job.checkpoint.graphComplete) {
+      const page = await input.repair.listGraphPage({
+        job,
+        leaseToken,
+        limit: input.treePageSize
+      });
+      const nodeCount = job.checkpoint.graphNodeCount
+        + page.records.filter((record) => record.projectionKind === "graph_node").length;
+      const edgeCount = job.checkpoint.graphEdgeCount
+        + page.records.filter((record) => record.projectionKind === "graph_edge").length;
+      if (!page.nextCursor) {
+        await requireCheckpoint(input.repair.stageGraphSummary({
+          job,
+          leaseToken,
+          nodeCount,
+          edgeCount,
+          updatedAt: now().toISOString()
+        }));
+      }
+      await requireCheckpoint(input.repair.advanceGraphCheckpoint({
+        job,
+        leaseToken,
+        graphCursor: page.nextCursor,
+        graphNodeCount: nodeCount,
+        graphEdgeCount: edgeCount,
+        graphComplete: page.nextCursor === null,
+        updatedAt: now().toISOString()
+      }));
+      return { phase: "graph", records: page.records.length };
     }
 
     for (const path of REPAIR_ROOT_PATHS) {

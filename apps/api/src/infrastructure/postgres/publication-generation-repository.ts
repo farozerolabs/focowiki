@@ -558,29 +558,6 @@ export function createPostgresPublicationGenerationRepository(
               updated_at = EXCLUDED.updated_at
         `;
         await transaction`
-          INSERT INTO focowiki.generation_graph_summaries (
-            knowledge_base_id, generation_id, node_count, edge_count,
-            graph_index_available, updated_at
-          )
-          SELECT ${input.knowledgeBaseId}, ${input.generationId},
-                 count(*) FILTER (WHERE projection_kind = 'graph_node'),
-                 count(*) FILTER (WHERE projection_kind = 'graph_edge'),
-                 EXISTS (
-                   SELECT 1 FROM focowiki.active_object_refs reference
-                   WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
-                     AND reference.logical_path = '_graph/index.md'
-                 ),
-                 ${input.activatedAt}
-          FROM focowiki.active_projection_records
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND projection_kind IN ('graph_node', 'graph_edge')
-          ON CONFLICT (generation_id) DO UPDATE
-          SET node_count = EXCLUDED.node_count,
-              edge_count = EXCLUDED.edge_count,
-              graph_index_available = EXCLUDED.graph_index_available,
-              updated_at = EXCLUDED.updated_at
-        `;
-        await transaction`
           WITH touched AS MATERIALIZED (
             SELECT DISTINCT segment.projection_kind, segment.logical_partition
             FROM focowiki.generation_projection_segments lineage

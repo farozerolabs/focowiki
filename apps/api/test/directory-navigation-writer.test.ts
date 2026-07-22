@@ -108,6 +108,7 @@ describe("directory navigation writer", () => {
     }));
     expect(stageUpsert).toHaveBeenCalledTimes(2);
     expect(applyEntries).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: "generation-1",
       entries: [expect.objectContaining({
         desiredEntry: expect.objectContaining({ sortKey: "guide.md/source-1" })
       })]
@@ -157,6 +158,65 @@ describe("directory navigation writer", () => {
       ]
     }));
     expect(stageUpsert).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes a bounded generation-scoped entry writer for maintenance repair", async () => {
+    const stageUpsert = vi.fn().mockResolvedValue(undefined);
+    const applyEntries = vi.fn().mockResolvedValue({
+      changed: false,
+      touchedLeaves: [],
+      removedLeafIds: [],
+      summary: {
+        directoryPath: "pages/empty",
+        entryCount: 0,
+        firstLeafId: null,
+        revision: 1
+      }
+    });
+    const writer = createDirectoryNavigationWriter({
+      navigation: { applyEntry: vi.fn(), applyEntries, getSummary: vi.fn() },
+      references: {
+        stageUpsert,
+        stageDelete: vi.fn(),
+        findActiveByPath: vi.fn(),
+        findActiveByRef: vi.fn(),
+        findStagedByRef: vi.fn()
+      },
+      immutableObjects: {
+        write: vi.fn().mockResolvedValue({
+          checksumSha256: "a".repeat(64),
+          formatVersion: 1,
+          objectKey: "generated/object",
+          contentType: "text/markdown; charset=utf-8",
+          sizeBytes: 100,
+          createdAt: "2026-07-17T00:00:00.000Z",
+          verifiedAt: "2026-07-17T00:00:00.000Z",
+          reused: false
+        })
+      },
+      limits: { maxEntries: 200, maxBytes: 65_536, mergeBelowEntries: 50 }
+    });
+
+    const result = await writer.writeEntries({
+      knowledgeBaseId: "kb-1",
+      generationId: "generation-repair",
+      directoryPath: "pages/empty",
+      entries: [],
+      writeRootWhenUnchanged: true
+    });
+
+    expect(result).toEqual({ handled: true, touchedShardCount: 1 });
+    expect(applyEntries).toHaveBeenCalledWith(expect.objectContaining({
+      knowledgeBaseId: "kb-1",
+      generationId: "generation-repair",
+      directoryPath: "pages/empty",
+      entries: []
+    }));
+    expect(stageUpsert).toHaveBeenCalledOnce();
+    expect(stageUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      refKind: "directory_root",
+      logicalPath: "pages/empty/index.md"
+    }));
   });
 });
 

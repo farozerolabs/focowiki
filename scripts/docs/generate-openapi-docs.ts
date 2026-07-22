@@ -447,7 +447,9 @@ function renderSuccessResponses(document: OpenApiDocument, copy: LocaleCopy, res
 }
 
 function renderErrorResponses(copy: LocaleCopy, responses: [string, unknown][]): string {
-  const operationSpecific = responses.filter(([status]) => !["401", "429", "500"].includes(status));
+  const operationSpecific = responses.filter(
+    ([status]) => !["401", "429", "500", "503"].includes(status)
+  );
   if (operationSpecific.length === 0) return copy.commonErrorsNote;
   return [
     copy.commonErrorsNote,
@@ -643,7 +645,8 @@ function errorCodeForStatus(status: string): string {
     "413": "PAYLOAD_TOO_LARGE",
     "422": "VALIDATION_ERROR",
     "429": "RATE_LIMITED",
-    "500": "INTERNAL_ERROR"
+    "500": "INTERNAL_ERROR",
+    "503": "DATABASE_REPOSITORY_UNAVAILABLE"
   };
   return map[status] ?? "ERROR";
 }

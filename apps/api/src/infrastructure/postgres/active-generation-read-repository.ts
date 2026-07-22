@@ -13,6 +13,7 @@ import {
   listActiveTreeAncestors
 } from "./active-tree-read-model.js";
 import type { TransactionSql } from "postgres";
+import { searchActiveProjections } from "./active-projection-search.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -60,10 +61,6 @@ type ProjectionRow = {
 type RelatedProjectionRow = ProjectionRow & {
   seed_source_file_id: string;
 };
-
-const SEARCH_CANDIDATE_MIN = 100;
-const SEARCH_CANDIDATE_MAX = 2_000;
-const SEARCH_CANDIDATE_MULTIPLIER = 10;
 
 export function createPostgresActiveGenerationReadRepository(
   sql: DatabaseClient
@@ -215,7 +212,6 @@ function createScope(
         sql,
         knowledgeBaseId,
         generationId,
-        version.optimizationState !== "optimized_active",
         input
       );
     },
@@ -225,168 +221,18 @@ function createScope(
         sql,
         knowledgeBaseId,
         generationId,
-        version.optimizationState !== "optimized_active",
         paths
       );
     },
 
     async search(input) {
       assertLimit(input.limit);
-      const query = input.query.trim();
-      if (!query) return { items: [], nextCursor: null };
-      const pattern = `%${escapeLikePattern(query)}%`;
-      const normalizedPattern = pattern.toLocaleLowerCase("en-US");
-      const candidateLimit = Math.min(
-        SEARCH_CANDIDATE_MAX,
-        Math.max(SEARCH_CANDIDATE_MIN, input.limit * SEARCH_CANDIDATE_MULTIPLIER)
-      );
-      const rows = await sql<ProjectionRow[]>`
-        WITH file_matches AS MATERIALIZED (
-          SELECT record.*
-          FROM focowiki.active_projection_records record
-          WHERE record.knowledge_base_id = ${knowledgeBaseId}
-            AND record.projection_kind = 'search'
-            AND ${input.mode} IN ('file', 'hybrid')
-            AND (
-              to_tsvector('simple', coalesce(record.searchable_text, ''))
-                @@ plainto_tsquery('simple', ${query})
-              OR lower(coalesce(record.searchable_text, ''))
-                LIKE ${normalizedPattern} ESCAPE '\\'
-            )
-          ORDER BY
-            (lower(coalesce(record.title, '')) = lower(${query})) DESC,
-            similarity(lower(coalesce(record.searchable_text, '')), lower(${query})) DESC,
-            record.record_id
-          LIMIT ${candidateLimit}
-        ), graph_matches AS MATERIALIZED (
-          SELECT record.*
-          FROM focowiki.active_projection_records record
-          WHERE record.knowledge_base_id = ${knowledgeBaseId}
-            AND record.projection_kind IN ('graph_node', 'graph_edge')
-            AND ${input.mode} IN ('graph', 'hybrid')
-            AND (
-              to_tsvector('simple', coalesce(record.searchable_text, ''))
-                @@ plainto_tsquery('simple', ${query})
-              OR lower(coalesce(record.searchable_text, ''))
-                LIKE ${normalizedPattern} ESCAPE '\\'
-            )
-          ORDER BY
-            (lower(coalesce(record.title, '')) = lower(${query})) DESC,
-            similarity(lower(coalesce(record.searchable_text, '')), lower(${query})) DESC,
-            record.record_id
-          LIMIT ${candidateLimit}
-        ), raw_candidates AS (
-          SELECT record.projection_kind, record.record_id,
-                 record.source_file_id, record.related_source_file_id,
-                 file.logical_path, record.parent_path, record.sort_key,
-                 record.title, record.summary, record.searchable_text,
-                 record.payload_json || jsonb_build_object(
-                   'fileId', file.file_id,
-                   'path', file.logical_path,
-                   'matchType', 'file_direct'
-                 ) AS payload_json
-          FROM file_matches record
-          JOIN focowiki.active_object_refs file
-            ON file.knowledge_base_id = record.knowledge_base_id
-           AND file.source_file_id = record.source_file_id
-           AND file.ref_kind = 'page'
-          JOIN focowiki.source_files source
-            ON source.id = record.source_file_id
-           AND source.knowledge_base_id = record.knowledge_base_id
-           AND source.deleted_at IS NULL
-           AND source.deletion_intent_id IS NULL
-          UNION ALL
-          SELECT record.projection_kind, record.record_id,
-                 record.source_file_id, record.related_source_file_id,
-                 file.logical_path, record.parent_path, record.sort_key,
-                 record.title, record.summary, record.searchable_text,
-                 record.payload_json || jsonb_build_object(
-                   'fileId', file.file_id,
-                   'path', file.logical_path,
-                   'matchType', 'graph_node'
-                 ) AS payload_json
-          FROM graph_matches record
-          JOIN focowiki.active_object_refs file
-            ON file.knowledge_base_id = record.knowledge_base_id
-           AND file.source_file_id = record.source_file_id
-           AND file.ref_kind = 'page'
-          JOIN focowiki.source_files source
-            ON source.id = record.source_file_id
-           AND source.knowledge_base_id = record.knowledge_base_id
-           AND source.deleted_at IS NULL
-           AND source.deletion_intent_id IS NULL
-          WHERE record.projection_kind = 'graph_node'
-          UNION ALL
-          SELECT record.projection_kind,
-                 candidate.source_file_id AS record_id,
-                 candidate.source_file_id,
-                 candidate.related_source_file_id,
-                 file.logical_path, NULL::text AS parent_path,
-                 file.logical_path AS sort_key, candidate.title,
-                 record.summary, record.searchable_text,
-                 record.payload_json || jsonb_build_object(
-                   'fileId', file.file_id,
-                   'path', file.logical_path,
-                   'matchType', 'graph_edge',
-                   'graphEdgeId', record.record_id
-                 ) AS payload_json
-          FROM graph_matches record
-          CROSS JOIN LATERAL (
-            VALUES
-              (record.source_file_id, record.related_source_file_id, record.payload_json->>'fromTitle'),
-              (record.related_source_file_id, record.source_file_id, record.payload_json->>'toTitle')
-          ) AS candidate(source_file_id, related_source_file_id, title)
-          JOIN focowiki.active_object_refs file
-            ON file.knowledge_base_id = record.knowledge_base_id
-           AND file.source_file_id = candidate.source_file_id
-           AND file.ref_kind = 'page'
-          JOIN focowiki.source_files source
-            ON source.id = candidate.source_file_id
-           AND source.knowledge_base_id = record.knowledge_base_id
-           AND source.deleted_at IS NULL
-           AND source.deletion_intent_id IS NULL
-          JOIN focowiki.source_files related
-            ON related.id = candidate.related_source_file_id
-           AND related.knowledge_base_id = record.knowledge_base_id
-           AND related.deleted_at IS NULL
-           AND related.deletion_intent_id IS NULL
-          WHERE record.projection_kind = 'graph_edge'
-            AND candidate.source_file_id IS NOT NULL
-        ), matched AS (
-          SELECT *, (
-            CASE WHEN lower(coalesce(title, '')) = lower(${query}) THEN 100 ELSE 0 END
-            + CASE WHEN coalesce(title, '') ILIKE ${pattern} ESCAPE '\\' THEN 40 ELSE 0 END
-            + CASE WHEN coalesce(logical_path, '') ILIKE ${pattern} ESCAPE '\\' THEN 20 ELSE 0 END
-            + ts_rank_cd(
-                to_tsvector('simple', coalesce(searchable_text, '')),
-                plainto_tsquery('simple', ${query})
-              ) * 10
-            + similarity(lower(coalesce(searchable_text, '')), lower(${query}))
-          )::real AS score
-          FROM raw_candidates
-        ), deduplicated AS (
-          SELECT *, row_number() OVER (
-            PARTITION BY source_file_id
-            ORDER BY score DESC, projection_kind, record_id
-          ) AS candidate_rank
-          FROM matched
-        ), ranked AS (
-          SELECT projection_kind, record_id, source_file_id,
-                 related_source_file_id, logical_path, parent_path,
-                 sort_key, title, summary, payload_json, score
-          FROM deduplicated
-          WHERE candidate_rank = 1
-        )
-        SELECT * FROM ranked
-        WHERE (
-          ${input.cursor?.score ?? null}::real IS NULL
-          OR score < ${input.cursor?.score ?? null}
-          OR (score = ${input.cursor?.score ?? null} AND record_id > ${input.cursor?.recordId ?? null})
-        )
-        ORDER BY score DESC, record_id
-        LIMIT ${input.limit + 1}
-      `;
-      return mapScoredPage(generationId, rows, input.limit);
+      return searchActiveProjections({
+        sql,
+        knowledgeBaseId,
+        generationId,
+        ...input
+      });
     },
 
     async listRelated(input) {
@@ -643,10 +489,6 @@ function readJsonString(value: SerializableJson, key: string): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof Date) return null;
   const property = (value as { readonly [property: string]: SerializableJson | undefined })[key];
   return typeof property === "string" ? property : null;
-}
-
-function escapeLikePattern(value: string): string {
-  return value.replace(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
 function assertLimit(limit: number): void {

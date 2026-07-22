@@ -15,6 +15,7 @@ import {
   toDeveloperActiveFile,
   toDeveloperActiveTreeEntry
 } from "../src/developer-openapi/active-generation-serializers.js";
+import { ActiveTreeStatisticsUnavailableError } from "../src/infrastructure/postgres/active-tree-statistics.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
 const rawKey = "fwok_active-generation-http-test-key";
@@ -106,6 +107,21 @@ describe("Developer OpenAPI active generation reads", () => {
     });
   });
 
+  it("caches search pages within one active generation and misses after activation", async () => {
+    const fixture = createFixture();
+    const path = `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=hybrid`;
+
+    expect((await getJson(fixture.app, path)).status).toBe(200);
+    expect((await getJson(fixture.app, path)).status).toBe(200);
+    expect(fixture.getSearchReadCount()).toBe(1);
+    expect(fixture.getRelatedBatchReadCount()).toBe(1);
+
+    fixture.setGeneration("generation-b");
+    expect((await getJson(fixture.app, path)).status).toBe(200);
+    expect(fixture.getSearchReadCount()).toBe(2);
+    expect(fixture.getRelatedBatchReadCount()).toBe(2);
+  });
+
   it("returns reusable graph node and edge identifiers", async () => {
     const fixture = createFixture();
     const search = await getJson(
@@ -169,6 +185,27 @@ describe("Developer OpenAPI active generation reads", () => {
     expect(stale.status).toBe(422);
     expect(stale.body).toMatchObject({
       error: { code: "VALIDATION_ERROR" }
+    });
+  });
+
+  it("returns a request-correlated availability response for unsafe tree statistics", async () => {
+    const fixture = createFixture({ treeStatisticsUnavailable: true });
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree`,
+      { "x-request-id": "request-tree-statistics-1" }
+    );
+
+    expect(response).toEqual({
+      status: 503,
+      body: {
+        error: {
+          code: "DATABASE_REPOSITORY_UNAVAILABLE",
+          message: "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation.",
+          httpStatus: 503
+        },
+        requestId: "request-tree-statistics-1"
+      }
     });
   });
 
@@ -330,10 +367,15 @@ describe("Developer OpenAPI active generation reads", () => {
   });
 });
 
-function createFixture(options: { graphState?: "available" | "empty" | "unavailable" } = {}) {
+function createFixture(options: {
+  graphState?: "available" | "empty" | "unavailable";
+  treeStatisticsUnavailable?: boolean;
+} = {}) {
   const graphState = options.graphState ?? "available";
   let generationId = "generation-a";
   const treeParentPaths: string[] = [];
+  let searchReadCount = 0;
+  let relatedBatchReadCount = 0;
   const files = new Map([
     ["source-a", file("source-a", "pages/a.md", "generated/a")],
     ["source-b", file("source-b", "pages/b.md", "generated/b")],
@@ -358,7 +400,10 @@ function createFixture(options: { graphState?: "available" | "empty" | "unavaila
         generationId,
         files,
         (parentPath) => treeParentPaths.push(parentPath),
-        graphState
+        graphState,
+        () => { searchReadCount += 1; },
+        () => { relatedBatchReadCount += 1; },
+        options.treeStatisticsUnavailable ?? false
       ));
     }
   };
@@ -396,6 +441,8 @@ function createFixture(options: { graphState?: "available" | "empty" | "unavaila
   return {
     app,
     treeParentPaths,
+    getSearchReadCount: () => searchReadCount,
+    getRelatedBatchReadCount: () => relatedBatchReadCount,
     setGeneration(value: string) {
       generationId = value;
     }
@@ -406,7 +453,10 @@ function createScope(
   generationId: string,
   files: Map<string, ActiveGenerationFile>,
   recordTreeParentPath: (parentPath: string) => void = () => undefined,
-  graphState: "available" | "empty" | "unavailable" = "available"
+  graphState: "available" | "empty" | "unavailable" = "available",
+  recordSearchRead: () => void = () => undefined,
+  recordRelatedBatchRead: () => void = () => undefined,
+  treeStatisticsUnavailable = false
 ): ActiveGenerationReadScope {
   const tree = [
     projection(generationId, "source-a", "pages/a.md", "A"),
@@ -446,6 +496,7 @@ function createScope(
       };
     },
     async listTree(input) {
+      if (treeStatisticsUnavailable) throw new ActiveTreeStatisticsUnavailableError();
       recordTreeParentPath(input.parentPath);
       const start = input.cursor ? 1 : 0;
       const items = tree.slice(start, start + input.limit);
@@ -460,6 +511,7 @@ function createScope(
       return new Map(paths.map((path) => [path, []]));
     },
     async search(input) {
+      recordSearchRead();
       return {
         items: [input.mode === "graph"
           ? { ...tree[0]!, projectionKind: "graph_node" }
@@ -472,6 +524,7 @@ function createScope(
       return { items: [], nextCursor: null };
     },
     async listRelatedForSources(input) {
+      recordRelatedBatchRead();
       return new Map(input.sourceFileIds.map((sourceFileId) => [
         sourceFileId,
         sourceFileId === "source-a" ? [relation] : []
@@ -582,9 +635,13 @@ function testConfig() {
   });
 }
 
-async function getJson(app: ReturnType<typeof createPublicOpenApiApp>, path: string) {
+async function getJson(
+  app: ReturnType<typeof createPublicOpenApiApp>,
+  path: string,
+  headers: Record<string, string> = {}
+) {
   const response = await app.request(`http://localhost${path}`, {
-    headers: { authorization: `Bearer ${rawKey}` }
+    headers: { authorization: `Bearer ${rawKey}`, ...headers }
   });
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }

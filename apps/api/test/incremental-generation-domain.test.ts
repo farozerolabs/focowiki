@@ -279,6 +279,18 @@ describe("incremental generation domain", () => {
     });
     expect(inserted.touchedLeafIds).toEqual(["leaf-first"]);
   });
+
+  it("removes the only leaf when its final directory entry is deleted", () => {
+    const removed = removeDirectoryEntry({
+      leaves: [{ id: "leaf-only", entries: [entry("only")] }],
+      entryId: "only",
+      limits: { maxEntries: 10, maxBytes: 10_000, mergeBelowEntries: 2 }
+    });
+
+    expect(removed.leaves).toEqual([]);
+    expect(removed.touchedLeafIds).toEqual([]);
+    expect(removed.removedLeafIds).toEqual(["leaf-only"]);
+  });
 });
 
 function entry(id: string): OrderedDirectoryEntry {

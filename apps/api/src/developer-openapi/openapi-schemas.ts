@@ -71,7 +71,9 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     Page: objectSchema(
       {
         items: { type: "array", items: {} },
-        nextCursor: nullableString("Opaque cursor accepted only by the same list family.")
+        nextCursor: nullableString(
+          "Opaque cursor accepted only by the same list family and unchanged query. Restart without a cursor when it is rejected."
+        )
       },
       ["items", "nextCursor"]
     ),
@@ -402,7 +404,9 @@ function graphExpansionResponseSchema(): SchemaObject {
         items: { type: "string" },
         description: "Logical `_graph/*` files that can be read through the path content endpoint."
       },
-      nextCursor: nullableString("Opaque cursor accepted by this graph expansion endpoint with the same seed."),
+      nextCursor: nullableString(
+        "Opaque cursor accepted by this graph expansion endpoint with the same seed and active generation. Restart without a cursor when it is rejected."
+      ),
       resultSummary: objectSchema(
         {
           seedCount: { type: "integer", minimum: 0 },
@@ -928,7 +932,9 @@ function fileSearchResponseSchema(): SchemaObject {
       generationId: nullableString("Active generation searched by this response. It is null before the first activation."),
       query: ref("FileSearchQueryContext"),
       items: { type: "array", items: ref("FileSearchResult") },
-      nextCursor: nullableString("Opaque cursor accepted by this search endpoint with the same query and filters."),
+      nextCursor: nullableString(
+        "Opaque cursor accepted by this search endpoint with the same query, filters, and active generation. Restart without a cursor when it is rejected."
+      ),
       searchStatus: {
         type: "string",
         enum: ["ok", "no_candidates", "index_unavailable"],
@@ -1121,7 +1127,9 @@ function generationPageSchema(itemSchema: SchemaObject): SchemaObject {
     {
       generationId: nullableString("Active generation used for this page. It is null before the first activation."),
       items: { type: "array", items: itemSchema },
-      nextCursor: nullableString("Opaque cursor accepted only by the same list family and active generation.")
+      nextCursor: nullableString(
+        "Opaque cursor accepted only by the same list family and active generation. Restart without a cursor when it is rejected."
+      )
     },
     ["generationId", "items", "nextCursor"]
   );

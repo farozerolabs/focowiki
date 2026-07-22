@@ -120,38 +120,53 @@ async function expandRelationships(
     return { items: [], nextCursor: null };
   }
 
-  const discovered: ActiveGenerationProjection[] = [];
-  let firstCursor: ActiveGenerationScoredCursor | null = null;
-  for (const [index, sourceFileId] of input.seedSourceFileIds.entries()) {
-    const page = await scope.listRelated({
-      sourceFileId,
-      limit: index === 0 ? input.limit : input.fanout,
-      cursor: index === 0 ? input.cursor : null
-    });
-    if (index === 0) firstCursor = page.nextCursor;
-    discovered.push(...page.items);
-  }
-
-  const firstHop = uniqueRelationships(discovered, input.excludedSourceFileIds);
+  const firstPage = await scope.listRelatedForSources({
+    sourceFileIds: input.seedSourceFileIds,
+    limitPerSource: input.fanout
+  });
+  const firstHop = uniqueRelationships(
+    input.seedSourceFileIds.flatMap((sourceFileId) => firstPage.get(sourceFileId) ?? []),
+    input.excludedSourceFileIds
+  );
   if (input.depth < 2) {
-    return { items: firstHop.slice(0, input.limit), nextCursor: firstCursor };
+    return paginateRelationships(firstHop, input.cursor, input.limit);
   }
 
-  const secondHop: ActiveGenerationProjection[] = [];
-  for (const relationship of firstHop.slice(0, input.fanout)) {
-    if (!relationship.relatedSourceFileId) continue;
-    const page = await scope.listRelated({
-      sourceFileId: relationship.relatedSourceFileId,
-      limit: input.fanout,
-      cursor: null
-    });
-    secondHop.push(...page.items);
-  }
+  const secondSeeds = uniqueStrings(
+    firstHop.slice(0, input.fanout)
+      .map((relationship) => relationship.relatedSourceFileId)
+      .filter(isString)
+  );
+  const secondPage = await scope.listRelatedForSources({
+    sourceFileIds: secondSeeds,
+    limitPerSource: input.fanout
+  });
+  const secondHop = secondSeeds.flatMap((sourceFileId) => secondPage.get(sourceFileId) ?? []);
 
+  return paginateRelationships(
+    uniqueRelationships([...firstHop, ...secondHop], input.excludedSourceFileIds),
+    input.cursor,
+    input.limit
+  );
+}
+
+function paginateRelationships(
+  relationships: ActiveGenerationProjection[],
+  cursor: ActiveGenerationScoredCursor | null,
+  limit: number
+): ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationScoredCursor> {
+  const afterCursor = cursor ? relationships.filter((relationship) => {
+    const score = relationship.score ?? 0;
+    return score < cursor.score
+      || (score === cursor.score && relationship.recordId > cursor.recordId);
+  }) : relationships;
+  const items = afterCursor.slice(0, limit);
+  const last = items.at(-1);
   return {
-    items: uniqueRelationships([...firstHop, ...secondHop], input.excludedSourceFileIds)
-      .slice(0, input.limit),
-    nextCursor: firstCursor
+    items,
+    nextCursor: afterCursor.length > limit && last
+      ? { score: last.score ?? 0, recordId: last.recordId }
+      : null
   };
 }
 
@@ -167,7 +182,10 @@ function uniqueRelationships(
     seen.add(targetId);
     output.push(relationship);
   }
-  return output;
+  return output.sort((left, right) =>
+    (right.score ?? 0) - (left.score ?? 0)
+    || left.recordId.localeCompare(right.recordId, "en")
+  );
 }
 
 function uniqueStrings(values: string[]): string[] {

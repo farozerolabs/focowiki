@@ -31,7 +31,7 @@ export type RedisCommandClient = {
 };
 
 export type RedisCoordinator = {
-  buildKey: (scope: string, id: string) => string;
+  buildKey: (...parts: string[]) => string;
   setSession: (sessionId: string, value: unknown, ttlSeconds: number) => Promise<void>;
   getSession: <T = unknown>(sessionId: string) => Promise<T | null>;
   clearSession: (sessionId: string) => Promise<void>;

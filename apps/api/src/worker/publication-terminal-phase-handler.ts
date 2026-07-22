@@ -65,9 +65,9 @@ export function createPublicationTerminalPhaseHandlers(input: {
         issueLimit: input.validationIssueLimit
       });
       if (issues.length > 0) {
-        throw terminalPhaseError(issues
+        throw validationPhaseError(issues
           .map((issue) => `${issue.code}:${issue.reference ?? "-"}`)
-          .join(", "), "GENERATION_VALIDATION_FAILED");
+          .join(", "));
       }
     },
 
@@ -153,4 +153,8 @@ function terminalPhaseError(message: string, code = "PUBLICATION_PHASE_FAILED"):
 
 function retryablePhaseError(message: string): RoleJobFailure {
   return new RoleJobFailure({ code: "PUBLICATION_PHASE_BUSY", message, retryable: true });
+}
+
+function validationPhaseError(message: string): RoleJobFailure {
+  return new RoleJobFailure({ code: "GENERATION_VALIDATION_FAILED", message, retryable: true });
 }
