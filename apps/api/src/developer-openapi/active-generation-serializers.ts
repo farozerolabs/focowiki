@@ -88,6 +88,10 @@ export function toDeveloperActiveSearchResult(
     ? "hybrid"
     : rawMatchType ?? (graph?.mode === "graph" ? "graph_node" : "file_direct");
   const relationships = graph?.relationships ?? [];
+  const nodeId = record.projectionKind === "graph_node" ? record.recordId : null;
+  const edgeId = record.projectionKind === "graph_edge"
+    ? readString(record.payload, "graphEdgeId") ?? record.recordId
+    : null;
   const graphRef = record.sourceFileId ? graphRefForSourceFile(record.sourceFileId) : null;
   const graphContext = graph && graph.mode !== "file" && record.sourceFileId && graphRef
     ? {
@@ -112,6 +116,8 @@ export function toDeveloperActiveSearchResult(
     : null;
   return {
     generationId: record.generationId,
+    nodeId,
+    edgeId,
     fileId,
     generatedFileId: fileId,
     knowledgeBaseId,
@@ -146,6 +152,7 @@ export function toDeveloperActiveRelatedFile(
   const seedIsFrom = readString(record.payload, "toFileId") === fileId;
   return {
     generationId: record.generationId,
+    edgeId: record.recordId,
     fileId,
     sourceFileId: fileId,
     path,

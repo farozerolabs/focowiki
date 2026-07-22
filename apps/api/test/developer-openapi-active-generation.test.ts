@@ -49,7 +49,7 @@ describe("Developer OpenAPI active generation reads", () => {
           graphRef: "_graph/by-file/source-a.json",
           depth: 1,
           seedSourceFileId: "source-a",
-          relationships: [{ fileId: "source-b", path: "pages/b.md" }],
+          relationships: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }],
           graphPaths: [
             "_graph/by-file/source-a.json",
             "_graph/by-file/source-b.json"
@@ -91,7 +91,7 @@ describe("Developer OpenAPI active generation reads", () => {
     expect(related.status).toBe(200);
     expect(related.body).toMatchObject({
       generationId: "generation-a",
-      items: [{ fileId: "source-b", path: "pages/b.md" }]
+      items: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }]
     });
 
     const graph = await getJson(
@@ -102,7 +102,52 @@ describe("Developer OpenAPI active generation reads", () => {
     expect(graph.body).toMatchObject({
       generationId: "generation-a",
       seedFile: { fileId: "source-a", path: "pages/a.md" },
-      relationships: [{ fileId: "source-b", path: "pages/b.md" }]
+      relationships: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }]
+    });
+  });
+
+  it("returns reusable graph node and edge identifiers", async () => {
+    const fixture = createFixture();
+    const search = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=graph`
+    );
+    expect(search).toMatchObject({
+      status: 200,
+      body: {
+        items: [{ nodeId: "source-a", fileId: "source-a", path: "pages/a.md" }]
+      }
+    });
+
+    const byNode = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?nodeId=source-a`
+    );
+    expect(byNode).toMatchObject({
+      status: 200,
+      body: {
+        query: { nodeId: "source-a" },
+        relationships: [{ edgeId: "edge-a-b", fileId: "source-b" }]
+      }
+    });
+
+    const related = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/related`
+    );
+    const edgeId = readItems(related.body)[0]?.edgeId;
+    expect(edgeId).toBe("edge-a-b");
+
+    const byEdge = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?edgeId=${edgeId}`
+    );
+    expect(byEdge).toMatchObject({
+      status: 200,
+      body: {
+        query: { edgeId: "edge-a-b" },
+        relationships: [{ edgeId: "edge-a-b", fileId: "source-b" }]
+      }
     });
   });
 
@@ -414,8 +459,13 @@ function createScope(
     async listTreeAncestors(paths) {
       return new Map(paths.map((path) => [path, []]));
     },
-    async search() {
-      return { items: [tree[0]!], nextCursor: null };
+    async search(input) {
+      return {
+        items: [input.mode === "graph"
+          ? { ...tree[0]!, projectionKind: "graph_node" }
+          : tree[0]!],
+        nextCursor: null
+      };
     },
     async listRelated(input) {
       if (input.sourceFileId === "source-a") return { items: [relation], nextCursor: null };
