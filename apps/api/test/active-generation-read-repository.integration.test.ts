@@ -107,6 +107,44 @@ describeDatabase("active generation read repository integration", () => {
     ))).rejects.toThrow("Active directory statistics are unavailable");
   });
 
+  it("uses complete directory statistics already stored in the active projection", async () => {
+    await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
+    await seedActiveTreeDirectory("generation-active-a", "pages", {
+      directEntryCount: 1,
+      directDirectoryCount: 0,
+      directFileCount: 1,
+      descendantFileCount: 1
+    });
+    await sql`
+      INSERT INTO focowiki.knowledge_base_optimization_migrations (
+        knowledge_base_id, state, prior_active_generation_id,
+        optimized_active_generation_id, completed_at
+      ) VALUES (
+        ${knowledgeBaseId}, 'optimized_active', 'generation-active-a',
+        'generation-active-a', now()
+      )
+      ON CONFLICT (knowledge_base_id) DO UPDATE
+      SET state = EXCLUDED.state,
+          prior_active_generation_id = EXCLUDED.prior_active_generation_id,
+          optimized_active_generation_id = EXCLUDED.optimized_active_generation_id,
+          completed_at = EXCLUDED.completed_at
+    `;
+
+    await expect(repository.withActiveGeneration(knowledgeBaseId, async (scope) => (
+      scope.listTree({ parentPath: "", entryType: "directory", query: null, limit: 10, cursor: null })
+    ))).resolves.toMatchObject({
+      items: [{
+        path: "pages",
+        payload: {
+          directEntryCount: 1,
+          directDirectoryCount: 0,
+          directFileCount: 1,
+          descendantFileCount: 1
+        }
+      }]
+    });
+  });
+
   it("resolves stable file identity and bounded projection pages in one generation", async () => {
     await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
     await seedAdditionalActiveFile("generation-active-a", "source-file-b", "pages/beta.md", "Beta");
@@ -522,7 +560,16 @@ describeDatabase("active generation read repository integration", () => {
     `;
   }
 
-  async function seedActiveTreeDirectory(generationId: string, path: string): Promise<void> {
+  async function seedActiveTreeDirectory(
+    generationId: string,
+    path: string,
+    statistics?: {
+      directEntryCount: number;
+      directDirectoryCount: number;
+      directFileCount: number;
+      descendantFileCount: number;
+    }
+  ): Promise<void> {
     const parentPath = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
     await sql`
       INSERT INTO focowiki.active_projection_records (
@@ -537,7 +584,8 @@ describeDatabase("active generation read repository integration", () => {
           kind: "directory",
           name: path.split("/").at(-1) ?? path,
           parentPath,
-          path
+          path,
+          ...statistics
         })}
       )
     `;
