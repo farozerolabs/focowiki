@@ -166,6 +166,8 @@ async function listSourceEntries(
 ): Promise<ActiveGenerationProjection[]> {
   const queryPattern = `%${escapeLikePattern(query)}%`;
   const normalizedQueryPattern = queryPattern.toLocaleLowerCase("en-US");
+  const queryScopePrefix = input.parentPath ? `${input.parentPath}/` : "";
+  const queryScopeUpperBound = input.parentPath ? `${input.parentPath}0` : "";
   const rows = await sql<ProjectionRow[]>`
     SELECT record.projection_kind, record.record_id, record.source_file_id,
            record.related_source_file_id, record.logical_path,
@@ -174,7 +176,19 @@ async function listSourceEntries(
     FROM focowiki.active_projection_records record
     WHERE record.knowledge_base_id = ${knowledgeBaseId}
       AND record.projection_kind = 'tree'
-      AND (${query} <> '' OR coalesce(record.parent_path, '') = ${input.parentPath})
+      AND (
+        (${query} = '' AND coalesce(record.parent_path, '') = ${input.parentPath})
+        OR (
+          ${query} <> ''
+          AND (
+            ${input.parentPath} = ''
+            OR (
+              record.logical_path >= ${queryScopePrefix}
+              AND record.logical_path < ${queryScopeUpperBound}
+            )
+          )
+        )
+      )
       AND (${query} = '' OR lower(
         coalesce(record.title, '') || ' ' || coalesce(record.logical_path, '')
       ) LIKE ${normalizedQueryPattern} ESCAPE '\\')

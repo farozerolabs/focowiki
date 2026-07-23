@@ -503,7 +503,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             name: "query",
             in: "query",
             required: false,
-            description: "Optional fuzzy tree search query. When set, matching files and directories are returned with ancestor chains.",
+            description: "Optional fuzzy tree search query. Matches stay within the selected parent path subtree and include ancestor chains.",
             schema: { type: "string", example: "guide" }
           },
           {
