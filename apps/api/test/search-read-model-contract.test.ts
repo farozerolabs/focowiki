@@ -24,6 +24,14 @@ function normalized(path: string): string {
   return readFileSync(path, "utf8").replace(/\s+/g, " ").toLowerCase();
 }
 
+function functionBody(source: string, name: string, nextName: string): string {
+  const start = source.indexOf(`function ${name.toLowerCase()}`);
+  const end = source.indexOf(`function ${nextName.toLowerCase()}`, start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe("active generation search read-model contract", () => {
   it("searches active file and graph projections with direct file continuity", () => {
     const repository = normalized(repositoryPath);
@@ -43,6 +51,32 @@ describe("active generation search read-model contract", () => {
     expect(search).toContain("limit ${input.limit + 1}");
     expect(search).not.toMatch(/and \( to_tsvector[^;]{0,300} or lower/u);
     expect(search).not.toContain(" offset ");
+  });
+
+  it("bounds full-text and fuzzy candidates before relevance scoring", () => {
+    const search = normalized(searchRepositoryPath);
+    const candidateRetrieval = functionBody(
+      search,
+      "retrieveexactcandidates",
+      "hydratesearchcandidates"
+    );
+
+    expect(candidateRetrieval.match(/with bounded_candidates as materialized/gu)).toHaveLength(4);
+    expect(candidateRetrieval).toContain("limit ${input.candidatelimit}");
+    expect(candidateRetrieval).not.toContain("order by ts_rank_cd(");
+    expect(candidateRetrieval).not.toContain("order by focowiki.similarity(");
+    expect(search).toContain("ts_rank_cd(");
+    expect(search).toContain("focowiki.similarity(");
+  });
+
+  it("uses literal file and graph candidate families so partial indexes remain usable", () => {
+    const search = normalized(searchRepositoryPath);
+    expect(search).toContain("retrievefilecandidates");
+    expect(search).toContain("retrievegraphcandidates");
+    expect(search).toContain("record.projection_kind = 'search'");
+    expect(search).toContain("record.projection_kind in ('graph_node', 'graph_edge')");
+    expect(search).not.toContain("${input.mode} in ('file', 'hybrid')");
+    expect(search).not.toContain("${input.mode} in ('graph', 'hybrid')");
   });
 
   it("bounds graph edge traversal with forward and reverse endpoint indexes", () => {

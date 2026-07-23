@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { expandActiveGenerationGraph } from "../src/developer-openapi/active-generation-graph-expansion.js";
 import { createPostgresActiveGenerationReadRepository } from "../src/infrastructure/postgres/active-generation-read-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
@@ -462,6 +463,56 @@ describeDatabase("active generation read repository integration", () => {
       path: "pages/beta.md"
     }));
     expect(result?.hybrid.items.filter((item) => item.sourceFileId === "source-file-a")).toHaveLength(1);
+  });
+
+  it("keeps high-frequency CJK graph retrieval bounded before scoring", async () => {
+    await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
+    await seedAdditionalActiveFile("generation-active-a", "source-file-b", "pages/beta.md", "Beta");
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, source_file_id,
+        related_source_file_id, logical_path, sort_key, title,
+        summary, searchable_text, payload_json
+      )
+      SELECT
+        ${knowledgeBaseId}, 'graph_edge', 'bulk-edge-' || lpad(item::text, 6, '0'),
+        'generation-active-a', 'graph-edge/v1/0001', 'source-file-a',
+        'source-file-b', 'pages/alpha.md', 'bulk-edge-' || lpad(item::text, 6, '0'),
+        'Alpha -> Beta', 'Common relationship', '法律 common relationship',
+        jsonb_build_object(
+          'fromFileId', 'source-file-a',
+          'fromPath', 'pages/alpha.md',
+          'fromTitle', 'Alpha',
+          'toFileId', 'source-file-b',
+          'toPath', 'pages/beta.md',
+          'toTitle', 'Beta',
+          'relationType', 'related',
+          'weight', 0.5,
+          'reason', 'Common relationship'
+        )
+      FROM generate_series(1, 30000) AS item
+    `;
+
+    const startedAt = performance.now();
+    const result = await repository.withActiveGeneration(knowledgeBaseId, async (scope) =>
+      expandActiveGenerationGraph(scope, {
+        fileId: null,
+        nodeId: null,
+        edgeId: null,
+        query: "法律",
+        depth: 1,
+        fanout: 5,
+        limit: 10,
+        cursor: null
+      })
+    );
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(result?.seedResults.length).toBeGreaterThan(0);
+    expect(result?.seedResults.every((item) => item.path?.startsWith("pages/"))).toBe(true);
+    expect(result?.relationships.every((item) => item.path?.startsWith("pages/"))).toBe(true);
+    expect(elapsedMs).toBeLessThan(2_000);
   });
 
   it("holds one repeatable-read generation snapshot across concurrent activation", async () => {
