@@ -354,7 +354,8 @@ async function runMaintenanceWorker(): Promise<void> {
               treePageSize: snapshot.maintenance.scanBatchSize,
               maxAttempts: snapshot.maintenance.maxAttempts,
               retryDelayMs: snapshot.maintenance.retryDelayMs,
-              validationIssueLimit: 50
+              validationIssueLimit: 50,
+              logger
             });
             const recoveryResult = await runImmutableWriteRecoverySlice({
               repository: immutableRepository,

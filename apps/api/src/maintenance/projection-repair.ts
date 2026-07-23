@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { GenerationObjectReferenceRepository } from "../application/ports/generation-object-reference-repository.js";
-import type { ProjectionRepairRepository } from "../application/ports/projection-repair-repository.js";
+import type {
+  ProjectionRepairCheckpoint,
+  ProjectionRepairRepository
+} from "../application/ports/projection-repair-repository.js";
 import type { ProjectionRecordRepository } from "../application/ports/projection-record-repository.js";
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
 import type { PublicationValidationRepository } from "../application/ports/publication-validation-repository.js";
@@ -9,10 +12,12 @@ import {
   GENERATED_GRAPH_RESOURCES,
   GENERATED_ROOT_MANIFEST_PATHS
 } from "../okf/generated-graph-resources.js";
+import type { RuntimeLogger } from "../logger.js";
 import { renderBoundedRootFile } from "../publication/bounded-root-writer.js";
 import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
 import type { JsonProjectionRecord } from "../publication/projection-shard-partitioning.js";
 import type { OrderedDirectoryEntry } from "../publication/ordered-directory-leaves.js";
+import { createRuntimeErrorDiagnostics } from "../runtime/error-diagnostics.js";
 
 const REPAIR_ROOT_PATHS = [
   "index.md",
@@ -23,6 +28,17 @@ const REPAIR_ROOT_PATHS = [
 ];
 
 export const CURRENT_PROJECTION_REPAIR_VERSION = 3;
+
+type ProjectionRepairDiagnosticStage =
+  | "tree"
+  | "navigation"
+  | "graph"
+  | "root_generation"
+  | "catalog"
+  | "validation"
+  | "manifest"
+  | "activation"
+  | "completion";
 
 export async function runProjectionRepairSlice(input: {
   repair: ProjectionRepairRepository;
@@ -65,6 +81,7 @@ export async function runProjectionRepairSlice(input: {
   maxAttempts: number;
   retryDelayMs: number;
   validationIssueLimit: number;
+  logger?: Pick<RuntimeLogger, "error">;
   now?: () => Date;
   leaseToken?: string;
   targetGenerationId?: string;
@@ -88,6 +105,7 @@ export async function runProjectionRepairSlice(input: {
   });
   if (!job) return { phase: "idle", records: 0 };
 
+  let diagnosticStage: ProjectionRepairDiagnosticStage = resolveDiagnosticStage(job.checkpoint);
   try {
     if (!job.checkpoint.treeComplete) {
       const page = await input.repair.listTreePage({
@@ -269,6 +287,7 @@ export async function runProjectionRepairSlice(input: {
       return { phase: "graph", records: page.records.length };
     }
 
+    diagnosticStage = "root_generation";
     for (const path of REPAIR_ROOT_PATHS) {
       const rendered = renderBoundedRootFile({
         path,
@@ -290,6 +309,7 @@ export async function runProjectionRepairSlice(input: {
         projectionShardId: null
       });
     }
+    diagnosticStage = "catalog";
     await input.catalog.finalize({
       knowledgeBaseId: job.knowledgeBaseId,
       generationId: job.targetGenerationId
@@ -301,6 +321,7 @@ export async function runProjectionRepairSlice(input: {
       state: "validating",
       updatedAt: now().toISOString()
     });
+    diagnosticStage = "validation";
     const issues = await input.validation.validateChangedClosure({
       knowledgeBaseId: job.knowledgeBaseId,
       generationId: job.targetGenerationId,
@@ -317,6 +338,7 @@ export async function runProjectionRepairSlice(input: {
       throw new Error("Projection repair candidate validation failed");
     }
 
+    diagnosticStage = "manifest";
     const roots = [];
     for (const path of GENERATED_ROOT_MANIFEST_PATHS) {
       const reference = await input.references.findStagedByRef({
@@ -360,6 +382,7 @@ export async function runProjectionRepairSlice(input: {
       sourceFileId: null,
       projectionShardId: null
     });
+    diagnosticStage = "activation";
     const activated = await input.generations.activateGeneration({
       knowledgeBaseId: job.knowledgeBaseId,
       generationId: job.targetGenerationId,
@@ -372,12 +395,31 @@ export async function runProjectionRepairSlice(input: {
       await scheduleRetry(input, job, leaseToken, "PROJECTION_REPAIR_SUPERSEDED", now());
       return { phase: "retry", records: 0 };
     }
+    diagnosticStage = "completion";
     await input.repair.complete({ job, leaseToken, completedAt: now().toISOString() });
     return { phase: "completed", records: 0 };
-  } catch {
+  } catch (error) {
+    input.logger?.error("Projection repair slice failed", {
+      knowledgeBaseId: job.knowledgeBaseId,
+      repairVersion: job.repairVersion,
+      baseGenerationId: job.baseGenerationId,
+      targetGenerationId: job.targetGenerationId,
+      attemptCount: job.attemptCount,
+      stage: diagnosticStage,
+      ...createRuntimeErrorDiagnostics(error)
+    });
     await scheduleRetry(input, job, leaseToken, "PROJECTION_REPAIR_FAILED", now());
     return { phase: "failed", records: 0 };
   }
+}
+
+function resolveDiagnosticStage(
+  checkpoint: ProjectionRepairCheckpoint
+): ProjectionRepairDiagnosticStage {
+  if (!checkpoint.treeComplete) return "tree";
+  if (!checkpoint.navigationComplete) return "navigation";
+  if (!checkpoint.graphComplete) return "graph";
+  return "root_generation";
 }
 
 function groupByShard<T extends { shardKey: string }>(records: T[]): Map<string, T[]> {
