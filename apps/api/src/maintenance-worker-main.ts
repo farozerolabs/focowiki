@@ -29,7 +29,10 @@ import { createPostgresStorageReconciliationRepository } from "./infrastructure/
 import { createRuntimeLogger } from "./logger.js";
 import { runImmutableWriteRecoverySlice } from "./maintenance/immutable-write-recovery.js";
 import { runIncrementalStatisticsReconciliationSlice } from "./maintenance/incremental-statistics-reconciliation.js";
-import { runProjectionRepairSlice } from "./maintenance/projection-repair.js";
+import {
+  CURRENT_PROJECTION_REPAIR_VERSION,
+  runProjectionRepairSlice
+} from "./maintenance/projection-repair.js";
 import { runProjectionCompactionSlice } from "./maintenance/projection-compaction.js";
 import { runMaintenanceBackground } from "./maintenance/runtime.js";
 import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
@@ -346,7 +349,7 @@ async function runMaintenanceWorker(): Promise<void> {
               catalog,
               validation,
               generations,
-              repairVersion: 2,
+              repairVersion: CURRENT_PROJECTION_REPAIR_VERSION,
               leaseToken: repairLeaseToken,
               treePageSize: snapshot.maintenance.scanBatchSize,
               maxAttempts: snapshot.maintenance.maxAttempts,

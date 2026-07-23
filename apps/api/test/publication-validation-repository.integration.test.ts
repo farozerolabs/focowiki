@@ -246,6 +246,84 @@ describeDatabase("publication validation repository integration", () => {
     ]));
   });
 
+  it("accepts complete projection repair directory statistics over a stale predecessor", async () => {
+    const baseGenerationId = "generation-publication-validation-stale-base";
+    await completeNavigationAndGraphSummary(sql, {
+      knowledgeBaseId,
+      generationId
+    });
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version, activated_at
+      ) VALUES (${baseGenerationId}, ${knowledgeBaseId}, 'active', 2, now())
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${baseGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET predecessor_generation_id = ${baseGenerationId},
+          generation_kind = 'projection_repair'
+      WHERE id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, source_file_id,
+        related_source_file_id, logical_path, parent_path, sort_key,
+        title, summary, searchable_text, payload_json
+      )
+      SELECT knowledge_base_id, projection_kind, record_id,
+             ${baseGenerationId}, shard_key, source_file_id,
+             related_source_file_id, logical_path, parent_path, sort_key,
+             title, summary, searchable_text, payload_json
+      FROM focowiki.generation_projection_records
+      WHERE generation_id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_tree_directory_stats (
+        knowledge_base_id, generation_id, path, parent_path,
+        direct_entry_count, direct_directory_count, direct_file_count,
+        descendant_file_count
+      ) VALUES
+        (${knowledgeBaseId}, ${baseGenerationId}, 'pages', '', 0, 0, 0, 0),
+        (${knowledgeBaseId}, ${baseGenerationId}, 'pages/06', 'pages', 0, 0, 0, 0)
+    `;
+    await sql`
+      UPDATE focowiki.generation_graph_summaries
+      SET edge_count = 1
+      WHERE generation_id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id,
+        target_generation_id, state, checkpoint_json
+      ) VALUES (
+        ${knowledgeBaseId}, 3, ${baseGenerationId}, ${generationId}, 'running',
+        ${sql.json({
+          treeComplete: true,
+          navigationComplete: true,
+          graphNodeCount: 1,
+          graphEdgeCount: 1,
+          graphComplete: true
+        })}
+      )
+    `;
+
+    const issues = await repository.validateChangedClosure({
+      knowledgeBaseId,
+      generationId,
+      issueLimit: 50
+    });
+
+    expect(issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "DIRECTORY_NAVIGATION_COUNT_MISMATCH" }),
+      expect.objectContaining({ code: "DIRECTORY_STATISTICS_MISMATCH" })
+    ]));
+  });
+
   it("rejects stale descendant statistics before activation", async () => {
     await completeNavigationAndGraphSummary(sql, {
       knowledgeBaseId,

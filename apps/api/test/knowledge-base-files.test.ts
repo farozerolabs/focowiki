@@ -333,6 +333,16 @@ function createRepositories() {
             safeErrorCode: null,
             safeErrorMessage: null
           },
+          projectionRepair: {
+            repairVersion: 3,
+            state: "running",
+            phase: "navigation",
+            attemptCount: 1,
+            updatedAt: "2026-06-14T00:00:03.000Z",
+            completedAt: null,
+            safeErrorCode: null,
+            safeErrorMessage: null
+          },
           compaction: {
             active: {
               state: "running",
@@ -1119,6 +1129,11 @@ describe("Knowledge base file Admin API", () => {
         migration: {
           state: "backfilling",
           phase: "projection_segments"
+        },
+        projectionRepair: {
+          repairVersion: 3,
+          state: "running",
+          phase: "navigation"
         },
         compaction: {
           active: {

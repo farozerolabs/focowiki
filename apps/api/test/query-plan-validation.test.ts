@@ -84,9 +84,15 @@ describe("query plan validation helpers", () => {
 
   it("defines bounded maintenance summaries without internal payload columns", () => {
     const targets = createMaintenanceProgressPlanTargets();
-    expect(targets).toHaveLength(3);
+    expect(targets).toHaveLength(4);
     expect(normalize(targets[0]!.sql)).toContain("knowledge_base_id = 'kb-plan'");
-    for (const target of targets.slice(1)) {
+    const repairTarget = targets.find(
+      (target) => target.name === "projection-repair-progress-summary"
+    );
+    expect(repairTarget).toBeDefined();
+    expect(normalize(repairTarget!.sql)).toContain("order by repair_version desc");
+    expect(normalize(repairTarget!.sql)).toContain("limit 1");
+    for (const target of targets.filter((target) => target.name.includes("compaction"))) {
       const sql = normalize(target.sql);
       expect(sql).toContain("order by updated_at desc, id");
       expect(sql).toContain("limit 1");

@@ -74,23 +74,48 @@ export function createPostgresProjectionRepairRepository(
 ): ProjectionRepairRepository {
   return {
     async bootstrap(input) {
-      const rows = await sql<Array<{ knowledge_base_id: string }>>`
-        INSERT INTO focowiki.knowledge_base_projection_repairs (
-          knowledge_base_id, repair_version, base_generation_id,
-          state, next_attempt_at, created_at, updated_at
-        )
-        SELECT knowledge_base.id, ${input.repairVersion}, knowledge_base.active_generation_id,
-               'pending', ${input.bootstrappedAt}, ${input.bootstrappedAt}, ${input.bootstrappedAt}
-        FROM focowiki.knowledge_bases knowledge_base
-        JOIN focowiki.publication_generations generation
-          ON generation.id = knowledge_base.active_generation_id
-         AND generation.knowledge_base_id = knowledge_base.id
-         AND generation.state = 'active'
-        WHERE knowledge_base.deleted_at IS NULL
-        ON CONFLICT (knowledge_base_id, repair_version) DO NOTHING
-        RETURNING knowledge_base_id
-      `;
-      return rows.length;
+      return sql.begin(async (transaction) => {
+        const olderRepairs = await transaction<Array<{
+          target_generation_id: string | null;
+        }>>`
+          UPDATE focowiki.knowledge_base_projection_repairs
+          SET state = 'superseded', lease_token = NULL, lease_expires_at = NULL,
+              updated_at = ${input.bootstrappedAt}
+          WHERE repair_version < ${input.repairVersion}
+            AND state IN ('pending', 'running', 'retry', 'failed')
+          RETURNING target_generation_id
+        `;
+        const olderGenerationIds = olderRepairs.flatMap((repair) =>
+          repair.target_generation_id ? [repair.target_generation_id] : []
+        );
+        if (olderGenerationIds.length > 0) {
+          await transaction`
+            UPDATE focowiki.publication_generations
+            SET state = 'superseded', failed_at = NULL,
+                safe_error_code = NULL, safe_error_message = NULL,
+                updated_at = ${input.bootstrappedAt}
+            WHERE id = ANY(${olderGenerationIds})
+              AND state IN ('open', 'frozen', 'building', 'validating', 'failed')
+          `;
+        }
+        const rows = await transaction<Array<{ knowledge_base_id: string }>>`
+          INSERT INTO focowiki.knowledge_base_projection_repairs (
+            knowledge_base_id, repair_version, base_generation_id,
+            state, next_attempt_at, created_at, updated_at
+          )
+          SELECT knowledge_base.id, ${input.repairVersion}, knowledge_base.active_generation_id,
+                 'pending', ${input.bootstrappedAt}, ${input.bootstrappedAt}, ${input.bootstrappedAt}
+          FROM focowiki.knowledge_bases knowledge_base
+          JOIN focowiki.publication_generations generation
+            ON generation.id = knowledge_base.active_generation_id
+           AND generation.knowledge_base_id = knowledge_base.id
+           AND generation.state = 'active'
+          WHERE knowledge_base.deleted_at IS NULL
+          ON CONFLICT (knowledge_base_id, repair_version) DO NOTHING
+          RETURNING knowledge_base_id
+        `;
+        return rows.length;
+      });
     },
 
     async claim(input) {
@@ -530,18 +555,26 @@ export function createPostgresProjectionRepairRepository(
     },
 
     async complete(input) {
-      const rows = await sql<Array<{ knowledge_base_id: string }>>`
-        UPDATE focowiki.knowledge_base_projection_repairs
-        SET state = 'completed', lease_token = NULL, lease_expires_at = NULL,
-            completed_at = ${input.completedAt}, updated_at = ${input.completedAt}
-        WHERE knowledge_base_id = ${input.job.knowledgeBaseId}
-          AND repair_version = ${input.job.repairVersion}
-          AND target_generation_id = ${input.job.targetGenerationId}
-          AND state = 'running' AND lease_token = ${input.leaseToken}
-          AND lease_expires_at > ${input.completedAt}
-        RETURNING knowledge_base_id
-      `;
-      return rows.length === 1;
+      return sql.begin(async (transaction) => {
+        const rows = await transaction<Array<{ knowledge_base_id: string }>>`
+          UPDATE focowiki.knowledge_base_projection_repairs
+          SET state = 'completed', lease_token = NULL, lease_expires_at = NULL,
+              completed_at = ${input.completedAt}, updated_at = ${input.completedAt}
+          WHERE knowledge_base_id = ${input.job.knowledgeBaseId}
+            AND repair_version = ${input.job.repairVersion}
+            AND target_generation_id = ${input.job.targetGenerationId}
+            AND state = 'running' AND lease_token = ${input.leaseToken}
+            AND lease_expires_at > ${input.completedAt}
+          RETURNING knowledge_base_id
+        `;
+        if (rows.length !== 1) return false;
+        await recoverDirectoryValidationFailures(transaction, {
+          knowledgeBaseId: input.job.knowledgeBaseId,
+          predecessorGenerationId: input.job.baseGenerationId,
+          recoveredAt: input.completedAt
+        });
+        return true;
+      });
     },
 
     async retryFromLatest(input) {
@@ -572,6 +605,90 @@ export function createPostgresProjectionRepairRepository(
       });
     }
   };
+}
+
+async function recoverDirectoryValidationFailures(
+  transaction: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    predecessorGenerationId: string;
+    recoveredAt: string;
+  }
+): Promise<void> {
+  const recoverable = await transaction<Array<{ generation_id: string }>>`
+    SELECT generation.id AS generation_id
+    FROM focowiki.publication_generations generation
+    WHERE generation.knowledge_base_id = ${input.knowledgeBaseId}
+      AND generation.predecessor_generation_id = ${input.predecessorGenerationId}
+      AND generation.generation_kind = 'normal'
+      AND generation.state = 'failed'
+      AND (
+        generation.safe_error_message LIKE '%DIRECTORY_NAVIGATION_COUNT_MISMATCH:%'
+        OR generation.safe_error_message LIKE '%DIRECTORY_STATISTICS_MISMATCH:%'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM focowiki.publication_change_facts fact
+        WHERE fact.knowledge_base_id = generation.knowledge_base_id
+          AND fact.generation_id = generation.id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM focowiki.publication_change_facts fact
+        WHERE fact.knowledge_base_id = generation.knowledge_base_id
+          AND fact.generation_id = generation.id
+          AND NOT (
+            (
+              fact.planning_payload_json ? 'preplannedImpacts'
+              AND jsonb_typeof(fact.planning_payload_json -> 'preplannedImpacts') = 'array'
+            )
+            OR (
+              fact.planning_payload_json ? 'impactPlanner'
+              AND jsonb_typeof(fact.planning_payload_json -> 'impactPlanner') = 'object'
+            )
+          )
+      )
+    FOR UPDATE
+  `;
+  const generationIds = recoverable.map((row) => row.generation_id);
+  if (generationIds.length === 0) return;
+
+  await transaction`
+    UPDATE focowiki.publication_subtasks
+    SET state = 'cancelled', lease_owner = NULL, lease_token = NULL,
+        lease_expires_at = NULL, completed_at = ${input.recoveredAt},
+        last_error_code = 'PROJECTION_REPAIR_RECOVERY',
+        last_error_message = 'Publication will be rebuilt from the repaired projection.',
+        updated_at = ${input.recoveredAt}
+    WHERE generation_id = ANY(${generationIds})
+      AND state IN ('pending', 'running', 'retry')
+  `;
+  await transaction`
+    DELETE FROM focowiki.publication_impact_causes cause
+    USING focowiki.publication_impacts impact
+    WHERE cause.impact_id = impact.id
+      AND impact.generation_id = ANY(${generationIds})
+  `;
+  await transaction`
+    DELETE FROM focowiki.publication_impacts
+    WHERE generation_id = ANY(${generationIds})
+  `;
+  await transaction`
+    UPDATE focowiki.publication_change_facts
+    SET generation_id = NULL, assembly_state = 'pending',
+        assembly_claimed_by = NULL, assembly_claimed_at = NULL,
+        assembled_at = NULL
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND generation_id = ANY(${generationIds})
+  `;
+  await transaction`
+    UPDATE focowiki.publication_generations
+    SET state = 'superseded', failed_at = NULL,
+        safe_error_code = NULL, safe_error_message = NULL,
+        updated_at = ${input.recoveredAt}
+    WHERE id = ANY(${generationIds})
+      AND state = 'failed'
+  `;
 }
 
 async function targetCanResume(
