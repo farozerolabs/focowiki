@@ -61,7 +61,18 @@ describe("active tree and generated-content repository contract", () => {
   it("lists and searches active tree projections with keyset pagination", () => {
     const treeReadModel = normalized(treeReadModelPath);
     expect(treeReadModel).toContain("projection_kind = 'tree'");
-    expect(treeReadModel).toContain("coalesce(record.parent_path, '') = ${input.parentpath}");
+    expect(treeReadModel).toContain(
+      "${query} = '' and coalesce(record.parent_path, '') = ${input.parentpath}"
+    );
+    expect(treeReadModel).toContain(
+      "record.logical_path >= ${queryscopeprefix}"
+    );
+    expect(treeReadModel).toContain(
+      "record.logical_path < ${queryscopeupperbound}"
+    );
+    expect(treeReadModel).not.toContain(
+      "${query} <> '' or coalesce(record.parent_path, '') = ${input.parentpath}"
+    );
     expect(treeReadModel).toContain("(coalesce(record.sort_key, ''), record.record_id) >");
     expect(treeReadModel).toContain("order by coalesce(record.sort_key, ''), record.record_id");
     expect(treeReadModel).toContain("source.id = record.source_file_id");

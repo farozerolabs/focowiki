@@ -202,6 +202,55 @@ describeDatabase("active generation read repository integration", () => {
     });
   });
 
+  it("keeps fuzzy tree queries inside the selected parent subtree", async () => {
+    await seedActiveGeneration(
+      "generation-active-a",
+      "source-file-inside",
+      "pages/02_laws/inside.md",
+      "Employment contract implementation"
+    );
+    await seedAdditionalActiveFile(
+      "generation-active-a",
+      "source-file-nested",
+      "pages/02_laws/nested/inside.md",
+      "Employment contract implementation"
+    );
+    await seedActiveTreeFile(
+      "generation-active-a",
+      "source-file-nested",
+      "pages/02_laws/nested/inside.md",
+      "Employment contract implementation"
+    );
+    await seedAdditionalActiveFile(
+      "generation-active-a",
+      "source-file-outside",
+      "pages/03_regulations/outside.md",
+      "Employment contract implementation"
+    );
+    await seedActiveTreeFile(
+      "generation-active-a",
+      "source-file-outside",
+      "pages/03_regulations/outside.md",
+      "Employment contract implementation"
+    );
+
+    const result = await repository.withActiveGeneration(
+      knowledgeBaseId,
+      async (scope) => scope.listTree({
+        parentPath: "pages/02_laws",
+        entryType: "file",
+        query: "Employment contract",
+        limit: 10,
+        cursor: null
+      })
+    );
+
+    expect(result?.items.map((item) => item.path)).toEqual([
+      "pages/02_laws/inside.md",
+      "pages/02_laws/nested/inside.md"
+    ]);
+  });
+
   it("hides logically deleted sources from every active read path immediately", async () => {
     await seedActiveGeneration("generation-active-a", "source-file-a", "pages/alpha.md", "Alpha");
     await seedAdditionalActiveFile("generation-active-a", "source-file-b", "pages/beta.md", "Beta");
@@ -701,6 +750,28 @@ describeDatabase("active generation read repository integration", () => {
       ) VALUES (
         ${knowledgeBaseId}, 'search', ${sourceFileId}, ${generationId},
         'search/v1/0002', ${sourceFileId}, ${path}, ${parentPath}, ${path},
+        ${title}, ${`${title} summary`}, ${`${title} searchable body`},
+        ${sql.json({ fileId: sourceFileId, path, title, kind: "file" })}
+      )
+    `;
+  }
+
+  async function seedActiveTreeFile(
+    generationId: string,
+    sourceFileId: string,
+    path: string,
+    title: string
+  ): Promise<void> {
+    const parentPath = path.slice(0, path.lastIndexOf("/"));
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, source_file_id,
+        logical_path, parent_path, sort_key, title, summary,
+        searchable_text, payload_json
+      ) VALUES (
+        ${knowledgeBaseId}, 'tree', ${sourceFileId}, ${generationId},
+        'tree/v1/0002', ${sourceFileId}, ${path}, ${parentPath}, ${path},
         ${title}, ${`${title} summary`}, ${`${title} searchable body`},
         ${sql.json({ fileId: sourceFileId, path, title, kind: "file" })}
       )
