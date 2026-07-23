@@ -75,6 +75,57 @@ describe("projection repair", () => {
     expect(input.repair.complete).not.toHaveBeenCalled();
   });
 
+  it("logs sanitized diagnostics when a repair slice fails", async () => {
+    const input = createInput();
+    const failure = Object.assign(
+      new Error(
+        "PUT https://account.r2.cloudflarestorage.com/private/object "
+        + "S3_SECRET_ACCESS_KEY=secret-value objectKey=private/object failed"
+      ),
+      {
+        name: "ServiceUnavailable",
+        code: "ServiceUnavailable",
+        $metadata: {
+          httpStatusCode: 503,
+          requestId: "request-123"
+        },
+        cause: Object.assign(new Error("socket closed"), {
+          name: "SocketError",
+          code: "ECONNRESET"
+        })
+      }
+    );
+    input.repair.listTreePage.mockRejectedValue(failure);
+
+    const result = await runProjectionRepairSlice(input);
+
+    expect(result).toEqual({ phase: "failed", records: 0 });
+    expect(input.logger.error).toHaveBeenCalledWith(
+      "Projection repair slice failed",
+      expect.objectContaining({
+        knowledgeBaseId: "kb-test",
+        repairVersion: 1,
+        baseGenerationId: "generation-active",
+        targetGenerationId: "generation-repair",
+        attemptCount: 1,
+        stage: "tree",
+        errorClass: "ServiceUnavailable",
+        errorCode: "ServiceUnavailable",
+        errorMessage: "PUT <redacted-url> S3_SECRET_ACCESS_KEY=<redacted> "
+          + "objectKey=<redacted> failed",
+        httpStatusCode: 503,
+        requestId: "request-123",
+        causeClass: "SocketError",
+        causeCode: "ECONNRESET",
+        causeMessage: "socket closed"
+      })
+    );
+    const logged = input.logger.error.mock.calls[0]?.[1];
+    expect(JSON.stringify(logged)).not.toContain("secret-value");
+    expect(JSON.stringify(logged)).not.toContain("private/object");
+    expect(input.repair.retryFromLatest).toHaveBeenCalledOnce();
+  });
+
   it("does no projection or object work when the repair version is already complete", async () => {
     const input = createInput();
     input.repair.claim.mockResolvedValue(null);
@@ -241,6 +292,7 @@ function createInput(checkpoint: Partial<ProjectionRepairCheckpoint> = emptyChec
     maxAttempts: 5,
     retryDelayMs: 30_000,
     validationIssueLimit: 50,
+    logger: { error: vi.fn() },
     now: () => new Date("2026-07-18T12:00:00.000Z"),
     leaseToken: "lease-repair",
     targetGenerationId: "generation-repair"
