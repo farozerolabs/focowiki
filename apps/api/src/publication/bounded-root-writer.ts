@@ -157,9 +157,8 @@ export function renderBoundedRootFile(input: {
       `- [Machine-readable graph catalog](${toBundleMarkdownHref(GENERATED_GRAPH_RESOURCES.catalogPath)})`,
       `- [Browse source-backed files](${toBundleMarkdownHref("pages/index.md")})`,
       "",
-      "Use the Developer OpenAPI graph overview for bounded graph status, then continue with graph expansion or related-file reads.",
-      "Source-backed pages and catalog records expose per-file graph references without listing the complete graph here.",
-      "Follow returned logical paths and read the related Markdown files as evidence.",
+      "Use the graph catalog to discover related files.",
+      "Relationships are navigation hints; open the linked source Markdown files to verify context and evidence.",
       ""
     ]);
   }

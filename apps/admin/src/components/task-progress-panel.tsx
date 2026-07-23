@@ -324,8 +324,12 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
 function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
   const { t } = useTranslation();
   const migration = summary.maintenanceProgress.migration;
+  const projectionRepair = summary.maintenanceProgress.projectionRepair;
   const compaction = summary.maintenanceProgress.compaction.active;
-  const failedCode = compaction?.safeErrorCode ?? migration?.safeErrorCode;
+  const latestUpdate = latestMaintenanceUpdate(summary);
+  const failedCode = projectionRepair?.safeErrorCode
+    ?? compaction?.safeErrorCode
+    ?? migration?.safeErrorCode;
 
   if (failedCode) {
     return (
@@ -333,6 +337,19 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
         label={t("tasks.summary.maintenance")}
         value={t("tasks.summary.maintenanceFailed")}
         detail={failedCode}
+      />
+    );
+  }
+
+  if (projectionRepair && ["pending", "running", "retry"].includes(projectionRepair.state)) {
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t("tasks.summary.projectionRepairActive")}
+        detail={t("tasks.summary.projectionRepairState", {
+          state: projectionRepair.state,
+          phase: projectionRepair.phase
+        })}
       />
     );
   }
@@ -368,13 +385,23 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
     <SummaryItem
       label={t("tasks.summary.maintenance")}
       value={t("tasks.summary.maintenanceIdle")}
-      detail={migration?.updatedAt
+      detail={latestUpdate
         ? t("tasks.summary.maintenanceUpdated", {
-            time: new Date(migration.updatedAt).toLocaleString()
+            time: new Date(latestUpdate).toLocaleString()
           })
         : t("tasks.summary.noMaintenanceHistory")}
     />
   );
+}
+
+function latestMaintenanceUpdate(summary: ProcessingSummary): string | null {
+  const timestamps = [
+    summary.maintenanceProgress.migration?.updatedAt,
+    summary.maintenanceProgress.projectionRepair?.updatedAt,
+    summary.maintenanceProgress.compaction.latestCompleted?.updatedAt
+  ].filter((value): value is string => Boolean(value));
+  if (timestamps.length === 0) return null;
+  return timestamps.reduce((latest, current) => current > latest ? current : latest);
 }
 
 function SummaryItem({

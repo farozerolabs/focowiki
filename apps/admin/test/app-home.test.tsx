@@ -104,6 +104,7 @@ vi.mock("../src/lib/admin-api", () => ({
     },
     maintenanceProgress: {
       migration: null,
+      projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
     },
     dirtySourceFiles: {

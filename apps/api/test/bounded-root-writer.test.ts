@@ -38,11 +38,12 @@ describe("bounded root writer", () => {
     const result = renderBoundedRootFile({ ...base, path: "_graph/index.md" });
     expect(result.body).toContain("[Machine-readable graph catalog](/_index/catalog.json)");
     expect(result.body).toContain("[Browse source-backed files](/pages/index.md)");
-    expect(result.body).toContain("graph overview");
-    expect(result.body).toContain("graph expansion");
-    expect(result.body).toContain("related-file");
-    expect(result.body).toContain("per-file graph reference");
-    expect(result.body).toContain("read the related Markdown files as evidence");
+    expect(result.body).toContain("Use the graph catalog to discover related files");
+    expect(result.body).toContain("Relationships are navigation hints");
+    expect(result.body).toContain("verify context and evidence");
+    expect(result.body).not.toContain("Developer OpenAPI");
+    expect(result.body).not.toContain("graph expansion");
+    expect(result.body).not.toContain("related-file reads");
     expect(result.body).not.toContain("manifest.json");
     expect(result.body).not.toContain("insights.json");
     expect(Buffer.byteLength(result.body, "utf8")).toBeLessThan(2_048);

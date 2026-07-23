@@ -28,6 +28,7 @@ export type QueryPlanTargetName =
   | "publication-impact-claim"
   | "publication-progress-summary"
   | "optimization-migration-progress-summary"
+  | "projection-repair-progress-summary"
   | "projection-compaction-active-summary"
   | "projection-compaction-completed-summary"
   | "generation-freeze"
@@ -282,6 +283,22 @@ export function createMaintenanceProgressPlanTargets(): QueryPlanTarget[] {
              updated_at, completed_at, last_error_code, last_error_message
       FROM focowiki.knowledge_base_optimization_migrations
       WHERE knowledge_base_id = 'kb-plan'
+    `),
+    target("projection-repair-progress-summary", "Projection repair progress resolves from the latest version row.", `
+      SELECT repair_version, state,
+             CASE
+               WHEN state IN ('completed', 'superseded') THEN state
+               WHEN NOT checkpoint_json @> '{"treeComplete": true}'::jsonb THEN 'tree'
+               WHEN NOT checkpoint_json @> '{"navigationComplete": true}'::jsonb THEN 'navigation'
+               WHEN NOT checkpoint_json @> '{"graphComplete": true}'::jsonb THEN 'graph'
+               ELSE 'finalizing'
+             END AS phase,
+             attempt_count, updated_at, completed_at,
+             last_error_code, last_error_message
+      FROM focowiki.knowledge_base_projection_repairs
+      WHERE knowledge_base_id = 'kb-plan'
+      ORDER BY repair_version DESC
+      LIMIT 1
     `),
     target("projection-compaction-active-summary", "Active compaction progress resolves from one partial-index row.", `
       SELECT state, attempt_count, max_attempts, created_at, updated_at,

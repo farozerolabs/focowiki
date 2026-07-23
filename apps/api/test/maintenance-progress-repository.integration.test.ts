@@ -21,7 +21,7 @@ describeDatabase("maintenance progress repository integration", () => {
     await sql.end({ timeout: 5 });
   });
 
-  it("returns one bounded migration row and the latest scoped compaction states", async () => {
+  it("returns bounded migration, projection repair, and compaction progress", async () => {
     const summary = await repository.getSummary({ knowledgeBaseId });
 
     expect(summary).toMatchObject({
@@ -30,6 +30,13 @@ describeDatabase("maintenance progress repository integration", () => {
         phase: "projection_segments",
         attemptCount: 2,
         maxAttempts: 5,
+        safeErrorCode: null
+      },
+      projectionRepair: {
+        repairVersion: 3,
+        state: "running",
+        phase: "navigation",
+        attemptCount: 1,
         safeErrorCode: null
       },
       compaction: {
@@ -47,13 +54,37 @@ describeDatabase("maintenance progress repository integration", () => {
       }
     });
     expect(summary.migration?.startedAt).toBe("2026-07-20T00:00:00.000Z");
+    expect(summary.projectionRepair?.updatedAt).toBe("2026-07-20T00:00:04.000Z");
     expect(summary.compaction.active?.queuedAt).toBe("2026-07-20T00:00:01.000Z");
   });
 
   it("returns empty bounded state for an unknown knowledge base", async () => {
     await expect(repository.getSummary({ knowledgeBaseId: "kb-missing" })).resolves.toEqual({
       migration: null,
+      projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
+    });
+  });
+
+  it("returns the safe failure details for the latest projection repair", async () => {
+    await sql`
+      UPDATE focowiki.knowledge_base_projection_repairs
+      SET state = 'failed',
+          last_error_code = 'PROJECTION_REPAIR_FAILED',
+          last_error_message = 'Projection repair validation failed',
+          updated_at = '2026-07-20T00:00:05.000Z'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND repair_version = 3
+    `;
+
+    await expect(repository.getSummary({ knowledgeBaseId })).resolves.toMatchObject({
+      projectionRepair: {
+        repairVersion: 3,
+        state: "failed",
+        phase: "navigation",
+        safeErrorCode: "PROJECTION_REPAIR_FAILED",
+        safeErrorMessage: "Projection repair validation failed"
+      }
     });
   });
 
@@ -70,6 +101,38 @@ describeDatabase("maintenance progress repository integration", () => {
       ) VALUES (
         ${knowledgeBaseId}, 'backfilling', 'projection_segments', 2, 5,
         '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:02.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, activated_at
+      ) VALUES (
+        'generation-progress-repair-base', ${knowledgeBaseId}, NULL, 'active',
+        2, 'normal', '2026-07-20T00:00:00.000Z'
+      ), (
+        'generation-progress-repair-target', ${knowledgeBaseId},
+        'generation-progress-repair-base', 'building', 2, 'projection_repair', NULL
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id, target_generation_id,
+        state, checkpoint_json, attempt_count, updated_at
+      ) VALUES (
+        ${knowledgeBaseId}, 2, 'generation-progress-repair-base', NULL,
+        'completed', ${sql.json({
+          treeComplete: true,
+          navigationComplete: true,
+          graphComplete: true
+        })}, 1, '2026-07-20T00:00:03.000Z'
+      ), (
+        ${knowledgeBaseId}, 3, 'generation-progress-repair-base',
+        'generation-progress-repair-target', 'running', ${sql.json({
+          treeComplete: true,
+          navigationComplete: false,
+          graphComplete: false
+        })}, 1, '2026-07-20T00:00:04.000Z'
       )
     `;
     await sql`

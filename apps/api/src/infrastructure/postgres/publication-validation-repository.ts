@@ -141,35 +141,54 @@ export function createPostgresPublicationValidationRepository(
         ),
         expected_tree_statistics AS MATERIALIZED (
           SELECT directory.path,
-                 coalesce(predecessor.direct_directory_count, 0)
-                   + coalesce(sum(
-                     CASE WHEN tree.previous_kind = 'directory'
-                                AND tree.previous_parent_path = directory.path
-                       THEN -1 ELSE 0 END
-                     + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'directory'
-                                AND tree.next_parent_path = directory.path
-                       THEN 1 ELSE 0 END
-                   ), 0) AS direct_directory_count,
-                 coalesce(predecessor.direct_file_count, 0)
-                   + coalesce(sum(
-                     CASE WHEN tree.previous_kind = 'file'
-                                AND tree.previous_parent_path = directory.path
-                       THEN -1 ELSE 0 END
-                     + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
-                                AND tree.next_parent_path = directory.path
-                       THEN 1 ELSE 0 END
-                   ), 0) AS direct_file_count,
-                 coalesce(predecessor.descendant_file_count, 0)
-                   + coalesce(sum(
-                     CASE WHEN tree.previous_kind = 'file'
-                                AND left(tree.previous_path, length(directory.path) + 1)
-                                  = directory.path || '/'
-                       THEN -1 ELSE 0 END
-                     + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
-                                AND left(tree.next_path, length(directory.path) + 1)
-                                  = directory.path || '/'
-                       THEN 1 ELSE 0 END
-                   ), 0) AS descendant_file_count
+                 CASE WHEN generation.generation_kind = 'projection_repair'
+                   THEN coalesce(sum(CASE
+                     WHEN tree.action = 'upsert' AND tree.next_kind = 'directory'
+                      AND tree.next_parent_path = directory.path THEN 1 ELSE 0
+                   END), 0)
+                   ELSE coalesce(predecessor.direct_directory_count, 0)
+                     + coalesce(sum(
+                       CASE WHEN tree.previous_kind = 'directory'
+                                  AND tree.previous_parent_path = directory.path
+                         THEN -1 ELSE 0 END
+                       + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'directory'
+                                  AND tree.next_parent_path = directory.path
+                         THEN 1 ELSE 0 END
+                     ), 0)
+                 END AS direct_directory_count,
+                 CASE WHEN generation.generation_kind = 'projection_repair'
+                   THEN coalesce(sum(CASE
+                     WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
+                      AND tree.next_parent_path = directory.path THEN 1 ELSE 0
+                   END), 0)
+                   ELSE coalesce(predecessor.direct_file_count, 0)
+                     + coalesce(sum(
+                       CASE WHEN tree.previous_kind = 'file'
+                                  AND tree.previous_parent_path = directory.path
+                         THEN -1 ELSE 0 END
+                       + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
+                                  AND tree.next_parent_path = directory.path
+                         THEN 1 ELSE 0 END
+                     ), 0)
+                 END AS direct_file_count,
+                 CASE WHEN generation.generation_kind = 'projection_repair'
+                   THEN coalesce(sum(CASE
+                     WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
+                      AND left(tree.next_path, length(directory.path) + 1)
+                        = directory.path || '/' THEN 1 ELSE 0
+                   END), 0)
+                   ELSE coalesce(predecessor.descendant_file_count, 0)
+                     + coalesce(sum(
+                       CASE WHEN tree.previous_kind = 'file'
+                                  AND left(tree.previous_path, length(directory.path) + 1)
+                                    = directory.path || '/'
+                         THEN -1 ELSE 0 END
+                       + CASE WHEN tree.action = 'upsert' AND tree.next_kind = 'file'
+                                  AND left(tree.next_path, length(directory.path) + 1)
+                                    = directory.path || '/'
+                         THEN 1 ELSE 0 END
+                     ), 0)
+                 END AS descendant_file_count
           FROM visible_changed_directories directory
           CROSS JOIN candidate_generation generation
           LEFT JOIN focowiki.generation_tree_directory_stats predecessor
@@ -177,7 +196,8 @@ export function createPostgresPublicationValidationRepository(
            AND predecessor.knowledge_base_id = ${input.knowledgeBaseId}
            AND predecessor.path = directory.path
           LEFT JOIN changed_tree tree ON true
-          GROUP BY directory.path, predecessor.direct_directory_count,
+          GROUP BY directory.path, generation.generation_kind,
+                   predecessor.direct_directory_count,
                    predecessor.direct_file_count, predecessor.descendant_file_count
         ),
         graph_delta AS MATERIALIZED (

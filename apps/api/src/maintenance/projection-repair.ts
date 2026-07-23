@@ -22,6 +22,8 @@ const REPAIR_ROOT_PATHS = [
   GENERATED_GRAPH_RESOURCES.index.path
 ];
 
+export const CURRENT_PROJECTION_REPAIR_VERSION = 3;
+
 export async function runProjectionRepairSlice(input: {
   repair: ProjectionRepairRepository;
   records: Pick<ProjectionRecordRepository, "stageUpsert">;
