@@ -16,6 +16,8 @@ type CandidateRow = {
   record_id: string;
 };
 
+type CandidateRetrieval = "exact" | "full_text" | "trigram";
+
 type ProjectionRow = {
   projection_kind: string;
   record_id: string;
@@ -78,19 +80,7 @@ export async function retrieveExactCandidates(input: {
   mode: SearchMode;
   candidateLimit: number;
 }): Promise<CandidateRow[]> {
-  return input.sql<CandidateRow[]>`
-    SELECT record.projection_kind, record.record_id
-    FROM focowiki.active_projection_records record
-    WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (
-        (${input.mode} IN ('file', 'hybrid') AND record.projection_kind = 'search')
-        OR (${input.mode} IN ('graph', 'hybrid')
-            AND record.projection_kind IN ('graph_node', 'graph_edge'))
-      )
-      AND lower(coalesce(record.title, '')) = lower(${input.query})
-    ORDER BY record.projection_kind, record.record_id
-    LIMIT ${input.candidateLimit}
-  `;
+  return retrieveCandidateFamilies(input, "exact");
 }
 
 export async function retrieveFullTextCandidates(input: {
@@ -100,25 +90,7 @@ export async function retrieveFullTextCandidates(input: {
   mode: SearchMode;
   candidateLimit: number;
 }): Promise<CandidateRow[]> {
-  return input.sql<CandidateRow[]>`
-    SELECT record.projection_kind, record.record_id
-    FROM focowiki.active_projection_records record
-    WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (
-        (${input.mode} IN ('file', 'hybrid') AND record.projection_kind = 'search')
-        OR (${input.mode} IN ('graph', 'hybrid')
-            AND record.projection_kind IN ('graph_node', 'graph_edge'))
-      )
-      AND to_tsvector('simple', coalesce(record.searchable_text, ''))
-          @@ plainto_tsquery('simple', ${input.query})
-    ORDER BY ts_rank_cd(
-               to_tsvector('simple', coalesce(record.searchable_text, '')),
-               plainto_tsquery('simple', ${input.query})
-             ) DESC,
-             record.projection_kind,
-             record.record_id
-    LIMIT ${input.candidateLimit}
-  `;
+  return retrieveCandidateFamilies(input, "full_text");
 }
 
 export async function retrieveTrigramCandidates(input: {
@@ -128,26 +100,136 @@ export async function retrieveTrigramCandidates(input: {
   mode: SearchMode;
   candidateLimit: number;
 }): Promise<CandidateRow[]> {
-  const normalizedQuery = input.query.toLocaleLowerCase("en-US");
-  const pattern = `%${escapeLikePattern(normalizedQuery)}%`;
-  return input.sql<CandidateRow[]>`
-    SELECT record.projection_kind, record.record_id
-    FROM focowiki.active_projection_records record
-    WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
-      AND (
-        (${input.mode} IN ('file', 'hybrid') AND record.projection_kind = 'search')
-        OR (${input.mode} IN ('graph', 'hybrid')
-            AND record.projection_kind IN ('graph_node', 'graph_edge'))
+  return retrieveCandidateFamilies(input, "trigram");
+}
+
+async function retrieveCandidateFamilies(
+  input: {
+    sql: ReadSql;
+    knowledgeBaseId: string;
+    query: string;
+    mode: SearchMode;
+    candidateLimit: number;
+  },
+  retrieval: CandidateRetrieval
+): Promise<CandidateRow[]> {
+  const familyLimit = input.mode === "hybrid"
+    ? Math.max(1, Math.ceil(input.candidateLimit / 2))
+    : input.candidateLimit;
+  const familyInput = { ...input, candidateLimit: familyLimit };
+  const pages: Array<Promise<CandidateRow[]>> = [];
+  if (input.mode === "file" || input.mode === "hybrid") {
+    pages.push(retrieveFileCandidates(familyInput, retrieval));
+  }
+  if (input.mode === "graph" || input.mode === "hybrid") {
+    pages.push(retrieveGraphCandidates(familyInput, retrieval));
+  }
+  return (await Promise.all(pages)).flat();
+}
+
+async function retrieveFileCandidates(
+  input: {
+    sql: ReadSql;
+    knowledgeBaseId: string;
+    query: string;
+    candidateLimit: number;
+  },
+  retrieval: CandidateRetrieval
+): Promise<CandidateRow[]> {
+  if (retrieval === "exact") {
+    return input.sql<CandidateRow[]>`
+      SELECT record.projection_kind, record.record_id
+      FROM focowiki.active_projection_records record
+      WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+        AND record.projection_kind = 'search'
+        AND lower(coalesce(record.title, '')) = lower(${input.query})
+      ORDER BY record.record_id
+      LIMIT ${input.candidateLimit}
+    `;
+  }
+  if (retrieval === "full_text") {
+    return input.sql<CandidateRow[]>`
+      WITH bounded_candidates AS MATERIALIZED (
+        SELECT record.projection_kind, record.record_id
+        FROM focowiki.active_projection_records record
+        WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+          AND record.projection_kind = 'search'
+          AND to_tsvector('simple', coalesce(record.searchable_text, ''))
+              @@ plainto_tsquery('simple', ${input.query})
+        LIMIT ${input.candidateLimit}
       )
-      AND lower(coalesce(record.searchable_text, ''))
-          LIKE ${pattern} ESCAPE '\\'
-    ORDER BY focowiki.similarity(
-               lower(coalesce(record.searchable_text, '')),
-               ${normalizedQuery}
-             ) DESC,
-             record.projection_kind,
-             record.record_id
-    LIMIT ${input.candidateLimit}
+      SELECT projection_kind, record_id
+      FROM bounded_candidates
+      ORDER BY record_id
+    `;
+  }
+  const pattern = `%${escapeLikePattern(input.query.toLocaleLowerCase("en-US"))}%`;
+  return input.sql<CandidateRow[]>`
+    WITH bounded_candidates AS MATERIALIZED (
+      SELECT record.projection_kind, record.record_id
+      FROM focowiki.active_projection_records record
+      WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+        AND record.projection_kind = 'search'
+        AND lower(coalesce(record.searchable_text, ''))
+            LIKE ${pattern} ESCAPE '\\'
+      LIMIT ${input.candidateLimit}
+    )
+    SELECT projection_kind, record_id
+    FROM bounded_candidates
+    ORDER BY record_id
+  `;
+}
+
+async function retrieveGraphCandidates(
+  input: {
+    sql: ReadSql;
+    knowledgeBaseId: string;
+    query: string;
+    candidateLimit: number;
+  },
+  retrieval: CandidateRetrieval
+): Promise<CandidateRow[]> {
+  if (retrieval === "exact") {
+    return input.sql<CandidateRow[]>`
+      SELECT record.projection_kind, record.record_id
+      FROM focowiki.active_projection_records record
+      WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+        AND record.projection_kind IN ('graph_node', 'graph_edge')
+        AND lower(coalesce(record.title, '')) = lower(${input.query})
+      ORDER BY record.projection_kind, record.record_id
+      LIMIT ${input.candidateLimit}
+    `;
+  }
+  if (retrieval === "full_text") {
+    return input.sql<CandidateRow[]>`
+      WITH bounded_candidates AS MATERIALIZED (
+        SELECT record.projection_kind, record.record_id
+        FROM focowiki.active_projection_records record
+        WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+          AND record.projection_kind IN ('graph_node', 'graph_edge')
+          AND to_tsvector('simple', coalesce(record.searchable_text, ''))
+              @@ plainto_tsquery('simple', ${input.query})
+        LIMIT ${input.candidateLimit}
+      )
+      SELECT projection_kind, record_id
+      FROM bounded_candidates
+      ORDER BY projection_kind, record_id
+    `;
+  }
+  const pattern = `%${escapeLikePattern(input.query.toLocaleLowerCase("en-US"))}%`;
+  return input.sql<CandidateRow[]>`
+    WITH bounded_candidates AS MATERIALIZED (
+      SELECT record.projection_kind, record.record_id
+      FROM focowiki.active_projection_records record
+      WHERE record.knowledge_base_id = ${input.knowledgeBaseId}
+        AND record.projection_kind IN ('graph_node', 'graph_edge')
+        AND lower(coalesce(record.searchable_text, ''))
+            LIKE ${pattern} ESCAPE '\\'
+      LIMIT ${input.candidateLimit}
+    )
+    SELECT projection_kind, record_id
+    FROM bounded_candidates
+    ORDER BY projection_kind, record_id
   `;
 }
 
