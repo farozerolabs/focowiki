@@ -8,6 +8,7 @@ import {
 } from "./diagnostic-context.js";
 import { DeveloperOpenApiError } from "./errors.js";
 import { validationError, writeDeveloperOpenApiError } from "./errors.js";
+import { sanitizeDiagnosticText } from "../runtime/error-diagnostics.js";
 
 const SAFE_RESOURCE_PARAMETERS = new Set([
   "knowledgeBaseId",
@@ -78,17 +79,6 @@ function safeResourceContext(context: Context): Record<string, string> {
     }
   }
   return output;
-}
-
-export function sanitizeDiagnosticText(value: string): string {
-  return value
-    .replace(/\b(?:postgres(?:ql)?|redis|https?|s3):\/\/[^\s]+/giu, "<redacted-url>")
-    .replace(/\b(?:objectKey|object_key)\s*[:=]\s*[^\s,;]+/giu, "objectKey=<redacted>")
-    .replace(/(?:^|\s)(?:\/[A-Za-z0-9._-]+){3,}(?=[:\s)]|$)/gmu, " <redacted-path>")
-    .replace(/(?:^|\s)[A-Za-z]:\\(?:[^\s\\]+\\){2,}[^\s]+/gmu, " <redacted-path>")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, 2_000);
 }
 
 export function readLimit(
