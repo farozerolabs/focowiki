@@ -151,6 +151,16 @@ vi.mock("../src/lib/admin-api", () => ({
     },
     maintenanceProgress: {
       migration: null,
+      projectionRepair: {
+        repairVersion: 3,
+        state: "running",
+        phase: "navigation",
+        attemptCount: 1,
+        updatedAt: "2026-07-20T00:00:04.000Z",
+        completedAt: null,
+        safeErrorCode: null,
+        safeErrorMessage: null
+      },
       compaction: { active: null, latestCompleted: null }
     },
     dirtySourceFiles: {
@@ -482,6 +492,14 @@ describe("Admin knowledge base detail", () => {
     expect(within(table).getByText("Metadata resolution")).toBeTruthy();
     expect(within(table).getAllByText("Pending").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
+  });
+
+  it("shows active projection repair in the maintenance summary", async () => {
+    await openDetail();
+
+    expect(await screen.findByText("Repairing projections")).toBeTruthy();
+    expect(screen.getByText("running · navigation")).toBeTruthy();
+    expect(screen.queryByText("No active maintenance")).toBeNull();
   });
 
   it("deletes only selected eligible task rows from the current page", async () => {

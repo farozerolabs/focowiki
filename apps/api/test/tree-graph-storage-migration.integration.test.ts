@@ -7,6 +7,7 @@ import {
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 import { createPostgresActiveGenerationReadRepository } from "../src/infrastructure/postgres/active-generation-read-repository.js";
+import { createPostgresGenerationAssemblyDispatchRepository } from "../src/infrastructure/postgres/generation-assembly-dispatch-repository.js";
 import { createPostgresImmutableObjectRepository } from "../src/infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresProjectionRepairRepository } from "../src/infrastructure/postgres/projection-repair-repository.js";
 import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
@@ -395,6 +396,262 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       claimedAt: "2026-07-18T13:10:11.000Z"
     })).resolves.toBeNull();
     expect(await repairPreservationSnapshot(sql)).toEqual(preservedBeforeCompletion);
+  });
+
+  it("supersedes unfinished older repairs before bootstrapping a newer repair version", async () => {
+    const repair = createPostgresProjectionRepairRepository(sql);
+    const knowledgeBaseId = "kb-older-projection-repair";
+    const activeGenerationId = "generation-older-repair-active";
+    const targetGenerationId = "generation-older-repair-building";
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Older projection repair')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, activated_at
+      ) VALUES
+        (${activeGenerationId}, ${knowledgeBaseId}, NULL, 'active', 2, 'normal', now()),
+        (${targetGenerationId}, ${knowledgeBaseId}, ${activeGenerationId},
+         'building', 2, 'projection_repair', NULL)
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${activeGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id,
+        target_generation_id, state, lease_token, lease_expires_at
+      ) VALUES (
+        ${knowledgeBaseId}, 2, ${activeGenerationId}, ${targetGenerationId},
+        'running', 'older-repair-lease', '2099-07-18T14:00:00.000Z'
+      )
+    `;
+
+    await repair.bootstrap({
+      repairVersion: 3,
+      bootstrappedAt: "2026-07-18T13:20:00.000Z"
+    });
+
+    const [olderRepair] = await sql<Array<{
+      state: string;
+      lease_token: string | null;
+      target_generation_id: string | null;
+    }>>`
+      SELECT state, lease_token, target_generation_id
+      FROM focowiki.knowledge_base_projection_repairs
+      WHERE knowledge_base_id = ${knowledgeBaseId} AND repair_version = 2
+    `;
+    expect(olderRepair).toEqual({
+      state: "superseded",
+      lease_token: null,
+      target_generation_id: targetGenerationId
+    });
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state FROM focowiki.publication_generations
+      WHERE id = ${targetGenerationId}
+    `)[0]?.state).toBe("superseded");
+  });
+
+  it("reassembles directory validation failures after projection repair activation", async () => {
+    const repair = createPostgresProjectionRepairRepository(sql);
+    const generations = createPostgresPublicationGenerationRepository(sql);
+    const dispatch = createPostgresGenerationAssemblyDispatchRepository(sql);
+    const knowledgeBaseId = "kb-directory-validation-recovery";
+    const baseGenerationId = "generation-directory-validation-base";
+    const repairGenerationId = "generation-directory-validation-repair";
+    const failedGenerationId = "generation-directory-validation-failed";
+    const sourceFileId = "source-file-directory-validation-recovery";
+    const sourceRevisionId = "source-revision-directory-validation-recovery";
+    const deletionIntentId = "deletion-intent-directory-validation-recovery";
+    const changeFactId = "change-directory-validation-recovery";
+    const impactId = "impact-directory-validation-recovery";
+    const leaseToken = "repair-lease-directory-validation-recovery";
+
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Directory validation recovery')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, activated_at
+      ) VALUES (
+        ${baseGenerationId}, ${knowledgeBaseId}, NULL, 'active', 2, 'normal', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${baseGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await repair.bootstrap({
+      repairVersion: 3,
+      bootstrappedAt: "2026-07-18T13:30:00.000Z"
+    });
+    await sql`
+      UPDATE focowiki.knowledge_base_projection_repairs
+      SET state = 'completed', completed_at = '2026-07-18T13:30:00.000Z'
+      WHERE repair_version = 3
+        AND knowledge_base_id <> ${knowledgeBaseId}
+        AND state IN ('pending', 'retry')
+    `;
+    const job = await repair.claim({
+      repairVersion: 3,
+      leaseToken,
+      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
+      targetGenerationId: repairGenerationId,
+      claimedAt: "2026-07-18T13:30:01.000Z"
+    });
+    expect(job).not.toBeNull();
+
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'superseded', activated_at = NULL
+        WHERE id = ${baseGenerationId}
+      `;
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'active', activated_at = '2026-07-18T13:30:02.000Z'
+        WHERE id = ${repairGenerationId}
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET active_generation_id = ${repairGenerationId}
+        WHERE id = ${knowledgeBaseId}
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id, state,
+          format_version, generation_kind, failed_at,
+          safe_error_code, safe_error_message
+        ) VALUES (
+          ${failedGenerationId}, ${knowledgeBaseId}, ${baseGenerationId},
+          'failed', 2, 'normal', now(), 'PUBLICATION_RETRIES_EXHAUSTED',
+          'DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/06, DIRECTORY_STATISTICS_MISMATCH:pages'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.deletion_intents (
+          id, knowledge_base_id, target_kind, target_id, catalog_generation, state
+        ) VALUES (
+          ${deletionIntentId}, ${knowledgeBaseId}, 'source_file', ${sourceFileId}, 1, 'running'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_files (
+          id, knowledge_base_id, object_key, content_type, size_bytes,
+          checksum_sha256, processing_status, processing_stage,
+          generated_output_status, name, relative_path, path_key,
+          active_revision_id, deletion_intent_id, deleted_at
+        ) VALUES (
+          ${sourceFileId}, ${knowledgeBaseId}, 'source/recovery.md',
+          'text/markdown', 10, ${"cd".repeat(32)}, 'completed',
+          'generation_activation', 'unavailable', 'recovery.md',
+          '06/recovery.md', '06/recovery.md', ${sourceRevisionId},
+          ${deletionIntentId}, now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          id, knowledge_base_id, source_file_id, revision, object_key,
+          content_type, size_bytes, checksum_sha256, processing_status
+        ) VALUES (
+          ${sourceRevisionId}, ${knowledgeBaseId}, ${sourceFileId}, 1,
+          'source/recovery.md', 'text/markdown', 10, ${"cd".repeat(32)}, 'completed'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_change_facts (
+          id, knowledge_base_id, source_file_id, source_revision_id,
+          deletion_intent_id, kind, previous_path, path, resource_revision,
+          generation_id, assembly_state, assembly_claimed_by,
+          assembly_claimed_at, assembled_at, planning_payload_json,
+          settings_snapshot_json, publication_max_attempts
+        ) VALUES (
+          ${changeFactId}, ${knowledgeBaseId}, ${sourceFileId}, ${sourceRevisionId},
+          ${deletionIntentId}, 'source_deleted', '06/recovery.md', NULL, 1,
+          ${failedGenerationId}, 'assembled', 'old-assembler', now(), now(),
+          ${transaction.json({
+            preplannedImpacts: [{
+              id: impactId,
+              projectionKind: "root",
+              projectionKey: "index.md",
+              recordIdentity: "index.md",
+              action: "upsert"
+            }],
+            schedulePublication: false,
+            allowDeletedKnowledgeBase: false
+          })}, ${transaction.json({})}, 3
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_impacts (
+          id, knowledge_base_id, generation_id, projection_kind,
+          projection_key, record_identity, action, status
+        ) VALUES (
+          ${impactId}, ${knowledgeBaseId}, ${failedGenerationId}, 'root',
+          'index.md', 'index.md', 'upsert', 'completed'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_impact_causes (impact_id, change_fact_id)
+        VALUES (${impactId}, ${changeFactId})
+      `;
+    });
+
+    await expect(repair.complete({
+      job: job!,
+      leaseToken,
+      completedAt: "2026-07-18T13:30:03.000Z"
+    })).resolves.toBe(true);
+
+    const [recovered] = await sql<Array<{
+      generation_state: string;
+      fact_generation_id: string | null;
+      fact_assembly_state: string;
+      fact_assembler: string | null;
+      impact_count: number;
+    }>>`
+      SELECT generation.state AS generation_state,
+             fact.generation_id AS fact_generation_id,
+             fact.assembly_state AS fact_assembly_state,
+             fact.assembly_claimed_by AS fact_assembler,
+             (SELECT count(*)::int FROM focowiki.publication_impacts
+              WHERE generation_id = ${failedGenerationId}) AS impact_count
+      FROM focowiki.publication_generations generation
+      JOIN focowiki.publication_change_facts fact
+        ON fact.id = ${changeFactId}
+      WHERE generation.id = ${failedGenerationId}
+    `;
+    expect(recovered).toEqual({
+      generation_state: "superseded",
+      fact_generation_id: null,
+      fact_assembly_state: "pending",
+      fact_assembler: null,
+      impact_count: 0
+    });
+
+    await expect(dispatch.dispatchPending({
+      now: "2026-07-18T13:30:04.000Z",
+      limit: 10
+    })).resolves.toBe(1);
+    const assembled = await generations.assemblePendingChanges({
+      knowledgeBaseId,
+      assemblerJobId: `role-job-generation-assembly-${knowledgeBaseId}`,
+      limit: 10,
+      assembledAt: "2026-07-18T13:30:05.000Z"
+    });
+    expect(assembled).toMatchObject({ assembledChangeCount: 1, impactCount: 1 });
+    await expect(sql<Array<{ predecessor_generation_id: string | null }>>`
+      SELECT predecessor_generation_id
+      FROM focowiki.publication_generations
+      WHERE id = ${assembled.generationId}
+    `).resolves.toEqual([{ predecessor_generation_id: repairGenerationId }]);
   });
 
   it("serializes immutable reservations with reconciliation deletion authorization", async () => {

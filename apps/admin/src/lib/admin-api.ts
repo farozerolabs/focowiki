@@ -283,6 +283,16 @@ export type ProcessingSummary = {
       safeErrorCode: string | null;
       safeErrorMessage: string | null;
     } | null;
+    projectionRepair: {
+      repairVersion: number;
+      state: string;
+      phase: string;
+      attemptCount: number;
+      updatedAt: string;
+      completedAt: string | null;
+      safeErrorCode: string | null;
+      safeErrorMessage: string | null;
+    } | null;
     compaction: {
       active: MaintenanceCompactionProgress | null;
       latestCompleted: MaintenanceCompactionProgress | null;

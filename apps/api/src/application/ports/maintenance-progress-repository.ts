@@ -20,8 +20,20 @@ export type MaintenanceCompactionProgress = {
   safeErrorCode: string | null;
 };
 
+export type MaintenanceProjectionRepairProgress = {
+  repairVersion: number;
+  state: string;
+  phase: string;
+  attemptCount: number;
+  updatedAt: string;
+  completedAt: string | null;
+  safeErrorCode: string | null;
+  safeErrorMessage: string | null;
+};
+
 export type MaintenanceProgressSummary = {
   migration: MaintenanceMigrationProgress | null;
+  projectionRepair: MaintenanceProjectionRepairProgress | null;
   compaction: {
     active: MaintenanceCompactionProgress | null;
     latestCompleted: MaintenanceCompactionProgress | null;
