@@ -83,6 +83,31 @@ describe("projection repair directory builder", () => {
       .not.toBe(await createFirstLeafId("pages/reference"));
   });
 
+  it("accepts PostgreSQL byte ordering for mixed-case and Unicode entries", async () => {
+    const writeLeaf = vi.fn().mockResolvedValue(undefined);
+    const builder = createProjectionRepairDirectoryStream({
+      directoryPath: "pages/reference",
+      limits: { maxEntries: 10, maxBytes: 4_096 },
+      writeLeaf
+    });
+
+    for (const sortKey of ["Z", "a", "司法解释"]) {
+      await builder.add({
+        id: `file-${sortKey}`,
+        sortKey,
+        name: sortKey,
+        targetPath: `pages/reference/${sortKey}.md`,
+        kind: "file"
+      });
+    }
+    await builder.finish();
+
+    expect(writeLeaf).toHaveBeenCalledOnce();
+    expect(writeLeaf.mock.calls[0]?.[0].entries.map(
+      (entry: { sortKey: string }) => entry.sortKey
+    )).toEqual(["Z", "a", "司法解释"]);
+  });
+
   it("rejects unordered input and a single entry over the byte budget", async () => {
     const unordered = createProjectionRepairDirectoryStream({
       directoryPath: "pages",

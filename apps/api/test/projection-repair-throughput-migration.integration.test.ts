@@ -21,7 +21,10 @@ describeDatabase("projection repair throughput migration integration", () => {
 
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
-    for (const fileName of MIGRATION_FILES.slice(0, -1)) {
+    const throughputMigrationIndex = MIGRATION_FILES.indexOf(
+      "013_projection_repair_throughput.sql"
+    );
+    for (const fileName of MIGRATION_FILES.slice(0, throughputMigrationIndex)) {
       await sql.begin(async (transaction) => {
         await transaction.unsafe(readMigrationSql(fileName));
       });
@@ -88,9 +91,11 @@ describeDatabase("projection repair throughput migration integration", () => {
         AND indexname IN (
           'knowledge_base_projection_repairs_one_active_version_idx',
           'projection_repair_subtasks_claim_idx',
-          'projection_repair_subtasks_lease_idx'
+          'projection_repair_subtasks_lease_idx',
+          'active_projection_records_tree_byte_order_idx',
+          'generation_directory_navigation_leaves_byte_order_idx'
         )
-    `)[0]?.count).toBe(3);
+    `)[0]?.count).toBe(5);
     expect((await sql<Array<{ active_generation_id: string | null }>>`
       SELECT active_generation_id
       FROM focowiki.knowledge_bases

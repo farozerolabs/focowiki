@@ -8,9 +8,13 @@ import type {
 } from "../../application/ports/directory-navigation-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  compareLegacyDirectoryEntries,
+  compareOrderedDirectoryEntries,
   directoryLeafByteSize,
   insertDirectoryEntry,
   removeDirectoryEntry,
+  UTF8_DIRECTORY_ORDER_VERSION,
+  type OrderedDirectoryEntryComparator,
   type OrderedDirectoryEntry,
   type OrderedDirectoryLeaf,
   type OrderedDirectoryLeafLimits,
@@ -39,6 +43,11 @@ type NavigationChangeRow = {
 
 type TransactionClient = postgres.TransactionSql;
 
+type DirectoryEntryOrder = {
+  compareEntries: OrderedDirectoryEntryComparator;
+  utf8: boolean;
+};
+
 export function createPostgresDirectoryNavigationRepository(
   sql: DatabaseClient,
   options: { createLeafId?: () => string } = {}
@@ -51,7 +60,11 @@ export function createPostgresDirectoryNavigationRepository(
       return sql.begin(async (transaction) => {
         await lockDirectory(transaction, input.generationId, input.directoryPath);
         await ensureGenerationDirectory(transaction, input);
-        return applyEntryInTransaction(transaction, input, createLeafId);
+        const order = await loadDirectoryEntryOrder(
+          transaction,
+          input.knowledgeBaseId
+        );
+        return applyEntryInTransaction(transaction, input, createLeafId, order);
       });
     },
 
@@ -62,6 +75,10 @@ export function createPostgresDirectoryNavigationRepository(
       return sql.begin(async (transaction) => {
         await lockDirectory(transaction, input.generationId, input.directoryPath);
         await ensureGenerationDirectory(transaction, input);
+        const order = await loadDirectoryEntryOrder(
+          transaction,
+          input.knowledgeBaseId
+        );
         const touchedIds = new Set<string>();
         const removedIds = new Set<string>();
         let changed = false;
@@ -79,7 +96,7 @@ export function createPostgresDirectoryNavigationRepository(
             entryId: entry.entryId,
             desiredEntry: entry.desiredEntry,
             limits: input.limits
-          }, createLeafId);
+          }, createLeafId, order);
           if (!mutation.changed) continue;
           changed = true;
           summary = mutation.summary;
@@ -136,7 +153,8 @@ async function lockDirectory(
 async function applyEntryInTransaction(
   transaction: TransactionClient,
   input: Parameters<DirectoryNavigationRepository["applyEntry"]>[0],
-  createLeafId: () => string
+  createLeafId: () => string,
+  order: DirectoryEntryOrder
 ): Promise<DirectoryNavigationMutationResult> {
   const existingLeaf = await findLeafContainingEntry(
     transaction,
@@ -178,7 +196,8 @@ async function applyEntryInTransaction(
     const mutation = removeDirectoryEntry({
       leaves: removalWindow.map(toOrderedLeaf),
       entryId: input.entryId,
-      limits: input.limits
+      limits: input.limits,
+      compareEntries: order.compareEntries
     });
     const adjacentTouchedIds = await persistMutation({
       transaction,
@@ -199,14 +218,16 @@ async function applyEntryInTransaction(
       input.knowledgeBaseId,
       input.generationId,
       input.directoryPath,
-      input.desiredEntry.sortKey
+      input.desiredEntry.sortKey,
+      order.utf8
     );
     const originalRows = target ? [target] : [];
     const mutation = insertDirectoryEntry({
       leaves: originalRows.map(toOrderedLeaf),
       entry: input.desiredEntry,
       limits: input.limits,
-      createLeafId
+      createLeafId,
+      compareEntries: order.compareEntries
     });
     const adjacentTouchedIds = await persistMutation({
       transaction,
@@ -438,31 +459,80 @@ async function findInsertionLeaf(
   knowledgeBaseId: string,
   generationId: string,
   directoryPath: string,
-  sortKey: string
+  sortKey: string,
+  utf8Order: boolean
 ): Promise<ParsedLeafRow | null> {
-  const candidates = await transaction<LeafRow[]>`
-    SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
-    FROM focowiki.generation_directory_navigation_leaves
-    WHERE knowledge_base_id = ${knowledgeBaseId}
-      AND generation_id = ${generationId}
-      AND directory_path = ${directoryPath}
-      AND (last_sort_key IS NULL OR last_sort_key >= ${sortKey})
-    ORDER BY last_sort_key NULLS FIRST, first_sort_key, id
-    LIMIT 1
-    FOR UPDATE
-  `;
+  const candidates = utf8Order
+    ? await transaction<LeafRow[]>`
+        SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
+        FROM focowiki.generation_directory_navigation_leaves
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND generation_id = ${generationId}
+          AND directory_path = ${directoryPath}
+          AND (
+            last_sort_key IS NULL
+            OR last_sort_key COLLATE "C" >= ${sortKey}::text COLLATE "C"
+          )
+        ORDER BY last_sort_key COLLATE "C" NULLS FIRST,
+                 first_sort_key COLLATE "C", id COLLATE "C"
+        LIMIT 1
+        FOR UPDATE
+      `
+    : await transaction<LeafRow[]>`
+        SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
+        FROM focowiki.generation_directory_navigation_leaves
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND generation_id = ${generationId}
+          AND directory_path = ${directoryPath}
+          AND (last_sort_key IS NULL OR last_sort_key >= ${sortKey})
+        ORDER BY last_sort_key NULLS FIRST, first_sort_key, id
+        LIMIT 1
+        FOR UPDATE
+      `;
   if (candidates[0]) return parseLeaf(candidates[0]);
-  const last = await transaction<LeafRow[]>`
-    SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
-    FROM focowiki.generation_directory_navigation_leaves
-    WHERE knowledge_base_id = ${knowledgeBaseId}
-      AND generation_id = ${generationId}
-      AND directory_path = ${directoryPath}
-    ORDER BY last_sort_key DESC NULLS LAST, id DESC
-    LIMIT 1
-    FOR UPDATE
-  `;
+  const last = utf8Order
+    ? await transaction<LeafRow[]>`
+        SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
+        FROM focowiki.generation_directory_navigation_leaves
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND generation_id = ${generationId}
+          AND directory_path = ${directoryPath}
+        ORDER BY last_sort_key COLLATE "C" DESC NULLS LAST,
+                 id COLLATE "C" DESC
+        LIMIT 1
+        FOR UPDATE
+      `
+    : await transaction<LeafRow[]>`
+        SELECT id, previous_leaf_id, next_leaf_id, entries_json, revision
+        FROM focowiki.generation_directory_navigation_leaves
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND generation_id = ${generationId}
+          AND directory_path = ${directoryPath}
+        ORDER BY last_sort_key DESC NULLS LAST, id DESC
+        LIMIT 1
+        FOR UPDATE
+      `;
   return last[0] ? parseLeaf(last[0]) : null;
+}
+
+async function loadDirectoryEntryOrder(
+  transaction: TransactionClient,
+  knowledgeBaseId: string
+): Promise<DirectoryEntryOrder> {
+  const rows = await transaction<Array<{ format_version: number }>>`
+    SELECT format_version
+    FROM focowiki.knowledge_base_projection_versions
+    WHERE knowledge_base_id = ${knowledgeBaseId}
+      AND projection_kind = 'directory'
+    LIMIT 1
+  `;
+  const utf8 = (rows[0]?.format_version ?? 0) >= UTF8_DIRECTORY_ORDER_VERSION;
+  return {
+    utf8,
+    compareEntries: utf8
+      ? compareOrderedDirectoryEntries
+      : compareLegacyDirectoryEntries
+  };
 }
 
 type ParsedLeafRow = Omit<LeafRow, "entries_json"> & { entries: OrderedDirectoryEntry[] };

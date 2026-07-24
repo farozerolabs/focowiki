@@ -5,6 +5,7 @@ import type {
 } from "../../application/ports/active-generation-read-repository.js";
 import type { SerializableJson } from "../../application/ports/source-dispatch-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
+import { compareUtf8Text } from "../../domain/deterministic-text-order.js";
 import type { TransactionSql } from "postgres";
 import { hydrateActiveTreeStatistics } from "./active-tree-statistics.js";
 
@@ -204,10 +205,17 @@ async function listSourceEntries(
       )
       AND (
         ${input.cursor?.sortKey ?? null}::text IS NULL
-        OR (coalesce(record.sort_key, ''), record.record_id) >
-           (${input.cursor?.sortKey ?? null}, ${input.cursor?.recordId ?? null})
+        OR coalesce(record.sort_key, '') COLLATE "C"
+           > ${input.cursor?.sortKey ?? null}::text COLLATE "C"
+        OR (
+          coalesce(record.sort_key, '') COLLATE "C"
+            = ${input.cursor?.sortKey ?? null}::text COLLATE "C"
+          AND record.record_id COLLATE "C"
+            > ${input.cursor?.recordId ?? null}::text COLLATE "C"
+        )
       )
-    ORDER BY coalesce(record.sort_key, ''), record.record_id
+    ORDER BY coalesce(record.sort_key, '') COLLATE "C",
+             record.record_id COLLATE "C"
     LIMIT ${input.limit + 1}
   `;
   return hydrateActiveTreeStatistics({
@@ -433,8 +441,8 @@ function compareTreeEntries(
   left: ActiveGenerationProjection,
   right: ActiveGenerationProjection
 ): number {
-  return left.sortKey.localeCompare(right.sortKey)
-    || left.recordId.localeCompare(right.recordId);
+  return compareUtf8Text(left.sortKey, right.sortKey)
+    || compareUtf8Text(left.recordId, right.recordId);
 }
 
 function isAfterCursor(
@@ -442,8 +450,12 @@ function isAfterCursor(
   cursor: ActiveGenerationCursor | null
 ): boolean {
   if (!cursor) return true;
-  return entry.sortKey > cursor.sortKey
-    || (entry.sortKey === cursor.sortKey && entry.recordId > cursor.recordId);
+  const sortKeyOrder = compareUtf8Text(entry.sortKey, cursor.sortKey);
+  return sortKeyOrder > 0
+    || (
+      sortKeyOrder === 0
+      && compareUtf8Text(entry.recordId, cursor.recordId) > 0
+    );
 }
 
 function escapeLikePattern(value: string): string {

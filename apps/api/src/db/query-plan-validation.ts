@@ -227,8 +227,14 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
       WHERE knowledge_base_id = 'kb-plan'
         AND projection_kind = 'tree'
         AND coalesce(parent_path, '') = 'pages'
-        AND (coalesce(sort_key, ''), record_id) > ('entry-plan', 'record-plan')
-      ORDER BY coalesce(sort_key, ''), record_id
+        AND (
+          coalesce(sort_key, '') COLLATE "C" > 'entry-plan' COLLATE "C"
+          OR (
+            coalesce(sort_key, '') COLLATE "C" = 'entry-plan' COLLATE "C"
+            AND record_id COLLATE "C" > 'record-plan' COLLATE "C"
+          )
+        )
+      ORDER BY coalesce(sort_key, '') COLLATE "C", record_id COLLATE "C"
       LIMIT 51
     `),
     target("active-tree-search", "Tree search uses bounded active projection text lookup.", `
@@ -238,7 +244,7 @@ export function createLargeScaleReadPlanTargets(): QueryPlanTarget[] {
         AND projection_kind = 'tree'
         AND lower(coalesce(title, '') || ' ' || coalesce(logical_path, ''))
           LIKE '%example%'
-      ORDER BY coalesce(sort_key, ''), record_id
+      ORDER BY coalesce(sort_key, '') COLLATE "C", record_id COLLATE "C"
       LIMIT 51
     `),
     target("active-file-search", "File search reads active search projections and direct page references.", `
