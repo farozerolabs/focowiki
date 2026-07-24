@@ -283,11 +283,44 @@ export type ProcessingSummary = {
       safeErrorCode: string | null;
       safeErrorMessage: string | null;
     } | null;
+    lexicalRebuild: {
+      state: string;
+      phase: string;
+      searchSchemaVersion: string;
+      tokenizerContractVersion: string;
+      segmentationVersion: string;
+      contentProfileVersion: string;
+      graphLexicalProjectionVersion: string;
+      processedSourceCount: number;
+      totalSourceCount: number;
+      attemptCount: number;
+      maxAttempts: number;
+      updatedAt: string;
+      completedAt: string | null;
+      safeErrorCode: string | null;
+      safeErrorMessage: string | null;
+    } | null;
     projectionRepair: {
       repairVersion: number;
       state: string;
       phase: string;
       attemptCount: number;
+      requiredProjectionKinds: string[];
+      completedProjectionKinds: string[];
+      completedSubtaskCount: number;
+      totalSubtaskCount: number;
+      completedRecordCount: number;
+      totalRecordCount: number;
+      completedDirectoryCount: number;
+      totalDirectoryCount: number;
+      objectWriteCount: number;
+      objectReuseCount: number;
+      retryCount: number;
+      recordsPerSecond: number | null;
+      rollingBatchLatencyMs: number | null;
+      lastProgressAt: string | null;
+      lastHeartbeatAt: string | null;
+      estimatedCompletionAt: string | null;
       updatedAt: string;
       completedAt: string | null;
       safeErrorCode: string | null;
@@ -416,6 +449,9 @@ export type MaintenanceSettings = {
   retryDelayMs: number;
   migrationBackfillConcurrency: number;
   compactionConcurrency: number;
+  projectionRepairConcurrency: number;
+  projectionRepairDatabaseBatchSize: number;
+  projectionRepairObjectWriteConcurrency: number;
 };
 
 export type RuntimeModelConfig = {

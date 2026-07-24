@@ -99,6 +99,21 @@ export function createPostgresStorageReconciliationRepository(
       });
     },
 
+    async renewCycleLease(input) {
+      const rows = await sql<Array<{ prefix: string }>>`
+        UPDATE focowiki.storage_reconciliation_cycles
+        SET lease_expires_at = ${input.leaseExpiresAt},
+            updated_at = ${input.renewedAt}
+        WHERE prefix = ${input.cycle.prefix}
+          AND cycle_id = ${input.cycle.cycleId}
+          AND lease_token = ${input.leaseToken}
+          AND state IN ('scanning', 'verifying')
+          AND lease_expires_at > ${input.renewedAt}
+        RETURNING prefix
+      `;
+      return rows.length === 1;
+    },
+
     async recordScanPage(input) {
       return sql.begin(async (transaction) => {
         const ownedKeys: string[] = [];
@@ -141,7 +156,8 @@ export function createPostgresStorageReconciliationRepository(
             `;
             await transaction`
               UPDATE focowiki.storage_reconciliation_candidates candidate
-              SET state = 'resolved', resolved_at = ${input.recordedAt}, updated_at = ${input.recordedAt}
+              SET state = 'resolved', deletion_lease_token = NULL,
+                  resolved_at = ${input.recordedAt}, updated_at = ${input.recordedAt}
               WHERE candidate.prefix = ${input.cycle.prefix}
                 AND candidate.object_key = ANY(${ownedKeys})
                 AND candidate.state <> 'deleted'
@@ -227,8 +243,20 @@ export function createPostgresStorageReconciliationRepository(
     async claimDeletionCandidates(input) {
       return sql.begin(async (transaction) => {
         await transaction`
+          UPDATE focowiki.storage_reconciliation_candidates
+          SET state = 'failed',
+              deletion_lease_token = NULL,
+              next_attempt_at = ${input.now},
+              last_error_code = 'STALE_DELETION_LEASE_EXPIRED',
+              updated_at = ${input.now}
+          WHERE prefix = ${input.cycle.prefix}
+            AND state = 'deleting'
+            AND updated_at <= ${input.staleDeletingBefore}
+        `;
+        await transaction`
           UPDATE focowiki.storage_reconciliation_candidates candidate
-          SET state = 'resolved', resolved_at = ${input.now}, updated_at = ${input.now}
+          SET state = 'resolved', deletion_lease_token = NULL,
+              resolved_at = ${input.now}, updated_at = ${input.now}
           WHERE candidate.prefix = ${input.cycle.prefix}
             AND candidate.state IN ('quarantined', 'failed')
             AND (
@@ -273,6 +301,7 @@ export function createPostgresStorageReconciliationRepository(
           )
           UPDATE focowiki.storage_reconciliation_candidates candidate
           SET state = 'deleting', attempt_count = attempt_count + 1,
+              deletion_lease_token = ${input.leaseToken},
               last_error_code = NULL, updated_at = ${input.now}
           FROM eligible
           WHERE candidate.prefix = eligible.prefix
@@ -299,6 +328,7 @@ export function createPostgresStorageReconciliationRepository(
             AND candidate.checksum_sha256 = ${input.checksumSha256}
             AND candidate.format_version = ${input.formatVersion}
             AND candidate.state = 'deleting'
+            AND candidate.deletion_lease_token = ${input.leaseToken}
             AND cycle.cycle_id = ${input.cycle.cycleId}
             AND cycle.state = 'verifying'
             AND cycle.lease_token = ${input.leaseToken}
@@ -321,7 +351,8 @@ export function createPostgresStorageReconciliationRepository(
 
         await transaction`
           UPDATE focowiki.storage_reconciliation_candidates
-          SET state = 'resolved', resolved_at = ${input.authorizedAt},
+          SET state = 'resolved', deletion_lease_token = NULL,
+              resolved_at = ${input.authorizedAt},
               updated_at = ${input.authorizedAt}
           WHERE prefix = ${input.cycle.prefix} AND object_key = ${input.objectKey}
         `;
@@ -333,12 +364,15 @@ export function createPostgresStorageReconciliationRepository(
       await sql`
         UPDATE focowiki.storage_reconciliation_candidates
         SET state = 'quarantined', confirmation_count = 1,
+            deletion_lease_token = NULL,
             first_seen_cycle_id = last_seen_cycle_id,
             first_seen_at = ${input.observedAt}, last_seen_at = ${input.observedAt},
             observed_size_bytes = ${input.object.sizeBytes},
             observed_etag = ${input.object.etag}, next_attempt_at = ${input.observedAt},
             last_error_code = NULL, updated_at = ${input.observedAt}
         WHERE prefix = ${input.prefix} AND object_key = ${input.object.key}
+          AND state = 'deleting'
+          AND deletion_lease_token = ${input.leaseToken}
       `;
     },
 
@@ -346,10 +380,12 @@ export function createPostgresStorageReconciliationRepository(
       await sql.begin(async (transaction) => {
         const updated = await transaction<Array<{ object_key: string }>>`
           UPDATE focowiki.storage_reconciliation_candidates
-          SET state = 'deleted', deleted_at = ${input.completedAt},
+          SET state = 'deleted', deletion_lease_token = NULL,
+              deleted_at = ${input.completedAt},
               resolved_at = ${input.completedAt}, updated_at = ${input.completedAt}
           WHERE prefix = ${input.prefix} AND object_key = ${input.objectKey}
             AND state = 'deleting'
+            AND deletion_lease_token = ${input.leaseToken}
           RETURNING object_key
         `;
         if (updated.length > 0) {
@@ -382,10 +418,12 @@ export function createPostgresStorageReconciliationRepository(
       await sql.begin(async (transaction) => {
         await transaction`
           UPDATE focowiki.storage_reconciliation_candidates
-          SET state = 'failed', last_error_code = ${input.errorCode},
+          SET state = 'failed', deletion_lease_token = NULL,
+              last_error_code = ${input.errorCode},
               next_attempt_at = ${input.retryAt}, updated_at = ${input.failedAt}
           WHERE prefix = ${input.prefix} AND object_key = ${input.objectKey}
             AND state = 'deleting'
+            AND deletion_lease_token = ${input.leaseToken}
         `;
         await transaction`
           UPDATE focowiki.storage_reconciliation_cycles
@@ -491,15 +529,29 @@ export function createPostgresStorageReconciliationRepository(
     },
 
     async failCycle(input) {
-      await sql`
-        UPDATE focowiki.storage_reconciliation_cycles
-        SET state = 'failed', lease_token = NULL, lease_expires_at = NULL,
-            next_scan_at = ${input.retryAt}, last_error_code = ${input.errorCode},
-            retry_count = retry_count + 1, updated_at = ${input.failedAt}
-        WHERE prefix = ${input.cycle.prefix}
-          AND cycle_id = ${input.cycle.cycleId}
-          AND lease_token = ${input.leaseToken}
-      `;
+      await sql.begin(async (transaction) => {
+        const cycles = await transaction<Array<{ prefix: string }>>`
+          UPDATE focowiki.storage_reconciliation_cycles
+          SET state = 'failed', lease_token = NULL, lease_expires_at = NULL,
+              next_scan_at = ${input.retryAt}, last_error_code = ${input.errorCode},
+              retry_count = retry_count + 1, updated_at = ${input.failedAt}
+          WHERE prefix = ${input.cycle.prefix}
+            AND cycle_id = ${input.cycle.cycleId}
+            AND lease_token = ${input.leaseToken}
+          RETURNING prefix
+        `;
+        if (cycles.length === 0) return;
+        await transaction`
+          UPDATE focowiki.storage_reconciliation_candidates
+          SET state = 'failed', deletion_lease_token = NULL,
+              next_attempt_at = ${input.retryAt},
+              last_error_code = ${input.errorCode}, updated_at = ${input.failedAt}
+          WHERE prefix = ${input.cycle.prefix}
+            AND last_seen_cycle_id = ${input.cycle.cycleId}
+            AND state = 'deleting'
+            AND deletion_lease_token = ${input.leaseToken}
+        `;
+      });
     },
 
     async getStatus(prefix) {

@@ -25,6 +25,40 @@ export type MaintenanceProjectionRepairProgress = {
   state: string;
   phase: string;
   attemptCount: number;
+  requiredProjectionKinds: string[];
+  completedProjectionKinds: string[];
+  completedSubtaskCount: number;
+  totalSubtaskCount: number;
+  completedRecordCount: number;
+  totalRecordCount: number;
+  completedDirectoryCount: number;
+  totalDirectoryCount: number;
+  objectWriteCount: number;
+  objectReuseCount: number;
+  retryCount: number;
+  recordsPerSecond: number | null;
+  rollingBatchLatencyMs: number | null;
+  lastProgressAt: string | null;
+  lastHeartbeatAt: string | null;
+  estimatedCompletionAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  safeErrorCode: string | null;
+  safeErrorMessage: string | null;
+};
+
+export type MaintenanceLexicalRebuildProgress = {
+  state: string;
+  phase: string;
+  searchSchemaVersion: string;
+  tokenizerContractVersion: string;
+  segmentationVersion: string;
+  contentProfileVersion: string;
+  graphLexicalProjectionVersion: string;
+  processedSourceCount: number;
+  totalSourceCount: number;
+  attemptCount: number;
+  maxAttempts: number;
   updatedAt: string;
   completedAt: string | null;
   safeErrorCode: string | null;
@@ -33,6 +67,7 @@ export type MaintenanceProjectionRepairProgress = {
 
 export type MaintenanceProgressSummary = {
   migration: MaintenanceMigrationProgress | null;
+  lexicalRebuild: MaintenanceLexicalRebuildProgress | null;
   projectionRepair: MaintenanceProjectionRepairProgress | null;
   compaction: {
     active: MaintenanceCompactionProgress | null;

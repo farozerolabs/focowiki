@@ -13,6 +13,10 @@ export async function runMaintenanceBackground(input: {
     migrationProcessed: number;
     migrationCompleted: boolean;
     migrationFailed: boolean;
+    lexicalRebuildPhase: string;
+    lexicalRebuildProcessed: number;
+    lexicalRebuildCompleted: boolean;
+    lexicalRebuildFailed: boolean;
     statisticsClaimed: boolean;
     statisticsChanged: boolean;
     statisticsFailed: boolean;

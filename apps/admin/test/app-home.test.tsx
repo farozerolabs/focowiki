@@ -104,6 +104,7 @@ vi.mock("../src/lib/admin-api", () => ({
     },
     maintenanceProgress: {
       migration: null,
+      lexicalRebuild: null,
       projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
     },

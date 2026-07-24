@@ -4,10 +4,13 @@ FROM node:24-alpine AS dependencies
 ENV CI=true
 ENV PNPM_HOME="/pnpm"
 ENV PATH="${PNPM_HOME}:${PATH}"
+ENV npm_config_build_from_source=true
+RUN apk add --no-cache --virtual .native-build-dependencies g++ make python3
 RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches patches
 COPY apps/api/package.json apps/api/package.json
 COPY apps/admin/package.json apps/admin/package.json
 COPY packages/okf/package.json packages/okf/package.json
@@ -25,7 +28,7 @@ ENV NODE_ENV=production
 ENV FOCOWIKI_RELEASE_VERSION=${FOCOWIKI_RELEASE_VERSION}
 WORKDIR /app
 
-RUN apk add --no-cache su-exec
+RUN apk add --no-cache libstdc++ su-exec
 COPY --from=build /app/apps/api/runtime ./apps/api/runtime
 COPY --from=build /app/apps/api/migrations ./apps/api/runtime/migrations
 COPY deploy/docker/api-entrypoint.sh /usr/local/bin/focowiki-api-entrypoint
@@ -34,8 +37,14 @@ RUN test -f apps/api/runtime/main.mjs \
     && test -f apps/api/runtime/migration-preflight.mjs \
     && test -f apps/api/runtime/source-worker.mjs \
     && test -f apps/api/runtime/publication-worker.mjs \
+    && test -f apps/api/runtime/projection-repair-worker.mjs \
     && test -f apps/api/runtime/maintenance-worker.mjs \
-    && test -f apps/api/runtime/migrate.mjs
+    && test -f apps/api/runtime/migrate.mjs \
+    && test -f apps/api/runtime/node_modules/nodejieba/package.json \
+    && test -f apps/api/runtime/node_modules/nodejieba/LICENSE \
+    && test ! -x /usr/bin/g++ \
+    && test ! -x /usr/bin/make \
+    && node -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1)"
 
 EXPOSE 43000 43200
 ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]

@@ -208,11 +208,11 @@ function generatedDirectoryPath(relativePath: string): string {
   return relativePath ? `pages/${relativePath}` : "pages";
 }
 
-function directoryLeafRefKey(directoryPath: string, leafId: string): string {
+export function directoryLeafRefKey(directoryPath: string, leafId: string): string {
   return `directory-leaf:${directoryPath}:${leafId}`;
 }
 
-function directoryLeafPath(directoryPath: string, leafId: string): string {
+export function directoryLeafPath(directoryPath: string, leafId: string): string {
   return `${directoryPath}/index-${encodeURIComponent(leafId)}.md`;
 }
 

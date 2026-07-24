@@ -25,6 +25,7 @@ import {
 } from "../runtime-settings/repository.js";
 import type { ModelApiMode } from "../runtime-settings/types.js";
 import type { GraphTermDocument } from "../graph/graph-term-document.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 export type {
   GeneratedSourceFileOutputRecord,
   GeneratedOutputStatus,
@@ -364,7 +365,10 @@ export function createSecurityAuditEventId(): string {
   return `audit-${randomUUID()}`;
 }
 
-export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepositories {
+export function createPostgresAdminRepositories(
+  sql: DatabaseClient,
+  options: { tokenizer?: LexicalTokenizer } = {}
+): AdminRepositories {
   return {
     runtimeSettings: createRuntimeSettingsRepository(sql),
     uploadSessions: createPostgresUploadSessionRepository(sql),
@@ -459,7 +463,7 @@ export function createPostgresAdminRepositories(sql: DatabaseClient): AdminRepos
       },
     },
     files: createPostgresSourceFileRepository(sql),
-    graph: createPostgresFileGraphRepository(sql),
+    graph: createPostgresFileGraphRepository(sql, options.tokenizer),
     modelInvocations: {
       async createModelInvocation(input) {
         const rows = await sql.begin(async (transaction) => {

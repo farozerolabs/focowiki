@@ -4,6 +4,7 @@ import type {
   SourceModelSuggestions
 } from "@focowiki/okf";
 import { resolveSourceMarkdownLinkDestination } from "@focowiki/okf";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 import { buildSourceContentProfile, isUsefulTerm } from "./content-profile.js";
 import {
   extractSearchTerms,
@@ -19,6 +20,7 @@ export function createGraphNode(input: {
   metadata: SourceMetadataDefaults;
   body: string;
   suggestions: SourceModelSuggestions | null;
+  tokenizer: LexicalTokenizer;
 }): OkfGraphNode {
   const sourceName = input.sourceRelativePath.split("/").at(-1) ?? input.sourceRelativePath;
   const title = readString(input.metadata.title) || stripMarkdownExtension(sourceName);
@@ -26,14 +28,15 @@ export function createGraphNode(input: {
     title,
     body: input.body,
     metadata: input.metadata,
-    suggestions: input.suggestions
+    suggestions: input.suggestions,
+    tokenizer: input.tokenizer
   });
   const tags = unique([...readStringArray(input.metadata.tags), ...profile.tags]).filter(isUsefulTerm);
   const keywords = unique([
     ...profile.keywords,
     ...profile.subjects,
     ...profile.entities,
-    ...extractSearchTerms(title)
+    ...extractSearchTerms(title, input.tokenizer)
   ])
     .filter(isUsefulTerm)
     .slice(0, 80);
@@ -81,7 +84,8 @@ export function createGraphNode(input: {
         headingOutline: profile.headingOutline,
         language: profile.language,
         profileVersion: profile.profileVersion,
-        profileSource: profile.profileSource
+        profileSource: profile.profileSource,
+        tokenizerContractVersion: profile.tokenizerContractVersion
       }
     }
   };

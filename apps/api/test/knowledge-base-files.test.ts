@@ -333,6 +333,7 @@ function createRepositories() {
             safeErrorCode: null,
             safeErrorMessage: null
           },
+          lexicalRebuild: null,
           projectionRepair: {
             repairVersion: 3,
             state: "running",
@@ -1130,6 +1131,7 @@ describe("Knowledge base file Admin API", () => {
           state: "backfilling",
           phase: "projection_segments"
         },
+        lexicalRebuild: null,
         projectionRepair: {
           repairVersion: 3,
           state: "running",

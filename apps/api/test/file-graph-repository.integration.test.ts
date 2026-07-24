@@ -7,7 +7,16 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 
 describeDatabase("file graph repository integration", () => {
   const sql = postgres(databaseUrl!, { max: 2 });
-  const repository = createPostgresFileGraphRepository(sql);
+  const tokenizer = {
+    contractVersion: "file-graph-test-tokenizer-v1",
+    tokenizeDocument(value: string, limit: number) {
+      return value.toLowerCase().match(/[\p{L}\p{N}]+/gu)?.slice(0, limit) ?? [];
+    },
+    tokenizeQuery(value: string, limit: number) {
+      return value.toLowerCase().match(/[\p{L}\p{N}]+/gu)?.slice(0, limit) ?? [];
+    }
+  };
+  const repository = createPostgresFileGraphRepository(sql, tokenizer);
   const knowledgeBaseId = "kb-file-graph-repository";
   const sourceFileId = "source-file-graph-repository";
   const revisionId = "source-revision-graph-repository";

@@ -151,11 +151,28 @@ vi.mock("../src/lib/admin-api", () => ({
     },
     maintenanceProgress: {
       migration: null,
+      lexicalRebuild: null,
       projectionRepair: {
         repairVersion: 3,
         state: "running",
-        phase: "navigation",
+        phase: "directory",
         attemptCount: 1,
+        requiredProjectionKinds: ["tree", "directory", "graph"],
+        completedProjectionKinds: ["tree"],
+        completedSubtaskCount: 8,
+        totalSubtaskCount: 24,
+        completedRecordCount: 12_500,
+        totalRecordCount: 30_000,
+        completedDirectoryCount: 40,
+        totalDirectoryCount: 120,
+        objectWriteCount: 320,
+        objectReuseCount: 1_280,
+        retryCount: 2,
+        recordsPerSecond: 625,
+        rollingBatchLatencyMs: 85,
+        lastProgressAt: "2026-07-20T00:00:04.000Z",
+        lastHeartbeatAt: "2026-07-20T00:00:04.500Z",
+        estimatedCompletionAt: "2026-07-20T00:00:32.000Z",
         updatedAt: "2026-07-20T00:00:04.000Z",
         completedAt: null,
         safeErrorCode: null,
@@ -498,7 +515,13 @@ describe("Admin knowledge base detail", () => {
     await openDetail();
 
     expect(await screen.findByText("Repairing projections")).toBeTruthy();
-    expect(screen.getByText("running · navigation")).toBeTruthy();
+    expect(
+      screen.getByText((content) =>
+        content.includes("Building directory navigation") &&
+        content.includes("12,500/30,000 records") &&
+        content.includes("8/24 tasks")
+      )
+    ).toBeTruthy();
     expect(screen.queryByText("No active maintenance")).toBeNull();
   });
 

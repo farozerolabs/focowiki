@@ -16,6 +16,22 @@ type GenerationRow = {
   created_at: Date;
 };
 
+type ActiveSearchVersionRow = {
+  search_schema_version: string | null;
+  tokenizer_contract_version: string | null;
+  search_segmentation_version: string | null;
+};
+
+type SearchProjectionReadinessRow = {
+  visible_source_count: number;
+  reference_count: number;
+  invalid_reference_count: number;
+  search_schema_version: string | null;
+  tokenizer_contract_version: string | null;
+  segmentation_version: string | null;
+  version_tuple_count: number;
+};
+
 export function createPostgresPublicationGenerationRepository(
   sql: DatabaseClient
 ): PublicationGenerationRepository {
@@ -365,11 +381,23 @@ export function createPostgresPublicationGenerationRepository(
             hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
           )
         `;
-        const knowledgeBases = await transaction<Array<{ active_generation_id: string | null }>>`
-          SELECT active_generation_id
-          FROM focowiki.knowledge_bases
-          WHERE id = ${input.knowledgeBaseId} AND deleted_at IS NULL
-          FOR UPDATE
+        const knowledgeBases = await transaction<Array<{
+          active_generation_id: string | null;
+          search_schema_version: string | null;
+          tokenizer_contract_version: string | null;
+          search_segmentation_version: string | null;
+        }>>`
+          SELECT knowledge_base.active_generation_id,
+                 generation.search_schema_version,
+                 generation.tokenizer_contract_version,
+                 generation.search_segmentation_version
+          FROM focowiki.knowledge_bases knowledge_base
+          LEFT JOIN focowiki.publication_generations generation
+            ON generation.knowledge_base_id = knowledge_base.id
+           AND generation.id = knowledge_base.active_generation_id
+          WHERE knowledge_base.id = ${input.knowledgeBaseId}
+            AND knowledge_base.deleted_at IS NULL
+          FOR UPDATE OF knowledge_base
         `;
         if (
           !knowledgeBases[0]
@@ -405,6 +433,11 @@ export function createPostgresPublicationGenerationRepository(
         if (Number(invalidObjectReferences[0]?.total ?? 0) > 0) {
           throw new Error("Candidate generation contains an unverified immutable object");
         }
+        const searchVersion = await resolveCandidateSearchVersion(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: input.generationId,
+          predecessorSearchVersion: knowledgeBases[0]
+        });
         if (input.expectedPredecessorGenerationId) {
           await transaction`
             INSERT INTO focowiki.generation_tree_directory_stats (
@@ -453,6 +486,9 @@ export function createPostgresPublicationGenerationRepository(
           SET state = 'active',
               root_manifest_checksum_sha256 = ${input.rootManifestChecksumSha256},
               root_manifest_object_key = ${input.rootManifestObjectKey},
+              search_schema_version = ${searchVersion.search_schema_version},
+              tokenizer_contract_version = ${searchVersion.tokenizer_contract_version},
+              search_segmentation_version = ${searchVersion.search_segmentation_version},
               validated_at = coalesce(validated_at, ${input.activatedAt}),
               activated_at = ${input.activatedAt}, updated_at = ${input.activatedAt}
           WHERE id = ${input.generationId}
@@ -813,6 +849,105 @@ export function createPostgresPublicationGenerationRepository(
         `;
       });
     }
+  };
+}
+
+async function resolveCandidateSearchVersion(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    predecessorSearchVersion: ActiveSearchVersionRow;
+  }
+): Promise<ActiveSearchVersionRow> {
+  await transaction`
+    DELETE FROM focowiki.generation_search_projection_refs reference
+    USING focowiki.source_files source
+    WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+      AND reference.generation_id = ${input.generationId}
+      AND source.knowledge_base_id = reference.knowledge_base_id
+      AND source.id = reference.source_file_id
+      AND (
+        source.deleted_at IS NOT NULL
+        OR source.deletion_intent_id IS NOT NULL
+      )
+  `;
+  const rows = await transaction<SearchProjectionReadinessRow[]>`
+    WITH visible_sources AS MATERIALIZED (
+      SELECT
+        source.id AS source_file_id,
+        coalesce(source.candidate_revision_id, source.active_revision_id) AS source_revision_id,
+        'pages/' || coalesce(source.candidate_relative_path, source.relative_path) AS logical_path
+      FROM focowiki.source_files source
+      WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
+        AND source.deleted_at IS NULL
+        AND source.deletion_intent_id IS NULL
+    ), search_refs AS MATERIALIZED (
+      SELECT reference.*, document.lifecycle_state,
+             document.segmentation_version AS document_segmentation_version,
+             document.search_schema_version AS document_search_schema_version,
+             document.tokenizer_contract_version AS document_tokenizer_contract_version
+      FROM focowiki.generation_search_projection_refs reference
+      JOIN focowiki.search_projection_documents document
+        ON document.knowledge_base_id = reference.knowledge_base_id
+       AND document.id = reference.search_document_id
+      WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+        AND reference.generation_id = ${input.generationId}
+    )
+    SELECT
+      (SELECT count(*)::int FROM visible_sources) AS visible_source_count,
+      (SELECT count(*)::int FROM search_refs) AS reference_count,
+      (
+        SELECT count(*)::int
+        FROM search_refs reference
+        LEFT JOIN visible_sources source
+          ON source.source_file_id = reference.source_file_id
+        WHERE source.source_file_id IS NULL
+           OR reference.source_revision_id IS DISTINCT FROM source.source_revision_id
+           OR reference.logical_path IS DISTINCT FROM source.logical_path
+           OR reference.lifecycle_state <> 'ready'
+           OR reference.search_schema_version
+                IS DISTINCT FROM reference.document_search_schema_version
+           OR reference.tokenizer_contract_version
+                IS DISTINCT FROM reference.document_tokenizer_contract_version
+           OR reference.segmentation_version
+                IS DISTINCT FROM reference.document_segmentation_version
+      ) AS invalid_reference_count,
+      min(reference.search_schema_version) AS search_schema_version,
+      min(reference.tokenizer_contract_version) AS tokenizer_contract_version,
+      min(reference.segmentation_version) AS segmentation_version,
+      count(DISTINCT (
+        reference.search_schema_version,
+        reference.tokenizer_contract_version,
+        reference.segmentation_version
+      ))::int AS version_tuple_count
+    FROM search_refs reference
+  `;
+  const readiness = rows[0]!;
+  const complete = readiness.reference_count === readiness.visible_source_count
+    && readiness.invalid_reference_count === 0
+    && readiness.version_tuple_count === 1
+    && readiness.search_schema_version !== null
+    && readiness.tokenizer_contract_version !== null
+    && readiness.segmentation_version !== null;
+  const predecessorUsesVersionedSearch =
+    input.predecessorSearchVersion.search_schema_version !== null
+    || input.predecessorSearchVersion.tokenizer_contract_version !== null
+    || input.predecessorSearchVersion.search_segmentation_version !== null;
+  if (!complete && predecessorUsesVersionedSearch) {
+    throw new Error("Candidate generation search projection is incomplete");
+  }
+  if (!complete) {
+    return {
+      search_schema_version: null,
+      tokenizer_contract_version: null,
+      search_segmentation_version: null
+    };
+  }
+  return {
+    search_schema_version: readiness.search_schema_version,
+    tokenizer_contract_version: readiness.tokenizer_contract_version,
+    search_segmentation_version: readiness.segmentation_version
   };
 }
 

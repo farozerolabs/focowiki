@@ -13,7 +13,10 @@ export const MIGRATION_FILES = [
   "007_publication_write_livelock_recovery.sql",
   "008_large_scale_ingestion_runtime.sql",
   "009_optimization_migration_rebase_recovery.sql",
-  "010_generation_consistent_read_repair.sql"
+  "010_generation_consistent_read_repair.sql",
+  "011_body_search_projection.sql",
+  "012_storage_reconciliation_lease_recovery.sql",
+  "013_projection_repair_throughput.sql"
 ] as const;
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
@@ -23,7 +26,10 @@ const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
 const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
 const LARGE_SCALE_SCHEMA_GENERATION = "large-scale-ingestion-runtime-v8";
 const OPTIMIZATION_REBASE_SCHEMA_GENERATION = "optimization-migration-rebase-recovery-v9";
-export const RUNTIME_SCHEMA_GENERATION = "generation-consistent-read-repair-v10";
+const GENERATION_CONSISTENT_READ_SCHEMA_GENERATION = "generation-consistent-read-repair-v10";
+const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
+const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
+export const RUNTIME_SCHEMA_GENERATION = "projection-repair-throughput-v13";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
@@ -34,7 +40,10 @@ const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   [CONTINUATION_SCHEMA_GENERATION, 6],
   [WRITE_LIVELOCK_SCHEMA_GENERATION, 7],
   [LARGE_SCALE_SCHEMA_GENERATION, 8],
-  [OPTIMIZATION_REBASE_SCHEMA_GENERATION, 9]
+  [OPTIMIZATION_REBASE_SCHEMA_GENERATION, 9],
+  [GENERATION_CONSISTENT_READ_SCHEMA_GENERATION, 10],
+  [BODY_SEARCH_SCHEMA_GENERATION, 11],
+  [STORAGE_RECONCILIATION_SCHEMA_GENERATION, 12]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {

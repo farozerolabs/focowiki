@@ -102,6 +102,40 @@ describe("storage reconciliation", () => {
     expect(repository.completeCandidateDeletion).toHaveBeenCalledWith(expect.objectContaining({
       objectKey: object.key
     }));
+    expect(repository.claimDeletionCandidates).toHaveBeenCalledWith(expect.objectContaining({
+      staleDeletingBefore: "2026-07-18T11:50:00.000Z"
+    }));
+  });
+
+  it("renews the cycle lease before processing a long deletion batch", async () => {
+    const object = candidate("8");
+    let current = new Date("2026-07-18T12:00:00.000Z");
+    const repository = createRepository({
+      claimCycle: vi.fn().mockImplementation(async () => {
+        current = new Date("2026-07-18T12:04:30.000Z");
+        return cycle("verifying");
+      }),
+      claimDeletionCandidates: vi.fn().mockResolvedValue([object]),
+      authorizeCandidateDeletion: vi.fn().mockResolvedValue(true),
+      renewCycleLease: vi.fn().mockResolvedValue(true)
+    });
+    const storage = createStorage({
+      headObjectMetadata: vi.fn().mockResolvedValue(null)
+    });
+    const input = createInput(repository, storage);
+    input.now = () => current;
+
+    await runStorageReconciliationSlice(input);
+
+    expect(repository.renewCycleLease).toHaveBeenCalledWith(expect.objectContaining({
+      cycle: expect.objectContaining({ cycleId: "cycle-test" }),
+      leaseToken: "lease-test",
+      renewedAt: "2026-07-18T12:04:30.000Z",
+      leaseExpiresAt: "2026-07-18T12:09:30.000Z"
+    }));
+    expect(repository.completeCandidateDeletion).toHaveBeenCalledWith(expect.objectContaining({
+      objectKey: object.key
+    }));
   });
 
   it("uses the configured version purge policy for confirmed candidates", async () => {
@@ -341,6 +375,7 @@ function createRepository(
 ): StorageReconciliationRepository {
   return {
     claimCycle: vi.fn().mockResolvedValue(null),
+    renewCycleLease: vi.fn().mockResolvedValue(true),
     recordScanPage: vi.fn().mockResolvedValue(true),
     claimDeletionCandidates: vi.fn().mockResolvedValue([]),
     authorizeCandidateDeletion: vi.fn().mockResolvedValue(true),

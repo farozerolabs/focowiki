@@ -322,13 +322,15 @@ function ProcessingSummaryStrip({ summary }: { summary: ProcessingSummary }) {
 }
 
 function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const migration = summary.maintenanceProgress.migration;
+  const lexicalRebuild = summary.maintenanceProgress.lexicalRebuild;
   const projectionRepair = summary.maintenanceProgress.projectionRepair;
   const compaction = summary.maintenanceProgress.compaction.active;
   const latestUpdate = latestMaintenanceUpdate(summary);
   const failedCode = projectionRepair?.safeErrorCode
     ?? compaction?.safeErrorCode
+    ?? lexicalRebuild?.safeErrorCode
     ?? migration?.safeErrorCode;
 
   if (failedCode) {
@@ -346,9 +348,27 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
       <SummaryItem
         label={t("tasks.summary.maintenance")}
         value={t("tasks.summary.projectionRepairActive")}
-        detail={t("tasks.summary.projectionRepairState", {
-          state: projectionRepair.state,
-          phase: projectionRepair.phase
+        detail={formatProjectionRepairProgress(projectionRepair, t, i18n.language)}
+      />
+    );
+  }
+
+  if (
+    lexicalRebuild
+    && ["pending", "running", "validating", "activating", "failed"].includes(
+      lexicalRebuild.state
+    )
+  ) {
+    return (
+      <SummaryItem
+        label={t("tasks.summary.maintenance")}
+        value={t("tasks.summary.lexicalRebuildActive")}
+        detail={t("tasks.summary.lexicalRebuildState", {
+          phase: t(`tasks.summary.lexicalRebuildPhase.${lexicalRebuild.phase}`, {
+            defaultValue: lexicalRebuild.phase
+          }),
+          processed: lexicalRebuild.processedSourceCount,
+          total: lexicalRebuild.totalSourceCount
         })}
       />
     );
@@ -394,9 +414,42 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
   );
 }
 
+function formatProjectionRepairProgress(
+  repair: NonNullable<ProcessingSummary["maintenanceProgress"]["projectionRepair"]>,
+  t: ReturnType<typeof useTranslation>["t"],
+  locale: string
+): string {
+  const integerFormatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+  const phase = t(`tasks.summary.projectionRepairPhase.${repair.phase}`, {
+    defaultValue: repair.phase
+  });
+  const parts = [
+    t("tasks.summary.projectionRepairProgress", {
+      phase,
+      completed: integerFormatter.format(repair.completedRecordCount),
+      total: integerFormatter.format(repair.totalRecordCount),
+      completedTasks: integerFormatter.format(repair.completedSubtaskCount),
+      totalTasks: integerFormatter.format(repair.totalSubtaskCount)
+    })
+  ];
+  if (repair.recordsPerSecond !== null) {
+    parts.push(t("tasks.summary.projectionRepairRate", {
+      rate: new Intl.NumberFormat(locale, { maximumFractionDigits: 1 })
+        .format(repair.recordsPerSecond)
+    }));
+  }
+  if (repair.estimatedCompletionAt) {
+    parts.push(t("tasks.summary.projectionRepairEta", {
+      time: new Date(repair.estimatedCompletionAt).toLocaleString(locale)
+    }));
+  }
+  return parts.join(" · ");
+}
+
 function latestMaintenanceUpdate(summary: ProcessingSummary): string | null {
   const timestamps = [
     summary.maintenanceProgress.migration?.updatedAt,
+    summary.maintenanceProgress.lexicalRebuild?.updatedAt,
     summary.maintenanceProgress.projectionRepair?.updatedAt,
     summary.maintenanceProgress.compaction.latestCompleted?.updatedAt
   ].filter((value): value is string => Boolean(value));

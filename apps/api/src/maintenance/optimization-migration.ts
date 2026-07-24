@@ -6,6 +6,7 @@ import type {
 } from "../application/ports/optimization-migration-repository.js";
 import { mapWithConcurrency } from "../runtime/bounded.js";
 import type { StorageAdapter } from "../storage/s3.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 
 export type OptimizationMigrationSliceResult = {
   knowledgeBaseId: string | null;
@@ -31,6 +32,7 @@ export async function runOptimizationMigrationSlice(input: {
   leaseExpiresAt: string;
   batchSize: number;
   sourceReadConcurrency: number;
+  tokenizer: LexicalTokenizer;
   onUnexpectedError?: (error: unknown, context: UnexpectedMigrationErrorContext) => void;
 }): Promise<OptimizationMigrationSliceResult> {
   assertPositiveInteger(input.batchSize, "Migration batch size");
@@ -112,7 +114,8 @@ async function processSourceTerms(
         phrases: source.phrases,
         entities: source.entities,
         explicitReferences: source.explicitReferences,
-        supplementalTerms: source.supplementalTerms
+        supplementalTerms: source.supplementalTerms,
+        tokenizer: input.tokenizer
       })
     });
   });

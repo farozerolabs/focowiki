@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { DatabaseClient } from "../src/db/client.js";
 import {
   MigrationWorkNotDrainedError,
@@ -41,6 +43,18 @@ describe("migration preflight", () => {
       code: "MIGRATION_WORK_NOT_DRAINED",
       snapshot: { sourceFiles: 1_000_000, capped: true }
     });
+  });
+
+  it("keeps resumable projection repairs outside the publication drain gate", () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../src/db/migration-preflight.ts"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(source).toContain(
+      "coalesce( to_jsonb(generation)->>'generation_kind', 'normal' ) <> 'projection_repair'"
+    );
+    expect(source).toContain("generation.state in ('frozen', 'building', 'validating')");
   });
 });
 

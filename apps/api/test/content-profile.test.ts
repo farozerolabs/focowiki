@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSourceContentProfile,
+  buildSourceContentProfile as buildSourceContentProfileWithTokenizer,
   CONTENT_PROFILE_SOURCE_CHAR_LIMIT,
   isUsefulTerm
 } from "../src/graph/content-profile.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
+
+function buildSourceContentProfile(
+  input: Omit<Parameters<typeof buildSourceContentProfileWithTokenizer>[0], "tokenizer">
+) {
+  return buildSourceContentProfileWithTokenizer({ ...input, tokenizer: testLexicalTokenizer });
+}
 
 describe("content profile", () => {
   it("extracts bounded CJK relationship phrases from titles, headings, and body text", () => {
@@ -23,7 +30,7 @@ describe("content profile", () => {
       ].join("\n")
     });
 
-    expect(profile.keywords).toContain("支付配置");
+    expect(profile.keywords).toEqual(expect.arrayContaining(["支付", "配置"]));
     expect(profile.subjects).toContain("支付配置");
     expect(profile.headingOutline).toEqual(["支付配置指南"]);
     expect(profile.sourceExcerpt).not.toContain("Related");

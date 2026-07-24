@@ -161,8 +161,101 @@ describeDatabase("publication validation repository integration", () => {
     })).resolves.toEqual([]);
   });
 
-  it("validates projection repair graph summaries from the completed repair checkpoint", async () => {
+  it("validates rebuilt projection repair graph summaries from staged graph records", async () => {
     const baseGenerationId = "generation-publication-validation-base";
+    await completeNavigationAndGraphSummary(sql, {
+      knowledgeBaseId,
+      generationId
+    });
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version, activated_at
+      ) VALUES (${baseGenerationId}, ${knowledgeBaseId}, 'active', 2, now())
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${baseGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET predecessor_generation_id = ${baseGenerationId},
+          generation_kind = 'projection_repair'
+      WHERE id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, logical_path, payload_json
+      ) VALUES
+        (${knowledgeBaseId}, 'graph_node', 'node-a', ${baseGenerationId},
+         'graph_node/v1/00', 'pages/06/a.md', '{"kind":"graph_node"}'::jsonb),
+        (${knowledgeBaseId}, 'graph_node', 'node-b', ${baseGenerationId},
+         'graph_node/v1/00', 'pages/06/b.md', '{"kind":"graph_node"}'::jsonb),
+        (${knowledgeBaseId}, 'graph_edge', 'edge-a-b', ${baseGenerationId},
+         'graph_edge/v1/00', '_graph/graph_edge/v1/00.json', '{"kind":"graph_edge"}'::jsonb)
+    `;
+    await sql`
+      DELETE FROM focowiki.generation_projection_records
+      WHERE generation_id = ${generationId}
+        AND projection_kind IN ('graph_node', 'graph_edge')
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_projection_records (
+        generation_id, knowledge_base_id, projection_kind, record_id,
+        action, shard_key, logical_path, payload_json
+      ) VALUES
+        (${generationId}, ${knowledgeBaseId}, 'graph_node', 'node-a',
+         'upsert', 'graph_node/v1/00', 'pages/06/a.md',
+         '{"kind":"graph_node"}'::jsonb),
+        (${generationId}, ${knowledgeBaseId}, 'graph_node', 'node-b',
+         'upsert', 'graph_node/v1/00', 'pages/06/b.md',
+         '{"kind":"graph_node"}'::jsonb),
+        (${generationId}, ${knowledgeBaseId}, 'graph_edge', 'edge-a-b',
+         'upsert', 'graph_edge/v1/00', '_graph/graph_edge/v1/00.json',
+         '{"kind":"graph_edge"}'::jsonb)
+    `;
+    await sql`
+      UPDATE focowiki.generation_graph_summaries
+      SET node_count = 2, edge_count = 1
+      WHERE generation_id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id,
+        target_generation_id, state, required_projection_kinds
+      ) VALUES (
+        ${knowledgeBaseId}, 2, ${baseGenerationId}, ${generationId}, 'running',
+        ARRAY['graph']::text[]
+      )
+    `;
+
+    const issues = await repository.validateChangedClosure({
+      knowledgeBaseId,
+      generationId,
+      issueLimit: 50
+    });
+
+    expect(issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "GRAPH_SUMMARY_MISMATCH" })
+    ]));
+
+    await sql`
+      UPDATE focowiki.generation_graph_summaries
+      SET node_count = 1
+      WHERE generation_id = ${generationId}
+    `;
+    await expect(repository.validateChangedClosure({
+      knowledgeBaseId,
+      generationId,
+      issueLimit: 50
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "GRAPH_SUMMARY_MISMATCH" })
+    ]));
+  });
+
+  it("validates inherited graph summaries when a repair does not rebuild graph data", async () => {
+    const baseGenerationId = "generation-publication-validation-reused-graph";
     await completeNavigationAndGraphSummary(sql, {
       knowledgeBaseId,
       generationId
@@ -189,35 +282,23 @@ describeDatabase("publication validation repository integration", () => {
         AND projection_kind IN ('graph_node', 'graph_edge')
     `;
     await sql`
-      INSERT INTO focowiki.active_projection_records (
-        knowledge_base_id, projection_kind, record_id,
-        last_changed_generation_id, shard_key, logical_path, payload_json
-      ) VALUES
-        (${knowledgeBaseId}, 'graph_node', 'node-a', ${baseGenerationId},
-         'graph_node/v1/00', 'pages/06/a.md', '{"kind":"graph_node"}'::jsonb),
-        (${knowledgeBaseId}, 'graph_node', 'node-b', ${baseGenerationId},
-         'graph_node/v1/00', 'pages/06/b.md', '{"kind":"graph_node"}'::jsonb),
-        (${knowledgeBaseId}, 'graph_edge', 'edge-a-b', ${baseGenerationId},
-         'graph_edge/v1/00', '_graph/graph_edge/v1/00.json', '{"kind":"graph_edge"}'::jsonb)
+      INSERT INTO focowiki.generation_graph_summaries (
+        knowledge_base_id, generation_id, node_count, edge_count,
+        graph_index_available
+      ) VALUES (${knowledgeBaseId}, ${baseGenerationId}, 7, 4, true)
     `;
     await sql`
       UPDATE focowiki.generation_graph_summaries
-      SET node_count = 2, edge_count = 1
+      SET node_count = 7, edge_count = 4
       WHERE generation_id = ${generationId}
     `;
     await sql`
       INSERT INTO focowiki.knowledge_base_projection_repairs (
         knowledge_base_id, repair_version, base_generation_id,
-        target_generation_id, state, checkpoint_json
+        target_generation_id, state, required_projection_kinds
       ) VALUES (
-        ${knowledgeBaseId}, 2, ${baseGenerationId}, ${generationId}, 'running',
-        ${sql.json({
-          treeComplete: true,
-          navigationComplete: true,
-          graphNodeCount: 2,
-          graphEdgeCount: 1,
-          graphComplete: true
-        })}
+        ${knowledgeBaseId}, 4, ${baseGenerationId}, ${generationId}, 'running',
+        ARRAY['tree', 'directory']::text[]
       )
     `;
 
@@ -228,20 +309,6 @@ describeDatabase("publication validation repository integration", () => {
     });
 
     expect(issues).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "GRAPH_SUMMARY_MISMATCH" })
-    ]));
-
-    await sql`
-      UPDATE focowiki.knowledge_base_projection_repairs
-      SET checkpoint_json = checkpoint_json || '{"graphComplete":false}'::jsonb
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND repair_version = 2
-    `;
-    await expect(repository.validateChangedClosure({
-      knowledgeBaseId,
-      generationId,
-      issueLimit: 50
-    })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "GRAPH_SUMMARY_MISMATCH" })
     ]));
   });

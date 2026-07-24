@@ -1,15 +1,43 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { createGraphCandidatePlanTarget } from "../src/db/query-plan-validation.js";
+import {
+  createBodySearchPlanTargets,
+  createGraphCandidatePlanTarget
+} from "../src/db/query-plan-validation.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
 
 describe("large-scale ingestion architecture gates", () => {
+  it("defines bounded indexed body-search candidate families", () => {
+    const targets = createBodySearchPlanTargets({
+      knowledgeBaseId: "kb-plan",
+      generationId: "generation-plan",
+      phrase: "缓存一致性",
+      terms: ["缓存", "一致性"],
+      limit: 100
+    });
+    const byName = new Map(targets.map((target) => [target.name, normalize(target.sql)]));
+
+    expect(byName.get("body-search-exact")).toContain("lower(title) = lower(");
+    expect(byName.get("body-search-token")).toContain("lexical_vector @@");
+    expect(byName.get("body-search-trigram")).toContain(
+      "lower(segment.normalized_text) operator(focowiki.%)"
+    );
+    expect(byName.get("generation-search-reference-page")).toContain(
+      "source_file_id > 'source-file-plan'"
+    );
+    for (const sql of byName.values()) {
+      expect(sql).toContain("limit 100");
+    }
+  });
+
   it("uses an indexed body-term projection for graph candidates", () => {
     const target = createGraphCandidatePlanTarget({
       knowledgeBaseId: "kb-plan",
       sourceFileId: "source-file-plan",
       terms: ["distributed systems", "一致性"],
-      limit: 100
+      limit: 100,
+      tokenizer: testLexicalTokenizer
     });
     const sql = normalize(target.sql);
 

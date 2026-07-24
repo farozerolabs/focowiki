@@ -22,6 +22,10 @@ type StorageReconciliationSettings = Pick<
   | "retryDelayMs"
 >;
 
+const RECONCILIATION_LEASE_MS = 5 * 60_000;
+const RECONCILIATION_LEASE_RENEWAL_WINDOW_MS = 60_000;
+const RECONCILIATION_DELETION_STALE_MS = 10 * 60_000;
+
 export type StorageReconciliationSliceResult = {
   claimed: boolean;
   phase: "idle" | "scanning" | "deleting" | "verifying" | "completed" | "failed";
@@ -69,12 +73,13 @@ export async function runStorageReconciliationSlice(input: {
   const startedAt = now();
   const leaseToken = input.leaseToken ?? randomUUID();
   const prefix = `${input.storage.keyspace.prefix}/generated/`;
+  let leaseExpiresAt = new Date(startedAt.getTime() + RECONCILIATION_LEASE_MS);
   const cycle = await input.repository.claimCycle({
     prefix,
     cycleId: input.cycleId ?? randomUUID(),
     leaseToken,
     now: startedAt.toISOString(),
-    leaseExpiresAt: new Date(startedAt.getTime() + 5 * 60_000).toISOString()
+    leaseExpiresAt: leaseExpiresAt.toISOString()
   });
   if (!cycle) return emptyResult("idle", false);
 
@@ -104,6 +109,9 @@ export async function runStorageReconciliationSlice(input: {
       cycle,
       leaseToken,
       now: current.toISOString(),
+      staleDeletingBefore: new Date(
+        current.getTime() - RECONCILIATION_DELETION_STALE_MS
+      ).toISOString(),
       graceBefore: new Date(
         current.getTime() - input.settings.quarantineGracePeriodSeconds * 1_000
       ).toISOString(),
@@ -115,10 +123,12 @@ export async function runStorageReconciliationSlice(input: {
       const result = emptyResult("deleting", true);
       for (const candidate of candidates) {
         try {
+          await renewLeaseWhenNeeded();
           const metadata = await input.storage.headObjectMetadata(candidate.key);
           if (metadata && observationChanged(candidate, metadata)) {
             await input.repository.refreshCandidateObservation({
               prefix: cycle.prefix,
+              leaseToken,
               object: {
                 key: candidate.key,
                 checksumSha256: candidate.checksumSha256,
@@ -147,6 +157,7 @@ export async function runStorageReconciliationSlice(input: {
           if (finalMetadata && observationChanged(candidate, finalMetadata)) {
             await input.repository.refreshCandidateObservation({
               prefix: cycle.prefix,
+              leaseToken,
               object: {
                 key: candidate.key,
                 checksumSha256: candidate.checksumSha256,
@@ -169,6 +180,7 @@ export async function runStorageReconciliationSlice(input: {
           }
           await input.repository.completeCandidateDeletion({
             prefix: cycle.prefix,
+            leaseToken,
             objectKey: candidate.key,
             completedAt: now().toISOString()
           });
@@ -176,6 +188,7 @@ export async function runStorageReconciliationSlice(input: {
         } catch {
           await input.repository.failCandidateDeletion({
             prefix: cycle.prefix,
+            leaseToken,
             objectKey: candidate.key,
             errorCode: "STORAGE_DELETE_FAILED",
             retryAt: new Date(now().getTime() + input.settings.retryDelayMs).toISOString(),
@@ -194,6 +207,7 @@ export async function runStorageReconciliationSlice(input: {
     });
     if (registered.length > 0) {
       for (const object of registered) {
+        await renewLeaseWhenNeeded();
         const metadata = await input.storage.headObjectMetadata(object.objectKey);
         await input.repository.recordRegisteredObjectCheck({
           cycle,
@@ -226,6 +240,25 @@ export async function runStorageReconciliationSlice(input: {
       failedAt: failedAt.toISOString()
     });
     return { ...emptyResult("failed", true), failed: 1 };
+  }
+
+  async function renewLeaseWhenNeeded(): Promise<void> {
+    const renewedAt = now();
+    if (
+      leaseExpiresAt.getTime() - renewedAt.getTime()
+      > RECONCILIATION_LEASE_RENEWAL_WINDOW_MS
+    ) {
+      return;
+    }
+    const nextLeaseExpiresAt = new Date(renewedAt.getTime() + RECONCILIATION_LEASE_MS);
+    const renewed = await input.repository.renewCycleLease({
+      cycle: cycle!,
+      leaseToken,
+      renewedAt: renewedAt.toISOString(),
+      leaseExpiresAt: nextLeaseExpiresAt.toISOString()
+    });
+    if (!renewed) throw new Error("Storage reconciliation lease renewal failed");
+    leaseExpiresAt = nextLeaseExpiresAt;
   }
 }
 

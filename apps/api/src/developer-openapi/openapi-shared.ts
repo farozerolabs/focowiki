@@ -12,6 +12,7 @@ export function operation(input: {
   tag: string;
   operationId: string;
   summary: string;
+  description?: string;
   parameters?: ParameterObject[];
   requestSchema?: SchemaObject;
   requestBody?: Record<string, unknown>;
@@ -27,6 +28,7 @@ export function operation(input: {
     tags: [input.tag],
     operationId: input.operationId,
     summary: input.summary,
+    ...(input.description ? { description: input.description } : {}),
     security: bearerSecurity,
     "x-request-example": input.requestExample ?? {},
     ...(input.parameters ? { parameters: input.parameters } : {}),
@@ -219,7 +221,7 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
 
 export function fileSearchParameters(): ParameterObject[] {
   return [
-    queryParameter("query", "Search phrase used to find candidate generated files.", {
+    queryParameter("query", "Language-neutral search phrase. Exact titles, partial terms, punctuation variants, and multi-term CJK, Latin, or mixed-script queries are accepted.", {
       type: "string",
       minLength: 2,
       maxLength: 160
@@ -252,7 +254,7 @@ export function fileSearchParameters(): ParameterObject[] {
       ],
       default: "page"
     }),
-    queryParameter("mode", "Search mode. `file` is the default and searches generated file documents. `hybrid` merges file and graph candidates. `graph` searches graph relationships only.", {
+    queryParameter("mode", "Search mode. `file` searches file evidence, `graph` searches relationship evidence, and `hybrid` merges both candidate families. Every result retains a file ID and logical path for subsequent file reads.", {
       type: "string",
       enum: ["file", "graph", "hybrid"],
       default: "file"

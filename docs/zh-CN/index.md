@@ -18,8 +18,9 @@ Focowiki 适合已经拥有 Markdown 知识资产的团队。团队可以用一�
 - 生成包含 `index.md`、`log.md`、`schema.md`、`pages/*.md`、JSON indexes 和 `_graph/*` 关系文件的 OKF-style 知识库。
 - 将上传来源修订和内容寻址的生成文件保存到 S3 兼容存储。
 - 通过 PostgreSQL 与 Redis 协调保存来源处理、发布 generation、活动投影、cursor 和 API key。
-- 将来源处理、generation 发布和有界维护分配给独立 Worker，服务请求不会执行投影修复或存储对账。
-- 以正文生成图术语，通过增量变更事实、结构共享投影分段和活动 generation 原子切换处理更新，不在每次上传时重建完整语料库。
+- 将来源处理、generation 发布、投影修复和有界维护分配给独立 Worker，服务请求不会执行后台修复或存储对账。
+- 以完整正文生成搜索数据和图术语，通过增量变更事实、结构共享投影分段和活动 generation 原子切换处理更新，不在每次上传时重建完整语料库。
+- 相关升级会在后台兼容重建搜索数据，重建期间继续读取原有生效 generation，并保留已接受的关联关系。
 - 通过 Developer OpenAPI 暴露知识库增删、Markdown 上传、来源文件处理观察、生成文件读取、删除和 webhooks。
 
 ## Admin UI 预览

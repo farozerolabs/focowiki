@@ -9,6 +9,7 @@ import type { RedisCoordinator } from "../redis/coordination.js";
 import type { ModelAssistanceOptions } from "./model-suggestions.js";
 import type { SourceFileStageMarker, SourceFileStageRecorder } from "./source-file-stage-types.js";
 import type { ResourceBudget } from "../runtime/resource-budget.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 
 export async function processSourceFileGraphStage(input: {
   repositories: AdminRepositories;
@@ -30,6 +31,7 @@ export async function processSourceFileGraphStage(input: {
   recordStage: SourceFileStageRecorder;
   graphQueryBudget?: ResourceBudget;
   databaseMutationBudget?: ResourceBudget;
+  tokenizer?: LexicalTokenizer;
 }): Promise<{
   affectedSourceFileIds: string[];
   edgeIds: string[];
@@ -54,6 +56,9 @@ export async function processSourceFileGraphStage(input: {
       edgeIds: [],
       removedEdgeIds: []
     };
+  }
+  if (!input.tokenizer) {
+    throw new Error("Lexical tokenizer is unavailable for graph generation");
   }
 
   let affectedSourceFileIds = [input.source.id];
@@ -88,6 +93,7 @@ export async function processSourceFileGraphStage(input: {
       metadata: input.metadata,
       body: input.body,
       suggestions: input.suggestions,
+      tokenizer: input.tokenizer,
       pageSize: input.pageSize,
       ...(input.maxCandidateNodes ? { maxCandidateNodes: input.maxCandidateNodes } : {}),
       ...(input.acceptedEdgeLimit ? { acceptedEdgeLimit: input.acceptedEdgeLimit } : {}),

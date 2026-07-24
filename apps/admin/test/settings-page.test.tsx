@@ -133,7 +133,10 @@ vi.mock("@/lib/admin-api", () => ({
         maxAttempts: 5,
         retryDelayMs: 30000,
         migrationBackfillConcurrency: 2,
-        compactionConcurrency: 1
+        compactionConcurrency: 1,
+        projectionRepairConcurrency: 4,
+        projectionRepairDatabaseBatchSize: 2000,
+        projectionRepairObjectWriteConcurrency: 8
       },
       activeModel: {
         id: "model-001"
@@ -247,8 +250,24 @@ describe("SettingsPage", () => {
     });
     const scanBatchSize = document.getElementById("maintenance-scanBatchSize") as HTMLInputElement;
     expect(scanBatchSize?.value).toBe("500");
+    const repairConcurrency = document.getElementById(
+      "maintenance-projectionRepairConcurrency"
+    ) as HTMLInputElement;
+    const repairBatchSize = document.getElementById(
+      "maintenance-projectionRepairDatabaseBatchSize"
+    ) as HTMLInputElement;
+    const repairObjectWrites = document.getElementById(
+      "maintenance-projectionRepairObjectWriteConcurrency"
+    ) as HTMLInputElement;
+    expect(repairConcurrency?.value).toBe("4");
+    expect(repairBatchSize?.value).toBe("2000");
+    expect(repairObjectWrites?.value).toBe("8");
+    expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
     expect(screen.getByText(/S3 page limit is 1,000 objects/)).toBeTruthy();
 
+    fireEvent.change(repairConcurrency, { target: { value: "6" } });
+    fireEvent.change(repairBatchSize, { target: { value: "3000" } });
+    fireEvent.change(repairObjectWrites, { target: { value: "10" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -256,7 +275,10 @@ describe("SettingsPage", () => {
         expect.objectContaining({
           reconciliationEnabled: true,
           scanBatchSize: 500,
-          confirmationPasses: 2
+          confirmationPasses: 2,
+          projectionRepairConcurrency: 6,
+          projectionRepairDatabaseBatchSize: 3000,
+          projectionRepairObjectWriteConcurrency: 10
         })
       );
     });

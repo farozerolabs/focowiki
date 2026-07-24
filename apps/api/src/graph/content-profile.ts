@@ -4,6 +4,8 @@ import {
   canonicalizeOptionalGeneratedTextIdentity,
   isLowInformationSharedGraphTerm
 } from "@focowiki/okf";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
+import { tokenizeBoundedDocument } from "../application/bounded-tokenization.js";
 
 export type SourceContentProfile = {
   summary: string;
@@ -23,9 +25,10 @@ export type SourceContentProfile = {
   sourceExcerpt: string;
   profileVersion: string;
   profileSource: "deterministic";
+  tokenizerContractVersion: string;
 };
 
-export const CONTENT_PROFILE_VERSION = "content-profile-v1";
+export const CONTENT_PROFILE_VERSION = "content-profile-v2";
 export const CONTENT_PROFILE_SOURCE_CHAR_LIMIT = 200_000;
 export const CONTENT_PROFILE_SOURCE_LINE_LIMIT = 5_000;
 
@@ -88,15 +91,20 @@ export function buildSourceContentProfile(input: {
   body: string;
   metadata: SourceMetadataDefaults;
   suggestions: SourceModelSuggestions | null;
+  tokenizer: LexicalTokenizer;
 }): SourceContentProfile {
   const sourceBody = stripGeneratedSections(limitProfileSourceBody(input.body));
   const plainText = markdownToText(sourceBody);
   const narrativeText = markdownToText(removeMarkdownHeadings(sourceBody)) || plainText;
   const headingOutline = extractSourceHeadings(sourceBody);
-  const titleTerms = extractTitleTerms(input.title);
-  const headingTerms = headingOutline.flatMap(extractTitleTerms);
-  const titleConcepts = extractConceptTerms(input.title, true);
-  const headingConcepts = headingOutline.flatMap((heading) => extractConceptTerms(heading, true));
+  const titleTerms = extractTitleTerms(input.title, input.tokenizer);
+  const headingTerms = headingOutline.flatMap(
+    (heading) => extractTitleTerms(heading, input.tokenizer)
+  );
+  const titleConcepts = extractConceptTerms(input.title, input.tokenizer, true);
+  const headingConcepts = headingOutline.flatMap(
+    (heading) => extractConceptTerms(heading, input.tokenizer, true)
+  );
   const metadataTags = readStringArray(input.metadata.tags);
   const suggestionTags = readStringArray(input.suggestions?.tags);
   const suggestionKeywords = readStringArray(input.suggestions?.keywords);
@@ -126,19 +134,25 @@ export function buildSourceContentProfile(input: {
   const keywords = unique([
     ...titleTerms,
     ...headingTerms,
-    ...coreQuotedPhrases.flatMap(extractTitleTerms),
-    ...contentHintPhrases.flatMap(extractTitleTerms),
+    ...coreQuotedPhrases.flatMap((phrase) => extractTitleTerms(phrase, input.tokenizer)),
+    ...contentHintPhrases.flatMap((phrase) => extractTitleTerms(phrase, input.tokenizer)),
     ...extractLatinTerms(narrativeText),
-    ...extractCjkTerms(narrativeText),
-    ...headingOutline.flatMap((heading) => [...extractLatinTerms(heading), ...extractTitleTerms(heading)]),
-    ...suggestionKeywords.flatMap((keyword) => [...extractLatinTerms(keyword), ...extractCjkTerms(keyword)])
+    ...tokenizeBoundedDocument(input.tokenizer, narrativeText, 512),
+    ...headingOutline.flatMap(
+      (heading) => [...extractLatinTerms(heading), ...extractTitleTerms(heading, input.tokenizer)]
+    ),
+    ...suggestionKeywords.flatMap(
+      (keyword) => input.tokenizer.tokenizeDocument(keyword, 64)
+    )
   ])
     .filter(isUsefulTerm)
     .slice(0, 80);
   const subjects = unique([
     ...titleConcepts,
     ...headingConcepts,
-    ...coreQuotedPhrases.flatMap((phrase) => extractConceptTerms(phrase))
+    ...coreQuotedPhrases.flatMap(
+      (phrase) => extractConceptTerms(phrase, input.tokenizer)
+    )
   ])
     .filter(isUsefulTerm)
     .slice(0, 24);
@@ -183,7 +197,8 @@ export function buildSourceContentProfile(input: {
     language: detectLanguage(plainText),
     sourceExcerpt: plainText.slice(0, 2_000),
     profileVersion: CONTENT_PROFILE_VERSION,
-    profileSource: "deterministic"
+    profileSource: "deterministic",
+    tokenizerContractVersion: input.tokenizer.contractVersion
   };
 }
 
@@ -403,99 +418,27 @@ function extractLatinTerms(value: string): string[] {
   return (value.match(/[a-zA-Z][a-zA-Z0-9-]{2,}/gu) ?? []).map(normalizeTerm);
 }
 
-function extractCjkTerms(value: string): string[] {
-  const chunks = value.match(/[\p{Script=Han}]{2,24}/gu) ?? [];
-  const terms: string[] = [];
-
-  for (const chunk of chunks) {
-    if (chunk.length <= 20) {
-      terms.push(chunk);
-    }
-
-    terms.push(...extractCjkSubterms(chunk));
-  }
-
-  return terms.map(normalizeTerm);
+function extractTitleTerms(value: string, tokenizer: LexicalTokenizer): string[] {
+  return tokenizer.tokenizeDocument(value, 64).map(normalizeTerm);
 }
 
-function extractCjkSubterms(value: string): string[] {
-  const chunk = stripDocumentSuffix(value);
-  const words = segmentCjkWords(chunk);
-  const terms: string[] = [];
-
-  for (let windowSize = 1; windowSize <= 4; windowSize += 1) {
-    for (let index = 0; index + windowSize <= words.length; index += 1) {
-      const term = words.slice(index, index + windowSize).join("");
-
-      if (term.length >= 3 && term.length <= 18 && isUsefulTerm(term)) {
-        terms.push(term);
-      }
-
-      if (terms.length >= 24) {
-        return unique(terms);
-      }
-    }
-  }
-
-  return unique(terms);
-}
-
-function segmentCjkWords(value: string): string[] {
-  const segmenter =
-    typeof Intl !== "undefined" && "Segmenter" in Intl
-      ? new Intl.Segmenter("zh", { granularity: "word" })
-      : null;
-
-  if (!segmenter) {
-    return value.length >= 3 && value.length <= 18 ? [value] : [];
-  }
-
-  const cjkSegments = Array.from(segmenter.segment(value), (segment) => segment.segment)
-    .map((segment) => segment.trim())
-    .filter((segment) => /^[\p{Script=Han}]+$/u.test(segment))
-    .filter((segment) => segment.length > 0);
-
-  if (cjkSegments.some((segment) => segment.length === 1)) {
-    return value.length >= 3 && value.length <= 18 ? [value] : [];
-  }
-
-  return cjkSegments
-    .filter((segment) => isUsefulTerm(segment));
-}
-
-function extractTitleTerms(value: string): string[] {
-  return [...extractLatinTerms(value), ...extractCjkTerms(value)].map(normalizeTerm);
-}
-
-function extractConceptTerms(value: string, expandShortTitle = false): string[] {
-  const latinTerms = extractLatinTerms(value);
-  const cjkTerms = (value.match(/[\p{Script=Han}]{2,80}/gu) ?? []).flatMap((chunk) => {
-    const stripped = stripDocumentSuffix(chunk);
-    const expanded = expandShortTitle && chunk.length <= 30
-      ? adjacentConceptPairs(segmentCjkWords(stripped || chunk))
-      : [];
-    return unique([
-      chunk,
-      ...(stripped && stripped !== chunk ? [stripped] : []),
-      ...expanded
-    ]);
-  });
-
-  return unique([...latinTerms, ...cjkTerms]).map(normalizeTerm).filter(isUsefulTerm);
-}
-
-function adjacentConceptPairs(words: string[]): string[] {
-  const pairs: string[] = [];
-
-  for (let index = 0; index + 1 < words.length; index += 1) {
-    const pair = `${words[index]}${words[index + 1]}`;
-
-    if (pair.length >= 4 && pair.length <= 16 && isUsefulTerm(pair)) {
-      pairs.push(pair);
-    }
-  }
-
-  return pairs;
+function extractConceptTerms(
+  value: string,
+  tokenizer: LexicalTokenizer,
+  expandShortTitle = false
+): string[] {
+  const normalizedPhrase = normalizeTerm(value);
+  const strippedPhrase = stripDocumentSuffix(normalizedPhrase);
+  return unique([
+    normalizedPhrase,
+    ...tokenizer.tokenizeDocument(value, 64),
+    ...(expandShortTitle && strippedPhrase && strippedPhrase !== normalizedPhrase
+      ? [
+          strippedPhrase,
+          ...tokenizer.tokenizeDocument(strippedPhrase, 64)
+        ]
+      : [])
+  ]).map(normalizeTerm).filter(isUsefulTerm);
 }
 
 function stripDocumentSuffix(value: string): string {
