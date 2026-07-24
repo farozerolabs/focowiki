@@ -413,7 +413,7 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
     if (statement.includes("FROM focowiki.runtime_generation")) {
       return generation && generation !== "absent" ? [{ generation }] : [];
     }
-    if (statement.includes("WITH counts AS")) {
+    if (statement.includes("counts AS (")) {
       preflightCalls += 1;
       return [{
         source_files: 0,

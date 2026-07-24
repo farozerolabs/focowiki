@@ -50,14 +50,129 @@ export async function inspectMigrationWork(
   sql: DatabaseClient
 ): Promise<MigrationWorkSnapshot> {
   const rows = await sql<MigrationWorkRow[]>`
-    WITH counts AS (
+    WITH resumable_repair_deletions AS MATERIALIZED (
+      SELECT DISTINCT
+             intent.id AS deletion_intent_id,
+             operation.id AS operation_id,
+             hard_delete.id AS role_job_id
+      FROM focowiki.deletion_intents intent
+      JOIN focowiki.resource_operation_targets target
+        ON target.target_kind = intent.target_kind
+       AND target.target_id = intent.target_id
+      JOIN focowiki.resource_operations operation
+        ON operation.id = target.operation_id
+       AND operation.knowledge_base_id = intent.knowledge_base_id
+      JOIN focowiki.role_jobs hard_delete
+        ON hard_delete.knowledge_base_id = intent.knowledge_base_id
+       AND hard_delete.role = 'maintenance'
+       AND hard_delete.kind = 'hard_delete'
+       AND hard_delete.payload_json->>'deletionIntentId' = intent.id
+      JOIN focowiki.publication_change_facts owned_fact
+        ON owned_fact.knowledge_base_id = intent.knowledge_base_id
+       AND owned_fact.operation_id = operation.id
+       AND owned_fact.deletion_intent_id = intent.id
+      JOIN focowiki.publication_generations generation
+        ON generation.id = owned_fact.generation_id
+       AND generation.knowledge_base_id = intent.knowledge_base_id
+       AND coalesce(
+             to_jsonb(generation)->>'generation_kind',
+             'normal'
+           ) = 'normal'
+       AND generation.state = 'failed'
+      JOIN focowiki.publication_generations repair_generation
+        ON repair_generation.knowledge_base_id = intent.knowledge_base_id
+       AND repair_generation.predecessor_generation_id =
+             generation.predecessor_generation_id
+       AND coalesce(
+             to_jsonb(repair_generation)->>'generation_kind',
+             'normal'
+           ) = 'projection_repair'
+       AND repair_generation.state IN ('frozen', 'building', 'validating')
+      WHERE intent.state IN ('accepted', 'running')
+        AND operation.state = 'publishing'
+        AND hard_delete.status IN ('queued', 'running')
+        AND (
+          generation.safe_error_message LIKE '%DIRECTORY_NAVIGATION_COUNT_MISMATCH:%'
+          OR generation.safe_error_message LIKE '%DIRECTORY_STATISTICS_MISMATCH:%'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM focowiki.publication_change_facts fact
+          WHERE fact.knowledge_base_id = generation.knowledge_base_id
+            AND fact.generation_id = generation.id
+            AND NOT (
+              (
+                coalesce(
+                  to_jsonb(fact) -> 'planning_payload_json',
+                  '{}'::jsonb
+                ) ? 'preplannedImpacts'
+                AND jsonb_typeof(
+                  coalesce(
+                    to_jsonb(fact) -> 'planning_payload_json',
+                    '{}'::jsonb
+                  ) -> 'preplannedImpacts'
+                ) = 'array'
+              )
+              OR (
+                coalesce(
+                  to_jsonb(fact) -> 'planning_payload_json',
+                  '{}'::jsonb
+                ) ? 'impactPlanner'
+                AND jsonb_typeof(
+                  coalesce(
+                    to_jsonb(fact) -> 'planning_payload_json',
+                    '{}'::jsonb
+                  ) -> 'impactPlanner'
+                ) = 'object'
+              )
+            )
+        )
+        AND (
+          (
+            intent.target_kind = 'source_file'
+            AND operation.operation_kind = 'source_file_delete'
+            AND owned_fact.kind = 'source_deleted'
+            AND hard_delete.payload_json->>'targetKind' = 'source_file'
+            AND hard_delete.payload_json->>'sourceFileId' = intent.target_id
+            AND EXISTS (
+              SELECT 1
+              FROM focowiki.source_files source
+              WHERE source.id = intent.target_id
+                AND source.knowledge_base_id = intent.knowledge_base_id
+                AND source.deletion_intent_id = intent.id
+                AND source.deleted_at IS NOT NULL
+            )
+          )
+          OR (
+            intent.target_kind = 'source_directory'
+            AND operation.operation_kind = 'source_directory_delete'
+            AND owned_fact.kind = 'directory_deleted'
+            AND hard_delete.payload_json->>'targetKind' = 'source_directory'
+            AND hard_delete.payload_json->>'sourceDirectoryId' = intent.target_id
+            AND EXISTS (
+              SELECT 1
+              FROM focowiki.source_directories directory
+              WHERE directory.id = intent.target_id
+                AND directory.knowledge_base_id = intent.knowledge_base_id
+                AND directory.deletion_intent_id = intent.id
+                AND directory.deleted_at IS NOT NULL
+            )
+          )
+        )
+    ),
+    counts AS (
       SELECT
         (SELECT count(*) FROM focowiki.source_files
          WHERE processing_status IN ('queued', 'running')) AS source_files,
         (SELECT count(*) FROM focowiki.source_dispatch_markers
          WHERE status IN ('pending', 'claimed')) AS dispatch_markers,
-        (SELECT count(*) FROM focowiki.role_jobs
-         WHERE status IN ('queued', 'running')) AS role_jobs,
+        (SELECT count(*) FROM focowiki.role_jobs job
+         WHERE job.status IN ('queued', 'running')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM resumable_repair_deletions deletion
+             WHERE deletion.role_job_id = job.id
+           )) AS role_jobs,
         (SELECT count(*) FROM focowiki.publication_impacts
          WHERE status IN ('pending', 'running')) AS publication_impacts,
         (SELECT count(*) FROM focowiki.publication_generations generation
@@ -72,10 +187,20 @@ export async function inspectMigrationWork(
                WHERE fact.generation_id = generation.id
              ))
            )) AS frozen_generations,
-        (SELECT count(*) FROM focowiki.resource_operations
-         WHERE state IN ('accepted', 'validating', 'processing', 'publishing')) AS resource_operations,
-        (SELECT count(*) FROM focowiki.deletion_intents
-         WHERE state IN ('accepted', 'running')) AS deletion_intents,
+        (SELECT count(*) FROM focowiki.resource_operations operation
+         WHERE operation.state IN ('accepted', 'validating', 'processing', 'publishing')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM resumable_repair_deletions deletion
+             WHERE deletion.operation_id = operation.id
+           )) AS resource_operations,
+        (SELECT count(*) FROM focowiki.deletion_intents intent
+         WHERE intent.state IN ('accepted', 'running')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM resumable_repair_deletions deletion
+             WHERE deletion.deletion_intent_id = intent.id
+           )) AS deletion_intents,
         (SELECT count(*) FROM focowiki.upload_sessions
          WHERE state IN ('draft', 'manifest_building', 'manifest_sealed', 'uploading', 'finalizing')
            AND expires_at > now()) AS upload_sessions,
