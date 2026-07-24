@@ -50,11 +50,12 @@ export async function inspectMigrationWork(
   sql: DatabaseClient
 ): Promise<MigrationWorkSnapshot> {
   const rows = await sql<MigrationWorkRow[]>`
-    WITH resumable_repair_deletions AS MATERIALIZED (
+    WITH resumable_deletions AS MATERIALIZED (
       SELECT DISTINCT
              intent.id AS deletion_intent_id,
              operation.id AS operation_id,
-             hard_delete.id AS role_job_id
+             hard_delete.id AS role_job_id,
+             generation.id AS generation_id
       FROM focowiki.deletion_intents intent
       JOIN focowiki.resource_operation_targets target
         ON target.target_kind = intent.target_kind
@@ -78,22 +79,30 @@ export async function inspectMigrationWork(
              to_jsonb(generation)->>'generation_kind',
              'normal'
            ) = 'normal'
-       AND generation.state = 'failed'
-      JOIN focowiki.publication_generations repair_generation
-        ON repair_generation.knowledge_base_id = intent.knowledge_base_id
-       AND repair_generation.predecessor_generation_id =
-             generation.predecessor_generation_id
-       AND coalesce(
-             to_jsonb(repair_generation)->>'generation_kind',
-             'normal'
-           ) = 'projection_repair'
-       AND repair_generation.state IN ('frozen', 'building', 'validating')
       WHERE intent.state IN ('accepted', 'running')
         AND operation.state = 'publishing'
         AND hard_delete.status IN ('queued', 'running')
         AND (
-          generation.safe_error_message LIKE '%DIRECTORY_NAVIGATION_COUNT_MISMATCH:%'
-          OR generation.safe_error_message LIKE '%DIRECTORY_STATISTICS_MISMATCH:%'
+          generation.state = 'frozen'
+          OR (
+            generation.state = 'failed'
+            AND (
+              generation.safe_error_message LIKE '%DIRECTORY_NAVIGATION_COUNT_MISMATCH:%'
+              OR generation.safe_error_message LIKE '%DIRECTORY_STATISTICS_MISMATCH:%'
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM focowiki.publication_generations repair_generation
+              WHERE repair_generation.knowledge_base_id = intent.knowledge_base_id
+                AND repair_generation.predecessor_generation_id =
+                      generation.predecessor_generation_id
+                AND coalesce(
+                      to_jsonb(repair_generation)->>'generation_kind',
+                      'normal'
+                    ) = 'projection_repair'
+                AND repair_generation.state IN ('frozen', 'building', 'validating')
+            )
+          )
         )
         AND NOT EXISTS (
           SELECT 1
@@ -170,7 +179,7 @@ export async function inspectMigrationWork(
          WHERE job.status IN ('queued', 'running')
            AND NOT EXISTS (
              SELECT 1
-             FROM resumable_repair_deletions deletion
+             FROM resumable_deletions deletion
              WHERE deletion.role_job_id = job.id
            )) AS role_jobs,
         (SELECT count(*) FROM focowiki.publication_impacts
@@ -186,19 +195,24 @@ export async function inspectMigrationWork(
                SELECT 1 FROM focowiki.publication_change_facts fact
                WHERE fact.generation_id = generation.id
              ))
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM resumable_deletions deletion
+             WHERE deletion.generation_id = generation.id
            )) AS frozen_generations,
         (SELECT count(*) FROM focowiki.resource_operations operation
          WHERE operation.state IN ('accepted', 'validating', 'processing', 'publishing')
            AND NOT EXISTS (
              SELECT 1
-             FROM resumable_repair_deletions deletion
+             FROM resumable_deletions deletion
              WHERE deletion.operation_id = operation.id
            )) AS resource_operations,
         (SELECT count(*) FROM focowiki.deletion_intents intent
          WHERE intent.state IN ('accepted', 'running')
            AND NOT EXISTS (
              SELECT 1
-             FROM resumable_repair_deletions deletion
+             FROM resumable_deletions deletion
              WHERE deletion.deletion_intent_id = intent.id
            )) AS deletion_intents,
         (SELECT count(*) FROM focowiki.upload_sessions
