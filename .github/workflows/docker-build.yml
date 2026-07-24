@@ -1,0 +1,271 @@
+name: Build and Publish Docker Images
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Docker release channel."
+        required: true
+        type: string
+      version:
+        description: "Stable Git tag or prerelease image version."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  artifact-metadata: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE: ghcr.io/farozerolabs/focowiki-api
+  ADMIN_IMAGE: ghcr.io/farozerolabs/focowiki-admin
+  FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+  REDIS_URL: redis://127.0.0.1:56379/0
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: focowiki
+          POSTGRES_USER: focowiki
+          POSTGRES_PASSWORD: focowiki
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U focowiki -d focowiki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: release
+        shell: bash
+        env:
+          REQUESTED_CHANNEL: ${{ inputs.channel }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${REQUESTED_CHANNEL}" == "stable" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Docker image releases require a semantic version tag like v1.2.3."
+              exit 1
+            fi
+            if [[ "${REQUESTED_VERSION}" != "${tag}" ]]; then
+              echo "::error::The requested stable version must match the triggering Git tag."
+              exit 1
+            fi
+            version="${tag#v}"
+            echo "is_release_tag=true" >> "${GITHUB_OUTPUT}"
+            echo "sha_prefix=sha-" >> "${GITHUB_OUTPUT}"
+          elif [[ "${REQUESTED_CHANNEL}" == "prerelease" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" != "branch" || "${GITHUB_REF_NAME}" != "dev" ]]; then
+              echo "::error::Prerelease Docker publishing must run from the dev branch."
+              exit 1
+            fi
+            if [[ ! "${REQUESTED_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.[1-9][0-9]*$ ]]; then
+              echo "::error::Prerelease versions must use the format 1.2.3-rc.1."
+              exit 1
+            fi
+            version="${REQUESTED_VERSION}"
+            echo "is_release_tag=false" >> "${GITHUB_OUTPUT}"
+            echo "sha_prefix=prerelease-sha-" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::error::Unsupported Docker release channel: ${REQUESTED_CHANNEL}."
+            exit 1
+          fi
+          base_version="${version%%-*}"
+          IFS="." read -r major minor patch <<< "${base_version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "major=${major}" >> "${GITHUB_OUTPUT}"
+          echo "major_minor=${major}.${minor}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify release source
+        shell: bash
+        env:
+          REQUESTED_CHANNEL: ${{ inputs.channel }}
+        run: |
+          if [[ "${REQUESTED_CHANNEL}" == "stable" ]]; then
+            git fetch origin main --prune
+            release_commit="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+            if ! git merge-base --is-ancestor "${release_commit}" origin/main; then
+              echo "::error::Stable Docker publishing is allowed only for commits already contained in main."
+              exit 1
+            fi
+          else
+            git fetch origin dev --prune
+            release_commit="$(git rev-parse HEAD)"
+            dev_commit="$(git rev-parse origin/dev)"
+            if [[ "${release_commit}" != "${dev_commit}" ]]; then
+              echo "::error::Prerelease Docker publishing must use the latest commit from dev."
+              exit 1
+            fi
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@11.7.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release contracts
+        env:
+          FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          pnpm test:validation
+          pnpm openapi:validate
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: API image metadata
+        id: meta-api
+        uses: docker/metadata-action@v6.1.0
+        with:
+          images: ${{ env.API_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=Focowiki API
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=${{ steps.release.outputs.major_minor }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=sha,prefix=${{ steps.release.outputs.sha_prefix }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+
+      - name: Admin image metadata
+        id: meta-admin
+        uses: docker/metadata-action@v6.1.0
+        with:
+          images: ${{ env.ADMIN_IMAGE }}
+          labels: |
+            org.opencontainers.image.title=Focowiki Admin
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.version }}
+            type=raw,value=${{ steps.release.outputs.major_minor }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+            type=sha,prefix=${{ steps.release.outputs.sha_prefix }}
+            type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}
+
+      - name: Build and push API image
+        id: build-api
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: Dockerfile
+          target: api
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          build-args: |
+            FOCOWIKI_RELEASE_VERSION=${{ steps.release.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Start S3 health fixture
+        run: |
+          node scripts/ci/s3-health-fixture.mjs &
+          echo $! > /tmp/focowiki-s3-health-fixture.pid
+
+      - name: Validate release native tokenizer runtime
+        shell: bash
+        run: |
+          image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          docker pull "${image}"
+          docker tag "${image}" focowiki-api:release-smoke
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
+          docker run --rm --entrypoint node focowiki-api:release-smoke -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+
+      - name: Validate published API image roles
+        shell: bash
+        run: |
+          image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          docker pull "${image}"
+          docker tag "${image}" focowiki-api:release-smoke
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migrate.mjs
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migration-preflight.mjs
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/source-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/publication-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/projection-repair-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/maintenance-worker.mjs --healthcheck
+          api_container="$(docker run -d --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/main.mjs)"
+          trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
+          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
+          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
+          docker rm -f "${api_container}" >/dev/null
+          trap - EXIT
+
+      - name: Build and push Admin image
+        id: build-admin
+        uses: docker/build-push-action@v7.2.0
+        with:
+          context: .
+          file: Dockerfile
+          target: admin
+          push: true
+          tags: ${{ steps.meta-admin.outputs.tags }}
+          labels: ${{ steps.meta-admin.outputs.labels }}
+          provenance: mode=max
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,mode=max,scope=admin
+
+      - name: Attest API image
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ${{ env.API_IMAGE }}
+          subject-digest: ${{ steps.build-api.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest Admin image
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ${{ env.ADMIN_IMAGE }}
+          subject-digest: ${{ steps.build-admin.outputs.digest }}
+          push-to-registry: true
+
+      - name: Stop S3 health fixture
+        if: always()
+        run: |
+          if [[ -f /tmp/focowiki-s3-health-fixture.pid ]]; then
+            kill "$(cat /tmp/focowiki-s3-health-fixture.pid)" || true
+          fi
