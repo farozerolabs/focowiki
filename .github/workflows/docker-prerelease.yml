@@ -1,0 +1,30 @@
+name: Publish Prerelease Docker Images
+run-name: Publish Docker ${{ inputs.version }} from dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Prerelease version, for example 0.6.18-rc.1."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  artifact-metadata: write
+  id-token: write
+
+concurrency:
+  group: docker-prerelease-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish prerelease images
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      channel: prerelease
+      version: ${{ inputs.version }}
+    secrets: inherit
