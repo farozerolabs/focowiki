@@ -14,6 +14,11 @@ import {
 } from "./active-tree-read-model.js";
 import type { TransactionSql } from "postgres";
 import { searchActiveProjections } from "./active-projection-search.js";
+import { searchBodyProjection } from "./body-search-query.js";
+import { searchGraphProjection } from "./graph-search-query.js";
+import type { LexicalTokenizer } from "../../application/ports/lexical-tokenizer.js";
+import { BODY_SEARCH_SCHEMA_VERSION } from "../../search/body-search-document.js";
+import { BODY_SEGMENTATION_VERSION } from "../../search/body-segmentation.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -21,11 +26,17 @@ type ActiveGenerationRow = {
   active_generation_id: string;
   format_version: number;
   optimization_state: "legacy_readable" | "backfilling" | "verifying" | "optimized_active" | "failed";
+  search_schema_version: string | null;
+  tokenizer_contract_version: string | null;
+  search_segmentation_version: string | null;
 };
 
 type ActiveReadVersion = {
   formatVersion: number;
   optimizationState: ActiveGenerationRow["optimization_state"];
+  searchSchemaVersion: string | null;
+  tokenizerContractVersion: string | null;
+  searchSegmentationVersion: string | null;
 };
 
 type FileRow = {
@@ -62,8 +73,11 @@ type RelatedProjectionRow = ProjectionRow & {
   seed_source_file_id: string;
 };
 
+const SEARCH_STATEMENT_TIMEOUT_MS = 10_000;
+
 export function createPostgresActiveGenerationReadRepository(
-  sql: DatabaseClient
+  sql: DatabaseClient,
+  tokenizer?: LexicalTokenizer
 ): ActiveGenerationReadRepository {
   async function withActiveGeneration<T>(
     knowledgeBaseId: string,
@@ -73,6 +87,9 @@ export function createPostgresActiveGenerationReadRepository(
       const rows = await transaction<ActiveGenerationRow[]>`
         SELECT knowledge_base.active_generation_id,
                generation.format_version,
+               generation.search_schema_version,
+               generation.tokenizer_contract_version,
+               generation.search_segmentation_version,
                coalesce(migration.state, 'legacy_readable') AS optimization_state
         FROM focowiki.knowledge_bases knowledge_base
         JOIN focowiki.publication_generations generation
@@ -89,8 +106,11 @@ export function createPostgresActiveGenerationReadRepository(
       if (!active) return null;
       return reader(createScope(transaction, knowledgeBaseId, active.active_generation_id, {
         formatVersion: Number(active.format_version),
-        optimizationState: active.optimization_state
-      }));
+        optimizationState: active.optimization_state,
+        searchSchemaVersion: active.search_schema_version,
+        tokenizerContractVersion: active.tokenizer_contract_version,
+        searchSegmentationVersion: active.search_segmentation_version
+      }, tokenizer));
     });
     return result as T | null;
   }
@@ -103,7 +123,8 @@ function createScope(
   sql: ReadSql,
   knowledgeBaseId: string,
   generationId: string,
-  version: ActiveReadVersion
+  version: ActiveReadVersion,
+  tokenizer?: LexicalTokenizer
 ): ActiveGenerationReadScope {
   return {
     knowledgeBaseId,
@@ -227,6 +248,47 @@ function createScope(
 
     async search(input) {
       assertLimit(input.limit);
+      await sql`
+        SELECT set_config(
+          'statement_timeout',
+          ${`${SEARCH_STATEMENT_TIMEOUT_MS}ms`},
+          true
+        )
+      `;
+      if (
+        tokenizer
+        && version.searchSchemaVersion === BODY_SEARCH_SCHEMA_VERSION
+        && version.tokenizerContractVersion === tokenizer.contractVersion
+        && version.searchSegmentationVersion === BODY_SEGMENTATION_VERSION
+      ) {
+        if (input.mode === "file") {
+          return searchBodyProjection({
+            sql,
+            tokenizer,
+            knowledgeBaseId,
+            generationId,
+            ...input
+          });
+        }
+        if (input.mode === "graph") {
+          return searchGraphProjection({
+            sql,
+            tokenizer,
+            knowledgeBaseId,
+            generationId,
+            ...input
+          });
+        }
+        if (input.mode === "hybrid") {
+          return searchVersionedHybrid({
+            sql,
+            tokenizer,
+            knowledgeBaseId,
+            generationId,
+            ...input
+          });
+        }
+      }
       return searchActiveProjections({
         sql,
         knowledgeBaseId,
@@ -364,6 +426,66 @@ function createScope(
       }
       return grouped;
     }
+  };
+}
+
+async function searchVersionedHybrid(input: {
+  sql: ReadSql;
+  tokenizer: LexicalTokenizer;
+  knowledgeBaseId: string;
+  generationId: string;
+  query: string;
+  limit: number;
+  cursor: ActiveGenerationScoredCursor | null;
+}): Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationScoredCursor>> {
+  const boundedLimit = Math.min(2_000, Math.max(100, (input.limit + 1) * 4));
+  const [files, graph] = await Promise.all([
+    searchBodyProjection({
+      ...input,
+      limit: boundedLimit,
+      cursor: null
+    }),
+    searchGraphProjection({
+      ...input,
+      limit: boundedLimit,
+      cursor: null
+    })
+  ]);
+  const bySource = new Map<string, ActiveGenerationProjection>();
+  for (const item of [...files.items, ...graph.items]) {
+    const identity = item.sourceFileId ?? item.recordId;
+    const existing = bySource.get(identity);
+    if (
+      !existing
+      || Number(item.score ?? 0) > Number(existing.score ?? 0)
+      || (
+        Number(item.score ?? 0) === Number(existing.score ?? 0)
+        && item.recordId < existing.recordId
+      )
+    ) {
+      bySource.set(identity, item);
+    }
+  }
+  const ranked = [...bySource.values()]
+    .sort((left, right) =>
+      Number(right.score ?? 0) - Number(left.score ?? 0)
+      || left.recordId.localeCompare(right.recordId)
+    )
+    .filter((item) =>
+      input.cursor === null
+      || Number(item.score ?? 0) < input.cursor.score
+      || (
+        Number(item.score ?? 0) === input.cursor.score
+        && item.recordId > input.cursor.recordId
+      )
+    );
+  const visible = ranked.slice(0, input.limit);
+  const last = visible.at(-1);
+  return {
+    items: visible,
+    nextCursor: ranked.length > input.limit && last
+      ? { score: Number(last.score ?? 0), recordId: last.recordId }
+      : null
   };
 }
 

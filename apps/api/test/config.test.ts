@@ -33,6 +33,7 @@ describe("parseRuntimeConfig", () => {
       poolMax: 10,
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
+      projectionRepairWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
     expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
@@ -477,6 +478,7 @@ describe("parseRuntimeConfig", () => {
         DATABASE_POOL_MAX: "16",
         SOURCE_WORKER_DATABASE_POOL_MAX: "9",
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "7",
+        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "8",
         MAINTENANCE_WORKER_DATABASE_POOL_MAX: "5",
         WORKER_SOURCE_FILE_CONCURRENCY: "3",
         WORKER_CLAIM_BATCH_SIZE: "12",
@@ -488,10 +490,11 @@ describe("parseRuntimeConfig", () => {
       })
     ).toMatchObject({
       database: {
-        poolMax: 16,
-        sourceWorkerPoolMax: 9,
-        publicationWorkerPoolMax: 7,
-        maintenanceWorkerPoolMax: 5
+      poolMax: 16,
+      sourceWorkerPoolMax: 9,
+      publicationWorkerPoolMax: 7,
+      projectionRepairWorkerPoolMax: 8,
+      maintenanceWorkerPoolMax: 5
       },
       worker: {
         sourceFileConcurrency: 2,
@@ -520,6 +523,7 @@ describe("parseRuntimeConfig", () => {
       poolMax: 10,
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
+      projectionRepairWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
     expect(() =>
@@ -528,6 +532,12 @@ describe("parseRuntimeConfig", () => {
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1"
       })
     ).toThrow(/PUBLICATION_WORKER_DATABASE_POOL_MAX/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "-1"
+      })
+    ).toThrow(/PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX/);
   });
 
   it("uses default publication settings managed by runtime settings", () => {

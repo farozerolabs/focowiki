@@ -8,40 +8,35 @@ import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { RoleJobFailure } from "./domain/role-job.js";
 import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
-import { createPostgresDirectoryNavigationRepository } from "./infrastructure/postgres/directory-navigation-repository.js";
-import { createPostgresGenerationObjectReferenceRepository } from "./infrastructure/postgres/generation-object-reference-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresIncrementalStatisticsRepository } from "./infrastructure/postgres/incremental-statistics-repository.js";
+import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
-import { createPostgresProjectionCatalogRepository } from "./infrastructure/postgres/projection-catalog-repository.js";
 import { createPostgresProjectionCompactionRepository } from "./infrastructure/postgres/projection-compaction-repository.js";
-import { createPostgresProjectionRecordRepository } from "./infrastructure/postgres/projection-record-repository.js";
-import { createPostgresProjectionRepairRepository } from "./infrastructure/postgres/projection-repair-repository.js";
-import { createPostgresProjectionSegmentRepository } from "./infrastructure/postgres/projection-segment-repository.js";
-import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
-import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import { createPostgresSearchProjectionRepository } from "./infrastructure/postgres/search-projection-repository.js";
 import {
   createPostgresRuntimePressureRepository,
   RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
 } from "./infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
-import { createRuntimeLogger } from "./logger.js";
+import {
+  assertNodeJiebaRuntimeAvailable,
+  createNodeJiebaTokenizer,
+  getNodeJiebaRuntimeEvidence
+} from "./infrastructure/tokenization/nodejieba-tokenizer.js";
+import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
 import { runImmutableWriteRecoverySlice } from "./maintenance/immutable-write-recovery.js";
 import { runIncrementalStatisticsReconciliationSlice } from "./maintenance/incremental-statistics-reconciliation.js";
-import {
-  CURRENT_PROJECTION_REPAIR_VERSION,
-  runProjectionRepairSlice
-} from "./maintenance/projection-repair.js";
 import { runProjectionCompactionSlice } from "./maintenance/projection-compaction.js";
 import { runMaintenanceBackground } from "./maintenance/runtime.js";
 import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
+import {
+  runLexicalRebuildSlice,
+  type LexicalRebuildEvent
+} from "./maintenance/lexical-rebuild.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
-import { createDirectoryNavigationWriter } from "./publication/directory-navigation-writer.js";
-import { createProjectionCatalogWriter } from "./publication/projection-catalog-writer.js";
-import { createProjectionSegmentWriter } from "./publication/projection-segment-writer.js";
-import { INCREMENTAL_PUBLICATION_DEFAULTS } from "./publication/incremental-defaults.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
@@ -86,7 +81,9 @@ async function runMaintenanceWorker(): Promise<void> {
       coordinator: authoritativeRedis,
       sessionWrites: "best_effort"
     });
-    const repositories = createPostgresAdminRepositories(sql);
+    const tokenizer = createNodeJiebaTokenizer();
+    logger.info("Lexical tokenizer initialized", getNodeJiebaRuntimeEvidence());
+    const repositories = createPostgresAdminRepositories(sql, { tokenizer });
     if (!repositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
@@ -119,29 +116,11 @@ async function runMaintenanceWorker(): Promise<void> {
         );
       }
     };
-    const references = createPostgresGenerationObjectReferenceRepository(sql);
-    const directoryNavigation = createPostgresDirectoryNavigationRepository(sql);
-    const records = createPostgresProjectionRecordRepository(sql);
-    const shards = createProjectionSegmentWriter({
-      references,
-      segments: createPostgresProjectionSegmentRepository(sql),
-      immutableObjects,
-      maxSegmentEntries: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentEntries,
-      maxSegmentBytes: INCREMENTAL_PUBLICATION_DEFAULTS.maxSegmentBytes,
-      maxObjectBytes: config.pagination.generatedContentMaxBytes
-    });
-    const catalog = createProjectionCatalogWriter({
-      catalog: createPostgresProjectionCatalogRepository(sql),
-      references,
-      immutableObjects,
-      maxShardDescriptors: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardDescriptors
-    });
-    const repair = createPostgresProjectionRepairRepository(sql);
     const compaction = createPostgresProjectionCompactionRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
-    const generations = createPostgresPublicationGenerationRepository(sql);
-    const validation = createPostgresPublicationValidationRepository(sql);
     const optimizationMigrations = createPostgresOptimizationMigrationRepository(sql);
+    const lexicalRebuilds = createPostgresLexicalRebuildRepository(sql);
+    const searchProjections = createPostgresSearchProjectionRepository(sql);
     const incrementalStatistics = createPostgresIncrementalStatisticsRepository(sql);
     const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
@@ -218,9 +197,9 @@ async function runMaintenanceWorker(): Promise<void> {
       logger
     });
     const maintenanceOwner = `maintenance-sweep-${randomUUID()}`;
-    const repairLeaseToken = `projection-repair-${randomUUID()}`;
     const reconciliationLeaseToken = `storage-reconciliation-${randomUUID()}`;
     const optimizationMigrationLeaseToken = `optimization-migration-${randomUUID()}`;
+    const lexicalRebuildLeaseToken = `lexical-rebuild-${randomUUID()}`;
     const statisticsLeaseToken = `incremental-statistics-${randomUUID()}`;
     await Promise.all([
       runtime.run(abort.signal),
@@ -251,6 +230,10 @@ async function runMaintenanceWorker(): Promise<void> {
                 migrationProcessed: 0,
                 migrationCompleted: false,
                 migrationFailed: false,
+                lexicalRebuildPhase: "contended",
+                lexicalRebuildProcessed: 0,
+                lexicalRebuildCompleted: false,
+                lexicalRebuildFailed: false,
                 statisticsClaimed: false,
                 statisticsChanged: false,
                 statisticsFailed: false,
@@ -278,6 +261,7 @@ async function runMaintenanceWorker(): Promise<void> {
                 repository: optimizationMigrations,
                 storage,
                 graph,
+                tokenizer,
                 workerId: maintenanceOwner,
                 leaseToken: optimizationMigrationLeaseToken,
                 now: migrationNow.toISOString(),
@@ -295,6 +279,34 @@ async function runMaintenanceWorker(): Promise<void> {
                     { code: "MIGRATION_SLICE_FAILED", ...context },
                     error
                   );
+                }
+              })
+            );
+            const lexicalNow = new Date();
+            const lexicalRebuildResult = await resourceBudgets.migrationBackfill.run(
+              () => runLexicalRebuildSlice({
+                rebuilds: lexicalRebuilds,
+                search: searchProjections,
+                graph,
+                storage,
+                tokenizer,
+                workerId: maintenanceOwner,
+                leaseToken: lexicalRebuildLeaseToken,
+                now: lexicalNow.toISOString(),
+                leaseExpiresAt: new Date(
+                  lexicalNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
+                ).toISOString(),
+                leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000,
+                batchSize: snapshot.maintenance.scanBatchSize,
+                concurrency: Math.min(
+                  snapshot.maintenance.migrationBackfillConcurrency,
+                  snapshot.maintenance.scanBatchSize
+                ),
+                retryDelayMs: snapshot.maintenance.retryDelayMs,
+                cleanupRetentionMs:
+                  snapshot.publication.generationRetentionDays * 24 * 60 * 60 * 1_000,
+                onEvent(event) {
+                  logLexicalRebuildEvent(logger, event);
                 }
               })
             );
@@ -327,36 +339,6 @@ async function runMaintenanceWorker(): Promise<void> {
               retryDelayMs: snapshot.maintenance.retryDelayMs,
               lockTtlSeconds: snapshot.worker.lockTtlSeconds
             });
-            const repairResult = await runProjectionRepairSlice({
-              repair,
-              records,
-              shards,
-              navigation: createDirectoryNavigationWriter({
-                navigation: directoryNavigation,
-                references,
-                immutableObjects,
-                limits: {
-                  maxEntries: snapshot.publication.directoryIndexMaxEntries,
-                  maxBytes: snapshot.publication.directoryIndexMaxBytes,
-                  mergeBelowEntries: Math.max(
-                    1,
-                    Math.floor(snapshot.publication.directoryIndexMaxEntries / 4)
-                  )
-                }
-              }),
-              references,
-              immutableObjects,
-              catalog,
-              validation,
-              generations,
-              repairVersion: CURRENT_PROJECTION_REPAIR_VERSION,
-              leaseToken: repairLeaseToken,
-              treePageSize: snapshot.maintenance.scanBatchSize,
-              maxAttempts: snapshot.maintenance.maxAttempts,
-              retryDelayMs: snapshot.maintenance.retryDelayMs,
-              validationIssueLimit: 50,
-              logger
-            });
             const recoveryResult = await runImmutableWriteRecoverySlice({
               repository: immutableRepository,
               storage,
@@ -381,7 +363,7 @@ async function runMaintenanceWorker(): Promise<void> {
               leaseToken: reconciliationLeaseToken
             });
             return {
-              repairPhase: repairResult.phase,
+              repairPhase: "isolated",
               recovered: recoveryResult.activated + recoveryResult.expired,
               reconciliationPhase: reconciliationResult.phase,
               reconciliationScanned: reconciliationResult.scanned,
@@ -392,6 +374,10 @@ async function runMaintenanceWorker(): Promise<void> {
               migrationProcessed: migrationResult.processed,
               migrationCompleted: migrationResult.completed,
               migrationFailed: migrationResult.failed,
+              lexicalRebuildPhase: lexicalRebuildResult.phase,
+              lexicalRebuildProcessed: lexicalRebuildResult.processed,
+              lexicalRebuildCompleted: lexicalRebuildResult.completed,
+              lexicalRebuildFailed: lexicalRebuildResult.failed,
               statisticsClaimed: statisticsResult.claimed,
               statisticsChanged: statisticsResult.changed,
               statisticsFailed: statisticsResult.failed,
@@ -423,12 +409,59 @@ async function runMaintenanceWorker(): Promise<void> {
   }
 }
 
+function logLexicalRebuildEvent(
+  logger: RuntimeLogger,
+  event: LexicalRebuildEvent
+): void {
+  switch (event.type) {
+    case "bootstrap":
+      if (event.scheduledCount > 0) {
+        logger.info("Lexical projection rebuild bootstrap completed", event);
+      }
+      return;
+    case "claim":
+      logger.info("Lexical projection rebuild lease claimed", event);
+      return;
+    case "lease_recovery":
+      logger.warn("Lexical projection rebuild lease recovered", event);
+      return;
+    case "slice_completed":
+      logger.info("Lexical projection rebuild slice completed", event);
+      return;
+    case "validation":
+      if (event.passed) {
+        logger.info("Lexical projection rebuild validation passed", event);
+      } else {
+        logger.warn("Lexical projection rebuild validation failed", event);
+      }
+      return;
+    case "activation":
+      logger.info("Lexical projection rebuild activated", event);
+      return;
+    case "rebase":
+      logger.info("Lexical projection rebuild rebased", event);
+      return;
+    case "cleanup":
+      logger.info("Lexical projection rebuild cleanup completed", event);
+      return;
+    case "retry":
+      logger.warn("Lexical projection rebuild retry scheduled", event);
+      return;
+    case "failure":
+      logger.error("Lexical projection rebuild failed", event);
+      return;
+    case "rollback":
+      logger.warn("Lexical projection rebuild visibility rollback completed", event);
+  }
+}
+
 async function runHealthcheck(): Promise<void> {
   const sql = createDatabaseClient(config, { role: "maintenance-worker" });
   const redisClient = createRedisClient(config);
   const storage = createS3StorageAdapter(config.storage);
   let redisConnected = false;
   try {
+    assertNodeJiebaRuntimeAvailable();
     await assertRuntimeSchemaGeneration(sql);
     await sql`
       SELECT

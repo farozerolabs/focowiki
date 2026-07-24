@@ -5,6 +5,7 @@ import {
   createGraphCandidatePlanTarget,
   summarizeQueryPlan
 } from "../src/db/query-plan-validation.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl
@@ -57,7 +58,8 @@ describeDatabase("graph candidate query plan integration", () => {
         knowledgeBaseId,
         sourceFileId: "source-scale-0",
         terms: [`unique-scale-term-${nodeCount - 1}`],
-        limit: 50
+        limit: 50,
+        tokenizer: testLexicalTokenizer
       });
       await sql`SET LOCAL enable_seqscan = off`;
       const rows = await sql.unsafe<Array<{ "QUERY PLAN": unknown }>>(
@@ -81,7 +83,8 @@ describeDatabase("graph candidate query plan integration", () => {
       knowledgeBaseId,
       sourceFileId: "source-scale-0",
       terms: ["common"],
-      limit: 50
+      limit: 50,
+      tokenizer: testLexicalTokenizer
     });
     const rows = await sql.unsafe<Array<{ source_file_id: string }>>(target.sql);
     expect(rows).toEqual([]);

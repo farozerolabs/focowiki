@@ -18,8 +18,9 @@ Focowiki is useful for teams that already have Markdown knowledge assets and wan
 - Generate an OKF-style knowledge base with `index.md`, `log.md`, `schema.md`, `pages/*.md`, JSON indexes, and `_graph/*` relationship files.
 - Store uploaded source revisions and content-addressed generated files in S3-compatible storage.
 - Persist knowledge bases, source processing, publication generations, active projections, cursors, and API keys through PostgreSQL and Redis-backed coordination.
-- Keep source processing, generation publication, and bounded maintenance in separate Worker roles so serving requests do not run projection repair or storage reconciliation.
-- Maintain body-grounded graph terms, incremental change facts, structurally shared projection segments, and atomic active-generation reads without rebuilding the full corpus for each upload.
+- Keep source processing, generation publication, projection repair, and bounded maintenance in separate Worker roles so serving requests do not execute background repair or storage reconciliation.
+- Maintain complete body-derived search data, body-grounded graph terms, incremental change facts, structurally shared projection segments, and atomic active-generation reads without rebuilding the full corpus for each upload.
+- Rebuild compatible search data in the background after relevant upgrades while keeping the previous active generation readable and preserving accepted relationships.
 - Expose knowledge-base CRUD, Markdown upload, source-file processing observation, generated file reads, deletion, and webhooks through Developer OpenAPI.
 
 ## Admin UI Preview

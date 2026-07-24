@@ -19,6 +19,9 @@ const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
 const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
 const LARGE_SCALE_SCHEMA_GENERATION = "large-scale-ingestion-runtime-v8";
 const OPTIMIZATION_REBASE_SCHEMA_GENERATION = "optimization-migration-rebase-recovery-v9";
+const GENERATION_CONSISTENT_READ_SCHEMA_GENERATION = "generation-consistent-read-repair-v10";
+const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
+const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -43,7 +46,10 @@ describe("runtime schema generation guard", () => {
       pendingFiles: [
         "008_large_scale_ingestion_runtime.sql",
         "009_optimization_migration_rebase_recovery.sql",
-        "010_generation_consistent_read_repair.sql"
+        "010_generation_consistent_read_repair.sql",
+        "011_body_search_projection.sql",
+        "012_storage_reconciliation_lease_recovery.sql",
+        "013_projection_repair_throughput.sql"
       ]
     });
     expect(database.unsafeCalls).toBe(0);
@@ -72,68 +78,92 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(9);
-    expect(database.beginCalls).toBe(9);
+    expect(database.unsafeCalls).toBe(12);
+    expect(database.beginCalls).toBe(12);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(8);
-    expect(database.beginCalls).toBe(8);
+    expect(database.unsafeCalls).toBe(11);
+    expect(database.beginCalls).toBe(11);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(7);
-    expect(database.beginCalls).toBe(7);
+    expect(database.unsafeCalls).toBe(10);
+    expect(database.beginCalls).toBe(10);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(6);
-    expect(database.beginCalls).toBe(6);
+    expect(database.unsafeCalls).toBe(9);
+    expect(database.beginCalls).toBe(9);
   });
 
   it("upgrades the retry-budget generation with its pending migrations", async () => {
     const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(8);
+    expect(database.beginCalls).toBe(8);
   });
 
   it("upgrades the continuation generation with only the pending migration", async () => {
     const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(7);
+    expect(database.beginCalls).toBe(7);
   });
 
   it("upgrades the write-livelock generation with only the optimized migration", async () => {
     const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the large-scale generation with only the migration recovery", async () => {
     const database = createGenerationDatabase(LARGE_SCALE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the optimization recovery generation with only the read repair", async () => {
     const database = createGenerationDatabase(OPTIMIZATION_REBASE_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
+  });
+
+  it("upgrades the generation-consistent read schema with only the body-search projection", async () => {
+    const database = createGenerationDatabase(GENERATION_CONSISTENT_READ_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
+  });
+
+  it("upgrades the body-search schema with only the reconciliation recovery", async () => {
+    const database = createGenerationDatabase(BODY_SEARCH_SCHEMA_GENERATION);
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades the storage reconciliation schema with only projection repair throughput", async () => {
+    const database = createGenerationDatabase(STORAGE_RECONCILIATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.unsafeCalls).toBe(1);
@@ -318,6 +348,52 @@ describe("runtime schema generation guard", () => {
     expect(migration).not.toContain("delete from focowiki.knowledge_bases");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).not.toContain("delete from focowiki.projection_segments");
+  });
+
+  it("adds immutable body-search projections without rewriting legacy active projections", () => {
+    const migration = readFileSync(
+      resolve(import.meta.dirname, "../migrations/011_body_search_projection.sql"),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    for (const table of [
+      "search_projection_documents",
+      "search_projection_segments",
+      "generation_search_projection_refs",
+      "knowledge_base_lexical_rebuilds"
+    ]) {
+      expect(migration).toContain(`create table focowiki.${table}`);
+    }
+    expect(migration).toContain("body-search-projection-v11");
+    expect(migration).toContain("generation_kind = any (array['normal', 'projection_repair', 'lexical_rebuild']");
+    expect(migration).toContain("to_tsvector('simple'::regconfig, token_text)");
+    expect(migration).toContain("using gin (lexical_vector)");
+    expect(migration).toContain("using gin (lower(normalized_text) focowiki.gin_trgm_ops)");
+    expect(migration).toContain("foreign key (knowledge_base_id, source_revision_id, source_file_id)");
+    expect(migration).toContain("foreign key (knowledge_base_id, generation_id)");
+    expect(migration).not.toContain("update focowiki.active_projection_records");
+    expect(migration).not.toContain("delete from focowiki.active_projection_records");
+    expect(migration).not.toContain("delete from focowiki.source_files");
+    expect(migration).not.toContain("delete from focowiki.source_revisions");
+  });
+
+  it("recovers only stale deletion leases without deleting persisted data", () => {
+    const migration = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../migrations/012_storage_reconciliation_lease_recovery.sql"
+      ),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    expect(migration).toContain("where state = 'deleting'");
+    expect(migration).toContain("state = 'failed'");
+    expect(migration).toContain("add column deletion_lease_token text");
+    expect(migration).toContain("stale_deletion_lease_expired");
+    expect(migration).toContain("interval '10 minutes'");
+    expect(migration).toContain("storage-reconciliation-lease-recovery-v12");
+    expect(migration).not.toContain("delete from");
+    expect(migration).not.toContain("truncate ");
   });
 });
 

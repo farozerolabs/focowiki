@@ -6,7 +6,17 @@ import type {
   OptimizationMigrationSource,
   ReferencedMigrationObject
 } from "../src/application/ports/optimization-migration-repository.js";
-import { runOptimizationMigrationSlice } from "../src/maintenance/optimization-migration.js";
+import { runOptimizationMigrationSlice as runOptimizationMigrationSliceWithTokenizer } from "../src/maintenance/optimization-migration.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
+
+function runOptimizationMigrationSlice(
+  input: Omit<Parameters<typeof runOptimizationMigrationSliceWithTokenizer>[0], "tokenizer">
+) {
+  return runOptimizationMigrationSliceWithTokenizer({
+    ...input,
+    tokenizer: testLexicalTokenizer
+  });
+}
 
 describe("optimization migration", () => {
   it("backfills one bounded source page and advances only after the page is durable", async () => {

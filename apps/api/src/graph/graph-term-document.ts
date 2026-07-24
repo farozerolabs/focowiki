@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
+import { tokenizeBoundedDocument } from "../application/bounded-tokenization.js";
 
 const EXACT_TERM_LIMIT = 600;
 const PHRASE_TERM_LIMIT = 120;
 const REFERENCE_LIMIT = 100;
 const LEXICAL_TEXT_MAX_BYTES = 64 * 1024;
 const SIGNAL_TERM_LIMIT = 64;
-const TERM_SCAN_MULTIPLIER = 16;
 const QUERY_EXACT_TERM_LIMIT = 100;
 const QUERY_PHRASE_TERM_LIMIT = 32;
 
@@ -17,6 +18,8 @@ export type GraphTermDocument = {
   exactTerms: string[];
   phraseTerms: string[];
   explicitReferences: string[];
+  tokenizerContractVersion: string;
+  lexicalProjectionVersion: string;
 };
 
 export type GraphQueryTerms = {
@@ -25,6 +28,8 @@ export type GraphQueryTerms = {
   explicitReferences: string[];
   lexicalText: string;
 };
+
+export const GRAPH_LEXICAL_PROJECTION_VERSION = "graph-lexical-v2";
 
 export function buildGraphTermDocument(input: {
   sourceFileId: string;
@@ -36,6 +41,7 @@ export function buildGraphTermDocument(input: {
   entities: string[];
   explicitReferences: string[];
   supplementalTerms: string[];
+  tokenizer: LexicalTokenizer;
 }): GraphTermDocument {
   const bodyText = normalizeText(stripMarkdown(input.body));
   const title = normalizeText(input.title);
@@ -62,7 +68,9 @@ export function buildGraphTermDocument(input: {
       lexicalText,
       exactTerms,
       phraseTerms,
-      explicitReferences
+      explicitReferences,
+      tokenizerContractVersion: input.tokenizer.contractVersion,
+      lexicalProjectionVersion: GRAPH_LEXICAL_PROJECTION_VERSION
     }))
     .digest("hex");
 
@@ -73,18 +81,23 @@ export function buildGraphTermDocument(input: {
     lexicalText,
     exactTerms,
     phraseTerms,
-    explicitReferences
+    explicitReferences,
+    tokenizerContractVersion: input.tokenizer.contractVersion,
+    lexicalProjectionVersion: GRAPH_LEXICAL_PROJECTION_VERSION
   };
 }
 
-export function buildGraphQueryTerms(values: string[]): GraphQueryTerms {
+export function buildGraphQueryTerms(
+  values: string[],
+  tokenizer: LexicalTokenizer
+): GraphQueryTerms {
   const normalized = collectNormalized(
     [values],
     normalizePhrase,
     isUsefulPhrase,
     PHRASE_TERM_LIMIT
   );
-  const exactTerms = collectSignals(normalized, QUERY_EXACT_TERM_LIMIT);
+  const exactTerms = collectSignals(normalized, QUERY_EXACT_TERM_LIMIT, tokenizer);
   const phraseTerms = normalized.filter(isQueryPhrase).slice(0, QUERY_PHRASE_TERM_LIMIT);
   const explicitReferences = collectNormalized(
     [values],
@@ -108,66 +121,51 @@ function collectExactTerms(input: {
   phrases: string[];
   entities: string[];
   supplementalTerms: string[];
+  tokenizer: LexicalTokenizer;
 }): string[] {
   const terms = new Set<string>();
-  appendTerms(terms, wordTerms(input.title, EXACT_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, unicodeNgrams(input.title, EXACT_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, collectSignals(input.headings, SIGNAL_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, collectSignals(input.phrases, SIGNAL_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, collectSignals(input.entities, SIGNAL_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, wordTerms(input.bodyText, EXACT_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, unicodeNgrams(input.bodyText, EXACT_TERM_LIMIT), EXACT_TERM_LIMIT);
-  appendTerms(terms, collectSignals(input.supplementalTerms, SIGNAL_TERM_LIMIT), EXACT_TERM_LIMIT);
+  appendTerms(
+    terms,
+    input.tokenizer.tokenizeDocument(input.title, EXACT_TERM_LIMIT),
+    EXACT_TERM_LIMIT
+  );
+  appendTerms(
+    terms,
+    collectSignals(input.headings, SIGNAL_TERM_LIMIT, input.tokenizer),
+    EXACT_TERM_LIMIT
+  );
+  appendTerms(
+    terms,
+    collectSignals(input.phrases, SIGNAL_TERM_LIMIT, input.tokenizer),
+    EXACT_TERM_LIMIT
+  );
+  appendTerms(
+    terms,
+    collectSignals(input.entities, SIGNAL_TERM_LIMIT, input.tokenizer),
+    EXACT_TERM_LIMIT
+  );
+  appendTerms(
+    terms,
+    tokenizeBoundedDocument(input.tokenizer, input.bodyText, EXACT_TERM_LIMIT),
+    EXACT_TERM_LIMIT
+  );
+  appendTerms(
+    terms,
+    collectSignals(input.supplementalTerms, SIGNAL_TERM_LIMIT, input.tokenizer),
+    EXACT_TERM_LIMIT
+  );
   return Array.from(terms);
 }
 
-function collectSignals(values: string[], limit: number): string[] {
+function collectSignals(
+  values: string[],
+  limit: number,
+  tokenizer: LexicalTokenizer
+): string[] {
   const terms = new Set<string>();
   for (const value of values) {
-    appendTerms(terms, termSignals(value), limit);
+    appendTerms(terms, tokenizer.tokenizeDocument(value, limit), limit);
     if (terms.size >= limit) break;
-  }
-  return Array.from(terms);
-}
-
-function termSignals(value: string): string[] {
-  const normalized = normalizeText(value);
-  const terms = new Set<string>();
-  appendTerms(terms, wordTerms(normalized, SIGNAL_TERM_LIMIT), SIGNAL_TERM_LIMIT);
-  appendTerms(terms, unicodeNgrams(normalized, SIGNAL_TERM_LIMIT), SIGNAL_TERM_LIMIT);
-  return Array.from(terms);
-}
-
-function wordTerms(value: string, limit: number): string[] {
-  const terms = new Set<string>();
-  const pattern = /[\p{L}\p{N}][\p{L}\p{N}_-]{1,63}/gu;
-  let scanned = 0;
-  for (const match of value.matchAll(pattern)) {
-    const term = match[0].replace(/^[-_]+|[-_]+$/gu, "");
-    if (isUsefulTerm(term)) terms.add(term);
-    scanned += 1;
-    if (terms.size >= limit || scanned >= limit * TERM_SCAN_MULTIPLIER) break;
-  }
-  return Array.from(terms);
-}
-
-function unicodeNgrams(value: string, limit: number): string[] {
-  const terms = new Set<string>();
-  let scanned = 0;
-  for (const match of value.matchAll(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu)) {
-    const symbols: string[] = [];
-    for (const symbol of match[0]) {
-      symbols.push(symbol);
-      scanned += 1;
-      if (scanned >= limit * TERM_SCAN_MULTIPLIER) break;
-    }
-    for (let size = 2; size <= 4; size += 1) {
-      for (let index = 0; index + size <= symbols.length; index += 1) {
-        terms.add(symbols.slice(index, index + size).join(""));
-        if (terms.size >= limit) return Array.from(terms);
-      }
-    }
-    if (scanned >= limit * TERM_SCAN_MULTIPLIER) break;
   }
   return Array.from(terms);
 }
@@ -201,10 +199,6 @@ function normalizeReference(value: string): string {
     .trim()
     .replace(/^\.\//u, "")
     .replace(/^\/+|#.*$/gu, "");
-}
-
-function isUsefulTerm(value: string): boolean {
-  return value.length >= 2 && value.length <= 64 && !/^\d+$/u.test(value);
 }
 
 function isUsefulPhrase(value: string): boolean {

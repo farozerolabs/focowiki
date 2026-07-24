@@ -46,6 +46,12 @@ export type StorageReconciliationRepository = {
     now: string;
     leaseExpiresAt: string;
   }) => Promise<StorageReconciliationCycle | null>;
+  renewCycleLease: (input: {
+    cycle: StorageReconciliationCycle;
+    leaseToken: string;
+    renewedAt: string;
+    leaseExpiresAt: string;
+  }) => Promise<boolean>;
   recordScanPage: (input: {
     cycle: StorageReconciliationCycle;
     leaseToken: string;
@@ -57,6 +63,7 @@ export type StorageReconciliationRepository = {
     cycle: StorageReconciliationCycle;
     leaseToken: string;
     now: string;
+    staleDeletingBefore: string;
     graceBefore: string;
     confirmationPasses: number;
     maxAttempts: number;
@@ -72,16 +79,19 @@ export type StorageReconciliationRepository = {
   }) => Promise<boolean>;
   refreshCandidateObservation: (input: {
     prefix: string;
+    leaseToken: string;
     object: ManagedImmutableObjectIdentity;
     observedAt: string;
   }) => Promise<void>;
   completeCandidateDeletion: (input: {
     prefix: string;
+    leaseToken: string;
     objectKey: string;
     completedAt: string;
   }) => Promise<void>;
   failCandidateDeletion: (input: {
     prefix: string;
+    leaseToken: string;
     objectKey: string;
     errorCode: string;
     retryAt: string;

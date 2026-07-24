@@ -121,8 +121,15 @@ Maintenance settings control bounded reconciliation of Focowiki-managed generate
 | Retry delay ms | Delay after a transient reconciliation failure. | `30000` to `300000` ms. |
 | Migration backfill concurrency | Bounded source and projection pages processed concurrently during compatible optimization migration. | 1 to 2. |
 | Projection compaction concurrency | Independent projection partitions compacted concurrently. | 1 to 2. |
+| Projection repair concurrency | Projection repair subtasks processed concurrently by the dedicated repair worker. | 4 to 8 on an 8C/32G server; range 1 to 16. |
+| Projection repair database batch size | Projection records handled by one bounded set-based database batch. | `2000`; range 100 to 10000. |
+| Projection repair object write concurrency | Generated projection objects uploaded and verified concurrently during repair. | `8`; range 1 to 32. |
 
-The status section reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
+Projection repair runs in its own Worker role. Saved values apply to later repair claims; already-running subtasks keep the settings captured when they were claimed. The status section reports bounded aggregate phase, task, record, directory, object, retry, throughput, and estimated-completion values without counting work tables during each request.
+
+The maintenance status also reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
+
+After an upgrade changes the search representation, maintenance rebuilds search, lexical, and graph-term data in bounded background pages. The currently active knowledge base remains readable until the rebuilt data has been validated and activated. Existing source files do not need to be uploaded again, accepted relationships are retained, and the rebuild does not call a model.
 
 ## Models
 

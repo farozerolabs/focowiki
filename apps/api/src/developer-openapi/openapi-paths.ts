@@ -539,7 +539,8 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       get: operation({
         tag: "Files",
         operationId: "searchGeneratedFiles",
-        summary: "Search generated files",
+        summary: "Search knowledge-base files",
+        description: "Search source-backed Markdown files with bounded file and relationship evidence. Continue from each result with its file ID or logical path and read the file before relying on its content. An empty result means that the supplied query did not match the active search data; it does not mean that the knowledge base contains no files.",
         parameters: [knowledgeBaseIdParameter(), ...fileSearchParameters()],
         requestExample: requestExamples.searchGeneratedFiles,
         successStatus: 200,

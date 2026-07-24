@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildGraphQueryTerms,
-  buildGraphTermDocument
+  buildGraphQueryTerms as buildGraphQueryTermsWithTokenizer,
+  buildGraphTermDocument as buildGraphTermDocumentWithTokenizer
 } from "../src/graph/graph-term-document.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
+
+function buildGraphTermDocument(
+  input: Omit<Parameters<typeof buildGraphTermDocumentWithTokenizer>[0], "tokenizer">
+) {
+  return buildGraphTermDocumentWithTokenizer({ ...input, tokenizer: testLexicalTokenizer });
+}
+
+function buildGraphQueryTerms(values: string[]) {
+  return buildGraphQueryTermsWithTokenizer(values, testLexicalTokenizer);
+}
 
 describe("graph term document", () => {
   it("derives bounded terms from Markdown body, headings, and explicit references", () => {
@@ -38,7 +49,7 @@ describe("graph term document", () => {
     expect(document.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("indexes non-whitespace text with bounded Unicode n-grams", () => {
+  it("indexes non-whitespace text with bounded shared tokenizer terms", () => {
     const document = buildGraphTermDocument({
       sourceFileId: "source-2",
       sourceRevisionId: "revision-2",

@@ -48,6 +48,27 @@ describeDatabase("migration preflight integration", () => {
     });
   });
 
+  it("allows a resumable projection repair to survive a compatible migration", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Migration preflight')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version, generation_kind
+      ) VALUES (
+        ${generationId}, ${knowledgeBaseId}, 'building', 2, 'projection_repair'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
   async function seedAllUnfinishedWork(): Promise<void> {
     await sql.begin(async (transaction) => {
       await transaction`

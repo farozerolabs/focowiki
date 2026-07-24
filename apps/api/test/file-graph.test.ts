@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { OkfGraphEdge, OkfGraphNode } from "@focowiki/okf";
-import { buildSourceFileGraph } from "../src/graph/file-graph.js";
-import { createGraphNode as createContentGraphNode } from "../src/graph/graph-node-profile.js";
+import { buildSourceFileGraph as buildSourceFileGraphWithTokenizer } from "../src/graph/file-graph.js";
+import { createGraphNode as createContentGraphNodeWithTokenizer } from "../src/graph/graph-node-profile.js";
 import type { FileGraphRepository, SourceFileRecord } from "../src/db/admin-repositories.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
 
 const now = "2026-06-18T00:00:00.000Z";
+
+function buildSourceFileGraph(
+  input: Omit<Parameters<typeof buildSourceFileGraphWithTokenizer>[0], "tokenizer">
+) {
+  return buildSourceFileGraphWithTokenizer({ ...input, tokenizer: testLexicalTokenizer });
+}
+
+function createContentGraphNode(
+  input: Omit<Parameters<typeof createContentGraphNodeWithTokenizer>[0], "tokenizer">
+) {
+  return createContentGraphNodeWithTokenizer({ ...input, tokenizer: testLexicalTokenizer });
+}
 
 describe("file graph", () => {
   it("builds graph edges with bounded candidate reads", async () => {

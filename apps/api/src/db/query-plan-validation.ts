@@ -1,4 +1,5 @@
 import { buildGraphQueryTerms } from "../graph/graph-term-document.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 import {
   GRAPH_COMMON_TERM_ABSOLUTE_MAX_DOCUMENTS,
   GRAPH_COMMON_TERM_MAX_DOCUMENT_RATIO,
@@ -19,6 +20,12 @@ export type QueryPlanTargetName =
   | "active-tree-page"
   | "active-tree-search"
   | "active-file-search"
+  | "body-search-exact"
+  | "body-search-token"
+  | "body-search-trigram"
+  | "graph-search-token"
+  | "graph-search-trigram"
+  | "generation-search-reference-page"
   | "active-graph-search"
   | "active-related-page"
   | "graph-candidate-terms"
@@ -326,8 +333,9 @@ export function createGraphCandidatePlanTarget(input: {
   sourceFileId: string;
   terms: string[];
   limit: number;
+  tokenizer: LexicalTokenizer;
 }): QueryPlanTarget {
-  const terms = buildGraphQueryTerms(input.terms.slice(0, 100));
+  const terms = buildGraphQueryTerms(input.terms.slice(0, 100), input.tokenizer);
   const sqlTerms = terms.exactTerms.map(sqlLiteral).join(", ");
   const sqlPhrases = terms.phraseTerms.map(sqlLiteral).join(", ");
   const sqlReferences = terms.explicitReferences.map(sqlLiteral).join(", ");
@@ -421,6 +429,161 @@ export function createGraphCandidatePlanTarget(input: {
     ORDER BY candidate.source_file_id
     LIMIT ${Math.max(1, Math.min(1_000, input.limit))}
   `);
+}
+
+export function createBodySearchPlanTargets(input: {
+  knowledgeBaseId: string;
+  generationId: string;
+  phrase: string;
+  terms: string[];
+  limit: number;
+}): QueryPlanTarget[] {
+  const candidateLimit = Math.max(1, Math.min(2_000, input.limit));
+  const terms = input.terms
+    .map((term) => term.normalize("NFKC").toLocaleLowerCase("en-US").trim())
+    .filter(Boolean)
+    .slice(0, 32);
+  const tokenQuery = terms.map((term) => `"${term.replaceAll("\"", "")}"`).join(" OR ");
+  return [
+    target("body-search-exact", "Body search exact evidence stays generation scoped and indexed.", `
+      SELECT source_file_id
+      FROM focowiki.generation_search_projection_refs
+      WHERE knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND generation_id = ${sqlLiteral(input.generationId)}
+        AND lower(title) = lower(${sqlLiteral(input.phrase)})
+      ORDER BY source_file_id
+      LIMIT ${candidateLimit}
+    `),
+    target("body-search-token", "Body search token evidence uses the versioned lexical-vector index.", `
+      WITH matching_segments AS MATERIALIZED (
+        SELECT segment.document_id,
+               max(ts_rank_cd(
+                 segment.lexical_vector,
+                 websearch_to_tsquery('simple', ${sqlLiteral(tokenQuery)})
+               )) AS rank_score
+        FROM focowiki.search_projection_segments segment
+        WHERE segment.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+          AND segment.lexical_vector
+              @@ websearch_to_tsquery('simple', ${sqlLiteral(tokenQuery)})
+        GROUP BY segment.document_id
+        ORDER BY rank_score DESC, segment.document_id
+        LIMIT ${candidateLimit}
+      )
+      SELECT reference.source_file_id
+      FROM matching_segments segment
+      JOIN focowiki.generation_search_projection_refs reference
+        ON reference.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+       AND reference.search_document_id = segment.document_id
+      WHERE reference.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND reference.generation_id = ${sqlLiteral(input.generationId)}
+      GROUP BY reference.source_file_id
+      ORDER BY reference.source_file_id
+      LIMIT ${candidateLimit}
+    `),
+    target("body-search-trigram", "Body search partial evidence uses the normalized-text trigram index.", `
+      WITH matching_segments AS MATERIALIZED (
+        SELECT segment.document_id,
+               focowiki.similarity(
+                 lower(segment.normalized_text),
+                 lower(${sqlLiteral(input.phrase)})
+               ) AS similarity_score
+        FROM focowiki.search_projection_segments segment
+        WHERE segment.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+          AND lower(segment.normalized_text)
+              OPERATOR(focowiki.%) lower(${sqlLiteral(input.phrase)})
+        ORDER BY similarity_score DESC, segment.document_id
+        LIMIT ${candidateLimit}
+      )
+      SELECT reference.source_file_id
+      FROM matching_segments segment
+      JOIN focowiki.generation_search_projection_refs reference
+        ON reference.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+       AND reference.generation_id = ${sqlLiteral(input.generationId)}
+       AND reference.search_document_id = segment.document_id
+      WHERE reference.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND reference.generation_id = ${sqlLiteral(input.generationId)}
+      GROUP BY reference.source_file_id
+      ORDER BY reference.source_file_id
+      LIMIT ${candidateLimit}
+    `),
+    target(
+      "generation-search-reference-page",
+      "Generation search references use bounded source-file keyset pagination.",
+      `
+        SELECT source_file_id, search_document_id, logical_path
+        FROM focowiki.generation_search_projection_refs
+        WHERE knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+          AND generation_id = ${sqlLiteral(input.generationId)}
+          AND source_file_id > 'source-file-plan'
+        ORDER BY source_file_id
+        LIMIT ${candidateLimit}
+      `
+    )
+  ];
+}
+
+export function createGraphSearchPlanTargets(input: {
+  knowledgeBaseId: string;
+  generationId: string;
+  phrase: string;
+  terms: string[];
+  tokenizerContractVersion: string;
+  lexicalProjectionVersion: string;
+  limit: number;
+}): QueryPlanTarget[] {
+  const candidateLimit = Math.max(1, Math.min(2_000, input.limit));
+  const terms = input.terms
+    .map((term) => term.normalize("NFKC").toLocaleLowerCase("en-US").trim())
+    .filter(Boolean)
+    .slice(0, 32);
+  return [
+    target("graph-search-token", "Graph search terms use the versioned exact-term GIN index.", `
+      SELECT document.source_file_id
+      FROM focowiki.source_file_graph_term_documents document
+      JOIN focowiki.generation_search_projection_refs reference
+        ON reference.knowledge_base_id = document.knowledge_base_id
+       AND reference.generation_id = ${sqlLiteral(input.generationId)}
+       AND reference.source_file_id = document.source_file_id
+       AND reference.source_revision_id = document.source_revision_id
+      WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+        AND document.tokenizer_contract_version =
+            ${sqlLiteral(input.tokenizerContractVersion)}
+        AND document.lexical_projection_version =
+            ${sqlLiteral(input.lexicalProjectionVersion)}
+        AND document.exact_terms && ARRAY[
+          ${terms.map(sqlLiteral).join(", ")}
+        ]::text[]
+      ORDER BY document.source_file_id
+      LIMIT ${candidateLimit}
+    `),
+    target("graph-search-trigram", "Graph search partial evidence uses the lexical-text trigram index.", `
+      WITH matching_documents AS MATERIALIZED (
+        SELECT document.source_file_id,
+               focowiki.similarity(
+                 document.lexical_text,
+                 ${sqlLiteral(input.phrase)}
+               ) AS similarity_score
+        FROM focowiki.source_file_graph_term_documents document
+        WHERE document.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+          AND document.tokenizer_contract_version =
+              ${sqlLiteral(input.tokenizerContractVersion)}
+          AND document.lexical_projection_version =
+              ${sqlLiteral(input.lexicalProjectionVersion)}
+          AND document.lexical_text
+              OPERATOR(focowiki.%) ${sqlLiteral(input.phrase)}
+        ORDER BY similarity_score DESC, document.source_file_id
+        LIMIT ${candidateLimit}
+      )
+      SELECT document.source_file_id
+      FROM matching_documents document
+      JOIN focowiki.generation_search_projection_refs reference
+        ON reference.knowledge_base_id = ${sqlLiteral(input.knowledgeBaseId)}
+       AND reference.generation_id = ${sqlLiteral(input.generationId)}
+       AND reference.source_file_id = document.source_file_id
+      ORDER BY document.source_file_id
+      LIMIT ${candidateLimit}
+    `)
+  ];
 }
 
 export function createRoleQueuePlanTargets(): QueryPlanTarget[] {

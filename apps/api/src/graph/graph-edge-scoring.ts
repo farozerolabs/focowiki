@@ -350,8 +350,10 @@ function bestEdgeForCandidate(input: {
 
   if (
     titleSupportedSharedSubjects.length > 0 &&
-    distinctSharedContentSignalCount >= 2 &&
-    (strongSharedSubjects.length >= 2 || strongSharedKeywords.length >= 2)
+    (
+      distinctSharedContentSignalCount >= 2 ||
+      titleSupportedSharedSubjects.some(isStandaloneSpecificSubject)
+    )
   ) {
     signals.push(
       createEdge(source, candidate, "same_specific_subject", 0.64, "Both files share body-derived subjects.", {
@@ -425,6 +427,13 @@ function bestEdgeForCandidate(input: {
   }
 
   return signals.sort((left, right) => right.weight - left.weight)[0] ?? null;
+}
+
+function isStandaloneSpecificSubject(value: string): boolean {
+  const normalized = normalizeSearchText(value).replace(/\s+/gu, "");
+  return /\p{Script=Han}/u.test(normalized)
+    ? normalized.length >= 4
+    : normalized.length >= 8;
 }
 
 const VERSION_METADATA_KEYS = [

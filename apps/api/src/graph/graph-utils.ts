@@ -1,20 +1,27 @@
 import type { OkfGraphNode } from "@focowiki/okf";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 import { isUsefulTerm, normalizeTerm } from "./content-profile.js";
 
-export function extractSearchTerms(value: string): string[] {
+export function extractSearchTerms(
+  value: string,
+  tokenizer: LexicalTokenizer
+): string[] {
   return unique(
-    value
-      .split(/[^\p{L}\p{N}]+/u)
+    tokenizer
+      .tokenizeDocument(value, 64)
       .map(normalizeTerm)
       .filter(isUsefulTerm)
   );
 }
 
-export function extractPathTerms(path: string): string[] {
+export function extractPathTerms(
+  path: string,
+  tokenizer: LexicalTokenizer
+): string[] {
   return unique(
     normalizePublicPath(path)
       .split("/")
-      .flatMap((part) => extractSearchTerms(stripMarkdownExtension(part)))
+      .flatMap((part) => extractSearchTerms(stripMarkdownExtension(part), tokenizer))
       .filter((term) => term !== "pages")
   );
 }

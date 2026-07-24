@@ -218,19 +218,39 @@ export function createPostgresPublicationValidationRepository(
           GROUP BY candidate.projection_kind
         ),
         repair_graph_expectation AS MATERIALIZED (
-          SELECT (repair.checkpoint_json->>'graphNodeCount')::bigint AS node_count,
-                 (repair.checkpoint_json->>'graphEdgeCount')::bigint AS edge_count
+          SELECT CASE
+                   WHEN 'graph' = ANY(repair.required_projection_kinds)
+                     THEN (
+                       SELECT count(*)
+                       FROM focowiki.generation_projection_records candidate
+                       WHERE candidate.generation_id = ${input.generationId}
+                         AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
+                         AND candidate.projection_kind = 'graph_node'
+                         AND candidate.action = 'upsert'
+                     )
+                   ELSE predecessor.node_count
+                 END AS node_count,
+                 CASE
+                   WHEN 'graph' = ANY(repair.required_projection_kinds)
+                     THEN (
+                       SELECT count(*)
+                       FROM focowiki.generation_projection_records candidate
+                       WHERE candidate.generation_id = ${input.generationId}
+                         AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
+                         AND candidate.projection_kind = 'graph_edge'
+                         AND candidate.action = 'upsert'
+                     )
+                   ELSE predecessor.edge_count
+                 END AS edge_count
           FROM focowiki.knowledge_base_projection_repairs repair
           JOIN candidate_generation generation
             ON generation.generation_kind = 'projection_repair'
+          LEFT JOIN focowiki.generation_graph_summaries predecessor
+            ON predecessor.generation_id = generation.predecessor_generation_id
+           AND predecessor.knowledge_base_id = ${input.knowledgeBaseId}
           WHERE repair.knowledge_base_id = ${input.knowledgeBaseId}
             AND repair.target_generation_id = ${input.generationId}
             AND repair.state = 'running'
-            AND repair.checkpoint_json->>'graphComplete' = 'true'
-            AND jsonb_typeof(repair.checkpoint_json->'graphNodeCount') = 'number'
-            AND jsonb_typeof(repair.checkpoint_json->'graphEdgeCount') = 'number'
-            AND repair.checkpoint_json->>'graphNodeCount' ~ '^[0-9]+$'
-            AND repair.checkpoint_json->>'graphEdgeCount' ~ '^[0-9]+$'
           ORDER BY repair.repair_version DESC
           LIMIT 1
         ),

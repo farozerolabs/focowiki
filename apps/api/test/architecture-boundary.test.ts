@@ -169,6 +169,27 @@ describe("lightweight architecture boundaries", () => {
     ).toBe(false);
   });
 
+  it("packages the native tokenizer without loading it in the publication role", () => {
+    const runtimeBuild = readWorkspaceFile("apps/api/scripts/build-runtime.mjs");
+    const dockerfile = readWorkspaceFile("Dockerfile");
+    const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
+    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
+    const publicationMain = readWorkspaceFile("apps/api/src/publication-worker-main.ts");
+
+    expect(runtimeBuild).toContain('external: ["nodejieba"]');
+    expect(runtimeBuild).toContain('resolvePackageRoot("nodejieba")');
+    expect(runtimeBuild).toContain('resolve(runtimeDir, "node_modules/nodejieba")');
+    expect(dockerfile).toContain("apk add --no-cache --virtual .native-build-dependencies");
+    expect(dockerfile).toContain("ENV npm_config_build_from_source=true");
+    expect(dockerfile).toContain("apk add --no-cache libstdc++ su-exec");
+    expect(dockerfile).toContain("test ! -x /usr/bin/g++");
+    expect(sourceMain.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
+    expect(maintenanceMain.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
+    expect(sourceMain).toContain("assertNodeJiebaRuntimeAvailable()");
+    expect(maintenanceMain).toContain("assertNodeJiebaRuntimeAvailable()");
+    expect(publicationMain).not.toContain("nodejieba-tokenizer");
+  });
+
   it("cleans package build directories before compiling", () => {
     const apiPackage = JSON.parse(readWorkspaceFile("apps/api/package.json")) as {
       scripts?: Record<string, string>;
@@ -399,13 +420,24 @@ describe("lightweight architecture boundaries", () => {
     expect(maintenanceMain).toContain('role: "maintenance"');
   });
 
-  it("keeps paged maintenance work on stable process-scoped lease tokens", () => {
+  it("keeps maintenance leases stable and projection repair in its own runtime", () => {
     const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
+    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
 
-    expect(maintenanceMain).toContain("const repairLeaseToken");
-    expect(maintenanceMain).toContain("leaseToken: repairLeaseToken");
     expect(maintenanceMain).toContain("const reconciliationLeaseToken");
     expect(maintenanceMain).toContain("leaseToken: reconciliationLeaseToken");
+    expect(maintenanceMain).not.toContain("repairLeaseToken");
+    expect(repairMain).toContain("createPostgresProjectionRepairWorkRepository");
+    expect(repairMain).toContain('role: "projection_repair"');
+    expect(repairMain).toContain("work.claimBatch");
+  });
+
+  it("keeps the last valid repair settings when a live refresh is temporarily unavailable", () => {
+    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
+
+    expect(repairMain).toContain("lastValidSnapshot");
+    expect(repairMain).toContain("Projection repair settings refresh failed");
+    expect(repairMain).toContain("return lastValidSnapshot");
   });
 
   it("keeps source-file completion from running publication inline", () => {
