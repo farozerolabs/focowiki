@@ -26,7 +26,8 @@ export function createPostgresGenerationCleanupRepository(
         `;
         await transaction`
           UPDATE focowiki.source_file_graph_jobs
-          SET status = 'failed', ended_at = ${input.supersededAt},
+          SET status = 'failed',
+              ended_at = GREATEST(${input.supersededAt}::timestamptz, started_at),
               error_code = 'KNOWLEDGE_BASE_DELETED'
           WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
             AND status = 'running'

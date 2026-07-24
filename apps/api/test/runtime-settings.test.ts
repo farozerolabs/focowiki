@@ -81,7 +81,10 @@ describe("runtime settings service", () => {
       maxAttempts: 5,
       retryDelayMs: 30_000,
       migrationBackfillConcurrency: 2,
-      compactionConcurrency: 1
+      compactionConcurrency: 1,
+      projectionRepairConcurrency: 4,
+      projectionRepairDatabaseBatchSize: 2_000,
+      projectionRepairObjectWriteConcurrency: 8
     });
     expect(snapshot.activeModel).toBeNull();
   });
@@ -138,7 +141,10 @@ describe("runtime settings service", () => {
     });
     expect(snapshot.maintenance).toMatchObject({
       migrationBackfillConcurrency: 2,
-      compactionConcurrency: 1
+      compactionConcurrency: 1,
+      projectionRepairConcurrency: 4,
+      projectionRepairDatabaseBatchSize: 2_000,
+      projectionRepairObjectWriteConcurrency: 8
     });
     expect(Object.fromEntries(
       [...repository.settings].map(([key, value]) => [key, value.version])
@@ -275,7 +281,10 @@ describe("runtime settings service", () => {
       value: {
         ...maximumPublication.maintenance,
         migrationBackfillConcurrency: 16,
-        compactionConcurrency: 16
+        compactionConcurrency: 16,
+        projectionRepairConcurrency: 16,
+        projectionRepairDatabaseBatchSize: 10_000,
+        projectionRepairObjectWriteConcurrency: 32
       }
     });
 
@@ -283,6 +292,7 @@ describe("runtime settings service", () => {
     expect(maximumMaintenance.worker.databaseMutationConcurrency).toBe(32);
     expect(maximumMaintenance.publication.projectionPartitionConcurrency).toBe(32);
     expect(maximumMaintenance.maintenance.compactionConcurrency).toBe(16);
+    expect(maximumMaintenance.maintenance.projectionRepairConcurrency).toBe(16);
   });
 
   it("rejects source concurrency above the process budget and undersized claim batches", async () => {
@@ -728,6 +738,7 @@ describe("runtime settings service", () => {
 function createStorageReconciliationRepository(): StorageReconciliationRepository {
   return {
     async claimCycle() { return null; },
+    async renewCycleLease() { return true; },
     async recordScanPage() { return true; },
     async claimDeletionCandidates() { return []; },
     async authorizeCandidateDeletion() { return false; },

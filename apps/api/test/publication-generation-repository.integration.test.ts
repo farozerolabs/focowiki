@@ -1263,6 +1263,7 @@ describeDatabase("publication generation repository integration", () => {
   }, options: { assemble?: boolean } = {}): Promise<SourceCompletionCommitResult> {
     const request = sourceCompletionRequest(source);
     const committed = await generations.commitSourceCompletion(request);
+    await ensureReadySearchProjection(source);
     if (options.assemble === false || committed.generationId) return committed;
     const assembled = await assemble("2026-07-17T01:00:01.000Z");
     if (!assembled.generationId) {
@@ -1274,6 +1275,31 @@ describeDatabase("publication generation repository integration", () => {
       impactCount: assembled.impactCount,
       replayed: committed.replayed
     };
+  }
+
+  async function ensureReadySearchProjection(source: {
+    sourceFileId: string;
+    sourceRevisionId: string;
+  }): Promise<void> {
+    await sql`
+      INSERT INTO focowiki.search_projection_documents (
+        id, knowledge_base_id, source_file_id, source_revision_id,
+        source_body_checksum_sha256, search_schema_version,
+        tokenizer_contract_version, segmentation_version,
+        segment_count, lifecycle_state, completed_at
+      )
+      SELECT
+        ${`search-document-${source.sourceRevisionId}`},
+        revision.knowledge_base_id, revision.source_file_id, revision.id,
+        revision.checksum_sha256, 'body-search-v1',
+        'lexical-tokenizer-test-v1', 'body-segmentation-v1',
+        0, 'ready', now()
+      FROM focowiki.source_revisions revision
+      WHERE revision.knowledge_base_id = ${knowledgeBaseId}
+        AND revision.source_file_id = ${source.sourceFileId}
+        AND revision.id = ${source.sourceRevisionId}
+      ON CONFLICT (id) DO NOTHING
+    `;
   }
 
   function sourceCompletionRequest(source: {

@@ -9,6 +9,7 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresSearchProjectionRepository } from "./infrastructure/postgres/search-projection-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
 import { createPostgresSourceDispatchRepository } from "./infrastructure/postgres/source-dispatch-repository.js";
 import { createPostgresSourceRevisionContextRepository } from "./infrastructure/postgres/source-revision-context-repository.js";
@@ -25,6 +26,11 @@ import { createResourceBudgetReporter } from "./runtime/resource-budget-reporter
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { createRoleWorkerRuntime } from "./worker/role-runtime.js";
 import { createSourceRoleProcessor } from "./worker/source-role-processor.js";
+import {
+  assertNodeJiebaRuntimeAvailable,
+  createNodeJiebaTokenizer,
+  getNodeJiebaRuntimeEvidence
+} from "./infrastructure/tokenization/nodejieba-tokenizer.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -50,12 +56,14 @@ async function runSourceWorker(): Promise<void> {
     await assertRuntimeSchemaGeneration(sql);
     await redisClient.connect();
     redisConnected = true;
+    const tokenizer = createNodeJiebaTokenizer();
+    logger.info("Lexical tokenizer initialized", getNodeJiebaRuntimeEvidence());
     const redis = createResilientRedisCoordinator({
       client: redisClient,
       coordinator: createRedisCoordinator(redisClient),
       sessionWrites: "best_effort"
     });
-    const repositories = createPostgresAdminRepositories(sql);
+    const repositories = createPostgresAdminRepositories(sql, { tokenizer });
     if (!repositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
@@ -92,6 +100,10 @@ async function runSourceWorker(): Promise<void> {
         sourceObjectRead: resourceBudgets.sourceObjectRead,
         graphQuery: resourceBudgets.graphQuery,
         databaseMutation: resourceBudgets.databaseMutation
+      },
+      {
+        tokenizer,
+        repository: createPostgresSearchProjectionRepository(sql)
       }
     );
     if (!sourceProcessor) {
@@ -191,6 +203,7 @@ async function runHealthcheck(): Promise<void> {
   const storage = createS3StorageAdapter(config.storage);
   let redisConnected = false;
   try {
+    assertNodeJiebaRuntimeAvailable();
     await assertRuntimeSchemaGeneration(sql);
     await sql`SELECT count(*)::int AS count FROM focowiki.role_jobs WHERE role = 'source'`;
     await redisClient.connect();

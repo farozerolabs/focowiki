@@ -171,6 +171,7 @@ jobs:
           build-args: |
             FOCOWIKI_RELEASE_VERSION=${{ steps.release.outputs.version }}
           provenance: mode=max
+          sbom: true
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
@@ -178,6 +179,17 @@ jobs:
         run: |
           node scripts/ci/s3-health-fixture.mjs &
           echo $! > /tmp/focowiki-s3-health-fixture.pid
+
+      - name: Validate release native tokenizer runtime
+        shell: bash
+        run: |
+          image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          docker pull "${image}"
+          docker tag "${image}" focowiki-api:release-smoke
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
+          docker run --rm --entrypoint node focowiki-api:release-smoke -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
+          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
 
       - name: Validate published API image roles
         shell: bash
@@ -189,6 +201,7 @@ jobs:
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migration-preflight.mjs
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/source-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/publication-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/projection-repair-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/maintenance-worker.mjs --healthcheck
           api_container="$(docker run -d --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/main.mjs)"
           trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT

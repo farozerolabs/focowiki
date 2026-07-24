@@ -39,6 +39,9 @@ export type RuntimeMaintenanceSettings = {
   retryDelayMs: number;
   migrationBackfillConcurrency: number;
   compactionConcurrency: number;
+  projectionRepairConcurrency: number;
+  projectionRepairDatabaseBatchSize: number;
+  projectionRepairObjectWriteConcurrency: number;
 };
 
 export type RuntimeSettingsSnapshot = {

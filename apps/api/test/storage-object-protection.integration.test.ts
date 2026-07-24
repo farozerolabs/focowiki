@@ -81,6 +81,7 @@ describeDatabase("storage object protection integration", () => {
       cycle: { ...first, state: "verifying" },
       leaseToken: "lease-protection-1",
       now: "2026-07-20T00:00:02.000Z",
+      staleDeletingBefore: "2026-07-19T23:55:02.000Z",
       graceBefore: "2026-07-20T00:00:02.000Z",
       confirmationPasses: 2,
       maxAttempts: 3,
@@ -106,6 +107,7 @@ describeDatabase("storage object protection integration", () => {
       cycle: verifying,
       leaseToken: "lease-protection-2",
       now: "2026-07-20T00:00:05.000Z",
+      staleDeletingBefore: "2026-07-19T23:55:05.000Z",
       graceBefore: "2026-07-19T23:59:59.000Z",
       confirmationPasses: 2,
       maxAttempts: 3,
@@ -116,6 +118,7 @@ describeDatabase("storage object protection integration", () => {
       cycle: verifying,
       leaseToken: "lease-protection-2",
       now: "2026-07-20T00:00:05.000Z",
+      staleDeletingBefore: "2026-07-19T23:55:05.000Z",
       graceBefore: "2026-07-20T00:00:02.000Z",
       confirmationPasses: 2,
       maxAttempts: 3,
@@ -136,6 +139,7 @@ describeDatabase("storage object protection integration", () => {
     })).resolves.toBe(true);
     await repository.completeCandidateDeletion({
       prefix,
+      leaseToken: "lease-protection-2",
       objectKey: object.key,
       completedAt: "2026-07-20T00:00:07.000Z"
     });

@@ -18,6 +18,10 @@ import { createPostgresSourceFileRetryRepository } from "./infrastructure/postgr
 import { createPostgresSourceFileTaskDeletionRepository } from "./infrastructure/postgres/source-file-task-deletion-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
 import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
+import {
+  createNodeJiebaTokenizer,
+  getNodeJiebaRuntimeEvidence
+} from "./infrastructure/tokenization/nodejieba-tokenizer.js";
 
 loadLocalEnvFile();
 
@@ -26,8 +30,10 @@ const logger = createRuntimeLogger(config, console, { streamName: "api" });
 const storage = createS3StorageAdapter(config.storage);
 const sql = createDatabaseClient(config);
 await assertRuntimeSchemaGeneration(sql);
-const repositories = createPostgresAdminRepositories(sql);
-const activeGenerationReads = createPostgresActiveGenerationReadRepository(sql);
+const tokenizer = createNodeJiebaTokenizer();
+logger.info("Lexical tokenizer initialized", getNodeJiebaRuntimeEvidence());
+const repositories = createPostgresAdminRepositories(sql, { tokenizer });
+const activeGenerationReads = createPostgresActiveGenerationReadRepository(sql, tokenizer);
 const roleJobs = createPostgresRoleJobRepository(sql);
 const publicationGenerations = createPostgresPublicationGenerationRepository(sql);
 const sourceDispatch = createPostgresSourceDispatchRepository(sql);

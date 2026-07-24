@@ -35,7 +35,10 @@ export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   maxAttempts: 5,
   retryDelayMs: 30_000,
   migrationBackfillConcurrency: 2,
-  compactionConcurrency: 1
+  compactionConcurrency: 1,
+  projectionRepairConcurrency: 4,
+  projectionRepairDatabaseBatchSize: 2_000,
+  projectionRepairObjectWriteConcurrency: 8
 };
 
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
@@ -417,7 +420,10 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
     "maxAttempts",
     "retryDelayMs",
     "migrationBackfillConcurrency",
-    "compactionConcurrency"
+    "compactionConcurrency",
+    "projectionRepairConcurrency",
+    "projectionRepairDatabaseBatchSize",
+    "projectionRepairObjectWriteConcurrency"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
   for (const field of ["migrationBackfillConcurrency", "compactionConcurrency"] as const) {
@@ -431,6 +437,10 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
       });
     }
   }
+
+  validateIntegerRange(value, "projectionRepairConcurrency", 1, 16, issues);
+  validateIntegerRange(value, "projectionRepairDatabaseBatchSize", 100, 10_000, issues);
+  validateIntegerRange(value, "projectionRepairObjectWriteConcurrency", 1, 32, issues);
 
   for (const field of ["scanBatchSize", "deletionBatchSize"] as const) {
     if (Number.isInteger(value[field]) && Number(value[field]) > 1_000) {
@@ -464,7 +474,10 @@ export function sanitizeMaintenanceSettings(
     maxAttempts: input.maxAttempts,
     retryDelayMs: input.retryDelayMs,
     migrationBackfillConcurrency: input.migrationBackfillConcurrency,
-    compactionConcurrency: input.compactionConcurrency
+    compactionConcurrency: input.compactionConcurrency,
+    projectionRepairConcurrency: input.projectionRepairConcurrency,
+    projectionRepairDatabaseBatchSize: input.projectionRepairDatabaseBatchSize,
+    projectionRepairObjectWriteConcurrency: input.projectionRepairObjectWriteConcurrency
   };
 }
 
@@ -566,6 +579,24 @@ function validateAtMost(
     issues.push({
       field,
       message: `${field} must be less than or equal to ${maximumField}`
+    });
+  }
+}
+
+function validateIntegerRange(
+  value: Record<string, unknown>,
+  field: string,
+  minimum: number,
+  maximum: number,
+  issues: RuntimeSettingsValidationIssue[]
+): void {
+  if (
+    Number.isInteger(value[field])
+    && (Number(value[field]) < minimum || Number(value[field]) > maximum)
+  ) {
+    issues.push({
+      field,
+      message: `${field} must be between ${minimum} and ${maximum}`
     });
   }
 }

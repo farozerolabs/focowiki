@@ -168,7 +168,10 @@ const maintenanceNumberFields = [
   "maxAttempts",
   "retryDelayMs",
   "migrationBackfillConcurrency",
-  "compactionConcurrency"
+  "compactionConcurrency",
+  "projectionRepairConcurrency",
+  "projectionRepairDatabaseBatchSize",
+  "projectionRepairObjectWriteConcurrency"
 ] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
@@ -781,6 +784,12 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                               min={field === "confirmationPasses" ? 2 : 1}
                               {...(field === "scanBatchSize" || field === "deletionBatchSize"
                                 ? { max: 1_000 }
+                                : field === "projectionRepairConcurrency"
+                                  ? { max: 16 }
+                                  : field === "projectionRepairDatabaseBatchSize"
+                                    ? { min: 100, max: 10_000 }
+                                    : field === "projectionRepairObjectWriteConcurrency"
+                                      ? { max: 32 }
                                 : {})}
                               value={maintenance[field]}
                               required
@@ -1375,7 +1384,11 @@ function buildMaintenanceSettings(
     settings.deletionBatchSize > 1_000 ||
     settings.confirmationPasses < 2 ||
     settings.migrationBackfillConcurrency > 16 ||
-    settings.compactionConcurrency > 16
+    settings.compactionConcurrency > 16 ||
+    settings.projectionRepairConcurrency > 16 ||
+    settings.projectionRepairDatabaseBatchSize < 100 ||
+    settings.projectionRepairDatabaseBatchSize > 10_000 ||
+    settings.projectionRepairObjectWriteConcurrency > 32
   ) {
     return null;
   }

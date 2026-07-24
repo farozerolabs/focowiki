@@ -16,6 +16,7 @@ import type {
   FileGraphRelatedRecord,
   FileGraphRepository
 } from "./admin-repositories.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 
 type SourceGraphNodeRow = {
   knowledge_base_id: string;
@@ -69,7 +70,10 @@ type RelatedRow = {
   content_available: boolean;
 };
 
-export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGraphRepository {
+export function createPostgresFileGraphRepository(
+  sql: DatabaseClient,
+  tokenizer?: LexicalTokenizer
+): FileGraphRepository {
   return {
     async upsertGraphNode({ knowledgeBaseId, node }) {
       await sql`
@@ -77,7 +81,8 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           knowledge_base_id, source_file_id, path, title, type, description, summary,
           subjects_json, tags_json, entities_json, explicit_references_json,
           relationship_hints_json, headings_json, keywords_json, language,
-          profile_version, profile_source, profile_json, metadata_json, updated_at
+          profile_version, profile_source, profile_json, metadata_json,
+          tokenizer_contract_version, lexical_projection_version, updated_at
         )
         SELECT ${knowledgeBaseId}, ${node.fileId}, ${node.path}, ${node.title},
                ${node.type ?? null}, ${node.description ?? null}, ${node.summary ?? null},
@@ -91,7 +96,9 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
                ${readProfileString(node.metadata, "profileVersion")},
                ${readProfileString(node.metadata, "profileSource")},
                ${sql.json((node.metadata ?? {}) as never)},
-               ${sql.json((node.metadata ?? {}) as never)}, now()
+               ${sql.json((node.metadata ?? {}) as never)},
+               ${readContentProfileString(node.metadata, "tokenizerContractVersion")},
+               ${readContentProfileString(node.metadata, "profileVersion")}, now()
         FROM focowiki.source_files source
         WHERE source.id = ${node.fileId}
           AND source.knowledge_base_id = ${knowledgeBaseId}
@@ -115,6 +122,8 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           profile_source = EXCLUDED.profile_source,
           profile_json = EXCLUDED.profile_json,
           metadata_json = EXCLUDED.metadata_json,
+          tokenizer_contract_version = EXCLUDED.tokenizer_contract_version,
+          lexical_projection_version = EXCLUDED.lexical_projection_version,
           updated_at = now()
       `;
     },
@@ -123,11 +132,14 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
         INSERT INTO focowiki.source_file_graph_term_documents (
           knowledge_base_id, source_file_id, source_revision_id,
           term_fingerprint, lexical_text, exact_terms, phrase_terms,
-          explicit_references, updated_at
+          explicit_references, tokenizer_contract_version,
+          lexical_projection_version, updated_at
         )
         SELECT ${knowledgeBaseId}, ${document.sourceFileId}, ${document.sourceRevisionId},
                ${document.fingerprint}, ${document.lexicalText}, ${document.exactTerms},
-               ${document.phraseTerms}, ${document.explicitReferences}, now()
+               ${document.phraseTerms}, ${document.explicitReferences},
+               ${document.tokenizerContractVersion},
+               ${document.lexicalProjectionVersion}, now()
         FROM focowiki.source_files source
         JOIN focowiki.source_revisions revision
           ON revision.id = ${document.sourceRevisionId}
@@ -148,11 +160,13 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
           exact_terms = EXCLUDED.exact_terms,
           phrase_terms = EXCLUDED.phrase_terms,
           explicit_references = EXCLUDED.explicit_references,
+          tokenizer_contract_version = EXCLUDED.tokenizer_contract_version,
+          lexical_projection_version = EXCLUDED.lexical_projection_version,
           updated_at = now()
       `;
     },
     async applyGraphMutationSet(input) {
-      return applyGraphMutationSet(sql, input);
+      return applyGraphMutationSet(sql, input, tokenizer);
     },
     async listGraphNodes(input) {
       return listSourceNodes(sql, input);
@@ -174,7 +188,10 @@ export function createPostgresFileGraphRepository(sql: DatabaseClient): FileGrap
       return listSourceNeighborhood(sql, input);
     },
     async listGraphCandidates({ knowledgeBaseId, sourceFileId, terms, limit }) {
-      const query = buildGraphQueryTerms(terms.slice(0, 100));
+      const query = buildGraphQueryTerms(
+        terms.slice(0, 100),
+        requireTokenizer(tokenizer)
+      );
       if (query.exactTerms.length === 0 || limit <= 0) return [];
       const rows = await sql.begin(async (transaction) => {
         await transaction`SET LOCAL enable_seqscan = off`;
@@ -392,7 +409,8 @@ type GraphMutationEdgeRow = {
 
 async function applyGraphMutationSet(
   sql: DatabaseClient,
-  input: GraphMutationInput
+  input: GraphMutationInput,
+  tokenizer?: LexicalTokenizer
 ): Promise<{
   edgeCount: number;
   affectedSourceFileIds: string[];
@@ -426,7 +444,10 @@ async function applyGraphMutationSet(
       input.rejectedEdges.filter((edge) => !acceptedIdentities.has(edgeIdentity(edge))),
       "rejected"
     );
-    const referenceTerms = buildGraphQueryTerms([input.target.path]).explicitReferences;
+    const referenceTerms = buildGraphQueryTerms(
+      [input.target.path],
+      requireTokenizer(tokenizer)
+    ).explicitReferences;
     const explicit = referenceTerms.length === 0
       ? []
       : await transaction<GraphMutationEdgeRow[]>`
@@ -778,6 +799,22 @@ function evidenceRecord(value: unknown): Record<string, unknown> {
 function readProfileString(metadata: Record<string, unknown> | undefined, key: string): string | null {
   const value = metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readContentProfileString(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string | null {
+  const contentProfile = record(metadata?.contentProfile);
+  const value = contentProfile[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function requireTokenizer(tokenizer: LexicalTokenizer | undefined): LexicalTokenizer {
+  if (!tokenizer) {
+    throw new Error("Lexical tokenizer is unavailable for graph candidate retrieval");
+  }
+  return tokenizer;
 }
 
 function strings(value: unknown): string[] {

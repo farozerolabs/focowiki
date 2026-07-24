@@ -25,6 +25,9 @@ import { processSourceFileModelStage } from "./source-file-model-stage.js";
 import { readSourceFileContent } from "./source-file-storage-stage.js";
 import { createProgressClock, createUploadProgressTracker } from "./upload-progress.js";
 import type { ResourceBudget } from "../runtime/resource-budget.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
+import type { SearchProjectionRepository } from "../application/ports/search-projection-repository.js";
+import { persistBodySearchProjection } from "../application/body-search-projection.js";
 import { createSourceFileStageRecorder } from "./source-file-stage-recorder.js";
 
 export type SourceFileQueueProcessor = {
@@ -63,6 +66,10 @@ export function createSourceFileQueueProcessor(
     sourceObjectRead: ResourceBudget;
     graphQuery: ResourceBudget;
     databaseMutation: ResourceBudget;
+  },
+  lexicalProjection?: {
+    tokenizer: LexicalTokenizer;
+    repository: SearchProjectionRepository;
   }
 ): SourceFileQueueProcessor | null {
   const files = repositories.files;
@@ -233,6 +240,7 @@ export function createSourceFileQueueProcessor(
           metadata: metadataResult.parsed.metadata,
           body: metadataResult.resolved.body,
           suggestions,
+          ...(lexicalProjection ? { tokenizer: lexicalProjection.tokenizer } : {}),
           pageSize: input.batchSize,
           maxCandidateNodes: input.graph?.candidateLimit,
           acceptedEdgeLimit: input.graph?.acceptedEdgeLimit,
@@ -264,6 +272,25 @@ export function createSourceFileQueueProcessor(
           severity: "info"
         });
         try {
+          if (!lexicalProjection) {
+            throw new Error("Lexical projection service is unavailable");
+          }
+          await runBudgeted(resourceBudgets?.databaseMutation, () =>
+            persistBodySearchProjection({
+              repository: lexicalProjection.repository,
+              tokenizer: lexicalProjection.tokenizer,
+              knowledgeBaseId: input.knowledgeBaseId,
+              sourceFileId: source.id,
+              sourceRevisionId,
+              relativePath: source.relativePath,
+              title: readMetadataText(metadataResult.resolved.metadata.title)
+                ?? source.relativePath.split("/").at(-1)
+                ?? source.relativePath,
+              summary: readMetadataText(metadataResult.resolved.metadata.description),
+              body: metadataResult.resolved.body,
+              completedAt: progressClock()
+            })
+          );
           await runBudgeted(resourceBudgets?.databaseMutation, () => completion.complete({
             knowledgeBaseId: input.knowledgeBaseId,
             sourceFileId: source.id,
@@ -354,6 +381,10 @@ export function createSourceFileQueueProcessor(
       }
     }
   };
+}
+
+function readMetadataText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function runBudgeted<T>(budget: ResourceBudget | undefined, operation: () => Promise<T>): Promise<T> {

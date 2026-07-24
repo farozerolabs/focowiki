@@ -83,6 +83,8 @@ export function createProjectionSegmentWriter(input: {
       maxSegmentBytes: input.maxSegmentBytes
     });
     let reused = true;
+    let objectWriteCount = 0;
+    let objectReuseCount = 0;
     let sequence = firstSequence;
     const inlineCandidate = plannedSegments.at(-1)!;
     for (const planned of plannedSegments.slice(0, -1)) {
@@ -98,6 +100,8 @@ export function createProjectionSegmentWriter(input: {
         references: input.references
       });
       reused &&= result.reused;
+      if (result.reused) objectReuseCount += 1;
+      else objectWriteCount += 1;
       sequence += 1;
     }
 
@@ -136,6 +140,8 @@ export function createProjectionSegmentWriter(input: {
         references: input.references
       });
       reused &&= result.reused;
+      if (result.reused) objectReuseCount += 1;
+      else objectWriteCount += 1;
       lineage = await input.segments.listGenerationLineage(partition);
       manifestBody = renderProjectionManifest({
         projectionKind: change.projectionKind,
@@ -150,6 +156,8 @@ export function createProjectionSegmentWriter(input: {
       formatVersion: inline ? 3 : 2
     });
     reused &&= manifest.reused;
+    if (manifest.reused) objectReuseCount += 1;
+    else objectWriteCount += 1;
     if (inline) {
       const recordIds = inlineCandidate.changes.map((item) => item.recordIdentity).sort();
       const registered = await input.segments.registerAndAttach({
@@ -204,7 +212,13 @@ export function createProjectionSegmentWriter(input: {
       sourceFileId: null,
       projectionShardId: null
     });
-    return { deleted: recordCount === 0, recordCount, reused };
+    return {
+      deleted: recordCount === 0,
+      recordCount,
+      reused,
+      objectWriteCount,
+      objectReuseCount
+    };
   };
 
   return {

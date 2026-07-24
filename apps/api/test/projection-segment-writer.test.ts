@@ -61,7 +61,13 @@ describe("projection segment writer", () => {
       ]
     });
 
-    expect(result).toEqual({ deleted: false, recordCount: 3, reused: false });
+    expect(result).toEqual({
+      deleted: false,
+      recordCount: 3,
+      reused: false,
+      objectWriteCount: 3,
+      objectReuseCount: 0
+    });
     expect(attached.map((item) => item.segmentKind)).toEqual(["tombstone", "delta", "delta"]);
     expect(attached.every((item) => item.entryCount <= 2)).toBe(true);
     expect(staged.filter((item) => item.refKind === "projection_segment")).toHaveLength(3);

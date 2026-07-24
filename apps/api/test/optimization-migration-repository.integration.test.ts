@@ -3,7 +3,17 @@ import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createPostgresFileGraphRepository } from "../src/db/file-graph-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "../src/infrastructure/postgres/optimization-migration-repository.js";
-import { runOptimizationMigrationSlice } from "../src/maintenance/optimization-migration.js";
+import { runOptimizationMigrationSlice as runOptimizationMigrationSliceWithTokenizer } from "../src/maintenance/optimization-migration.js";
+import { testLexicalTokenizer } from "./helpers/test-lexical-tokenizer.js";
+
+function runOptimizationMigrationSlice(
+  input: Omit<Parameters<typeof runOptimizationMigrationSliceWithTokenizer>[0], "tokenizer">
+) {
+  return runOptimizationMigrationSliceWithTokenizer({
+    ...input,
+    tokenizer: testLexicalTokenizer
+  });
+}
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;

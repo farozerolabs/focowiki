@@ -7,9 +7,7 @@ import {
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 import { createPostgresActiveGenerationReadRepository } from "../src/infrastructure/postgres/active-generation-read-repository.js";
-import { createPostgresGenerationAssemblyDispatchRepository } from "../src/infrastructure/postgres/generation-assembly-dispatch-repository.js";
 import { createPostgresImmutableObjectRepository } from "../src/infrastructure/postgres/immutable-object-repository.js";
-import { createPostgresProjectionRepairRepository } from "../src/infrastructure/postgres/projection-repair-repository.js";
 import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
 import { createPostgresStorageReconciliationRepository } from "../src/infrastructure/postgres/storage-reconciliation-repository.js";
 import { createImmutableObjectKey } from "../src/domain/generation.js";
@@ -104,554 +102,38 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
         objectKey: "test/generated/v1/objects/ab/" + "ab".repeat(32)
       }
     });
-  });
 
-  it("repairs legacy tree statistics idempotently and retries after a newer activation", async () => {
-    const repair = createPostgresProjectionRepairRepository(sql);
-    const bootstrappedAt = "2026-07-18T13:00:00.000Z";
-    expect(await repair.bootstrap({ repairVersion: 1, bootstrappedAt })).toBe(1);
-    expect(await repair.bootstrap({ repairVersion: 1, bootstrappedAt })).toBe(0);
-
-    let job = await repair.claim({
-      repairVersion: 1,
-      leaseToken: "repair-lease-released",
-      leaseExpiresAt: "2099-07-18T13:10:00.000Z",
-      targetGenerationId: "generation-repair-released",
-      claimedAt: "2026-07-18T13:00:01.000Z"
-    });
-    expect(job).toMatchObject({
-      knowledgeBaseId: "kb-released-migration",
-      baseGenerationId: "generation-released-active",
-      targetGenerationId: "generation-repair-released"
-    });
-    job = await repair.claim({
-      repairVersion: 1,
-      leaseToken: "repair-lease-released",
-      leaseExpiresAt: "2099-07-18T13:10:01.000Z",
-      targetGenerationId: "generation-repair-must-not-replace-active-slice",
-      claimedAt: "2026-07-18T13:00:02.000Z"
-    });
-    expect(job).toMatchObject({
-      targetGenerationId: "generation-repair-released",
-      attemptCount: 1
-    });
-    const publicationProgress = createPostgresPublicationGenerationRepository(sql);
-    await expect(publicationProgress.getProgressSummary({
-      knowledgeBaseId: "kb-released-migration"
-    })).resolves.toMatchObject({ generationId: null, stage: null });
-
-    const page = await repair.listTreePage({
-      job: job!,
-      leaseToken: "repair-lease-released",
-      limit: 100
-    });
-    expect(page.find((record) => record.recordId === "directory:pages")?.payload).toMatchObject({
-      directEntryCount: 1,
-      directDirectoryCount: 1,
-      directFileCount: 0,
-      descendantFileCount: 1
-    });
-    expect(page.find((record) => record.recordId === "directory:pages/guides")?.payload).toMatchObject({
-      directEntryCount: 1,
-      directDirectoryCount: 0,
-      directFileCount: 1,
-      descendantFileCount: 1
-    });
-    expect(page.find((record) => record.recordId === "source-file-released")?.payload).toMatchObject({
-      directEntryCount: 0,
-      directDirectoryCount: 0,
-      directFileCount: 0,
-      descendantFileCount: 0
-    });
-    expect(JSON.stringify(page)).not.toContain("childCount");
-
-    const reads = createPostgresActiveGenerationReadRepository(sql);
-    await expect(reads.withActiveGeneration("kb-released-migration", async (scope) => ({
-      generationId: scope.generationId,
-      file: await scope.findFileById("source-file-released")
-    }))).resolves.toMatchObject({
-      generationId: "generation-released-active",
-      file: { fileId: "source-file-released", path: "pages/guides/released.md" }
-    });
-    await sql`
-      UPDATE focowiki.knowledge_bases
-      SET deleted_at = '2026-07-18T13:00:30.000Z'
-      WHERE id = 'kb-released-migration'
-    `;
-    expect(await repair.listTreePage({
-      job: job!,
-      leaseToken: "repair-lease-released",
-      limit: 100
-    })).toEqual([]);
-    await sql`
-      UPDATE focowiki.knowledge_bases
-      SET deleted_at = NULL
-      WHERE id = 'kb-released-migration'
-    `;
-
-    await sql.begin(async (transaction) => {
-      await transaction`
-        UPDATE focowiki.publication_generations
-        SET state = 'superseded', updated_at = '2026-07-18T13:01:00.000Z'
-        WHERE id = 'generation-released-active'
-      `;
-      await transaction`
-        INSERT INTO focowiki.publication_generations (
-          id, knowledge_base_id, predecessor_generation_id, state,
-          format_version, generation_kind, activated_at
-        ) VALUES (
-          'generation-normal-winner', 'kb-released-migration',
-          'generation-released-active', 'active', 1, 'normal',
-          '2026-07-18T13:01:00.000Z'
-        )
-      `;
-      await transaction`
-        UPDATE focowiki.knowledge_bases
-        SET active_generation_id = 'generation-normal-winner'
-        WHERE id = 'kb-released-migration'
-      `;
+    const legacySearch = await repository.withActiveGeneration(
+      "kb-released-migration",
+      async (scope) => scope.search({
+        query: "migration fixture",
+        mode: "file",
+        limit: 10,
+        cursor: null
+      })
+    );
+    expect(legacySearch).toMatchObject({
+      items: [{
+        sourceFileId: "source-file-released",
+        path: "pages/guides/released.md",
+        title: "Released source"
+      }]
     });
 
-    expect(await repair.listTreePage({
-      job: job!,
-      leaseToken: "repair-lease-released",
-      limit: 100
-    })).toEqual([]);
-    await repair.retryFromLatest({
-      job: job!,
-      leaseToken: "repair-lease-released",
-      errorCode: "PROJECTION_REPAIR_SUPERSEDED",
-      retryAt: "2026-07-18T13:02:00.000Z",
-      failedAt: "2026-07-18T13:01:01.000Z",
-      maxAttempts: 5
-    });
-
-    const [state] = await sql<Array<{
+    const rebuilds = await sql<Array<{
+      knowledge_base_id: string;
       state: string;
       base_generation_id: string;
-      target_generation_id: string | null;
-      checkpoint_json: unknown;
     }>>`
-      SELECT state, base_generation_id, target_generation_id, checkpoint_json
-      FROM focowiki.knowledge_base_projection_repairs
-      WHERE knowledge_base_id = 'kb-released-migration' AND repair_version = 1
+      SELECT knowledge_base_id, state, base_generation_id
+      FROM focowiki.knowledge_base_lexical_rebuilds
+      WHERE knowledge_base_id = 'kb-released-migration'
     `;
-    expect(state).toEqual({
-      state: "retry",
-      base_generation_id: "generation-normal-winner",
-      target_generation_id: null,
-      checkpoint_json: {}
-    });
-    expect((await sql<Array<{ state: string }>>`
-      SELECT state FROM focowiki.publication_generations
-      WHERE id = 'generation-repair-released'
-    `)[0]?.state).toBe("superseded");
-    await expect(reads.withActiveGeneration("kb-released-migration", async (scope) => ({
-      generationId: scope.generationId,
-      file: await scope.findFileById("source-file-released")
-    }))).resolves.toMatchObject({
-      generationId: "generation-normal-winner",
-      file: { fileId: "source-file-released", path: "pages/guides/released.md" }
-    });
-  });
-
-  it("resumes generation-scoped navigation and graph repair from durable checkpoints", async () => {
-    const repair = createPostgresProjectionRepairRepository(sql);
-    const repairVersion = 2;
-    const leaseToken = "repair-lease-generation-consistency";
-    expect(await repair.bootstrap({
-      repairVersion,
-      bootstrappedAt: "2026-07-18T13:10:00.000Z"
-    })).toBe(1);
-    let job = await repair.claim({
-      repairVersion,
-      leaseToken,
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: "generation-repair-consistency",
-      claimedAt: "2026-07-18T13:10:01.000Z"
-    });
-    expect(job).not.toBeNull();
-    expect(await repair.advanceTreeCheckpoint({
-      job: job!,
-      leaseToken,
-      treeCursor: job!.checkpoint.treeCursor,
-      treeComplete: true,
-      updatedAt: "2026-07-18T13:10:02.000Z"
-    })).toBe(true);
-
-    job = await repair.claim({
-      repairVersion,
-      leaseToken,
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: "generation-repair-must-resume",
-      claimedAt: "2026-07-18T13:10:03.000Z"
-    });
-    expect(job?.checkpoint.treeComplete).toBe(true);
-    const directory = await repair.listNextNavigationDirectory({ job: job!, leaseToken });
-    expect(directory).toEqual({ recordId: "directory:pages", path: "pages" });
-    const entryPage = await repair.listNavigationEntryPage({
-      job: job!,
-      leaseToken,
-      directoryPath: directory!.path,
-      limit: 1
-    });
-    expect(entryPage.entries).toEqual([expect.objectContaining({
-      entryId: "directory:pages/guides",
-      desiredEntry: expect.objectContaining({
-        kind: "directory",
-        targetPath: "pages/guides/index.md"
-      })
-    })]);
-    expect(await repair.advanceNavigationCheckpoint({
-      job: job!,
-      leaseToken,
-      navigationDirectoryCursor: directory!.recordId,
-      navigationEntryCursor: null,
-      navigationPhase: "entries",
-      navigationComplete: true,
-      updatedAt: "2026-07-18T13:10:04.000Z"
-    })).toBe(true);
-
-    job = await repair.claim({
-      repairVersion,
-      leaseToken,
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: "generation-repair-must-resume-again",
-      claimedAt: "2026-07-18T13:10:05.000Z"
-    });
-    expect(job?.checkpoint.navigationComplete).toBe(true);
-    const firstGraphPage = await repair.listGraphPage({
-      job: job!,
-      leaseToken,
-      limit: 1
-    });
-    expect(firstGraphPage.records).toHaveLength(1);
-    expect(firstGraphPage.nextCursor).not.toBeNull();
-    expect(await repair.advanceGraphCheckpoint({
-      job: job!,
-      leaseToken,
-      graphCursor: firstGraphPage.nextCursor,
-      graphNodeCount: firstGraphPage.records.filter(
-        (record) => record.projectionKind === "graph_node"
-      ).length,
-      graphEdgeCount: firstGraphPage.records.filter(
-        (record) => record.projectionKind === "graph_edge"
-      ).length,
-      graphComplete: false,
-      updatedAt: "2026-07-18T13:10:06.000Z"
-    })).toBe(true);
-
-    job = await repair.claim({
-      repairVersion,
-      leaseToken,
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: "generation-repair-must-resume-final",
-      claimedAt: "2026-07-18T13:10:07.000Z"
-    });
-    const secondGraphPage = await repair.listGraphPage({
-      job: job!,
-      leaseToken,
-      limit: 10
-    });
-    const nodeCount = job!.checkpoint.graphNodeCount + secondGraphPage.records.filter(
-      (record) => record.projectionKind === "graph_node"
-    ).length;
-    const edgeCount = job!.checkpoint.graphEdgeCount + secondGraphPage.records.filter(
-      (record) => record.projectionKind === "graph_edge"
-    ).length;
-    expect(secondGraphPage.nextCursor).toBeNull();
-    expect({ nodeCount, edgeCount }).toEqual({ nodeCount: 1, edgeCount: 1 });
-    expect(await repair.stageGraphSummary({
-      job: job!,
-      leaseToken,
-      nodeCount,
-      edgeCount,
-      updatedAt: "2026-07-18T13:10:08.000Z"
-    })).toBe(true);
-    const summary = (await sql<Array<{ node_count: number; edge_count: number }>>`
-      SELECT node_count, edge_count
-      FROM focowiki.generation_graph_summaries
-      WHERE generation_id = ${job!.targetGenerationId}
-    `)[0];
-    expect({
-      node_count: Number(summary?.node_count),
-      edge_count: Number(summary?.edge_count)
-    }).toEqual({ node_count: 1, edge_count: 1 });
-
-    const preservedBeforeCompletion = await repairPreservationSnapshot(sql);
-    expect(await repair.complete({
-      job: job!,
-      leaseToken,
-      completedAt: "2026-07-18T13:10:09.000Z"
-    })).toBe(true);
-    expect(await repair.bootstrap({
-      repairVersion,
-      bootstrappedAt: "2026-07-18T13:10:10.000Z"
-    })).toBe(0);
-    await expect(repair.claim({
-      repairVersion,
-      leaseToken: "repair-lease-after-completion",
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: "generation-repair-must-not-run-again",
-      claimedAt: "2026-07-18T13:10:11.000Z"
-    })).resolves.toBeNull();
-    expect(await repairPreservationSnapshot(sql)).toEqual(preservedBeforeCompletion);
-  });
-
-  it("supersedes unfinished older repairs before bootstrapping a newer repair version", async () => {
-    const repair = createPostgresProjectionRepairRepository(sql);
-    const knowledgeBaseId = "kb-older-projection-repair";
-    const activeGenerationId = "generation-older-repair-active";
-    const targetGenerationId = "generation-older-repair-building";
-    await sql`
-      INSERT INTO focowiki.knowledge_bases (id, name)
-      VALUES (${knowledgeBaseId}, 'Older projection repair')
-    `;
-    await sql`
-      INSERT INTO focowiki.publication_generations (
-        id, knowledge_base_id, predecessor_generation_id, state,
-        format_version, generation_kind, activated_at
-      ) VALUES
-        (${activeGenerationId}, ${knowledgeBaseId}, NULL, 'active', 2, 'normal', now()),
-        (${targetGenerationId}, ${knowledgeBaseId}, ${activeGenerationId},
-         'building', 2, 'projection_repair', NULL)
-    `;
-    await sql`
-      UPDATE focowiki.knowledge_bases
-      SET active_generation_id = ${activeGenerationId}
-      WHERE id = ${knowledgeBaseId}
-    `;
-    await sql`
-      INSERT INTO focowiki.knowledge_base_projection_repairs (
-        knowledge_base_id, repair_version, base_generation_id,
-        target_generation_id, state, lease_token, lease_expires_at
-      ) VALUES (
-        ${knowledgeBaseId}, 2, ${activeGenerationId}, ${targetGenerationId},
-        'running', 'older-repair-lease', '2099-07-18T14:00:00.000Z'
-      )
-    `;
-
-    await repair.bootstrap({
-      repairVersion: 3,
-      bootstrappedAt: "2026-07-18T13:20:00.000Z"
-    });
-
-    const [olderRepair] = await sql<Array<{
-      state: string;
-      lease_token: string | null;
-      target_generation_id: string | null;
-    }>>`
-      SELECT state, lease_token, target_generation_id
-      FROM focowiki.knowledge_base_projection_repairs
-      WHERE knowledge_base_id = ${knowledgeBaseId} AND repair_version = 2
-    `;
-    expect(olderRepair).toEqual({
-      state: "superseded",
-      lease_token: null,
-      target_generation_id: targetGenerationId
-    });
-    expect((await sql<Array<{ state: string }>>`
-      SELECT state FROM focowiki.publication_generations
-      WHERE id = ${targetGenerationId}
-    `)[0]?.state).toBe("superseded");
-  });
-
-  it("reassembles directory validation failures after projection repair activation", async () => {
-    const repair = createPostgresProjectionRepairRepository(sql);
-    const generations = createPostgresPublicationGenerationRepository(sql);
-    const dispatch = createPostgresGenerationAssemblyDispatchRepository(sql);
-    const knowledgeBaseId = "kb-directory-validation-recovery";
-    const baseGenerationId = "generation-directory-validation-base";
-    const repairGenerationId = "generation-directory-validation-repair";
-    const failedGenerationId = "generation-directory-validation-failed";
-    const sourceFileId = "source-file-directory-validation-recovery";
-    const sourceRevisionId = "source-revision-directory-validation-recovery";
-    const deletionIntentId = "deletion-intent-directory-validation-recovery";
-    const changeFactId = "change-directory-validation-recovery";
-    const impactId = "impact-directory-validation-recovery";
-    const leaseToken = "repair-lease-directory-validation-recovery";
-
-    await sql`
-      INSERT INTO focowiki.knowledge_bases (id, name)
-      VALUES (${knowledgeBaseId}, 'Directory validation recovery')
-    `;
-    await sql`
-      INSERT INTO focowiki.publication_generations (
-        id, knowledge_base_id, predecessor_generation_id, state,
-        format_version, generation_kind, activated_at
-      ) VALUES (
-        ${baseGenerationId}, ${knowledgeBaseId}, NULL, 'active', 2, 'normal', now()
-      )
-    `;
-    await sql`
-      UPDATE focowiki.knowledge_bases
-      SET active_generation_id = ${baseGenerationId}
-      WHERE id = ${knowledgeBaseId}
-    `;
-    await repair.bootstrap({
-      repairVersion: 3,
-      bootstrappedAt: "2026-07-18T13:30:00.000Z"
-    });
-    await sql`
-      UPDATE focowiki.knowledge_base_projection_repairs
-      SET state = 'completed', completed_at = '2026-07-18T13:30:00.000Z'
-      WHERE repair_version = 3
-        AND knowledge_base_id <> ${knowledgeBaseId}
-        AND state IN ('pending', 'retry')
-    `;
-    const job = await repair.claim({
-      repairVersion: 3,
-      leaseToken,
-      leaseExpiresAt: "2099-07-18T14:00:00.000Z",
-      targetGenerationId: repairGenerationId,
-      claimedAt: "2026-07-18T13:30:01.000Z"
-    });
-    expect(job).not.toBeNull();
-
-    await sql.begin(async (transaction) => {
-      await transaction`
-        UPDATE focowiki.publication_generations
-        SET state = 'superseded', activated_at = NULL
-        WHERE id = ${baseGenerationId}
-      `;
-      await transaction`
-        UPDATE focowiki.publication_generations
-        SET state = 'active', activated_at = '2026-07-18T13:30:02.000Z'
-        WHERE id = ${repairGenerationId}
-      `;
-      await transaction`
-        UPDATE focowiki.knowledge_bases
-        SET active_generation_id = ${repairGenerationId}
-        WHERE id = ${knowledgeBaseId}
-      `;
-      await transaction`
-        INSERT INTO focowiki.publication_generations (
-          id, knowledge_base_id, predecessor_generation_id, state,
-          format_version, generation_kind, failed_at,
-          safe_error_code, safe_error_message
-        ) VALUES (
-          ${failedGenerationId}, ${knowledgeBaseId}, ${baseGenerationId},
-          'failed', 2, 'normal', now(), 'PUBLICATION_RETRIES_EXHAUSTED',
-          'DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/06, DIRECTORY_STATISTICS_MISMATCH:pages'
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.deletion_intents (
-          id, knowledge_base_id, target_kind, target_id, catalog_generation, state
-        ) VALUES (
-          ${deletionIntentId}, ${knowledgeBaseId}, 'source_file', ${sourceFileId}, 1, 'running'
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.source_files (
-          id, knowledge_base_id, object_key, content_type, size_bytes,
-          checksum_sha256, processing_status, processing_stage,
-          generated_output_status, name, relative_path, path_key,
-          active_revision_id, deletion_intent_id, deleted_at
-        ) VALUES (
-          ${sourceFileId}, ${knowledgeBaseId}, 'source/recovery.md',
-          'text/markdown', 10, ${"cd".repeat(32)}, 'completed',
-          'generation_activation', 'unavailable', 'recovery.md',
-          '06/recovery.md', '06/recovery.md', ${sourceRevisionId},
-          ${deletionIntentId}, now()
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.source_revisions (
-          id, knowledge_base_id, source_file_id, revision, object_key,
-          content_type, size_bytes, checksum_sha256, processing_status
-        ) VALUES (
-          ${sourceRevisionId}, ${knowledgeBaseId}, ${sourceFileId}, 1,
-          'source/recovery.md', 'text/markdown', 10, ${"cd".repeat(32)}, 'completed'
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.publication_change_facts (
-          id, knowledge_base_id, source_file_id, source_revision_id,
-          deletion_intent_id, kind, previous_path, path, resource_revision,
-          generation_id, assembly_state, assembly_claimed_by,
-          assembly_claimed_at, assembled_at, planning_payload_json,
-          settings_snapshot_json, publication_max_attempts
-        ) VALUES (
-          ${changeFactId}, ${knowledgeBaseId}, ${sourceFileId}, ${sourceRevisionId},
-          ${deletionIntentId}, 'source_deleted', '06/recovery.md', NULL, 1,
-          ${failedGenerationId}, 'assembled', 'old-assembler', now(), now(),
-          ${transaction.json({
-            preplannedImpacts: [{
-              id: impactId,
-              projectionKind: "root",
-              projectionKey: "index.md",
-              recordIdentity: "index.md",
-              action: "upsert"
-            }],
-            schedulePublication: false,
-            allowDeletedKnowledgeBase: false
-          })}, ${transaction.json({})}, 3
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.publication_impacts (
-          id, knowledge_base_id, generation_id, projection_kind,
-          projection_key, record_identity, action, status
-        ) VALUES (
-          ${impactId}, ${knowledgeBaseId}, ${failedGenerationId}, 'root',
-          'index.md', 'index.md', 'upsert', 'completed'
-        )
-      `;
-      await transaction`
-        INSERT INTO focowiki.publication_impact_causes (impact_id, change_fact_id)
-        VALUES (${impactId}, ${changeFactId})
-      `;
-    });
-
-    await expect(repair.complete({
-      job: job!,
-      leaseToken,
-      completedAt: "2026-07-18T13:30:03.000Z"
-    })).resolves.toBe(true);
-
-    const [recovered] = await sql<Array<{
-      generation_state: string;
-      fact_generation_id: string | null;
-      fact_assembly_state: string;
-      fact_assembler: string | null;
-      impact_count: number;
-    }>>`
-      SELECT generation.state AS generation_state,
-             fact.generation_id AS fact_generation_id,
-             fact.assembly_state AS fact_assembly_state,
-             fact.assembly_claimed_by AS fact_assembler,
-             (SELECT count(*)::int FROM focowiki.publication_impacts
-              WHERE generation_id = ${failedGenerationId}) AS impact_count
-      FROM focowiki.publication_generations generation
-      JOIN focowiki.publication_change_facts fact
-        ON fact.id = ${changeFactId}
-      WHERE generation.id = ${failedGenerationId}
-    `;
-    expect(recovered).toEqual({
-      generation_state: "superseded",
-      fact_generation_id: null,
-      fact_assembly_state: "pending",
-      fact_assembler: null,
-      impact_count: 0
-    });
-
-    await expect(dispatch.dispatchPending({
-      now: "2026-07-18T13:30:04.000Z",
-      limit: 10
-    })).resolves.toBe(1);
-    const assembled = await generations.assemblePendingChanges({
-      knowledgeBaseId,
-      assemblerJobId: `role-job-generation-assembly-${knowledgeBaseId}`,
-      limit: 10,
-      assembledAt: "2026-07-18T13:30:05.000Z"
-    });
-    expect(assembled).toMatchObject({ assembledChangeCount: 1, impactCount: 1 });
-    await expect(sql<Array<{ predecessor_generation_id: string | null }>>`
-      SELECT predecessor_generation_id
-      FROM focowiki.publication_generations
-      WHERE id = ${assembled.generationId}
-    `).resolves.toEqual([{ predecessor_generation_id: repairGenerationId }]);
+    expect(rebuilds).toEqual([{
+      knowledge_base_id: "kb-released-migration",
+      state: "pending",
+      base_generation_id: "generation-released-active"
+    }]);
   });
 
   it("serializes immutable reservations with reconciliation deletion authorization", async () => {
@@ -679,12 +161,12 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
         prefix, object_key, checksum_sha256, format_version, state,
         first_seen_cycle_id, last_seen_cycle_id, confirmation_count,
         first_seen_at, last_seen_at, observed_size_bytes, observed_etag,
-        attempt_count, next_attempt_at
+        attempt_count, next_attempt_at, deletion_lease_token
       ) VALUES (
         ${prefix}, ${deletingKey}, ${deletingChecksum}, 1, 'deleting',
         ${cycleId}, ${cycleId}, 2, '2026-07-16T14:00:00.000Z',
         '2026-07-18T14:00:00.000Z', 20, 'etag-delete', 1,
-        '2026-07-18T14:00:00.000Z'
+        '2026-07-18T14:00:00.000Z', ${leaseToken}
       )
     `;
 
@@ -715,6 +197,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
 
     await reconciliation.completeCandidateDeletion({
       prefix,
+      leaseToken,
       objectKey: deletingKey,
       completedAt: "2026-07-18T14:00:03.000Z"
     });
@@ -768,6 +251,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       },
       leaseToken,
       now: "2026-07-18T14:00:06.000Z",
+      staleDeletingBefore: "2026-07-18T13:55:06.000Z",
       graceBefore: "2026-07-18T14:00:06.000Z",
       confirmationPasses: 2,
       maxAttempts: 5,
@@ -825,6 +309,106 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       state: "verifying",
       listed_count: 1_000,
       quarantined_count: 1_000
+    });
+  });
+
+  it("reclaims stale deleting candidates and renews the owning cycle lease", async () => {
+    const reconciliation = createPostgresStorageReconciliationRepository(sql);
+    const prefix = "test/stale-deletion/generated/";
+    const cycleId = "cycle-stale-deletion";
+    const leaseToken = "lease-stale-deletion";
+    const checksumSha256 = "56".repeat(32);
+    const objectKey = createImmutableObjectKey({
+      prefix: "test/stale-deletion",
+      checksumSha256,
+      formatVersion: 1
+    });
+    const claimedCycle = await reconciliation.claimCycle({
+      prefix,
+      cycleId,
+      leaseToken,
+      now: "2026-07-18T16:30:00.000Z",
+      leaseExpiresAt: "2099-07-18T16:35:00.000Z"
+    });
+    expect(claimedCycle).not.toBeNull();
+    await reconciliation.recordScanPage({
+      cycle: claimedCycle!,
+      leaseToken,
+      objects: [],
+      nextContinuationToken: null,
+      recordedAt: "2026-07-18T16:30:01.000Z"
+    });
+    await sql`
+      INSERT INTO focowiki.storage_reconciliation_candidates (
+        prefix, object_key, checksum_sha256, format_version, state,
+        first_seen_cycle_id, last_seen_cycle_id, confirmation_count,
+        first_seen_at, last_seen_at, observed_size_bytes, observed_etag,
+        attempt_count, next_attempt_at, updated_at
+      ) VALUES (
+        ${prefix}, ${objectKey}, ${checksumSha256}, 1, 'deleting',
+        ${cycleId}, ${cycleId}, 2,
+        '2026-07-16T16:30:00.000Z', '2026-07-18T16:30:00.000Z',
+        12, 'etag-stale', 1, '2026-07-18T16:30:00.000Z',
+        '2026-07-18T16:20:00.000Z'
+      )
+    `;
+
+    await expect(reconciliation.renewCycleLease({
+      cycle: claimedCycle!,
+      leaseToken,
+      renewedAt: "2026-07-18T16:34:30.000Z",
+      leaseExpiresAt: "2099-07-18T16:39:30.000Z"
+    })).resolves.toBe(true);
+    const candidates = await reconciliation.claimDeletionCandidates({
+      cycle: claimedCycle!,
+      leaseToken,
+      now: "2026-07-18T16:34:31.000Z",
+      staleDeletingBefore: "2026-07-18T16:29:31.000Z",
+      graceBefore: "2026-07-18T16:34:31.000Z",
+      confirmationPasses: 2,
+      maxAttempts: 5,
+      limit: 100
+    });
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        key: objectKey,
+        attemptCount: 2
+      })
+    ]);
+    expect((await sql<Array<{ state: string; last_error_code: string | null }>>`
+      SELECT state, last_error_code
+      FROM focowiki.storage_reconciliation_candidates
+      WHERE prefix = ${prefix} AND object_key = ${objectKey}
+    `)[0]).toEqual({
+      state: "deleting",
+      last_error_code: null
+    });
+    await reconciliation.completeCandidateDeletion({
+      prefix,
+      leaseToken: "expired-deletion-lease",
+      objectKey,
+      completedAt: "2026-07-18T16:34:31.500Z"
+    });
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state
+      FROM focowiki.storage_reconciliation_candidates
+      WHERE prefix = ${prefix} AND object_key = ${objectKey}
+    `)[0]?.state).toBe("deleting");
+    await reconciliation.failCycle({
+      cycle: claimedCycle!,
+      leaseToken,
+      errorCode: "STORAGE_RECONCILIATION_FAILED",
+      retryAt: "2026-07-18T16:35:01.000Z",
+      failedAt: "2026-07-18T16:34:32.000Z"
+    });
+    expect((await sql<Array<{ state: string; last_error_code: string | null }>>`
+      SELECT state, last_error_code
+      FROM focowiki.storage_reconciliation_candidates
+      WHERE prefix = ${prefix} AND object_key = ${objectKey}
+    `)[0]).toEqual({
+      state: "failed",
+      last_error_code: "STORAGE_RECONCILIATION_FAILED"
     });
   });
 
@@ -1140,46 +724,6 @@ async function releasedSnapshot(sql: ReturnType<typeof postgres>) {
     projectionKinds,
     generationReferences
   };
-}
-
-async function repairPreservationSnapshot(sql: ReturnType<typeof postgres>) {
-  const [knowledgeBase] = await sql<Array<{
-    active_generation_id: string | null;
-  }>>`
-    SELECT active_generation_id
-    FROM focowiki.knowledge_bases
-    WHERE id = 'kb-released-migration'
-  `;
-  const [source] = await sql<Array<{
-    active_revision_id: string | null;
-    relative_path: string;
-    checksum_sha256: string;
-  }>>`
-    SELECT active_revision_id, relative_path, checksum_sha256
-    FROM focowiki.source_files
-    WHERE id = 'source-file-released'
-  `;
-  const [page] = await sql<Array<{
-    file_id: string;
-    checksum_sha256: string;
-    logical_path: string | null;
-  }>>`
-    SELECT file_id, checksum_sha256, logical_path
-    FROM focowiki.active_object_refs
-    WHERE knowledge_base_id = 'kb-released-migration'
-      AND ref_kind = 'page'
-      AND ref_key = 'source-file-released'
-  `;
-  const [object] = await sql<Array<{
-    lifecycle_state: string;
-    object_key: string;
-  }>>`
-    SELECT lifecycle_state, object_key
-    FROM focowiki.immutable_objects
-    WHERE checksum_sha256 = ${"ab".repeat(32)}
-      AND format_version = 1
-  `;
-  return { knowledgeBase, source, page, object };
 }
 
 function databaseConnectionUrl(value: string, databaseName: string): string {

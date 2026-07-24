@@ -18,12 +18,14 @@ import {
   type CapturedProjectionInput,
   type PublicationProjectionCaptureChange
 } from "./publication-projection-input-capture.js";
+import { updateGenerationSearchReferences } from "./generation-search-reference-writer.js";
 
 type GenerationRow = {
   id: string;
   predecessor_generation_id: string | null;
   state: string;
   created_at: Date;
+  createdNow?: boolean;
 };
 
 type ChangeFactRow = {
@@ -124,6 +126,19 @@ export async function assemblePendingPublicationChanges(
         knowledgeBaseId: input.knowledgeBaseId,
         generationId: generation.id,
         captured: capturedInputs,
+        now: input.assembledAt
+      });
+      await updateGenerationSearchReferences(transaction, {
+        knowledgeBaseId: input.knowledgeBaseId,
+        generationId: generation.id,
+        predecessorGenerationId: generation.predecessor_generation_id,
+        inheritPredecessor: generation.createdNow === true,
+        changes: publishableFacts.map((fact) => ({
+          kind: fact.kind,
+          sourceFileId: fact.source_file_id,
+          sourceRevisionId: fact.source_revision_id,
+          path: fact.path
+        })),
         now: input.assembledAt
       });
       impactCount = await persistPublicationImpactBatch(transaction, {
@@ -400,7 +415,7 @@ async function requireOpenGeneration(
     )
     RETURNING id, predecessor_generation_id, state, created_at
   `;
-  return created[0]!;
+  return { ...created[0]!, createdNow: true };
 }
 
 function projectionTargetKey(impact: PublicationImpact): string {

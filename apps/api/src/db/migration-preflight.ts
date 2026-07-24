@@ -61,11 +61,17 @@ export async function inspectMigrationWork(
         (SELECT count(*) FROM focowiki.publication_impacts
          WHERE status IN ('pending', 'running')) AS publication_impacts,
         (SELECT count(*) FROM focowiki.publication_generations generation
-         WHERE generation.state IN ('frozen', 'building', 'validating')
-            OR (generation.state = 'open' AND EXISTS (
-              SELECT 1 FROM focowiki.publication_change_facts fact
-              WHERE fact.generation_id = generation.id
-            ))) AS frozen_generations,
+         WHERE coalesce(
+             to_jsonb(generation)->>'generation_kind',
+             'normal'
+           ) <> 'projection_repair'
+           AND (
+             generation.state IN ('frozen', 'building', 'validating')
+             OR (generation.state = 'open' AND EXISTS (
+               SELECT 1 FROM focowiki.publication_change_facts fact
+               WHERE fact.generation_id = generation.id
+             ))
+           )) AS frozen_generations,
         (SELECT count(*) FROM focowiki.resource_operations
          WHERE state IN ('accepted', 'validating', 'processing', 'publishing')) AS resource_operations,
         (SELECT count(*) FROM focowiki.deletion_intents

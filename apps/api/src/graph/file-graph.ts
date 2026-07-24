@@ -8,6 +8,7 @@ import { buildGraphTermDocument } from "./graph-term-document.js";
 import type { GraphModelConfirmationOptions } from "./graph-types.js";
 import { readContentProfileStringArray } from "./graph-utils.js";
 import type { ResourceBudget } from "../runtime/resource-budget.js";
+import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 
 export type BuildSourceFileGraphInput = {
   graph: FileGraphRepository;
@@ -23,6 +24,7 @@ export type BuildSourceFileGraphInput = {
   modelConfirmation?: GraphModelConfirmationOptions | null;
   graphQueryBudget?: ResourceBudget;
   databaseMutationBudget?: ResourceBudget;
+  tokenizer: LexicalTokenizer;
 };
 
 export type BuildSourceFileGraphResult = {
@@ -42,7 +44,8 @@ export async function buildSourceFileGraph(
     sourceRelativePath: input.source.relativePath,
     metadata: input.metadata,
     body: input.body,
-    suggestions: input.suggestions
+    suggestions: input.suggestions,
+    tokenizer: input.tokenizer
   });
   const termDocument = buildGraphTermDocument({
     sourceFileId: input.source.id,
@@ -63,7 +66,8 @@ export async function buildSourceFileGraph(
       ...(node.tags ?? []),
       ...(node.keywords ?? []),
       ...(node.relationshipHints ?? [])
-    ]
+    ],
+    tokenizer: input.tokenizer
   });
   await runBudgeted(input.databaseMutationBudget, async () => {
     await input.graph.upsertGraphNode({
@@ -80,8 +84,9 @@ export async function buildSourceFileGraph(
     graph: input.graph,
     knowledgeBaseId: input.knowledgeBaseId,
     sourceFileId: input.source.id,
-    candidateTerms: buildCandidateTerms(node),
-    maxCandidateNodes: resolveMaxCandidateNodes(input)
+    candidateTerms: buildCandidateTerms(node, input.tokenizer),
+    maxCandidateNodes: resolveMaxCandidateNodes(input),
+    tokenizer: input.tokenizer
   }));
   const edges = buildGraphEdges({
     source: node,
