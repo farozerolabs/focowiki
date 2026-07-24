@@ -295,6 +295,100 @@ describeDatabase("upload session repository integration", () => {
     })).rejects.toMatchObject({ code: "UPLOAD_IDEMPOTENCY_CONFLICT" });
   });
 
+  it("expires abandoned sessions, releases path reservations, and preserves finalized source objects", async () => {
+    const abandoned = await createSealedSession({
+      sessionId: "upload-session-abandoned",
+      idempotencyKey: "abandoned",
+      entries: [
+        createEntry(
+          "upload-entry-abandoned-finalized",
+          "source-file-abandoned-finalized",
+          "abandoned/finalized.md",
+          "finalized"
+        ),
+        createEntry(
+          "upload-entry-abandoned-staged",
+          "source-file-abandoned-staged",
+          "abandoned/staged.md",
+          "staged"
+        )
+      ]
+    });
+    await repository.markEntryUploaded({
+      knowledgeBaseId,
+      sessionId: abandoned.id,
+      entryId: "upload-entry-abandoned-finalized",
+      stagingObjectKey: "test/finalized-source.md",
+      receivedSize: new TextEncoder().encode("finalized").byteLength,
+      receivedChecksumSha256: checksum("finalized")
+    });
+    await sql`
+      UPDATE focowiki.upload_session_entries
+      SET transfer_state = 'failed',
+          staging_object_key = 'test/uncommitted-staging.md',
+          received_size = 6,
+          received_checksum_sha256 = ${checksum("staged")},
+          error_code = 'UPLOAD_ENTRY_STORAGE_FAILED',
+          updated_at = now()
+      WHERE id = 'upload-entry-abandoned-staged'
+    `;
+    await sql`
+      UPDATE focowiki.upload_sessions
+      SET expires_at = now() - interval '1 minute'
+      WHERE id = ${abandoned.id}
+    `;
+
+    const expired = await repository.expireSessions({
+      now: new Date().toISOString(),
+      limit: 10
+    });
+    const cleanup = await repository.listStagingObjectsForCleanup({ limit: 10 });
+
+    expect(expired).toContain(abandoned.id);
+    expect(cleanup).toContainEqual({
+      sessionId: abandoned.id,
+      objectKey: "test/uncommitted-staging.md"
+    });
+    expect(cleanup).not.toContainEqual({
+      sessionId: abandoned.id,
+      objectKey: "test/finalized-source.md"
+    });
+
+    const reservations = await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+      FROM focowiki.source_path_reservations
+      WHERE session_id = ${abandoned.id}
+    `;
+    expect(reservations[0]?.count).toBe(0);
+
+    await repository.completeStagingObjectCleanup({
+      objects: cleanup,
+      completedAt: new Date().toISOString()
+    });
+    const pendingCleanup = await repository.listStagingObjectsForCleanup({ limit: 10 });
+    expect(pendingCleanup).not.toContainEqual({
+      sessionId: abandoned.id,
+      objectKey: "test/uncommitted-staging.md"
+    });
+
+    const replacement = await createSealedSession({
+      sessionId: "upload-session-abandoned-replacement",
+      idempotencyKey: "abandoned-replacement",
+      entries: [
+        createEntry(
+          "upload-entry-abandoned-replacement",
+          "source-file-abandoned-replacement",
+          "abandoned/staged.md",
+          "replacement"
+        )
+      ]
+    });
+    expect(replacement.counts).toMatchObject({
+      uploadRequired: 1,
+      waitingReservation: 0
+    });
+  });
+
   async function createSealedSession(input: {
     sessionId: string;
     idempotencyKey: string;

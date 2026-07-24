@@ -154,11 +154,19 @@ export function createUploadSessionService(input: {
       knowledgeBaseId: string;
       sessionId: string;
     }): Promise<UploadSessionRecord> => {
+      const now = input.runtime.clock.now().toISOString();
       const result = await input.repository.cancelSession({
         ...request,
-        now: input.runtime.clock.now().toISOString()
+        now
       });
       await input.storage.deleteObjects(result.stagingObjectKeys);
+      await input.repository.completeStagingObjectCleanup({
+        objects: result.stagingObjectKeys.map((objectKey) => ({
+          sessionId: request.sessionId,
+          objectKey
+        })),
+        completedAt: now
+      });
       return result.session;
     }
   };

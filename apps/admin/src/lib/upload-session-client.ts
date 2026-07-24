@@ -69,25 +69,64 @@ export async function runUploadSession(input: {
   }
   const sessionId = created.session.id;
   input.onSessionReady?.(sessionId, created.transport);
-  for (let offset = 0; offset < manifest.length; offset += created.transport.manifestPageSize) {
-    const response = await addUploadManifestEntries({
+  try {
+    const result = await continueUploadSession({
+      knowledgeBaseId: input.knowledgeBaseId,
+      files: input.files,
+      manifest,
+      sessionId,
+      transport: created.transport,
+      onProgress: input.onProgress
+    });
+    if (result.ok) return result;
+    return cancelFailedUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
       sessionId,
-      entries: manifest.slice(offset, offset + created.transport.manifestPageSize)
+      failure: result.failure
+    });
+  } catch {
+    return cancelFailedUploadSession({
+      knowledgeBaseId: input.knowledgeBaseId,
+      sessionId,
+      failure: { messageKey: "errors.uploadFailed" }
+    });
+  }
+}
+
+async function continueUploadSession(input: {
+  knowledgeBaseId: string;
+  files: File[];
+  manifest: Array<{
+    relativePath: string;
+    declaredSize: number;
+    checksumSha256: string | null;
+  }>;
+  sessionId: string;
+  transport: UploadSessionTransport;
+  onProgress: (progress: UploadClientProgress) => void;
+}): Promise<UploadClientResult> {
+  for (let offset = 0; offset < input.manifest.length; offset += input.transport.manifestPageSize) {
+    const response = await addUploadManifestEntries({
+      knowledgeBaseId: input.knowledgeBaseId,
+      sessionId: input.sessionId,
+      entries: input.manifest.slice(offset, offset + input.transport.manifestPageSize)
     });
     if (isFailure(response)) {
-      return { ok: false, failure: response, sessionId };
+      return { ok: false, failure: response, sessionId: input.sessionId };
     }
     input.onProgress({
       stage: "manifest",
-      completed: Math.min(offset + created.transport.manifestPageSize, manifest.length),
-      total: manifest.length,
+      completed: Math.min(offset + input.transport.manifestPageSize, input.manifest.length),
+      total: input.manifest.length,
       session: response.session
     });
   }
-  const sealed = await sealUploadManifest({ knowledgeBaseId: input.knowledgeBaseId, sessionId });
+  const sealed = await sealUploadManifest({
+    knowledgeBaseId: input.knowledgeBaseId,
+    sessionId: input.sessionId
+  });
   if (isFailure(sealed)) {
-    return { ok: false, failure: sealed, sessionId };
+    return { ok: false, failure: sealed, sessionId: input.sessionId };
   }
   input.onProgress({
     stage: "classifying",
@@ -99,32 +138,32 @@ export async function runUploadSession(input: {
     return {
       ok: false,
       failure: { messageKey: "errors.uploadPathDeleting" },
-      sessionId
+      sessionId: input.sessionId
     };
   }
   let session = sealed.session;
   if (session.counts.waitingReservation > 0) {
     const reconciled = await reconcileUploadSession({
       knowledgeBaseId: input.knowledgeBaseId,
-      sessionId
+      sessionId: input.sessionId
     });
     if (isFailure(reconciled)) {
-      return { ok: false, failure: reconciled, sessionId };
+      return { ok: false, failure: reconciled, sessionId: input.sessionId };
     }
     session = reconciled.session;
     if (session.counts.waitingReservation > 0) {
       return {
         ok: false,
         failure: { messageKey: "errors.uploadPathReserved" },
-        sessionId
+        sessionId: input.sessionId
       };
     }
   }
   const uploaded = await transferMissingEntries({
     knowledgeBaseId: input.knowledgeBaseId,
-    sessionId,
+    sessionId: input.sessionId,
     files: input.files,
-    transport: created.transport,
+    transport: input.transport,
     session,
     onProgress: input.onProgress
   });
@@ -139,10 +178,10 @@ export async function runUploadSession(input: {
   });
   const finalized = await finalizeUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
-    sessionId
+    sessionId: input.sessionId
   });
   if (isFailure(finalized)) {
-    return { ok: false, failure: finalized, sessionId };
+    return { ok: false, failure: finalized, sessionId: input.sessionId };
   }
   input.onProgress({
     stage: "completed",
@@ -153,66 +192,20 @@ export async function runUploadSession(input: {
   return { ok: true, session: finalized.session };
 }
 
-export async function resumeUploadSession(input: {
+async function cancelFailedUploadSession(input: {
   knowledgeBaseId: string;
   sessionId: string;
-  files: File[];
-  transport: UploadSessionTransport;
-  onProgress: (progress: UploadClientProgress) => void;
+  failure: ApiFailure;
 }): Promise<UploadClientResult> {
-  const current = await getUploadSession({
-    knowledgeBaseId: input.knowledgeBaseId,
-    sessionId: input.sessionId,
-    limit: 1
-  });
-  if (isFailure(current)) {
-    return { ok: false, failure: current, sessionId: input.sessionId };
-  }
-  let session = current.session;
-  if (session.state === "completed") {
-    return { ok: true, session };
-  }
-  if (session.counts.waitingReservation > 0) {
-    const reconciled = await reconcileUploadSession({
-      knowledgeBaseId: input.knowledgeBaseId,
-      sessionId: input.sessionId
-    });
-    if (isFailure(reconciled)) {
-      return { ok: false, failure: reconciled, sessionId: input.sessionId };
-    }
-    session = reconciled.session;
-  }
-  if (session.counts.waitingReservation > 0 || session.counts.rejectedDeleting > 0) {
-    return {
-      ok: false,
-      failure: {
-        messageKey:
-          session.counts.rejectedDeleting > 0
-            ? "errors.uploadPathDeleting"
-            : "errors.uploadPathReserved"
-      },
-      sessionId: input.sessionId
-    };
-  }
-  const uploaded = await transferMissingEntries({
-    knowledgeBaseId: input.knowledgeBaseId,
-    sessionId: input.sessionId,
-    files: input.files,
-    transport: input.transport,
-    session,
-    onProgress: input.onProgress
-  });
-  if (!uploaded.ok) {
-    return uploaded;
-  }
-  const finalized = await finalizeUploadSession({
+  await cancelUploadSession({
     knowledgeBaseId: input.knowledgeBaseId,
     sessionId: input.sessionId
-  });
-  if (isFailure(finalized)) {
-    return { ok: false, failure: finalized, sessionId: input.sessionId };
-  }
-  return { ok: true, session: finalized.session };
+  }).catch(() => undefined);
+  return {
+    ok: false,
+    failure: input.failure,
+    sessionId: null
+  };
 }
 
 export async function cancelFolderUpload(input: {
