@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inspectMigrationWork } from "../src/db/migration-preflight.js";
-import { applyMigrations } from "../src/db/migrations.js";
+import {
+  applyMigrations,
+  MIGRATION_FILES,
+  readMigrationSql
+} from "../src/db/migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -10,8 +14,12 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describeDatabase("migration preflight integration", () => {
   const connectionUrl = databaseUrl ?? "postgres://unused:unused@127.0.0.1:5432/unused";
   const databaseName = `focowiki_preflight_${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const legacyDatabaseName = `focowiki_preflight_legacy_${process.pid}_${
+    randomUUID().replaceAll("-", "").slice(0, 12)
+  }`;
   const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), { max: 1 });
   const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), { max: 3 });
+  const legacySql = postgres(databaseConnectionUrl(connectionUrl, legacyDatabaseName), { max: 1 });
   const knowledgeBaseId = "kb-migration-preflight";
   const sourceFileId = "source-file-migration-preflight";
   const revisionId = "source-revision-migration-preflight";
@@ -19,13 +27,19 @@ describeDatabase("migration preflight integration", () => {
 
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+    await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(legacyDatabaseName)}`);
     await applyMigrations(sql);
+    await legacySql.unsafe(readMigrationSql(MIGRATION_FILES[0]));
   });
 
   afterAll(async () => {
     await cleanup();
     await sql.end({ timeout: 5 });
+    await legacySql.end({ timeout: 5 });
     await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`);
+    await admin.unsafe(
+      `DROP DATABASE IF EXISTS ${quoteIdentifier(legacyDatabaseName)} WITH (FORCE)`
+    );
     await admin.end({ timeout: 5 });
   });
 
@@ -90,6 +104,79 @@ describeDatabase("migration preflight integration", () => {
 
     expect(snapshot.uploadSessions).toBe(baseline.uploadSessions);
     expect(snapshot.total).toBe(baseline.total);
+  });
+
+  it("runs against the first released schema before later columns exist", async () => {
+    await expect(inspectMigrationWork(legacySql)).resolves.toMatchObject({
+      total: 0,
+      capped: false
+    });
+  });
+
+  it("allows a recoverable deletion to survive an active projection repair", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
+    });
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
+  it("blocks a deletion that projection repair cannot recover", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "UNRELATED_PUBLICATION_FAILURE"
+    });
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs + 1);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
+    expect(snapshot.total).toBe(baseline.total + 3);
+  });
+
+  it("allows a recoverable directory deletion to survive projection repair", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_STATISTICS_MISMATCH:pages/example",
+      targetKind: "source_directory"
+    });
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
+  it("blocks a deletion whose target was not logically deleted", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
+    });
+    await sql`
+      UPDATE focowiki.source_files
+      SET deleted_at = NULL
+      WHERE id = ${sourceFileId}
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs + 1);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
+    expect(snapshot.total).toBe(baseline.total + 3);
   });
 
   async function seedAllUnfinishedWork(): Promise<void> {
@@ -199,6 +286,193 @@ describeDatabase("migration preflight integration", () => {
         ) VALUES (
           'cleanup-migration-preflight', ${knowledgeBaseId},
           'generated/preflight.json', 'pending'
+        )
+      `;
+    });
+  }
+
+  async function seedRepairDependentDeletion(input: {
+    failureMessage: string;
+    targetKind?: "source_file" | "source_directory";
+  }): Promise<void> {
+    const baseGenerationId = "generation-migration-preflight-base";
+    const failedGenerationId = "generation-migration-preflight-failed";
+    const repairGenerationId = "generation-migration-preflight-repair";
+    const operationId = "operation-migration-preflight-delete";
+    const deletionIntentId = "deletion-migration-preflight-repair";
+    const directoryId = "source-directory-migration-preflight";
+    const targetKind = input.targetKind ?? "source_file";
+    const targetId = targetKind === "source_file" ? sourceFileId : directoryId;
+    const operationKind = targetKind === "source_file"
+      ? "source_file_delete"
+      : "source_directory_delete";
+    const changeKind = targetKind === "source_file"
+      ? "source_deleted"
+      : "directory_deleted";
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.knowledge_bases (id, name, resource_revision)
+        VALUES (${knowledgeBaseId}, 'Migration preflight', 2)
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, state, format_version, generation_kind,
+          activated_at
+        ) VALUES (
+          ${baseGenerationId}, ${knowledgeBaseId}, 'active', 2, 'normal', now()
+        )
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET active_generation_id = ${baseGenerationId}
+        WHERE id = ${knowledgeBaseId}
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id, state,
+          format_version, generation_kind, failed_at,
+          safe_error_code, safe_error_message
+        ) VALUES (
+          ${failedGenerationId}, ${knowledgeBaseId}, ${baseGenerationId},
+          'failed', 2, 'normal', now(), 'PUBLICATION_RETRIES_EXHAUSTED',
+          ${input.failureMessage}
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id, state,
+          format_version, generation_kind, frozen_at
+        ) VALUES (
+          ${repairGenerationId}, ${knowledgeBaseId}, ${baseGenerationId},
+          'building', 2, 'projection_repair', now()
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.knowledge_base_projection_repairs (
+          knowledge_base_id, repair_version, base_generation_id,
+          target_generation_id, state
+        ) VALUES (
+          ${knowledgeBaseId}, 3, ${baseGenerationId},
+          ${repairGenerationId}, 'running'
+        )
+      `;
+      if (targetKind === "source_file") {
+        await transaction`
+          INSERT INTO focowiki.source_files (
+            id, knowledge_base_id, object_key, content_type, size_bytes,
+            checksum_sha256, processing_status, processing_stage,
+            generated_output_status, name, relative_path, path_key,
+            active_revision_id
+          ) VALUES (
+            ${sourceFileId}, ${knowledgeBaseId}, 'sources/preflight.md',
+            'text/markdown; charset=utf-8', 12, ${"c".repeat(64)},
+            'completed', 'generation_activation', 'visible', 'preflight.md',
+            'preflight.md', 'preflight.md', ${revisionId}
+          )
+        `;
+        await transaction`
+          INSERT INTO focowiki.source_revisions (
+            id, knowledge_base_id, source_file_id, revision, object_key,
+            content_type, size_bytes, checksum_sha256, processing_status
+          ) VALUES (
+            ${revisionId}, ${knowledgeBaseId}, ${sourceFileId}, 1,
+            'sources/preflight.md', 'text/markdown; charset=utf-8', 12,
+            ${"c".repeat(64)}, 'completed'
+          )
+        `;
+      } else {
+        await transaction`
+          INSERT INTO focowiki.source_directories (
+            id, knowledge_base_id, name, relative_path, path_key, depth
+          ) VALUES (
+            ${directoryId}, ${knowledgeBaseId}, 'example',
+            'example', 'example', 1
+          )
+        `;
+      }
+      await transaction`
+        INSERT INTO focowiki.deletion_intents (
+          id, knowledge_base_id, target_kind, target_id,
+          catalog_generation, state
+        ) VALUES (
+          ${deletionIntentId}, ${knowledgeBaseId}, ${targetKind},
+          ${targetId}, 2, 'accepted'
+        )
+      `;
+      if (targetKind === "source_file") {
+        await transaction`
+          UPDATE focowiki.source_files
+          SET deletion_intent_id = ${deletionIntentId}, deleted_at = now()
+          WHERE id = ${sourceFileId}
+        `;
+      } else {
+        await transaction`
+          UPDATE focowiki.source_directories
+          SET deletion_intent_id = ${deletionIntentId}, deleted_at = now()
+          WHERE id = ${directoryId}
+        `;
+      }
+      await transaction`
+        INSERT INTO focowiki.resource_operations (
+          id, knowledge_base_id, operation_kind, state, idempotency_key,
+          request_fingerprint, candidate_catalog_generation
+        ) VALUES (
+          ${operationId}, ${knowledgeBaseId}, ${operationKind},
+          'publishing', 'migration-preflight-delete', ${"d".repeat(64)}, 2
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.resource_operation_targets (
+          operation_id, target_kind, target_id, expected_resource_revision
+        ) VALUES (${operationId}, ${targetKind}, ${targetId}, 1)
+      `;
+      if (targetKind === "source_file") {
+        await transaction`
+          INSERT INTO focowiki.publication_change_facts (
+            id, knowledge_base_id, source_file_id, source_revision_id,
+            operation_id, deletion_intent_id, generation_id, kind,
+            resource_revision, previous_path, assembly_state,
+            planning_payload_json
+          ) VALUES (
+            'fact-migration-preflight-delete', ${knowledgeBaseId},
+            ${sourceFileId}, ${revisionId}, ${operationId}, ${deletionIntentId},
+            ${failedGenerationId}, ${changeKind}, 1, 'preflight.md',
+            'assembled', '{"preplannedImpacts":[]}'::jsonb
+          )
+        `;
+      } else {
+        await transaction`
+          INSERT INTO focowiki.publication_change_facts (
+            id, knowledge_base_id, operation_id, deletion_intent_id,
+            generation_id, kind, resource_revision, previous_path,
+            assembly_state, planning_payload_json
+          ) VALUES (
+            'fact-migration-preflight-delete', ${knowledgeBaseId},
+            ${operationId}, ${deletionIntentId}, ${failedGenerationId},
+            ${changeKind}, 1, 'example', 'assembled',
+            '{"preplannedImpacts":[]}'::jsonb
+          )
+        `;
+      }
+      await transaction`
+        INSERT INTO focowiki.role_jobs (
+          id, role, kind, knowledge_base_id, payload_json, status
+        ) VALUES (
+          'role-job-migration-preflight-hard-delete', 'maintenance',
+          'hard_delete', ${knowledgeBaseId}, ${transaction.json(
+            targetKind === "source_file"
+              ? {
+                  targetKind,
+                  sourceFileId,
+                  deletionIntentId
+                }
+              : {
+                  targetKind,
+                  sourceDirectoryId: directoryId,
+                  deletionIntentId
+                }
+          )},
+          'queued'
         )
       `;
     });
