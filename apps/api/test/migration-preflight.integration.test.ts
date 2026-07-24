@@ -5,7 +5,8 @@ import { inspectMigrationWork } from "../src/db/migration-preflight.js";
 import {
   applyMigrations,
   MIGRATION_FILES,
-  readMigrationSql
+  readMigrationSql,
+  RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
@@ -159,6 +160,98 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.total).toBe(baseline.total);
   });
 
+  it("allows a frozen recoverable deletion publication to survive migration", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
+    });
+    await freezeDeleteGeneration();
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs);
+    expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
+  it("blocks a frozen deletion publication without resumable planning data", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
+    });
+    await freezeDeleteGeneration();
+    await sql`
+      UPDATE focowiki.publication_change_facts
+      SET planning_payload_json = '{}'::jsonb
+      WHERE generation_id = 'generation-migration-preflight-failed'
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.roleJobs).toBe(baseline.roleJobs + 1);
+    expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations + 1);
+    expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
+    expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
+    expect(snapshot.total).toBe(baseline.total + 4);
+  });
+
+  it("applies a compatible migration while preserving a frozen deletion publication", async () => {
+    await cleanup();
+    await seedRepairDependentDeletion({
+      failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
+    });
+    await freezeDeleteGeneration();
+    await sql`
+      DROP INDEX focowiki.active_projection_records_tree_byte_order_idx
+    `;
+    await sql`
+      DROP INDEX focowiki.generation_directory_navigation_leaves_byte_order_idx
+    `;
+    await sql`
+      UPDATE focowiki.runtime_generation
+      SET generation = 'projection-repair-throughput-v13'
+      WHERE singleton = true
+    `;
+
+    await applyMigrations(sql);
+
+    expect((await sql<Array<{ generation: string }>>`
+      SELECT generation
+      FROM focowiki.runtime_generation
+      WHERE singleton = true
+    `)[0]?.generation).toBe(RUNTIME_SCHEMA_GENERATION);
+    expect(await sql<Array<{
+      job_status: string;
+      generation_state: string;
+      operation_state: string;
+      intent_state: string;
+    }>>`
+      SELECT job.status AS job_status,
+             generation.state AS generation_state,
+             operation.state AS operation_state,
+             intent.state AS intent_state
+      FROM focowiki.role_jobs job
+      JOIN focowiki.deletion_intents intent
+        ON intent.id = job.payload_json->>'deletionIntentId'
+      JOIN focowiki.publication_change_facts fact
+        ON fact.deletion_intent_id = intent.id
+      JOIN focowiki.publication_generations generation
+        ON generation.id = fact.generation_id
+      JOIN focowiki.resource_operations operation
+        ON operation.id = fact.operation_id
+      WHERE job.id = 'role-job-migration-preflight-hard-delete'
+    `).toEqual([{
+      job_status: "queued",
+      generation_state: "frozen",
+      operation_state: "publishing",
+      intent_state: "accepted"
+    }]);
+  });
+
   it("blocks a deletion whose target was not logically deleted", async () => {
     await cleanup();
     const baseline = await inspectMigrationWork(sql);
@@ -289,6 +382,18 @@ describeDatabase("migration preflight integration", () => {
         )
       `;
     });
+  }
+
+  async function freezeDeleteGeneration(): Promise<void> {
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET state = 'frozen',
+          frozen_at = now(),
+          failed_at = NULL,
+          safe_error_code = NULL,
+          safe_error_message = NULL
+      WHERE id = 'generation-migration-preflight-failed'
+    `;
   }
 
   async function seedRepairDependentDeletion(input: {
