@@ -11,10 +11,8 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
-import type { UploadSessionTransport } from "@/lib/admin-api";
 import {
   cancelFolderUpload,
-  resumeUploadSession,
   runUploadSession,
   type UploadClientProgress
 } from "@/lib/upload-session-client";
@@ -47,15 +45,12 @@ export function UploadSourceDialog({
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadOperationEpochRef = useRef(0);
+  const activeSessionIdRef = useRef<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
   const [progress, setProgress] = useState<UploadClientProgress | null>(null);
-  const [activeSession, setActiveSession] = useState<{
-    id: string;
-    transport: UploadSessionTransport;
-  } | null>(null);
   const selectedFileItems = visibleSelectedFiles(selectedFiles);
   const selectedFileTotalSize = formatUploadBytes(totalSelectedFileBytes(selectedFiles));
   const invalidPaths = invalidSelectedUploadPaths(selectedFiles);
@@ -83,29 +78,19 @@ export function UploadSourceDialog({
       return;
     }
 
-    const result = await (
-      activeSession
-        ? resumeUploadSession({
-            knowledgeBaseId,
-            sessionId: activeSession.id,
-            files: selectedFiles,
-            transport: activeSession.transport,
-            onProgress: setProgress
-          })
-        : runUploadSession({
-            knowledgeBaseId,
-            files: selectedFiles,
-            onProgress: setProgress,
-            onSessionReady: (id, transport) => {
-              if (uploadOperationEpochRef.current === operationEpoch) {
-                setActiveSession({ id, transport });
-              }
-            }
-          })
-    ).catch(() => ({
+    const result = await runUploadSession({
+      knowledgeBaseId,
+      files: selectedFiles,
+      onProgress: setProgress,
+      onSessionReady: (id) => {
+        if (uploadOperationEpochRef.current === operationEpoch) {
+          activeSessionIdRef.current = id;
+        }
+      }
+    }).catch(() => ({
       ok: false as const,
       failure: { messageKey: "errors.uploadFailed" },
-      sessionId: activeSession?.id ?? null
+      sessionId: null
     }));
 
     if (uploadOperationEpochRef.current !== operationEpoch) {
@@ -114,6 +99,7 @@ export function UploadSourceDialog({
 
     if (!result.ok) {
       setIsUploading(false);
+      activeSessionIdRef.current = null;
       setUploadError(result.failure.messageKey);
       return;
     }
@@ -156,7 +142,7 @@ export function UploadSourceDialog({
     setSelectedFiles([]);
     setUploadError("");
     setProgress(null);
-    setActiveSession(null);
+    activeSessionIdRef.current = null;
     resetInputs();
   }
 
@@ -168,7 +154,7 @@ export function UploadSourceDialog({
 
   async function handleCancelUpload() {
     uploadOperationEpochRef.current += 1;
-    const sessionId = activeSession?.id ?? null;
+    const sessionId = activeSessionIdRef.current;
     setIsUploading(false);
     resetSelection();
     if (sessionId) {
@@ -196,6 +182,7 @@ export function UploadSourceDialog({
               <Button
                 type="button"
                 variant="outline"
+                disabled={isUploading}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <UploadIcon data-icon="inline-start" />
@@ -232,7 +219,13 @@ export function UploadSourceDialog({
                           count: selectedFiles.length
                         })}
                       </p>
-                      <Button type="button" variant="ghost" size="sm" onClick={resetSelection}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={isUploading}
+                        onClick={resetSelection}
+                      >
                         {t("upload.clearSelection")}
                       </Button>
                     </div>
@@ -248,6 +241,7 @@ export function UploadSourceDialog({
                             type="button"
                             variant="ghost"
                             size="icon-xs"
+                            disabled={isUploading}
                             aria-label={t("upload.removeFile", { name: file.name })}
                             onClick={() => handleRemoveSelectedFile(index)}
                           >
@@ -311,9 +305,7 @@ export function UploadSourceDialog({
             >
               {isUploading
                 ? t("upload.uploading")
-                : activeSession
-                  ? t("upload.resume")
-                  : t("upload.upload")}
+                : t("upload.upload")}
             </Button>
             {isUploading ? (
               <Button type="button" variant="outline" onClick={handleCancelUpload}>

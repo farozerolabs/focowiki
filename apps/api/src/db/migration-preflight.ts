@@ -77,7 +77,8 @@ export async function inspectMigrationWork(
         (SELECT count(*) FROM focowiki.deletion_intents
          WHERE state IN ('accepted', 'running')) AS deletion_intents,
         (SELECT count(*) FROM focowiki.upload_sessions
-         WHERE state IN ('draft', 'manifest_building', 'manifest_sealed', 'uploading', 'finalizing')) AS upload_sessions,
+         WHERE state IN ('draft', 'manifest_building', 'manifest_sealed', 'uploading', 'finalizing')
+           AND expires_at > now()) AS upload_sessions,
         (SELECT count(*) FROM focowiki.cleanup_object_deletions
          WHERE status = 'pending') AS cleanup_objects
     )

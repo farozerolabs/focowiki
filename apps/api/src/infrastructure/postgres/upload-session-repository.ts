@@ -642,7 +642,10 @@ export function createPostgresUploadSessionRepository(
           SET state = 'cancelled', updated_at = ${input.now}
           WHERE id = ${input.sessionId}
             AND knowledge_base_id = ${input.knowledgeBaseId}
-            AND state IN ('draft', 'manifest_building', 'manifest_sealed', 'uploading', 'failed')
+            AND state IN (
+              'draft', 'manifest_building', 'manifest_sealed',
+              'uploading', 'finalizing', 'failed'
+            )
           RETURNING ${transaction.unsafe(SESSION_COLUMNS)}
         `;
         return {
@@ -658,34 +661,66 @@ export function createPostgresUploadSessionRepository(
           SELECT id
           FROM focowiki.upload_sessions
           WHERE expires_at <= ${input.now}
-            AND state IN ('draft', 'manifest_building', 'manifest_sealed', 'uploading', 'failed')
+            AND state IN (
+              'draft', 'manifest_building', 'manifest_sealed',
+              'uploading', 'finalizing', 'failed'
+            )
           ORDER BY expires_at ASC, id ASC
           LIMIT ${input.limit}
           FOR UPDATE SKIP LOCKED
         `;
-        const results: Array<{ sessionId: string; stagingObjectKeys: string[] }> = [];
-        for (const session of sessions) {
-          const objects = await transaction<{ staging_object_key: string }[]>`
-            SELECT staging_object_key
-            FROM focowiki.upload_session_entries
-            WHERE session_id = ${session.id}
-              AND staging_object_key IS NOT NULL
-          `;
-          await transaction`
-            DELETE FROM focowiki.source_path_reservations WHERE session_id = ${session.id}
-          `;
-          await transaction`
-            UPDATE focowiki.upload_sessions
-            SET state = 'expired', updated_at = ${input.now}
-            WHERE id = ${session.id}
-          `;
-          results.push({
-            sessionId: session.id,
-            stagingObjectKeys: objects.map((item) => item.staging_object_key)
-          });
-        }
-        return results;
+        const sessionIds = sessions.map((session) => session.id);
+        if (sessionIds.length === 0) return [];
+        await transaction`
+          DELETE FROM focowiki.source_path_reservations
+          WHERE session_id = ANY(${sessionIds})
+        `;
+        await transaction`
+          UPDATE focowiki.upload_sessions
+          SET state = 'expired', updated_at = ${input.now}
+          WHERE id = ANY(${sessionIds})
+        `;
+        return sessionIds;
       });
+    },
+
+    async listStagingObjectsForCleanup(input) {
+      const rows = await sql<Array<{
+        session_id: string;
+        staging_object_key: string;
+      }>>`
+        SELECT entry.session_id, entry.staging_object_key
+        FROM focowiki.upload_session_entries entry
+        JOIN focowiki.upload_sessions session ON session.id = entry.session_id
+        WHERE session.state IN ('cancelled', 'expired')
+          AND entry.finalized_at IS NULL
+          AND entry.staging_object_key IS NOT NULL
+        ORDER BY session.updated_at ASC, entry.session_id ASC, entry.id ASC
+        LIMIT ${input.limit}
+      `;
+      return rows.map((row) => ({
+        sessionId: row.session_id,
+        objectKey: row.staging_object_key
+      }));
+    },
+
+    async completeStagingObjectCleanup(input) {
+      if (input.objects.length === 0) return;
+      const sessionIds = input.objects.map((object) => object.sessionId);
+      const objectKeys = input.objects.map((object) => object.objectKey);
+      await sql`
+        WITH completed(session_id, object_key) AS (
+          SELECT *
+          FROM unnest(${sessionIds}::text[], ${objectKeys}::text[])
+        )
+        UPDATE focowiki.upload_session_entries entry
+        SET staging_object_key = NULL,
+            updated_at = ${input.completedAt}
+        FROM completed
+        WHERE entry.session_id = completed.session_id
+          AND entry.staging_object_key = completed.object_key
+          AND entry.finalized_at IS NULL
+      `;
     }
   };
 }

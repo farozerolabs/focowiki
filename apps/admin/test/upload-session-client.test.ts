@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addUploadManifestEntries,
+  cancelUploadSession,
   createUploadSession,
   finalizeUploadSession,
   getUploadSession,
@@ -33,6 +34,9 @@ describe("folder upload session client", () => {
     });
     vi.mocked(finalizeUploadSession).mockResolvedValue({
       session: uploadSession("completed", { selected: 2, finalized: 2 })
+    });
+    vi.mocked(cancelUploadSession).mockResolvedValue({
+      session: uploadSession("cancelled", { selected: 2 })
     });
   });
 
@@ -196,12 +200,106 @@ describe("folder upload session client", () => {
       total: 4
     }));
   });
+
+  it("cancels a session when classification rejects a deleting path", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        rejectedDeleting: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Blocked", "handbook/blocked.md")],
+      onProgress: vi.fn()
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadPathDeleting" },
+      sessionId: null
+    });
+    expect(cancelUploadSession).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      sessionId: "upload-session-test"
+    });
+    expect(uploadSessionContent).not.toHaveBeenCalled();
+  });
+
+  it("cancels a partially transferred session after an upload failure", async () => {
+    vi.mocked(sealUploadManifest).mockResolvedValue({
+      session: uploadSession("manifest_sealed", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      sample: [],
+      nextCursor: null
+    });
+    vi.mocked(getUploadSession).mockResolvedValue({
+      session: uploadSession("uploading", {
+        selected: 1,
+        uploadRequired: 1
+      }),
+      entries: {
+        items: [uploadEntry("upload-entry-failed", "handbook/failed.md")],
+        nextCursor: null
+      }
+    });
+    vi.mocked(uploadSessionContent).mockResolvedValue({
+      messageKey: "errors.uploadFailed"
+    });
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Failed", "handbook/failed.md")],
+      onProgress: vi.fn()
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadFailed" },
+      sessionId: null
+    });
+    expect(cancelUploadSession).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      sessionId: "upload-session-test"
+    });
+  });
+
+  it("cancels a created session after an unexpected client exception", async () => {
+    vi.mocked(addUploadManifestEntries).mockRejectedValueOnce(new Error("network unavailable"));
+
+    const result = await runUploadSession({
+      knowledgeBaseId: "kb-docs",
+      files: [nestedFile("Interrupted", "handbook/interrupted.md")],
+      onProgress: vi.fn()
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      failure: { messageKey: "errors.uploadFailed" },
+      sessionId: null
+    });
+    expect(cancelUploadSession).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      sessionId: "upload-session-test"
+    });
+  });
 });
 
 const uploadTransport = { manifestPageSize: 500, contentUploadConcurrency: 2 };
 
 function uploadSession(
-  state: "draft" | "manifest_building" | "manifest_sealed" | "uploading" | "completed",
+  state:
+    | "draft"
+    | "manifest_building"
+    | "manifest_sealed"
+    | "uploading"
+    | "completed"
+    | "cancelled",
   counts: Partial<{
     selected: number;
     uploadRequired: number;

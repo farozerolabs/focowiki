@@ -29,6 +29,8 @@ export async function runMaintenanceBackground(input: {
     garbageCollectionExpired: number;
     garbageCollectionDeleted: number;
     garbageCollectionPending: boolean;
+    uploadSessionsExpired: number;
+    uploadSessionObjectsDeleted: number;
   }>;
   pollIntervalMs: () => Promise<number>;
   logger: RuntimeLogger;

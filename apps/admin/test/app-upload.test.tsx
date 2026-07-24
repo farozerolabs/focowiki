@@ -11,7 +11,6 @@ import {
 } from "../src/lib/admin-api";
 import {
   cancelFolderUpload,
-  resumeUploadSession,
   runUploadSession
 } from "../src/lib/upload-session-client";
 import { selectDirectoryFiles } from "../src/lib/directory-picker";
@@ -107,7 +106,6 @@ vi.mock("../src/lib/admin-api", () => ({
 
 vi.mock("../src/lib/upload-session-client", () => ({
   cancelFolderUpload: vi.fn(),
-  resumeUploadSession: vi.fn(),
   runUploadSession: vi.fn()
 }));
 
@@ -421,16 +419,16 @@ describe("Admin upload file picker", () => {
     );
   });
 
-  it("resumes a created upload session after a recoverable transfer failure", async () => {
+  it("starts a new upload session after a failed session is cleaned up", async () => {
     vi.mocked(runUploadSession).mockImplementationOnce(async (input) => {
       input.onSessionReady?.("upload-session-resume", createUploadTransport());
       return {
         ok: false,
         failure: { messageKey: "errors.uploadFailed" },
-        sessionId: "upload-session-resume"
+        sessionId: null
       };
     });
-    vi.mocked(resumeUploadSession).mockResolvedValueOnce(createCompletedUploadResult());
+    vi.mocked(runUploadSession).mockResolvedValueOnce(createCompletedUploadResult());
     render(<App />);
 
     await openKnowledgeBaseDetail();
@@ -441,18 +439,17 @@ describe("Admin upload file picker", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Upload" }));
 
-    expect(await screen.findByRole("button", { name: "Resume upload" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Resume upload" }));
+    expect(await screen.findByText("Upload request failed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Upload" }));
 
     await waitFor(() => {
-      expect(resumeUploadSession).toHaveBeenCalledWith(
+      expect(runUploadSession).toHaveBeenLastCalledWith(
         expect.objectContaining({
           knowledgeBaseId: "kb-docs",
-          sessionId: "upload-session-resume",
-          files: [file],
-          transport: createUploadTransport()
+          files: [file]
         })
       );
+      expect(runUploadSession).toHaveBeenCalledTimes(2);
       expect(screen.queryByRole("dialog")).toBeNull();
     });
   });
