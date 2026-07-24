@@ -13,7 +13,9 @@ const packageJsonPath = resolve(rootDir, "package.json");
 const devEnvTemplatePath = resolve(rootDir, ".env.dev.example");
 const deploymentEnvTemplatePath = resolve(rootDir, ".env.example");
 const ciWorkflowPath = resolve(rootDir, ".github/workflows/ci.yml");
+const dockerBuildWorkflowPath = resolve(rootDir, ".github/workflows/docker-build.yml");
 const dockerPublishWorkflowPath = resolve(rootDir, ".github/workflows/docker-publish.yml");
+const dockerPrereleaseWorkflowPath = resolve(rootDir, ".github/workflows/docker-prerelease.yml");
 const docsPublishWorkflowPath = resolve(rootDir, ".github/workflows/docs-publish.yml");
 const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
 const apiConfigSourcePath = resolve(rootDir, "apps/api/src/config.ts");
@@ -239,7 +241,7 @@ describe("Docker Compose infrastructure", () => {
   });
 
   it("proves the published API image supports every runtime role", () => {
-    const workflow = readFileSync(dockerPublishWorkflowPath, "utf8");
+    const workflow = readFileSync(dockerBuildWorkflowPath, "utf8");
 
     expect(workflow).toContain("Validate published API image roles");
     expect(workflow).toContain("Start S3 health fixture");
@@ -400,33 +402,54 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).not.toContain("PUBLIC_API_AUTH_REQUIRED");
   });
 
-  it("publishes Docker images from version tags with versioned and latest tags", () => {
-    const workflow = readFileSync(dockerPublishWorkflowPath, "utf8");
+  it("publishes stable Docker images from version tags without v-prefixed image tags", () => {
+    const triggerWorkflow = readFileSync(dockerPublishWorkflowPath, "utf8");
+    const buildWorkflow = readFileSync(dockerBuildWorkflowPath, "utf8");
 
-    expect(workflow).toContain('tags:\n      - "v*"');
-    expect(workflow).not.toContain("branches:\n      - main");
-    expect(workflow).toContain("group: docker-${{ github.ref }}");
-    expect(workflow).toContain("cancel-in-progress: false");
-    expect(workflow).toContain("name: Resolve release version");
-    expect(workflow).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
-    expect(workflow).toContain("Docker image releases require a semantic version tag like v1.2.3.");
-    expect(workflow).toContain("name: Validate release contracts");
-    expect(workflow).toContain("FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}");
-    expect(workflow).toContain("pnpm test:validation");
-    expect(workflow).toContain("pnpm openapi:validate");
-    expect(workflow).toContain("org.opencontainers.image.version=${{ steps.release.outputs.version }}");
-    expect(workflow).toContain("name: Verify main release source");
-    expect(workflow).toContain("Manual Docker publishing must run from the main branch.");
-    expect(workflow).toContain("Docker publishing is allowed only for commits already contained in main.");
-    expect(workflow).not.toContain("type=ref,event=branch");
-    expect(workflow).toContain("type=ref,event=tag");
-    expect(workflow).toContain("type=semver,pattern={{version}}");
-    expect(workflow).toContain("type=semver,pattern={{major}}.{{minor}}");
-    expect(workflow).toContain("type=semver,pattern={{major}}");
-    expect(workflow).toContain("type=sha,prefix=sha-");
-    expect(workflow).toContain("type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}");
-    expect(workflow).toContain("actions/attest-build-provenance@v4.1.0");
-    expect(workflow).toContain("push-to-registry: true");
+    expect(triggerWorkflow).toContain('tags:\n      - "v*"');
+    expect(triggerWorkflow).not.toContain("workflow_dispatch:");
+    expect(triggerWorkflow).toContain("group: docker-stable-${{ github.ref }}");
+    expect(triggerWorkflow).toContain("uses: ./.github/workflows/docker-build.yml");
+    expect(triggerWorkflow).toContain("channel: stable");
+    expect(triggerWorkflow).toContain("version: ${{ github.ref_name }}");
+    expect(buildWorkflow).toContain("name: Resolve release version");
+    expect(buildWorkflow).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
+    expect(buildWorkflow).toContain("Docker image releases require a semantic version tag like v1.2.3.");
+    expect(buildWorkflow).toContain("name: Validate release contracts");
+    expect(buildWorkflow).toContain("FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}");
+    expect(buildWorkflow).toContain("pnpm test:validation");
+    expect(buildWorkflow).toContain("pnpm openapi:validate");
+    expect(buildWorkflow).toContain("org.opencontainers.image.version=${{ steps.release.outputs.version }}");
+    expect(buildWorkflow).toContain("name: Verify release source");
+    expect(buildWorkflow).toContain("Stable Docker publishing is allowed only for commits already contained in main.");
+    expect(buildWorkflow).not.toContain("type=ref,event=tag");
+    expect(buildWorkflow).toContain("type=raw,value=${{ steps.release.outputs.version }}");
+    expect(buildWorkflow).toContain("type=raw,value=${{ steps.release.outputs.major_minor }}");
+    expect(buildWorkflow).toContain("type=raw,value=${{ steps.release.outputs.major }}");
+    expect(buildWorkflow).toContain("type=sha,prefix=${{ steps.release.outputs.sha_prefix }}");
+    expect(buildWorkflow).toContain(
+      "type=raw,value=latest,enable=${{ steps.release.outputs.is_release_tag == 'true' }}"
+    );
+    expect(buildWorkflow).toContain("actions/attest-build-provenance@v4.1.0");
+    expect(buildWorkflow).toContain("push-to-registry: true");
+  });
+
+  it("publishes manually versioned prerelease Docker images only from dev", () => {
+    const triggerWorkflow = readFileSync(dockerPrereleaseWorkflowPath, "utf8");
+    const buildWorkflow = readFileSync(dockerBuildWorkflowPath, "utf8");
+
+    expect(triggerWorkflow).toContain("workflow_dispatch:");
+    expect(triggerWorkflow).toContain('description: "Prerelease version, for example 0.6.18-rc.1."');
+    expect(triggerWorkflow).toContain("group: docker-prerelease-${{ inputs.version }}");
+    expect(triggerWorkflow).toContain("uses: ./.github/workflows/docker-build.yml");
+    expect(triggerWorkflow).toContain("channel: prerelease");
+    expect(triggerWorkflow).toContain("version: ${{ inputs.version }}");
+    expect(buildWorkflow).toContain("Prerelease Docker publishing must run from the dev branch.");
+    expect(buildWorkflow).toContain("^[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[1-9][0-9]*$");
+    expect(buildWorkflow).toContain("Prerelease versions must use the format 1.2.3-rc.1.");
+    expect(buildWorkflow).toContain("Prerelease Docker publishing must use the latest commit from dev.");
+    expect(buildWorkflow).toContain('echo "is_release_tag=false"');
+    expect(buildWorkflow).toContain('echo "sha_prefix=prerelease-sha-"');
   });
 
   it("publishes documentation from version tags with release version and custom domain", () => {
@@ -434,6 +457,7 @@ describe("Docker Compose infrastructure", () => {
     const cname = readFileSync(docsCnamePath, "utf8").trim();
 
     expect(workflow).toContain('tags:\n      - "v*"');
+    expect(workflow).not.toContain("workflow_dispatch:");
     expect(workflow).not.toContain("branches:\n      - main");
     expect(workflow).toContain("group: pages");
     expect(workflow).toContain("cancel-in-progress: false");
