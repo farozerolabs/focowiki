@@ -16,7 +16,8 @@ export const MIGRATION_FILES = [
   "010_generation_consistent_read_repair.sql",
   "011_body_search_projection.sql",
   "012_storage_reconciliation_lease_recovery.sql",
-  "013_projection_repair_throughput.sql"
+  "013_projection_repair_throughput.sql",
+  "014_directory_order_repair.sql"
 ] as const;
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
@@ -29,7 +30,8 @@ const OPTIMIZATION_REBASE_SCHEMA_GENERATION = "optimization-migration-rebase-rec
 const GENERATION_CONSISTENT_READ_SCHEMA_GENERATION = "generation-consistent-read-repair-v10";
 const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
 const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
-export const RUNTIME_SCHEMA_GENERATION = "projection-repair-throughput-v13";
+const PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION = "projection-repair-throughput-v13";
+export const RUNTIME_SCHEMA_GENERATION = "directory-order-repair-v14";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
@@ -43,7 +45,8 @@ const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   [OPTIMIZATION_REBASE_SCHEMA_GENERATION, 9],
   [GENERATION_CONSISTENT_READ_SCHEMA_GENERATION, 10],
   [BODY_SEARCH_SCHEMA_GENERATION, 11],
-  [STORAGE_RECONCILIATION_SCHEMA_GENERATION, 12]
+  [STORAGE_RECONCILIATION_SCHEMA_GENERATION, 12],
+  [PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION, 13]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {

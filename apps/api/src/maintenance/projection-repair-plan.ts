@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import { UTF8_DIRECTORY_ORDER_VERSION } from "../publication/ordered-directory-leaves.js";
 
-export const CURRENT_PROJECTION_REPAIR_VERSION = 4;
+export const CURRENT_PROJECTION_REPAIR_VERSION = 5;
 export const CURRENT_PROJECTION_REPAIR_PLANNER_VERSION = 1;
 
 export const REQUIRED_PROJECTION_REPAIR_VERSIONS = Object.freeze({
   tree: 4,
-  directory: 2,
+  directory: UTF8_DIRECTORY_ORDER_VERSION,
   graph: 2
 });
 

@@ -492,10 +492,17 @@ export function createPostgresProjectionRepairBuildRepository(
           AND record.payload_json->>'kind' IN ('directory', 'file')
           AND (
             ${input.cursor?.sortKey ?? null}::text IS NULL
-            OR (coalesce(record.sort_key, ''), record.record_id)
-               > (${input.cursor?.sortKey ?? null}, ${input.cursor?.recordId ?? null})
+            OR coalesce(record.sort_key, '') COLLATE "C"
+               > ${input.cursor?.sortKey ?? null}::text COLLATE "C"
+            OR (
+              coalesce(record.sort_key, '') COLLATE "C"
+                = ${input.cursor?.sortKey ?? null}::text COLLATE "C"
+              AND record.record_id COLLATE "C"
+                > ${input.cursor?.recordId ?? null}::text COLLATE "C"
+            )
           )
-        ORDER BY coalesce(record.sort_key, ''), record.record_id
+        ORDER BY coalesce(record.sort_key, '') COLLATE "C",
+                 record.record_id COLLATE "C"
         LIMIT ${limit + 1}
       `;
       const visible = rows.slice(0, limit);

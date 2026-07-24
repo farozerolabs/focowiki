@@ -6,6 +6,9 @@ import { createPostgresProjectionRepairBuildRepository } from
   "../src/infrastructure/postgres/projection-repair-build-repository.js";
 import { createPostgresProjectionRepairWorkRepository } from
   "../src/infrastructure/postgres/projection-repair-work-repository.js";
+import {
+  createProjectionRepairDirectoryStream
+} from "../src/maintenance/projection-repair-directory-builder.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -100,6 +103,99 @@ describeDatabase("projection repair work repository integration", () => {
     }]);
   });
 
+  it("supersedes an older running repair before starting the current version", async () => {
+    await bootstrap();
+    await plan("generation-repair-old-order");
+
+    expect(await work.bootstrap({
+      repairVersion: 5,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      now: "2026-07-24T00:01:00.000Z"
+    })).toBe(1);
+
+    expect(await sql<Array<{
+      repair_version: number;
+      repair_state: string;
+      generation_state: string | null;
+    }>>`
+      SELECT repair.repair_version, repair.state AS repair_state,
+             generation.state AS generation_state
+      FROM focowiki.knowledge_base_projection_repairs repair
+      LEFT JOIN focowiki.publication_generations generation
+        ON generation.id = repair.target_generation_id
+      WHERE repair.knowledge_base_id = 'kb-repair-work'
+      ORDER BY repair.repair_version
+    `).toEqual([
+      {
+        repair_version: 4,
+        repair_state: "superseded",
+        generation_state: "superseded"
+      },
+      {
+        repair_version: 5,
+        repair_state: "pending",
+        generation_state: null
+      }
+    ]);
+  });
+
+  it("starts the current repair version after an older repair failed", async () => {
+    await bootstrap();
+    await plan("generation-repair-failed-order");
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.knowledge_base_projection_repairs
+        SET state = 'failed', current_phase = 'failed'
+        WHERE knowledge_base_id = 'kb-repair-work'
+          AND repair_version = 4
+      `;
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'failed', failed_at = now(),
+            safe_error_code = 'PROJECTION_REPAIR_TASK_FAILED',
+            safe_error_message = 'Directory entries must be strictly ordered'
+        WHERE id = 'generation-repair-failed-order'
+      `;
+    });
+
+    expect(await work.bootstrap({
+      repairVersion: 5,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      now: "2026-07-24T00:01:00.000Z"
+    })).toBe(1);
+
+    expect(await sql<Array<{
+      repair_version: number;
+      repair_state: string;
+      generation_state: string | null;
+    }>>`
+      SELECT repair.repair_version, repair.state AS repair_state,
+             generation.state AS generation_state
+      FROM focowiki.knowledge_base_projection_repairs repair
+      LEFT JOIN focowiki.publication_generations generation
+        ON generation.id = repair.target_generation_id
+      WHERE repair.knowledge_base_id = 'kb-repair-work'
+      ORDER BY repair.repair_version
+    `).toEqual([
+      {
+        repair_version: 4,
+        repair_state: "failed",
+        generation_state: "failed"
+      },
+      {
+        repair_version: 5,
+        repair_state: "pending",
+        generation_state: null
+      }
+    ]);
+  });
+
   it("claims runnable partitions without duplicates and recovers an expired lease", async () => {
     await bootstrap();
     await plan("generation-repair-claims");
@@ -189,6 +285,74 @@ describeDatabase("projection repair work repository integration", () => {
         directFileCount: 200,
         descendantFileCount: 200
       });
+  });
+
+  it("streams mixed-case and Unicode directory entries in stable byte order", async () => {
+    await sql`
+      UPDATE focowiki.active_projection_records
+      SET sort_key = CASE record_id
+            WHEN 'source-file-0001' THEN 'Z'
+            WHEN 'source-file-0002' THEN 'a'
+          END
+      WHERE knowledge_base_id = 'kb-repair-work'
+        AND record_id IN ('source-file-0001', 'source-file-0002')
+    `;
+    await bootstrap();
+    await plan("generation-repair-directory-order");
+    const treeTasks = await work.claimBatch({
+      repairVersion: 4,
+      workerId: "repair-worker",
+      leaseTokenPrefix: "tree",
+      limit: 4,
+      now: "2026-07-24T00:00:01.000Z",
+      leaseExpiresAt: "2026-07-24T00:01:01.000Z"
+    });
+    for (const task of treeTasks) {
+      await work.completeTask({
+        task,
+        processedRecordCount: task.expectedRecordCount,
+        objectWriteCount: 1,
+        objectReuseCount: 0,
+        durationMs: 1,
+        completedAt: "2026-07-24T00:00:02.000Z"
+      });
+    }
+    const directoryTasks = await work.claimBatch({
+      repairVersion: 4,
+      workerId: "repair-worker",
+      leaseTokenPrefix: "directory",
+      limit: 4,
+      now: "2026-07-24T00:00:03.000Z",
+      leaseExpiresAt: "2026-07-24T00:01:03.000Z"
+    });
+    const task = directoryTasks.find(
+      (candidate) => candidate.partitionKey === "pages/guides"
+    );
+    expect(task).toBeDefined();
+
+    const observed: string[] = [];
+    const stream = createProjectionRepairDirectoryStream({
+      directoryPath: "pages/guides",
+      limits: { maxEntries: 500, maxBytes: 1_048_576 },
+      writeLeaf: async () => undefined
+    });
+    let cursor = null;
+    do {
+      const page = await builds.listDirectoryEntryPage({
+        task: task!,
+        cursor,
+        limit: 1
+      });
+      for (const entry of page.entries) {
+        observed.push(entry.sortKey);
+        await stream.add(entry);
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    await stream.finish();
+
+    expect(observed.slice(0, 3)).toEqual(["Z", "a", "file-0003"]);
+    expect(observed).toHaveLength(200);
   });
 
   it("writes and replaces a generated directory leaf with the schema conflict key", async () => {

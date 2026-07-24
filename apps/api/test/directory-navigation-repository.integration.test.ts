@@ -1,6 +1,7 @@
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createPostgresDirectoryNavigationRepository } from "../src/infrastructure/postgres/directory-navigation-repository.js";
+import { UTF8_DIRECTORY_ORDER_VERSION } from "../src/publication/ordered-directory-leaves.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -146,6 +147,44 @@ describeDatabase("directory navigation repository integration", () => {
     expect(rows).toEqual([{ entry_count: 3 }]);
   });
 
+  it("uses UTF-8 byte ordering after the directory projection upgrade", async () => {
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_versions (
+        knowledge_base_id, projection_kind, format_version,
+        input_version, active_generation_id
+      ) VALUES (
+        ${knowledgeBaseId}, 'directory', ${UTF8_DIRECTORY_ORDER_VERSION},
+        ${UTF8_DIRECTORY_ORDER_VERSION}, ${activeGenerationId}
+      )
+    `;
+
+    await repository.applyEntries({
+      knowledgeBaseId,
+      generationId: candidateGenerationId,
+      directoryPath: "pages",
+      entries: [
+        orderedEntryMutation("source-unicode", "司法解释.md"),
+        orderedEntryMutation("source-lower", "a.md"),
+        orderedEntryMutation("source-upper", "Z.md")
+      ],
+      limits
+    });
+
+    const leaves = await sql<Array<{
+      entries_json: Array<{ sortKey: string }>;
+    }>>`
+      SELECT entries_json
+      FROM focowiki.generation_directory_navigation_leaves
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${candidateGenerationId}
+        AND directory_path = 'pages'
+      ORDER BY first_sort_key COLLATE "C", id COLLATE "C"
+    `;
+    expect(leaves.flatMap((leaf) =>
+      leaf.entries_json.map((entry) => entry.sortKey)
+    )).toEqual(["Z.md", "a.md", "司法解释.md"]);
+  });
+
   it("isolates candidate navigation from the active generation", async () => {
     await apply("source-a", "a.md", activeGenerationId);
     await apply("source-b", "b.md", candidateGenerationId);
@@ -285,6 +324,19 @@ describeDatabase("directory navigation repository integration", () => {
       desiredEntry: {
         id: entryId,
         sortKey: name.toLowerCase(),
+        name,
+        targetPath: `pages/${name}`,
+        kind: "file" as const
+      }
+    };
+  }
+
+  function orderedEntryMutation(entryId: string, name: string) {
+    return {
+      entryId,
+      desiredEntry: {
+        id: entryId,
+        sortKey: name,
         name,
         targetPath: `pages/${name}`,
         kind: "file" as const

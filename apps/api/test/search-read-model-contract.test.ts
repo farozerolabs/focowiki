@@ -19,6 +19,10 @@ const readRepairMigrationPath = resolve(
   import.meta.dirname,
   "../migrations/010_generation_consistent_read_repair.sql"
 );
+const directoryOrderMigrationPath = resolve(
+  import.meta.dirname,
+  "../migrations/014_directory_order_repair.sql"
+);
 
 function normalized(path: string): string {
   return readFileSync(path, "utf8").replace(/\s+/g, " ").toLowerCase();
@@ -81,7 +85,15 @@ describe("active generation search read-model contract", () => {
 
   it("bounds graph edge traversal with forward and reverse endpoint indexes", () => {
     const repository = `${normalized(repositoryPath)} ${normalized(searchRepositoryPath)}`;
-    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)} ${normalized(readRepairMigrationPath)}`;
+    const migration = `${
+      normalized(migrationPath)
+    } ${
+      normalized(runtimeMigrationPath)
+    } ${
+      normalized(readRepairMigrationPath)
+    } ${
+      normalized(directoryOrderMigrationPath)
+    }`;
     expect(repository).toContain("edge.source_file_id = ${input.sourcefileid}");
     expect(repository).toContain("edge.related_source_file_id = ${input.sourcefileid}");
     expect(migration).toContain("active_projection_records_graph_edge_source_weight_idx");
@@ -98,10 +110,18 @@ describe("active generation search read-model contract", () => {
   });
 
   it("defines active file, tree, file-search, and graph-search indexes", () => {
-    const migration = `${normalized(migrationPath)} ${normalized(runtimeMigrationPath)} ${normalized(readRepairMigrationPath)}`;
+    const migration = `${
+      normalized(migrationPath)
+    } ${
+      normalized(runtimeMigrationPath)
+    } ${
+      normalized(readRepairMigrationPath)
+    } ${
+      normalized(directoryOrderMigrationPath)
+    }`;
     expect(migration).toContain("active_object_refs_path_idx");
     expect(migration).toContain("active_object_refs_file_idx");
-    expect(migration).toContain("active_projection_records_tree_idx");
+    expect(migration).toContain("active_projection_records_tree_byte_order_idx");
     expect(migration).toContain("active_projection_records_tree_search_trgm_idx");
     expect(migration).toContain("active_projection_records_search_fts_idx");
     expect(migration).toContain("active_projection_records_search_trgm_idx");

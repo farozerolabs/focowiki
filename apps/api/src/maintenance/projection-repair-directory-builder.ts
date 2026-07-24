@@ -3,6 +3,7 @@ import type {
   PersistentDirectoryLeaf
 } from "../application/ports/directory-navigation-repository.js";
 import {
+  compareOrderedDirectoryEntries,
   directoryLeafByteSize,
   type OrderedDirectoryEntry
 } from "../publication/ordered-directory-leaves.js";
@@ -27,7 +28,10 @@ export function createProjectionRepairDirectoryStream(input: {
 
   async function add(entry: OrderedDirectoryEntry): Promise<void> {
     if (finished) throw new Error("Directory stream is already finished");
-    if (previousEntry && compareEntries(previousEntry, entry) >= 0) {
+    if (
+      previousEntry
+      && compareOrderedDirectoryEntries(previousEntry, entry) >= 0
+    ) {
       throw new Error("Directory entries must be strictly ordered");
     }
     assertEntryFits(entry, input.limits.maxBytes);
@@ -94,11 +98,6 @@ function assertEntryFits(entry: OrderedDirectoryEntry, maxBytes: number): void {
   if (directoryLeafByteSize([entry]) > maxBytes) {
     throw new Error("A directory entry exceeds the configured leaf byte limit");
   }
-}
-
-function compareEntries(left: OrderedDirectoryEntry, right: OrderedDirectoryEntry): number {
-  return left.sortKey.localeCompare(right.sortKey, "en")
-    || left.id.localeCompare(right.id, "en");
 }
 
 function validateLimits(limits: { maxEntries: number; maxBytes: number }): void {
