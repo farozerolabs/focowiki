@@ -69,6 +69,29 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.total).toBe(baseline.total);
   });
 
+  it("does not block migration for an upload session whose lease has expired", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Migration preflight')
+    `;
+    await sql`
+      INSERT INTO focowiki.upload_sessions (
+        id, knowledge_base_id, state, idempotency_key,
+        declared_file_count, declared_byte_count, expires_at
+      ) VALUES (
+        'upload-session-expired-preflight', ${knowledgeBaseId}, 'manifest_sealed',
+        'expired-preflight', 1, 12, now() - interval '1 hour'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.uploadSessions).toBe(baseline.uploadSessions);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
   async function seedAllUnfinishedWork(): Promise<void> {
     await sql.begin(async (transaction) => {
       await transaction`

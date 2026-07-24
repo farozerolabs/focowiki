@@ -34,7 +34,9 @@ describe("maintenance runtime", () => {
         compactionFailed: 0,
         garbageCollectionExpired: 3,
         garbageCollectionDeleted: 4,
-        garbageCollectionPending: true
+        garbageCollectionPending: true,
+        uploadSessionsExpired: 2,
+        uploadSessionObjectsDeleted: 5
       };
     });
 
@@ -76,7 +78,9 @@ describe("maintenance runtime", () => {
       compactionFailed: 0,
       garbageCollectionExpired: 3,
       garbageCollectionDeleted: 4,
-      garbageCollectionPending: true
+      garbageCollectionPending: true,
+      uploadSessionsExpired: 2,
+      uploadSessionObjectsDeleted: 5
     });
     expect(JSON.stringify(debug.mock.calls)).not.toContain("objectKey");
     expect(JSON.stringify(debug.mock.calls)).not.toContain("checksum");

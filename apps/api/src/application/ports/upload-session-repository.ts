@@ -9,6 +9,11 @@ export type UploadSessionPage<T> = {
   nextCursor: string | null;
 };
 
+export type UploadSessionStagingObject = {
+  sessionId: string;
+  objectKey: string;
+};
+
 export type UploadSessionRepository = {
   createSession: (input: {
     id: string;
@@ -75,5 +80,12 @@ export type UploadSessionRepository = {
   expireSessions: (input: {
     now: string;
     limit: number;
-  }) => Promise<Array<{ sessionId: string; stagingObjectKeys: string[] }>>;
+  }) => Promise<string[]>;
+  listStagingObjectsForCleanup: (input: {
+    limit: number;
+  }) => Promise<UploadSessionStagingObject[]>;
+  completeStagingObjectCleanup: (input: {
+    objects: UploadSessionStagingObject[];
+    completedAt: string;
+  }) => Promise<void>;
 };

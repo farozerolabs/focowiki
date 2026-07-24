@@ -20,6 +20,7 @@ import {
   RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
 } from "./infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
+import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
 import {
   assertNodeJiebaRuntimeAvailable,
   createNodeJiebaTokenizer,
@@ -36,6 +37,7 @@ import {
   type LexicalRebuildEvent
 } from "./maintenance/lexical-rebuild.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
+import { runUploadSessionExpirationSlice } from "./maintenance/upload-session-expiration.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
 import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.js";
@@ -90,6 +92,9 @@ async function runMaintenanceWorker(): Promise<void> {
     if (!repositories.graph) {
       throw new Error("File graph repository is unavailable");
     }
+    if (!repositories.uploadSessions) {
+      throw new Error("Upload session repository is unavailable");
+    }
     const graph = repositories.graph;
     const runtimeSettings = createRuntimeSettingsService({
       config,
@@ -104,6 +109,7 @@ async function runMaintenanceWorker(): Promise<void> {
     const resourceBudgetReporter = createResourceBudgetReporter({ logger });
     const cleanup = createPostgresGenerationCleanupRepository(sql);
     const storage = createS3StorageAdapter(config.storage);
+    const uploadSessionStorage = createUploadSessionStoragePort(storage);
     const immutableRepository = createPostgresImmutableObjectRepository(sql);
     const unboundedImmutableObjects = createImmutableObjectWriter({
       repository: immutableRepository,
@@ -245,7 +251,9 @@ async function runMaintenanceWorker(): Promise<void> {
                 compactionFailed: 0,
                 garbageCollectionExpired: 0,
                 garbageCollectionDeleted: 0,
-                garbageCollectionPending: false
+                garbageCollectionPending: false,
+                uploadSessionsExpired: 0,
+                uploadSessionObjectsDeleted: 0
               };
             }
           } catch {
@@ -255,6 +263,14 @@ async function runMaintenanceWorker(): Promise<void> {
             const snapshot = await runtimeSettings.getSnapshot();
             resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
             resourceBudgetReporter.report(resourceBudgets);
+            const uploadExpirationResult = await resourceBudgets.generatedObjectWrite.run(
+              () => runUploadSessionExpirationSlice({
+                repository: repositories.uploadSessions!,
+                storage: uploadSessionStorage,
+                now: new Date().toISOString(),
+                limit: snapshot.maintenance.scanBatchSize
+              })
+            );
             const migrationNow = new Date();
             const migrationResult = await resourceBudgets.migrationBackfill.run(
               () => runOptimizationMigrationSlice({
@@ -389,7 +405,9 @@ async function runMaintenanceWorker(): Promise<void> {
               compactionFailed: compactionResult.failed,
               garbageCollectionExpired: garbageCollectionResult.expiredGenerations,
               garbageCollectionDeleted: garbageCollectionResult.deletedObjects,
-              garbageCollectionPending: garbageCollectionResult.hasMore
+              garbageCollectionPending: garbageCollectionResult.hasMore,
+              uploadSessionsExpired: uploadExpirationResult.expiredSessions,
+              uploadSessionObjectsDeleted: uploadExpirationResult.deletedObjects
             };
           } finally {
             if (redisLock) {
