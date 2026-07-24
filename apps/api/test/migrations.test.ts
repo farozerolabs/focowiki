@@ -180,6 +180,33 @@ describe("runtime schema generation guard", () => {
     expect(database.beginCalls).toBe(1);
   });
 
+  it("does not require drained work for the directory-order-only upgrade", async () => {
+    const database = createGenerationDatabase(
+      PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION,
+      { unfinishedWork: true }
+    );
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.preflightCalls).toBe(0);
+    expect(database.unsafeCalls).toBe(1);
+    expect(database.beginCalls).toBe(1);
+  });
+
+  it("still requires drained work when earlier migrations are pending", async () => {
+    const database = createGenerationDatabase(
+      STORAGE_RECONCILIATION_SCHEMA_GENERATION,
+      { unfinishedWork: true }
+    );
+
+    await expect(applyMigrations(database.sql)).rejects.toMatchObject({
+      name: "MigrationWorkNotDrainedError",
+      code: "MIGRATION_WORK_NOT_DRAINED"
+    });
+    expect(database.preflightCalls).toBe(1);
+    expect(database.unsafeCalls).toBe(0);
+    expect(database.beginCalls).toBe(0);
+  });
+
   it("rejects unmarked and incompatible schemas", async () => {
     for (const generation of [null, "file-graph-v1", "folder-aware-v2", "unknown-v9"] as const) {
       const database = createGenerationDatabase(generation);
@@ -424,7 +451,10 @@ describe("runtime schema generation guard", () => {
   });
 });
 
-function createGenerationDatabase(initialGeneration: string | "absent" | null) {
+function createGenerationDatabase(
+  initialGeneration: string | "absent" | null,
+  options: { unfinishedWork?: boolean } = {}
+) {
   let generation = initialGeneration;
   let unsafeCalls = 0;
   let beginCalls = 0;
@@ -445,11 +475,11 @@ function createGenerationDatabase(initialGeneration: string | "absent" | null) {
       return [{
         source_files: 0,
         dispatch_markers: 0,
-        role_jobs: 0,
+        role_jobs: options.unfinishedWork ? 1 : 0,
         publication_impacts: 0,
-        frozen_generations: 0,
-        resource_operations: 0,
-        deletion_intents: 0,
+        frozen_generations: options.unfinishedWork ? 1 : 0,
+        resource_operations: options.unfinishedWork ? 1 : 0,
+        deletion_intents: options.unfinishedWork ? 1 : 0,
         upload_sessions: 0,
         cleanup_objects: 0,
         capped: false
