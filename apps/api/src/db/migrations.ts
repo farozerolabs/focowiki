@@ -19,6 +19,11 @@ export const MIGRATION_FILES = [
   "013_projection_repair_throughput.sql",
   "014_directory_order_repair.sql"
 ] as const;
+const MIGRATIONS_ALLOWED_WITH_PERSISTED_WORK = new Set<
+  (typeof MIGRATION_FILES)[number]
+>([
+  "014_directory_order_repair.sql"
+]);
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
 const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
@@ -110,10 +115,16 @@ export async function preflightMigrations(
     throw new RuntimeSchemaGenerationError(state);
   }
 
-  if (state !== "absent") await assertMigrationWorkDrained(sql);
+  const pendingFiles = MIGRATION_FILES.slice(migrationStart);
+  if (
+    state !== "absent"
+    && pendingFiles.some((fileName) => !MIGRATIONS_ALLOWED_WITH_PERSISTED_WORK.has(fileName))
+  ) {
+    await assertMigrationWorkDrained(sql);
+  }
   return {
     currentGeneration: state,
-    pendingFiles: MIGRATION_FILES.slice(migrationStart)
+    pendingFiles
   };
 }
 

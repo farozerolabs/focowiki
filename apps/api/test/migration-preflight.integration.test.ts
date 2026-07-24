@@ -199,12 +199,24 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.total).toBe(baseline.total + 4);
   });
 
-  it("applies a compatible migration while preserving a frozen deletion publication", async () => {
+  it("applies the directory-order migration while preserving non-drained deletion work", async () => {
     await cleanup();
     await seedRepairDependentDeletion({
       failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
     });
     await freezeDeleteGeneration();
+    await sql`
+      UPDATE focowiki.publication_change_facts
+      SET planning_payload_json = '{}'::jsonb
+      WHERE generation_id = 'generation-migration-preflight-failed'
+    `;
+    expect(await inspectMigrationWork(sql)).toMatchObject({
+      roleJobs: 1,
+      frozenGenerations: 1,
+      resourceOperations: 1,
+      deletionIntents: 1,
+      total: 4
+    });
     await sql`
       DROP INDEX focowiki.active_projection_records_tree_byte_order_idx
     `;
@@ -250,6 +262,13 @@ describeDatabase("migration preflight integration", () => {
       operation_state: "publishing",
       intent_state: "accepted"
     }]);
+    expect(await inspectMigrationWork(sql)).toMatchObject({
+      roleJobs: 1,
+      frozenGenerations: 1,
+      resourceOperations: 1,
+      deletionIntents: 1,
+      total: 4
+    });
   });
 
   it("blocks a deletion whose target was not logically deleted", async () => {
