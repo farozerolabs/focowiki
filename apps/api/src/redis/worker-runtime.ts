@@ -10,7 +10,7 @@ export type WorkerRedisEventClient = {
 export function registerWorkerRedisRuntimeEvents(input: {
   client: WorkerRedisEventClient;
   logger: RuntimeLogger;
-  role: "source" | "publication" | "projection_repair" | "maintenance";
+  role: "source" | "publication" | "projection_repair" | "lexical_rebuild" | "maintenance";
 }): void {
   let interruptionReported = false;
 

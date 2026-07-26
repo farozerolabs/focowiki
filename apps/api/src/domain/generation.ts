@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 
 export const PUBLICATION_FORMAT_VERSION = 1;
 
-export type WorkerRole = "source" | "publication" | "projection_repair" | "maintenance";
+export type WorkerRole =
+  | "source"
+  | "publication"
+  | "projection_repair"
+  | "lexical_rebuild"
+  | "maintenance";
 
 export type ChangeFactKind =
   | "source_created"

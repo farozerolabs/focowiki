@@ -124,8 +124,16 @@ Maintenance settings control bounded reconciliation of Focowiki-managed generate
 | Projection repair concurrency | Projection repair subtasks processed concurrently by the dedicated repair worker. | 4 to 8 on an 8C/32G server; range 1 to 16. |
 | Projection repair database batch size | Projection records handled by one bounded set-based database batch. | `2000`; range 100 to 10000. |
 | Projection repair object write concurrency | Generated projection objects uploaded and verified concurrently during repair. | `8`; range 1 to 32. |
+| Lexical rebuild concurrency | Source-processing lanes used by one dedicated lexical-rebuild worker. | `4` on an 8C/32G server; range 1 to 16. |
+| Lexical source read concurrency | Source Markdown objects read concurrently from S3-compatible storage. | `2` on an 8C/32G server; range 1 to 32. Increase only after verifying content-read latency against the storage service. |
+| Lexical database write concurrency | Lexical projection batches committed concurrently. | `2` on an 8C/32G server; range 1 to 16 and no higher than lexical rebuild concurrency. |
+| Lexical claim batch size | Durable source work items claimed in one cycle. | `500`; range 50 to 2000. |
+| Lexical database batch size | Source files committed in one atomic lexical database batch. | `50`; range 1 to 250 and no higher than the claim batch size. |
+| Lexical in-flight source bytes | Maximum total source Markdown bytes retained by active lexical reads. | `67108864` bytes (64 MiB); range 1 MiB to 512 MiB. |
 
 Projection repair runs in its own Worker role. Saved values apply to later repair claims; already-running subtasks keep the settings captured when they were claimed. The status section reports bounded aggregate phase, task, record, directory, object, retry, throughput, and estimated-completion values without counting work tables during each request.
+
+Lexical rebuild also runs in its own Worker role. Saved values apply to later claims; active claims keep their captured revision. Maintenance status reports exact completed, active, waiting, retrying, failed, and total file counts together with active workers, recent throughput, retries, last progress, heartbeat, and estimated completion. The current active generation remains readable while the candidate is built.
 
 The maintenance status also reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
 

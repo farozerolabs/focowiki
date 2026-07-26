@@ -15,10 +15,20 @@ import {
   validationError,
   writeDeveloperOpenApiError
 } from "./errors.js";
-import { readLimit, safe } from "./route-helpers.js";
+import {
+  readDeveloperJsonObjectBody,
+  readLimit,
+  safe
+} from "./route-helpers.js";
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
 import { toDeveloperKnowledgeBase } from "./serializers.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
+import {
+  readSourceResourceCursor,
+  sourceResourceCursorScope,
+  writeSourceResourceCursor
+} from "./source-resource-pagination.js";
+import { readIdempotencyKey } from "./idempotency-key.js";
 
 export function registerDeveloperOpenApiSourceResourceRoutes(
   app: Hono,
@@ -38,7 +48,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
   app.patch("/openapi/v2/knowledge-bases/:knowledgeBaseId", async (context) =>
     safe(context, async () => {
       const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
-      const body = await readJsonBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(context.req.raw);
       const name = body.name === undefined ? undefined : readOptionalName(body.name);
       const description = readOptionalDescription(body.description);
       if (name === undefined && description === undefined) {
@@ -85,17 +95,32 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
 
   app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories", async (context) =>
     safe(context, async () => {
-      await requireKnowledgeBase(context.req.param("knowledgeBaseId"));
+      const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      await requireKnowledgeBase(knowledgeBaseId);
       const parentDirectoryId = readNullableQuery(context.req.query("parentDirectoryId"));
+      const scope = sourceResourceCursorScope(
+        "directories",
+        knowledgeBaseId,
+        { parentDirectoryId }
+      );
       const page = await requireService().listDirectories({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        knowledgeBaseId,
         parentDirectoryId,
         limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
+        cursor: await readSourceResourceCursor(
+          services.redis,
+          scope,
+          context.req.query("cursor") ?? null
+        )
       });
       return {
         items: page.items.map(toDirectoryResponse),
-        nextCursor: page.nextCursor
+        nextCursor: await writeSourceResourceCursor(
+          services.redis,
+          scope,
+          page.nextCursor,
+          services.config.pagination.cursorTtlSeconds
+        )
       };
     })
   );
@@ -117,7 +142,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     async (context) =>
       safe(context, async () => {
-        const body = await readJsonBody(context.req.raw);
+        const body = await readDeveloperJsonObjectBody(context.req.raw);
         const result = await acceptAndEnqueueOperation(services, {
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           kind: "source_directory_move",
@@ -135,7 +160,9 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     async (context) =>
       safe(context, async () => {
-        const idempotencyKey = context.req.header("idempotency-key")?.trim() ?? "";
+        const idempotencyKey = readIdempotencyKey(
+          context.req.header("idempotency-key")
+        );
         const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
         const knowledgeBaseId = context.req.param("knowledgeBaseId");
         const directoryId = context.req.param("directoryId");
@@ -170,18 +197,36 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
 
   app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files", async (context) =>
     safe(context, async () => {
-      await requireKnowledgeBase(context.req.param("knowledgeBaseId"));
+      const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      await requireKnowledgeBase(knowledgeBaseId);
       const directoryId = context.req.query("directoryId");
+      const resolvedDirectoryId = directoryId === undefined
+        ? undefined
+        : readNullableQuery(directoryId);
+      const filters = readSourceResourceFilters(context.req.query());
+      const scope = sourceResourceCursorScope("files", knowledgeBaseId, {
+        directoryId: resolvedDirectoryId,
+        filters
+      });
       const page = await requireService().listSourceFiles({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        directoryId: directoryId === undefined ? undefined : readNullableQuery(directoryId),
-        filters: readSourceResourceFilters(context.req.query()),
+        knowledgeBaseId,
+        directoryId: resolvedDirectoryId,
+        filters,
         limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
+        cursor: await readSourceResourceCursor(
+          services.redis,
+          scope,
+          context.req.query("cursor") ?? null
+        )
       });
       return {
         items: page.items.map(toSourceFileResponse),
-        nextCursor: page.nextCursor
+        nextCursor: await writeSourceResourceCursor(
+          services.redis,
+          scope,
+          page.nextCursor,
+          services.config.pagination.cursorTtlSeconds
+        )
       };
     })
   );
@@ -227,7 +272,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     async (context) =>
       safe(context, async () => {
-        const body = await readJsonBody(context.req.raw);
+        const body = await readDeveloperJsonObjectBody(context.req.raw);
         const result = await acceptAndEnqueueOperation(services, {
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           kind: "source_file_move",
@@ -291,15 +336,33 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
 
   app.get("/openapi/v2/knowledge-bases/:knowledgeBaseId/operations", async (context) =>
     safe(context, async () => {
-      await requireKnowledgeBase(context.req.param("knowledgeBaseId"));
+      const knowledgeBaseId = context.req.param("knowledgeBaseId");
+      await requireKnowledgeBase(knowledgeBaseId);
       const state = readOperationState(context.req.query("state"));
+      const scope = sourceResourceCursorScope(
+        "operations",
+        knowledgeBaseId,
+        { state }
+      );
       const page = await requireService().listOperations({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        knowledgeBaseId,
         ...(state ? { states: [state] } : {}),
         limit: readLimit(context.req.query("limit"), services.config),
-        cursor: context.req.query("cursor") ?? null
+        cursor: await readSourceResourceCursor(
+          services.redis,
+          scope,
+          context.req.query("cursor") ?? null
+        )
       });
-      return { items: page.items.map(toOperationResponse), nextCursor: page.nextCursor };
+      return {
+        items: page.items.map(toOperationResponse),
+        nextCursor: await writeSourceResourceCursor(
+          services.redis,
+          scope,
+          page.nextCursor,
+          services.config.pagination.cursorTtlSeconds
+        )
+      };
     })
   );
 
@@ -574,17 +637,6 @@ function readOperationState(value: string | undefined) {
   return value as "accepted" | "validating" | "processing" | "publishing" | "completed" | "failed" | "cancelled" | "superseded";
 }
 
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
-  try {
-    const value = await request.json();
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
-}
-
 async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
@@ -637,10 +689,4 @@ async function requireMutationService(services: DeveloperOpenApiRouteServices) {
     }),
     maxAttempts: worker.jobMaxAttempts
   };
-}
-
-function readIdempotencyKey(value: string | undefined): string {
-  const key = value?.trim() ?? "";
-  if (!key) throw validationError("Idempotency-Key is required.", { field: "Idempotency-Key" });
-  return key;
 }

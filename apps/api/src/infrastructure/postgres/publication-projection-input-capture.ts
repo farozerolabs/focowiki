@@ -89,6 +89,11 @@ type DirectoryRow = {
   descendant_file_count: number;
 };
 
+type ProjectionCaptureVisibility = {
+  operationIds: string[];
+  deletionIntentIds: string[];
+};
+
 export type CapturedProjectionInput = {
   inputKey: string;
   payload: SerializableJson;
@@ -102,6 +107,8 @@ export type PublicationProjectionCaptureChange = {
   changeKind: ChangeFactKind;
   sourceFileId: string | null;
   sourceRevisionId: string | null;
+  operationId: string | null;
+  deletionIntentId: string | null;
   previousPath: string | null;
   path: string | null;
   impacts: PublicationImpact[];
@@ -115,6 +122,8 @@ export async function capturePublicationProjectionInputs(
     changeKind: ChangeFactKind;
     sourceFileId: string | null;
     sourceRevisionId: string | null;
+    operationId?: string | null;
+    deletionIntentId?: string | null;
     previousPath: string | null;
     path: string | null;
     impacts: PublicationImpact[];
@@ -128,6 +137,8 @@ export async function capturePublicationProjectionInputs(
       changeKind: input.changeKind,
       sourceFileId: input.sourceFileId,
       sourceRevisionId: input.sourceRevisionId,
+      operationId: input.operationId ?? null,
+      deletionIntentId: input.deletionIntentId ?? null,
       previousPath: input.previousPath,
       path: input.path,
       impacts: input.impacts
@@ -142,6 +153,7 @@ export async function capturePublicationProjectionInputsBatch(
     knowledgeBaseId: string;
     generationId: string;
     changes: PublicationProjectionCaptureChange[];
+    visibility?: ProjectionCaptureVisibility;
     now: string;
   }
 ): Promise<Map<string, CapturedProjectionInput>> {
@@ -156,6 +168,18 @@ export async function capturePublicationProjectionInputsBatch(
   }
   const entries = [...effective.values()];
   const impacts = entries.map((entry) => entry.impact);
+  const operationIds = unique([
+    ...(input.visibility?.operationIds ?? []),
+    ...input.changes.flatMap((change) =>
+      change.operationId ? [change.operationId] : []
+    )
+  ]);
+  const deletionIntentIds = unique([
+    ...(input.visibility?.deletionIntentIds ?? []),
+    ...input.changes.flatMap((change) =>
+      change.deletionIntentId ? [change.deletionIntentId] : []
+    )
+  ]);
   const sourceIds = unique(impacts.flatMap((impact) =>
     requiresSourceInput(impact) ? [impact.recordIdentity] : []
   ));
@@ -188,18 +212,24 @@ export async function capturePublicationProjectionInputsBatch(
   const directoryInputs = await captureDirectories(
     transaction,
     input.knowledgeBaseId,
-    directoryPaths
+    directoryPaths,
+    { operationIds, deletionIntentIds }
   );
   const knowledgeBaseInput = impacts.some((impact) => impact.projectionKind === "root")
     || directoryPaths.includes("")
-    ? await captureKnowledgeBase(transaction, input.knowledgeBaseId)
+    ? await captureKnowledgeBase(
+        transaction,
+        input.knowledgeBaseId,
+        { operationIds, deletionIntentIds }
+      )
     : null;
   const result = new Map<string, CapturedProjectionInput>();
 
   for (const { impact, change } of entries) {
     let projectionInput: PublicationProjectionInput | null = null;
     if (requiresSourceInput(impact)) {
-      projectionInput = sourceInputs.get(impact.recordIdentity) ?? null;
+      projectionInput = sourceInputs.get(impact.recordIdentity)
+        ?? missingSourceProjectionInput(impact);
     } else if (requiresGraphEdgeInput(impact)) {
       const edge = edgeInputs.get(impact.recordIdentity);
       projectionInput = edge ? { kind: "graph_edge", edge } : null;
@@ -312,6 +342,15 @@ function requiresSourceInput(impact: PublicationImpact): boolean {
   ].includes(impact.projectionKind);
 }
 
+function missingSourceProjectionInput(
+  impact: PublicationImpact
+): Extract<PublicationProjectionInput, { kind: "empty" }> | null {
+  return impact.projectionKind === "graph_reverse_neighbor"
+    || impact.projectionKind === "related_files"
+    ? { kind: "empty" }
+    : null;
+}
+
 function requiresGraphEdgeInput(impact: PublicationImpact): boolean {
   return impact.action !== "delete"
     && (impact.projectionKind === "graph_edge" || impact.projectionKind === "links");
@@ -396,7 +435,6 @@ async function captureSources(
       ON node.knowledge_base_id = source.knowledge_base_id
      AND node.source_file_id = source.id
     WHERE source.deleted_at IS NULL
-      AND source.task_deleted_at IS NULL
       AND source.deletion_intent_id IS NULL
   `;
   const relationships = await captureRelationships(transaction, knowledgeBaseId, sourceIds);
@@ -474,7 +512,7 @@ async function captureRelationships(
       ON node.knowledge_base_id = related.knowledge_base_id
      AND node.source_file_id = related.id
     WHERE ranked.relation_rank = 1 AND ranked.source_rank <= ${MAX_SNAPSHOT_RELATIONSHIPS}
-      AND related.deleted_at IS NULL AND related.task_deleted_at IS NULL
+      AND related.deleted_at IS NULL
       AND related.deletion_intent_id IS NULL
     ORDER BY ranked.source_file_id, ranked.source_rank
   `;
@@ -547,43 +585,134 @@ async function captureGraphEdges(
 async function captureDirectories(
   transaction: TransactionSql<Record<string, never>>,
   knowledgeBaseId: string,
-  relativePaths: string[]
+  relativePaths: string[],
+  visibility: ProjectionCaptureVisibility
 ): Promise<Map<string, PublicationDirectorySnapshot>> {
   const nonRootPaths = relativePaths.filter(Boolean);
   if (nonRootPaths.length === 0) return new Map();
   const rows = await transaction<DirectoryRow[]>`
-    SELECT coalesce(directory.candidate_relative_path, directory.relative_path) AS relative_path,
-           directory.id, coalesce(directory.candidate_name, directory.name) AS name,
-           directory.resource_revision + CASE WHEN operation.id IS NULL THEN 0 ELSE 1 END
-             AS resource_revision,
-           (SELECT count(*)::int FROM focowiki.source_directories child
-            WHERE child.knowledge_base_id = directory.knowledge_base_id
-              AND coalesce(child.candidate_parent_id, child.parent_id) = directory.id
-              AND child.deleted_at IS NULL AND child.deletion_intent_id IS NULL)
-             AS direct_directory_count,
-           (SELECT count(*)::int FROM focowiki.source_files child
-            WHERE child.knowledge_base_id = directory.knowledge_base_id
-              AND coalesce(child.candidate_directory_id, child.directory_id) = directory.id
-              AND child.processing_status = 'completed'
-              AND child.deleted_at IS NULL AND child.task_deleted_at IS NULL
-              AND child.deletion_intent_id IS NULL) AS direct_file_count,
-           (SELECT count(*)::int FROM focowiki.source_files descendant
-            WHERE descendant.knowledge_base_id = directory.knowledge_base_id
-              AND coalesce(descendant.candidate_path_key, descendant.path_key) COLLATE "C"
-                >= (coalesce(directory.candidate_path_key, directory.path_key) || '/')::text COLLATE "C"
-              AND coalesce(descendant.candidate_path_key, descendant.path_key) COLLATE "C"
-                < (coalesce(directory.candidate_path_key, directory.path_key) || '0')::text COLLATE "C"
-              AND descendant.processing_status = 'completed'
-              AND descendant.deleted_at IS NULL AND descendant.task_deleted_at IS NULL
-              AND descendant.deletion_intent_id IS NULL) AS descendant_file_count
-    FROM focowiki.source_directories directory
-    LEFT JOIN focowiki.resource_operations operation
-      ON operation.id = directory.candidate_operation_id
-     AND operation.knowledge_base_id = directory.knowledge_base_id
-     AND operation.state = 'publishing'
-    WHERE directory.knowledge_base_id = ${knowledgeBaseId}
-      AND coalesce(directory.candidate_relative_path, directory.relative_path) = ANY(${nonRootPaths})
-      AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL
+    WITH effective_sources AS MATERIALIZED (
+      SELECT source.id, source.knowledge_base_id,
+             CASE WHEN operation.id IS NULL THEN source.directory_id
+               ELSE coalesce(source.candidate_directory_id, source.directory_id)
+             END AS directory_id,
+             CASE WHEN operation.id IS NULL THEN source.path_key
+               ELSE coalesce(source.candidate_path_key, source.path_key)
+             END AS path_key,
+             (
+               NOT coalesce(
+                 source.deletion_intent_id = ANY(${visibility.deletionIntentIds}),
+                 false
+               )
+               AND (
+                 source.deleted_at IS NULL
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_source
+                   WHERE active_source.knowledge_base_id = source.knowledge_base_id
+                     AND active_source.projection_kind = 'tree'
+                     AND active_source.source_file_id = source.id
+                 )
+               )
+               AND (
+                 source.processing_status = 'completed'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_source
+                   WHERE active_source.knowledge_base_id = source.knowledge_base_id
+                     AND active_source.projection_kind = 'tree'
+                     AND active_source.source_file_id = source.id
+                 )
+               )
+             ) AS visible
+      FROM focowiki.source_files source
+      LEFT JOIN focowiki.resource_operations operation
+        ON operation.id = source.candidate_operation_id
+       AND operation.knowledge_base_id = source.knowledge_base_id
+       AND operation.id = ANY(${visibility.operationIds})
+       AND operation.state = 'publishing'
+      WHERE source.knowledge_base_id = ${knowledgeBaseId}
+    ),
+    effective_directories AS MATERIALIZED (
+      SELECT directory.id, directory.knowledge_base_id,
+             CASE WHEN operation.id IS NULL THEN directory.name
+               ELSE coalesce(directory.candidate_name, directory.name)
+             END AS name,
+             CASE WHEN operation.id IS NULL THEN directory.parent_id
+               ELSE coalesce(directory.candidate_parent_id, directory.parent_id)
+             END AS parent_id,
+             CASE WHEN operation.id IS NULL THEN directory.relative_path
+               ELSE coalesce(directory.candidate_relative_path, directory.relative_path)
+             END AS relative_path,
+             CASE WHEN operation.id IS NULL THEN directory.path_key
+               ELSE coalesce(directory.candidate_path_key, directory.path_key)
+             END AS path_key,
+             directory.resource_revision
+               + CASE WHEN operation.id IS NULL THEN 0 ELSE 1 END AS resource_revision,
+             EXISTS (
+               SELECT 1
+               FROM focowiki.active_projection_records active_directory
+               WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                 AND active_directory.projection_kind = 'tree'
+                 AND active_directory.payload_json->>'kind' = 'directory'
+                 AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+             ) AS active_visible,
+             NOT coalesce(
+               directory.deletion_intent_id = ANY(${visibility.deletionIntentIds}),
+               false
+             )
+             AND (
+               directory.deleted_at IS NULL
+               OR EXISTS (
+                 SELECT 1
+                 FROM focowiki.active_projection_records active_directory
+                 WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                   AND active_directory.projection_kind = 'tree'
+                   AND active_directory.payload_json->>'kind' = 'directory'
+                   AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+               )
+             ) AS visible
+      FROM focowiki.source_directories directory
+      LEFT JOIN focowiki.resource_operations operation
+        ON operation.id = directory.candidate_operation_id
+       AND operation.knowledge_base_id = directory.knowledge_base_id
+       AND operation.id = ANY(${visibility.operationIds})
+       AND operation.state = 'publishing'
+      WHERE directory.knowledge_base_id = ${knowledgeBaseId}
+    )
+    SELECT directory.relative_path, directory.id, directory.name,
+           directory.resource_revision,
+           (SELECT count(*)::int
+            FROM effective_directories child
+            WHERE child.parent_id = directory.id
+              AND child.visible
+              AND (
+                EXISTS (
+                  SELECT 1
+                  FROM effective_sources descendant
+                  WHERE descendant.visible
+                    AND descendant.path_key COLLATE "C"
+                      >= (child.path_key || '/')::text COLLATE "C"
+                    AND descendant.path_key COLLATE "C"
+                      < (child.path_key || '0')::text COLLATE "C"
+                )
+                OR child.active_visible
+              )) AS direct_directory_count,
+           (SELECT count(*)::int
+            FROM effective_sources child
+            WHERE child.visible AND child.directory_id = directory.id)
+             AS direct_file_count,
+           (SELECT count(*)::int
+            FROM effective_sources descendant
+            WHERE descendant.visible
+              AND descendant.path_key COLLATE "C"
+                >= (directory.path_key || '/')::text COLLATE "C"
+              AND descendant.path_key COLLATE "C"
+                < (directory.path_key || '0')::text COLLATE "C")
+             AS descendant_file_count
+    FROM effective_directories directory
+    WHERE directory.relative_path = ANY(${nonRootPaths})
+      AND directory.visible
   `;
   return new Map(rows.map((row) => [row.relative_path, {
     id: `directory:${row.relative_path}`,
@@ -603,7 +732,8 @@ async function captureDirectories(
 
 async function captureKnowledgeBase(
   transaction: TransactionSql<Record<string, never>>,
-  knowledgeBaseId: string
+  knowledgeBaseId: string,
+  visibility: ProjectionCaptureVisibility
 ): Promise<{
   descriptor: PublicationKnowledgeBaseSnapshot;
   rootEntryCount: number;
@@ -626,7 +756,7 @@ async function captureKnowledgeBase(
            (SELECT count(*)::int FROM focowiki.source_files source
             WHERE source.knowledge_base_id = knowledge_base.id
               AND source.processing_status = 'completed'
-              AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+              AND source.deleted_at IS NULL
               AND source.deletion_intent_id IS NULL) AS source_file_count,
            (SELECT count(*)::int FROM focowiki.source_file_graph_edges edge
             JOIN focowiki.source_files source ON source.id = edge.from_source_file_id
@@ -638,46 +768,250 @@ async function captureKnowledgeBase(
             JOIN focowiki.source_files source ON source.id = node.source_file_id
             WHERE node.knowledge_base_id = knowledge_base.id
               AND source.knowledge_base_id = knowledge_base.id
-              AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+              AND source.deleted_at IS NULL
               AND source.deletion_intent_id IS NULL) AS graph_node_count,
            (SELECT count(*)::int FROM focowiki.source_directories directory
              WHERE directory.knowledge_base_id = knowledge_base.id
                AND coalesce(directory.candidate_parent_id, directory.parent_id) IS NULL
-               AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL)
+               AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM focowiki.source_files descendant
+                   WHERE descendant.knowledge_base_id = directory.knowledge_base_id
+                     AND coalesce(
+                       descendant.candidate_path_key,
+                       descendant.path_key
+                     ) COLLATE "C"
+                       >= (
+                         coalesce(
+                           directory.candidate_path_key,
+                           directory.path_key
+                         ) || '/'
+                       )::text COLLATE "C"
+                     AND coalesce(
+                       descendant.candidate_path_key,
+                       descendant.path_key
+                     ) COLLATE "C"
+                       < (
+                         coalesce(
+                           directory.candidate_path_key,
+                           directory.path_key
+                         ) || '0'
+                       )::text COLLATE "C"
+                     AND descendant.processing_status = 'completed'
+                     AND descendant.deleted_at IS NULL
+                     AND descendant.deletion_intent_id IS NULL
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_directory
+                   WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                     AND active_directory.projection_kind = 'tree'
+                     AND active_directory.payload_json->>'kind' = 'directory'
+                     AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+                 )
+               ))
              AS root_directory_count,
            (SELECT count(*)::int FROM focowiki.source_files source
              WHERE source.knowledge_base_id = knowledge_base.id
                AND coalesce(source.candidate_directory_id, source.directory_id) IS NULL
                AND source.processing_status = 'completed'
-               AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+               AND source.deleted_at IS NULL
                AND source.deletion_intent_id IS NULL) AS root_file_count,
            ((SELECT count(*)::int FROM focowiki.source_directories directory
              WHERE directory.knowledge_base_id = knowledge_base.id
                AND coalesce(directory.candidate_parent_id, directory.parent_id) IS NULL
-               AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL)
+               AND directory.deleted_at IS NULL AND directory.deletion_intent_id IS NULL
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM focowiki.source_files descendant
+                   WHERE descendant.knowledge_base_id = directory.knowledge_base_id
+                     AND coalesce(
+                       descendant.candidate_path_key,
+                       descendant.path_key
+                     ) COLLATE "C"
+                       >= (
+                         coalesce(
+                           directory.candidate_path_key,
+                           directory.path_key
+                         ) || '/'
+                       )::text COLLATE "C"
+                     AND coalesce(
+                       descendant.candidate_path_key,
+                       descendant.path_key
+                     ) COLLATE "C"
+                       < (
+                         coalesce(
+                           directory.candidate_path_key,
+                           directory.path_key
+                         ) || '0'
+                       )::text COLLATE "C"
+                     AND descendant.processing_status = 'completed'
+                     AND descendant.deleted_at IS NULL
+                     AND descendant.deletion_intent_id IS NULL
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_directory
+                   WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                     AND active_directory.projection_kind = 'tree'
+                     AND active_directory.payload_json->>'kind' = 'directory'
+                     AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+                 )
+               ))
             + (SELECT count(*)::int FROM focowiki.source_files source
                WHERE source.knowledge_base_id = knowledge_base.id
                  AND coalesce(source.candidate_directory_id, source.directory_id) IS NULL
                  AND source.processing_status = 'completed'
-                 AND source.deleted_at IS NULL AND source.task_deleted_at IS NULL
+                 AND source.deleted_at IS NULL
                  AND source.deletion_intent_id IS NULL)) AS root_entry_count
     FROM focowiki.knowledge_bases knowledge_base
     WHERE knowledge_base.id = ${knowledgeBaseId} AND knowledge_base.deleted_at IS NULL
   `;
   const row = rows[0];
   if (!row) return null;
+  const root = await captureVisibleRootStatistics(
+    transaction,
+    knowledgeBaseId,
+    visibility
+  );
   return {
     descriptor: {
       id: row.id,
       name: row.name,
       description: row.description,
-      sourceFileCount: Number(row.source_file_count),
+      sourceFileCount: root.sourceFileCount,
       graphEdgeCount: Number(row.graph_edge_count)
     },
-    rootEntryCount: Number(row.root_entry_count),
-    rootDirectoryCount: Number(row.root_directory_count),
-    rootFileCount: Number(row.root_file_count),
+    rootEntryCount: root.rootDirectoryCount + root.rootFileCount,
+    rootDirectoryCount: root.rootDirectoryCount,
+    rootFileCount: root.rootFileCount,
     graphNodeCount: Number(row.graph_node_count)
+  };
+}
+
+async function captureVisibleRootStatistics(
+  transaction: TransactionSql<Record<string, never>>,
+  knowledgeBaseId: string,
+  visibility: ProjectionCaptureVisibility
+): Promise<{
+  sourceFileCount: number;
+  rootDirectoryCount: number;
+  rootFileCount: number;
+}> {
+  const rows = await transaction<Array<{
+    source_file_count: number;
+    root_directory_count: number;
+    root_file_count: number;
+  }>>`
+    WITH effective_sources AS MATERIALIZED (
+      SELECT source.id,
+             CASE WHEN operation.id IS NULL THEN source.directory_id
+               ELSE coalesce(source.candidate_directory_id, source.directory_id)
+             END AS directory_id,
+             CASE WHEN operation.id IS NULL THEN source.path_key
+               ELSE coalesce(source.candidate_path_key, source.path_key)
+             END AS path_key,
+             (
+               NOT coalesce(
+                 source.deletion_intent_id = ANY(${visibility.deletionIntentIds}),
+                 false
+               )
+               AND (
+                 source.deleted_at IS NULL
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_source
+                   WHERE active_source.knowledge_base_id = source.knowledge_base_id
+                     AND active_source.projection_kind = 'tree'
+                     AND active_source.source_file_id = source.id
+                 )
+               )
+               AND (
+                 source.processing_status = 'completed'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM focowiki.active_projection_records active_source
+                   WHERE active_source.knowledge_base_id = source.knowledge_base_id
+                     AND active_source.projection_kind = 'tree'
+                     AND active_source.source_file_id = source.id
+                 )
+               )
+             ) AS visible
+      FROM focowiki.source_files source
+      LEFT JOIN focowiki.resource_operations operation
+        ON operation.id = source.candidate_operation_id
+       AND operation.knowledge_base_id = source.knowledge_base_id
+       AND operation.id = ANY(${visibility.operationIds})
+       AND operation.state = 'publishing'
+      WHERE source.knowledge_base_id = ${knowledgeBaseId}
+    ),
+    effective_directories AS MATERIALIZED (
+      SELECT directory.id,
+             CASE WHEN operation.id IS NULL THEN directory.parent_id
+               ELSE coalesce(directory.candidate_parent_id, directory.parent_id)
+             END AS parent_id,
+             CASE WHEN operation.id IS NULL THEN directory.path_key
+               ELSE coalesce(directory.candidate_path_key, directory.path_key)
+             END AS path_key,
+             EXISTS (
+               SELECT 1
+               FROM focowiki.active_projection_records active_directory
+               WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                 AND active_directory.projection_kind = 'tree'
+                 AND active_directory.payload_json->>'kind' = 'directory'
+                 AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+             ) AS active_visible,
+             NOT coalesce(
+               directory.deletion_intent_id = ANY(${visibility.deletionIntentIds}),
+               false
+             )
+             AND (
+               directory.deleted_at IS NULL
+               OR EXISTS (
+                 SELECT 1
+                 FROM focowiki.active_projection_records active_directory
+                 WHERE active_directory.knowledge_base_id = directory.knowledge_base_id
+                   AND active_directory.projection_kind = 'tree'
+                   AND active_directory.payload_json->>'kind' = 'directory'
+                   AND active_directory.payload_json->>'sourceDirectoryId' = directory.id
+               )
+             ) AS visible
+      FROM focowiki.source_directories directory
+      LEFT JOIN focowiki.resource_operations operation
+        ON operation.id = directory.candidate_operation_id
+       AND operation.knowledge_base_id = directory.knowledge_base_id
+       AND operation.id = ANY(${visibility.operationIds})
+       AND operation.state = 'publishing'
+      WHERE directory.knowledge_base_id = ${knowledgeBaseId}
+    )
+    SELECT
+      (SELECT count(*)::int FROM effective_sources source
+       WHERE source.visible) AS source_file_count,
+      (SELECT count(*)::int FROM effective_directories directory
+       WHERE directory.visible
+         AND directory.parent_id IS NULL
+         AND (
+           directory.active_visible
+           OR EXISTS (
+             SELECT 1
+             FROM effective_sources descendant
+             WHERE descendant.visible
+               AND descendant.path_key COLLATE "C"
+                 >= (directory.path_key || '/')::text COLLATE "C"
+               AND descendant.path_key COLLATE "C"
+                 < (directory.path_key || '0')::text COLLATE "C"
+           )
+         )) AS root_directory_count,
+      (SELECT count(*)::int FROM effective_sources source
+       WHERE source.visible AND source.directory_id IS NULL) AS root_file_count
+  `;
+  return {
+    sourceFileCount: Number(rows[0]?.source_file_count ?? 0),
+    rootDirectoryCount: Number(rows[0]?.root_directory_count ?? 0),
+    rootFileCount: Number(rows[0]?.root_file_count ?? 0)
   };
 }
 

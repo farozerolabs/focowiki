@@ -1037,14 +1037,16 @@ async function failCandidateOperation(
     failedAt: string;
   }
 ): Promise<ResourceOperationFailureResult> {
-  const operations = await transaction<OperationRow[]>`
+  const operations = await transaction<Array<OperationRow & {
+    request_json: unknown;
+  }>>`
     UPDATE focowiki.resource_operations
     SET state = 'failed', error_code = ${input.errorCode},
         updated_at = ${input.failedAt}, completed_at = ${input.failedAt}
     WHERE id = ${input.operationId}
       AND knowledge_base_id = ${input.knowledgeBaseId}
       AND state NOT IN ('completed', 'cancelled', 'superseded')
-    RETURNING ${transaction.unsafe(OPERATION_COLUMNS)}
+    RETURNING ${transaction.unsafe(OPERATION_COLUMNS)}, request_json
   `;
   const operation = operations[0];
   if (!operation) return { operation: null, objectKeys: [] };
@@ -1095,11 +1097,18 @@ async function failCandidateOperation(
       AND operation_id = ${input.operationId}
   `;
 
+  const requestObjectKey = operation.operation_kind === "source_file_replace"
+    && isRecord(operation.request_json)
+    ? readString(operation.request_json.objectKey)
+    : null;
   return {
     operation: mapOperation(operation),
-    objectKeys: Array.from(new Set(candidates.flatMap((candidate) =>
-      candidate.object_key ? [candidate.object_key] : []
-    )))
+    objectKeys: Array.from(new Set([
+      ...candidates.flatMap((candidate) =>
+        candidate.object_key ? [candidate.object_key] : []
+      ),
+      ...(requestObjectKey ? [requestObjectKey] : [])
+    ]))
   };
 }
 
@@ -1174,7 +1183,8 @@ async function prepareSourceFileOperation(
     LIMIT 1
     FOR UPDATE
   `;
-  const source = requireRow(sources[0]);
+  const source = sources[0];
+  if (!source) throw new SourceResourceError("RESOURCE_NOT_FOUND");
   if (source.deletion_intent_id || source.candidate_operation_id) {
     throw new SourceResourceError("RESOURCE_DELETING");
   }
@@ -1339,7 +1349,8 @@ async function prepareSourceDirectoryMove(
     LIMIT 1
     FOR UPDATE
   `;
-  const directory = requireRow(directories[0]);
+  const directory = directories[0];
+  if (!directory) throw new SourceResourceError("RESOURCE_NOT_FOUND");
   if (directory.deletion_intent_id || directory.candidate_operation_id) {
     throw new SourceResourceError("RESOURCE_DELETING");
   }
@@ -1897,7 +1908,7 @@ async function prepareSourceDirectoryDeletionBatch(
           OR owner.state = 'superseded'
         )
         AND source.deletion_intent_id IS DISTINCT FROM ${intent.id}
-      ORDER BY source.path_key COLLATE "C", source.id
+      ORDER BY source.id
       LIMIT ${batchSize}
       FOR UPDATE OF source SKIP LOCKED
     )

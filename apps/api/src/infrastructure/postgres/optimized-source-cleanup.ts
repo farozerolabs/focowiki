@@ -29,11 +29,35 @@ export async function purgeOptimizedSourceState(
       AND source_file_id = ANY(${input.sourceIds})
   `;
   await transaction`
-    DELETE FROM focowiki.generation_projection_records
-    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+    UPDATE focowiki.generation_projection_records record
+    SET action = 'delete',
+        source_file_id = NULL,
+        related_source_file_id = NULL,
+        logical_path = NULL,
+        parent_path = NULL,
+        sort_key = NULL,
+        title = NULL,
+        summary = NULL,
+        searchable_text = NULL,
+        payload_json = '{}'::jsonb
+    FROM focowiki.publication_generations generation
+    WHERE generation.id = record.generation_id
+      AND generation.state IN ('open', 'frozen', 'building', 'validating')
+      AND record.knowledge_base_id = ${input.knowledgeBaseId}
       AND (
-        source_file_id = ANY(${input.sourceIds})
-        OR related_source_file_id = ANY(${input.sourceIds})
+        record.source_file_id = ANY(${input.sourceIds})
+        OR record.related_source_file_id = ANY(${input.sourceIds})
+      )
+  `;
+  await transaction`
+    DELETE FROM focowiki.generation_projection_records record
+    USING focowiki.publication_generations generation
+    WHERE generation.id = record.generation_id
+      AND generation.state IN ('active', 'failed', 'superseded')
+      AND record.knowledge_base_id = ${input.knowledgeBaseId}
+      AND (
+        record.source_file_id = ANY(${input.sourceIds})
+        OR record.related_source_file_id = ANY(${input.sourceIds})
       )
   `;
   await transaction`

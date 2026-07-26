@@ -55,7 +55,20 @@ describeDatabase("maintenance progress repository integration", () => {
         contentProfileVersion: "content-profile-v2",
         graphLexicalProjectionVersion: "graph-lexical-v2",
         processedSourceCount: 32,
+        pendingSourceCount: 60,
+        runningSourceCount: 4,
+        retrySourceCount: 3,
+        failedSourceCount: 1,
         totalSourceCount: 100,
+        activeWorkerCount: 1,
+        sourceReadRetryCount: 6,
+        databaseRetryCount: 2,
+        filesPerSecond: 18.5,
+        sourceReadLatencyMs: 42,
+        databaseBatchLatencyMs: 25,
+        lastProgressAt: "2026-07-20T00:00:02.000Z",
+        lastWorkerHeartbeatAt: "2026-07-20T00:00:02.500Z",
+        estimatedCompletionAt: "2026-07-20T00:00:08.000Z",
         attemptCount: 1,
         maxAttempts: 5,
         safeErrorCode: null
@@ -155,13 +168,27 @@ describeDatabase("maintenance progress repository integration", () => {
         target_tokenizer_contract_version, target_segmentation_version,
         target_content_profile_version,
         target_graph_lexical_projection_version,
-        state, phase, processed_source_count, total_source_count,
+        state, phase, processed_source_count, pending_source_count,
+        running_source_count, retry_source_count, failed_source_count,
+        total_source_count, source_read_retry_count, database_retry_count,
+        recent_files_per_second, rolling_source_read_latency_ms,
+        rolling_database_batch_latency_ms, last_progress_at,
+        last_worker_heartbeat_at, estimated_completion_at,
         attempt_count, max_attempts, updated_at
       ) VALUES (
         ${knowledgeBaseId}, 'body-search-v1', 'nodejieba-3.5.8-test',
         'body-segmentation-v1', 'content-profile-v2', 'graph-lexical-v2',
-        'running', 'lexical_profiles', 32, 100, 1, 5,
+        'running', 'lexical_profiles', 32, 60, 4, 3, 1, 100, 6, 2,
+        18.5, 42, 25, '2026-07-20T00:00:02.000Z',
+        '2026-07-20T00:00:02.500Z', '2026-07-20T00:00:08.000Z', 1, 5,
         '2026-07-20T00:00:03.000Z'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.role_heartbeats (
+        worker_id, role, active_job_count, last_seen_at
+      ) VALUES (
+        'lexical-progress-worker', 'lexical_rebuild', 4, now()
       )
     `;
     await sql`
@@ -237,6 +264,10 @@ describeDatabase("maintenance progress repository integration", () => {
   }
 
   async function cleanup(): Promise<void> {
+    await sql`
+      DELETE FROM focowiki.role_heartbeats
+      WHERE worker_id = 'lexical-progress-worker'
+    `;
     await sql`
       DELETE FROM focowiki.knowledge_bases
       WHERE id IN (${knowledgeBaseId}, ${otherKnowledgeBaseId})

@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   isManifestOwnedPath,
   isReservedOkfMarkdownPath,
-  requiresSourceBodyComparison
+  requiresSourceBodyComparison,
+  validateProjectionCatalog,
+  validateReservedMarkdownFrontmatter
 } from "../lib/okf-file-contract.mjs";
 
 test("recognizes reserved OKF index and log files at every directory depth", () => {
@@ -14,6 +16,72 @@ test("recognizes reserved OKF index and log files at every directory depth", () 
   assert.equal(isReservedOkfMarkdownPath("schema.md"), true);
   assert.equal(isReservedOkfMarkdownPath("pages/team/index.md"), false);
   assert.equal(isReservedOkfMarkdownPath("pages/team/log.md"), false);
+});
+
+test("validates current reserved Markdown frontmatter contracts", () => {
+  assert.equal(
+    validateReservedMarkdownFrontmatter("index.md", { okf_version: "0.1" }),
+    true
+  );
+  assert.equal(
+    validateReservedMarkdownFrontmatter("index.md", {
+      okf_version: "0.1",
+      knowledge_base_id: "internal"
+    }),
+    false
+  );
+  assert.equal(
+    validateReservedMarkdownFrontmatter("schema.md", {
+      type: "Schema Reference",
+      title: "Metadata and navigation schema",
+      description: "Metadata conventions"
+    }),
+    true
+  );
+  assert.equal(validateReservedMarkdownFrontmatter("schema.md", {}), false);
+  assert.equal(validateReservedMarkdownFrontmatter("log.md", {}), true);
+  assert.equal(validateReservedMarkdownFrontmatter("_graph/index.md", {}), true);
+  assert.equal(validateReservedMarkdownFrontmatter("_index/index.md", {}), true);
+  assert.equal(
+    validateReservedMarkdownFrontmatter("log.md", { type: "internal" }),
+    false
+  );
+});
+
+test("validates the current sharded projection catalog", () => {
+  const catalog = {
+    formatVersion: 1,
+    knowledgeBaseId: "kb-1",
+    generationId: "generation-1",
+    projections: {
+      search: { shards: [{ path: "_index/search/v1/0001.json", recordCount: 2 }] },
+      links: { shards: [] },
+      manifest: { shards: [{ path: "_index/manifest/v1/0001.json", recordCount: 2 }] },
+      tree: { shards: [{ path: "_index/tree/v1/0001.json", recordCount: 3 }] },
+      graphNodes: { shards: [] },
+      graphEdges: { shards: [] },
+      relatedFiles: { pathTemplate: "_graph/by-file/{fileId}.json" }
+    }
+  };
+
+  assert.equal(validateProjectionCatalog(catalog), true);
+  assert.equal(
+    validateProjectionCatalog({
+      ...catalog,
+      projections: { ...catalog.projections, search: "_index/search.json" }
+    }),
+    false
+  );
+  assert.equal(
+    validateProjectionCatalog({
+      ...catalog,
+      projections: {
+        ...catalog.projections,
+        tree: { shards: [{ path: "../tree.json", recordCount: 1 }] }
+      }
+    }),
+    false
+  );
 });
 
 test("does not classify concept and numbered navigation files as reserved", () => {

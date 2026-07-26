@@ -38,6 +38,7 @@ RUN test -f apps/api/runtime/main.mjs \
     && test -f apps/api/runtime/source-worker.mjs \
     && test -f apps/api/runtime/publication-worker.mjs \
     && test -f apps/api/runtime/projection-repair-worker.mjs \
+    && test -f apps/api/runtime/lexical-rebuild-worker.mjs \
     && test -f apps/api/runtime/maintenance-worker.mjs \
     && test -f apps/api/runtime/migrate.mjs \
     && test -f apps/api/runtime/node_modules/nodejieba/package.json \

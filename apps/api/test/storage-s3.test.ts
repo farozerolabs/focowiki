@@ -68,6 +68,53 @@ describe("S3 storage adapter", () => {
       .rejects.toBeInstanceOf(Error);
   });
 
+  it("reads bounded text with one GET request", async () => {
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "GetObjectCommand") {
+        return {
+          Body: Uint8Array.from(Buffer.from("# Heading\nBody")),
+          ContentLength: 14
+        };
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.getObjectText("objects/value.md", { maxBytes: 14 }))
+      .resolves.toBe("# Heading\nBody");
+
+    expect(send).toHaveBeenCalledOnce();
+    const command = (send.mock.calls as unknown as Array<[
+      { constructor: { name: string } }
+    ]>)[0]?.[0];
+    expect(command?.constructor.name).toBe("GetObjectCommand");
+  });
+
+  it("stops a bounded text stream when the response exceeds its limit", async () => {
+    async function* body(): AsyncGenerator<Uint8Array> {
+      yield Uint8Array.from([1, 2]);
+      yield Uint8Array.from([3, 4]);
+    }
+    const send = vi.fn(async () => ({ Body: body() }));
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.getObjectText("objects/value.md", { maxBytes: 3 }))
+      .rejects.toMatchObject({
+        name: "StorageObjectTooLargeError",
+        key: "objects/value.md",
+        maxBytes: 3
+      });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it("lists bounded object metadata pages without loading the managed prefix", async () => {
     const send = vi.fn(async () => ({
       Contents: [

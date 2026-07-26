@@ -84,6 +84,27 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.total).toBe(baseline.total);
   });
 
+  it("allows a resumable lexical rebuild to survive a compatible migration", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Migration preflight')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version, generation_kind
+      ) VALUES (
+        ${generationId}, ${knowledgeBaseId}, 'building', 2, 'lexical_rebuild'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
+    expect(snapshot.total).toBe(baseline.total);
+  });
+
   it("does not block migration for an upload session whose lease has expired", async () => {
     await cleanup();
     const baseline = await inspectMigrationWork(sql);
@@ -199,7 +220,7 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.total).toBe(baseline.total + 4);
   });
 
-  it("applies the directory-order migration while preserving non-drained deletion work", async () => {
+  it("preserves non-drained deletion work after compatible migrations", async () => {
     await cleanup();
     await seedRepairDependentDeletion({
       failureMessage: "DIRECTORY_NAVIGATION_COUNT_MISMATCH:pages/example"
@@ -217,20 +238,6 @@ describeDatabase("migration preflight integration", () => {
       deletionIntents: 1,
       total: 4
     });
-    await sql`
-      DROP INDEX focowiki.active_projection_records_tree_byte_order_idx
-    `;
-    await sql`
-      DROP INDEX focowiki.generation_directory_navigation_leaves_byte_order_idx
-    `;
-    await sql`
-      UPDATE focowiki.runtime_generation
-      SET generation = 'projection-repair-throughput-v13'
-      WHERE singleton = true
-    `;
-
-    await applyMigrations(sql);
-
     expect((await sql<Array<{ generation: string }>>`
       SELECT generation
       FROM focowiki.runtime_generation

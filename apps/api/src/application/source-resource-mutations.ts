@@ -139,7 +139,7 @@ export function createSourceResourceMutationService(input: {
         contentType: "text/markdown; charset=utf-8"
       });
       try {
-        return await acceptOperation(
+        const result = await acceptOperation(
           {
             knowledgeBaseId: request.knowledgeBaseId,
             kind: "source_file_replace",
@@ -157,6 +157,10 @@ export function createSourceResourceMutationService(input: {
           },
           request.maxAttempts
         );
+        if (result.replayed) {
+          await input.storage.delete(objectKey).catch(() => undefined);
+        }
+        return result;
       } catch (error) {
         await input.storage.delete(objectKey).catch(() => undefined);
         throw error;
@@ -169,11 +173,11 @@ export function createSourceResourceMutationService(input: {
       expectedResourceRevision: number;
       maxAttempts: number;
     }) {
+      const result = await resources.deleteSourceFile(request);
       const closures = await input.graph?.getMutationClosures?.({
         knowledgeBaseId: request.knowledgeBaseId,
         sourceFileIds: [request.sourceFileId]
       });
-      const result = await resources.deleteSourceFile(request);
       const mutation = result.sourceMutation;
       const now = input.runtime.clock.now().toISOString();
       if (mutation) {

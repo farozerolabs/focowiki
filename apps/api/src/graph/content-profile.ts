@@ -28,7 +28,7 @@ export type SourceContentProfile = {
   tokenizerContractVersion: string;
 };
 
-export const CONTENT_PROFILE_VERSION = "content-profile-v2";
+export const CONTENT_PROFILE_VERSION = "content-profile-v3";
 export const CONTENT_PROFILE_SOURCE_CHAR_LIMIT = 200_000;
 export const CONTENT_PROFILE_SOURCE_LINE_LIMIT = 5_000;
 

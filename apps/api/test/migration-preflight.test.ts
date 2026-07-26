@@ -52,7 +52,8 @@ describe("migration preflight", () => {
     ).replace(/\s+/g, " ").toLowerCase();
 
     expect(source).toContain(
-      "coalesce( to_jsonb(generation)->>'generation_kind', 'normal' ) <> 'projection_repair'"
+      "coalesce( to_jsonb(generation)->>'generation_kind', 'normal' ) "
+      + "not in ('projection_repair', 'lexical_rebuild')"
     );
     expect(source).toContain("generation.state in ('frozen', 'building', 'validating')");
   });

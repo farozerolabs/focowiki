@@ -137,9 +137,11 @@ These values stay in `.env` because they set API memory boundaries, Redis cursor
 | --- | --- | --- |
 | `SOURCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one source-worker process. Start with `8` on an 8C/32G server. |
 | `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one publication-worker process. Start with `4`. |
+| `PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one projection-repair-worker process. Start with `8`. |
+| `LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one lexical-rebuild-worker process. Start with `8`; this is startup topology, while live lexical work concurrency is managed in Admin Settings. |
 | `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one maintenance-worker process. Start with `2`. |
 
-Each role creates its PostgreSQL pool during startup. Change a role pool in `.env` and restart that role. Keep the total budget within `API replicas * DATABASE_POOL_MAX + source-worker replicas * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker replicas * PUBLICATION_WORKER_DATABASE_POOL_MAX + maintenance-worker replicas * MAINTENANCE_WORKER_DATABASE_POOL_MAX + migration and operational headroom`.
+Each role creates its PostgreSQL pool during startup. Change a role pool in `.env` and restart that role. Keep the total budget within `API replicas * DATABASE_POOL_MAX + source-worker replicas * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker replicas * PUBLICATION_WORKER_DATABASE_POOL_MAX + projection-repair-worker replicas * PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX + lexical-rebuild-worker replicas * LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX + maintenance-worker replicas * MAINTENANCE_WORKER_DATABASE_POOL_MAX + migration and operational headroom`.
 
 ## Security Audit
 

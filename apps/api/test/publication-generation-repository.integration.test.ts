@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import postgres from "postgres";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type {
   PublicationGenerationRepository,
   SourceCompletionCommitResult
@@ -8,6 +8,7 @@ import type {
 import { createChangeFactIdentity } from "../src/domain/generation.js";
 import { normalizeSourceRelativePath } from "../src/domain/source-path.js";
 import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresPublicationGraphSummaryFinalizer } from "../src/infrastructure/postgres/publication-graph-summary-finalizer.js";
 import { createPostgresPublicationImpactRepository } from "../src/infrastructure/postgres/publication-impact-repository.js";
 import { createPostgresGenerationObjectReferenceRepository } from "../src/infrastructure/postgres/generation-object-reference-repository.js";
 import { createPostgresImmutableObjectRepository } from "../src/infrastructure/postgres/immutable-object-repository.js";
@@ -15,24 +16,36 @@ import { createPostgresProjectionRecordRepository } from "../src/infrastructure/
 import { createPostgresProjectionSegmentRepository } from "../src/infrastructure/postgres/projection-segment-repository.js";
 import { createPostgresUploadSessionRepository } from "../src/infrastructure/postgres/upload-session-repository.js";
 import { planPublicationImpacts } from "../src/publication/impact-planner.js";
+import { applyMigrations } from "../src/db/migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
 
 describeDatabase("publication generation repository integration", () => {
+  const connectionUrl = databaseUrl ?? "postgres://unused:unused@127.0.0.1/unused";
   const statements: string[] = [];
-  const sql = postgres(databaseUrl!, {
+  const databaseName = `focowiki_publication_generation_${process.pid}_${
+    randomUUID().replaceAll("-", "").slice(0, 10)
+  }`;
+  const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), { max: 1 });
+  const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), {
     max: 4,
     debug: (_connection, query) => statements.push(query)
   });
   const uploads = createPostgresUploadSessionRepository(sql);
   const generations = createPostgresPublicationGenerationRepository(sql);
+  const graphSummaries = createPostgresPublicationGraphSummaryFinalizer(sql);
   const publicationImpacts = createPostgresPublicationImpactRepository(sql);
   const references = createPostgresGenerationObjectReferenceRepository(sql);
   const objects = createPostgresImmutableObjectRepository(sql);
   const projectionRecords = createPostgresProjectionRecordRepository(sql);
   const projectionSegments = createPostgresProjectionSegmentRepository(sql);
   const knowledgeBaseId = "kb-generation-integration";
+
+  beforeAll(async () => {
+    await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+    await applyMigrations(sql);
+  });
 
   beforeEach(async () => {
     await cleanup();
@@ -45,6 +58,8 @@ describeDatabase("publication generation repository integration", () => {
   afterAll(async () => {
     await cleanup();
     await sql.end({ timeout: 5 });
+    await admin.unsafe(`DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`);
+    await admin.end({ timeout: 5 });
   });
 
   it("atomically commits source facts and coalesces one open generation", async () => {
@@ -136,6 +151,31 @@ describeDatabase("publication generation repository integration", () => {
     });
   });
 
+  it("excludes lexical rebuild candidates from ordinary publication progress", async () => {
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, generation_kind
+      ) VALUES (
+        'generation-lexical-candidate', ${knowledgeBaseId}, 'building', 'lexical_rebuild'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_progress (
+        knowledge_base_id, generation_id, stage, processed_impact_count,
+        total_impact_count, touched_shard_count
+      ) VALUES (
+        ${knowledgeBaseId}, 'generation-lexical-candidate', 'projection', 50, 100, 4
+      )
+    `;
+
+    await expect(generations.getProgressSummary({ knowledgeBaseId })).resolves.toMatchObject({
+      generationId: null,
+      stage: null,
+      processedImpactCount: 0,
+      totalImpactCount: 0
+    });
+  });
+
   it("persists one bounded change-fact page through set-based projection writes", async () => {
     const sources = await Promise.all([
       registerSource(104),
@@ -151,6 +191,69 @@ describeDatabase("publication generation repository integration", () => {
     expect(countStatements("INSERT INTO focowiki.publication_impacts")).toBe(1);
     expect(countStatements("INSERT INTO focowiki.publication_impact_causes")).toBe(1);
     expect(countStatements("INSERT INTO focowiki.publication_projection_inputs")).toBe(1);
+  });
+
+  it("counts fallback graph nodes idempotently when source graph profiles are unavailable", async () => {
+    const sources = await Promise.all([
+      registerSource(109),
+      registerSource(110)
+    ]);
+    for (const source of sources) await commit(source, { assemble: false });
+
+    const assembled = await assemble("2026-07-17T01:00:01.000Z");
+    for (const source of sources) {
+      await projectionRecords.stageUpsert({
+        knowledgeBaseId,
+        generationId: assembled.generationId!,
+        projectionKind: "graph_node",
+        recordId: source.sourceFileId,
+        shardKey: "graph_node/v1/0000",
+        sourceFileId: source.sourceFileId,
+        relatedSourceFileId: null,
+        logicalPath: source.path,
+        parentPath: null,
+        sortKey: source.path,
+        title: source.path,
+        summary: null,
+        searchableText: source.path,
+        payload: { id: source.sourceFileId, path: source.path }
+      });
+    }
+    await graphSummaries.finalize({
+      knowledgeBaseId,
+      generationId: assembled.generationId!
+    });
+    await graphSummaries.finalize({
+      knowledgeBaseId,
+      generationId: assembled.generationId!
+    });
+    const summaries = await sql<Array<{ node_count: number; edge_count: number }>>`
+      SELECT node_count, edge_count
+      FROM focowiki.generation_graph_summaries
+      WHERE generation_id = ${assembled.generationId}
+    `;
+
+    expect(summaries.map((summary) => ({
+      node_count: Number(summary.node_count),
+      edge_count: Number(summary.edge_count)
+    }))).toEqual([{ node_count: 2, edge_count: 0 }]);
+  });
+
+  it("serializes projection input capture with active generation selection", async () => {
+    const source = await registerSource(108);
+    await commit(source, { assemble: false });
+    statements.length = 0;
+
+    await assemble("2026-07-17T01:00:02.000Z");
+
+    const generationLockIndex = statements.findIndex((statement) =>
+      statement.includes("focowiki:generation:")
+    );
+    const sourceCaptureIndex = statements.findIndex((statement) =>
+      statement.includes("WITH requested AS")
+    );
+    expect(generationLockIndex).toBeGreaterThanOrEqual(0);
+    expect(sourceCaptureIndex).toBeGreaterThan(generationLockIndex);
   });
 
   it("assembles deferred directory descendants before scheduling the final directory mutation", async () => {
@@ -488,6 +591,447 @@ describeDatabase("publication generation repository integration", () => {
     });
   });
 
+  it("serializes source completion with generation projection input capture", async () => {
+    const first = await registerSource(107);
+    const second = await registerSource(108);
+    await commit(first, { assemble: false });
+
+    let releaseLock!: () => void;
+    let reportLockAcquired!: () => void;
+    const lockRelease = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockAcquired = new Promise<void>((resolve) => {
+      reportLockAcquired = resolve;
+    });
+    const blocker = sql.begin(async (transaction) => {
+      await transaction`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended('focowiki:generation:' || ${knowledgeBaseId}, 0)
+        )
+      `;
+      reportLockAcquired();
+      await lockRelease;
+    });
+    await lockAcquired;
+
+    const assembly = assemble("2026-07-17T02:10:00.000Z");
+    await waitForAdvisoryWaiters(1);
+    let completionSettled = false;
+    const completion = commit(second, { assemble: false }).finally(() => {
+      completionSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const completionWaitedForAssemblyBoundary = !completionSettled;
+
+    releaseLock();
+    await blocker;
+    const [assembled] = await Promise.all([assembly, completion]);
+
+    expect(completionWaitedForAssemblyBoundary).toBe(true);
+    expect(assembled.generationId).not.toBeNull();
+    const inputs = await sql<Array<{
+      payload_json: {
+        kind: string;
+        directory: {
+          relativePath: string;
+          directFileCount: number;
+          descendantFileCount: number;
+        };
+      };
+    }>>`
+      SELECT projection_input.payload_json
+      FROM focowiki.publication_projection_inputs projection_input
+      WHERE projection_input.knowledge_base_id = ${knowledgeBaseId}
+        AND projection_input.generation_id = ${assembled.generationId}
+        AND projection_input.payload_json->>'kind' = 'directory'
+        AND projection_input.payload_json->'directory'->>'relativePath' = 'docs'
+    `;
+    expect(inputs).toEqual([{
+      payload_json: expect.objectContaining({
+        kind: "directory",
+        directory: expect.objectContaining({
+          relativePath: "docs",
+          directFileCount: 1,
+          descendantFileCount: 1
+        })
+      })
+    }]);
+    expect((await sql<Array<{
+      generation_id: string | null;
+      assembly_state: string;
+    }>>`
+      SELECT generation_id, assembly_state
+      FROM focowiki.publication_change_facts
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND source_file_id = ${second.sourceFileId}
+    `)[0]).toEqual({
+      generation_id: null,
+      assembly_state: "pending"
+    });
+  });
+
+  it("keeps an active source visible while a replacement is processing", async () => {
+    const activeSource = await registerSource(115);
+    const active = await commit(activeSource);
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET state = 'active', activated_at = '2026-07-17T02:15:00.000Z'
+      WHERE id = ${active.generationId}
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${active.generationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, source_file_id,
+        logical_path, parent_path, sort_key, title, searchable_text, payload_json
+      ) VALUES (
+        ${knowledgeBaseId}, 'tree', ${activeSource.sourceFileId},
+        ${active.generationId}, 'tree/v1/0000', ${activeSource.sourceFileId},
+        ${`pages/${activeSource.path}`}, 'pages/docs',
+        ${activeSource.sourceFileId}, 'active source', 'active source',
+        ${sql.json({
+          id: activeSource.sourceFileId,
+          kind: "file",
+          path: `pages/${activeSource.path}`
+        })}
+      )
+    `;
+    await sql`
+      UPDATE focowiki.source_files
+      SET processing_status = 'running',
+          processing_stage = 'llm_suggestion'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${activeSource.sourceFileId}
+    `;
+
+    const currentSource = await registerSource(116);
+    const current = await commit(currentSource);
+    const inputs = await sql<Array<{
+      payload_json: {
+        kind: string;
+        directory?: {
+          relativePath: string;
+          directFileCount: number;
+          descendantFileCount: number;
+        };
+        descriptor?: { sourceFileCount: number };
+      };
+    }>>`
+      SELECT payload_json
+      FROM focowiki.publication_projection_inputs
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${current.generationId}
+        AND (
+          payload_json->>'kind' = 'knowledge_base'
+          OR (
+            payload_json->>'kind' = 'directory'
+            AND payload_json->'directory'->>'relativePath' = 'docs'
+          )
+        )
+      ORDER BY payload_json->>'kind'
+    `;
+
+    expect(inputs).toEqual([
+      {
+        payload_json: expect.objectContaining({
+          kind: "directory",
+          directory: expect.objectContaining({
+            relativePath: "docs",
+            directFileCount: 2,
+            descendantFileCount: 2
+          })
+        })
+      },
+      {
+        payload_json: expect.objectContaining({
+          kind: "knowledge_base",
+          descriptor: expect.objectContaining({ sourceFileCount: 2 })
+        })
+      }
+    ]);
+  });
+
+  it("excludes directories created only by unfinished uploads from frozen inputs", async () => {
+    const completed = await registerSource(111);
+    await commit(completed, { assemble: false });
+    await registerSource(112, "incoming/pending.md");
+    await registerSource(113, "docs/pending/staged.md");
+
+    const assembled = await assemble("2026-07-17T02:20:00.000Z");
+    expect(assembled.generationId).not.toBeNull();
+    const inputs = await sql<Array<{
+      relative_path: string;
+      direct_directory_count: number;
+      direct_file_count: number;
+      descendant_file_count: number;
+    }>>`
+      SELECT payload_json->'directory'->>'relativePath' AS relative_path,
+             (payload_json->'directory'->>'directDirectoryCount')::int
+               AS direct_directory_count,
+             (payload_json->'directory'->>'directFileCount')::int
+               AS direct_file_count,
+             (payload_json->'directory'->>'descendantFileCount')::int
+               AS descendant_file_count
+      FROM focowiki.publication_projection_inputs
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${assembled.generationId}
+        AND payload_json->>'kind' = 'directory'
+        AND payload_json->'directory'->>'relativePath' IN ('', 'docs')
+      ORDER BY payload_json->'directory'->>'relativePath'
+    `;
+    expect(inputs).toEqual([
+      {
+        relative_path: "",
+        direct_directory_count: 1,
+        direct_file_count: 0,
+        descendant_file_count: 1
+      },
+      {
+        relative_path: "docs",
+        direct_directory_count: 0,
+        direct_file_count: 1,
+        descendant_file_count: 1
+      }
+    ]);
+  });
+
+  it("keeps an active directory visible after its last source file is deleted", async () => {
+    const nested = await registerSource(114, "docs/nested/only.md");
+    await commit(nested, { assemble: false });
+    const directories = await sql<Array<{ id: string; relative_path: string }>>`
+      SELECT id, relative_path
+      FROM focowiki.source_directories
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND relative_path IN ('docs', 'docs/nested')
+    `;
+    const directoryIds = new Map(
+      directories.map((directory) => [directory.relative_path, directory.id])
+    );
+    const activeGenerationId = "generation-active-directory";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version, activated_at
+      ) VALUES (
+        ${activeGenerationId}, ${knowledgeBaseId}, 'active', 2,
+        '2026-07-17T02:24:00.000Z'
+      )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${activeGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, logical_path,
+        parent_path, sort_key, title, searchable_text, payload_json
+      ) VALUES
+        (
+          ${knowledgeBaseId}, 'tree', 'directory:docs',
+          ${activeGenerationId}, 'tree/v1/0000', 'pages/docs',
+          'pages', 'docs', 'docs', 'docs',
+          ${sql.json({
+            id: "directory:docs",
+            kind: "directory",
+            path: "pages/docs",
+            sourceDirectoryId: directoryIds.get("docs")
+          })}
+        ),
+        (
+          ${knowledgeBaseId}, 'tree', 'directory:docs/nested',
+          ${activeGenerationId}, 'tree/v1/0000', 'pages/docs/nested',
+          'pages/docs', 'nested', 'nested', 'nested',
+          ${sql.json({
+            id: "directory:docs/nested",
+            kind: "directory",
+            path: "pages/docs/nested",
+            sourceDirectoryId: directoryIds.get("docs/nested")
+          })}
+        )
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, source_file_id,
+        logical_path, parent_path, sort_key, title, searchable_text, payload_json
+      ) VALUES (
+        ${knowledgeBaseId}, 'tree', ${nested.sourceFileId},
+        ${activeGenerationId}, 'tree/v1/0000', ${nested.sourceFileId},
+        ${`pages/${nested.path}`}, 'pages/docs/nested',
+        ${nested.sourceFileId}, 'only.md', 'only.md',
+        ${sql.json({
+          id: nested.sourceFileId,
+          kind: "file",
+          path: `pages/${nested.path}`
+        })}
+      )
+    `;
+    const deletionIntentId = "deletion-active-empty-directory";
+    await sql`
+      INSERT INTO focowiki.deletion_intents (
+        id, knowledge_base_id, target_kind, target_id, catalog_generation
+      ) VALUES (
+        ${deletionIntentId}, ${knowledgeBaseId}, 'source_file',
+        ${nested.sourceFileId}, 3
+      )
+    `;
+    await sql`
+      UPDATE focowiki.source_files
+      SET deleted_at = '2026-07-17T02:25:00.000Z',
+          deletion_intent_id = ${deletionIntentId}
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${nested.sourceFileId}
+    `;
+    const changeFactId = createChangeFactIdentity({
+      knowledgeBaseId,
+      sourceRevisionId: nested.sourceRevisionId,
+      kind: "source_deleted",
+      previousPath: nested.path,
+      path: null,
+      mutationIdentity: deletionIntentId
+    });
+    await generations.commitMutation({
+      knowledgeBaseId,
+      sourceFileId: nested.sourceFileId,
+      sourceRevisionId: nested.sourceRevisionId,
+      kind: "source_deleted",
+      previousPath: nested.path,
+      path: null,
+      resourceRevision: 3,
+      operationId: null,
+      deletionIntentId,
+      changeFactId,
+      impacts: planPublicationImpacts({
+        changeFactId,
+        kind: "source_deleted",
+        sourceFileId: nested.sourceFileId,
+        previousPath: nested.path,
+        path: null,
+        config: {
+          searchShardCount: 16,
+          linkShardCount: 16,
+          manifestShardCount: 16,
+          treeShardCount: 16,
+          graphNodeShardCount: 16,
+          graphEdgeShardCount: 16
+        }
+      }),
+      publicationSettingsSnapshot: publicationSettingsSnapshot(),
+      publicationMaxAttempts: 3,
+      schedulePublication: false,
+      committedAt: "2026-07-17T02:25:00.000Z"
+    });
+
+    const assembled = await assemble("2026-07-17T02:25:01.000Z");
+    await expect(sql<Array<{
+      relative_path: string;
+      direct_directory_count: number;
+    }>>`
+      SELECT payload_json->'directory'->>'relativePath' AS relative_path,
+             (payload_json->'directory'->>'directDirectoryCount')::int
+               AS direct_directory_count
+      FROM focowiki.publication_projection_inputs
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${assembled.generationId}
+        AND payload_json->>'kind' = 'directory'
+        AND payload_json->'directory'->>'relativePath' IN ('', 'docs')
+      ORDER BY payload_json->'directory'->>'relativePath'
+    `).resolves.toEqual([
+      { relative_path: "", direct_directory_count: 1 },
+      { relative_path: "docs", direct_directory_count: 1 }
+    ]);
+
+    const laterSource = await registerSource(117, "incoming/later.md");
+    await commit(laterSource, { assemble: false });
+    const continued = await assemble("2026-07-17T02:25:02.000Z");
+    expect(continued.generationId).toBe(assembled.generationId);
+    await expect(sql<Array<{
+      source_file_count: number;
+      descendant_file_count: number;
+    }>>`
+      SELECT
+        (payload_json->'descriptor'->>'sourceFileCount')::int AS source_file_count,
+        (
+          SELECT (directory.payload_json->'directory'->>'descendantFileCount')::int
+          FROM focowiki.publication_projection_inputs directory
+          WHERE directory.knowledge_base_id = ${knowledgeBaseId}
+            AND directory.generation_id = ${continued.generationId}
+            AND directory.payload_json->>'kind' = 'directory'
+            AND directory.payload_json->'directory'->>'relativePath' = ''
+        ) AS descendant_file_count
+      FROM focowiki.publication_projection_inputs root
+      WHERE root.knowledge_base_id = ${knowledgeBaseId}
+        AND root.generation_id = ${continued.generationId}
+        AND root.payload_json->>'kind' = 'knowledge_base'
+    `).resolves.toEqual([{
+      source_file_count: 1,
+      descendant_file_count: 1
+    }]);
+  });
+
+  it("keeps completed content visible when its task row is hidden", async () => {
+    const hiddenSource = await registerSource(109);
+    await sql`
+      UPDATE focowiki.source_files
+      SET processing_status = 'completed',
+          task_deleted_at = '2026-07-17T01:15:00.000Z'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${hiddenSource.sourceFileId}
+    `;
+
+    const currentSource = await registerSource(110);
+    const committed = await commit(currentSource);
+    const inputs = await sql<Array<{
+      payload_json: {
+        kind: string;
+        directory?: {
+          relativePath: string;
+          directFileCount: number;
+          descendantFileCount: number;
+        };
+        descriptor?: { sourceFileCount: number };
+      };
+    }>>`
+      SELECT payload_json
+      FROM focowiki.publication_projection_inputs
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${committed.generationId}
+        AND (
+          payload_json->>'kind' = 'knowledge_base'
+          OR (
+            payload_json->>'kind' = 'directory'
+            AND payload_json->'directory'->>'relativePath' = 'docs'
+          )
+        )
+      ORDER BY payload_json->>'kind'
+    `;
+
+    expect(inputs).toEqual([
+      {
+        payload_json: expect.objectContaining({
+          kind: "directory",
+          directory: expect.objectContaining({
+            relativePath: "docs",
+            directFileCount: 2,
+            descendantFileCount: 2
+          })
+        })
+      },
+      {
+        payload_json: expect.objectContaining({
+          kind: "knowledge_base",
+          descriptor: expect.objectContaining({ sourceFileCount: 2 })
+        })
+      }
+    ]);
+  });
+
   it("advances a processed replacement operation through publication activation", async () => {
     const source = await registerSource(1);
     const initial = await commit(source);
@@ -685,6 +1229,80 @@ describeDatabase("publication generation repository integration", () => {
       SELECT state FROM focowiki.resource_operations WHERE id = ${operationId}
     `;
     expect(operations[0]?.state).toBe("publishing");
+  });
+
+  it("treats deleted graph neighbors as empty relation projection inputs", async () => {
+    const source = await registerSource(11);
+    const deletedNeighbor = await registerSource(12);
+    const deletedAt = "2026-07-17T01:10:00.000Z";
+    await sql`
+      UPDATE focowiki.source_files
+      SET deleted_at = ${deletedAt}
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ANY(${[source.sourceFileId, deletedNeighbor.sourceFileId]})
+    `;
+    const changeFactId = createChangeFactIdentity({
+      knowledgeBaseId,
+      sourceRevisionId: source.sourceRevisionId,
+      kind: "source_deleted",
+      previousPath: source.path,
+      path: null,
+      mutationIdentity: "deleted-neighbor-capture"
+    });
+    await generations.commitMutation({
+      knowledgeBaseId,
+      sourceFileId: source.sourceFileId,
+      sourceRevisionId: source.sourceRevisionId,
+      kind: "source_deleted",
+      previousPath: source.path,
+      path: null,
+      resourceRevision: 2,
+      operationId: null,
+      deletionIntentId: "deletion-intent-deleted-neighbor-capture",
+      changeFactId,
+      impacts: planPublicationImpacts({
+        changeFactId,
+        kind: "source_deleted",
+        sourceFileId: source.sourceFileId,
+        previousPath: source.path,
+        path: null,
+        graphNeighborSourceFileIds: [deletedNeighbor.sourceFileId],
+        config: {
+          searchShardCount: 16,
+          linkShardCount: 16,
+          manifestShardCount: 16,
+          treeShardCount: 16,
+          graphNodeShardCount: 16,
+          graphEdgeShardCount: 16
+        }
+      }),
+      publicationSettingsSnapshot: publicationSettingsSnapshot(),
+      publicationMaxAttempts: 3,
+      schedulePublication: false,
+      committedAt: deletedAt
+    });
+
+    const assembled = await assemble("2026-07-17T01:10:01.000Z");
+    const inputs = await sql<Array<{
+      projection_kind: string;
+      payload_json: { kind: string };
+    }>>`
+      SELECT impact.projection_kind, projection_input.payload_json
+      FROM focowiki.publication_impacts impact
+      JOIN focowiki.publication_projection_inputs projection_input
+        ON projection_input.knowledge_base_id = impact.knowledge_base_id
+       AND projection_input.generation_id = impact.generation_id
+       AND projection_input.input_key = impact.projection_input_key
+      WHERE impact.generation_id = ${assembled.generationId}
+        AND impact.record_identity = ${deletedNeighbor.sourceFileId}
+        AND impact.projection_kind IN ('graph_reverse_neighbor', 'related_files')
+      ORDER BY impact.projection_kind
+    `;
+
+    expect(inputs).toEqual([
+      { projection_kind: "graph_reverse_neighbor", payload_json: { kind: "empty" } },
+      { projection_kind: "related_files", payload_json: { kind: "empty" } }
+    ]);
   });
 
   it("commits path mutations and inverse deletion facts through the same generation", async () => {
@@ -1078,6 +1696,176 @@ describeDatabase("publication generation repository integration", () => {
     ]);
   });
 
+  it("advances projection version ownership when a successor becomes active", async () => {
+    const firstSource = await registerSource(21);
+    const first = await commit(firstSource);
+    const firstChecksum = "ad".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: first.generationId,
+      source: firstSource,
+      checksum: firstChecksum,
+      timestampPrefix: "2026-07-17T04:00"
+    });
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: first.generationId,
+      expectedPredecessorGenerationId: null,
+      rootManifestChecksumSha256: firstChecksum,
+      rootManifestObjectKey: `generated/${firstChecksum}`,
+      activatedAt: "2026-07-17T04:00:03.000Z"
+    })).toBe(true);
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_versions (
+        knowledge_base_id, projection_kind, format_version,
+        input_version, active_generation_id
+      ) VALUES
+        (${knowledgeBaseId}, 'tree', 2, 2, ${first.generationId}),
+        (${knowledgeBaseId}, 'directory', 2, 2, ${first.generationId}),
+        (${knowledgeBaseId}, 'graph', 2, 2, ${first.generationId})
+    `;
+
+    const secondSource = await registerSource(22);
+    const second = await commit(secondSource);
+    const secondChecksum = "ae".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: second.generationId,
+      source: secondSource,
+      checksum: secondChecksum,
+      timestampPrefix: "2026-07-17T05:00"
+    });
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: second.generationId,
+      expectedPredecessorGenerationId: first.generationId,
+      rootManifestChecksumSha256: secondChecksum,
+      rootManifestObjectKey: `generated/${secondChecksum}`,
+      activatedAt: "2026-07-17T05:00:03.000Z"
+    })).toBe(true);
+
+    expect(await sql<Array<{ projection_kind: string; active_generation_id: string }>>`
+      SELECT projection_kind, active_generation_id
+      FROM focowiki.knowledge_base_projection_versions
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY projection_kind
+    `).toEqual([
+      { projection_kind: "directory", active_generation_id: second.generationId },
+      { projection_kind: "graph", active_generation_id: second.generationId },
+      { projection_kind: "tree", active_generation_id: second.generationId }
+    ]);
+  });
+
+  it("activates captured search references while sibling source changes are staged", async () => {
+    const firstSource = await registerSource(41);
+    const first = await commit(firstSource);
+    const firstChecksum = "ca".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: first.generationId,
+      source: firstSource,
+      checksum: firstChecksum,
+      timestampPrefix: "2026-07-17T08:10"
+    });
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: first.generationId,
+      expectedPredecessorGenerationId: null,
+      rootManifestChecksumSha256: firstChecksum,
+      rootManifestObjectKey: `generated/${firstChecksum}`,
+      activatedAt: "2026-07-17T08:10:03.000Z"
+    })).toBe(true);
+
+    const secondSource = await registerSource(42);
+    const second = await commit(secondSource);
+    const secondChecksum = "cb".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: second.generationId,
+      source: secondSource,
+      checksum: secondChecksum,
+      timestampPrefix: "2026-07-17T08:20"
+    });
+
+    await registerSource(43);
+    await sql`
+      UPDATE focowiki.source_files
+      SET candidate_relative_path = 'docs/file-41-moved.md'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${firstSource.sourceFileId}
+    `;
+
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: second.generationId,
+      expectedPredecessorGenerationId: first.generationId,
+      rootManifestChecksumSha256: secondChecksum,
+      rootManifestObjectKey: `generated/${secondChecksum}`,
+      activatedAt: "2026-07-17T08:20:03.000Z"
+    })).toBe(true);
+  });
+
+  it("defers maintenance activation while a normal publication is unfinished", async () => {
+    const firstSource = await registerSource(31);
+    const first = await commit(firstSource);
+    const firstChecksum = "ba".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: first.generationId,
+      source: firstSource,
+      checksum: firstChecksum,
+      timestampPrefix: "2026-07-17T06:00"
+    });
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: first.generationId,
+      expectedPredecessorGenerationId: null,
+      rootManifestChecksumSha256: firstChecksum,
+      rootManifestObjectKey: `generated/${firstChecksum}`,
+      activatedAt: "2026-07-17T06:00:03.000Z"
+    })).toBe(true);
+
+    const repairSource = await registerSource(32);
+    const repair = await commit(repairSource);
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET generation_kind = 'projection_repair'
+      WHERE id = ${repair.generationId}
+    `;
+    const repairChecksum = "bb".repeat(32);
+    await prepareGenerationForActivation({
+      generationId: repair.generationId,
+      source: repairSource,
+      checksum: repairChecksum,
+      timestampPrefix: "2026-07-17T07:00"
+    });
+    const normalGenerationId = "generation-normal-during-repair";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id,
+        state, format_version, generation_kind
+      ) VALUES (
+        ${normalGenerationId}, ${knowledgeBaseId}, ${first.generationId},
+        'validating', 2, 'normal'
+      )
+    `;
+
+    expect(await generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: repair.generationId,
+      expectedPredecessorGenerationId: first.generationId,
+      rootManifestChecksumSha256: repairChecksum,
+      rootManifestObjectKey: `generated/${repairChecksum}`,
+      activatedAt: "2026-07-17T07:00:03.000Z"
+    })).toBe(false);
+    expect((await sql<Array<{
+      predecessor_generation_id: string;
+      state: string;
+    }>>`
+      SELECT predecessor_generation_id, state
+      FROM focowiki.publication_generations
+      WHERE id = ${normalGenerationId}
+    `)[0]).toEqual({
+      predecessor_generation_id: first.generationId,
+      state: "validating"
+    });
+  });
+
   it("transfers active path ownership when a deleted path is recreated", async () => {
     const original = await registerSource(1);
     const first = await commit(original);
@@ -1200,11 +1988,54 @@ describeDatabase("publication generation repository integration", () => {
     expect(successor?.predecessorGenerationId).toBe(first.generationId);
   });
 
-  async function registerSource(index: number) {
+  it("freezes normal publication while a projection repair generation is building", async () => {
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id,
+          state, format_version, generation_kind
+        ) VALUES (
+          'generation-active-during-repair', ${knowledgeBaseId}, NULL,
+          'active', 2, 'normal'
+        )
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET active_generation_id = 'generation-active-during-repair'
+        WHERE id = ${knowledgeBaseId}
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id,
+          state, format_version, generation_kind
+        ) VALUES (
+          'generation-repair-building', ${knowledgeBaseId},
+          'generation-active-during-repair', 'building', 2, 'projection_repair'
+        )
+      `;
+    });
+    const source = await registerSource(33);
+    const normal = await commit(source);
+
+    await expect(generations.freezeGeneration({
+      knowledgeBaseId,
+      generationId: normal.generationId,
+      frozenAt: "2026-07-17T08:00:00.000Z"
+    })).resolves.toMatchObject({
+      generationId: normal.generationId,
+      predecessorGenerationId: "generation-active-during-repair",
+      state: "frozen"
+    });
+  });
+
+  async function registerSource(
+    index: number,
+    relativePath = `docs/file-${index}.md`
+  ) {
     const sessionId = `upload-session-generation-${index}`;
     const entryId = `upload-entry-generation-${index}`;
     const sourceFileId = `source-file-generation-${index}`;
-    const path = `docs/file-${index}.md`;
+    const path = relativePath;
     const content = `# Generation ${index}`;
     const checksum = createHash("sha256").update(content).digest("hex");
     await uploads.createSession({
@@ -1355,6 +2186,22 @@ describeDatabase("publication generation repository integration", () => {
     });
   }
 
+  async function waitForAdvisoryWaiters(minimum: number): Promise<void> {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const rows = await sql<Array<{ count: number }>>`
+        SELECT count(*)::int AS count
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND wait_event = 'advisory'
+      `;
+      if (Number(rows[0]?.count ?? 0) >= minimum) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Expected an advisory lock waiter");
+  }
+
   function publicationSettingsSnapshot() {
     return {
       publication: { mode: "batch" as const, batchSize: 50, intervalSeconds: 30 }
@@ -1457,3 +2304,13 @@ describeDatabase("publication generation repository integration", () => {
     return statements.filter((statement) => statement.includes(fragment)).length;
   }
 });
+
+function databaseConnectionUrl(connectionUrl: string, databaseName: string): string {
+  const url = new URL(connectionUrl);
+  url.pathname = `/${databaseName}`;
+  return url.toString();
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}

@@ -267,7 +267,13 @@ export const resources = {
             compactionConcurrency: "Concurrent projection compaction partitions. Recommended: 1 to 2.",
             projectionRepairConcurrency: "Projection repair subtasks processed at the same time. For an 8-core, 32-GiB server, recommended: 4 to 8. Range: 1 to 16.",
             projectionRepairDatabaseBatchSize: "Projection records handled in one bounded database batch. For an 8-core, 32-GiB server, recommended: 2000. Range: 100 to 10000.",
-            projectionRepairObjectWriteConcurrency: "Generated projection objects written at the same time during repair. For an 8-core, 32-GiB server, recommended: 8. Range: 1 to 32."
+            projectionRepairObjectWriteConcurrency: "Generated projection objects written at the same time during repair. For an 8-core, 32-GiB server, recommended: 8. Range: 1 to 32.",
+            lexicalRebuildConcurrency: "Concurrent lexical rebuild work lanes. For an 8-core, 32-GiB server, recommended: 4. Range: 1 to 16.",
+            lexicalRebuildSourceReadConcurrency: "Source Markdown objects read from storage at the same time. For an 8-core, 32-GiB server, recommended: 2. Range: 1 to 32.",
+            lexicalRebuildDatabaseWriteConcurrency: "Lexical projection batches committed at the same time. For an 8-core, 32-GiB server, recommended: 2. Range: 1 to 16 and no higher than lexical rebuild concurrency.",
+            lexicalRebuildClaimBatchSize: "Durable source work items claimed per cycle. For an 8-core, 32-GiB server, recommended: 500. Range: 50 to 2000.",
+            lexicalRebuildDatabaseBatchSize: "Source files committed in one atomic lexical database batch. For an 8-core, 32-GiB server, recommended: 50. Range: 1 to 250 and no higher than claim batch size.",
+            lexicalRebuildMaxInFlightSourceBytes: "Maximum source Markdown bytes held by active lexical reads. For an 8-core, 32-GiB server, recommended: 67108864 bytes (64 MiB). Range: 1048576 to 536870912."
           },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
@@ -364,6 +370,12 @@ export const resources = {
           projectionRepairConcurrency: "Projection repair concurrency",
           projectionRepairDatabaseBatchSize: "Projection repair database batch size",
           projectionRepairObjectWriteConcurrency: "Projection repair object write concurrency",
+          lexicalRebuildConcurrency: "Lexical rebuild concurrency",
+          lexicalRebuildSourceReadConcurrency: "Lexical source read concurrency",
+          lexicalRebuildDatabaseWriteConcurrency: "Lexical database write concurrency",
+          lexicalRebuildClaimBatchSize: "Lexical claim batch size",
+          lexicalRebuildDatabaseBatchSize: "Lexical database batch size",
+          lexicalRebuildMaxInFlightSourceBytes: "Lexical in-flight source bytes",
           rootSummaryLimit: "Root summary limit",
           directoryIndexMaxEntries: "Directory index entries per page",
           directoryIndexMaxBytes: "Directory index bytes per page",
@@ -626,6 +638,10 @@ export const resources = {
             superseded: "Refreshing the repair plan"
           },
           lexicalRebuildState: "{{phase}} · {{processed}}/{{total}} files",
+          lexicalRebuildWorkers: "{{workers}} workers · {{running}} active · {{pending}} waiting",
+          lexicalRebuildRate: "{{rate}} files/s",
+          lexicalRebuildRetries: "{{count}} retries",
+          lexicalRebuildEta: "ETA {{time}}",
           lexicalRebuildPhase: {
             documents: "Indexing source content",
             lexical_profiles: "Refreshing lexical fields",
@@ -1022,7 +1038,13 @@ export const resources = {
             compactionConcurrency: "同时压缩的投影分区数量。推荐 1 到 2。",
             projectionRepairConcurrency: "同时处理的投影修复子任务数量。8 核 32 GiB 服务器推荐 4 到 8，允许范围 1 到 16。",
             projectionRepairDatabaseBatchSize: "单个有界数据库批次处理的投影记录数量。8 核 32 GiB 服务器推荐 2000，允许范围 100 到 10000。",
-            projectionRepairObjectWriteConcurrency: "投影修复期间同时写入的生成对象数量。8 核 32 GiB 服务器推荐 8，允许范围 1 到 32。"
+            projectionRepairObjectWriteConcurrency: "投影修复期间同时写入的生成对象数量。8 核 32 GiB 服务器推荐 8，允许范围 1 到 32。",
+            lexicalRebuildConcurrency: "同时执行的词法重建工作通道数量。8 核 32 GiB 服务器推荐 4，允许范围 1 到 16。",
+            lexicalRebuildSourceReadConcurrency: "同时从存储读取 Markdown 正文的数量。8 核 32 GiB 服务器推荐 2，允许范围 1 到 32。",
+            lexicalRebuildDatabaseWriteConcurrency: "同时提交的词法投影数据库批次数量。8 核 32 GiB 服务器推荐 2，允许范围 1 到 16，并且不能高于词法重建并发。",
+            lexicalRebuildClaimBatchSize: "每轮领取的持久化来源工作项数量。8 核 32 GiB 服务器推荐 500，允许范围 50 到 2000。",
+            lexicalRebuildDatabaseBatchSize: "单次原子数据库批次提交的来源文件数量。8 核 32 GiB 服务器推荐 50，允许范围 1 到 250，并且不能高于领取批次大小。",
+            lexicalRebuildMaxInFlightSourceBytes: "词法重建读取期间允许驻留的 Markdown 正文字节总量。8 核 32 GiB 服务器推荐 67108864 字节，也就是 64 MiB，允许范围 1048576 到 536870912。"
           },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
@@ -1119,6 +1141,12 @@ export const resources = {
           projectionRepairConcurrency: "投影修复并发",
           projectionRepairDatabaseBatchSize: "投影修复数据库批次大小",
           projectionRepairObjectWriteConcurrency: "投影修复对象写入并发",
+          lexicalRebuildConcurrency: "词法重建并发",
+          lexicalRebuildSourceReadConcurrency: "词法来源读取并发",
+          lexicalRebuildDatabaseWriteConcurrency: "词法数据库写入并发",
+          lexicalRebuildClaimBatchSize: "词法领取批次大小",
+          lexicalRebuildDatabaseBatchSize: "词法数据库批次大小",
+          lexicalRebuildMaxInFlightSourceBytes: "词法在途正文字节数",
           rootSummaryLimit: "根摘要上限",
           directoryIndexMaxEntries: "目录索引单页条目数",
           directoryIndexMaxBytes: "目录索引单页字节数",
@@ -1381,6 +1409,10 @@ export const resources = {
             superseded: "正在刷新修复计划"
           },
           lexicalRebuildState: "{{phase}} · {{processed}}/{{total}} 个文件",
+          lexicalRebuildWorkers: "{{workers}} 个 Worker · {{running}} 个处理中 · {{pending}} 个等待中",
+          lexicalRebuildRate: "每秒 {{rate}} 个文件",
+          lexicalRebuildRetries: "已重试 {{count}} 次",
+          lexicalRebuildEta: "预计 {{time}} 完成",
           lexicalRebuildPhase: {
             documents: "正在索引源文件内容",
             lexical_profiles: "正在刷新词法字段",

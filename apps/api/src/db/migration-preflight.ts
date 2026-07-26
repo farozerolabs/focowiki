@@ -188,7 +188,7 @@ export async function inspectMigrationWork(
          WHERE coalesce(
              to_jsonb(generation)->>'generation_kind',
              'normal'
-           ) <> 'projection_repair'
+           ) NOT IN ('projection_repair', 'lexical_rebuild')
            AND (
              generation.state IN ('frozen', 'building', 'validating')
              OR (generation.state = 'open' AND EXISTS (

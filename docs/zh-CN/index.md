@@ -10,18 +10,16 @@ Focowiki 适合已经拥有 Markdown 知识资产的团队。团队可以用一�
 
 ![Focowiki 架构图](/images/focowiki-architecture.png)
 
-## Focowiki 做什么
+## Focowiki 提供什么
 
-- 上传一个或多个 `.md` 文件。
-- 解析 YAML frontmatter、Markdown 标题、Markdown 链接和正文内容。
-- 保留安全的领域元数据。
-- 生成包含 `index.md`、`log.md`、`schema.md`、`pages/*.md`、JSON indexes 和 `_graph/*` 关系文件的 OKF-style 知识库。
-- 将上传来源修订和内容寻址的生成文件保存到 S3 兼容存储。
-- 通过 PostgreSQL 与 Redis 协调保存来源处理、发布 generation、活动投影、cursor 和 API key。
-- 将来源处理、generation 发布、投影修复和有界维护分配给独立 Worker，服务请求不会执行后台修复或存储对账。
-- 以完整正文生成搜索数据和图术语，通过增量变更事实、结构共享投影分段和活动 generation 原子切换处理更新，不在每次上传时重建完整语料库。
-- 相关升级会在后台兼容重建搜索数据，重建期间继续读取原有生效 generation，并保留已接受的关联关系。
-- 通过 Developer OpenAPI 暴露知识库增删、Markdown 上传、来源文件处理观察、生成文件读取、删除和 webhooks。
+Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 探索的知识库。
+
+- **上传文档和文件夹。** 添加单个 Markdown 文件或完整的多层文件夹，并保留路径、名称、元数据、链接和正文。
+- **浏览结构化知识。** 通过文件树打开文档，移动或重命名文件和文件夹，替换正文并删除过时内容。
+- **查找相关文档。** 搜索文件内容、浏览目录索引、查看相关文档，并通过知识图谱继续探索关联内容。
+- **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索图关系并管理文档变更。
+- **通过 Admin UI 管理系统。** 创建知识库、查看文件处理进度、配置模型和运行参数，并管理 API key。
+- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis 和 S3 兼容存储运行 Focowiki。
 
 ## Admin UI 预览
 

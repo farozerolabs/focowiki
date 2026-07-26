@@ -55,6 +55,7 @@
     "validate:tree-storage-scale": "pnpm --dir apps/api exec tsx scripts/tree-storage-reconciliation-scale-evidence.ts",
     "validate:active-read-repair-scale": "pnpm --dir apps/api exec tsx scripts/active-read-repair-scale-evidence.ts",
     "validate:projection-repair-scale": "pnpm --dir apps/api exec tsx scripts/projection-repair-scale-evidence.ts",
+    "validate:lexical-rebuild-scale": "pnpm --dir apps/api exec tsx scripts/lexical-rebuild-scale-evidence.ts",
     "validate:generated-content": "node scripts/validation/generated-okf-file-inspection.mjs",
     "validate:generated-links": "node scripts/validation/generated-markdown-link-audit.mjs",
     "validate:admin-generated-links": "node scripts/validation/admin-generated-link-preview.mjs",

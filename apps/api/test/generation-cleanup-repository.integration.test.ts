@@ -268,6 +268,51 @@ describeDatabase("generation cleanup repository integration", () => {
     })).resolves.toBe(1);
   });
 
+  it("retains an expired predecessor while unfinished generation work depends on it", async () => {
+    await insertActiveGeneration();
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state, updated_at
+      ) VALUES
+        (
+          'generation-cleanup-required-predecessor',
+          ${knowledgeBaseId},
+          'generation-cleanup',
+          'superseded',
+          '2026-01-01T00:00:00.000Z'
+        ),
+        (
+          'generation-cleanup-unfinished-dependent',
+          ${knowledgeBaseId},
+          'generation-cleanup-required-predecessor',
+          'building',
+          now()
+        )
+    `;
+
+    await expect(repository.deleteExpiredGenerations({
+      olderThan: '2026-07-20T00:00:00.000Z',
+      limit: 10
+    })).resolves.toBe(0);
+    await expect(sql<Array<{ id: string }>>`
+      SELECT id
+      FROM focowiki.publication_generations
+      WHERE id = 'generation-cleanup-required-predecessor'
+    `).resolves.toEqual([{
+      id: "generation-cleanup-required-predecessor"
+    }]);
+
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET state = 'superseded', updated_at = '2026-07-25T00:00:00.000Z'
+      WHERE id = 'generation-cleanup-unfinished-dependent'
+    `;
+    await expect(repository.deleteExpiredGenerations({
+      olderThan: '2026-07-20T00:00:00.000Z',
+      limit: 10
+    })).resolves.toBe(1);
+  });
+
   it("does not reclaim a deleting object owned by queued maintenance work", async () => {
     const ownedChecksum = "fe".repeat(32);
     await sql`
@@ -518,6 +563,68 @@ describeDatabase("generation cleanup repository integration", () => {
     }]);
   });
 
+  it("retains tombstones in unfinished generations while purging source ownership", async () => {
+    await insertActiveGeneration();
+    await sql`
+      UPDATE focowiki.deletion_intents
+      SET state = 'completed', completed_at = now()
+      WHERE id = ${deletionIntentId}
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state, generation_kind
+      ) VALUES (
+        'generation-cleanup-building', ${knowledgeBaseId},
+        'generation-cleanup', 'building', 'projection_repair'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_projection_records (
+        generation_id, knowledge_base_id, projection_kind, record_id,
+        action, shard_key, source_file_id, logical_path, payload_json
+      ) VALUES (
+        'generation-cleanup-building', ${knowledgeBaseId}, 'graph_node',
+        ${sourceFileId}, 'upsert', 'graph_node/v1/0001', ${sourceFileId},
+        'pages/cleanup.md', ${sql.json({ id: sourceFileId, title: "Cleanup" })}
+      )
+    `;
+
+    await expect(repository.purgeTargetBatch({
+      jobId: "source-cleanup-building-job",
+      target: {
+        kind: "source_file",
+        knowledgeBaseId,
+        sourceFileId,
+        deletionIntentId
+      },
+      limit: 10,
+      purgedAt: new Date().toISOString()
+    })).resolves.toEqual({ deletedRows: 1, hasMore: false });
+
+    const records = await sql<Array<{
+      record_id: string;
+      action: string;
+      shard_key: string;
+      source_file_id: string | null;
+      logical_path: string | null;
+      payload_json: Record<string, unknown>;
+    }>>`
+      SELECT record_id, action, shard_key, source_file_id,
+             logical_path, payload_json
+      FROM focowiki.generation_projection_records
+      WHERE generation_id = 'generation-cleanup-building'
+        AND projection_kind = 'graph_node'
+    `;
+    expect(records).toEqual([{
+      record_id: sourceFileId,
+      action: "delete",
+      shard_key: "graph_node/v1/0001",
+      source_file_id: null,
+      logical_path: null,
+      payload_json: {}
+    }]);
+  });
+
   it("purges a deleted knowledge base with source and model records", async () => {
     const target = {
       kind: "knowledge_base" as const,
@@ -680,8 +787,76 @@ describeDatabase("generation cleanup repository integration", () => {
     await insertActiveGeneration();
     await sql`
       INSERT INTO focowiki.publication_generations (
-        id, knowledge_base_id, state, format_version
-      ) VALUES ('generation-cleanup-pending', ${knowledgeBaseId}, 'building', 2)
+        id, knowledge_base_id, state, format_version, generation_kind
+      ) VALUES
+        (
+          'generation-cleanup-pending', ${knowledgeBaseId}, 'building', 2,
+          'normal'
+        ),
+        (
+          'generation-cleanup-repair', ${knowledgeBaseId}, 'building', 2,
+          'projection_repair'
+        ),
+        (
+          'generation-cleanup-lexical', ${knowledgeBaseId}, 'building', 2,
+          'lexical_rebuild'
+        )
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id,
+        target_generation_id, state, current_phase, lease_token,
+        lease_expires_at
+      ) VALUES (
+        ${knowledgeBaseId}, 1, 'generation-cleanup',
+        'generation-cleanup-repair', 'running', 'tree',
+        'repair-lease', now() + interval '5 minutes'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.projection_repair_subtasks (
+        id, knowledge_base_id, repair_version, target_generation_id,
+        base_generation_id, task_kind, partition_key, phase_order, state,
+        lease_owner, lease_token, lease_expires_at, heartbeat_at
+      ) VALUES (
+        'repair-subtask-kb-cleanup', ${knowledgeBaseId}, 1,
+        'generation-cleanup-repair', 'generation-cleanup',
+        'tree_partition', 'tree/v2/0001', 1, 'running',
+        'projection-repair-worker', 'repair-subtask-lease',
+        now() + interval '5 minutes', now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_lexical_rebuilds (
+        knowledge_base_id, target_search_schema_version,
+        target_tokenizer_contract_version, target_segmentation_version,
+        target_content_profile_version,
+        target_graph_lexical_projection_version, base_generation_id,
+        target_generation_id, state, lease_owner, lease_token,
+        lease_expires_at, heartbeat_at
+      ) VALUES (
+        ${knowledgeBaseId}, 'search-v3', 'tokenizer-v3',
+        'segmentation-v3', 'content-profile-v3', 'graph-lexical-v3',
+        'generation-cleanup', 'generation-cleanup-lexical', 'running',
+        'lexical-worker', 'lexical-lease', now() + interval '5 minutes',
+        now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.lexical_rebuild_work_items (
+        knowledge_base_id, target_generation_id, source_file_id,
+        source_revision_id, logical_path, target_search_schema_version,
+        target_tokenizer_contract_version, target_segmentation_version,
+        target_content_profile_version,
+        target_graph_lexical_projection_version, state, lease_owner,
+        lease_token, lease_expires_at, heartbeat_at, claimed_at
+      ) VALUES (
+        ${knowledgeBaseId}, 'generation-cleanup-lexical', ${sourceFileId},
+        'source-revision-cleanup', 'pages/cleanup.md', 'search-v3',
+        'tokenizer-v3', 'segmentation-v3', 'content-profile-v3',
+        'graph-lexical-v3', 'running', 'lexical-worker',
+        'lexical-work-lease', now() + interval '5 minutes', now(), now()
+      )
     `;
     await sql`
       INSERT INTO focowiki.knowledge_base_optimization_migrations (
@@ -781,6 +956,10 @@ describeDatabase("generation cleanup repository integration", () => {
       generation_status: string;
       compaction_status: string;
       migration_status: string;
+      repair_status: string;
+      repair_subtask_status: string;
+      lexical_status: string;
+      lexical_work_status: string;
       hard_delete_job_count: number;
     }>>`
       SELECT
@@ -792,6 +971,10 @@ describeDatabase("generation cleanup repository integration", () => {
         (SELECT state FROM focowiki.publication_generations WHERE id = 'generation-cleanup-pending') AS generation_status,
         (SELECT state FROM focowiki.projection_compaction_jobs WHERE id = 'compaction-cleanup-integration') AS compaction_status,
         (SELECT state FROM focowiki.knowledge_base_optimization_migrations WHERE knowledge_base_id = ${knowledgeBaseId}) AS migration_status,
+        (SELECT state FROM focowiki.knowledge_base_projection_repairs WHERE knowledge_base_id = ${knowledgeBaseId} AND repair_version = 1) AS repair_status,
+        (SELECT state FROM focowiki.projection_repair_subtasks WHERE id = 'repair-subtask-kb-cleanup') AS repair_subtask_status,
+        (SELECT state FROM focowiki.knowledge_base_lexical_rebuilds WHERE knowledge_base_id = ${knowledgeBaseId}) AS lexical_status,
+        (SELECT state FROM focowiki.lexical_rebuild_work_items WHERE target_generation_id = 'generation-cleanup-lexical' AND source_file_id = ${sourceFileId}) AS lexical_work_status,
         (SELECT count(*)::int FROM focowiki.role_jobs WHERE knowledge_base_id = ${knowledgeBaseId} AND kind = 'hard_delete') AS hard_delete_job_count
     `;
     expect(state).toEqual([{
@@ -803,6 +986,10 @@ describeDatabase("generation cleanup repository integration", () => {
       generation_status: "superseded",
       compaction_status: "superseded",
       migration_status: "failed",
+      repair_status: "superseded",
+      repair_subtask_status: "cancelled",
+      lexical_status: "cancelled",
+      lexical_work_status: "cancelled",
       hard_delete_job_count: 0
     }]);
     await expect(repository.isReady({
@@ -1214,6 +1401,10 @@ describeDatabase("generation cleanup repository integration", () => {
     await sql`DELETE FROM focowiki.active_projection_records WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.generation_projection_records WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.role_jobs WHERE knowledge_base_id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.lexical_rebuild_work_items WHERE knowledge_base_id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.knowledge_base_lexical_rebuilds WHERE knowledge_base_id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.projection_repair_subtasks WHERE knowledge_base_id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.knowledge_base_projection_repairs WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.model_invocations WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.upload_sessions WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.source_file_graph_edges WHERE knowledge_base_id = ${knowledgeBaseId}`;

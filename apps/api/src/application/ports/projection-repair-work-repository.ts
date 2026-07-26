@@ -152,6 +152,13 @@ export type ProjectionRepairBuildRepository = {
     entries: OrderedDirectoryEntry[];
       nextCursor: ProjectionRepairDirectoryCursor | null;
   }>;
+  listActiveDirectoryReferences: (input: {
+    task: ProjectionRepairWorkItem;
+  }) => Promise<Array<{
+    refKind: "directory_root" | "directory_leaf";
+    refKey: string;
+    logicalPath: string;
+  }>>;
   directoryExists: (input: {
     task: ProjectionRepairWorkItem;
   }) => Promise<boolean>;

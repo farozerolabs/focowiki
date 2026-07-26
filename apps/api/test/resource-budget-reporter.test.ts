@@ -33,7 +33,15 @@ describe("resource budget reporter", () => {
     expect(info).toHaveBeenCalledWith("Resource budget metrics", {
       budgets: expect.objectContaining({
         sourceObjectRead: expect.objectContaining({ completed: 1 })
-      })
+      }),
+      process: {
+        rssBytes: expect.any(Number),
+        heapUsedBytes: expect.any(Number),
+        externalBytes: expect.any(Number),
+        userCpuMicros: expect.any(Number),
+        systemCpuMicros: expect.any(Number),
+        eventLoopUtilization: expect.any(Number)
+      }
     });
     const serialized = JSON.stringify(info.mock.calls);
     expect(serialized).not.toContain("content");

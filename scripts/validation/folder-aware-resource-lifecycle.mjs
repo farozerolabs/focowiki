@@ -316,6 +316,10 @@ try {
   if (originalWorkerSettings) {
     await updateWorkerSettings(originalWorkerSettings).catch(() => undefined);
   }
+  await admin.request("/admin/api/logout", {
+    method: "POST",
+    headers: { origin: adminOrigin() }
+  }).catch(() => undefined);
   report.finishedAt = new Date().toISOString();
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);

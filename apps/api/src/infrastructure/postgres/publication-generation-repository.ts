@@ -5,9 +5,11 @@ import type {
 } from "../../application/ports/publication-generation-repository.js";
 import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
+import { hasPendingForwardWork } from "./forward-work-pending.js";
 import { PublicationGenerationBusyError } from "../../domain/publication.js";
 import { appendPublicationChangeFact } from "./publication-change-fact-writer.js";
 import { assemblePendingPublicationChanges } from "./generation-assembler.js";
+import { advanceProjectionVersionOwnership } from "./projection-version-ownership.js";
 
 type GenerationRow = {
   id: string;
@@ -23,7 +25,6 @@ type ActiveSearchVersionRow = {
 };
 
 type SearchProjectionReadinessRow = {
-  visible_source_count: number;
   reference_count: number;
   invalid_reference_count: number;
   search_schema_version: string | null;
@@ -279,6 +280,7 @@ export function createPostgresPublicationGenerationRepository(
             WHERE knowledge_base_id = ${input.knowledgeBaseId}
               AND id <> ${input.generationId}
               AND state IN ('frozen', 'building', 'validating')
+              AND generation_kind = 'normal'
             LIMIT 1
           `;
           if (inProgress[0]) {
@@ -405,8 +407,11 @@ export function createPostgresPublicationGenerationRepository(
         ) {
           return false;
         }
-        const candidates = await transaction<Array<{ id: string }>>`
-          SELECT id
+        const candidates = await transaction<Array<{
+          id: string;
+          generation_kind: "normal" | "projection_repair" | "lexical_rebuild";
+        }>>`
+          SELECT id, generation_kind
           FROM focowiki.publication_generations
           WHERE id = ${input.generationId}
             AND knowledge_base_id = ${input.knowledgeBaseId}
@@ -414,6 +419,12 @@ export function createPostgresPublicationGenerationRepository(
           FOR UPDATE
         `;
         if (candidates.length !== 1) {
+          return false;
+        }
+        if (
+          candidates[0]!.generation_kind === "projection_repair"
+          && await hasPendingForwardWork(transaction, input.knowledgeBaseId)
+        ) {
           return false;
         }
         const invalidObjectReferences = await transaction<Array<{ total: number }>>`
@@ -757,6 +768,11 @@ export function createPostgresPublicationGenerationRepository(
           SET active_generation_id = ${input.generationId}, updated_at = ${input.activatedAt}
           WHERE id = ${input.knowledgeBaseId}
         `;
+        await advanceProjectionVersionOwnership(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          activeGenerationId: input.generationId,
+          updatedAt: input.activatedAt
+        });
         await transaction`
           UPDATE focowiki.publication_generations
           SET predecessor_generation_id = ${input.generationId},
@@ -860,29 +876,8 @@ async function resolveCandidateSearchVersion(
     predecessorSearchVersion: ActiveSearchVersionRow;
   }
 ): Promise<ActiveSearchVersionRow> {
-  await transaction`
-    DELETE FROM focowiki.generation_search_projection_refs reference
-    USING focowiki.source_files source
-    WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
-      AND reference.generation_id = ${input.generationId}
-      AND source.knowledge_base_id = reference.knowledge_base_id
-      AND source.id = reference.source_file_id
-      AND (
-        source.deleted_at IS NOT NULL
-        OR source.deletion_intent_id IS NOT NULL
-      )
-  `;
   const rows = await transaction<SearchProjectionReadinessRow[]>`
-    WITH visible_sources AS MATERIALIZED (
-      SELECT
-        source.id AS source_file_id,
-        coalesce(source.candidate_revision_id, source.active_revision_id) AS source_revision_id,
-        'pages/' || coalesce(source.candidate_relative_path, source.relative_path) AS logical_path
-      FROM focowiki.source_files source
-      WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-        AND source.deleted_at IS NULL
-        AND source.deletion_intent_id IS NULL
-    ), search_refs AS MATERIALIZED (
+    WITH search_refs AS MATERIALIZED (
       SELECT reference.*, document.lifecycle_state,
              document.segmentation_version AS document_segmentation_version,
              document.search_schema_version AS document_search_schema_version,
@@ -895,17 +890,11 @@ async function resolveCandidateSearchVersion(
         AND reference.generation_id = ${input.generationId}
     )
     SELECT
-      (SELECT count(*)::int FROM visible_sources) AS visible_source_count,
       (SELECT count(*)::int FROM search_refs) AS reference_count,
       (
         SELECT count(*)::int
         FROM search_refs reference
-        LEFT JOIN visible_sources source
-          ON source.source_file_id = reference.source_file_id
-        WHERE source.source_file_id IS NULL
-           OR reference.source_revision_id IS DISTINCT FROM source.source_revision_id
-           OR reference.logical_path IS DISTINCT FROM source.logical_path
-           OR reference.lifecycle_state <> 'ready'
+        WHERE reference.lifecycle_state <> 'ready'
            OR reference.search_schema_version
                 IS DISTINCT FROM reference.document_search_schema_version
            OR reference.tokenizer_contract_version
@@ -924,12 +913,17 @@ async function resolveCandidateSearchVersion(
     FROM search_refs reference
   `;
   const readiness = rows[0]!;
-  const complete = readiness.reference_count === readiness.visible_source_count
-    && readiness.invalid_reference_count === 0
-    && readiness.version_tuple_count === 1
-    && readiness.search_schema_version !== null
-    && readiness.tokenizer_contract_version !== null
-    && readiness.segmentation_version !== null;
+  const empty = readiness.reference_count === 0;
+  const complete = readiness.invalid_reference_count === 0
+    && (
+      empty
+      || (
+        readiness.version_tuple_count === 1
+        && readiness.search_schema_version !== null
+        && readiness.tokenizer_contract_version !== null
+        && readiness.segmentation_version !== null
+      )
+    );
   const predecessorUsesVersionedSearch =
     input.predecessorSearchVersion.search_schema_version !== null
     || input.predecessorSearchVersion.tokenizer_contract_version !== null
@@ -944,6 +938,7 @@ async function resolveCandidateSearchVersion(
       search_segmentation_version: null
     };
   }
+  if (empty) return input.predecessorSearchVersion;
   return {
     search_schema_version: readiness.search_schema_version,
     tokenizer_contract_version: readiness.tokenizer_contract_version,

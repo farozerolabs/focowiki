@@ -10,6 +10,7 @@ import {
   createSearchQueryEvidence,
   SEARCH_MULTI_TERM_MIN_COVERAGE
 } from "../../search/search-query-evidence.js";
+import { isSelectiveExactMatch } from "../../search/exact-match-strategy.js";
 import type { DatabaseClient } from "../../db/client.js";
 import type { TransactionSql } from "postgres";
 
@@ -28,6 +29,17 @@ const CANDIDATE_MIN = 100;
 const CANDIDATE_MAX = 2_000;
 const CANDIDATE_MULTIPLIER = 10;
 
+export function createGraphSearchStrategy(input: {
+  hasVisibleExactMatch: boolean;
+  phrase: string;
+}): { runTermCandidates: boolean; runTrigramCandidates: boolean } {
+  const narrowToExactMatch = isSelectiveExactMatch(input);
+  return {
+    runTermCandidates: !narrowToExactMatch,
+    runTrigramCandidates: !narrowToExactMatch
+  };
+}
+
 export async function searchGraphProjection(input: {
   sql: ReadSql;
   tokenizer: LexicalTokenizer;
@@ -39,6 +51,15 @@ export async function searchGraphProjection(input: {
 }): Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationScoredCursor>> {
   const evidence = createSearchQueryEvidence(input.query, input.tokenizer);
   if (!evidence.phrase) return { items: [], nextCursor: null };
+  const strategy = createGraphSearchStrategy({
+    hasVisibleExactMatch: await hasVisibleExactGraphMatch({
+      sql: input.sql,
+      knowledgeBaseId: input.knowledgeBaseId,
+      generationId: input.generationId,
+      phrase: evidence.phrase
+    }),
+    phrase: evidence.phrase
+  });
   const candidateLimit = Math.min(
     CANDIDATE_MAX,
     Math.max(CANDIDATE_MIN, input.limit * CANDIDATE_MULTIPLIER)
@@ -80,6 +101,7 @@ export async function searchGraphProjection(input: {
        AND node.projection_kind = 'graph_node'
        AND node.source_file_id = document.source_file_id
       WHERE document.knowledge_base_id = ${input.knowledgeBaseId}
+        AND ${strategy.runTermCandidates}
         AND document.tokenizer_contract_version = ${input.tokenizer.contractVersion}
         AND document.lexical_projection_version = ${GRAPH_LEXICAL_PROJECTION_VERSION}
         AND cardinality(${evidence.terms}::text[]) > 0
@@ -106,6 +128,7 @@ export async function searchGraphProjection(input: {
        AND node.projection_kind = 'graph_node'
        AND node.source_file_id = document.source_file_id
       WHERE document.knowledge_base_id = ${input.knowledgeBaseId}
+        AND ${strategy.runTrigramCandidates}
         AND document.tokenizer_contract_version = ${input.tokenizer.contractVersion}
         AND document.lexical_projection_version = ${GRAPH_LEXICAL_PROJECTION_VERSION}
         AND document.lexical_text
@@ -244,6 +267,36 @@ export async function searchGraphProjection(input: {
       ? { score: Number(last.score), recordId: last.source_file_id }
       : null
   };
+}
+
+async function hasVisibleExactGraphMatch(input: {
+  sql: ReadSql;
+  knowledgeBaseId: string;
+  generationId: string;
+  phrase: string;
+}): Promise<boolean> {
+  const rows = await input.sql<Array<{ exact_match: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM focowiki.generation_search_projection_refs reference
+      JOIN focowiki.active_projection_records node
+        ON node.knowledge_base_id = reference.knowledge_base_id
+       AND node.projection_kind = 'graph_node'
+       AND node.source_file_id = reference.source_file_id
+      JOIN focowiki.source_files source
+        ON source.knowledge_base_id = reference.knowledge_base_id
+       AND source.id = reference.source_file_id
+       AND source.deleted_at IS NULL
+       AND source.deletion_intent_id IS NULL
+      WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+        AND reference.generation_id = ${input.generationId}
+        AND (
+          lower(reference.title) = lower(${input.phrase})
+          OR lower(reference.logical_path) = lower(${input.phrase})
+        )
+    ) AS exact_match
+  `;
+  return rows[0]?.exact_match ?? false;
 }
 
 function parentPath(path: string): string | null {

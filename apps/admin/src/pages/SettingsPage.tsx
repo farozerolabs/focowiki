@@ -171,7 +171,13 @@ const maintenanceNumberFields = [
   "compactionConcurrency",
   "projectionRepairConcurrency",
   "projectionRepairDatabaseBatchSize",
-  "projectionRepairObjectWriteConcurrency"
+  "projectionRepairObjectWriteConcurrency",
+  "lexicalRebuildConcurrency",
+  "lexicalRebuildSourceReadConcurrency",
+  "lexicalRebuildDatabaseWriteConcurrency",
+  "lexicalRebuildClaimBatchSize",
+  "lexicalRebuildDatabaseBatchSize",
+  "lexicalRebuildMaxInFlightSourceBytes"
 ] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
@@ -790,6 +796,18 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                                     ? { min: 100, max: 10_000 }
                                     : field === "projectionRepairObjectWriteConcurrency"
                                       ? { max: 32 }
+                                      : field === "lexicalRebuildConcurrency"
+                                        ? { max: 16 }
+                                        : field === "lexicalRebuildSourceReadConcurrency"
+                                          ? { max: 32 }
+                                          : field === "lexicalRebuildDatabaseWriteConcurrency"
+                                            ? { max: 16 }
+                                            : field === "lexicalRebuildClaimBatchSize"
+                                              ? { min: 50, max: 2_000 }
+                                              : field === "lexicalRebuildDatabaseBatchSize"
+                                                ? { max: 250 }
+                                                : field === "lexicalRebuildMaxInFlightSourceBytes"
+                                                  ? { min: 1_048_576, max: 536_870_912 }
                                 : {})}
                               value={maintenance[field]}
                               required
@@ -1388,7 +1406,19 @@ function buildMaintenanceSettings(
     settings.projectionRepairConcurrency > 16 ||
     settings.projectionRepairDatabaseBatchSize < 100 ||
     settings.projectionRepairDatabaseBatchSize > 10_000 ||
-    settings.projectionRepairObjectWriteConcurrency > 32
+    settings.projectionRepairObjectWriteConcurrency > 32 ||
+    settings.lexicalRebuildConcurrency > 16 ||
+    settings.lexicalRebuildSourceReadConcurrency > 32 ||
+    settings.lexicalRebuildDatabaseWriteConcurrency > 16 ||
+    settings.lexicalRebuildDatabaseWriteConcurrency
+      > settings.lexicalRebuildConcurrency ||
+    settings.lexicalRebuildClaimBatchSize < 50 ||
+    settings.lexicalRebuildClaimBatchSize > 2_000 ||
+    settings.lexicalRebuildDatabaseBatchSize > 250 ||
+    settings.lexicalRebuildDatabaseBatchSize
+      > settings.lexicalRebuildClaimBatchSize ||
+    settings.lexicalRebuildMaxInFlightSourceBytes < 1_048_576 ||
+    settings.lexicalRebuildMaxInFlightSourceBytes > 536_870_912
   ) {
     return null;
   }
