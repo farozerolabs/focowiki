@@ -11,6 +11,7 @@ export type IncrementalStatisticsRepository = {
     now: string;
     leaseExpiresAt: string;
     reconciledBefore: string;
+    knowledgeBaseId?: string | undefined;
   }) => Promise<IncrementalStatisticsReconciliationClaim | null>;
   reconcile: (input: IncrementalStatisticsReconciliationClaim & {
     reconciledAt: string;

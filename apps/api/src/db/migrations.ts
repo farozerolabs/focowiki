@@ -1,62 +1,22 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { DatabaseClient } from "./client.js";
+import {
+  MIGRATION_MANIFEST,
+  UnsupportedMigrationGenerationError,
+  createMigrationPlan,
+  validateMigrationManifest,
+  type MigrationFile
+} from "./migration-manifest.js";
 import { assertMigrationWorkDrained } from "./migration-preflight.js";
 
-export const MIGRATION_FILES = [
-  "001_production_admin_web.sql",
-  "002_tree_graph_storage_reconciliation.sql",
-  "003_bounded_publication_recovery.sql",
-  "004_immutable_object_contention_recovery.sql",
-  "005_publication_retry_budget_recovery.sql",
-  "006_publication_continuation_recovery.sql",
-  "007_publication_write_livelock_recovery.sql",
-  "008_large_scale_ingestion_runtime.sql",
-  "009_optimization_migration_rebase_recovery.sql",
-  "010_generation_consistent_read_repair.sql",
-  "011_body_search_projection.sql",
-  "012_storage_reconciliation_lease_recovery.sql",
-  "013_projection_repair_throughput.sql",
-  "014_directory_order_repair.sql",
-  "015_lexical_rebuild_worker.sql"
-] as const;
-const MIGRATIONS_ALLOWED_WITH_PERSISTED_WORK = new Set<
-  (typeof MIGRATION_FILES)[number]
->([
-  "014_directory_order_repair.sql",
-  "015_lexical_rebuild_worker.sql"
-]);
-const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
-const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
-const IMMUTABLE_CONTENTION_SCHEMA_GENERATION = "immutable-object-contention-recovery-v4";
-export const RELEASED_SCHEMA_GENERATION = "publication-retry-budget-recovery-v5";
-const CONTINUATION_SCHEMA_GENERATION = "publication-continuation-recovery-v6";
-const WRITE_LIVELOCK_SCHEMA_GENERATION = "publication-write-livelock-recovery-v7";
-const LARGE_SCALE_SCHEMA_GENERATION = "large-scale-ingestion-runtime-v8";
-const OPTIMIZATION_REBASE_SCHEMA_GENERATION = "optimization-migration-rebase-recovery-v9";
-const GENERATION_CONSISTENT_READ_SCHEMA_GENERATION = "generation-consistent-read-repair-v10";
-const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
-const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
-const PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION = "projection-repair-throughput-v13";
-const DIRECTORY_ORDER_SCHEMA_GENERATION = "directory-order-repair-v14";
-export const RUNTIME_SCHEMA_GENERATION = "lexical-rebuild-worker-v15";
-
-const MIGRATION_START_BY_GENERATION = new Map<string, number>([
-  ["incremental-sharded-publication-v1", 1],
-  [TREE_GRAPH_SCHEMA_GENERATION, 2],
-  [BOUNDED_PUBLICATION_SCHEMA_GENERATION, 3],
-  [IMMUTABLE_CONTENTION_SCHEMA_GENERATION, 4],
-  [RELEASED_SCHEMA_GENERATION, 5],
-  [CONTINUATION_SCHEMA_GENERATION, 6],
-  [WRITE_LIVELOCK_SCHEMA_GENERATION, 7],
-  [LARGE_SCALE_SCHEMA_GENERATION, 8],
-  [OPTIMIZATION_REBASE_SCHEMA_GENERATION, 9],
-  [GENERATION_CONSISTENT_READ_SCHEMA_GENERATION, 10],
-  [BODY_SEARCH_SCHEMA_GENERATION, 11],
-  [STORAGE_RECONCILIATION_SCHEMA_GENERATION, 12],
-  [PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION, 13],
-  [DIRECTORY_ORDER_SCHEMA_GENERATION, 14]
-]);
+export const MIGRATION_FILES = MIGRATION_MANIFEST.map(
+  (migration) => migration.fileName
+) as readonly MigrationFile[];
+export const RELEASED_SCHEMA_GENERATION =
+  MIGRATION_MANIFEST[4].targetGeneration;
+export const RUNTIME_SCHEMA_GENERATION =
+  MIGRATION_MANIFEST.at(-1)!.targetGeneration;
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {
@@ -71,10 +31,10 @@ export class RuntimeSchemaGenerationError extends Error {
 
 export type MigrationPreflightResult = {
   currentGeneration: string | "absent";
-  pendingFiles: Array<(typeof MIGRATION_FILES)[number]>;
+  pendingFiles: MigrationFile[];
 };
 
-export function readMigrationSql(fileName: (typeof MIGRATION_FILES)[number]): string {
+export function readMigrationSql(fileName: MigrationFile): string {
   for (const migrationUrl of [
     new URL(`./migrations/${fileName}`, import.meta.url),
     new URL(`../../migrations/${fileName}`, import.meta.url)
@@ -105,30 +65,25 @@ export async function preflightMigrations(
   sql: DatabaseClient
 ): Promise<MigrationPreflightResult> {
   const state = await inspectRuntimeSchemaGeneration(sql);
-  if (state === RUNTIME_SCHEMA_GENERATION) {
-    return { currentGeneration: state, pendingFiles: [] };
-  }
-
   if (state !== "absent" && typeof state !== "string") {
     throw new RuntimeSchemaGenerationError(state);
   }
-  const migrationStart = state === "absent"
-    ? 0
-    : MIGRATION_START_BY_GENERATION.get(state);
-  if (migrationStart === undefined) {
-    throw new RuntimeSchemaGenerationError(state);
+  let plan;
+  try {
+    plan = createMigrationPlan(state);
+  } catch (error) {
+    if (error instanceof UnsupportedMigrationGenerationError) {
+      throw new RuntimeSchemaGenerationError(state);
+    }
+    throw error;
   }
 
-  const pendingFiles = MIGRATION_FILES.slice(migrationStart);
-  if (
-    state !== "absent"
-    && pendingFiles.some((fileName) => !MIGRATIONS_ALLOWED_WITH_PERSISTED_WORK.has(fileName))
-  ) {
+  if (state !== "absent" && plan.requiresDrain) {
     await assertMigrationWorkDrained(sql);
   }
   return {
     currentGeneration: state,
-    pendingFiles
+    pendingFiles: plan.pendingFiles
   };
 }
 
@@ -168,3 +123,10 @@ async function inspectRuntimeSchemaGeneration(
 
   return generationRows[0]?.generation ?? null;
 }
+
+validateMigrationManifest(MIGRATION_MANIFEST, {
+  fileExists: (fileName) => [
+    new URL(`./migrations/${fileName}`, import.meta.url),
+    new URL(`../../migrations/${fileName}`, import.meta.url)
+  ].some((migrationUrl) => existsSync(fileURLToPath(migrationUrl)))
+});

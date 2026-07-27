@@ -105,9 +105,13 @@ jobs:
       - name: Validate compatible migration paths
         run: >-
           pnpm --filter @focowiki/api exec vitest run
+          test/migration-manifest.test.ts
           test/migrations.test.ts
           test/migration-preflight.test.ts
           test/migration-preflight.integration.test.ts
+          test/migration-maintenance-separation.test.ts
+          test/knowledge-base-index-maintenance-migration.integration.test.ts
+          test/partial-schema-migration.integration.test.ts
           test/tree-graph-storage-migration.integration.test.ts
 
       - name: Start S3 health fixture
@@ -131,6 +135,13 @@ jobs:
         run: >-
           pnpm --filter @focowiki/api exec vitest run
           test/lexical-rebuild-scale.integration.test.ts
+
+      - name: Validate bounded migration preflight plans
+        env:
+          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
+        run: >-
+          pnpm --filter @focowiki/api exec vitest run
+          test/migration-preflight-scale.integration.test.ts
 
       - name: Validate source-to-activation smoke flow
         run: >-

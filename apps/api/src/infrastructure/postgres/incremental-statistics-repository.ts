@@ -36,6 +36,10 @@ export function createPostgresIncrementalStatisticsRepository(
             ON migration.knowledge_base_id = stats.knowledge_base_id
           WHERE (stats.reconciled_at IS NULL OR stats.reconciled_at <= ${input.reconciledBefore})
             AND (
+              ${input.knowledgeBaseId === undefined}
+              OR stats.knowledge_base_id = ${input.knowledgeBaseId ?? null}
+            )
+            AND (
               stats.reconciliation_lease_expires_at IS NULL
               OR stats.reconciliation_lease_expires_at <= ${input.now}
             )

@@ -19,6 +19,9 @@ import { createPostgresSourceFileTaskDeletionRepository } from "./infrastructure
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
 import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
 import {
+  createPostgresKnowledgeBaseIndexMaintenanceRepository
+} from "./infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
+import {
   createNodeJiebaTokenizer,
   getNodeJiebaRuntimeEvidence
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
@@ -41,6 +44,8 @@ const sourceFileRetries = createPostgresSourceFileRetryRepository(sql);
 const sourceFileTaskDeletions = createPostgresSourceFileTaskDeletionRepository(sql);
 const storageReconciliation = createPostgresStorageReconciliationRepository(sql);
 const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
+const knowledgeBaseIndexMaintenance =
+  createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
 const redis = await connectApiRedis({ config, logger });
 const sharedServices = {
   config,
@@ -54,6 +59,7 @@ const sharedServices = {
   sourceFileTaskDeletions,
   storageReconciliation,
   maintenanceProgress,
+  knowledgeBaseIndexMaintenance,
   logger,
   ...(redis ? { redis } : {})
 };

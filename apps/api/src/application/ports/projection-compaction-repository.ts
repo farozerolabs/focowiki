@@ -26,12 +26,14 @@ export type ProjectionCompactionRepository = {
     partitionLimit: number;
     maxAttempts: number;
     discoveredAt: string;
+    knowledgeBaseIds?: string[] | undefined;
   }): Promise<number>;
   claim(input: {
     workerId: string;
     limit: number;
     now: string;
     leaseExpiresAt: string;
+    knowledgeBaseIds?: string[] | undefined;
   }): Promise<ProjectionCompactionJob[]>;
   listActiveRecords(input: {
     job: ProjectionCompactionJob;

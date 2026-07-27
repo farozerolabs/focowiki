@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CheckIcon,
@@ -8,11 +8,12 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
-  SettingsIcon,
   Trash2Icon,
   XIcon
 } from "lucide-react";
+import { AdminPageHeader } from "@/components/admin-page-header";
 import { DocumentationLink } from "@/components/documentation-link";
+import { HomeSidebar, type HomeSection } from "@/components/home-sidebar";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { OpenApiKeysPanel } from "@/components/openapi-keys-panel";
 import {
@@ -53,12 +54,17 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger
+} from "@/components/ui/sidebar";
 import {
   Pagination,
   PaginationContent,
   PaginationItem
 } from "@/components/ui/pagination";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   ApiFailure,
   KnowledgeBase,
@@ -66,7 +72,13 @@ import type {
   PublicOpenApiKey
 } from "@/lib/admin-api";
 
+const SettingsPanel = lazy(async () => {
+  const module = await import("@/components/settings-panel");
+  return { default: module.SettingsPanel };
+});
+
 type AdminHomePageProps = {
+  activeSection: HomeSection;
   knowledgeBases: KnowledgeBase[];
   knowledgeBaseQuery: string;
   knowledgeBasePageNumber: number;
@@ -93,16 +105,17 @@ type AdminHomePageProps = {
   onDeletePublicOpenApiKey: (key: PublicOpenApiKey) => Promise<{ deleted: true } | ApiFailure>;
   onDismissPublicOpenApiOneTimeKey: () => void;
   onLoadPublicOpenApiKeys: (input: { replace: boolean }) => void;
-  onOpenApiKeysTabSelected: () => void;
+  onOpenApiKeysSelected: () => void;
+  onSectionChange: (section: HomeSection) => void;
   onPreviousKnowledgeBasePage: () => void;
   onNextKnowledgeBasePage: () => void;
   onSearchKnowledgeBases: (query: string) => void;
   onLogout: () => void;
-  onOpenSettings: () => void;
   onOpenKnowledgeBase: (knowledgeBase: KnowledgeBase) => void;
 };
 
 export function AdminHomePage({
+  activeSection,
   knowledgeBases,
   knowledgeBaseQuery,
   knowledgeBasePageNumber,
@@ -120,16 +133,15 @@ export function AdminHomePage({
   onDeletePublicOpenApiKey,
   onDismissPublicOpenApiOneTimeKey,
   onLoadPublicOpenApiKeys,
-  onOpenApiKeysTabSelected,
+  onOpenApiKeysSelected,
+  onSectionChange,
   onPreviousKnowledgeBasePage,
   onNextKnowledgeBasePage,
   onSearchKnowledgeBases,
   onLogout,
-  onOpenSettings,
   onOpenKnowledgeBase
 }: AdminHomePageProps) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState("knowledge-bases");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<KnowledgeBase | null>(null);
   const [name, setName] = useState("");
@@ -222,47 +234,61 @@ export function AdminHomePage({
     setCopiedKnowledgeBaseId(knowledgeBaseId);
   }
 
+  function handleSectionChange(section: HomeSection) {
+    if (section === activeSection) {
+      return;
+    }
+
+    onSectionChange(section);
+    if (section === "openapi-keys") {
+      onOpenApiKeysSelected();
+    }
+  }
+
   return (
-    <main className="min-h-svh bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <img src="/logo.svg" alt="" className="size-10 object-contain" />
-            <h1 className="truncate text-xl font-medium">{t("app.name")}</h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              aria-label={t("settings.open")}
-              onClick={onOpenSettings}
-            >
-              <SettingsIcon />
-            </Button>
-            <DocumentationLink />
-            <LanguageSwitch />
-            <Button type="button" variant="outline" onClick={onLogout}>
-              {t("auth.logout")}
-            </Button>
-          </div>
-        </div>
-      </header>
-      <section className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-6">
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) => {
-            setActiveTab(value);
-            if (value === "openapi-keys") {
-              onOpenApiKeysTabSelected();
-            }
-          }}
-        >
-          <TabsList>
-            <TabsTrigger value="knowledge-bases">{t("home.knowledgeBasesTab")}</TabsTrigger>
-            <TabsTrigger value="openapi-keys">{t("home.openapiKeysTab")}</TabsTrigger>
-          </TabsList>
-          <TabsContent value="knowledge-bases" className="flex flex-col gap-6">
+    <SidebarProvider>
+      <HomeSidebar
+        appName={t("app.name")}
+        activeSection={activeSection}
+        labels={{
+          navigation: t("home.sectionNavigation"),
+          toggleSidebarRail: t("home.toggleSidebarRail"),
+          knowledgeBases: t("home.knowledgeBasesTab"),
+          openApiKeys: t("home.openapiKeysTab"),
+          settings: t("settings.title"),
+          logout: t("auth.logout")
+        }}
+        onSectionSelect={handleSectionChange}
+        onLogout={onLogout}
+      />
+      <SidebarInset className="min-w-0 overflow-hidden">
+        <AdminPageHeader
+          start={
+            <>
+              <SidebarTrigger aria-label={t("home.toggleSidebar")} />
+              <Separator orientation="vertical" className="h-4" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {activeSection === "knowledge-bases"
+                    ? t("home.knowledgeBasesTab")
+                    : activeSection === "openapi-keys"
+                      ? t("home.openapiKeysTab")
+                      : t("settings.title")}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{t("app.name")}</p>
+              </div>
+            </>
+          }
+          end={
+            <>
+              <DocumentationLink />
+              <LanguageSwitch />
+            </>
+          }
+        />
+        <section className="min-w-0 flex-1 px-4 py-6 sm:px-6">
+          {activeSection === "knowledge-bases" ? (
+            <div className="flex flex-col gap-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-end">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <div className="flex min-w-0 flex-1 flex-col gap-2 sm:w-80">
@@ -481,8 +507,8 @@ export function AdminHomePage({
                 </PaginationContent>
               </Pagination>
             ) : null}
-          </TabsContent>
-          <TabsContent value="openapi-keys">
+            </div>
+          ) : activeSection === "openapi-keys" ? (
             <OpenApiKeysPanel
               keys={publicOpenApiKeys}
               oneTimeKey={publicOpenApiKeysOneTimeKey}
@@ -493,9 +519,19 @@ export function AdminHomePage({
               onDismissOneTimeKey={onDismissPublicOpenApiOneTimeKey}
               onLoadMore={() => onLoadPublicOpenApiKeys({ replace: false })}
             />
-          </TabsContent>
-        </Tabs>
-      </section>
+          ) : (
+            <Suspense
+              fallback={
+                <Alert>
+                  <AlertTitle>{t("settings.loading")}</AlertTitle>
+                </Alert>
+              }
+            >
+              <SettingsPanel />
+            </Suspense>
+          )}
+        </section>
+      </SidebarInset>
 
       <Dialog
         open={isDialogOpen}
@@ -580,6 +616,6 @@ export function AdminHomePage({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </main>
+    </SidebarProvider>
   );
 }

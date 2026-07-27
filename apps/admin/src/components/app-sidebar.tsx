@@ -1,6 +1,5 @@
 import type * as React from "react";
 import {
-  ArrowLeftIcon,
   ChevronRightIcon,
   FileTextIcon,
   FolderIcon,
@@ -10,11 +9,13 @@ import {
   LogOutIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  SettingsIcon,
   LoaderCircleIcon,
   SearchIcon,
   XIcon,
   Trash2Icon
 } from "lucide-react";
+import { AdminSidebarHeader } from "@/components/admin-sidebar-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -37,7 +38,6 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
@@ -77,6 +77,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     back: string;
     files: string;
     uploadProgress: string;
+    settings: string;
     loadMore: string;
     logout: string;
     running: string;
@@ -95,7 +96,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
     fileTreeSearchNoResults: string;
     fileTreeSearchLoadMore: string;
   };
-  activeView: "file" | "processing";
+  activeView: "file" | "processing" | "settings";
   tree: AdminSidebarTreeNode[];
   rootNextCursor: string | null;
   rootLoading: boolean;
@@ -103,6 +104,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   onBack: () => void;
   onLogout: () => void;
   onOpenProcessing: () => void;
+  onOpenSettings: () => void;
   onOpenFile: (node: AdminSidebarTreeNode) => void;
   onDeleteFile: (node: AdminSidebarTreeNode) => void;
   onDeleteDirectory: (node: AdminSidebarTreeNode) => void;
@@ -141,6 +143,7 @@ export function AppSidebar({
   onBack,
   onLogout,
   onOpenProcessing,
+  onOpenSettings,
   onOpenFile,
   onDeleteFile,
   onDeleteDirectory,
@@ -158,21 +161,14 @@ export function AppSidebar({
 
   return (
     <Sidebar {...props}>
-      <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 pt-1">
-          <Button type="button" variant="ghost" size="icon-sm" aria-label={labels.back} onClick={onBack}>
-            <ArrowLeftIcon />
-          </Button>
-          <img src="/logo.svg" alt="" className="size-7 object-contain" />
-          <div className="min-w-0">
-            <p className="truncate text-xs text-sidebar-foreground/70">{appName}</p>
-            <p className="truncate text-sm font-medium">{knowledgeBaseName}</p>
-          </div>
-        </div>
-      </SidebarHeader>
+      <AdminSidebarHeader
+        appName={appName}
+        contextName={knowledgeBaseName}
+        backLabel={labels.back}
+        onBack={onBack}
+      />
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>{labels.uploadProgress}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -183,6 +179,15 @@ export function AppSidebar({
                 {sourceFiles.length > 0 ? (
                   <SidebarMenuBadge>{runningSourceFiles > 0 ? labels.running : labels.ended}</SidebarMenuBadge>
                 ) : null}
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "settings"}
+                  onClick={onOpenSettings}
+                >
+                  <SettingsIcon />
+                  <span>{labels.settings}</span>
+                </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>

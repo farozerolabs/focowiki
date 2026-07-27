@@ -30,7 +30,7 @@ describeDatabase("migration preflight integration", () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(legacyDatabaseName)}`);
     await applyMigrations(sql);
-    await legacySql.unsafe(readMigrationSql(MIGRATION_FILES[0]));
+    await legacySql.unsafe(readMigrationSql(MIGRATION_FILES[0]!));
   });
 
   afterAll(async () => {
@@ -81,7 +81,10 @@ describeDatabase("migration preflight integration", () => {
     const snapshot = await inspectMigrationWork(sql);
 
     expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
-    expect(snapshot.total).toBe(baseline.total);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 1);
   });
 
   it("allows a resumable lexical rebuild to survive a compatible migration", async () => {
@@ -102,7 +105,172 @@ describeDatabase("migration preflight integration", () => {
     const snapshot = await inspectMigrationWork(sql);
 
     expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
-    expect(snapshot.total).toBe(baseline.total);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 1);
+  });
+
+  it("counts an active knowledge-base maintenance request", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedKnowledgeBaseWithActiveGeneration();
+    await sql`
+      INSERT INTO focowiki.knowledge_base_index_maintenance_requests (
+        id, knowledge_base_id, trigger_kind, state, retry_count,
+        max_attempts, next_attempt_at
+      ) VALUES (
+        'maintenance-request-migration-preflight',
+        ${knowledgeBaseId}, 'manual', 'queued', 2, 5, now()
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.knowledgeBaseMaintenanceRequests).toBe(
+      baseline.knowledgeBaseMaintenanceRequests + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 1);
+  });
+
+  it("counts active projection repair coordinators and subtasks", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedKnowledgeBaseWithActiveGeneration();
+    const repairGenerationId = "generation-migration-preflight-repair-work";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind
+      ) VALUES (
+        ${repairGenerationId}, ${knowledgeBaseId}, ${generationId},
+        'building', 2, 'projection_repair'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_projection_repairs (
+        knowledge_base_id, repair_version, base_generation_id,
+        target_generation_id, state
+      ) VALUES (
+        ${knowledgeBaseId}, 10, ${generationId},
+        ${repairGenerationId}, 'running'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.projection_repair_subtasks (
+        id, knowledge_base_id, repair_version, target_generation_id,
+        base_generation_id, task_kind, partition_key, phase_order, state
+      ) VALUES (
+        'projection-repair-subtask-migration-preflight',
+        ${knowledgeBaseId}, 10, ${repairGenerationId}, ${generationId},
+        'tree_partition', '00', 1, 'pending'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.projectionRepairs).toBe(baseline.projectionRepairs + 2);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 3);
+  });
+
+  it("counts active lexical rebuild coordinators and work items", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedKnowledgeBaseWithActiveGeneration();
+    await seedCompletedSource();
+    const lexicalGenerationId = "generation-migration-preflight-lexical-work";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind
+      ) VALUES (
+        ${lexicalGenerationId}, ${knowledgeBaseId}, ${generationId},
+        'building', 2, 'lexical_rebuild'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.knowledge_base_lexical_rebuilds (
+        knowledge_base_id, target_search_schema_version,
+        target_tokenizer_contract_version, target_segmentation_version,
+        target_content_profile_version,
+        target_graph_lexical_projection_version,
+        base_generation_id, target_generation_id, state
+      ) VALUES (
+        ${knowledgeBaseId}, 'search-v1', 'tokenizer-v1', 'segment-v1',
+        'content-v1', 'graph-v1', ${generationId},
+        ${lexicalGenerationId}, 'running'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.lexical_rebuild_work_items (
+        knowledge_base_id, target_generation_id, source_file_id,
+        source_revision_id, logical_path, target_search_schema_version,
+        target_tokenizer_contract_version, target_segmentation_version,
+        target_content_profile_version,
+        target_graph_lexical_projection_version, state
+      ) VALUES (
+        ${knowledgeBaseId}, ${lexicalGenerationId}, ${sourceFileId},
+        ${revisionId}, 'preflight.md', 'search-v1', 'tokenizer-v1',
+        'segment-v1', 'content-v1', 'graph-v1', 'pending'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.lexicalRebuilds).toBe(baseline.lexicalRebuilds + 2);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 3);
+  });
+
+  it("counts a retryable failed lexical rebuild as unfinished work", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedKnowledgeBaseWithActiveGeneration();
+    await sql`
+      INSERT INTO focowiki.knowledge_base_lexical_rebuilds (
+        knowledge_base_id, target_search_schema_version,
+        target_tokenizer_contract_version, target_segmentation_version,
+        target_content_profile_version,
+        target_graph_lexical_projection_version,
+        base_generation_id, state, attempt_count, max_attempts
+      ) VALUES (
+        ${knowledgeBaseId}, 'search-v1', 'tokenizer-v1', 'segment-v1',
+        'content-v1', 'graph-v1', ${generationId}, 'failed', 2, 5
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.lexicalRebuilds).toBe(baseline.lexicalRebuilds + 1);
+    expect(snapshot.total).toBe(baseline.total + 1);
+  });
+
+  it("counts pending projection compaction work", async () => {
+    await cleanup();
+    const baseline = await inspectMigrationWork(sql);
+    await seedKnowledgeBaseWithActiveGeneration();
+    await sql`
+      INSERT INTO focowiki.projection_compaction_jobs (
+        id, knowledge_base_id, projection_kind, logical_partition,
+        active_generation_id, expected_segment_ids, reason_codes, state
+      ) VALUES (
+        'projection-compaction-migration-preflight', ${knowledgeBaseId},
+        'search', '00', ${generationId}, ARRAY['segment-1'],
+        ARRAY['segment_count'], 'pending'
+      )
+    `;
+
+    const snapshot = await inspectMigrationWork(sql);
+
+    expect(snapshot.projectionCompactions).toBe(
+      baseline.projectionCompactions + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 1);
   });
 
   it("does not block migration for an upload session whose lease has expired", async () => {
@@ -135,7 +303,7 @@ describeDatabase("migration preflight integration", () => {
     });
   });
 
-  it("allows a recoverable deletion to survive an active projection repair", async () => {
+  it("excludes recoverable deletion rows while counting active repair work", async () => {
     await cleanup();
     const baseline = await inspectMigrationWork(sql);
     await seedRepairDependentDeletion({
@@ -147,7 +315,11 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.roleJobs).toBe(baseline.roleJobs);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
-    expect(snapshot.total).toBe(baseline.total);
+    expect(snapshot.projectionRepairs).toBe(baseline.projectionRepairs + 1);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 2);
   });
 
   it("blocks a deletion that projection repair cannot recover", async () => {
@@ -162,10 +334,10 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.roleJobs).toBe(baseline.roleJobs + 1);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
-    expect(snapshot.total).toBe(baseline.total + 3);
+    expect(snapshot.total).toBe(baseline.total + 5);
   });
 
-  it("allows a recoverable directory deletion to survive projection repair", async () => {
+  it("excludes recoverable directory deletion rows while counting repair work", async () => {
     await cleanup();
     const baseline = await inspectMigrationWork(sql);
     await seedRepairDependentDeletion({
@@ -178,7 +350,11 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.roleJobs).toBe(baseline.roleJobs);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
-    expect(snapshot.total).toBe(baseline.total);
+    expect(snapshot.projectionRepairs).toBe(baseline.projectionRepairs + 1);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 2);
   });
 
   it("allows a frozen recoverable deletion publication to survive migration", async () => {
@@ -195,7 +371,11 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents);
-    expect(snapshot.total).toBe(baseline.total);
+    expect(snapshot.projectionRepairs).toBe(baseline.projectionRepairs + 1);
+    expect(snapshot.maintenanceCandidateGenerations).toBe(
+      baseline.maintenanceCandidateGenerations + 1
+    );
+    expect(snapshot.total).toBe(baseline.total + 2);
   });
 
   it("blocks a frozen deletion publication without resumable planning data", async () => {
@@ -217,7 +397,7 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.frozenGenerations).toBe(baseline.frozenGenerations + 1);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
-    expect(snapshot.total).toBe(baseline.total + 4);
+    expect(snapshot.total).toBe(baseline.total + 6);
   });
 
   it("preserves non-drained deletion work after compatible migrations", async () => {
@@ -236,7 +416,9 @@ describeDatabase("migration preflight integration", () => {
       frozenGenerations: 1,
       resourceOperations: 1,
       deletionIntents: 1,
-      total: 4
+      projectionRepairs: 1,
+      maintenanceCandidateGenerations: 1,
+      total: 6
     });
     expect((await sql<Array<{ generation: string }>>`
       SELECT generation
@@ -274,7 +456,9 @@ describeDatabase("migration preflight integration", () => {
       frozenGenerations: 1,
       resourceOperations: 1,
       deletionIntents: 1,
-      total: 4
+      projectionRepairs: 1,
+      maintenanceCandidateGenerations: 1,
+      total: 6
     });
   });
 
@@ -295,7 +479,7 @@ describeDatabase("migration preflight integration", () => {
     expect(snapshot.roleJobs).toBe(baseline.roleJobs + 1);
     expect(snapshot.resourceOperations).toBe(baseline.resourceOperations + 1);
     expect(snapshot.deletionIntents).toBe(baseline.deletionIntents + 1);
-    expect(snapshot.total).toBe(baseline.total + 3);
+    expect(snapshot.total).toBe(baseline.total + 5);
   });
 
   async function seedAllUnfinishedWork(): Promise<void> {
@@ -405,6 +589,54 @@ describeDatabase("migration preflight integration", () => {
         ) VALUES (
           'cleanup-migration-preflight', ${knowledgeBaseId},
           'generated/preflight.json', 'pending'
+        )
+      `;
+    });
+  }
+
+  async function seedKnowledgeBaseWithActiveGeneration(): Promise<void> {
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES (${knowledgeBaseId}, 'Migration preflight')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, state, format_version,
+        generation_kind, activated_at
+      ) VALUES (
+        ${generationId}, ${knowledgeBaseId}, 'active', 2, 'normal', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${generationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+  }
+
+  async function seedCompletedSource(): Promise<void> {
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.source_files (
+          id, knowledge_base_id, object_key, content_type, size_bytes,
+          checksum_sha256, processing_status, processing_stage,
+          generated_output_status, name, relative_path, path_key,
+          active_revision_id
+        ) VALUES (
+          ${sourceFileId}, ${knowledgeBaseId}, 'sources/preflight.md',
+          'text/markdown; charset=utf-8', 12, ${"c".repeat(64)},
+          'completed', 'generation_activation', 'visible', 'preflight.md',
+          'preflight.md', 'preflight.md', ${revisionId}
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.source_revisions (
+          id, knowledge_base_id, source_file_id, revision, object_key,
+          content_type, size_bytes, checksum_sha256, processing_status
+        ) VALUES (
+          ${revisionId}, ${knowledgeBaseId}, ${sourceFileId}, 1,
+          'sources/preflight.md', 'text/markdown; charset=utf-8', 12,
+          ${"c".repeat(64)}, 'completed'
         )
       `;
     });

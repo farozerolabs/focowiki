@@ -9,6 +9,7 @@ export function bootstrapLexicalRebuildWork(input: {
   rebuilds: LexicalRebuildRepository;
   tokenizer: LexicalTokenizer;
   now: string;
+  knowledgeBaseIds?: string[] | undefined;
 }): Promise<number> {
   return input.rebuilds.bootstrap({
     searchSchemaVersion: BODY_SEARCH_SCHEMA_VERSION,
@@ -16,6 +17,7 @@ export function bootstrapLexicalRebuildWork(input: {
     segmentationVersion: BODY_SEGMENTATION_VERSION,
     contentProfileVersion: CONTENT_PROFILE_VERSION,
     graphLexicalProjectionVersion: GRAPH_LEXICAL_PROJECTION_VERSION,
-    now: input.now
+    now: input.now,
+    knowledgeBaseIds: input.knowledgeBaseIds
   });
 }

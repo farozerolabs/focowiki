@@ -4,9 +4,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AdminHomePage,
   KnowledgeBaseDetailPage,
-  LoginPage,
-  SettingsPage
+  LoginPage
 } from "@/pages/lazy-admin-pages";
+import type { HomeSection } from "@/components/home-sidebar";
 import {
   checkAdminSession,
   createKnowledgeBase,
@@ -55,7 +55,7 @@ export function App() {
   const [isLoadingKnowledgeBases, setIsLoadingKnowledgeBases] = useState(false);
   const [knowledgeBaseQuery, setKnowledgeBaseQuery] = useState("");
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState<KnowledgeBase | null>(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [homeSection, setHomeSection] = useState<HomeSection>("knowledge-bases");
   const [publicOpenApiKeys, setPublicOpenApiKeys] = useState<PublicOpenApiKey[]>([]);
   const [publicOpenApiKeysNextCursor, setPublicOpenApiKeysNextCursor] = useState<string | null>(
     null
@@ -135,12 +135,12 @@ export function App() {
 
     if (view.type === "home") {
       setSelectedKnowledgeBase(null);
-      setIsSettingsOpen(false);
+      setHomeSection("knowledge-bases");
       return;
     }
     if (view.type === "settings") {
       setSelectedKnowledgeBase(null);
-      setIsSettingsOpen(true);
+      setHomeSection("settings");
       return;
     }
 
@@ -151,29 +151,33 @@ export function App() {
     if (!knowledgeBase) {
       navigateAdminView({ type: "home" }, "replace");
       setSelectedKnowledgeBase(null);
-      setIsSettingsOpen(false);
+      setHomeSection("knowledge-bases");
       return;
     }
-    setIsSettingsOpen(false);
+    setHomeSection("knowledge-bases");
     setSelectedKnowledgeBase(knowledgeBase);
   }
 
   function openKnowledgeBase(knowledgeBase: KnowledgeBase) {
     navigateAdminView({ type: "knowledge-base", knowledgeBaseId: knowledgeBase.id });
-    setIsSettingsOpen(false);
+    setHomeSection("knowledge-bases");
     setSelectedKnowledgeBase(knowledgeBase);
   }
 
-  function openSettings() {
-    navigateAdminView({ type: "settings" });
+  function handleHomeSectionChange(section: HomeSection) {
+    if (section === "settings") {
+      navigateAdminView({ type: "settings" });
+    } else if (homeSection === "settings") {
+      navigateAdminView({ type: "home" });
+    }
     setSelectedKnowledgeBase(null);
-    setIsSettingsOpen(true);
+    setHomeSection(section);
   }
 
   function returnHome() {
     navigateAdminView({ type: "home" });
     setSelectedKnowledgeBase(null);
-    setIsSettingsOpen(false);
+    setHomeSection("knowledge-bases");
   }
 
   useEffect(() => {
@@ -190,7 +194,7 @@ export function App() {
     setKnowledgeBasePageState(createInitialCursorPageState());
     setKnowledgeBaseQuery("");
     setSelectedKnowledgeBase(null);
-    setIsSettingsOpen(false);
+    setHomeSection("knowledge-bases");
     setIsLoadingKnowledgeBases(false);
     setPublicOpenApiKeys([]);
     setPublicOpenApiKeysNextCursor(null);
@@ -325,7 +329,7 @@ export function App() {
     setIsLoadingPublicOpenApiKeys(false);
   }
 
-  function handleOpenApiKeysTabSelected() {
+  function handleOpenApiKeysSelected() {
     if (!hasLoadedPublicOpenApiKeys && !isLoadingPublicOpenApiKeys) {
       void loadPublicOpenApiKeys({ replace: true });
     }
@@ -388,20 +392,10 @@ export function App() {
     );
   }
 
-  if (isSettingsOpen) {
-    return (
-      <AdminPageBoundary>
-        <SettingsPage
-          onBack={returnHome}
-          onLogout={() => void handleLogout()}
-        />
-      </AdminPageBoundary>
-    );
-  }
-
   return (
     <AdminPageBoundary>
       <AdminHomePage
+        activeSection={homeSection}
         knowledgeBases={knowledgeBases}
         knowledgeBaseQuery={knowledgeBaseQuery}
         knowledgeBasePageNumber={knowledgeBasePageState.pageNumber}
@@ -419,12 +413,12 @@ export function App() {
         onDeletePublicOpenApiKey={handleDeletePublicOpenApiKey}
         onDismissPublicOpenApiOneTimeKey={() => setPublicOpenApiKeysOneTimeKey(null)}
         onLoadPublicOpenApiKeys={(input) => void loadPublicOpenApiKeys(input)}
-        onOpenApiKeysTabSelected={handleOpenApiKeysTabSelected}
+        onOpenApiKeysSelected={handleOpenApiKeysSelected}
+        onSectionChange={handleHomeSectionChange}
         onPreviousKnowledgeBasePage={() => void handleKnowledgeBasePreviousPage()}
         onNextKnowledgeBasePage={() => void handleKnowledgeBaseNextPage()}
         onSearchKnowledgeBases={(query) => void handleKnowledgeBaseQueryChange(query)}
         onLogout={() => void handleLogout()}
-        onOpenSettings={openSettings}
         onOpenKnowledgeBase={openKnowledgeBase}
       />
     </AdminPageBoundary>

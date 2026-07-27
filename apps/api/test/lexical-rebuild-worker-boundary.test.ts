@@ -40,9 +40,11 @@ describe("dedicated lexical rebuild runtime boundary", () => {
 
   it("keeps source-body execution out of the maintenance sweep", () => {
     const maintenance = read("apps/api/src/maintenance-worker-main.ts");
+    const lexicalWorker = read("apps/api/src/lexical-rebuild-worker-main.ts");
     expect(maintenance).not.toContain("runLexicalRebuildSlice");
     expect(maintenance).not.toContain("getObjectText");
     expect(maintenance).toContain("bootstrapLexicalRebuildWork");
+    expect(lexicalWorker).not.toContain("bootstrapLexicalRebuildWork");
   });
 
   it("keeps all lexical work controls in persisted Admin settings", () => {

@@ -196,6 +196,121 @@ describeDatabase("projection repair work repository integration", () => {
     ]);
   });
 
+  it("reopens a failed current repair only after its maintenance request retries", async () => {
+    await sql`
+      INSERT INTO focowiki.knowledge_base_index_maintenance_requests (
+        id, knowledge_base_id, trigger_kind, state, settings_revision,
+        started_at, created_at, updated_at
+      ) VALUES (
+        'index-maintenance-repair-retry', 'kb-repair-work',
+        'manual', 'running', 9,
+        '2026-07-23T23:59:00.000Z',
+        '2026-07-23T23:59:00.000Z',
+        '2026-07-23T23:59:00.000Z'
+      )
+    `;
+    expect(await work.bootstrap({
+      repairVersion: 4,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      requireActiveMaintenanceRequest: true,
+      now: "2026-07-24T00:00:00.000Z"
+    })).toBe(1);
+    await plan("generation-repair-current-failed");
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.knowledge_base_projection_repairs
+        SET state = 'failed', current_phase = 'failed',
+            last_error_code = 'PROJECTION_REPAIR_VALIDATION_FAILED',
+            last_error_message = 'Projection repair validation failed',
+            updated_at = '2026-07-24T00:01:00.000Z'
+        WHERE knowledge_base_id = 'kb-repair-work'
+          AND repair_version = 4
+      `;
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'failed',
+            failed_at = '2026-07-24T00:01:00.000Z',
+            safe_error_code = 'PROJECTION_REPAIR_VALIDATION_FAILED',
+            safe_error_message = 'Projection repair validation failed',
+            updated_at = '2026-07-24T00:01:00.000Z'
+        WHERE id = 'generation-repair-current-failed'
+      `;
+    });
+
+    await sql`
+      UPDATE focowiki.knowledge_base_index_maintenance_requests
+      SET updated_at = '2026-07-24T00:02:00.000Z'
+      WHERE id = 'index-maintenance-repair-retry'
+    `;
+    expect(await work.bootstrap({
+      repairVersion: 4,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      requireActiveMaintenanceRequest: true,
+      now: "2026-07-24T00:03:00.000Z"
+    })).toBe(0);
+    await expect(sql<Array<{
+      state: string;
+      target_generation_id: string | null;
+    }>>`
+      SELECT state, target_generation_id
+      FROM focowiki.knowledge_base_projection_repairs
+      WHERE knowledge_base_id = 'kb-repair-work'
+        AND repair_version = 4
+    `).resolves.toEqual([{
+      state: "failed",
+      target_generation_id: "generation-repair-current-failed"
+    }]);
+
+    await sql`
+      UPDATE focowiki.knowledge_base_index_maintenance_requests
+      SET state = 'queued', retry_count = retry_count + 1,
+          updated_at = '2026-07-24T00:04:00.000Z'
+      WHERE id = 'index-maintenance-repair-retry'
+    `;
+    expect(await work.bootstrap({
+      repairVersion: 4,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      requireActiveMaintenanceRequest: true,
+      now: "2026-07-24T00:05:00.000Z"
+    })).toBe(0);
+
+    await sql`
+      UPDATE focowiki.knowledge_base_index_maintenance_requests
+      SET state = 'running', updated_at = '2026-07-24T00:06:00.000Z'
+      WHERE id = 'index-maintenance-repair-retry'
+    `;
+    expect(await work.bootstrap({
+      repairVersion: 4,
+      plannerVersion: 1,
+      settingsRevision: 9,
+      settings,
+      maxAttempts: 5,
+      requireActiveMaintenanceRequest: true,
+      now: "2026-07-24T00:07:00.000Z"
+    })).toBe(1);
+    await expect(sql<Array<{
+      state: string;
+      target_generation_id: string | null;
+    }>>`
+      SELECT state, target_generation_id
+      FROM focowiki.knowledge_base_projection_repairs
+      WHERE knowledge_base_id = 'kb-repair-work'
+        AND repair_version = 4
+    `).resolves.toEqual([{
+      state: "pending",
+      target_generation_id: null
+    }]);
+  });
+
   it("claims runnable partitions without duplicates and recovers an expired lease", async () => {
     await bootstrap();
     await plan("generation-repair-claims");

@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowLeftIcon,
   CheckIcon,
   PauseIcon,
   PlayIcon,
@@ -9,7 +8,6 @@ import {
   SettingsIcon,
   Trash2Icon
 } from "lucide-react";
-import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -65,11 +63,6 @@ import {
   type RuntimeSettingsResponse,
   type WorkerSettings
 } from "@/lib/admin-api";
-
-type SettingsPageProps = {
-  onBack: () => void;
-  onLogout: () => void;
-};
 
 const rateLimitGroups = [
   "adminLogin",
@@ -160,6 +153,8 @@ const graphBooleanFields = [
 ] as const satisfies readonly (keyof Pick<GraphSettings, "modelReviewEnabled">)[];
 
 const maintenanceNumberFields = [
+  "knowledgeBaseMaintenanceScanIntervalSeconds",
+  "knowledgeBaseMaintenanceConcurrency",
   "scanIntervalSeconds",
   "scanBatchSize",
   "deletionBatchSize",
@@ -178,7 +173,9 @@ const maintenanceNumberFields = [
   "lexicalRebuildClaimBatchSize",
   "lexicalRebuildDatabaseBatchSize",
   "lexicalRebuildMaxInFlightSourceBytes"
-] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
+] as const satisfies readonly (
+  keyof Omit<MaintenanceSettings, "reconciliationEnabled" | "knowledgeBaseMaintenanceMode">
+)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
@@ -223,7 +220,11 @@ const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) 
   descriptionKey: `settings.tips.graph.${field}`
 }));
 
-const maintenanceTipItems = ["reconciliationEnabled", ...maintenanceNumberFields].map((field) => ({
+const maintenanceTipItems = [
+  "knowledgeBaseMaintenanceMode",
+  "reconciliationEnabled",
+  ...maintenanceNumberFields
+].map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.maintenance.${field}`
 }));
@@ -264,7 +265,10 @@ type EditablePublicationSettings = {
 type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
   Pick<GraphSettings, "modelReviewEnabled">;
 type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber> &
-  Pick<MaintenanceSettings, "reconciliationEnabled">;
+  Pick<
+    MaintenanceSettings,
+    "reconciliationEnabled" | "knowledgeBaseMaintenanceMode"
+  >;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -274,7 +278,7 @@ type EditableModelForm = {
   isActive: boolean;
 } & Record<ModelNumberField, EditableNumber>;
 
-export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
+export function SettingsPanel() {
   const { t } = useTranslation();
   const [data, setData] = useState<RuntimeSettingsResponse | null>(null);
   const [rateLimits, setRateLimits] = useState<EditableRateLimitSettings | null>(null);
@@ -499,28 +503,8 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   }
 
   return (
-    <main className="min-h-svh min-w-0 overflow-x-hidden bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <Button type="button" variant="ghost" size="icon-sm" onClick={onBack}>
-              <ArrowLeftIcon />
-            </Button>
-            <img src="/logo.svg" alt="" className="size-10 object-contain" />
-            <div className="min-w-0">
-              <p className="text-sm text-muted-foreground">{t("app.name")}</p>
-              <h1 className="text-xl font-medium">{t("settings.title")}</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <LanguageSwitch />
-            <Button type="button" variant="outline" onClick={onLogout}>
-              {t("auth.logout")}
-            </Button>
-          </div>
-        </div>
-      </header>
-      <section className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
+    <div className="flex min-w-0 flex-col gap-6">
+      <section className="flex min-w-0 flex-col gap-6">
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>{t(error)}</AlertTitle>
@@ -760,6 +744,36 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                   >
                     <form noValidate onSubmit={handleMaintenanceSave}>
                       <FieldGroup>
+                        <Field>
+                          <FieldLabel htmlFor="maintenance-knowledgeBaseMaintenanceMode">
+                            <RequiredLabel
+                              label={t("settings.fields.knowledgeBaseMaintenanceMode")}
+                              required
+                            />
+                          </FieldLabel>
+                          <Select
+                            value={maintenance.knowledgeBaseMaintenanceMode}
+                            onValueChange={(value) =>
+                              setMaintenance({
+                                ...maintenance,
+                                knowledgeBaseMaintenanceMode:
+                                  value as MaintenanceSettings["knowledgeBaseMaintenanceMode"]
+                              })
+                            }
+                          >
+                            <SelectTrigger id="maintenance-knowledgeBaseMaintenanceMode">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="manual">
+                                {t("settings.maintenanceModes.manual")}
+                              </SelectItem>
+                              <SelectItem value="automatic">
+                                {t("settings.maintenanceModes.automatic")}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                           <Field>
                             <FieldLabel htmlFor="maintenance-reconciliationEnabled">
@@ -787,9 +801,17 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                               key={field}
                               id={`maintenance-${field}`}
                               label={t(`settings.fields.${field}`)}
+                              disabled={
+                                field === "knowledgeBaseMaintenanceScanIntervalSeconds"
+                                && maintenance.knowledgeBaseMaintenanceMode === "manual"
+                              }
                               min={field === "confirmationPasses" ? 2 : 1}
                               {...(field === "scanBatchSize" || field === "deletionBatchSize"
                                 ? { max: 1_000 }
+                                : field === "knowledgeBaseMaintenanceScanIntervalSeconds"
+                                  ? { min: 60, max: 2_592_000 }
+                                  : field === "knowledgeBaseMaintenanceConcurrency"
+                                    ? { max: 16 }
                                 : field === "projectionRepairConcurrency"
                                   ? { max: 16 }
                                   : field === "projectionRepairDatabaseBatchSize"
@@ -1113,7 +1135,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </main>
+    </div>
   );
 }
 
@@ -1191,6 +1213,7 @@ function NumberField({
   value,
   min = 1,
   max,
+  disabled = false,
   required = false,
   onChange
 }: {
@@ -1199,11 +1222,12 @@ function NumberField({
   value: EditableNumber;
   min?: number;
   max?: number;
+  disabled?: boolean;
   required?: boolean;
   onChange: (value: EditableNumber) => void;
 }) {
   return (
-    <Field>
+    <Field data-disabled={disabled || undefined}>
       <FieldLabel htmlFor={id}>
         <RequiredLabel label={label} required={required} />
       </FieldLabel>
@@ -1214,6 +1238,7 @@ function NumberField({
         max={max}
         step={1}
         required={required}
+        disabled={disabled}
         value={value === "" ? "" : String(value)}
         onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))}
       />
@@ -1400,6 +1425,9 @@ function buildMaintenanceSettings(
   if (
     settings.scanBatchSize > 1_000 ||
     settings.deletionBatchSize > 1_000 ||
+    settings.knowledgeBaseMaintenanceScanIntervalSeconds < 60 ||
+    settings.knowledgeBaseMaintenanceScanIntervalSeconds > 2_592_000 ||
+    settings.knowledgeBaseMaintenanceConcurrency > 16 ||
     settings.confirmationPasses < 2 ||
     settings.migrationBackfillConcurrency > 16 ||
     settings.compactionConcurrency > 16 ||
@@ -1424,6 +1452,7 @@ function buildMaintenanceSettings(
   }
 
   return {
+    knowledgeBaseMaintenanceMode: input.knowledgeBaseMaintenanceMode,
     reconciliationEnabled: input.reconciliationEnabled,
     ...settings
   };

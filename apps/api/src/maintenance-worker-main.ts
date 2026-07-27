@@ -10,9 +10,16 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresIncrementalStatisticsRepository } from "./infrastructure/postgres/incremental-statistics-repository.js";
+import {
+  createPostgresKnowledgeBaseIndexMaintenanceRepository
+} from "./infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
+import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
 import { createPostgresProjectionCompactionRepository } from "./infrastructure/postgres/projection-compaction-repository.js";
+import {
+  createPostgresProjectionRepairWorkRepository
+} from "./infrastructure/postgres/projection-repair-work-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
 import {
   createPostgresRuntimePressureRepository,
@@ -32,6 +39,14 @@ import { runProjectionCompactionSlice } from "./maintenance/projection-compactio
 import { runMaintenanceBackground } from "./maintenance/runtime.js";
 import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
 import { bootstrapLexicalRebuildWork } from "./maintenance/lexical-rebuild-bootstrap.js";
+import {
+  KnowledgeBaseIndexMaintenanceExecutionError,
+  runKnowledgeBaseIndexMaintenanceSlice
+} from "./maintenance/knowledge-base-index-maintenance.js";
+import {
+  CURRENT_PROJECTION_REPAIR_PLANNER_VERSION,
+  CURRENT_PROJECTION_REPAIR_VERSION
+} from "./maintenance/projection-repair-plan.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
 import { runUploadSessionExpirationSlice } from "./maintenance/upload-session-expiration.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
@@ -123,6 +138,10 @@ async function runMaintenanceWorker(): Promise<void> {
     const optimizationMigrations = createPostgresOptimizationMigrationRepository(sql);
     const lexicalRebuilds = createPostgresLexicalRebuildRepository(sql);
     const incrementalStatistics = createPostgresIncrementalStatisticsRepository(sql);
+    const indexMaintenance =
+      createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
+    const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
+    const projectionRepairs = createPostgresProjectionRepairWorkRepository(sql);
     const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
       role: "maintenance",
@@ -292,39 +311,108 @@ async function runMaintenanceWorker(): Promise<void> {
                 }
               })
             );
-            const lexicalScheduled = await bootstrapLexicalRebuildWork({
-              rebuilds: lexicalRebuilds,
-              tokenizer,
-              now: new Date().toISOString()
+            let lexicalScheduled = 0;
+            let statisticsResult = {
+              claimed: false,
+              changed: false,
+              failed: false
+            };
+            let compactionResult = {
+              discovered: 0,
+              claimed: 0,
+              completed: 0,
+              superseded: 0,
+              failed: 0
+            };
+            await runKnowledgeBaseIndexMaintenanceSlice({
+              requests: indexMaintenance,
+              progress: maintenanceProgress,
+              runtimeSettings,
+              workerId: maintenanceOwner,
+              leaseTtlSeconds: snapshot.worker.lockTtlSeconds,
+              async schedule({ request, now }) {
+                const requestSnapshot = await runtimeSettings.getSnapshot();
+                const projectionSettings = {
+                  concurrency: requestSnapshot.maintenance.projectionRepairConcurrency,
+                  databaseBatchSize:
+                    requestSnapshot.maintenance.projectionRepairDatabaseBatchSize,
+                  objectWriteConcurrency:
+                    requestSnapshot.maintenance.projectionRepairObjectWriteConcurrency
+                };
+                await projectionRepairs.bootstrap({
+                  repairVersion: CURRENT_PROJECTION_REPAIR_VERSION,
+                  plannerVersion: CURRENT_PROJECTION_REPAIR_PLANNER_VERSION,
+                  settingsRevision: request.settingsRevision,
+                  settings: projectionSettings,
+                  maxAttempts: requestSnapshot.maintenance.maxAttempts,
+                  now,
+                  knowledgeBaseIds: [request.knowledgeBaseId],
+                  requireActiveMaintenanceRequest: true
+                });
+                lexicalScheduled += await bootstrapLexicalRebuildWork({
+                  rebuilds: lexicalRebuilds,
+                  tokenizer,
+                  now,
+                  knowledgeBaseIds: [request.knowledgeBaseId]
+                });
+                const statisticsNow = new Date(now);
+                const currentStatistics =
+                  await runIncrementalStatisticsReconciliationSlice({
+                    repository: incrementalStatistics,
+                    workerId: maintenanceOwner,
+                    leaseToken:
+                      `${statisticsLeaseToken}-${request.knowledgeBaseId}`,
+                    now,
+                    leaseExpiresAt: new Date(
+                      statisticsNow.getTime()
+                        + requestSnapshot.worker.lockTtlSeconds * 1_000
+                    ).toISOString(),
+                    reconciledBefore: now,
+                    knowledgeBaseId: request.knowledgeBaseId
+                  });
+                statisticsResult = {
+                  claimed: statisticsResult.claimed || currentStatistics.claimed,
+                  changed: statisticsResult.changed || currentStatistics.changed,
+                  failed: statisticsResult.failed || currentStatistics.failed
+                };
+                if (currentStatistics.failed) {
+                  throw new KnowledgeBaseIndexMaintenanceExecutionError(
+                    "INDEX_MAINTENANCE_STATISTICS_FAILED",
+                    "Knowledge-base statistics maintenance could not complete"
+                  );
+                }
+                const currentCompaction = await runProjectionCompactionSlice({
+                  repository: compaction,
+                  immutableObjects,
+                  budget: resourceBudgets.compaction,
+                  workerId: maintenanceOwner,
+                  concurrency: requestSnapshot.maintenance.compactionConcurrency,
+                  partitionScanLimit: requestSnapshot.maintenance.scanBatchSize,
+                  recordPageSize: requestSnapshot.maintenance.scanBatchSize,
+                  maxAttempts: requestSnapshot.maintenance.maxAttempts,
+                  retryDelayMs: requestSnapshot.maintenance.retryDelayMs,
+                  lockTtlSeconds: requestSnapshot.worker.lockTtlSeconds,
+                  knowledgeBaseIds: [request.knowledgeBaseId]
+                });
+                compactionResult = {
+                  discovered: compactionResult.discovered + currentCompaction.discovered,
+                  claimed: compactionResult.claimed + currentCompaction.claimed,
+                  completed: compactionResult.completed + currentCompaction.completed,
+                  superseded: compactionResult.superseded + currentCompaction.superseded,
+                  failed: compactionResult.failed + currentCompaction.failed
+                };
+                if (currentCompaction.failed > 0) {
+                  throw new KnowledgeBaseIndexMaintenanceExecutionError(
+                    "INDEX_MAINTENANCE_COMPACTION_FAILED",
+                    "Knowledge-base projection compaction could not complete"
+                  );
+                }
+              }
             });
             const statisticsNow = new Date();
-            const statisticsResult = await runIncrementalStatisticsReconciliationSlice({
-              repository: incrementalStatistics,
-              workerId: maintenanceOwner,
-              leaseToken: statisticsLeaseToken,
-              now: statisticsNow.toISOString(),
-              leaseExpiresAt: new Date(
-                statisticsNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
-              ).toISOString(),
-              reconciledBefore: new Date(
-                statisticsNow.getTime() - snapshot.maintenance.scanIntervalSeconds * 1_000
-              ).toISOString()
-            });
             const pressureResult = await runtimePressure.reconcileIfDue({
               now: statisticsNow.toISOString(),
               intervalSeconds: RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
-            });
-            const compactionResult = await runProjectionCompactionSlice({
-              repository: compaction,
-              immutableObjects,
-              budget: resourceBudgets.compaction,
-              workerId: maintenanceOwner,
-              concurrency: snapshot.maintenance.compactionConcurrency,
-              partitionScanLimit: snapshot.maintenance.scanBatchSize,
-              recordPageSize: snapshot.maintenance.scanBatchSize,
-              maxAttempts: snapshot.maintenance.maxAttempts,
-              retryDelayMs: snapshot.maintenance.retryDelayMs,
-              lockTtlSeconds: snapshot.worker.lockTtlSeconds
             });
             const recoveryResult = await runImmutableWriteRecoverySlice({
               repository: immutableRepository,
