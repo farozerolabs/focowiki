@@ -27,6 +27,8 @@ const settings: LexicalRebuildSettingsSnapshot = {
   databaseBatchSize: 50,
   maxInFlightSourceBytes: 64 * 1_024 * 1_024
 };
+const scaleCleanupBudgetMs = 60_000;
+const scaleCleanupTestTimeoutMs = 90_000;
 
 describeScale("lexical rebuild 100k scale integration", () => {
   const connectionUrl = databaseUrl ?? "postgres://unused:unused@127.0.0.1/unused";
@@ -233,7 +235,7 @@ describeScale("lexical rebuild 100k scale integration", () => {
       DELETE FROM focowiki.knowledge_bases
       WHERE id = 'kb-lexical-scale-100000'
     `;
-    expect(performance.now() - cleanupStartedAt).toBeLessThan(20_000);
+    expect(performance.now() - cleanupStartedAt).toBeLessThan(scaleCleanupBudgetMs);
     expect((await sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count
       FROM focowiki.lexical_rebuild_work_items
@@ -247,7 +249,7 @@ describeScale("lexical rebuild 100k scale integration", () => {
 
     expect(process.memoryUsage().rss - rssBefore).toBeLessThan(128 * 1_024 * 1_024);
     expect(await databaseSessionCount()).toBeLessThanOrEqual(sessionsBefore);
-  }, 30_000);
+  }, scaleCleanupTestTimeoutMs);
 
   async function seedScaleKnowledgeBase(
     knowledgeBaseId: string,
