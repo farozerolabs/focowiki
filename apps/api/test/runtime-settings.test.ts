@@ -73,6 +73,9 @@ describe("runtime settings service", () => {
     });
     expect(snapshot.maintenance).toEqual({
       reconciliationEnabled: true,
+      knowledgeBaseMaintenanceMode: "manual",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
+      knowledgeBaseMaintenanceConcurrency: 1,
       scanIntervalSeconds: 21_600,
       scanBatchSize: 500,
       deletionBatchSize: 100,
@@ -117,6 +120,9 @@ describe("runtime settings service", () => {
     delete publication.directoryMaterializationConcurrency;
     delete maintenance.migrationBackfillConcurrency;
     delete maintenance.compactionConcurrency;
+    delete maintenance.knowledgeBaseMaintenanceMode;
+    delete maintenance.knowledgeBaseMaintenanceScanIntervalSeconds;
+    delete maintenance.knowledgeBaseMaintenanceConcurrency;
     delete maintenance.lexicalRebuildConcurrency;
     delete maintenance.lexicalRebuildSourceReadConcurrency;
     delete maintenance.lexicalRebuildDatabaseWriteConcurrency;
@@ -152,6 +158,9 @@ describe("runtime settings service", () => {
       directoryMaterializationConcurrency: 4
     });
     expect(snapshot.maintenance).toMatchObject({
+      knowledgeBaseMaintenanceMode: "manual",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
+      knowledgeBaseMaintenanceConcurrency: 1,
       migrationBackfillConcurrency: 2,
       compactionConcurrency: 1,
       projectionRepairConcurrency: 4,
@@ -362,6 +371,71 @@ describe("runtime settings service", () => {
     expect((await service.getSnapshot()).worker).toEqual(initial.worker);
     expect((await service.getSnapshot()).publication).toEqual(initial.publication);
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
+  });
+
+  it("validates knowledge-base maintenance scheduling atomically", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "scheduled"
+      } as never
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "knowledgeBaseMaintenanceMode" })
+      ])
+    });
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "automatic",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 59
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          field: "knowledgeBaseMaintenanceScanIntervalSeconds"
+        })
+      ])
+    });
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceConcurrency: 17
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "knowledgeBaseMaintenanceConcurrency" })
+      ])
+    });
+
+    expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
+
+    const automatic = await service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "automatic",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
+        knowledgeBaseMaintenanceConcurrency: 2
+      }
+    });
+    expect(automatic.maintenance).toMatchObject({
+      knowledgeBaseMaintenanceMode: "automatic",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
+      knowledgeBaseMaintenanceConcurrency: 2
+    });
+    await expect(service.getMaintenanceRevision()).resolves.toBeGreaterThan(1);
   });
 
   it("propagates concurrent live updates and preserves them after service restart", async () => {

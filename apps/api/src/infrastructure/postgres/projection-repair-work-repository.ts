@@ -65,20 +65,40 @@ export function createPostgresProjectionRepairWorkRepository(
             base_generation_id, base_resource_revision,
             source_watermark, activation_watermark,
             state, current_phase, settings_revision, settings_snapshot_json,
+            maintenance_request_id, maintenance_request_attempt,
             next_attempt_at, started_at, last_progress_at, created_at, updated_at
           )
           SELECT knowledge_base.id, ${input.repairVersion}, ${input.plannerVersion},
                  knowledge_base.active_generation_id, knowledge_base.resource_revision,
                  knowledge_base.resource_revision, knowledge_base.resource_revision,
                  'pending', 'planning', ${input.settingsRevision},
-                 ${transaction.json(input.settings)}, ${input.now}, ${input.now},
+                 ${transaction.json(input.settings)},
+                 maintenance_request.id,
+                 coalesce(maintenance_request.retry_count, 0),
+                 ${input.now}, ${input.now},
                  ${input.now}, ${input.now}, ${input.now}
           FROM focowiki.knowledge_bases knowledge_base
           JOIN focowiki.publication_generations active_generation
             ON active_generation.id = knowledge_base.active_generation_id
            AND active_generation.knowledge_base_id = knowledge_base.id
            AND active_generation.state = 'active'
+          LEFT JOIN LATERAL (
+            SELECT request.id, request.retry_count
+            FROM focowiki.knowledge_base_index_maintenance_requests request
+            WHERE request.knowledge_base_id = knowledge_base.id
+              AND request.state IN ('planning', 'running', 'validating')
+            ORDER BY request.created_at DESC, request.id DESC
+            LIMIT 1
+          ) maintenance_request ON true
           WHERE knowledge_base.deleted_at IS NULL
+            AND (
+              ${input.knowledgeBaseIds === undefined}
+              OR knowledge_base.id = ANY(${input.knowledgeBaseIds ?? []})
+            )
+            AND (
+              ${input.requireActiveMaintenanceRequest !== true}
+              OR maintenance_request.id IS NOT NULL
+            )
             AND (
               NOT EXISTS (
                 SELECT 1
@@ -105,7 +125,63 @@ export function createPostgresProjectionRepairWorkRepository(
                   AND version.input_version = ${REQUIRED_PROJECTION_REPAIR_VERSIONS.graph}
               )
             )
-          ON CONFLICT (knowledge_base_id, repair_version) DO NOTHING
+          ON CONFLICT (knowledge_base_id, repair_version) DO UPDATE
+          SET planner_version = EXCLUDED.planner_version,
+              base_generation_id = EXCLUDED.base_generation_id,
+              target_generation_id = NULL,
+              base_resource_revision = EXCLUDED.base_resource_revision,
+              source_watermark = EXCLUDED.source_watermark,
+              activation_watermark = EXCLUDED.activation_watermark,
+              state = 'pending',
+              checkpoint_json = '{}'::jsonb,
+              lease_token = NULL,
+              lease_expires_at = NULL,
+              attempt_count = 0,
+              next_attempt_at = EXCLUDED.next_attempt_at,
+              last_error_code = NULL,
+              last_error_message = NULL,
+              completed_at = NULL,
+              settings_revision = EXCLUDED.settings_revision,
+              settings_snapshot_json = EXCLUDED.settings_snapshot_json,
+              maintenance_request_id = EXCLUDED.maintenance_request_id,
+              maintenance_request_attempt = EXCLUDED.maintenance_request_attempt,
+              current_phase = 'planning',
+              expected_subtask_count = 0,
+              completed_subtask_count = 0,
+              expected_record_count = 0,
+              completed_record_count = 0,
+              expected_directory_count = 0,
+              completed_directory_count = 0,
+              expected_object_count = 0,
+              object_write_count = 0,
+              object_reuse_count = 0,
+              retry_count = 0,
+              required_projection_kinds = '{}'::text[],
+              completed_projection_kinds = '{}'::text[],
+              recent_records_per_second = NULL,
+              rolling_batch_latency_ms = NULL,
+              started_at = EXCLUDED.started_at,
+              last_progress_at = EXCLUDED.last_progress_at,
+              last_heartbeat_at = NULL,
+              estimated_completion_at = NULL,
+              updated_at = EXCLUDED.updated_at
+          WHERE focowiki.knowledge_base_projection_repairs.state = 'superseded'
+             OR (
+               focowiki.knowledge_base_projection_repairs.state = 'failed'
+               AND (
+                 ${input.requireActiveMaintenanceRequest !== true}
+                 OR (
+                   EXCLUDED.maintenance_request_id IS NOT NULL
+                   AND (
+                     focowiki.knowledge_base_projection_repairs.maintenance_request_id
+                       IS DISTINCT FROM EXCLUDED.maintenance_request_id
+                     OR focowiki.knowledge_base_projection_repairs
+                          .maintenance_request_attempt
+                        < EXCLUDED.maintenance_request_attempt
+                   )
+                 )
+               )
+             )
           RETURNING knowledge_base_id
         `;
         return rows.length;

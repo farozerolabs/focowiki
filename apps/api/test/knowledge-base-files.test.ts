@@ -1144,6 +1144,12 @@ describe("Knowledge base file Admin API", () => {
           latestCompleted: null
         }
       },
+      indexMaintenance: {
+        requestId: null,
+        state: "idle",
+        active: false,
+        maintenanceRequired: false
+      },
       dirtySourceFiles: {
         count: 2,
         oldestDirtyAt: "2026-06-14T00:00:00.000Z"

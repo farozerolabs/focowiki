@@ -344,6 +344,30 @@ export type ProcessingSummary = {
       latestCompleted: MaintenanceCompactionProgress | null;
     };
   };
+  indexMaintenance: {
+    requestId: string | null;
+    state:
+      | "idle"
+      | "queued"
+      | "planning"
+      | "running"
+      | "validating"
+      | "completed"
+      | "failed"
+      | "superseded"
+      | "canceled";
+    trigger: "manual" | "automatic" | null;
+    stage: string | null;
+    active: boolean;
+    completedCount: number;
+    expectedCount: number;
+    retryCount: number;
+    lastProgressAt: string | null;
+    lastCompletedAt: string | null;
+    maintenanceRequired: boolean;
+    safeErrorCode: string | null;
+    safeErrorMessage: string | null;
+  };
   dirtySourceFiles: {
     count: number;
     oldestDirtyAt: string | null;
@@ -452,6 +476,9 @@ export type GraphSettings = {
 };
 
 export type MaintenanceSettings = {
+  knowledgeBaseMaintenanceMode: "manual" | "automatic";
+  knowledgeBaseMaintenanceScanIntervalSeconds: number;
+  knowledgeBaseMaintenanceConcurrency: number;
   reconciliationEnabled: boolean;
   scanIntervalSeconds: number;
   scanBatchSize: number;
@@ -1275,6 +1302,40 @@ export async function fetchKnowledgeBaseProcessingSummary(input: {
   }
 
   return (await response.json()) as ProcessingSummary;
+}
+
+export async function requestKnowledgeBaseIndexMaintenance(input: {
+  knowledgeBaseId: string;
+  idempotencyKey: string;
+}): Promise<{
+  result: "accepted" | "already_active";
+  maintenance: ProcessingSummary["indexMaintenance"];
+} | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/index-maintenance`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": input.idempotencyKey
+      },
+      body: JSON.stringify({ idempotencyKey: input.idempotencyKey })
+    }
+  );
+  const body = (await response.json()) as
+    | {
+        result: "accepted" | "already_active";
+        maintenance: ProcessingSummary["indexMaintenance"];
+      }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.indexMaintenanceRequestFailed");
+  }
+  return body as {
+    result: "accepted" | "already_active";
+    maintenance: ProcessingSummary["indexMaintenance"];
+  };
 }
 
 export async function fetchKnowledgeBasePublicUrls(input: {

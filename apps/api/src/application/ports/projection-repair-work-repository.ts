@@ -50,6 +50,8 @@ export type ProjectionRepairWorkRepository = {
     settings: ProjectionRepairSettingsSnapshot;
     maxAttempts: number;
     now: string;
+    knowledgeBaseIds?: string[] | undefined;
+    requireActiveMaintenanceRequest?: boolean | undefined;
   }) => Promise<number>;
   planNext: (input: {
     repairVersion: number;

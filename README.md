@@ -42,8 +42,8 @@ Run Focowiki with Docker Compose and the published images on GHCR.
 
 Before installing Focowiki, make sure your machine meets these requirements:
 
-- Minimum: CPU >= 2 cores, RAM >= 2 GiB
-- Recommended: CPU >= 2 cores, RAM >= 4 GiB or more
+- Minimum: CPU >= 2 cores, RAM >= 4 GiB; 6 GiB RAM is preferred for background processing
+- Recommended: CPU >= 4 cores, RAM >= 8 GiB or more
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki

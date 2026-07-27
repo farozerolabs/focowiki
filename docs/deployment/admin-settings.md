@@ -107,10 +107,13 @@ Graph settings control body-grounded file relationship discovery, graph search, 
 
 ## Maintenance
 
-Maintenance settings control bounded reconciliation of Focowiki-managed generated objects. Reconciliation runs only in the maintenance worker. It does not scan source uploads, upload-session objects, unrelated prefixes, or user-managed storage paths.
+Maintenance settings control knowledge-base index maintenance and bounded reconciliation of Focowiki-managed generated objects. Knowledge-base maintenance updates file navigation, search, relationships, and statistics. Storage reconciliation keeps its own enablement and interval and continues in either knowledge-base maintenance mode.
 
 | Field | Meaning | Recommended value |
 | --- | --- | --- |
+| Knowledge-base maintenance mode | `Manual` starts maintenance from the selected knowledge base. `Automatic` also checks periodically for knowledge bases that need maintenance. Manual maintenance remains available in both modes. | `Manual` for deployments that want explicit resource control. |
+| Automatic maintenance interval seconds | Time between automatic maintenance eligibility checks. This value is preserved but inactive in manual mode. | `21600` seconds. |
+| Knowledge-base maintenance concurrency | Maximum knowledge bases maintained at the same time. Additional requests wait until capacity is available. | `1`; increase after observing database and object-storage capacity. |
 | Storage reconciliation | Enables bounded generated-object reconciliation. | Keep enabled for normal deployments. |
 | Scan interval seconds | Time between complete reconciliation cycles. | `21600` seconds. |
 | Scan batch size | Generated-object metadata records listed in one bounded page. | `500`; maximum `1000`. |
@@ -130,6 +133,8 @@ Maintenance settings control bounded reconciliation of Focowiki-managed generate
 | Lexical claim batch size | Durable source work items claimed in one cycle. | `500`; range 50 to 2000. |
 | Lexical database batch size | Source files committed in one atomic lexical database batch. | `50`; range 1 to 250 and no higher than the claim batch size. |
 | Lexical in-flight source bytes | Maximum total source Markdown bytes retained by active lexical reads. | `67108864` bytes (64 MiB); range 1 MiB to 512 MiB. |
+
+Open a knowledge base, select **Settings** below **File processing**, and choose **Maintain index** to start one maintenance run for that knowledge base. The action is unavailable while that knowledge base already has maintenance waiting or running. Existing readable content stays available while maintenance completes.
 
 Projection repair runs in its own Worker role. Saved values apply to later repair claims; already-running subtasks keep the settings captured when they were claimed. The status section reports bounded aggregate phase, task, record, directory, object, retry, throughput, and estimated-completion values without counting work tables during each request.
 

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SettingsPage } from "../src/pages/SettingsPage";
+import { SettingsPanel } from "../src/components/settings-panel";
 import { initI18n } from "../src/i18n";
 import {
   createRuntimeModel,
@@ -124,6 +124,9 @@ vi.mock("@/lib/admin-api", () => ({
         genericPhraseThreshold: 4
       },
       maintenance: {
+        knowledgeBaseMaintenanceMode: "manual",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
+        knowledgeBaseMaintenanceConcurrency: 1,
         reconciliationEnabled: true,
         scanIntervalSeconds: 21600,
         scanBatchSize: 500,
@@ -188,16 +191,16 @@ vi.mock("@/lib/admin-api", () => ({
   } }))
 }));
 
-describe("SettingsPage", () => {
+describe("SettingsPanel", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
 
   it("loads runtime settings and confirms model deletion", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -223,9 +226,9 @@ describe("SettingsPage", () => {
   });
 
   it("keeps empty required number fields empty and blocks settings save", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const maxRequests = document.getElementById("adminLogin-max") as HTMLInputElement | null;
     expect(maxRequests).toBeTruthy();
     if (!maxRequests) {
@@ -243,9 +246,9 @@ describe("SettingsPage", () => {
   });
 
   it("shows and saves bounded maintenance settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const maintenanceTab = screen.getByRole("tab", { name: "Maintenance" });
     fireEvent.pointerDown(maintenanceTab);
     fireEvent.mouseDown(maintenanceTab);
@@ -255,7 +258,16 @@ describe("SettingsPage", () => {
       expect(maintenanceTab.getAttribute("data-state")).toBe("active");
     });
     const scanBatchSize = document.getElementById("maintenance-scanBatchSize") as HTMLInputElement;
+    const automaticInterval = document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceScanIntervalSeconds"
+    ) as HTMLInputElement;
+    const knowledgeBaseConcurrency = document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceConcurrency"
+    ) as HTMLInputElement;
     expect(scanBatchSize?.value).toBe("500");
+    expect(automaticInterval?.value).toBe("21600");
+    expect(automaticInterval?.disabled).toBe(true);
+    expect(knowledgeBaseConcurrency?.value).toBe("1");
     const repairConcurrency = document.getElementById(
       "maintenance-projectionRepairConcurrency"
     ) as HTMLInputElement;
@@ -311,6 +323,9 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(updateMaintenanceSettings).toHaveBeenCalledWith(
         expect.objectContaining({
+          knowledgeBaseMaintenanceMode: "manual",
+          knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
+          knowledgeBaseMaintenanceConcurrency: 1,
           reconciliationEnabled: true,
           scanBatchSize: 500,
           confirmationPasses: 2,
@@ -329,9 +344,9 @@ describe("SettingsPage", () => {
   });
 
   it("shows model required-field feedback only after an invalid submit", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -349,17 +364,17 @@ describe("SettingsPage", () => {
   });
 
   it("removes upload admission controls from the settings surface", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Upload and generation" })).toBeNull();
     expect(document.getElementById("upload-generation-maxBytes")).toBeNull();
     expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
   });
 
   it("saves source worker generation and hysteresis settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Worker" }));
 
     const generationBatchSize = await waitFor(() => {
@@ -384,8 +399,8 @@ describe("SettingsPage", () => {
   });
 
   it("saves publication pressure and bounded work settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Publication" }));
 
     const impactBatchSize = await waitFor(() => {

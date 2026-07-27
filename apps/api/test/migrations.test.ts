@@ -24,6 +24,7 @@ const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
 const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
 const PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION = "projection-repair-throughput-v13";
 const DIRECTORY_ORDER_SCHEMA_GENERATION = "directory-order-repair-v14";
+const LEXICAL_REBUILD_SCHEMA_GENERATION = "lexical-rebuild-worker-v15";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -53,7 +54,8 @@ describe("runtime schema generation guard", () => {
         "012_storage_reconciliation_lease_recovery.sql",
         "013_projection_repair_throughput.sql",
         "014_directory_order_repair.sql",
-        "015_lexical_rebuild_worker.sql"
+        "015_lexical_rebuild_worker.sql",
+        "016_knowledge_base_index_maintenance.sql"
       ]
     });
     expect(database.unsafeCalls).toBe(0);
@@ -82,104 +84,104 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(14);
-    expect(database.beginCalls).toBe(14);
+    expect(database.unsafeCalls).toBe(15);
+    expect(database.beginCalls).toBe(15);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(13);
-    expect(database.beginCalls).toBe(13);
+    expect(database.unsafeCalls).toBe(14);
+    expect(database.beginCalls).toBe(14);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(12);
-    expect(database.beginCalls).toBe(12);
+    expect(database.unsafeCalls).toBe(13);
+    expect(database.beginCalls).toBe(13);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(11);
-    expect(database.beginCalls).toBe(11);
+    expect(database.unsafeCalls).toBe(12);
+    expect(database.beginCalls).toBe(12);
   });
 
   it("upgrades the retry-budget generation with its pending migrations", async () => {
     const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(10);
-    expect(database.beginCalls).toBe(10);
+    expect(database.unsafeCalls).toBe(11);
+    expect(database.beginCalls).toBe(11);
   });
 
   it("upgrades the continuation generation with only the pending migration", async () => {
     const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(9);
-    expect(database.beginCalls).toBe(9);
+    expect(database.unsafeCalls).toBe(10);
+    expect(database.beginCalls).toBe(10);
   });
 
   it("upgrades the write-livelock generation with only the optimized migration", async () => {
     const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(8);
-    expect(database.beginCalls).toBe(8);
+    expect(database.unsafeCalls).toBe(9);
+    expect(database.beginCalls).toBe(9);
   });
 
   it("upgrades the large-scale generation with only the migration recovery", async () => {
     const database = createGenerationDatabase(LARGE_SCALE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(7);
-    expect(database.beginCalls).toBe(7);
+    expect(database.unsafeCalls).toBe(8);
+    expect(database.beginCalls).toBe(8);
   });
 
   it("upgrades the optimization recovery generation with only the read repair", async () => {
     const database = createGenerationDatabase(OPTIMIZATION_REBASE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(6);
-    expect(database.beginCalls).toBe(6);
+    expect(database.unsafeCalls).toBe(7);
+    expect(database.beginCalls).toBe(7);
   });
 
   it("upgrades the generation-consistent read schema with only the body-search projection", async () => {
     const database = createGenerationDatabase(GENERATION_CONSISTENT_READ_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the body-search schema with only the reconciliation recovery", async () => {
     const database = createGenerationDatabase(BODY_SEARCH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades the storage reconciliation schema with the pending compatible migrations", async () => {
     const database = createGenerationDatabase(STORAGE_RECONCILIATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades projection repair throughput with compatible ordering and lexical migrations", async () => {
     const database = createGenerationDatabase(PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
   });
 
   it("does not require drained work for compatible ordering and lexical upgrades", async () => {
@@ -190,12 +192,23 @@ describe("runtime schema generation guard", () => {
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.preflightCalls).toBe(0);
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
   });
 
   it("upgrades directory ordering with only the compatible lexical migration", async () => {
     const database = createGenerationDatabase(DIRECTORY_ORDER_SCHEMA_GENERATION, {
+      unfinishedWork: true
+    });
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.preflightCalls).toBe(0);
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades lexical rebuild with only the compatible maintenance migration", async () => {
+    const database = createGenerationDatabase(LEXICAL_REBUILD_SCHEMA_GENERATION, {
       unfinishedWork: true
     });
 
@@ -216,6 +229,30 @@ describe("runtime schema generation guard", () => {
       code: "MIGRATION_WORK_NOT_DRAINED"
     });
     expect(database.preflightCalls).toBe(1);
+    expect(database.unsafeCalls).toBe(0);
+    expect(database.beginCalls).toBe(0);
+  });
+
+  it.each([
+    "knowledgeBaseMaintenanceRequests",
+    "projectionRepairs",
+    "lexicalRebuilds",
+    "projectionCompactions",
+    "maintenanceCandidateGenerations"
+  ] as const)("blocks drain-required migration for %s", async (preflightCategory) => {
+    const database = createGenerationDatabase(
+      STORAGE_RECONCILIATION_SCHEMA_GENERATION,
+      { preflightCategory }
+    );
+
+    await expect(applyMigrations(database.sql)).rejects.toMatchObject({
+      name: "MigrationWorkNotDrainedError",
+      code: "MIGRATION_WORK_NOT_DRAINED",
+      snapshot: {
+        [preflightCategory]: 1,
+        total: 1
+      }
+    });
     expect(database.unsafeCalls).toBe(0);
     expect(database.beginCalls).toBe(0);
   });
@@ -483,7 +520,15 @@ describe("runtime schema generation guard", () => {
 
 function createGenerationDatabase(
   initialGeneration: string | "absent" | null,
-  options: { unfinishedWork?: boolean } = {}
+  options: {
+    unfinishedWork?: boolean;
+    preflightCategory?:
+      | "knowledgeBaseMaintenanceRequests"
+      | "projectionRepairs"
+      | "lexicalRebuilds"
+      | "projectionCompactions"
+      | "maintenanceCandidateGenerations";
+  } = {}
 ) {
   let generation = initialGeneration;
   let unsafeCalls = 0;
@@ -493,6 +538,18 @@ function createGenerationDatabase(
     const statement = segments.join(" ");
     if (statement.includes("to_regnamespace")) {
       return [{ schema_exists: generation !== "absent" }];
+    }
+    if (statement.includes("migration_capabilities")) {
+      return [{
+        maintenance_requests:
+          options.preflightCategory === "knowledgeBaseMaintenanceRequests",
+        projection_repairs: options.preflightCategory === "projectionRepairs",
+        projection_repair_subtasks: false,
+        lexical_rebuilds: options.preflightCategory === "lexicalRebuilds",
+        lexical_rebuild_work_items: false,
+        projection_compactions:
+          options.preflightCategory === "projectionCompactions"
+      }];
     }
     if (statement.includes("to_regclass")) {
       return [{ marker_exists: generation !== null }];
@@ -512,8 +569,18 @@ function createGenerationDatabase(
         deletion_intents: options.unfinishedWork ? 1 : 0,
         upload_sessions: 0,
         cleanup_objects: 0,
+        maintenance_candidate_generations:
+          options.preflightCategory === "maintenanceCandidateGenerations" ? 1 : 0,
         capped: false
       }];
+    }
+    if (
+      statement.includes("active_maintenance_requests")
+      || statement.includes("active_projection_repairs")
+      || statement.includes("active_lexical_rebuilds")
+      || statement.includes("active_projection_compactions")
+    ) {
+      return [{ count: 1, capped: false }];
     }
     throw new Error(`Unexpected SQL in generation test: ${statement}`);
   };

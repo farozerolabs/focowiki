@@ -4,6 +4,9 @@ import type { PublicationGenerationRepository } from "../application/ports/publi
 import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
 import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
 import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
+import type {
+  KnowledgeBaseIndexMaintenanceRepository
+} from "../application/ports/knowledge-base-index-maintenance-repository.js";
 
 export function registerAdminProcessingSummaryRoutes(
   app: Hono,
@@ -13,6 +16,7 @@ export function registerAdminProcessingSummaryRoutes(
     publicationGenerations: PublicationGenerationRepository | null;
     sourceDispatch: SourceDispatchRepository | null;
     maintenanceProgress: MaintenanceProgressRepository | null;
+    knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -23,7 +27,8 @@ export function registerAdminProcessingSummaryRoutes(
     roleJobs,
     publicationGenerations,
     sourceDispatch,
-    maintenanceProgress
+    maintenanceProgress,
+    knowledgeBaseIndexMaintenance
   } = services;
 
   app.get(
@@ -54,7 +59,8 @@ export function registerAdminProcessingSummaryRoutes(
         publicationJobs,
         pendingDispatch,
         publicationProgress,
-        maintenanceProgressSummary
+        maintenanceProgressSummary,
+        indexMaintenance
       ] = await Promise.all([
         roleJobs.getQueueSummary({
           role: "source",
@@ -68,7 +74,23 @@ export function registerAdminProcessingSummaryRoutes(
         }),
         sourceDispatch.getSummary({ knowledgeBaseId: knowledgeBase.id }),
         publicationGenerations.getProgressSummary({ knowledgeBaseId: knowledgeBase.id }),
-        maintenanceProgress.getSummary({ knowledgeBaseId: knowledgeBase.id })
+        maintenanceProgress.getSummary({ knowledgeBaseId: knowledgeBase.id }),
+        knowledgeBaseIndexMaintenance?.getSummary({ knowledgeBaseId: knowledgeBase.id })
+          ?? Promise.resolve({
+            requestId: null,
+            state: "idle" as const,
+            trigger: null,
+            stage: null,
+            active: false,
+            completedCount: 0,
+            expectedCount: 0,
+            retryCount: 0,
+            lastProgressAt: null,
+            lastCompletedAt: null,
+            maintenanceRequired: false,
+            safeErrorCode: null,
+            safeErrorMessage: null
+          })
       ]);
 
       return context.json({
@@ -78,6 +100,7 @@ export function registerAdminProcessingSummaryRoutes(
         publicationJobs,
         publicationProgress,
         maintenanceProgress: maintenanceProgressSummary,
+        indexMaintenance,
         dirtySourceFiles: {
           count: Math.max(
             0,

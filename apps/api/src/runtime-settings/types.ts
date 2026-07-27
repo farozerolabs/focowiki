@@ -28,8 +28,12 @@ export type RuntimePublicationSettings = Required<RuntimeConfig["publication"]> 
   directoryMaterializationConcurrency: number;
 };
 export type RuntimeGraphSettings = Required<NonNullable<RuntimeConfig["graph"]>>;
+export type KnowledgeBaseMaintenanceMode = "manual" | "automatic";
 export type RuntimeMaintenanceSettings = {
   reconciliationEnabled: boolean;
+  knowledgeBaseMaintenanceMode: KnowledgeBaseMaintenanceMode;
+  knowledgeBaseMaintenanceScanIntervalSeconds: number;
+  knowledgeBaseMaintenanceConcurrency: number;
   scanIntervalSeconds: number;
   scanBatchSize: number;
   deletionBatchSize: number;

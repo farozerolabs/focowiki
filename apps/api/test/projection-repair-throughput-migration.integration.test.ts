@@ -38,7 +38,22 @@ describeDatabase("projection repair throughput migration integration", () => {
     await admin.end({ timeout: 5 });
   });
 
-  it("upgrades populated resumable repairs and is idempotent after completion", async () => {
+  it("requires active repairs to drain before upgrading and remains idempotent", async () => {
+    await expect(applyMigrations(sql)).rejects.toMatchObject({
+      code: "MIGRATION_WORK_NOT_DRAINED"
+    });
+    expect((await sql<Array<{ generation: string }>>`
+      SELECT generation
+      FROM focowiki.runtime_generation
+      WHERE singleton = true
+    `)[0]?.generation).toBe("storage-reconciliation-lease-recovery-v12");
+    expect((await sql<Array<{ active_generation_id: string | null }>>`
+      SELECT active_generation_id
+      FROM focowiki.knowledge_bases
+      WHERE id = 'kb-repair-migration'
+    `)[0]?.active_generation_id).toBe("generation-repair-active");
+
+    await drainProjectionRepairWork();
     await applyMigrations(sql);
     await applyMigrations(sql);
 
@@ -69,8 +84,8 @@ describeDatabase("projection repair throughput migration integration", () => {
       },
       {
         repair_version: 3,
-        state: "running",
-        current_phase: "tree",
+        state: "failed",
+        current_phase: "failed",
         planner_version: 1,
         settings_snapshot_json: {}
       }
@@ -81,7 +96,7 @@ describeDatabase("projection repair throughput migration integration", () => {
       WHERE id IN ('generation-repair-old', 'generation-repair-current')
       ORDER BY id
     `).toEqual([
-      { id: "generation-repair-current", state: "building" },
+      { id: "generation-repair-current", state: "failed" },
       { id: "generation-repair-old", state: "superseded" }
     ]);
     expect((await sql<Array<{ count: number }>>`
@@ -118,11 +133,56 @@ describeDatabase("projection repair throughput migration integration", () => {
         ON operation.id = fact.operation_id
       WHERE job.id = 'role-job-repair-migration-hard-delete'
     `)[0]).toEqual({
-      job_status: "queued",
-      operation_state: "publishing",
-      intent_state: "accepted"
+      job_status: "completed",
+      operation_state: "completed",
+      intent_state: "completed"
     });
   });
+
+  async function drainProjectionRepairWork(): Promise<void> {
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.knowledge_base_projection_repairs
+        SET state = CASE
+              WHEN repair_version = 2 THEN 'superseded'
+              ELSE 'failed'
+            END,
+            lease_token = NULL,
+            lease_expires_at = NULL,
+            updated_at = now()
+        WHERE knowledge_base_id = 'kb-repair-migration'
+      `;
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'failed',
+            failed_at = now(),
+            safe_error_code = 'REPAIR_DRAINED_FOR_MIGRATION',
+            safe_error_message = 'Repair stopped before database migration'
+        WHERE id = 'generation-repair-current'
+      `;
+      await transaction`
+        UPDATE focowiki.role_jobs
+        SET status = 'completed',
+            completed_at = now(),
+            updated_at = now()
+        WHERE id = 'role-job-repair-migration-hard-delete'
+      `;
+      await transaction`
+        UPDATE focowiki.resource_operations
+        SET state = 'completed',
+            completed_at = now(),
+            updated_at = now()
+        WHERE id = 'resource-operation-repair-migration'
+      `;
+      await transaction`
+        UPDATE focowiki.deletion_intents
+        SET state = 'completed',
+            completed_at = now(),
+            updated_at = now()
+        WHERE id = 'deletion-intent-repair-migration'
+      `;
+    });
+  }
 
   async function seedCompatibleDatabase(): Promise<void> {
     await sql.begin(async (transaction) => {

@@ -17,7 +17,6 @@ import {
   createNodeJiebaTokenizer
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
 import { createRuntimeLogger } from "./logger.js";
-import { bootstrapLexicalRebuildWork } from "./maintenance/lexical-rebuild-bootstrap.js";
 import { runLexicalCapacityRefill } from "./maintenance/lexical-rebuild-capacity.js";
 import { runLexicalRebuildFinalization } from "./maintenance/lexical-rebuild-finalization.js";
 import { processLexicalRebuildClaims } from "./maintenance/lexical-rebuild-worker.js";
@@ -32,7 +31,7 @@ import { createRuntimeSettingsRepository } from "./runtime-settings/repository.j
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 
-const BOOTSTRAP_INTERVAL_MS = 60_000;
+const PLANNING_INTERVAL_MS = 60_000;
 const MAX_PLANNED_KNOWLEDGE_BASES_PER_INTERVAL = 100;
 const MAX_CLAIM_CYCLES_PER_SETTINGS_REFRESH = 2;
 
@@ -96,7 +95,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
       maxObjectBytes: config.pagination.generatedContentMaxBytes
     });
     const workerId = `lexical-rebuild-worker-${randomUUID()}`;
-    let lastBootstrapAt = 0;
+    let lastPlanningAt = 0;
 
     logger.info("Lexical rebuild worker started", { workerId });
     while (!abort.signal.aborted) {
@@ -127,12 +126,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
 
         const cycleNow = new Date();
         const settingsRevision = await readSettingsRevision(sql);
-        if (cycleNow.getTime() - lastBootstrapAt >= BOOTSTRAP_INTERVAL_MS) {
-          await bootstrapLexicalRebuildWork({
-            rebuilds,
-            tokenizer,
-            now: cycleNow.toISOString()
-          });
+        if (cycleNow.getTime() - lastPlanningAt >= PLANNING_INTERVAL_MS) {
           for (
             let planned = 0;
             planned < MAX_PLANNED_KNOWLEDGE_BASES_PER_INTERVAL;
@@ -147,7 +141,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
             });
             if (!result) break;
           }
-          lastBootstrapAt = cycleNow.getTime();
+          lastPlanningAt = cycleNow.getTime();
         }
 
         const capacity = await runLexicalCapacityRefill({

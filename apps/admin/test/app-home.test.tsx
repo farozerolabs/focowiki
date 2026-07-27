@@ -16,6 +16,7 @@ import {
 } from "../src/lib/admin-api";
 
 vi.mock("../src/lib/admin-api", () => ({
+  activateRuntimeModel: vi.fn(),
   adminFetch: vi.fn(async (path: string) => {
     if (path.includes("/operations")) {
       return new Response(JSON.stringify({ items: [], nextCursor: null }), {
@@ -39,6 +40,7 @@ vi.mock("../src/lib/admin-api", () => ({
     return new Response("{}", { status: 404 });
   }),
   checkAdminSession: vi.fn(async () => false),
+  createRuntimeModel: vi.fn(),
   createKnowledgeBase: vi.fn(async () => ({
     knowledgeBase: {
       id: "kb-created",
@@ -63,6 +65,7 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   deleteKnowledgeBase: vi.fn(async () => ({ deleted: true })),
   deletePublicOpenApiKey: vi.fn(async () => ({ deleted: true })),
+  deleteRuntimeModel: vi.fn(),
   fetchKnowledgeBase: vi.fn(async () => null),
   deleteKnowledgeBaseFile: vi.fn(),
   fetchKnowledgeBaseFileDetail: vi.fn(),
@@ -114,6 +117,7 @@ vi.mock("../src/lib/admin-api", () => ({
     }
   })),
   fetchKnowledgeBasePublicUrls: vi.fn(async () => null),
+  fetchRuntimeSettings: vi.fn(async () => ({ messageKey: "errors.requestFailed" })),
   fetchResultFile: vi.fn(),
   fetchResultTree: vi.fn(async () => []),
   generateBundle: vi.fn(),
@@ -144,10 +148,17 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   loginAdmin: vi.fn(async () => true),
   logoutAdmin: vi.fn(async () => undefined),
+  pauseRuntimeModel: vi.fn(),
+  resumeRuntimeModel: vi.fn(),
   setAdminAuthFailureHandler: vi.fn(),
   renderPreview: vi.fn(),
   uploadKnowledgeBaseSources: vi.fn(),
-  uploadSources: vi.fn()
+  uploadSources: vi.fn(),
+  updateGraphSettings: vi.fn(),
+  updateMaintenanceSettings: vi.fn(),
+  updatePublicationSettings: vi.fn(),
+  updateRateLimitSettings: vi.fn(),
+  updateWorkerSettings: vi.fn()
 }));
 
 describe("Admin knowledge base home", () => {
@@ -204,9 +215,24 @@ describe("Admin knowledge base home", () => {
 
     await login();
 
-    expect(await screen.findByRole("heading", { name: "Focowiki", level: 1 })).toBeTruthy();
+    const heading = await screen.findByRole("heading", { name: "Focowiki", level: 1 });
+    const sidebarHeader = heading.closest('[data-slot="sidebar-header"]');
+    const contentHeader = document.querySelector('[data-slot="admin-page-header"]');
+    const logo = sidebarHeader?.querySelector('img[src="/logo.svg"]');
+    expect(sidebarHeader?.className).toContain("h-14");
+    expect(logo?.className).toContain("size-7");
+    expect(contentHeader?.textContent).toContain("Knowledge bases");
+    expect(contentHeader?.querySelector('img[src="/logo.svg"]')).toBeNull();
+    expect(screen.getByRole("button", { name: "Toggle sidebar" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open documentation" })).toBeTruthy();
-    expect(screen.getAllByText("Knowledge bases")).toHaveLength(1);
+    expect(screen.getByRole("navigation", { name: "Home sections" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open settings" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Knowledge bases" }).getAttribute("aria-current")
+    ).toBe("page");
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getAllByText("Knowledge bases")).toHaveLength(2);
     expect(screen.queryByText("Create and open Markdown knowledge bases.")).toBeNull();
     expect(screen.getAllByRole("button", { name: "Create knowledge base" }).length).toBeGreaterThan(
       0
@@ -214,6 +240,23 @@ describe("Admin knowledge base home", () => {
     expect(screen.getByText("No knowledge bases yet")).toBeTruthy();
     expect(screen.queryByText("Markdown sources")).toBeNull();
     expect(listKnowledgeBases).toHaveBeenCalledWith({});
+  });
+
+  it("renders settings in the home detail area while keeping the sidebar", async () => {
+    render(<App />);
+
+    await login();
+    const settingsNavigation = await screen.findByRole("button", { name: "Settings" });
+    fireEvent.click(settingsNavigation);
+
+    await waitFor(() => {
+      const contentHeader = document.querySelector('[data-slot="admin-page-header"]');
+      expect(contentHeader?.textContent).toContain("Settings");
+    });
+    expect(screen.getByRole("navigation", { name: "Home sections" })).toBeTruthy();
+    expect(settingsNavigation.getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(window.location.search).toBe("?view=settings");
   });
 
   it("restores an existing admin session without showing the login form", async () => {
@@ -432,19 +475,15 @@ describe("Admin knowledge base home", () => {
     expect(screen.getAllByRole("button", { name: "创建知识库" }).length).toBeGreaterThan(0);
   });
 
-  it("manages public OpenAPI keys from the home tabs", async () => {
+  it("manages public OpenAPI keys from the home navigation", async () => {
     render(<App />);
 
     await login();
-    const openApiKeysTab = screen.getByRole("tab", { name: "OpenAPI keys" });
-    fireEvent.mouseDown(openApiKeysTab, {
-      button: 0,
-      ctrlKey: false
-    });
-    fireEvent.mouseUp(openApiKeysTab);
-    fireEvent.click(openApiKeysTab);
+    const openApiKeysNavigation = screen.getByRole("button", { name: "OpenAPI keys" });
+    fireEvent.click(openApiKeysNavigation);
 
     expect(await screen.findByText("Default key")).toBeTruthy();
+    expect(openApiKeysNavigation.getAttribute("aria-current")).toBe("page");
     expect(await screen.findByRole("dialog", { name: "Copy this key now" })).toBeTruthy();
     expect(screen.getByDisplayValue("fwok_default-secret")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -452,7 +491,7 @@ describe("Admin knowledge base home", () => {
       expect(screen.queryByDisplayValue("fwok_default-secret")).toBeNull();
     });
     expect(listPublicOpenApiKeys).toHaveBeenCalledWith({});
-    expect(screen.getAllByText("OpenAPI keys")).toHaveLength(1);
+    expect(screen.getAllByText("OpenAPI keys")).toHaveLength(2);
     expect(
       screen.queryByText("Manage bearer keys for read-only public OpenAPI access.")
     ).toBeNull();

@@ -58,6 +58,10 @@ export function createPostgresLexicalRebuildRepository(
          AND generation.state = 'active'
         WHERE knowledge_base.deleted_at IS NULL
           AND (
+            ${input.knowledgeBaseIds === undefined}
+            OR knowledge_base.id = ANY(${input.knowledgeBaseIds ?? []})
+          )
+          AND (
             generation.search_schema_version IS DISTINCT FROM ${input.searchSchemaVersion}
             OR generation.tokenizer_contract_version
                  IS DISTINCT FROM ${input.tokenizerContractVersion}
@@ -117,7 +121,8 @@ export function createPostgresLexicalRebuildRepository(
             validated_at = NULL,
             completed_at = NULL,
             updated_at = EXCLUDED.updated_at
-        WHERE knowledge_base_lexical_rebuilds.state IN ('completed', 'cancelled')
+        WHERE knowledge_base_lexical_rebuilds.state
+              IN ('completed', 'failed', 'cancelled')
         RETURNING knowledge_base_id
       `;
       return rows.length;

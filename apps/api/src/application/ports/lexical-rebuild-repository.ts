@@ -32,6 +32,7 @@ export type LexicalRebuildRepository = {
     contentProfileVersion: string;
     graphLexicalProjectionVersion: string;
     now: string;
+    knowledgeBaseIds?: string[] | undefined;
   }) => Promise<number>;
   claimNext: (input: {
     workerId: string;

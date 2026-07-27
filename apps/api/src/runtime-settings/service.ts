@@ -49,6 +49,7 @@ const LOCAL_CACHE_TTL_MS = 1_000;
 export type RuntimeSettingsService = {
   ensureBootstrapped: () => Promise<void>;
   getSnapshot: () => Promise<RuntimeSettingsSnapshot>;
+  getMaintenanceRevision: () => Promise<number>;
   getPublicSnapshot: () => Promise<{
     rateLimits: RuntimeRateLimitSettings;
     worker: RuntimeSettingsSnapshot["worker"];
@@ -316,6 +317,10 @@ export function createRuntimeSettingsService(input: {
   return {
     ensureBootstrapped,
     getSnapshot,
+    async getMaintenanceRevision() {
+      await ensureBootstrapped();
+      return (await input.repository.getSetting("maintenance"))?.version ?? 0;
+    },
     async getPublicSnapshot() {
       const snapshot = await getSnapshot();
       return {

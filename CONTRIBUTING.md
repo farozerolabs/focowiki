@@ -123,6 +123,15 @@ Use **Squash and merge** for short-lived branches entering `dev`. Use **Create a
 
 Release publishing is performed from `main` by maintainers. A `v*` tag triggers the Docker image and documentation publishing workflows. Do not tag a feature branch or an unmerged commit.
 
+Before publishing a release, record these independent upgrade facts in its release notes:
+
+- Whether the release includes a database migration.
+- Whether asynchronous work must finish before running that migration.
+- Whether generated knowledge-base indexes changed and maintenance may be required.
+- Any required backup, rollback, or version-pinning step.
+
+Keep deployment documentation version-neutral. Put instructions that apply only to one release in that release's notes.
+
 ## Security Reports
 
 Follow [SECURITY.md](SECURITY.md) for vulnerability reports. Do not disclose security issues in a public issue or pull request before the maintainer has reviewed them.

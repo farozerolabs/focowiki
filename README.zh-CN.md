@@ -42,8 +42,8 @@ Focowiki 使用可阅读的 Markdown 作为核心知识表示。系统保留元�
 
 安装 Focowiki 前，请确认机器满足以下要求：
 
-- 最小配置：CPU >= 2 Core，RAM >= 2 GiB
-- 推荐配置：CPU >= 2 Core，RAM >= 4 GiB 或更高
+- 最小配置：CPU >= 2 Core，RAM >= 4 GiB；运行后台处理任务时建议使用 6 GiB RAM
+- 推荐配置：CPU >= 4 Core，RAM >= 8 GiB 或更高
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki

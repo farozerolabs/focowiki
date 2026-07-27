@@ -57,6 +57,26 @@ FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
 
+## Update an Existing Deployment
+
+Read the release notes before updating. They state whether the release changes the database, requires asynchronous work to finish first, or changes knowledge-base indexes.
+
+1. Back up PostgreSQL and the configured S3-compatible storage.
+2. Update the image tags in `.env`, then pull the images.
+3. Follow any drain requirement in the release notes before stopping the current services.
+4. Run the database migration command.
+5. Start the updated services.
+
+```bash
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml run --rm migrate
+docker compose -f docker-compose.yml up -d
+```
+
+The migration command updates the database structure and is safe to run again after it succeeds. It does not rebuild knowledge-base indexes or process source files.
+
+When a release changes generated indexes, the knowledge-base page reports whether maintenance is required. The existing active content remains readable while maintenance is waiting or running. In manual mode, start maintenance for each affected knowledge base from its settings. In automatic mode, Focowiki can schedule affected knowledge bases in bounded background work, and the manual action remains available when that knowledge base is idle.
+
 ## Start Services
 
 ```bash

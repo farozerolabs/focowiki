@@ -57,6 +57,26 @@ FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:0.0.1
 FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 ```
 
+## 更新现有部署
+
+更新前先阅读发行说明。发行说明会写明该版本是否调整数据库、是否要求先完成异步任务，以及是否更新知识库索引。
+
+1. 备份 PostgreSQL 和当前配置的 S3 兼容存储。
+2. 更新 `.env` 中的镜像标签并拉取镜像。
+3. 如果发行说明要求先完成异步任务，在停止当前服务前完成该要求。
+4. 执行数据库迁移命令。
+5. 启动更新后的服务。
+
+```bash
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml run --rm migrate
+docker compose -f docker-compose.yml up -d
+```
+
+数据库迁移命令只更新数据库结构，成功后可以重复执行。该命令不会重建知识库索引，也不会处理来源文件。
+
+当版本更新了生成索引时，知识库页面会显示是否需要维护。维护等待或运行期间，当前已生效内容继续保持可读。手动模式下，在每个受影响知识库的设置中启动维护。自动模式下，Focowiki 会以受控的后台任务安排受影响的知识库；知识库空闲时仍可使用手动维护。
+
 ## 启动服务
 
 ```bash

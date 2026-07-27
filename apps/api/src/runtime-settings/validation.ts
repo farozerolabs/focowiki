@@ -27,6 +27,9 @@ const MAX_MAINTENANCE_RESOURCE_CONCURRENCY = 16;
 
 export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   reconciliationEnabled: true,
+  knowledgeBaseMaintenanceMode: "manual",
+  knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
+  knowledgeBaseMaintenanceConcurrency: 1,
   scanIntervalSeconds: 21_600,
   scanBatchSize: 500,
   deletionBatchSize: 100,
@@ -416,8 +419,16 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
       message: "reconciliationEnabled must be true or false"
     });
   }
+  if (!["manual", "automatic"].includes(String(value.knowledgeBaseMaintenanceMode))) {
+    issues.push({
+      field: "knowledgeBaseMaintenanceMode",
+      message: "knowledgeBaseMaintenanceMode must be manual or automatic"
+    });
+  }
 
   [
+    "knowledgeBaseMaintenanceScanIntervalSeconds",
+    "knowledgeBaseMaintenanceConcurrency",
     "scanIntervalSeconds",
     "scanBatchSize",
     "deletionBatchSize",
@@ -437,6 +448,15 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
     "lexicalRebuildDatabaseBatchSize",
     "lexicalRebuildMaxInFlightSourceBytes"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
+
+  validateIntegerRange(
+    value,
+    "knowledgeBaseMaintenanceScanIntervalSeconds",
+    60,
+    2_592_000,
+    issues
+  );
+  validateIntegerRange(value, "knowledgeBaseMaintenanceConcurrency", 1, 16, issues);
 
   for (const field of ["migrationBackfillConcurrency", "compactionConcurrency"] as const) {
     if (
@@ -502,6 +522,10 @@ export function sanitizeMaintenanceSettings(
 ): RuntimeMaintenanceSettings {
   return {
     reconciliationEnabled: input.reconciliationEnabled,
+    knowledgeBaseMaintenanceMode: input.knowledgeBaseMaintenanceMode,
+    knowledgeBaseMaintenanceScanIntervalSeconds:
+      input.knowledgeBaseMaintenanceScanIntervalSeconds,
+    knowledgeBaseMaintenanceConcurrency: input.knowledgeBaseMaintenanceConcurrency,
     scanIntervalSeconds: input.scanIntervalSeconds,
     scanBatchSize: Math.min(input.scanBatchSize, 1_000),
     deletionBatchSize: Math.min(input.deletionBatchSize, 1_000),

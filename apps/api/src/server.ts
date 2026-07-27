@@ -31,7 +31,7 @@ import type { SourceFileRetryRepository } from "./application/ports/source-file-
 import type { SourceFileTaskDeletionRepository } from "./application/ports/source-file-task-deletion-repository.js";
 import type { StorageReconciliationRepository } from "./application/ports/storage-reconciliation-repository.js";
 import type { MaintenanceProgressRepository } from "./application/ports/maintenance-progress-repository.js";
-
+import type { KnowledgeBaseIndexMaintenanceRepository } from "./application/ports/knowledge-base-index-maintenance-repository.js";
 export type ApiAppOptions = {
   config: RuntimeConfig;
   storage?: StorageAdapter;
@@ -48,8 +48,8 @@ export type ApiAppOptions = {
   sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
   storageReconciliation?: StorageReconciliationRepository;
   maintenanceProgress?: MaintenanceProgressRepository;
+  knowledgeBaseIndexMaintenance?: KnowledgeBaseIndexMaintenanceRepository;
 };
-
 type ApiAppServices = {
   config: RuntimeConfig;
   storage: StorageAdapter;
@@ -69,8 +69,8 @@ type ApiAppServices = {
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
   storageReconciliation: StorageReconciliationRepository | null;
   maintenanceProgress: MaintenanceProgressRepository | null;
+  knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
 };
-
 export function createAdminApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config, services.logger);
@@ -78,7 +78,6 @@ export function createAdminApiApp(options: ApiAppOptions): Hono {
 
   return app;
 }
-
 export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config, services.logger);
@@ -144,6 +143,7 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     sourceFileRetries: options.sourceFileRetries ?? null,
     sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null,
     storageReconciliation: options.storageReconciliation ?? null,
-    maintenanceProgress: options.maintenanceProgress ?? null
+    maintenanceProgress: options.maintenanceProgress ?? null,
+    knowledgeBaseIndexMaintenance: options.knowledgeBaseIndexMaintenance ?? null
   };
 }

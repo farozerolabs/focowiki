@@ -32,6 +32,7 @@ export async function runProjectionCompactionSlice(input: {
   maxAttempts: number;
   retryDelayMs: number;
   lockTtlSeconds: number;
+  knowledgeBaseIds?: string[] | undefined;
   now?: () => Date;
 }): Promise<{
   discovered: number;
@@ -49,7 +50,8 @@ export async function runProjectionCompactionSlice(input: {
     limits: DEFAULT_PROJECTION_COMPACTION_LIMITS,
     partitionLimit: input.partitionScanLimit,
     maxAttempts: input.maxAttempts,
-    discoveredAt: discoveredAt.toISOString()
+    discoveredAt: discoveredAt.toISOString(),
+    knowledgeBaseIds: input.knowledgeBaseIds
   });
   const claimTime = now();
   const jobs = await input.repository.claim({
@@ -58,7 +60,8 @@ export async function runProjectionCompactionSlice(input: {
     now: claimTime.toISOString(),
     leaseExpiresAt: new Date(
       claimTime.getTime() + input.lockTtlSeconds * 1_000
-    ).toISOString()
+    ).toISOString(),
+    knowledgeBaseIds: input.knowledgeBaseIds
   });
   const result = { discovered, claimed: jobs.length, completed: 0, superseded: 0, failed: 0 };
   await Promise.all(jobs.map((job) => input.budget.run(async () => {

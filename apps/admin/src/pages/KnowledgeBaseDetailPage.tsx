@@ -1,9 +1,11 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AdminPageHeader } from "@/components/admin-page-header";
 import { AppSidebar, type AdminSidebarTreeNode } from "@/components/app-sidebar";
 import { FilePreviewPanel } from "@/components/file-preview-panel";
 import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { SourceFileProgressPanel } from "@/components/task-progress-panel";
+import { KnowledgeBaseMaintenancePanel } from "@/components/knowledge-base-maintenance-panel";
 import { UploadSourceDialog } from "@/components/upload-source-dialog";
 import { SourceDirectoryDeleteDialog } from "@/components/source-directory-delete-dialog";
 import { SourceFileDeleteDialog } from "@/components/source-file-delete-dialog";
@@ -23,7 +25,6 @@ import {
 import {
   normalizeSourceFileRefreshAfterMs,
   rememberSourceFileRefreshSnapshots,
-  shouldScheduleSourceFileRefresh,
   shouldRefreshGeneratedFiles,
   type SourceFileRefreshSnapshot
 } from "@/lib/source-file-refresh";
@@ -56,6 +57,7 @@ import {
 import { useSourceFileTaskDeletionHandler } from "@/hooks/use-source-file-task-deletion-handler";
 import { showAdminToast } from "@/hooks/use-admin-toast";
 import { useDetailResourceEditing } from "@/hooks/use-detail-resource-editing";
+import { useDetailPageRefresh } from "@/hooks/use-detail-page-refresh";
 import { useDetailSidebarLabels } from "@/hooks/use-detail-sidebar-labels";
 
 const ROOT_PARENT_PATH = "";
@@ -70,7 +72,7 @@ type KnowledgeBaseDetailPageProps = {
   onLogout: () => void;
 };
 
-type ActiveView = "file" | "processing";
+type ActiveView = "file" | "processing" | "settings";
 
 export function KnowledgeBaseDetailPage({
   knowledgeBase,
@@ -205,51 +207,17 @@ export function KnowledgeBaseDetailPage({
     void loadPublicUrls();
   }, [knowledgeBase.id]);
 
-  useEffect(() => {
-    let timeoutId: number | null = null;
-    let disposed = false;
-
-    const canRefresh = () =>
-      shouldScheduleSourceFileRefresh({
-        activeView: activeViewRef.current,
-        isVisible: document.visibilityState === "visible",
-        sourceFiles: sourceFilesRef.current
-      }) && !isSourceFilePageLoadingRef.current;
-
-    const schedule = () => {
-      if (disposed) {
-        return;
-      }
-      const refreshIntervalMs = sourceFileRefreshIntervalMsRef.current;
-      timeoutId = window.setTimeout(() => {
-        if (canRefresh()) {
-          void loadSourceFiles({ pageState: sourceFilePageStateRef.current });
-        }
-        schedule();
-      }, refreshIntervalMs);
-    };
-
-    const handleVisibilityChange = () => {
-      if (canRefresh()) {
-        void loadSourceFiles({ pageState: sourceFilePageStateRef.current });
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    schedule();
-
-    return () => {
-      disposed = true;
-      if (sourceFileFilterTimeoutRef.current !== null) {
-        window.clearTimeout(sourceFileFilterTimeoutRef.current);
-        sourceFileFilterTimeoutRef.current = null;
-      }
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [knowledgeBase.id]);
+  useDetailPageRefresh({
+    knowledgeBaseId: knowledgeBase.id,
+    activeViewRef,
+    sourceFilesRef,
+    sourceFilePageLoadingRef: isSourceFilePageLoadingRef,
+    sourceFileFilterTimeoutRef,
+    refreshIntervalMsRef: sourceFileRefreshIntervalMsRef,
+    refreshSourceFiles: () =>
+      void loadSourceFiles({ pageState: sourceFilePageStateRef.current }),
+    refreshMaintenance: () => void loadProcessingSummary()
+  });
 
   async function loadFileTree(input: { parentPath: string; replace: boolean }) {
     const currentCursor = input.replace ? null : treePages[input.parentPath]?.nextCursor ?? null;
@@ -566,6 +534,10 @@ export function KnowledgeBaseDetailPage({
         onBack={onBack}
         onLogout={onLogout}
         onOpenProcessing={() => setActiveView("processing")}
+        onOpenSettings={() => {
+          setActiveView("settings");
+          void loadProcessingSummary();
+        }}
         onOpenFile={(node) => void handleSelectFile(node)}
         onDeleteFile={(node) => {
           setDeleteFileError("");
@@ -597,21 +569,25 @@ export function KnowledgeBaseDetailPage({
         }}
       />
       <SidebarInset className="min-w-0 overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-4">
-          <div className="flex min-w-0 items-center gap-2">
-            <SidebarTrigger aria-label={t("detail.toggleSidebar")} />
-            <Separator orientation="vertical" className="h-4" />
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">
-                {activeView === "processing"
-                  ? t("tasks.title")
-                  : selectedFileTitle || selectedFilePath || t("result.preview")}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">{knowledgeBase.name}</p>
-            </div>
-          </div>
-          <LanguageSwitch />
-        </header>
+        <AdminPageHeader
+          start={
+            <>
+              <SidebarTrigger aria-label={t("detail.toggleSidebar")} />
+              <Separator orientation="vertical" className="h-4" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {activeView === "processing"
+                    ? t("tasks.title")
+                    : activeView === "settings"
+                      ? t("detail.settings")
+                      : selectedFileTitle || selectedFilePath || t("result.preview")}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{knowledgeBase.name}</p>
+              </div>
+            </>
+          }
+          end={<LanguageSwitch />}
+        />
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-4">
           {activeView === "processing" ? (
             <SourceFileProgressPanel
@@ -644,6 +620,12 @@ export function KnowledgeBaseDetailPage({
                   })();
                 }
               }}
+            />
+          ) : activeView === "settings" ? (
+            <KnowledgeBaseMaintenancePanel
+              knowledgeBaseId={knowledgeBase.id}
+              summary={processingSummary}
+              onRefresh={loadProcessingSummary}
             />
           ) : (
             <FilePreviewPanel
