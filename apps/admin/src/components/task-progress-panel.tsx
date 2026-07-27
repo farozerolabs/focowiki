@@ -363,13 +363,7 @@ function MaintenanceSummaryItem({ summary }: { summary: ProcessingSummary }) {
       <SummaryItem
         label={t("tasks.summary.maintenance")}
         value={t("tasks.summary.lexicalRebuildActive")}
-        detail={t("tasks.summary.lexicalRebuildState", {
-          phase: t(`tasks.summary.lexicalRebuildPhase.${lexicalRebuild.phase}`, {
-            defaultValue: lexicalRebuild.phase
-          }),
-          processed: lexicalRebuild.processedSourceCount,
-          total: lexicalRebuild.totalSourceCount
-        })}
+        detail={formatLexicalRebuildProgress(lexicalRebuild, t, i18n.language)}
       />
     );
   }
@@ -441,6 +435,46 @@ function formatProjectionRepairProgress(
   if (repair.estimatedCompletionAt) {
     parts.push(t("tasks.summary.projectionRepairEta", {
       time: new Date(repair.estimatedCompletionAt).toLocaleString(locale)
+    }));
+  }
+  return parts.join(" · ");
+}
+
+function formatLexicalRebuildProgress(
+  rebuild: NonNullable<ProcessingSummary["maintenanceProgress"]["lexicalRebuild"]>,
+  t: ReturnType<typeof useTranslation>["t"],
+  locale: string
+): string {
+  const integerFormatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+  const parts = [
+    t("tasks.summary.lexicalRebuildState", {
+      phase: t(`tasks.summary.lexicalRebuildPhase.${rebuild.phase}`, {
+        defaultValue: rebuild.phase
+      }),
+      processed: integerFormatter.format(rebuild.processedSourceCount),
+      total: integerFormatter.format(rebuild.totalSourceCount)
+    }),
+    t("tasks.summary.lexicalRebuildWorkers", {
+      workers: rebuild.activeWorkerCount,
+      running: integerFormatter.format(rebuild.runningSourceCount),
+      pending: integerFormatter.format(
+        rebuild.pendingSourceCount + rebuild.retrySourceCount
+      )
+    })
+  ];
+  if (rebuild.filesPerSecond !== null) {
+    parts.push(t("tasks.summary.lexicalRebuildRate", {
+      rate: new Intl.NumberFormat(locale, { maximumFractionDigits: 1 })
+        .format(rebuild.filesPerSecond)
+    }));
+  }
+  const retries = rebuild.sourceReadRetryCount + rebuild.databaseRetryCount;
+  if (retries > 0) {
+    parts.push(t("tasks.summary.lexicalRebuildRetries", { count: retries }));
+  }
+  if (rebuild.estimatedCompletionAt) {
+    parts.push(t("tasks.summary.lexicalRebuildEta", {
+      time: new Date(rebuild.estimatedCompletionAt).toLocaleString(locale)
     }));
   }
   return parts.join(" · ");

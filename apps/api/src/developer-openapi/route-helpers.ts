@@ -94,3 +94,18 @@ export function readLimit(
 
   return parsed;
 }
+
+export async function readDeveloperJsonObjectBody(
+  request: Request
+): Promise<Record<string, unknown>> {
+  try {
+    const bytes = await request.arrayBuffer();
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  } catch {
+    throw validationError("Request body must contain valid UTF-8 JSON.");
+  }
+}

@@ -5,6 +5,7 @@ export type GenerationSearchReferenceChange = {
   kind: ChangeFactKind;
   sourceFileId: string | null;
   sourceRevisionId: string | null;
+  searchDocumentId: string | null;
   path: string | null;
 };
 
@@ -64,6 +65,7 @@ export async function updateGenerationSearchReferences(
       FROM jsonb_to_recordset(${transaction.json(upserts as never)}) AS item(
         "sourceFileId" text,
         "sourceRevisionId" text,
+        "searchDocumentId" text,
         "path" text
       )
     ), selected AS MATERIALIZED (
@@ -104,7 +106,16 @@ export async function updateGenerationSearchReferences(
       JOIN focowiki.search_projection_documents document
         ON document.knowledge_base_id = source.knowledge_base_id
        AND document.source_file_id = source.id
-       AND document.source_revision_id = revision.id
+       AND (
+         (
+           request."searchDocumentId" IS NOT NULL
+           AND document.id = request."searchDocumentId"
+         )
+         OR (
+           request."searchDocumentId" IS NULL
+           AND document.source_revision_id = revision.id
+         )
+       )
        AND document.lifecycle_state = 'ready'
       LEFT JOIN focowiki.source_file_graph_nodes node
         ON node.knowledge_base_id = source.knowledge_base_id
@@ -161,11 +172,13 @@ export async function updateGenerationSearchReferences(
 function latestSourceChanges(changes: GenerationSearchReferenceChange[]): Array<{
   sourceFileId: string;
   sourceRevisionId: string;
+  searchDocumentId: string | null;
   path: string;
 }> {
   const latest = new Map<string, {
     sourceFileId: string;
     sourceRevisionId: string;
+    searchDocumentId: string | null;
     path: string;
   }>();
   for (const change of changes) {
@@ -180,6 +193,7 @@ function latestSourceChanges(changes: GenerationSearchReferenceChange[]): Array<
     latest.set(change.sourceFileId, {
       sourceFileId: change.sourceFileId,
       sourceRevisionId: change.sourceRevisionId,
+      searchDocumentId: change.searchDocumentId,
       path: change.path
     });
   }

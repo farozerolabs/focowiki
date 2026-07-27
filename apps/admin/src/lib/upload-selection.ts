@@ -87,7 +87,8 @@ function isSafeMarkdownRelativePath(path: string): boolean {
   if (!path || path !== path.trim() || path.startsWith("/") || path.includes("\\")) {
     return false;
   }
-  const segments = path.normalize("NFC").split("/");
+  const normalizedPath = path.normalize("NFC");
+  const segments = normalizedPath.split("/");
   const name = segments.at(-1) ?? "";
   if (
     segments.some(
@@ -96,9 +97,9 @@ function isSafeMarkdownRelativePath(path: string): boolean {
         segment === "." ||
         segment === ".." ||
         segment.length > 240 ||
-        /[\u0000-\u001f\u007f]/u.test(segment)
+        /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(segment)
     ) ||
-    path.length > 2_048 ||
+    normalizedPath.length > 2_048 ||
     !name.toLocaleLowerCase("en-US").endsWith(".md")
   ) {
     return false;

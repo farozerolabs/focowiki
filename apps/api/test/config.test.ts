@@ -34,6 +34,7 @@ describe("parseRuntimeConfig", () => {
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
       projectionRepairWorkerPoolMax: 8,
+      lexicalRebuildWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
     expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
@@ -524,6 +525,7 @@ describe("parseRuntimeConfig", () => {
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
       projectionRepairWorkerPoolMax: 8,
+      lexicalRebuildWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
     expect(() =>
@@ -538,6 +540,12 @@ describe("parseRuntimeConfig", () => {
         PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "-1"
       })
     ).toThrow(/PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX: "-1"
+      })
+    ).toThrow(/LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX/);
   });
 
   it("uses default publication settings managed by runtime settings", () => {

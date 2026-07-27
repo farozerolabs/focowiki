@@ -5,6 +5,7 @@ import type { PublicationImpact } from "../../publication/impact-planner.js";
 
 export type PublicationChangePlanningPayload = {
   preplannedImpacts?: PublicationImpact[];
+  searchDocumentId?: string;
   graphNeighborSourceFileIds?: string[];
   graphEdgeIds?: string[];
   removedGraphEdgeIds?: string[];
@@ -40,6 +41,11 @@ export async function appendPublicationChangeFact(
     committedAt: string;
   }
 ): Promise<boolean> {
+  await transaction`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
+    )
+  `;
   const inserted = await transaction<Array<{ id: string }>>`
     INSERT INTO focowiki.publication_change_facts (
       id, knowledge_base_id, source_file_id, source_revision_id,

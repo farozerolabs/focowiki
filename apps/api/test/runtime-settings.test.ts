@@ -84,7 +84,13 @@ describe("runtime settings service", () => {
       compactionConcurrency: 1,
       projectionRepairConcurrency: 4,
       projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 8
+      projectionRepairObjectWriteConcurrency: 8,
+      lexicalRebuildConcurrency: 4,
+      lexicalRebuildSourceReadConcurrency: 2,
+      lexicalRebuildDatabaseWriteConcurrency: 2,
+      lexicalRebuildClaimBatchSize: 500,
+      lexicalRebuildDatabaseBatchSize: 50,
+      lexicalRebuildMaxInFlightSourceBytes: 64 * 1_024 * 1_024
     });
     expect(snapshot.activeModel).toBeNull();
   });
@@ -111,6 +117,12 @@ describe("runtime settings service", () => {
     delete publication.directoryMaterializationConcurrency;
     delete maintenance.migrationBackfillConcurrency;
     delete maintenance.compactionConcurrency;
+    delete maintenance.lexicalRebuildConcurrency;
+    delete maintenance.lexicalRebuildSourceReadConcurrency;
+    delete maintenance.lexicalRebuildDatabaseWriteConcurrency;
+    delete maintenance.lexicalRebuildClaimBatchSize;
+    delete maintenance.lexicalRebuildDatabaseBatchSize;
+    delete maintenance.lexicalRebuildMaxInFlightSourceBytes;
     worker.sourceFileConcurrency = 3;
     await repository.upsertSetting({ key: "worker", value: worker, source: "admin" });
     await repository.upsertSetting({ key: "publication", value: publication, source: "admin" });

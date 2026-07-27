@@ -292,7 +292,20 @@ export type ProcessingSummary = {
       contentProfileVersion: string;
       graphLexicalProjectionVersion: string;
       processedSourceCount: number;
+      pendingSourceCount: number;
+      runningSourceCount: number;
+      retrySourceCount: number;
+      failedSourceCount: number;
       totalSourceCount: number;
+      activeWorkerCount: number;
+      sourceReadRetryCount: number;
+      databaseRetryCount: number;
+      filesPerSecond: number | null;
+      sourceReadLatencyMs: number | null;
+      databaseBatchLatencyMs: number | null;
+      lastProgressAt: string | null;
+      lastWorkerHeartbeatAt: string | null;
+      estimatedCompletionAt: string | null;
       attemptCount: number;
       maxAttempts: number;
       updatedAt: string;
@@ -452,6 +465,12 @@ export type MaintenanceSettings = {
   projectionRepairConcurrency: number;
   projectionRepairDatabaseBatchSize: number;
   projectionRepairObjectWriteConcurrency: number;
+  lexicalRebuildConcurrency: number;
+  lexicalRebuildSourceReadConcurrency: number;
+  lexicalRebuildDatabaseWriteConcurrency: number;
+  lexicalRebuildClaimBatchSize: number;
+  lexicalRebuildDatabaseBatchSize: number;
+  lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
 export type RuntimeModelConfig = {

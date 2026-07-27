@@ -60,6 +60,52 @@ export function createPostgresGenerationCleanupRepository(
             AND state IN ('pending', 'running', 'retry')
         `;
         await transaction`
+          UPDATE focowiki.projection_repair_subtasks
+          SET state = 'cancelled', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, heartbeat_at = NULL,
+              completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded projection repair work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running', 'retry')
+        `;
+        await transaction`
+          UPDATE focowiki.knowledge_base_projection_repairs
+          SET state = 'superseded', current_phase = 'superseded',
+              lease_token = NULL, lease_expires_at = NULL,
+              completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded projection repair.',
+              last_heartbeat_at = ${input.supersededAt},
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running', 'retry')
+        `;
+        await transaction`
+          UPDATE focowiki.lexical_rebuild_work_items
+          SET state = 'cancelled', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, heartbeat_at = NULL,
+              completed_at = ${input.supersededAt},
+              last_error_stage = 'cleanup',
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded lexical rebuild work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running', 'retry')
+        `;
+        await transaction`
+          UPDATE focowiki.knowledge_base_lexical_rebuilds
+          SET state = 'cancelled', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, heartbeat_at = NULL,
+              completed_at = ${input.supersededAt},
+              last_error_code = 'KNOWLEDGE_BASE_DELETED',
+              last_error_message = 'Knowledge base deletion superseded lexical rebuild.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('pending', 'running', 'validating', 'activating')
+        `;
+        await transaction`
           UPDATE focowiki.publication_generations
           SET state = 'superseded', successor_generation_id = NULL,
               updated_at = ${input.supersededAt}
@@ -712,6 +758,13 @@ export function createPostgresGenerationCleanupRepository(
             AND NOT EXISTS (
               SELECT 1 FROM focowiki.knowledge_bases knowledge_base
               WHERE knowledge_base.active_generation_id = candidate.id
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM focowiki.publication_generations dependent
+              WHERE dependent.knowledge_base_id = candidate.knowledge_base_id
+                AND dependent.predecessor_generation_id = candidate.id
+                AND dependent.state IN ('open', 'frozen', 'building', 'validating')
             )
             AND NOT EXISTS (
               SELECT 1 FROM focowiki.active_projection_records record

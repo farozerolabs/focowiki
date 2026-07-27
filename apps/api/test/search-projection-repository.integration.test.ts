@@ -341,6 +341,7 @@ describeDatabase("search projection repository integration", () => {
         kind: "source_moved",
         sourceFileId,
         sourceRevisionId,
+        searchDocumentId: null,
         path: "reference/cache.md"
       }],
       now: "2026-07-24T02:00:00.000Z"
@@ -362,6 +363,7 @@ describeDatabase("search projection repository integration", () => {
         kind: "source_deleted",
         sourceFileId,
         sourceRevisionId,
+        searchDocumentId: null,
         path: null
       }],
       now: "2026-07-24T02:01:00.000Z"
@@ -372,6 +374,108 @@ describeDatabase("search projection repository integration", () => {
       WHERE generation_id = ${targetGenerationId}
     `;
     expect(remaining[0]?.count).toBe(0);
+  });
+
+  it("reuses one body search document across identical-content source revisions", async () => {
+    const original = testDocument();
+    const replacementRevisionId = "source-revision-search-projection-replacement";
+    const targetGenerationId = "generation-search-projection-replacement";
+    await repository.persistDocument({
+      document: original,
+      completedAt: "2026-07-24T01:00:00.000Z"
+    });
+    await repository.attachGenerationReference({
+      knowledgeBaseId,
+      generationId,
+      sourceFileId,
+      sourceRevisionId,
+      searchDocumentId: original.documentId,
+      searchSchemaVersion: original.searchSchemaVersion,
+      tokenizerContractVersion: original.tokenizerContractVersion,
+      segmentationVersion: original.segmentationVersion,
+      logicalPath: original.logicalPath,
+      title: original.title,
+      summary: original.summary,
+      sourceUrl: null,
+      metadata: {}
+    });
+    await sql`
+      INSERT INTO focowiki.source_revisions (
+        id, knowledge_base_id, source_file_id, revision, object_key,
+        content_type, size_bytes, checksum_sha256, processing_status
+      ) VALUES (
+        ${replacementRevisionId}, ${knowledgeBaseId}, ${sourceFileId}, 2,
+        'sources/cache-replacement.md', 'text/markdown; charset=utf-8',
+        ${body.length}, ${checksum}, 'completed'
+      )
+    `;
+    const replacement = buildBodySearchDocument({
+      knowledgeBaseId,
+      sourceFileId,
+      sourceRevisionId: replacementRevisionId,
+      sourceBodyChecksumSha256: checksum,
+      title: "Cache consistency",
+      logicalPath: "pages/guides/cache.md",
+      summary: "Lease recovery",
+      body,
+      tokenizer
+    });
+    expect(replacement.documentId).toBe(original.documentId);
+    await expect(repository.persistDocument({
+      document: replacement,
+      completedAt: "2026-07-24T02:00:00.000Z"
+    })).resolves.toMatchObject({ status: "reused" });
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET state = 'active',
+          search_schema_version = ${original.searchSchemaVersion},
+          tokenizer_contract_version = ${original.tokenizerContractVersion},
+          search_segmentation_version = ${original.segmentationVersion}
+      WHERE id = ${generationId}
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${generationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id,
+        state, format_version, generation_kind
+      ) VALUES (
+        ${targetGenerationId}, ${knowledgeBaseId}, ${generationId},
+        'open', 2, 'normal'
+      )
+    `;
+
+    await sql.begin((transaction) => updateGenerationSearchReferences(transaction, {
+      knowledgeBaseId,
+      generationId: targetGenerationId,
+      predecessorGenerationId: generationId,
+      inheritPredecessor: true,
+      changes: [{
+        kind: "source_replaced",
+        sourceFileId,
+        sourceRevisionId: replacementRevisionId,
+        searchDocumentId: replacement.documentId,
+        path: "guides/cache.md"
+      }],
+      now: "2026-07-24T02:01:00.000Z"
+    }));
+
+    const references = await sql<Array<{
+      source_revision_id: string;
+      search_document_id: string;
+    }>>`
+      SELECT source_revision_id, search_document_id
+      FROM focowiki.generation_search_projection_refs
+      WHERE generation_id = ${targetGenerationId}
+        AND source_file_id = ${sourceFileId}
+    `;
+    expect(references).toEqual([{
+      source_revision_id: replacementRevisionId,
+      search_document_id: original.documentId
+    }]);
   });
 
   it("retrieves late body evidence through the bounded token projection", async () => {

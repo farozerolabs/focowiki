@@ -11,6 +11,7 @@ export function createDatabaseClient(
       | "source-worker"
       | "publication-worker"
       | "projection-repair-worker"
+      | "lexical-rebuild-worker"
       | "maintenance-worker"
       | "migration";
   } = {}
@@ -21,6 +22,8 @@ export function createDatabaseClient(
       ? config.database.publicationWorkerPoolMax ?? 4
       : options.role === "projection-repair-worker"
         ? config.database.projectionRepairWorkerPoolMax ?? 8
+        : options.role === "lexical-rebuild-worker"
+          ? config.database.lexicalRebuildWorkerPoolMax ?? 8
         : options.role === "maintenance-worker"
           ? config.database.maintenanceWorkerPoolMax ?? 2
           : config.database.poolMax ?? 10;

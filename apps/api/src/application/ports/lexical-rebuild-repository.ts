@@ -84,7 +84,8 @@ export type LexicalRebuildRepository = {
     workerId: string;
     leaseToken: string;
     activatedAt: string;
-  }) => Promise<"activated" | "rebased">;
+    retryDelayMs: number;
+  }) => Promise<"activated" | "rebased" | "deferred">;
   complete: (input: {
     knowledgeBaseId: string;
     workerId: string;

@@ -1,5 +1,8 @@
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createPostgresSourceFileTaskDeletionRepository
+} from "../src/infrastructure/postgres/source-file-task-deletion-repository.js";
 import { createPostgresSourceResourceRepository } from "../src/infrastructure/postgres/source-resource-repository.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
@@ -8,6 +11,7 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describeDatabase("source resource move integration", () => {
   const sql = postgres(databaseUrl!, { max: 2 });
   const repository = createPostgresSourceResourceRepository(sql);
+  const taskDeletions = createPostgresSourceFileTaskDeletionRepository(sql);
   const knowledgeBaseId = "kb-source-directory-move-integration";
 
   beforeAll(async () => {
@@ -21,7 +25,8 @@ describeDatabase("source resource move integration", () => {
         id, knowledge_base_id, parent_id, name, relative_path, path_key, depth
       ) VALUES
         ('source-directory-move-root', ${knowledgeBaseId}, NULL, 'root', 'root', 'root', 1),
-        ('source-directory-move-child', ${knowledgeBaseId}, 'source-directory-move-root', 'child', 'root/child', 'root/child', 2)
+        ('source-directory-move-child', ${knowledgeBaseId}, 'source-directory-move-root', 'child', 'root/child', 'root/child', 2),
+        ('source-directory-race', ${knowledgeBaseId}, NULL, 'race', 'race', 'race', 1)
     `;
     await sql.begin(async (transaction) => {
       await transaction`
@@ -40,12 +45,25 @@ describeDatabase("source resource move integration", () => {
           'source-file-replace', ${knowledgeBaseId}, 'replace.md',
           'root/replace.md', 'root/replace.md', 'source-directory-move-root',
           'objects/replace', 'text/markdown', 1, 'replace', 'source-revision-replace'
+        ), (
+          'source-file-race', ${knowledgeBaseId}, 'race.md',
+          'root/race.md', 'root/race.md', 'source-directory-move-root',
+          'objects/race', 'text/markdown', 1, 'race', 'source-revision-race'
+        ), (
+          'source-file-task-delete-race', ${knowledgeBaseId}, 'task-delete-race.md',
+          'root/task-delete-race.md', 'root/task-delete-race.md',
+          'source-directory-move-root', 'objects/task-delete-race',
+          'text/markdown', 1, 'task-delete-race',
+          'source-revision-task-delete-race'
         )
       `;
       await transaction`
         UPDATE focowiki.source_files
         SET processing_status = CASE
-          WHEN id IN ('source-file-move-child', 'source-file-replace') THEN 'completed'
+          WHEN id IN (
+            'source-file-move-child', 'source-file-replace', 'source-file-race'
+            , 'source-file-task-delete-race'
+          ) THEN 'completed'
           ELSE 'running'
         END
         WHERE knowledge_base_id = ${knowledgeBaseId}
@@ -63,6 +81,13 @@ describeDatabase("source resource move integration", () => {
         ), (
           'source-revision-replace', ${knowledgeBaseId}, 'source-file-replace', 1,
           'objects/replace', 'text/markdown', 1, 'replace'
+        ), (
+          'source-revision-race', ${knowledgeBaseId}, 'source-file-race', 1,
+          'objects/race', 'text/markdown', 1, 'race'
+        ), (
+          'source-revision-task-delete-race', ${knowledgeBaseId},
+          'source-file-task-delete-race', 1, 'objects/task-delete-race',
+          'text/markdown', 1, 'task-delete-race'
         )
       `;
     });
@@ -139,6 +164,159 @@ describeDatabase("source resource move integration", () => {
     })).rejects.toMatchObject({ code: "RESOURCE_BUSY" });
   });
 
+  it("fails an accepted replacement cleanly when deletion removes its target", async () => {
+    const operationId = "resource-operation-replace-delete-race";
+    const replacementObjectKey = "objects/race-replacement";
+    await repository.createOperation({
+      operationId,
+      knowledgeBaseId,
+      kind: "source_file_replace",
+      idempotencyKey: "replace-delete-race",
+      requestFingerprint: "replace-delete-race-fingerprint",
+      request: {
+        relativePath: "root/race.md",
+        revisionId: "source-revision-race-candidate",
+        objectKey: replacementObjectKey,
+        contentType: "text/markdown; charset=utf-8",
+        sizeBytes: 10,
+        checksumSha256: "race-candidate"
+      },
+      expectedResourceRevision: 1,
+      targetKind: "source_file",
+      targetId: "source-file-race"
+    });
+    await sql`
+      DELETE FROM focowiki.source_files
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = 'source-file-race'
+    `;
+
+    await expect(repository.prepareOperation({
+      knowledgeBaseId,
+      operationId,
+      now: new Date().toISOString(),
+      batchSize: 50
+    })).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
+
+    const failed = await repository.failOperation({
+      knowledgeBaseId,
+      operationId,
+      errorCode: "RESOURCE_NOT_FOUND",
+      failedAt: new Date().toISOString()
+    });
+    expect(failed.operation?.state).toBe("failed");
+    expect(failed.objectKeys).toEqual([replacementObjectKey]);
+  });
+
+  it("fails an accepted directory move cleanly when deletion removes its target", async () => {
+    const operationId = "resource-operation-directory-delete-race";
+    await repository.createOperation({
+      operationId,
+      knowledgeBaseId,
+      kind: "source_directory_move",
+      idempotencyKey: "directory-delete-race",
+      requestFingerprint: "directory-delete-race-fingerprint",
+      request: { relativePath: "renamed-race" },
+      expectedResourceRevision: 1,
+      targetKind: "source_directory",
+      targetId: "source-directory-race"
+    });
+    await sql`
+      DELETE FROM focowiki.source_directories
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = 'source-directory-race'
+    `;
+
+    await expect(repository.prepareOperation({
+      knowledgeBaseId,
+      operationId,
+      now: new Date().toISOString(),
+      batchSize: 50
+    })).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
+  });
+
+  it("skips task deletion while a replacement is accepted or processing", async () => {
+    const operationId = "resource-operation-task-delete-race";
+    await repository.createOperation({
+      operationId,
+      knowledgeBaseId,
+      kind: "source_file_replace",
+      idempotencyKey: "task-delete-race",
+      requestFingerprint: "task-delete-race-fingerprint",
+      request: {
+        relativePath: "root/task-delete-race.md",
+        revisionId: "source-revision-task-delete-race-candidate",
+        objectKey: "objects/task-delete-race-candidate",
+        contentType: "text/markdown; charset=utf-8",
+        sizeBytes: 10,
+        checksumSha256: "task-delete-race-candidate"
+      },
+      expectedResourceRevision: 1,
+      targetKind: "source_file",
+      targetId: "source-file-task-delete-race"
+    });
+    await expect(taskDeletions.deleteTasks({
+      knowledgeBaseId,
+      sourceFileIds: ["source-file-task-delete-race"],
+      deletedAt: new Date().toISOString(),
+      hardDeleteMaxAttempts: 3,
+      publicationSettingsSnapshot: {
+        publication: {
+          mode: "manual",
+          batchSize: 10,
+          intervalSeconds: 60
+        }
+      }
+    })).resolves.toEqual([{
+      sourceFileId: "source-file-task-delete-race",
+      outcome: "skipped",
+      reason: "running"
+    }]);
+
+    await repository.prepareOperation({
+      knowledgeBaseId,
+      operationId,
+      now: new Date().toISOString(),
+      batchSize: 50
+    });
+    await expect(taskDeletions.deleteTasks({
+      knowledgeBaseId,
+      sourceFileIds: ["source-file-task-delete-race"],
+      deletedAt: new Date().toISOString(),
+      hardDeleteMaxAttempts: 3,
+      publicationSettingsSnapshot: {
+        publication: {
+          mode: "manual",
+          batchSize: 10,
+          intervalSeconds: 60
+        }
+      }
+    })).resolves.toEqual([{
+      sourceFileId: "source-file-task-delete-race",
+      outcome: "skipped",
+      reason: "running"
+    }]);
+
+    const [state] = await sql<Array<{
+      operation_state: string;
+      candidate_operation_id: string | null;
+      task_deleted_at: Date | null;
+    }>>`
+      SELECT operation.state AS operation_state,
+             source.candidate_operation_id,
+             source.task_deleted_at
+      FROM focowiki.resource_operations operation
+      JOIN focowiki.source_files source
+        ON source.candidate_operation_id = operation.id
+      WHERE operation.id = ${operationId}
+    `;
+    expect(state).toMatchObject({
+      operation_state: "processing",
+      candidate_operation_id: operationId,
+      task_deleted_at: null
+    });
+  });
+
   it("cleans replacement candidates when an operation reaches terminal failure", async () => {
     const operationId = "resource-operation-replace-failure-integration";
     const candidateRevisionId = "source-revision-replace-candidate";
@@ -204,6 +382,10 @@ describeDatabase("source resource move integration", () => {
   });
 
   async function clearFixture() {
+    await sql`
+      DELETE FROM focowiki.source_file_events
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
     await sql`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.source_directories WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.resource_operations WHERE knowledge_base_id = ${knowledgeBaseId}`;

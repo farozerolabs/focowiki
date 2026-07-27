@@ -89,13 +89,14 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.1.0
 
 ## Focowiki 提供什么
 
-- 只接收 `.md` 文件的 Markdown 上传流程。
-- Frontmatter、标题、链接和正文内容提取。
-- OKF-style 文件：`index.md`、`log.md`、`schema.md`、`pages/*.md`、`_index/*.json` 和 `_graph/*`。
-- PostgreSQL 记录、Redis 协调和 S3 兼容文件存储。
-- 相互隔离的来源处理、发布和维护 Worker 角色，以及由数据库持久化的处理进度。
-- Admin UI，用于知识库管理、上传、文件浏览、处理状态和 OpenAPI key。
-- Developer OpenAPI，用于后端和 Agent 集成。
+Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 探索的知识库。
+
+- **上传文档和文件夹。** 添加单个 Markdown 文件或完整的多层文件夹，并保留路径、名称、元数据、链接和正文。
+- **浏览结构化知识。** 通过文件树打开文档，移动或重命名文件和文件夹，替换正文并删除过时内容。
+- **查找相关文档。** 搜索文件内容、浏览目录索引、查看相关文档，并通过知识图谱继续探索关联内容。
+- **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索图关系并管理文档变更。
+- **通过 Admin UI 管理系统。** 创建知识库、查看文件处理进度、配置模型和运行参数，并管理 API key。
+- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis 和 S3 兼容存储运行 Focowiki。
 
 ## Admin UI 预览
 

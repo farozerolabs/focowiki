@@ -136,7 +136,13 @@ vi.mock("@/lib/admin-api", () => ({
         compactionConcurrency: 1,
         projectionRepairConcurrency: 4,
         projectionRepairDatabaseBatchSize: 2000,
-        projectionRepairObjectWriteConcurrency: 8
+        projectionRepairObjectWriteConcurrency: 8,
+        lexicalRebuildConcurrency: 4,
+        lexicalRebuildSourceReadConcurrency: 8,
+        lexicalRebuildDatabaseWriteConcurrency: 2,
+        lexicalRebuildClaimBatchSize: 500,
+        lexicalRebuildDatabaseBatchSize: 50,
+        lexicalRebuildMaxInFlightSourceBytes: 67_108_864
       },
       activeModel: {
         id: "model-001"
@@ -259,15 +265,47 @@ describe("SettingsPage", () => {
     const repairObjectWrites = document.getElementById(
       "maintenance-projectionRepairObjectWriteConcurrency"
     ) as HTMLInputElement;
+    const lexicalConcurrency = document.getElementById(
+      "maintenance-lexicalRebuildConcurrency"
+    ) as HTMLInputElement;
+    const lexicalSourceReads = document.getElementById(
+      "maintenance-lexicalRebuildSourceReadConcurrency"
+    ) as HTMLInputElement;
+    const lexicalDatabaseWrites = document.getElementById(
+      "maintenance-lexicalRebuildDatabaseWriteConcurrency"
+    ) as HTMLInputElement;
+    const lexicalClaimBatch = document.getElementById(
+      "maintenance-lexicalRebuildClaimBatchSize"
+    ) as HTMLInputElement;
+    const lexicalDatabaseBatch = document.getElementById(
+      "maintenance-lexicalRebuildDatabaseBatchSize"
+    ) as HTMLInputElement;
+    const lexicalInFlightBytes = document.getElementById(
+      "maintenance-lexicalRebuildMaxInFlightSourceBytes"
+    ) as HTMLInputElement;
     expect(repairConcurrency?.value).toBe("4");
     expect(repairBatchSize?.value).toBe("2000");
     expect(repairObjectWrites?.value).toBe("8");
+    expect(lexicalConcurrency?.value).toBe("4");
+    expect(lexicalSourceReads?.value).toBe("8");
+    expect(lexicalDatabaseWrites?.value).toBe("2");
+    expect(lexicalClaimBatch?.value).toBe("500");
+    expect(lexicalDatabaseBatch?.value).toBe("50");
+    expect(lexicalInFlightBytes?.value).toBe("67108864");
     expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
+    expect(document.getElementById("maintenance-lexicalRebuildWorkerPoolMax")).toBeNull();
     expect(screen.getByText(/S3 page limit is 1,000 objects/)).toBeTruthy();
+    expect(screen.getByText(/Concurrent lexical rebuild work lanes/)).toBeTruthy();
 
     fireEvent.change(repairConcurrency, { target: { value: "6" } });
     fireEvent.change(repairBatchSize, { target: { value: "3000" } });
     fireEvent.change(repairObjectWrites, { target: { value: "10" } });
+    fireEvent.change(lexicalConcurrency, { target: { value: "6" } });
+    fireEvent.change(lexicalSourceReads, { target: { value: "12" } });
+    fireEvent.change(lexicalDatabaseWrites, { target: { value: "3" } });
+    fireEvent.change(lexicalClaimBatch, { target: { value: "750" } });
+    fireEvent.change(lexicalDatabaseBatch, { target: { value: "75" } });
+    fireEvent.change(lexicalInFlightBytes, { target: { value: "134217728" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -278,7 +316,13 @@ describe("SettingsPage", () => {
           confirmationPasses: 2,
           projectionRepairConcurrency: 6,
           projectionRepairDatabaseBatchSize: 3000,
-          projectionRepairObjectWriteConcurrency: 10
+          projectionRepairObjectWriteConcurrency: 10,
+          lexicalRebuildConcurrency: 6,
+          lexicalRebuildSourceReadConcurrency: 12,
+          lexicalRebuildDatabaseWriteConcurrency: 3,
+          lexicalRebuildClaimBatchSize: 750,
+          lexicalRebuildDatabaseBatchSize: 75,
+          lexicalRebuildMaxInFlightSourceBytes: 134_217_728
         })
       );
     });

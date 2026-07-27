@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEnvFile } from "node:process";
+import {
+  RUNTIME_SETTINGS_BOUNDARY_CATEGORIES
+} from "./lib/runtime-settings-boundary-categories.mjs";
 
 loadLocalEnv();
 
@@ -31,12 +34,7 @@ async function prepare() {
   const initial = await requestJson(client, "/admin/api/settings/runtime");
   assertPublicSettings(initial);
 
-  const categories = [
-    ["rateLimits", "/admin/api/settings/rate-limits"],
-    ["worker", "/admin/api/settings/worker"],
-    ["publication", "/admin/api/settings/publication"],
-    ["graph", "/admin/api/settings/graph"]
-  ];
+  const categories = RUNTIME_SETTINGS_BOUNDARY_CATEGORIES;
   const checks = [];
 
   for (const [key, pathname] of categories) {
@@ -119,6 +117,10 @@ async function verifyAfterRestart() {
     modelsDurable: true,
     activeModelConfigured: Boolean(persisted.settings?.activeModel),
     modelCount: persisted.models?.length ?? 0
+  });
+  await requestJson(client, "/admin/api/logout", {
+    method: "POST",
+    expectedStatus: 200
   });
   fs.rmSync(statePath, { force: true });
 }

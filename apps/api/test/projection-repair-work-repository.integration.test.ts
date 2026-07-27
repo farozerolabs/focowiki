@@ -355,6 +355,64 @@ describeDatabase("projection repair work repository integration", () => {
     expect(observed).toHaveLength(200);
   });
 
+  it("continues reading the active directory after a normal generation advances", async () => {
+    await bootstrap();
+    await plan("generation-repair-directory-advance");
+    await sql`
+      UPDATE focowiki.projection_repair_subtasks
+      SET state = 'completed', completed_at = now(),
+          processed_record_count = expected_record_count
+      WHERE target_generation_id = 'generation-repair-directory-advance'
+        AND task_kind = 'tree_partition'
+    `;
+    const directoryTasks = await work.claimBatch({
+      repairVersion: 4,
+      workerId: "repair-worker",
+      leaseTokenPrefix: "directory-advance",
+      limit: 4,
+      now: "2026-07-24T00:00:03.000Z",
+      leaseExpiresAt: "2026-07-24T00:01:03.000Z"
+    });
+    const root = directoryTasks.find((task) => task.partitionKey === "pages");
+    expect(root).toBeDefined();
+
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.publication_generations
+        SET state = 'superseded', updated_at = now()
+        WHERE id = 'generation-repair-active'
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id,
+          state, generation_kind, activated_at
+        ) VALUES (
+          'generation-repair-active-next', 'kb-repair-work',
+          'generation-repair-active', 'active', 'normal', now()
+        )
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET active_generation_id = 'generation-repair-active-next'
+        WHERE id = 'kb-repair-work'
+      `;
+    });
+
+    await expect(builds.listDirectoryEntryPage({
+      task: root!,
+      cursor: null,
+      limit: 10
+    })).resolves.toMatchObject({
+      entries: [
+        expect.objectContaining({
+          id: "directory:pages/guides",
+          kind: "directory"
+        })
+      ],
+      nextCursor: null
+    });
+  });
+
   it("writes and replaces a generated directory leaf with the schema conflict key", async () => {
     await bootstrap();
     await plan("generation-repair-directory");
@@ -501,7 +559,7 @@ describeDatabase("projection repair work repository integration", () => {
           resource_revision, generation_id, created_at
         ) VALUES (
           'change-fact-catch-up', 'kb-repair-work', 'source-file-0200',
-          'source_replaced', 'guides/file-0200.md', 4,
+          'source_replaced', 'guides/file-0200.md', 10,
           'generation-normal-next', '2026-07-24T00:00:02.000Z'
         )
       `;
@@ -547,6 +605,13 @@ describeDatabase("projection repair work repository integration", () => {
       await transaction`
         DELETE FROM focowiki.publication_impacts
         WHERE generation_id = 'generation-normal-next'
+      `;
+      await transaction`
+        UPDATE focowiki.active_projection_records
+        SET shard_key = 'tree/v1/0001'
+        WHERE knowledge_base_id = 'kb-repair-work'
+          AND projection_kind = 'tree'
+          AND record_id = 'directory:'
       `;
     });
     const claimed = await work.claimBatch({
@@ -603,6 +668,10 @@ describeDatabase("projection repair work repository integration", () => {
         })
       ])
     );
+    expect(tasks).not.toContainEqual(expect.objectContaining({
+      task_kind: "directory_rebase",
+      partition_key: "generation-normal-next\u001e"
+    }));
     expect(tasks).toContainEqual(expect.objectContaining({
       task_kind: "graph_rebase_finalize",
       partition_key: "generation-normal-next\u001egraph"
@@ -623,19 +692,36 @@ describeDatabase("projection repair work repository integration", () => {
       current_phase: string;
       expected_subtask_count: number;
       predecessor_generation_id: string;
+      base_resource_revision: number;
+      source_watermark: number;
+      activation_watermark: number;
+      finalize_source_watermark: number;
     }>>`
       SELECT repair.current_phase, repair.expected_subtask_count,
-             generation.predecessor_generation_id
+             generation.predecessor_generation_id,
+             repair.base_resource_revision,
+             repair.source_watermark,
+             repair.activation_watermark,
+             finalize.source_watermark AS finalize_source_watermark
       FROM focowiki.knowledge_base_projection_repairs repair
       JOIN focowiki.publication_generations generation
         ON generation.id = repair.target_generation_id
+      JOIN focowiki.projection_repair_subtasks finalize
+        ON finalize.knowledge_base_id = repair.knowledge_base_id
+       AND finalize.repair_version = repair.repair_version
+       AND finalize.target_generation_id = repair.target_generation_id
+       AND finalize.task_kind = 'finalize'
       WHERE repair.knowledge_base_id = 'kb-repair-work'
         AND repair.repair_version = 4
     `;
     expect(state[0]).toMatchObject({
       current_phase: "catch_up",
       expected_subtask_count: 14,
-      predecessor_generation_id: "generation-normal-next"
+      predecessor_generation_id: "generation-normal-next",
+      base_resource_revision: 4,
+      source_watermark: 4,
+      activation_watermark: 4,
+      finalize_source_watermark: 4
     });
 
     const catchUp = await work.claimBatch({
@@ -657,7 +743,7 @@ describeDatabase("projection repair work repository integration", () => {
       cursor: null,
       limit: 2_000
     })).toMatchObject({
-      processedRecordCount: 201,
+      processedRecordCount: 202,
       complete: true
     });
     const changes = await builds.listStagedTreeRebaseChanges({
@@ -816,6 +902,131 @@ describeDatabase("projection repair work repository integration", () => {
       assembly_state: "pending",
       impact_count: 0
     }]);
+  });
+
+  it("defers repair finalization while a forward resource operation is publishing", async () => {
+    await bootstrap();
+    await plan("generation-repair-forward-operation");
+    await sql`
+      UPDATE focowiki.projection_repair_subtasks
+      SET state = 'completed', completed_at = now(),
+          processed_record_count = expected_record_count
+      WHERE target_generation_id = 'generation-repair-forward-operation'
+        AND task_kind <> 'finalize'
+    `;
+    await sql`
+      INSERT INTO focowiki.resource_operations (
+        id, knowledge_base_id, operation_kind, state, idempotency_key,
+        request_fingerprint, candidate_catalog_generation
+      ) VALUES (
+        'resource-operation-repair-forward', 'kb-repair-work',
+        'source_file_replace', 'publishing', 'repair-forward',
+        ${"f".repeat(64)}, 4
+      )
+    `;
+    const [finalizeTask] = await work.claimBatch({
+      repairVersion: 4,
+      workerId: "repair-worker",
+      leaseTokenPrefix: "forward-operation",
+      limit: 1,
+      now: "2026-07-24T00:02:00.000Z",
+      leaseExpiresAt: "2026-07-24T00:03:00.000Z"
+    });
+    expect(finalizeTask?.kind).toBe("finalize");
+
+    expect(await work.scheduleCatchUp({
+      task: finalizeTask!,
+      scheduledAt: "2026-07-24T00:02:01.000Z"
+    })).toBe("scheduled");
+
+    await expect(sql<Array<{
+      state: string;
+      base_generation_id: string;
+      attempt_count: number;
+    }>>`
+      SELECT state, base_generation_id, attempt_count
+      FROM focowiki.projection_repair_subtasks
+      WHERE id = ${finalizeTask!.id}
+    `).resolves.toEqual([{
+      state: "pending",
+      base_generation_id: "generation-repair-active",
+      attempt_count: 0
+    }]);
+  });
+
+  it("allows repair activation before requeuing a recoverable deletion publication", async () => {
+    await bootstrap();
+    await plan("generation-repair-deletion-recovery");
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.projection_repair_subtasks
+        SET state = 'completed', completed_at = now(),
+            processed_record_count = expected_record_count
+        WHERE target_generation_id = 'generation-repair-deletion-recovery'
+          AND task_kind <> 'finalize'
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_bases
+        SET resource_revision = 4
+        WHERE id = 'kb-repair-work'
+      `;
+      await transaction`
+        INSERT INTO focowiki.resource_operations (
+          id, knowledge_base_id, operation_kind, state, idempotency_key,
+          request_fingerprint, candidate_catalog_generation
+        ) VALUES (
+          'resource-operation-repair-deletion', 'kb-repair-work',
+          'source_file_delete', 'publishing', 'repair-deletion',
+          ${"d".repeat(64)}, 4
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.deletion_intents (
+          id, knowledge_base_id, target_kind, target_id, catalog_generation,
+          state
+        ) VALUES (
+          'deletion-repair-recovery', 'kb-repair-work', 'source_file',
+          'source-file-0001', 4, 'accepted'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_generations (
+          id, knowledge_base_id, predecessor_generation_id, state,
+          generation_kind, failed_at, safe_error_code, safe_error_message
+        ) VALUES (
+          'generation-deletion-failed', 'kb-repair-work',
+          'generation-repair-active', 'failed', 'normal', now(),
+          'PUBLICATION_RETRIES_EXHAUSTED',
+          'DIRECTORY_STATISTICS_MISMATCH:pages/guides'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.publication_change_facts (
+          id, knowledge_base_id, operation_id, deletion_intent_id, kind,
+          resource_revision, generation_id, assembly_state,
+          planning_payload_json
+        ) VALUES (
+          'fact-deletion-failed', 'kb-repair-work',
+          'resource-operation-repair-deletion', 'deletion-repair-recovery',
+          'source_deleted', 4, 'generation-deletion-failed', 'assembled',
+          ${transaction.json({ preplannedImpacts: [] })}
+        )
+      `;
+    });
+    const [finalizeTask] = await work.claimBatch({
+      repairVersion: 4,
+      workerId: "repair-worker",
+      leaseTokenPrefix: "deletion-recovery",
+      limit: 1,
+      now: "2026-07-24T00:02:00.000Z",
+      leaseExpiresAt: "2026-07-24T00:03:00.000Z"
+    });
+    expect(finalizeTask?.kind).toBe("finalize");
+
+    await expect(work.scheduleCatchUp({
+      task: finalizeTask!,
+      scheduledAt: "2026-07-24T00:02:01.000Z"
+    })).resolves.toBe("ready");
   });
 
   async function bootstrap(): Promise<number> {

@@ -1,5 +1,5 @@
 ALTER TABLE focowiki.storage_reconciliation_candidates
-  ADD COLUMN deletion_lease_token text;
+  ADD COLUMN IF NOT EXISTS deletion_lease_token text;
 
 CREATE INDEX IF NOT EXISTS storage_reconciliation_candidates_deleting_lease_idx
   ON focowiki.storage_reconciliation_candidates (prefix, updated_at, object_key)

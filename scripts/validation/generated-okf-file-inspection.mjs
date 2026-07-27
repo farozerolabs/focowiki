@@ -10,13 +10,18 @@ import { normalizeMarkdownLinkDestinations } from "./lib/markdown-body-compariso
 import { uploadMarkdownFilesWithSession } from "./lib/upload-session-client.mjs";
 import {
   isReservedOkfMarkdownPath,
-  requiresSourceBodyComparison
+  requiresSourceBodyComparison,
+  validateProjectionCatalog,
+  validateReservedMarkdownFrontmatter
 } from "./lib/okf-file-contract.mjs";
 import {
   readAdminSourceFileModelName,
   readAdminSourceFileId,
   readUploadSourceFileId
 } from "./lib/source-file-contract.mjs";
+import {
+  readConsistentGeneratedContent
+} from "./lib/active-generation-content-reader.mjs";
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
@@ -96,14 +101,27 @@ try {
   const sourceFiles = await waitForSourceFilesCompleted(admin, knowledgeBase.id, report.sourceFileIds, readSourceFileTimeoutMs(samples.length));
   report.modelName = listSourceFileModelNames(sourceFiles).join(", ") || null;
   assertSourceFiles(sourceFiles, samples);
+  report.generationId = await waitForPublicationQuiescence(
+    requiredEnv("DATABASE_URL"),
+    knowledgeBase.id,
+    readSourceFileTimeoutMs(samples.length)
+  );
+  const adminGenerationId = await readActiveGeneration(admin, knowledgeBase.id);
+  if (adminGenerationId !== report.generationId) {
+    throw new Error("Admin and durable publication state returned different active generations.");
+  }
   const generatedFiles = await waitForGeneratedFiles(
     requiredEnv("DATABASE_URL"),
     knowledgeBase.id,
     samples,
     readSourceFileTimeoutMs(samples.length)
   );
-  report.generationId = await readActiveGeneration(admin, knowledgeBase.id);
-  const contents = await readAllGeneratedContents(developer, knowledgeBase.id, generatedFiles);
+  const contents = await readAllGeneratedContents(
+    developer,
+    knowledgeBase.id,
+    generatedFiles,
+    report.generationId
+  );
   inspectGeneratedFiles(generatedFiles, contents, samples);
   await inspectDeveloperTree(developer, knowledgeBase.id, generatedFiles);
   if (!keepKnowledgeBase && cleanup) {
@@ -400,6 +418,72 @@ async function readActiveGeneration(admin, knowledgeBaseId) {
   return generationId;
 }
 
+async function waitForPublicationQuiescence(
+  databaseUrl,
+  knowledgeBaseId,
+  timeoutMs
+) {
+  const requireFromApi = createRequire(path.resolve("apps/api/package.json"));
+  const postgresModule = requireFromApi("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+  const deadline = Date.now() + timeoutMs;
+  let stableGenerationId = null;
+  let stablePolls = 0;
+
+  try {
+    while (Date.now() < deadline) {
+      const rows = await sql`
+        SELECT knowledge_base.active_generation_id,
+               (
+                 SELECT count(*)::int
+                 FROM focowiki.role_jobs job
+                 WHERE job.knowledge_base_id = ${knowledgeBaseId}
+                   AND job.role = 'publication'
+                   AND job.status IN ('queued', 'running')
+               ) AS publication_job_count,
+               (
+                 SELECT count(*)::int
+                 FROM focowiki.publication_generations generation
+                 WHERE generation.knowledge_base_id = ${knowledgeBaseId}
+                   AND generation.state IN (
+                     'open', 'frozen', 'building', 'validating'
+                   )
+               ) AS nonterminal_generation_count
+        FROM focowiki.knowledge_bases knowledge_base
+        WHERE knowledge_base.id = ${knowledgeBaseId}
+          AND knowledge_base.deleted_at IS NULL
+      `;
+      const row = rows[0];
+      const generationId = row?.active_generation_id ?? null;
+      const idle = generationId
+        && Number(row.publication_job_count) === 0
+        && Number(row.nonterminal_generation_count) === 0;
+
+      if (idle && generationId === stableGenerationId) {
+        stablePolls += 1;
+      } else {
+        stableGenerationId = idle ? generationId : null;
+        stablePolls = idle ? 1 : 0;
+      }
+      if (stablePolls >= 3) {
+        report.checks.push(
+          okCheck(
+            "publication-quiescence",
+            "Publication reached a stable active generation before content inspection."
+          )
+        );
+        return stableGenerationId;
+      }
+      await sleep(250);
+    }
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+
+  throw new Error(`Publication did not become quiescent within ${timeoutMs}ms.`);
+}
+
 async function waitForGeneratedFiles(databaseUrl, knowledgeBaseId, samples, timeoutMs) {
   const startedAt = Date.now();
   const expectedPaths = new Set(samples.map(pagePathForSample));
@@ -471,7 +555,12 @@ function generatedFileKind(refKind, logicalPath) {
   return "index";
 }
 
-async function readAllGeneratedContents(developer, knowledgeBaseId, generatedFiles) {
+async function readAllGeneratedContents(
+  developer,
+  knowledgeBaseId,
+  generatedFiles,
+  generationId
+) {
   const contents = new Map();
   const concurrency = readBoundedIntegerEnvironment(
     "FOCOWIKI_VALIDATION_CONTENT_READ_CONCURRENCY",
@@ -485,22 +574,25 @@ async function readAllGeneratedContents(developer, knowledgeBaseId, generatedFil
     Array.from({ length: Math.min(concurrency, generatedFiles.length) }, async () => {
       while (nextIndex < generatedFiles.length) {
         const file = generatedFiles[nextIndex++];
-        const byId = await developer.json(
-          `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(file.id)}/content`
-        );
-        const byPath = await developer.json(
-          `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/content?path=${encodeURIComponent(file.logicalPath)}`
-        );
+        const result = await readConsistentGeneratedContent({
+          logicalPath: file.logicalPath,
+          maxAttempts: 5,
+          expectedGenerationId: generationId,
+          readById: () => developer.json(
+            `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/${encodeURIComponent(file.id)}/content`
+          ),
+          readByPath: () => developer.json(
+            `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/files/content?path=${encodeURIComponent(file.logicalPath)}`
+          ),
+          wait: () => new Promise((resolve) => setTimeout(resolve, 100))
+        });
 
-        if (byId.content !== byPath.content) {
-          throw new Error(`File content mismatch between id and path reads: ${file.logicalPath}`);
-        }
-        if (byId.file?.fileId !== file.id || byPath.file?.fileId !== file.id) {
+        if (result.file?.fileId !== file.id) {
           throw new Error(`File identity mismatch between Admin and Developer OpenAPI: ${file.logicalPath}`);
         }
 
-        contents.set(file.logicalPath, byId.content);
-        exportGeneratedContent(file.logicalPath, byId.content);
+        contents.set(file.logicalPath, result.content);
+        exportGeneratedContent(file.logicalPath, result.content);
       }
     })
   );
@@ -610,17 +702,7 @@ function inspectMarkdownFile(file, content, samples) {
   const parsed = matter(content);
 
   if (isReservedOkfMarkdownPath(file.logicalPath)) {
-    const rootIndexKeys = file.logicalPath === "index.md" ? Object.keys(parsed.data) : [];
-    const hasValidRootVersion =
-      rootIndexKeys.every((key) => ["okf_version", "knowledge_base_id", "generation_id"].includes(key)) &&
-      parsed.data.okf_version === "0.1" &&
-      typeof parsed.data.knowledge_base_id === "string" &&
-      typeof parsed.data.generation_id === "string";
-
-    if (
-      (file.logicalPath === "index.md" && !hasValidRootVersion) ||
-      (file.logicalPath !== "index.md" && Object.keys(parsed.data).length > 0)
-    ) {
+    if (!validateReservedMarkdownFrontmatter(file.logicalPath, parsed.data)) {
       throw new Error(`Reserved Markdown file has invalid frontmatter: ${file.logicalPath}`);
     }
     if (!parsed.content.startsWith("# ")) {
@@ -839,21 +921,22 @@ function isComparableMetadataValue(value) {
 
 function inspectIndexes(contents, paths) {
   const catalog = JSON.parse(contents.get("_index/catalog.json"));
-  if (catalog.formatVersion !== 1 || !catalog.generationId || !catalog.projections) {
-    throw new Error("Projection catalog is missing generation or format identity.");
+  if (!validateProjectionCatalog(catalog)) {
+    throw new Error("Projection catalog does not match the current sharded contract.");
   }
-  const requiredProjectionKeys = [
+  const shardedProjectionKeys = [
     "search",
     "links",
     "manifest",
     "tree",
     "graphNodes",
-    "graphEdges",
-    "relatedFiles"
+    "graphEdges"
   ];
-  for (const key of requiredProjectionKeys) {
-    if (typeof catalog.projections[key] !== "string") {
-      throw new Error(`Projection catalog is missing ${key}.`);
+  for (const key of shardedProjectionKeys) {
+    for (const shard of catalog.projections[key].shards) {
+      if (!paths.has(shard.path)) {
+        throw new Error(`Projection catalog references a missing shard: ${shard.path}`);
+      }
     }
   }
   const machineFiles = [...paths].filter((logicalPath) => logicalPath.endsWith(".json"));

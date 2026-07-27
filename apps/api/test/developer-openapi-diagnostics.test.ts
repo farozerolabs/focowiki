@@ -6,10 +6,37 @@ import { describe, expect, it, vi } from "vitest";
 import { createRuntimeLogger, type RuntimeLogger } from "../src/logger.js";
 import {
   installDeveloperOpenApiDiagnosticBoundary,
+  readDeveloperJsonObjectBody,
   safe
 } from "../src/developer-openapi/route-helpers.js";
 
 describe("Developer OpenAPI diagnostics", () => {
+  it("rejects JSON request bodies with invalid UTF-8 bytes", async () => {
+    const app = new Hono();
+    app.post("/openapi/v2/knowledge-bases", (context) =>
+      safe(context, async () => ({
+        body: await readDeveloperJsonObjectBody(context.req.raw)
+      }))
+    );
+
+    const response = await app.request("/openapi/v2/knowledge-bases", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array([
+        0x7b, 0x22, 0x6e, 0x61, 0x6d, 0x65, 0x22,
+        0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d
+      ])
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        httpStatus: 422
+      }
+    });
+  });
+
   it("correlates unexpected failures without logging request secrets", async () => {
     const logger = createLogger();
     const app = new Hono();

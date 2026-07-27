@@ -1,0 +1,44 @@
+{
+  "profileVersion": 1,
+  "dataset": {
+    "identity": "frozen-real-markdown-29735",
+    "sourceCount": 29735,
+    "sourceBytes": 526804582,
+    "smallProfileSourceCount": 120,
+    "largeValidationSourceCount": 10000,
+    "largeValidationSelection": "first 10000 Markdown files sorted by normalized logical path",
+    "contentClass": "domain-neutral Markdown with structured metadata"
+  },
+  "runtime": {
+    "node": "24",
+    "postgres": "18",
+    "redis": "8",
+    "storageClass": "external S3-compatible object storage",
+    "hostClass": "8 vCPU, 32 GiB RAM"
+  },
+  "baselineSettings": {
+    "scanBatchSize": 1000,
+    "migrationBackfillConcurrency": 2,
+    "executionRole": "maintenance-worker"
+  },
+  "optimizedSettings": {
+    "concurrency": 4,
+    "sourceReadConcurrency": 2,
+    "databaseWriteConcurrency": 2,
+    "claimBatchSize": 500,
+    "databaseBatchSize": 50,
+    "maxInFlightSourceBytes": 67108864
+  },
+  "measurementBoundaries": {
+    "endToEnd": "first eligible lexical coordinator state to atomic activation",
+    "activeProcessing": "source fact load, object GET, derive, persist, and checkpoint",
+    "interClaimDelay": "previous committed slice to next eligible claim",
+    "readLoad": "bounded Admin and Developer OpenAPI indexed reads plus external content reads"
+  },
+  "privacy": {
+    "endpointNamesCommitted": false,
+    "credentialsCommitted": false,
+    "sourceBodiesCommitted": false,
+    "privatePathsCommitted": false
+  }
+}

@@ -17,12 +17,14 @@ export const MIGRATION_FILES = [
   "011_body_search_projection.sql",
   "012_storage_reconciliation_lease_recovery.sql",
   "013_projection_repair_throughput.sql",
-  "014_directory_order_repair.sql"
+  "014_directory_order_repair.sql",
+  "015_lexical_rebuild_worker.sql"
 ] as const;
 const MIGRATIONS_ALLOWED_WITH_PERSISTED_WORK = new Set<
   (typeof MIGRATION_FILES)[number]
 >([
-  "014_directory_order_repair.sql"
+  "014_directory_order_repair.sql",
+  "015_lexical_rebuild_worker.sql"
 ]);
 const TREE_GRAPH_SCHEMA_GENERATION = "tree-graph-storage-reconciliation-v2";
 const BOUNDED_PUBLICATION_SCHEMA_GENERATION = "bounded-publication-recovery-v3";
@@ -36,7 +38,8 @@ const GENERATION_CONSISTENT_READ_SCHEMA_GENERATION = "generation-consistent-read
 const BODY_SEARCH_SCHEMA_GENERATION = "body-search-projection-v11";
 const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-recovery-v12";
 const PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION = "projection-repair-throughput-v13";
-export const RUNTIME_SCHEMA_GENERATION = "directory-order-repair-v14";
+const DIRECTORY_ORDER_SCHEMA_GENERATION = "directory-order-repair-v14";
+export const RUNTIME_SCHEMA_GENERATION = "lexical-rebuild-worker-v15";
 
 const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   ["incremental-sharded-publication-v1", 1],
@@ -51,7 +54,8 @@ const MIGRATION_START_BY_GENERATION = new Map<string, number>([
   [GENERATION_CONSISTENT_READ_SCHEMA_GENERATION, 10],
   [BODY_SEARCH_SCHEMA_GENERATION, 11],
   [STORAGE_RECONCILIATION_SCHEMA_GENERATION, 12],
-  [PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION, 13]
+  [PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION, 13],
+  [DIRECTORY_ORDER_SCHEMA_GENERATION, 14]
 ]);
 
 export class RuntimeSchemaGenerationError extends Error {

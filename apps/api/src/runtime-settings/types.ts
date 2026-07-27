@@ -42,6 +42,12 @@ export type RuntimeMaintenanceSettings = {
   projectionRepairConcurrency: number;
   projectionRepairDatabaseBatchSize: number;
   projectionRepairObjectWriteConcurrency: number;
+  lexicalRebuildConcurrency: number;
+  lexicalRebuildSourceReadConcurrency: number;
+  lexicalRebuildDatabaseWriteConcurrency: number;
+  lexicalRebuildClaimBatchSize: number;
+  lexicalRebuildDatabaseBatchSize: number;
+  lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
 export type RuntimeSettingsSnapshot = {

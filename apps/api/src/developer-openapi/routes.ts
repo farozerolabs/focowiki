@@ -29,7 +29,11 @@ import {
   registerDeveloperOpenApiSourceResourceRoutes,
   toSourceFileResponse
 } from "./source-resource-routes.js";
-import { readLimit, safe } from "./route-helpers.js";
+import {
+  readDeveloperJsonObjectBody,
+  readLimit,
+  safe
+} from "./route-helpers.js";
 import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
 import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
 import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
@@ -96,7 +100,7 @@ export function registerDeveloperOpenApiRoutes(
 
   app.post("/openapi/v2/knowledge-bases", async (context) =>
     safe(context, async () => {
-      const body = await readJsonBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(context.req.raw);
       return api.createKnowledgeBase({
         name: typeof body.name === "string" ? body.name : "",
         description: typeof body.description === "string" ? body.description : null
@@ -249,7 +253,7 @@ export function registerDeveloperOpenApiRoutes(
 
   app.post("/openapi/v2/webhooks", async (context) =>
     safe(context, async () => {
-      const body = await readJsonBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(context.req.raw);
       return api.createWebhook({
         name: typeof body.name === "string" ? body.name : null,
         url: typeof body.url === "string" ? body.url : "",
@@ -303,15 +307,4 @@ function createOperationIdMap(
     }
   }
   return operationIds;
-}
-
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
-  try {
-    const body = (await request.json()) as unknown;
-    return body && typeof body === "object" && !Array.isArray(body)
-      ? (body as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
 }

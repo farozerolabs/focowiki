@@ -30,6 +30,7 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "projection-repair-worker:",
+      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "migrate:",
       "postgres:",
@@ -43,6 +44,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
     expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("DATABASE_URL: postgres://${POSTGRES_USER:");
     expect(compose).toContain("@postgres:5432/");
@@ -55,7 +57,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(9);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
@@ -74,6 +76,7 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "projection-repair-worker:",
+      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "migrate:",
       "postgres:",
@@ -90,6 +93,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
     expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
@@ -102,7 +106,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/redis:/data");
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(9);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
@@ -115,6 +119,7 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "projection-repair-worker:",
+      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "migrate:",
       "postgres:",
@@ -132,6 +137,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
     expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
+    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
@@ -155,7 +161,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(9);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -171,6 +177,7 @@ describe("Docker Compose infrastructure", () => {
       expect(compose).toContain("apps/api/runtime/source-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/publication-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs\", \"--healthcheck");
+      expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("'/healthz'");
       expect(compose).toContain("body?.status==='ok'");
@@ -199,6 +206,7 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/projection-repair-worker.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
@@ -212,6 +220,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/projection-repair-worker.mjs");
+    expect(workflow).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
     expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
@@ -221,6 +230,8 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
     expect(workflow).toContain("Validate compatible migration paths");
     expect(workflow).toContain("Validate current schema idempotence");
+    expect(workflow).toContain("Validate 100k lexical rebuild work plans");
+    expect(workflow).toContain("test/lexical-rebuild-scale.integration.test.ts");
   });
 
   it("proves migrations, role health, and source-to-activation flow in CI", () => {
@@ -236,6 +247,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("source-worker.mjs --healthcheck");
     expect(workflow).toContain("publication-worker.mjs --healthcheck");
     expect(workflow).toContain("projection-repair-worker.mjs --healthcheck");
+    expect(workflow).toContain("lexical-rebuild-worker.mjs --healthcheck");
     expect(workflow).toContain("maintenance-worker.mjs --healthcheck");
     expect(workflow).toContain("Validate source-to-activation smoke flow");
   });
@@ -250,10 +262,16 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/projection-repair-worker.mjs --healthcheck");
+    expect(workflow).toContain("apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs --healthcheck");
     expect(workflow).toContain("Validate release native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).toContain("subject-digest: ${{ steps.build-api.outputs.digest }}");
+    expect(workflow).toContain("provenance: mode=max");
+    expect(workflow).toContain("sbom: true");
+    expect(workflow).not.toContain("focowiki-lexical-rebuild-worker");
+    expect(workflow).not.toContain("LEXICAL_IMAGE");
     expect(workflow).toContain("http://127.0.0.1:43000/healthz");
     expect(workflow).toContain("http://127.0.0.1:43200/healthz");
   });

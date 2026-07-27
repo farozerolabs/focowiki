@@ -47,7 +47,6 @@ export function createPostgresProjectionRepairBuildRepository(
             FROM focowiki.active_projection_records record
             JOIN focowiki.knowledge_bases knowledge_base
               ON knowledge_base.id = record.knowledge_base_id
-             AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
              AND knowledge_base.deleted_at IS NULL
             WHERE record.knowledge_base_id = ${input.task.knowledgeBaseId}
               AND record.projection_kind = 'tree'
@@ -241,7 +240,6 @@ export function createPostgresProjectionRepairBuildRepository(
               FROM focowiki.active_projection_records active
               JOIN focowiki.knowledge_bases knowledge_base
                 ON knowledge_base.id = active.knowledge_base_id
-               AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
                AND knowledge_base.deleted_at IS NULL
               WHERE active.knowledge_base_id = ${input.task.knowledgeBaseId}
                 AND active.projection_kind = 'tree'
@@ -483,7 +481,6 @@ export function createPostgresProjectionRepairBuildRepository(
         FROM focowiki.active_projection_records record
         JOIN focowiki.knowledge_bases knowledge_base
           ON knowledge_base.id = record.knowledge_base_id
-         AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
          AND knowledge_base.deleted_at IS NULL
         WHERE record.knowledge_base_id = ${input.task.knowledgeBaseId}
           AND record.projection_kind = 'tree'
@@ -530,7 +527,6 @@ export function createPostgresProjectionRepairBuildRepository(
           FROM focowiki.active_projection_records record
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.id = record.knowledge_base_id
-           AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
            AND knowledge_base.deleted_at IS NULL
           WHERE record.knowledge_base_id = ${input.task.knowledgeBaseId}
             AND record.projection_kind = 'tree'
@@ -539,6 +535,35 @@ export function createPostgresProjectionRepairBuildRepository(
         ) AS exists
       `;
       return rows[0]?.exists ?? false;
+    },
+
+    async listActiveDirectoryReferences(input) {
+      const rows = await sql<Array<{
+        ref_kind: "directory_root" | "directory_leaf";
+        ref_key: string;
+        logical_path: string;
+      }>>`
+        SELECT ref_kind, ref_key, logical_path
+        FROM focowiki.active_object_refs
+        WHERE knowledge_base_id = ${input.task.knowledgeBaseId}
+          AND (
+            (
+              ref_kind = 'directory_root'
+              AND ref_key = ${`directory-root:${input.task.partitionKey}`}
+            )
+            OR (
+              ref_kind = 'directory_leaf'
+              AND logical_path >= ${`${input.task.partitionKey}/index-`}
+              AND logical_path < ${`${input.task.partitionKey}/index.`}
+            )
+          )
+        ORDER BY ref_kind, ref_key
+      `;
+      return rows.map((row) => ({
+        refKind: row.ref_kind,
+        refKey: row.ref_key,
+        logicalPath: row.logical_path
+      }));
     },
 
     async resetDirectorySnapshot(input) {
@@ -641,7 +666,6 @@ export function createPostgresProjectionRepairBuildRepository(
           FROM focowiki.active_projection_records record
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.id = record.knowledge_base_id
-           AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
            AND knowledge_base.deleted_at IS NULL
           WHERE record.knowledge_base_id = ${input.task.knowledgeBaseId}
             AND record.projection_kind IN ('graph_node', 'graph_edge')
@@ -687,7 +711,6 @@ export function createPostgresProjectionRepairBuildRepository(
           FROM focowiki.active_projection_records record
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.id = record.knowledge_base_id
-           AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
            AND knowledge_base.deleted_at IS NULL
           WHERE record.knowledge_base_id = ${input.task.knowledgeBaseId}
             AND record.projection_kind = ${input.projectionKind}
@@ -781,7 +804,6 @@ export function createPostgresProjectionRepairBuildRepository(
             FROM focowiki.active_projection_records active
             JOIN focowiki.knowledge_bases knowledge_base
               ON knowledge_base.id = active.knowledge_base_id
-             AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
              AND knowledge_base.deleted_at IS NULL
             WHERE active.knowledge_base_id = ${input.task.knowledgeBaseId}
               AND active.projection_kind = ${input.projectionKind}
@@ -922,7 +944,6 @@ export function createPostgresProjectionRepairBuildRepository(
           FROM focowiki.generation_search_projection_refs reference
           JOIN focowiki.knowledge_bases knowledge_base
             ON knowledge_base.id = reference.knowledge_base_id
-           AND knowledge_base.active_generation_id = ${input.task.baseGenerationId}
            AND knowledge_base.deleted_at IS NULL
           WHERE reference.knowledge_base_id = ${input.task.knowledgeBaseId}
             AND reference.generation_id = ${input.task.baseGenerationId}

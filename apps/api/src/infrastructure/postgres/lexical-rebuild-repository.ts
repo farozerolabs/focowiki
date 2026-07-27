@@ -5,6 +5,8 @@ import type {
 } from "../../application/ports/lexical-rebuild-repository.js";
 import type { DatabaseClient } from "../../db/client.js";
 import type { TransactionSql } from "postgres";
+import { hasPendingForwardWork } from "./forward-work-pending.js";
+import { advanceProjectionVersionOwnership } from "./projection-version-ownership.js";
 
 type ClaimRow = {
   knowledge_base_id: string;
@@ -555,6 +557,10 @@ export function createPostgresLexicalRebuildRepository(
           });
           return "rebased";
         }
+        if (await hasPendingForwardWork(transaction, input.knowledgeBaseId)) {
+          await deferActivation(transaction, input);
+          return "deferred";
+        }
         await copyGenerationLineage(transaction, {
           knowledgeBaseId: input.knowledgeBaseId,
           baseGenerationId: context.baseGenerationId,
@@ -584,12 +590,31 @@ export function createPostgresLexicalRebuildRepository(
             AND target.id = rebuild.target_generation_id
             AND target.state = 'building'
         `;
+        await refreshActiveLexicalProjectionRecords(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          targetGenerationId: context.targetGenerationId,
+          updatedAt: input.activatedAt
+        });
         await transaction`
           UPDATE focowiki.knowledge_bases
           SET active_generation_id = ${context.targetGenerationId},
               updated_at = ${input.activatedAt}
           WHERE id = ${input.knowledgeBaseId}
             AND active_generation_id = ${context.baseGenerationId}
+        `;
+        await advanceProjectionVersionOwnership(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          activeGenerationId: context.targetGenerationId,
+          updatedAt: input.activatedAt
+        });
+        await transaction`
+          UPDATE focowiki.publication_generations
+          SET predecessor_generation_id = ${context.targetGenerationId},
+              updated_at = ${input.activatedAt}
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND generation_kind = 'normal'
+            AND state IN ('open', 'frozen', 'building', 'validating')
+            AND predecessor_generation_id = ${context.baseGenerationId}
         `;
         await transaction`
           UPDATE focowiki.knowledge_base_lexical_rebuilds
@@ -646,6 +671,147 @@ export function createPostgresLexicalRebuildRepository(
       };
     }
   };
+}
+
+async function deferActivation(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    workerId: string;
+    leaseToken: string;
+    activatedAt: string;
+    retryDelayMs: number;
+  }
+): Promise<void> {
+  const nextAttemptAt = new Date(
+    new Date(input.activatedAt).getTime() + input.retryDelayMs
+  ).toISOString();
+  const rows = await transaction<Array<{ knowledge_base_id: string }>>`
+    UPDATE focowiki.knowledge_base_lexical_rebuilds
+    SET state = 'pending',
+        phase = 'activate',
+        next_attempt_at = ${nextAttemptAt},
+        lease_owner = NULL,
+        lease_token = NULL,
+        lease_expires_at = NULL,
+        heartbeat_at = ${input.activatedAt},
+        last_worker_heartbeat_at = ${input.activatedAt},
+        updated_at = ${input.activatedAt}
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND lease_owner = ${input.workerId}
+      AND lease_token = ${input.leaseToken}
+    RETURNING knowledge_base_id
+  `;
+  if (!rows[0]) throw new Error("Lexical rebuild lease was lost");
+}
+
+async function refreshActiveLexicalProjectionRecords(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    targetGenerationId: string;
+    updatedAt: string;
+  }
+): Promise<void> {
+  await transaction`
+    UPDATE focowiki.active_projection_records active
+    SET last_changed_generation_id = ${input.targetGenerationId},
+        logical_path = node.path,
+        sort_key = lower(node.path),
+        title = node.title,
+        summary = node.summary,
+        searchable_text = concat_ws(
+          ' ', node.title, node.summary, node.description,
+          node.subjects_json::text,
+          node.tags_json::text,
+          node.entities_json::text,
+          node.headings_json::text,
+          node.keywords_json::text
+        ),
+        payload_json = jsonb_strip_nulls(jsonb_build_object(
+          'id', node.source_file_id,
+          'fileId', node.source_file_id,
+          'path', node.path,
+          'title', node.title,
+          'summary', node.summary,
+          'type', node.type,
+          'description', node.description,
+          'subjects', node.subjects_json,
+          'tags', node.tags_json,
+          'entities', node.entities_json,
+          'explicitReferences', node.explicit_references_json,
+          'relationshipHints', node.relationship_hints_json,
+          'headings', node.headings_json,
+          'keywords', node.keywords_json,
+          'language', node.language,
+          'profileVersion', coalesce(
+            node.profile_version,
+            node.metadata_json->'contentProfile'->>'profileVersion'
+          ),
+          'profileSource', coalesce(
+            node.profile_source,
+            node.metadata_json->'contentProfile'->>'profileSource'
+          ),
+          'metadata', node.metadata_json
+        )),
+        updated_at = ${input.updatedAt}
+    FROM focowiki.generation_search_projection_refs reference
+    JOIN focowiki.source_file_graph_nodes node
+      ON node.knowledge_base_id = reference.knowledge_base_id
+     AND node.source_file_id = reference.source_file_id
+    WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+      AND reference.generation_id = ${input.targetGenerationId}
+      AND active.knowledge_base_id = reference.knowledge_base_id
+      AND active.projection_kind = 'graph_node'
+      AND active.source_file_id = reference.source_file_id
+  `;
+  await transaction`
+    UPDATE focowiki.active_projection_records active
+    SET last_changed_generation_id = ${input.targetGenerationId},
+        logical_path = reference.logical_path,
+        sort_key = lower(reference.logical_path),
+        title = reference.title,
+        summary = reference.summary,
+        searchable_text = concat_ws(
+          ' ', reference.title, reference.summary, node.description,
+          node.subjects_json::text,
+          node.tags_json::text,
+          node.entities_json::text,
+          node.headings_json::text,
+          node.keywords_json::text
+        ),
+        payload_json = jsonb_strip_nulls(jsonb_build_object(
+          'id', reference.source_file_id,
+          'fileId', reference.source_file_id,
+          'path', reference.logical_path,
+          'title', reference.title,
+          'summary', reference.summary,
+          'type', node.type,
+          'description', node.description,
+          'tags', node.tags_json,
+          'resource', coalesce(
+            reference.source_url,
+            reference.metadata_json->>'resource'
+          ),
+          'timestamp', reference.metadata_json->>'timestamp',
+          'subjects', node.subjects_json,
+          'entities', node.entities_json,
+          'headings', node.headings_json,
+          'keywords', node.keywords_json,
+          'language', node.language,
+          'metadata', reference.metadata_json
+        )),
+        updated_at = ${input.updatedAt}
+    FROM focowiki.generation_search_projection_refs reference
+    JOIN focowiki.source_file_graph_nodes node
+      ON node.knowledge_base_id = reference.knowledge_base_id
+     AND node.source_file_id = reference.source_file_id
+    WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+      AND reference.generation_id = ${input.targetGenerationId}
+      AND active.knowledge_base_id = reference.knowledge_base_id
+      AND active.projection_kind = 'search'
+      AND active.source_file_id = reference.source_file_id
+  `;
 }
 
 async function lockActivationContext(
@@ -783,55 +949,7 @@ async function rebase(
   await transaction`
     UPDATE focowiki.knowledge_base_lexical_rebuilds rebuild
     SET base_generation_id = ${input.activeGenerationId},
-        state = 'pending', phase = 'reconcile', source_cursor = NULL,
-        processed_source_count = 0,
-        total_source_count = (
-          SELECT count(*)
-          FROM focowiki.source_files source
-          WHERE source.knowledge_base_id = ${input.knowledgeBaseId}
-            AND source.deleted_at IS NULL
-            AND source.deletion_intent_id IS NULL
-            AND NOT EXISTS (
-              SELECT 1
-              FROM focowiki.generation_search_projection_refs reference
-              JOIN focowiki.search_projection_documents document
-                ON document.knowledge_base_id = reference.knowledge_base_id
-               AND document.id = reference.search_document_id
-              WHERE reference.knowledge_base_id = source.knowledge_base_id
-                AND reference.generation_id = rebuild.target_generation_id
-                AND reference.source_file_id = source.id
-                AND reference.source_revision_id = source.active_revision_id
-                AND reference.logical_path = 'pages/' || source.relative_path
-                AND reference.search_schema_version
-                      = rebuild.target_search_schema_version
-                AND reference.tokenizer_contract_version
-                      = rebuild.target_tokenizer_contract_version
-                AND reference.segmentation_version
-                      = rebuild.target_segmentation_version
-                AND document.lifecycle_state = 'ready'
-                AND EXISTS (
-                  SELECT 1
-                  FROM focowiki.source_file_graph_nodes node
-                  WHERE node.knowledge_base_id = source.knowledge_base_id
-                    AND node.source_file_id = source.id
-                    AND node.tokenizer_contract_version
-                          = rebuild.target_tokenizer_contract_version
-                    AND node.lexical_projection_version
-                          = rebuild.target_content_profile_version
-                )
-                AND EXISTS (
-                  SELECT 1
-                  FROM focowiki.source_file_graph_term_documents terms
-                  WHERE terms.knowledge_base_id = source.knowledge_base_id
-                    AND terms.source_file_id = source.id
-                    AND terms.source_revision_id = source.active_revision_id
-                    AND terms.tokenizer_contract_version
-                          = rebuild.target_tokenizer_contract_version
-                    AND terms.lexical_projection_version
-                          = rebuild.target_graph_lexical_projection_version
-                )
-            )
-        ),
+        state = 'pending', phase = 'validate', source_cursor = NULL,
         rebase_count = rebase_count + 1,
         lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
         validated_at = NULL,

@@ -125,6 +125,13 @@ jobs:
           pnpm --filter @focowiki/api exec vitest run
           test/graph-candidate-query-plan.integration.test.ts
 
+      - name: Validate 100k lexical rebuild work plans
+        env:
+          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
+        run: >-
+          pnpm --filter @focowiki/api exec vitest run
+          test/lexical-rebuild-scale.integration.test.ts
+
       - name: Validate source-to-activation smoke flow
         run: >-
           pnpm --filter @focowiki/api exec vitest run
@@ -146,7 +153,7 @@ jobs:
         run: pnpm openapi:validate
 
       - name: Validate API Docker worker runtimes
-        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/projection-repair-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/projection-repair-worker.mjs','apps/api/runtime/lexical-rebuild-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
 
       - name: Validate native tokenizer runtime
         run: |
@@ -160,6 +167,7 @@ jobs:
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/source-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/publication-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/projection-repair-worker.mjs --healthcheck
+          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/maintenance-worker.mjs --healthcheck
 
       - name: Build Admin Docker image
