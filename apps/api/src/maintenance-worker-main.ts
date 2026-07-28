@@ -26,6 +26,7 @@ import {
   RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
 } from "./infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
+import { createPostgresObjectProtectionRepository } from "./infrastructure/postgres/object-protection-repository.js";
 import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
 import {
   assertNodeJiebaRuntimeAvailable,
@@ -48,6 +49,10 @@ import {
   CURRENT_PROJECTION_REPAIR_VERSION
 } from "./maintenance/projection-repair-plan.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
+import {
+  createMaintenanceReconciliationTelemetry
+} from "./maintenance/reconciliation-telemetry.js";
+import { runObjectProtectionMaintenanceSlice } from "./maintenance/object-protection-maintenance.js";
 import { runUploadSessionExpirationSlice } from "./maintenance/upload-session-expiration.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
@@ -135,6 +140,7 @@ async function runMaintenanceWorker(): Promise<void> {
     };
     const compaction = createPostgresProjectionCompactionRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
+    const objectProtection = createPostgresObjectProtectionRepository(sql);
     const optimizationMigrations = createPostgresOptimizationMigrationRepository(sql);
     const lexicalRebuilds = createPostgresLexicalRebuildRepository(sql);
     const incrementalStatistics = createPostgresIncrementalStatisticsRepository(sql);
@@ -218,6 +224,7 @@ async function runMaintenanceWorker(): Promise<void> {
     });
     const maintenanceOwner = `maintenance-sweep-${randomUUID()}`;
     const reconciliationLeaseToken = `storage-reconciliation-${randomUUID()}`;
+    const reconciliationTelemetry = createMaintenanceReconciliationTelemetry(logger);
     const optimizationMigrationLeaseToken = `optimization-migration-${randomUUID()}`;
     const statisticsLeaseToken = `incremental-statistics-${randomUUID()}`;
     await Promise.all([
@@ -245,6 +252,10 @@ async function runMaintenanceWorker(): Promise<void> {
                 reconciliationDeleted: 0,
                 reconciliationVerified: 0,
                 reconciliationFailed: 0,
+                objectProtectionPhase: "contended",
+                objectProtectionProcessed: 0,
+                objectProtectionCompleted: false,
+                objectProtectionFailed: false,
                 migrationPhase: "contended",
                 migrationProcessed: 0,
                 migrationCompleted: false,
@@ -430,12 +441,40 @@ async function runMaintenanceWorker(): Promise<void> {
                 now: new Date()
               })
             );
+            const objectProtectionResult = await resourceBudgets.migrationBackfill.run(
+              () => runObjectProtectionMaintenanceSlice({
+                repository: objectProtection,
+                batchSize: Math.min(snapshot.maintenance.scanBatchSize, 1_000)
+              })
+            );
             const reconciliationResult = await runStorageReconciliationSlice({
               repository: reconciliation,
               storage,
               settings: snapshot.maintenance,
               versionPurgeEnabled: snapshot.worker.hardDeleteVersionPurgeEnabled,
               leaseToken: reconciliationLeaseToken
+            });
+            const shouldReadReconciliationStatus =
+              objectProtectionResult.claimed
+              || objectProtectionResult.failed
+              || reconciliationResult.claimed
+              || reconciliationResult.failed > 0;
+            const [reconciliationStatus, objectProtectionStatus] =
+              shouldReadReconciliationStatus
+                ? await Promise.all([
+                    reconciliation.getStatus(`${storage.keyspace.prefix}/generated/`),
+                    objectProtection.getStatus()
+                  ])
+                : [null, null];
+            reconciliationTelemetry.record({
+              reconciliation: {
+                result: reconciliationResult,
+                status: reconciliationStatus
+              },
+              protection: {
+                result: objectProtectionResult,
+                status: objectProtectionStatus
+              }
             });
             return {
               repairPhase: "isolated",
@@ -445,6 +484,10 @@ async function runMaintenanceWorker(): Promise<void> {
               reconciliationDeleted: reconciliationResult.deleted,
               reconciliationVerified: reconciliationResult.verified,
               reconciliationFailed: reconciliationResult.failed,
+              objectProtectionPhase: objectProtectionResult.phase,
+              objectProtectionProcessed: objectProtectionResult.processed,
+              objectProtectionCompleted: objectProtectionResult.completed,
+              objectProtectionFailed: objectProtectionResult.failed,
               migrationPhase: migrationResult.phase,
               migrationProcessed: migrationResult.processed,
               migrationCompleted: migrationResult.completed,

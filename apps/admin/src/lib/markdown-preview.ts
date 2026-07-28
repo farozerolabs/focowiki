@@ -72,10 +72,41 @@ export function renderMarkdownPreview(markdown: string, currentLogicalPath = "in
   });
 }
 
+export function renderGeneratedTextPreview(
+  content: string,
+  input: {
+    contentType: string;
+    logicalPath: string;
+  }
+) {
+  const displayContent = isJsonContent(input)
+    ? formatJsonContent(content)
+    : content;
+
+  return [
+    '<pre class="max-w-full overflow-x-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere]">',
+    `<code>${escapeHtml(displayContent)}</code>`,
+    "</pre>"
+  ].join("");
+}
+
 function renderFrontmatterAsCode(markdown: string) {
   return markdown.replace(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/, (_match, frontmatter) =>
     ["```yaml", String(frontmatter).trimEnd(), "```", ""].join("\n")
   );
+}
+
+function isJsonContent(input: { contentType: string; logicalPath: string }) {
+  return input.contentType.toLowerCase().includes("json")
+    || input.logicalPath.toLowerCase().endsWith(".json");
+}
+
+function formatJsonContent(content: string) {
+  try {
+    return JSON.stringify(JSON.parse(content), null, 2) ?? content;
+  } catch {
+    return content;
+  }
 }
 
 function findOpeningLinkToken(tokens: unknown[], closeIndex: number) {

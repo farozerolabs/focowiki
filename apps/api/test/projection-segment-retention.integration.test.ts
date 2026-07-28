@@ -78,7 +78,8 @@ describeDatabase("projection segment retention integration", () => {
         cycleId: "cycle-segment-retention",
         state: "verifying",
         continuationToken: null,
-        verificationCursor: null
+        verificationCursor: null,
+        databaseChunkSize: null
       },
       leaseToken: "lease-segment-retention",
       objectKey,

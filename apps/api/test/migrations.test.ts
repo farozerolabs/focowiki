@@ -25,6 +25,8 @@ const STORAGE_RECONCILIATION_SCHEMA_GENERATION = "storage-reconciliation-lease-r
 const PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION = "projection-repair-throughput-v13";
 const DIRECTORY_ORDER_SCHEMA_GENERATION = "directory-order-repair-v14";
 const LEXICAL_REBUILD_SCHEMA_GENERATION = "lexical-rebuild-worker-v15";
+const KNOWLEDGE_BASE_MAINTENANCE_SCHEMA_GENERATION =
+  "knowledge-base-index-maintenance-v16";
 
 describe("runtime schema generation guard", () => {
   it("accepts the current runtime generation", async () => {
@@ -55,7 +57,8 @@ describe("runtime schema generation guard", () => {
         "013_projection_repair_throughput.sql",
         "014_directory_order_repair.sql",
         "015_lexical_rebuild_worker.sql",
-        "016_knowledge_base_index_maintenance.sql"
+        "016_knowledge_base_index_maintenance.sql",
+        "017_indexed_storage_object_protection.sql"
       ]
     });
     expect(database.unsafeCalls).toBe(0);
@@ -84,104 +87,104 @@ describe("runtime schema generation guard", () => {
     const database = createGenerationDatabase(FIRST_RELEASED_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(15);
-    expect(database.beginCalls).toBe(15);
+    expect(database.unsafeCalls).toBe(16);
+    expect(database.beginCalls).toBe(16);
   });
 
   it("upgrades the tree and graph generation without replaying prior migrations", async () => {
     const database = createGenerationDatabase(TREE_GRAPH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(14);
-    expect(database.beginCalls).toBe(14);
+    expect(database.unsafeCalls).toBe(15);
+    expect(database.beginCalls).toBe(15);
   });
 
   it("upgrades the bounded publication generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(BOUNDED_PUBLICATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(13);
-    expect(database.beginCalls).toBe(13);
+    expect(database.unsafeCalls).toBe(14);
+    expect(database.beginCalls).toBe(14);
   });
 
   it("upgrades the immutable contention generation without replaying earlier migrations", async () => {
     const database = createGenerationDatabase(IMMUTABLE_CONTENTION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(12);
-    expect(database.beginCalls).toBe(12);
+    expect(database.unsafeCalls).toBe(13);
+    expect(database.beginCalls).toBe(13);
   });
 
   it("upgrades the retry-budget generation with its pending migrations", async () => {
     const database = createGenerationDatabase(RETRY_BUDGET_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(11);
-    expect(database.beginCalls).toBe(11);
+    expect(database.unsafeCalls).toBe(12);
+    expect(database.beginCalls).toBe(12);
   });
 
   it("upgrades the continuation generation with only the pending migration", async () => {
     const database = createGenerationDatabase(CONTINUATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(10);
-    expect(database.beginCalls).toBe(10);
+    expect(database.unsafeCalls).toBe(11);
+    expect(database.beginCalls).toBe(11);
   });
 
   it("upgrades the write-livelock generation with only the optimized migration", async () => {
     const database = createGenerationDatabase(WRITE_LIVELOCK_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(9);
-    expect(database.beginCalls).toBe(9);
+    expect(database.unsafeCalls).toBe(10);
+    expect(database.beginCalls).toBe(10);
   });
 
   it("upgrades the large-scale generation with only the migration recovery", async () => {
     const database = createGenerationDatabase(LARGE_SCALE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(8);
-    expect(database.beginCalls).toBe(8);
+    expect(database.unsafeCalls).toBe(9);
+    expect(database.beginCalls).toBe(9);
   });
 
   it("upgrades the optimization recovery generation with only the read repair", async () => {
     const database = createGenerationDatabase(OPTIMIZATION_REBASE_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(7);
-    expect(database.beginCalls).toBe(7);
+    expect(database.unsafeCalls).toBe(8);
+    expect(database.beginCalls).toBe(8);
   });
 
   it("upgrades the generation-consistent read schema with only the body-search projection", async () => {
     const database = createGenerationDatabase(GENERATION_CONSISTENT_READ_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(6);
-    expect(database.beginCalls).toBe(6);
+    expect(database.unsafeCalls).toBe(7);
+    expect(database.beginCalls).toBe(7);
   });
 
   it("upgrades the body-search schema with only the reconciliation recovery", async () => {
     const database = createGenerationDatabase(BODY_SEARCH_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(5);
-    expect(database.beginCalls).toBe(5);
+    expect(database.unsafeCalls).toBe(6);
+    expect(database.beginCalls).toBe(6);
   });
 
   it("upgrades the storage reconciliation schema with the pending compatible migrations", async () => {
     const database = createGenerationDatabase(STORAGE_RECONCILIATION_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(4);
-    expect(database.beginCalls).toBe(4);
+    expect(database.unsafeCalls).toBe(5);
+    expect(database.beginCalls).toBe(5);
   });
 
   it("upgrades projection repair throughput with compatible ordering and lexical migrations", async () => {
     const database = createGenerationDatabase(PROJECTION_REPAIR_THROUGHPUT_SCHEMA_GENERATION);
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("does not require drained work for compatible ordering and lexical upgrades", async () => {
@@ -192,8 +195,8 @@ describe("runtime schema generation guard", () => {
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.preflightCalls).toBe(0);
-    expect(database.unsafeCalls).toBe(3);
-    expect(database.beginCalls).toBe(3);
+    expect(database.unsafeCalls).toBe(4);
+    expect(database.beginCalls).toBe(4);
   });
 
   it("upgrades directory ordering with only the compatible lexical migration", async () => {
@@ -203,14 +206,26 @@ describe("runtime schema generation guard", () => {
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.preflightCalls).toBe(0);
-    expect(database.unsafeCalls).toBe(2);
-    expect(database.beginCalls).toBe(2);
+    expect(database.unsafeCalls).toBe(3);
+    expect(database.beginCalls).toBe(3);
   });
 
   it("upgrades lexical rebuild with only the compatible maintenance migration", async () => {
     const database = createGenerationDatabase(LEXICAL_REBUILD_SCHEMA_GENERATION, {
       unfinishedWork: true
     });
+
+    await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
+    expect(database.preflightCalls).toBe(0);
+    expect(database.unsafeCalls).toBe(2);
+    expect(database.beginCalls).toBe(2);
+  });
+
+  it("upgrades knowledge-base maintenance with only indexed object protection", async () => {
+    const database = createGenerationDatabase(
+      KNOWLEDGE_BASE_MAINTENANCE_SCHEMA_GENERATION,
+      { unfinishedWork: true }
+    );
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     expect(database.preflightCalls).toBe(0);
@@ -515,6 +530,44 @@ describe("runtime schema generation guard", () => {
     expect(migration).not.toContain("delete from focowiki.knowledge_bases");
     expect(migration).not.toContain("delete from focowiki.source_files");
     expect(migration).not.toContain("delete from focowiki.source_revisions");
+  });
+
+  it("adds indexed object protection without running content or storage work", () => {
+    const migration = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../migrations/017_indexed_storage_object_protection.sql"
+      ),
+      "utf8"
+    ).replace(/\s+/g, " ").toLowerCase();
+
+    for (const table of [
+      "storage_object_protection_index",
+      "storage_object_protection_dirty",
+      "storage_object_protection_backfills",
+      "storage_reconciliation_page_checkpoints",
+      "storage_reconciliation_chunk_checkpoints"
+    ]) {
+      expect(migration).toContain(`create table if not exists focowiki.${table}`);
+    }
+    expect(migration).toContain("indexed-storage-object-protection-v17");
+    expect(migration).toContain(
+      "insert into focowiki.storage_object_protection_backfills"
+    );
+    expect(migration).not.toContain(
+      "storage_object_protection_index_checksum_check"
+    );
+    expect(migration).not.toContain(
+      "insert into focowiki.publication_generations"
+    );
+    expect(migration).not.toContain(
+      "insert into focowiki.knowledge_base_maintenance_requests"
+    );
+    expect(migration).not.toContain("insert into focowiki.role_jobs");
+    expect(migration).not.toContain("update focowiki.knowledge_bases");
+    expect(migration).not.toContain("update focowiki.source_files");
+    expect(migration).not.toContain("update focowiki.publication_generations");
+    expect(migration).not.toContain("truncate ");
   });
 });
 

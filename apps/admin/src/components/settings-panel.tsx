@@ -63,6 +63,10 @@ import {
   type RuntimeSettingsResponse,
   type WorkerSettings
 } from "@/lib/admin-api";
+import {
+  deriveMaintenanceHealth,
+  deriveObjectProtectionProgress
+} from "@/lib/maintenance-health";
 
 const rateLimitGroups = [
   "adminLogin",
@@ -292,6 +296,13 @@ export function SettingsPanel() {
   const [hasModelFormError, setHasModelFormError] = useState(false);
   const [deleteModelTarget, setDeleteModelTarget] = useState<RuntimeModelConfig | null>(null);
   const [modelForm, setModelForm] = useState(createEmptyModelForm);
+  const maintenanceHealth = deriveMaintenanceHealth({
+    reconciliation: data?.maintenanceStatus ?? null,
+    protection: data?.objectProtectionStatus ?? null
+  });
+  const objectProtectionProgress = deriveObjectProtectionProgress(
+    data?.objectProtectionStatus ?? null
+  );
 
   useEffect(() => {
     void loadSettings();
@@ -845,6 +856,10 @@ export function SettingsPanel() {
                   </SettingsCard>
                   <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
                     <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.health")}
+                      value={t(`settings.maintenance.status.healthStates.${maintenanceHealth}`)}
+                    />
+                    <MaintenanceStatusItem
                       label={t("settings.maintenance.status.state")}
                       value={data?.maintenanceStatus
                         ? t(`settings.maintenance.status.states.${data.maintenanceStatus.state}`)
@@ -866,6 +881,14 @@ export function SettingsPanel() {
                       value={String(data?.maintenanceStatus?.quarantinedCount ?? 0)}
                     />
                     <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.resolved")}
+                      value={String(data?.maintenanceStatus?.resolvedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.pending")}
+                      value={String(data?.maintenanceStatus?.pendingCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
                       label={t("settings.maintenance.status.deleted")}
                       value={String(data?.maintenanceStatus?.deletedCount ?? 0)}
                     />
@@ -878,8 +901,121 @@ export function SettingsPanel() {
                       value={String(data?.maintenanceStatus?.retryCount ?? 0)}
                     />
                     <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.databaseChunkSize")}
+                      value={data?.maintenanceStatus?.databaseChunkSize === null
+                        || data?.maintenanceStatus?.databaseChunkSize === undefined
+                        ? t("settings.maintenance.status.none")
+                        : String(data.maintenanceStatus.databaseChunkSize)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.reconciliationThroughput")}
+                      value={formatOptionalNumber(
+                        data?.maintenanceStatus?.recentObjectsPerSecond,
+                        1
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.reconciliationBatchLatency")}
+                      value={formatOptionalNumber(
+                        data?.maintenanceStatus?.rollingBatchLatencyMs
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.heartbeat")}
+                      value={formatMaintenanceTime(
+                        data?.maintenanceStatus?.heartbeatAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.lastProgress")}
+                      value={formatMaintenanceTime(
+                        data?.maintenanceStatus?.lastProgressAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
                       label={t("settings.maintenance.status.lastError")}
                       value={data?.maintenanceStatus?.lastErrorCode
+                        ?? t("settings.maintenance.status.none")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionState")}
+                      value={data?.objectProtectionStatus
+                        ? t(
+                            `settings.maintenance.status.protectionStates.${
+                              data.objectProtectionStatus.readiness
+                            }`
+                          )
+                        : t("settings.maintenance.status.notRun")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionPhase")}
+                      value={data?.objectProtectionStatus
+                        ? t(
+                            `settings.maintenance.status.protectionPhases.${
+                              data.objectProtectionStatus.phase
+                            }`
+                          )
+                        : t("settings.maintenance.status.notRun")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionProgress")}
+                      value={`${objectProtectionProgress.completed} / ${
+                        objectProtectionProgress.expected
+                      }`}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionDirty")}
+                      value={String(data?.objectProtectionStatus?.dirtyCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionVerified")}
+                      value={String(data?.objectProtectionStatus?.verifiedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionRetries")}
+                      value={String(data?.objectProtectionStatus?.retryCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.throughput")}
+                      value={formatOptionalNumber(
+                        data?.objectProtectionStatus?.recentObjectsPerSecond,
+                        1
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.batchLatency")}
+                      value={formatOptionalNumber(
+                        data?.objectProtectionStatus?.rollingBatchLatencyMs
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionHeartbeat")}
+                      value={formatMaintenanceTime(
+                        data?.objectProtectionStatus?.heartbeatAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionLastProgress")}
+                      value={formatMaintenanceTime(
+                        data?.objectProtectionStatus?.lastProgressAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    {data?.objectProtectionStatus?.estimatedCompletionAt ? (
+                      <MaintenanceStatusItem
+                        label={t("settings.maintenance.status.estimatedCompletion")}
+                        value={formatMaintenanceTime(
+                          data.objectProtectionStatus.estimatedCompletionAt,
+                          t("settings.maintenance.status.notRun")
+                        )}
+                      />
+                    ) : null}
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionError")}
+                      value={data?.objectProtectionStatus?.lastErrorCode
                         ?? t("settings.maintenance.status.none")}
                     />
                   </div>
@@ -1152,6 +1288,11 @@ function formatMaintenanceTime(value: string | null, fallback: string): string {
   if (!value) return fallback;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
+function formatOptionalNumber(value: number | null | undefined, digits?: number): string {
+  if (value === null || value === undefined) return "-";
+  return digits === undefined ? String(value) : value.toFixed(digits);
 }
 
 function SettingsCard({

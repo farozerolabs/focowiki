@@ -1,0 +1,37 @@
+import type { OpenAIModelClient } from "@focowiki/okf";
+import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
+import type { KnowledgeBaseIndexMaintenanceRepository } from "../application/ports/knowledge-base-index-maintenance-repository.js";
+import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
+import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
+import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
+import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
+import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
+import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
+import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
+import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
+import type { RuntimeConfig } from "../config.js";
+import type { AdminRepositories } from "../db/admin-repositories.js";
+import type { RuntimeLogger } from "../logger.js";
+import type { RedisCoordinator } from "../redis/coordination.js";
+import type { RuntimeSettingsService } from "../runtime-settings/service.js";
+import type { StorageAdapter } from "../storage/s3.js";
+
+export type ApiAppOptions = {
+  config: RuntimeConfig;
+  storage?: StorageAdapter;
+  modelClient?: OpenAIModelClient;
+  redis?: RedisCoordinator;
+  repositories?: AdminRepositories;
+  runtimeSettings?: RuntimeSettingsService;
+  logger?: RuntimeLogger;
+  activeGenerationReads?: ActiveGenerationReadRepository;
+  roleJobs?: RoleJobRepository;
+  publicationGenerations?: PublicationGenerationRepository;
+  sourceDispatch?: SourceDispatchRepository;
+  sourceFileRetries?: SourceFileRetryRepository;
+  sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
+  storageReconciliation?: StorageReconciliationRepository;
+  objectProtection?: ObjectProtectionRepository;
+  maintenanceProgress?: MaintenanceProgressRepository;
+  knowledgeBaseIndexMaintenance?: KnowledgeBaseIndexMaintenanceRepository;
+};

@@ -70,6 +70,7 @@ import type { SourceDispatchRepository } from "../application/ports/source-dispa
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
 import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
+import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
 import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
 import type {
   KnowledgeBaseIndexMaintenanceRepository
@@ -96,6 +97,7 @@ export type AdminApiServices = {
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
   storageReconciliation: StorageReconciliationRepository | null;
+  objectProtection: ObjectProtectionRepository | null;
   maintenanceProgress: MaintenanceProgressRepository | null;
   knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
 };
@@ -137,6 +139,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     {
       runtimeSettings,
       storageReconciliation: services.storageReconciliation,
+      objectProtection: services.objectProtection,
       storagePrefix: config.storage.prefix
     },
     {

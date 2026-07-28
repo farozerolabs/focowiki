@@ -156,6 +156,35 @@ describe("S3 storage adapter", () => {
     });
   });
 
+  it("treats a compatible HEAD NotFound response as a missing object", async () => {
+    const notFound = Object.assign(new Error("Object not found"), {
+      name: "NotFound",
+      $metadata: { httpStatusCode: 404 }
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send: vi.fn().mockRejectedValue(notFound) } as never
+    });
+
+    await expect(storage.headObjectMetadata("objects/missing.md")).resolves.toBeNull();
+  });
+
+  it("does not hide non-missing HEAD failures", async () => {
+    const forbidden = Object.assign(new Error("Access denied"), {
+      name: "AccessDenied",
+      $metadata: { httpStatusCode: 403 }
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send: vi.fn().mockRejectedValue(forbidden) } as never
+    });
+
+    await expect(storage.headObjectMetadata("objects/protected.md"))
+      .rejects.toBe(forbidden);
+  });
+
   it.each([
     "tenant/other/generated/",
     "tenant/test/../other/generated/",

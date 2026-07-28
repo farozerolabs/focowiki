@@ -1,13 +1,31 @@
+import { randomUUID } from "node:crypto";
 import postgres from "postgres";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { applyMigrations } from "../src/db/migrations.js";
+import { createStoragePageCheckpointId } from "../src/maintenance/storage-reconciliation-chunks.js";
+import { createPostgresObjectProtectionRepository } from "../src/infrastructure/postgres/object-protection-repository.js";
 import { createPostgresStorageReconciliationRepository } from "../src/infrastructure/postgres/storage-reconciliation-repository.js";
+import { runObjectProtectionMaintenanceSlice } from "../src/maintenance/object-protection-maintenance.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
 
 describeDatabase("storage object protection integration", () => {
-  const sql = postgres(databaseUrl!, { max: 3 });
+  const connectionUrl = databaseUrl
+    ?? "postgres://unused:unused@127.0.0.1:5432/unused";
+  const databaseName = `focowiki_storage_protection_${process.pid}_${
+    randomUUID().replaceAll("-", "").slice(0, 10)
+  }`;
+  const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), {
+    max: 1,
+    onnotice: () => {}
+  });
+  const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), {
+    max: 3,
+    onnotice: () => {}
+  });
   const repository = createPostgresStorageReconciliationRepository(sql);
+  const protection = createPostgresObjectProtectionRepository(sql);
   const knowledgeBaseId = "kb-storage-object-protection";
   const prefix = "test/protection/";
   const checksums = {
@@ -21,14 +39,30 @@ describeDatabase("storage object protection integration", () => {
     generationRoot: "89".repeat(32)
   };
 
+  beforeAll(async () => {
+    await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+    await applyMigrations(sql);
+  }, 120_000);
+
   beforeEach(async () => {
     await cleanup();
     await seedProtectionLineage();
+    await markProtectionReady();
+    await runObjectProtectionMaintenanceSlice({
+      repository: protection,
+      batchSize: 100,
+      leaseToken: "storage-protection-test",
+      now: () => new Date("2090-07-27T00:00:00.000Z")
+    });
   });
 
   afterAll(async () => {
     await cleanup();
     await sql.end({ timeout: 5 });
+    await admin.unsafe(
+      `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`
+    );
+    await admin.end({ timeout: 5 });
   });
 
   it("classifies active, retained, legacy, and unreferenced projection objects", async () => {
@@ -58,6 +92,121 @@ describeDatabase("storage object protection integration", () => {
     expect([...classes.get(`${prefix}legacy.json`) ?? []]).toContain("root:legacy_retained");
     expect([...classes.get(`${prefix}generation-root.json`) ?? []])
       .toContain("manifest:active_referenced");
+
+    const indexed = await protection.lookupIdentities(
+      Object.entries(checksums).map(([name, checksumSha256]) => ({
+        objectKey: `${prefix}${name === "retainedRoot"
+          ? "retained-root"
+          : name === "generationRoot" ? "generation-root" : name}.json`,
+        checksumSha256,
+        formatVersion: name === "legacy" ? 1 : 2
+      }))
+    );
+    expect(indexed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        objectKey: `${prefix}base.json`,
+        protected: true,
+        dirty: false
+      }),
+      expect.objectContaining({
+        objectKey: `${prefix}delta.json`,
+        protected: true,
+        dirty: false
+      }),
+      expect.objectContaining({
+        objectKey: `${prefix}tombstone.json`,
+        protected: true,
+        dirty: false
+      }),
+      expect.objectContaining({
+        objectKey: `${prefix}compacted.json`,
+        protected: false,
+        dirty: false
+      }),
+      expect.objectContaining({
+        objectKey: `${prefix}generation-root.json`,
+        protected: true,
+        dirty: false
+      })
+    ]));
+  });
+
+  it("covers every canonical durable protection boundary", async () => {
+    const rows = await sql<Array<{
+      table_name: string;
+      trigger_name: string;
+    }>>`
+      SELECT DISTINCT event_object_table AS table_name, trigger_name
+      FROM information_schema.triggers
+      WHERE trigger_schema = 'focowiki'
+        AND trigger_name = ANY(ARRAY[
+          'source_files_storage_protection_trigger',
+          'immutable_objects_storage_protection_trigger',
+          'projection_segments_storage_protection_trigger'
+        ])
+      ORDER BY event_object_table, trigger_name
+    `;
+    expect(rows).toEqual([
+      {
+        table_name: "immutable_objects",
+        trigger_name: "immutable_objects_storage_protection_trigger"
+      },
+      {
+        table_name: "projection_segments",
+        trigger_name: "projection_segments_storage_protection_trigger"
+      },
+      {
+        table_name: "source_files",
+        trigger_name: "source_files_storage_protection_trigger"
+      }
+    ]);
+
+    const referenceTargets = await sql<Array<{
+      table_name: string;
+      foreign_table_name: string;
+    }>>`
+      SELECT DISTINCT
+        constraint_table.relname AS table_name,
+        referenced_table.relname AS foreign_table_name
+      FROM pg_constraint constraint_record
+      JOIN pg_class constraint_table
+        ON constraint_table.oid = constraint_record.conrelid
+      JOIN pg_namespace constraint_namespace
+        ON constraint_namespace.oid = constraint_table.relnamespace
+      JOIN pg_class referenced_table
+        ON referenced_table.oid = constraint_record.confrelid
+      WHERE constraint_record.contype = 'f'
+        AND constraint_namespace.nspname = 'focowiki'
+        AND constraint_table.relname = ANY(ARRAY[
+          'active_object_refs',
+          'generation_object_refs',
+          'active_projection_segments',
+          'generation_projection_segments'
+        ])
+        AND referenced_table.relname = ANY(ARRAY[
+          'immutable_objects',
+          'projection_segments'
+        ])
+      ORDER BY constraint_table.relname, referenced_table.relname
+    `;
+    expect(referenceTargets).toEqual([
+      {
+        table_name: "active_object_refs",
+        foreign_table_name: "immutable_objects"
+      },
+      {
+        table_name: "active_projection_segments",
+        foreign_table_name: "projection_segments"
+      },
+      {
+        table_name: "generation_object_refs",
+        foreign_table_name: "immutable_objects"
+      },
+      {
+        table_name: "generation_projection_segments",
+        foreign_table_name: "projection_segments"
+      }
+    ]);
   });
 
   it("requires repeated observation and grace before deleting an unreferenced compacted segment", async () => {
@@ -70,7 +219,8 @@ describeDatabase("storage object protection integration", () => {
       lastModified: "2026-07-20T00:00:00.000Z"
     };
     const first = await claimScanningCycle("cycle-protection-1", "lease-protection-1", "2026-07-20T00:00:00.000Z");
-    await expect(repository.recordScanPage({
+    await expect(recordBatchedPage({
+      reconciliation: repository,
       cycle: first,
       leaseToken: "lease-protection-1",
       objects: [object],
@@ -95,7 +245,8 @@ describeDatabase("storage object protection integration", () => {
     });
 
     const second = await claimScanningCycle("cycle-protection-2", "lease-protection-2", "2026-07-20T00:00:03.000Z");
-    await repository.recordScanPage({
+    await recordBatchedPage({
+      reconciliation: repository,
       cycle: second,
       leaseToken: "lease-protection-2",
       objects: [object],
@@ -138,7 +289,7 @@ describeDatabase("storage object protection integration", () => {
       authorizedAt: "2026-07-20T00:00:06.000Z"
     })).resolves.toBe(true);
     await repository.completeCandidateDeletion({
-      prefix,
+      cycle: verifying,
       leaseToken: "lease-protection-2",
       objectKey: object.key,
       completedAt: "2026-07-20T00:00:07.000Z"
@@ -150,9 +301,65 @@ describeDatabase("storage object protection integration", () => {
     `)[0]?.lifecycle_state).toBe("deleted");
   });
 
+  it("counts candidates missing from a later complete scan as resolved", async () => {
+    const object = {
+      key: `${prefix}compacted.json`,
+      checksumSha256: checksums.compacted,
+      formatVersion: 2,
+      sizeBytes: 64,
+      etag: "compacted-etag",
+      lastModified: "2026-07-20T00:00:00.000Z"
+    };
+    const first = await claimScanningCycle(
+      "cycle-resolved-1",
+      "lease-resolved-1",
+      "2026-07-20T00:00:00.000Z"
+    );
+    await recordBatchedPage({
+      reconciliation: repository,
+      cycle: first,
+      leaseToken: "lease-resolved-1",
+      objects: [object],
+      nextContinuationToken: null,
+      recordedAt: "2026-07-20T00:00:01.000Z"
+    });
+    await repository.finishCycle({
+      cycle: { ...first, state: "verifying" },
+      leaseToken: "lease-resolved-1",
+      nextScanAt: "2026-07-20T00:00:02.000Z",
+      completedAt: "2026-07-20T00:00:02.000Z"
+    });
+
+    const second = await claimScanningCycle(
+      "cycle-resolved-2",
+      "lease-resolved-2",
+      "2026-07-20T00:00:03.000Z"
+    );
+    await recordBatchedPage({
+      reconciliation: repository,
+      cycle: second,
+      leaseToken: "lease-resolved-2",
+      objects: [],
+      nextContinuationToken: null,
+      recordedAt: "2026-07-20T00:00:04.000Z"
+    });
+
+    expect(await repository.getStatus(prefix)).toMatchObject({
+      state: "verifying",
+      resolvedCount: 1
+    });
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state
+      FROM focowiki.storage_reconciliation_candidates
+      WHERE prefix = ${prefix}
+        AND object_key = ${object.key}
+    `)[0]?.state).toBe("resolved");
+  });
+
   it("records a missing protected segment without exposing neighboring objects to deletion", async () => {
     const cycle = await claimScanningCycle("cycle-protection-missing", "lease-protection-missing", "2026-07-20T01:00:00.000Z");
-    await repository.recordScanPage({
+    await recordBatchedPage({
+      reconciliation: repository,
       cycle,
       leaseToken: "lease-protection-missing",
       objects: [],
@@ -194,6 +401,306 @@ describeDatabase("storage object protection integration", () => {
     `)[0]?.count).toBe(0);
   });
 
+  it("rejects stale verification without changing registered integrity state", async () => {
+    const cycle = await claimScanningCycle(
+      "cycle-protection-stale-verification",
+      "lease-protection-stale-verification",
+      "2026-07-20T01:30:00.000Z"
+    );
+    await recordBatchedPage({
+      reconciliation: repository,
+      cycle,
+      leaseToken: "lease-protection-stale-verification",
+      objects: [],
+      nextContinuationToken: null,
+      recordedAt: "2026-07-20T01:30:01.000Z"
+    });
+    const verifying = { ...cycle, state: "verifying" as const };
+    await sql`
+      UPDATE focowiki.storage_reconciliation_cycles
+      SET lease_expires_at = '2026-07-20T01:30:01.500Z'
+      WHERE prefix = ${prefix}
+        AND cycle_id = ${cycle.cycleId}
+    `;
+
+    await expect(repository.recordRegisteredObjectCheck({
+      cycle: verifying,
+      leaseToken: "lease-protection-stale-verification",
+      object: {
+        checksumSha256: checksums.base,
+        formatVersion: 2,
+        objectKey: `${prefix}base.json`
+      },
+      exists: false,
+      checkedAt: "2026-07-20T01:30:02.000Z"
+    })).resolves.toBe(false);
+
+    expect((await sql<Array<{ integrity_error_code: string | null }>>`
+      SELECT integrity_error_code
+      FROM focowiki.projection_segments
+      WHERE id = 'segment-protection-base'
+    `)[0]?.integrity_error_code).toBeNull();
+  });
+
+  it("resumes durable scan and verification checkpoints after repository restart", async () => {
+    const firstRepository = createPostgresStorageReconciliationRepository(sql);
+    const firstCycle = await firstRepository.claimCycle({
+      prefix,
+      cycleId: "cycle-repository-restart",
+      leaseToken: "lease-repository-restart-1",
+      now: "2026-07-20T01:40:00.000Z",
+      leaseExpiresAt: "2026-07-20T01:40:02.000Z"
+    });
+    expect(firstCycle).toMatchObject({
+      cycleId: "cycle-repository-restart",
+      state: "scanning",
+      continuationToken: null
+    });
+
+    const objects = [
+      {
+        key: `${prefix}base.json`,
+        checksumSha256: checksums.base,
+        formatVersion: 2,
+        sizeBytes: 64,
+        etag: "base-etag",
+        lastModified: "2026-07-20T01:40:00.000Z"
+      },
+      {
+        key: `${prefix}compacted.json`,
+        checksumSha256: checksums.compacted,
+        formatVersion: 2,
+        sizeBytes: 64,
+        etag: "compacted-etag",
+        lastModified: "2026-07-20T01:40:00.000Z"
+      }
+    ];
+    const pageId = createStoragePageCheckpointId({
+      cycleId: firstCycle!.cycleId,
+      continuationToken: null,
+      nextContinuationToken: null
+    });
+    await expect(firstRepository.prepareScanPage({
+      cycle: firstCycle!,
+      leaseToken: "lease-repository-restart-1",
+      pageId,
+      nextContinuationToken: null,
+      listedCount: objects.length,
+      databaseChunkSize: 25,
+      preparedAt: "2026-07-20T01:40:00.500Z"
+    })).resolves.toMatchObject({ completedObjectCount: 0, committed: false });
+    await expect(firstRepository.recordScanChunk({
+      cycle: firstCycle!,
+      leaseToken: "lease-repository-restart-1",
+      pageId,
+      objectOffset: 0,
+      objects: objects.slice(0, 1),
+      allowQuarantine: true,
+      recordedAt: "2026-07-20T01:40:01.000Z"
+    })).resolves.toBe(true);
+
+    const resumedRepository = createPostgresStorageReconciliationRepository(sql);
+    const resumedCycle = await resumedRepository.claimCycle({
+      prefix,
+      cycleId: "ignored-new-cycle",
+      leaseToken: "lease-repository-restart-2",
+      now: "2026-07-20T01:40:03.000Z",
+      leaseExpiresAt: "2026-07-20T01:41:00.000Z"
+    });
+    expect(resumedCycle).toMatchObject({
+      cycleId: "cycle-repository-restart",
+      state: "scanning",
+      continuationToken: null
+    });
+    await expect(resumedRepository.prepareScanPage({
+      cycle: resumedCycle!,
+      leaseToken: "lease-repository-restart-2",
+      pageId,
+      nextContinuationToken: null,
+      listedCount: objects.length,
+      databaseChunkSize: 25,
+      preparedAt: "2026-07-20T01:40:03.500Z"
+    })).resolves.toMatchObject({ completedObjectCount: 1, committed: false });
+    await expect(resumedRepository.recordScanChunk({
+      cycle: resumedCycle!,
+      leaseToken: "lease-repository-restart-2",
+      pageId,
+      objectOffset: 1,
+      objects: objects.slice(1),
+      allowQuarantine: true,
+      recordedAt: "2026-07-20T01:40:04.000Z"
+    })).resolves.toBe(true);
+    await expect(resumedRepository.completeScanPage({
+      cycle: resumedCycle!,
+      leaseToken: "lease-repository-restart-2",
+      pageId,
+      completedAt: "2026-07-20T01:40:04.500Z",
+      batchLatencyMs: 4_000
+    })).resolves.toBe(true);
+
+    const verifyingCycle = { ...resumedCycle!, state: "verifying" as const };
+    const firstVerificationPage =
+      await resumedRepository.listRegisteredObjectsForVerification({
+        cycle: verifyingCycle,
+        leaseToken: "lease-repository-restart-2",
+        limit: 1
+      });
+    expect(firstVerificationPage).toHaveLength(1);
+    await expect(resumedRepository.recordRegisteredObjectCheck({
+      cycle: verifyingCycle,
+      leaseToken: "lease-repository-restart-2",
+      object: firstVerificationPage[0]!,
+      exists: true,
+      checkedAt: "2026-07-20T01:40:05.000Z"
+    })).resolves.toBe(true);
+    await sql`
+      UPDATE focowiki.storage_reconciliation_cycles
+      SET lease_expires_at = '2026-07-20T01:40:05.500Z'
+      WHERE prefix = ${prefix}
+        AND cycle_id = 'cycle-repository-restart'
+    `;
+
+    const verificationRepository =
+      createPostgresStorageReconciliationRepository(sql);
+    const verificationCycle = await verificationRepository.claimCycle({
+      prefix,
+      cycleId: "ignored-verification-cycle",
+      leaseToken: "lease-repository-restart-3",
+      now: "2026-07-20T01:40:06.000Z",
+      leaseExpiresAt: "2026-07-20T01:41:00.000Z"
+    });
+    expect(verificationCycle).toMatchObject({
+      cycleId: "cycle-repository-restart",
+      state: "verifying",
+      verificationCursor: firstVerificationPage[0]!.objectKey
+    });
+    await expect(verificationRepository.listRegisteredObjectsForVerification({
+      cycle: verificationCycle!,
+      leaseToken: "lease-repository-restart-3",
+      limit: 100
+    })).resolves.not.toContainEqual(firstVerificationPage[0]);
+
+    const state = await sql<Array<{
+      listed_count: number;
+      quarantined_count: number;
+      confirmation_count: number;
+      chunk_count: number;
+    }>>`
+      SELECT
+        cycle.listed_count::int AS listed_count,
+        cycle.quarantined_count::int AS quarantined_count,
+        candidate.confirmation_count,
+        (
+          SELECT count(*)::int
+          FROM focowiki.storage_reconciliation_chunk_checkpoints chunk
+          WHERE chunk.prefix = cycle.prefix
+            AND chunk.cycle_id = cycle.cycle_id
+            AND chunk.page_id = ${pageId}
+        ) AS chunk_count
+      FROM focowiki.storage_reconciliation_cycles cycle
+      JOIN focowiki.storage_reconciliation_candidates candidate
+        ON candidate.prefix = cycle.prefix
+       AND candidate.object_key = ${objects[1]!.key}
+      WHERE cycle.prefix = ${prefix}
+    `;
+    expect(state[0]).toEqual({
+      listed_count: 2,
+      quarantined_count: 1,
+      confirmation_count: 1,
+      chunk_count: 2
+    });
+  });
+
+  it("blocks final deletion for incomplete, dirty, changed, or stale ownership", async () => {
+    const cycle = await seedDeletingCandidate({
+      cycleId: "cycle-final-authorization",
+      leaseToken: "lease-final-authorization"
+    });
+    const candidate = {
+      cycle,
+      leaseToken: "lease-final-authorization",
+      objectKey: `${prefix}compacted.json`,
+      checksumSha256: checksums.compacted,
+      formatVersion: 2,
+      authorizedAt: "2026-07-20T02:00:01.000Z"
+    };
+
+    await sql`
+      UPDATE focowiki.storage_object_protection_backfills
+      SET state = 'backfilling', phase = 'immutable_objects'
+      WHERE schema_version = 1
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+
+    await markProtectionReady();
+    await resetDeletingCandidate(candidate.objectKey, candidate.leaseToken);
+    await sql`
+      UPDATE focowiki.storage_object_protection_index
+      SET protected = false, dirty = true
+      WHERE object_key = ${candidate.objectKey}
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+
+    await resetDeletingCandidate(candidate.objectKey, candidate.leaseToken);
+    await sql`
+      UPDATE focowiki.storage_object_protection_index
+      SET protected = true, dirty = false
+      WHERE object_key = ${candidate.objectKey}
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+
+    await resetUnprotectedCandidate(candidate.objectKey, candidate.leaseToken);
+    await sql`
+      INSERT INTO focowiki.immutable_objects (
+        checksum_sha256, format_version, object_key, content_type,
+        size_bytes, lifecycle_state, verified_at
+      ) VALUES (
+        ${candidate.checksumSha256}, ${candidate.formatVersion},
+        ${candidate.objectKey}, 'application/json', 64, 'active', now()
+      )
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+    await sql`
+      DELETE FROM focowiki.immutable_objects
+      WHERE checksum_sha256 = ${candidate.checksumSha256}
+        AND format_version = ${candidate.formatVersion}
+    `;
+
+    await resetUnprotectedCandidate(candidate.objectKey, candidate.leaseToken);
+    await sql`
+      UPDATE focowiki.projection_segments
+      SET ownership_count = 1
+      WHERE id = 'segment-protection-compacted'
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+
+    await sql`
+      UPDATE focowiki.projection_segments
+      SET ownership_count = 0
+      WHERE id = 'segment-protection-compacted'
+    `;
+    await resetUnprotectedCandidate(candidate.objectKey, candidate.leaseToken);
+    await sql`
+      UPDATE focowiki.storage_reconciliation_cycles
+      SET lease_expires_at = '2026-07-20T01:59:59.000Z'
+      WHERE prefix = ${prefix}
+        AND cycle_id = ${cycle.cycleId}
+    `;
+    await expect(repository.authorizeCandidateDeletion(candidate)).resolves.toBe(false);
+    await repository.completeCandidateDeletion({
+      cycle,
+      leaseToken: candidate.leaseToken,
+      objectKey: candidate.objectKey,
+      completedAt: candidate.authorizedAt
+    });
+    expect((await sql<Array<{ state: string }>>`
+      SELECT state
+      FROM focowiki.storage_reconciliation_candidates
+      WHERE prefix = ${prefix}
+        AND object_key = ${candidate.objectKey}
+    `)[0]?.state).toBe("deleting");
+  });
+
   async function claimScanningCycle(cycleId: string, leaseToken: string, now: string) {
     const cycle = await repository.claimCycle({
       prefix,
@@ -204,6 +711,77 @@ describeDatabase("storage object protection integration", () => {
     });
     expect(cycle).toMatchObject({ cycleId, state: "scanning" });
     return cycle!;
+  }
+
+  async function seedDeletingCandidate(input: {
+    cycleId: string;
+    leaseToken: string;
+  }) {
+    await sql`
+      INSERT INTO focowiki.storage_reconciliation_cycles (
+        prefix, cycle_id, state, lease_token, lease_expires_at,
+        scan_started_at, scan_completed_at, next_scan_at
+      ) VALUES (
+        ${prefix}, ${input.cycleId}, 'verifying', ${input.leaseToken},
+        '2099-01-01T00:00:00.000Z', '2026-07-20T02:00:00.000Z',
+        '2026-07-20T02:00:00.000Z', '2026-07-20T02:00:00.000Z'
+      )
+    `;
+    await resetDeletingCandidate(
+      `${prefix}compacted.json`,
+      input.leaseToken
+    );
+    return {
+      prefix,
+      cycleId: input.cycleId,
+      state: "verifying" as const,
+      continuationToken: null,
+      verificationCursor: null,
+      databaseChunkSize: null
+    };
+  }
+
+  async function resetDeletingCandidate(
+    objectKey: string,
+    leaseToken: string
+  ): Promise<void> {
+    await sql`
+      INSERT INTO focowiki.storage_reconciliation_candidates (
+        prefix, object_key, checksum_sha256, format_version, state,
+        first_seen_cycle_id, last_seen_cycle_id, confirmation_count,
+        first_seen_at, last_seen_at, observed_size_bytes, observed_etag,
+        attempt_count, next_attempt_at, deletion_lease_token, updated_at
+      ) VALUES (
+        ${prefix}, ${objectKey}, ${checksums.compacted}, 2, 'deleting',
+        'cycle-final-authorization', 'cycle-final-authorization', 2,
+        '2026-07-18T02:00:00.000Z', '2026-07-20T02:00:00.000Z',
+        64, 'etag-final-authorization', 1,
+        '2026-07-20T02:00:00.000Z', ${leaseToken},
+        '2026-07-20T02:00:00.000Z'
+      )
+      ON CONFLICT (prefix, object_key) DO UPDATE
+      SET state = 'deleting',
+          deletion_lease_token = EXCLUDED.deletion_lease_token,
+          resolved_at = NULL,
+          deleted_at = NULL,
+          updated_at = EXCLUDED.updated_at
+    `;
+  }
+
+  async function resetUnprotectedCandidate(
+    objectKey: string,
+    leaseToken: string
+  ): Promise<void> {
+    await resetDeletingCandidate(objectKey, leaseToken);
+    await sql`
+      UPDATE focowiki.storage_object_protection_index
+      SET protected = false, dirty = false, protection_classes = ARRAY[]::text[]
+      WHERE object_key = ${objectKey}
+    `;
+    await sql`
+      DELETE FROM focowiki.storage_object_protection_dirty
+      WHERE object_key = ${objectKey}
+    `;
   }
 
   async function seedProtectionLineage() {
@@ -298,4 +876,87 @@ describeDatabase("storage object protection integration", () => {
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.immutable_objects WHERE object_key >= ${prefix} AND object_key < ${`${prefix}\uffff`}`;
   }
+
+  async function markProtectionReady(): Promise<void> {
+    await sql`
+      UPDATE focowiki.storage_object_protection_backfills
+      SET state = 'ready',
+          phase = 'ready',
+          lease_token = NULL,
+          lease_expires_at = NULL,
+          completed_at = now(),
+          updated_at = now()
+      WHERE schema_version = 1
+    `;
+  }
 });
+
+async function recordBatchedPage(input: {
+  reconciliation: ReturnType<typeof createPostgresStorageReconciliationRepository>;
+  cycle: NonNullable<Awaited<ReturnType<
+    ReturnType<typeof createPostgresStorageReconciliationRepository>["claimCycle"]
+  >>>;
+  leaseToken: string;
+  objects: Array<{
+    key: string;
+    checksumSha256: string;
+    formatVersion: number;
+    sizeBytes: number;
+    etag: string | null;
+    lastModified: string | null;
+  }>;
+  nextContinuationToken: string | null;
+  recordedAt: string;
+}): Promise<boolean> {
+  const pageId = createStoragePageCheckpointId({
+    cycleId: input.cycle.cycleId,
+    continuationToken: input.cycle.continuationToken,
+    nextContinuationToken: input.nextContinuationToken
+  });
+  const prepared = await input.reconciliation.prepareScanPage({
+    cycle: input.cycle,
+    leaseToken: input.leaseToken,
+    pageId,
+    nextContinuationToken: input.nextContinuationToken,
+    listedCount: input.objects.length,
+    databaseChunkSize: 100,
+    preparedAt: input.recordedAt
+  });
+  if (!prepared) return false;
+  for (
+    let objectOffset = prepared.completedObjectCount;
+    objectOffset < input.objects.length;
+    objectOffset += prepared.databaseChunkSize
+  ) {
+    const committed = await input.reconciliation.recordScanChunk({
+      cycle: input.cycle,
+      leaseToken: input.leaseToken,
+      pageId,
+      objectOffset,
+      objects: input.objects.slice(
+        objectOffset,
+        objectOffset + prepared.databaseChunkSize
+      ),
+      allowQuarantine: true,
+      recordedAt: input.recordedAt
+    });
+    if (!committed) return false;
+  }
+  return input.reconciliation.completeScanPage({
+    cycle: input.cycle,
+    leaseToken: input.leaseToken,
+    pageId,
+    completedAt: input.recordedAt,
+    batchLatencyMs: 1
+  });
+}
+
+function databaseConnectionUrl(url: string, databaseName: string): string {
+  const parsed = new URL(url);
+  parsed.pathname = `/${databaseName}`;
+  return parsed.toString();
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll("\"", "\"\"")}"`;
+}

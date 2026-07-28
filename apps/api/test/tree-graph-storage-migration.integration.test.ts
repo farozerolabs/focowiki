@@ -11,6 +11,7 @@ import { createPostgresImmutableObjectRepository } from "../src/infrastructure/p
 import { createPostgresPublicationGenerationRepository } from "../src/infrastructure/postgres/publication-generation-repository.js";
 import { createPostgresStorageReconciliationRepository } from "../src/infrastructure/postgres/storage-reconciliation-repository.js";
 import { createImmutableObjectKey } from "../src/domain/generation.js";
+import { createStoragePageCheckpointId } from "../src/maintenance/storage-reconciliation-chunks.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -63,6 +64,18 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
     expect((await sql<Array<{ generation: string }>>`
       SELECT generation FROM focowiki.runtime_generation WHERE singleton = true
     `)[0]?.generation).toBe(RUNTIME_SCHEMA_GENERATION);
+    expect((await sql<Array<{ state: string; processed_count: number }>>`
+      SELECT state, processed_count::int AS processed_count
+      FROM focowiki.storage_object_protection_backfills
+      WHERE schema_version = 1
+    `)[0]).toEqual({
+      state: "pending",
+      processed_count: 0
+    });
+    expect((await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+      FROM focowiki.storage_object_protection_index
+    `)[0]?.count).toBe(0);
 
     const migratedObjects = await sql<Array<{
       lifecycle_state: string;
@@ -137,6 +150,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
   });
 
   it("serializes immutable reservations with reconciliation deletion authorization", async () => {
+    await markProtectionReady();
     const objects = createPostgresImmutableObjectRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
     const prefix = "test/generated/";
@@ -176,7 +190,8 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
         cycleId,
         state: "verifying",
         continuationToken: null,
-        verificationCursor: null
+        verificationCursor: null,
+        databaseChunkSize: null
       },
       leaseToken,
       objectKey: deletingKey,
@@ -196,7 +211,14 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
     })).resolves.toEqual({ status: "deleting", record: null });
 
     await reconciliation.completeCandidateDeletion({
-      prefix,
+      cycle: {
+        prefix,
+        cycleId,
+        state: "verifying",
+        continuationToken: null,
+        verificationCursor: null,
+        databaseChunkSize: null
+      },
       leaseToken,
       objectKey: deletingKey,
       completedAt: "2026-07-18T14:00:03.000Z"
@@ -247,7 +269,8 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
         cycleId,
         state: "verifying",
         continuationToken: null,
-        verificationCursor: null
+        verificationCursor: null,
+        databaseChunkSize: null
       },
       leaseToken,
       now: "2026-07-18T14:00:06.000Z",
@@ -265,6 +288,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
   });
 
   it("records one bounded reconciliation page with a bulk upsert", async () => {
+    await markProtectionReady();
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
     const prefix = "test/bulk/generated/";
     const claimed = await reconciliation.claimCycle({
@@ -287,7 +311,8 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
         lastModified: null
       };
     });
-    await expect(reconciliation.recordScanPage({
+    await expect(recordBatchedPage({
+      reconciliation,
       cycle: claimed!,
       leaseToken: "lease-bulk-page",
       objects,
@@ -310,9 +335,16 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       listed_count: 1_000,
       quarantined_count: 1_000
     });
+    expect((await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+      FROM focowiki.storage_reconciliation_chunk_checkpoints
+      WHERE prefix = ${prefix}
+        AND cycle_id = 'cycle-bulk-page'
+    `)[0]?.count).toBe(10);
   });
 
   it("reclaims stale deleting candidates and renews the owning cycle lease", async () => {
+    await markProtectionReady();
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
     const prefix = "test/stale-deletion/generated/";
     const cycleId = "cycle-stale-deletion";
@@ -331,7 +363,8 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       leaseExpiresAt: "2099-07-18T16:35:00.000Z"
     });
     expect(claimedCycle).not.toBeNull();
-    await reconciliation.recordScanPage({
+    await recordBatchedPage({
+      reconciliation,
       cycle: claimedCycle!,
       leaseToken,
       objects: [],
@@ -385,7 +418,7 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       last_error_code: null
     });
     await reconciliation.completeCandidateDeletion({
-      prefix,
+      cycle: claimedCycle!,
       leaseToken: "expired-deletion-lease",
       objectKey,
       completedAt: "2026-07-18T16:34:31.500Z"
@@ -467,7 +500,80 @@ describeDatabase("tree, graph, and storage compatible migration integration", ()
       WHERE knowledge_base_id = 'kb-writing-object'
     `)[0]?.count).toBe(0);
   });
+
+  async function markProtectionReady(): Promise<void> {
+    await sql`
+      UPDATE focowiki.storage_object_protection_backfills
+      SET state = 'ready',
+          phase = 'ready',
+          lease_token = NULL,
+          lease_expires_at = NULL,
+          completed_at = now(),
+          updated_at = now()
+      WHERE schema_version = 1
+    `;
+  }
 });
+
+async function recordBatchedPage(input: {
+  reconciliation: ReturnType<typeof createPostgresStorageReconciliationRepository>;
+  cycle: NonNullable<Awaited<ReturnType<
+    ReturnType<typeof createPostgresStorageReconciliationRepository>["claimCycle"]
+  >>>;
+  leaseToken: string;
+  objects: Array<{
+    key: string;
+    checksumSha256: string;
+    formatVersion: number;
+    sizeBytes: number;
+    etag: string | null;
+    lastModified: string | null;
+  }>;
+  nextContinuationToken: string | null;
+  recordedAt: string;
+}): Promise<boolean> {
+  const pageId = createStoragePageCheckpointId({
+    cycleId: input.cycle.cycleId,
+    continuationToken: input.cycle.continuationToken,
+    nextContinuationToken: input.nextContinuationToken
+  });
+  const prepared = await input.reconciliation.prepareScanPage({
+    cycle: input.cycle,
+    leaseToken: input.leaseToken,
+    pageId,
+    nextContinuationToken: input.nextContinuationToken,
+    listedCount: input.objects.length,
+    databaseChunkSize: 100,
+    preparedAt: input.recordedAt
+  });
+  if (!prepared) return false;
+  for (
+    let objectOffset = prepared.completedObjectCount;
+    objectOffset < input.objects.length;
+    objectOffset += prepared.databaseChunkSize
+  ) {
+    const committed = await input.reconciliation.recordScanChunk({
+      cycle: input.cycle,
+      leaseToken: input.leaseToken,
+      pageId,
+      objectOffset,
+      objects: input.objects.slice(
+        objectOffset,
+        objectOffset + prepared.databaseChunkSize
+      ),
+      allowQuarantine: true,
+      recordedAt: input.recordedAt
+    });
+    if (!committed) return false;
+  }
+  return input.reconciliation.completeScanPage({
+    cycle: input.cycle,
+    leaseToken: input.leaseToken,
+    pageId,
+    completedAt: input.recordedAt,
+    batchLatencyMs: 1
+  });
+}
 
 async function seedReleasedSchema(sql: ReturnType<typeof postgres>): Promise<void> {
   const checksum = "ab".repeat(32);

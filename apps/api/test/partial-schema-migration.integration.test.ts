@@ -75,6 +75,35 @@ describeDatabase("partial schema compatible migration", () => {
       ALTER TABLE focowiki.storage_reconciliation_candidates
       ADD COLUMN deletion_lease_token text
     `;
+    await sql`
+      CREATE TABLE focowiki.storage_reconciliation_page_checkpoints (
+        prefix text NOT NULL,
+        cycle_id text NOT NULL,
+        page_id text NOT NULL,
+        continuation_token text,
+        next_continuation_token text,
+        expected_chunk_count integer NOT NULL,
+        listed_count integer NOT NULL,
+        protected_count integer DEFAULT 0 NOT NULL,
+        pending_count integer DEFAULT 0 NOT NULL,
+        quarantined_count integer DEFAULT 0 NOT NULL,
+        resolved_count integer DEFAULT 0 NOT NULL,
+        committed_at timestamp with time zone,
+        created_at timestamp with time zone DEFAULT now() NOT NULL,
+        updated_at timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT storage_reconciliation_page_checkpoints_pkey PRIMARY KEY (
+          prefix, cycle_id, page_id
+        ),
+        CONSTRAINT storage_reconciliation_page_checkpoints_counts_check CHECK (
+          expected_chunk_count >= 0
+          AND listed_count >= 0
+          AND protected_count >= 0
+          AND pending_count >= 0
+          AND quarantined_count >= 0
+          AND resolved_count >= 0
+        )
+      )
+    `;
   }, 120_000);
 
   afterAll(async () => {
@@ -127,10 +156,26 @@ describeDatabase("partial schema compatible migration", () => {
       WHERE conrelid = 'focowiki.publication_generations'::regclass
         AND conname = 'publication_generations_kind_check'
     `;
+    const pageCheckpointColumns = await sql<Array<{
+      column_name: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>>`
+      SELECT column_name, is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'focowiki'
+        AND table_name = 'storage_reconciliation_page_checkpoints'
+        AND column_name = 'database_chunk_size'
+    `;
 
     expect(generation[0]?.generation).toBe(RUNTIME_SCHEMA_GENERATION);
     expect(columns[0]?.count).toBe(7);
     expect(obsoleteConstraints[0]?.count).toBe(0);
+    expect(pageCheckpointColumns).toEqual([{
+      column_name: "database_chunk_size",
+      is_nullable: "NO",
+      column_default: "100"
+    }]);
   });
 });
 

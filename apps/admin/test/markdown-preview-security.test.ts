@@ -1,7 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { renderMarkdownPreview } from "../src/lib/markdown-preview";
+import {
+  renderGeneratedTextPreview,
+  renderMarkdownPreview
+} from "../src/lib/markdown-preview";
 
 describe("Markdown preview security", () => {
+  it("formats complete JSON content for readable wrapped preview", () => {
+    const content = JSON.stringify({
+      formatVersion: 3,
+      projection: "search",
+      inlineSegments: [
+        {
+          kind: "delta",
+          records: [{ id: "record-001", content: "complete content" }]
+        }
+      ]
+    });
+    const html = renderGeneratedTextPreview(content, {
+      contentType: "application/json",
+      logicalPath: "_index/search/v1/0019.json"
+    });
+    const container = document.createElement("div");
+
+    container.innerHTML = html;
+
+    const pre = container.querySelector("pre");
+    expect(pre?.textContent).toBe(JSON.stringify(JSON.parse(content), null, 2));
+    expect(pre?.className).toContain("whitespace-pre-wrap");
+    expect(pre?.className).toContain("break-words");
+    expect(pre?.textContent).toContain("complete content");
+  });
+
+  it("renders invalid JSON as complete inert text", () => {
+    const content = '{"value":"<script>unsafe</script>"';
+    const html = renderGeneratedTextPreview(content, {
+      contentType: "application/json",
+      logicalPath: "invalid.json"
+    });
+    const container = document.createElement("div");
+
+    container.innerHTML = html;
+
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe(content);
+  });
+
   it("renders script-like Markdown as inert preview HTML", () => {
     const html = renderMarkdownPreview(
       [
