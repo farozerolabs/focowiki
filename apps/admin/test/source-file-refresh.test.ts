@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeSourceFileRefreshAfterMs,
   rememberSourceFileRefreshSnapshots,
+  shouldScheduleMaintenanceRefresh,
   shouldScheduleSourceFileRefresh,
   shouldRefreshGeneratedFiles
 } from "../src/lib/source-file-refresh";
@@ -21,6 +22,21 @@ function sourceFile(input: Partial<SourceFileRecord> & Pick<SourceFileRecord, "i
 }
 
 describe("source file refresh decisions", () => {
+  it("schedules maintenance status refresh only for a visible settings view", () => {
+    expect(shouldScheduleMaintenanceRefresh({
+      activeView: "settings",
+      isVisible: true
+    })).toBe(true);
+    expect(shouldScheduleMaintenanceRefresh({
+      activeView: "settings",
+      isVisible: false
+    })).toBe(false);
+    expect(shouldScheduleMaintenanceRefresh({
+      activeView: "processing",
+      isVisible: true
+    })).toBe(false);
+  });
+
   it("refreshes generated files when one file becomes available while another file is still running", () => {
     const previous = rememberSourceFileRefreshSnapshots([
       sourceFile({

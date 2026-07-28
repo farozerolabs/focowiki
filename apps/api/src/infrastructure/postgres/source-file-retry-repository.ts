@@ -166,14 +166,7 @@ async function retryPublication(
   const job = jobs[0];
   if (!job) return { outcome: "not_allowed" };
   if (job.status === "running") return { outcome: "resource_conflict" };
-  if (job.status === "queued") {
-    return {
-      outcome: "accepted",
-      kind: "publication",
-      coalesced: true,
-      roleJobId: job.id
-    };
-  }
+  const coalesced = job.status === "queued";
   await transaction`
     UPDATE focowiki.publication_impacts
     SET status = 'pending', run_after = ${input.runAfter}, attempt_count = 0,
@@ -183,18 +176,56 @@ async function retryPublication(
     WHERE generation_id = ${generationId}
       AND status IN ('failed', 'cancelled')
   `;
-  await transaction`
-    UPDATE focowiki.publication_progress
-    SET stage = 'pending', completed_at = NULL, safe_error_code = NULL,
-        safe_error_message = NULL, heartbeat_at = ${input.runAfter},
-        processed_impact_count = (
-          SELECT count(*) FROM focowiki.publication_impacts impact
-          WHERE impact.generation_id = ${generationId} AND impact.status = 'completed'
-        ),
-        updated_at = ${input.runAfter}
-    WHERE knowledge_base_id = ${input.knowledgeBaseId}
-      AND generation_id = ${generationId}
+  const subtaskRuntime = await transaction<Array<{ available: boolean }>>`
+    SELECT to_regclass('focowiki.publication_subtasks') IS NOT NULL AS available
   `;
+  if (subtaskRuntime[0]?.available) {
+    await transaction`
+      UPDATE focowiki.publication_subtasks
+      SET state = 'retry', attempt_count = 0, max_attempts = ${input.maxAttempts},
+          run_after = ${input.runAfter}, lease_owner = NULL, lease_token = NULL,
+          lease_expires_at = NULL, processed_count = 0,
+          last_error_code = NULL, last_error_message = NULL,
+          completed_at = NULL, updated_at = ${input.runAfter}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+        AND generation_id = ${generationId}
+        AND state <> 'completed'
+    `;
+    await transaction`
+      UPDATE focowiki.publication_progress
+      SET stage = 'pending', completed_at = NULL, safe_error_code = NULL,
+          safe_error_message = NULL, heartbeat_at = ${input.runAfter},
+          processed_impact_count = (
+            SELECT count(*) FROM focowiki.publication_impacts impact
+            WHERE impact.generation_id = ${generationId}
+              AND impact.status = 'completed'
+          ),
+          remaining_subtask_count = (
+            SELECT count(*) FROM focowiki.publication_subtasks subtask
+            WHERE subtask.generation_id = ${generationId}
+              AND subtask.state <> 'completed'
+          ),
+          running_subtask_count = 0,
+          failed_subtask_count = 0,
+          updated_at = ${input.runAfter}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+        AND generation_id = ${generationId}
+    `;
+  } else {
+    await transaction`
+      UPDATE focowiki.publication_progress
+      SET stage = 'pending', completed_at = NULL, safe_error_code = NULL,
+          safe_error_message = NULL, heartbeat_at = ${input.runAfter},
+          processed_impact_count = (
+            SELECT count(*) FROM focowiki.publication_impacts impact
+            WHERE impact.generation_id = ${generationId}
+              AND impact.status = 'completed'
+          ),
+          updated_at = ${input.runAfter}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+        AND generation_id = ${generationId}
+    `;
+  }
   await transaction`
     UPDATE focowiki.role_jobs
     SET status = 'queued', run_after = ${input.runAfter}, attempt_count = 0,
@@ -220,7 +251,7 @@ async function retryPublication(
   return {
     outcome: "accepted",
     kind: "publication",
-    coalesced: false,
+    coalesced,
     roleJobId: job.id
   };
 }

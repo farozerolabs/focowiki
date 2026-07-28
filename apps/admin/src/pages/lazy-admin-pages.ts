@@ -14,8 +14,3 @@ export const LoginPage = lazy(async () => {
   const module = await import("./LoginPage");
   return { default: module.LoginPage };
 });
-
-export const SettingsPage = lazy(async () => {
-  const module = await import("./SettingsPage");
-  return { default: module.SettingsPage };
-});

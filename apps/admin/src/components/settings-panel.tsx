@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowLeftIcon,
   CheckIcon,
   PauseIcon,
   PlayIcon,
@@ -9,7 +8,6 @@ import {
   SettingsIcon,
   Trash2Icon
 } from "lucide-react";
-import { LanguageSwitch } from "@/components/LanguageSwitch";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -65,11 +63,10 @@ import {
   type RuntimeSettingsResponse,
   type WorkerSettings
 } from "@/lib/admin-api";
-
-type SettingsPageProps = {
-  onBack: () => void;
-  onLogout: () => void;
-};
+import {
+  deriveMaintenanceHealth,
+  deriveObjectProtectionProgress
+} from "@/lib/maintenance-health";
 
 const rateLimitGroups = [
   "adminLogin",
@@ -160,6 +157,8 @@ const graphBooleanFields = [
 ] as const satisfies readonly (keyof Pick<GraphSettings, "modelReviewEnabled">)[];
 
 const maintenanceNumberFields = [
+  "knowledgeBaseMaintenanceScanIntervalSeconds",
+  "knowledgeBaseMaintenanceConcurrency",
   "scanIntervalSeconds",
   "scanBatchSize",
   "deletionBatchSize",
@@ -171,8 +170,16 @@ const maintenanceNumberFields = [
   "compactionConcurrency",
   "projectionRepairConcurrency",
   "projectionRepairDatabaseBatchSize",
-  "projectionRepairObjectWriteConcurrency"
-] as const satisfies readonly (keyof Omit<MaintenanceSettings, "reconciliationEnabled">)[];
+  "projectionRepairObjectWriteConcurrency",
+  "lexicalRebuildConcurrency",
+  "lexicalRebuildSourceReadConcurrency",
+  "lexicalRebuildDatabaseWriteConcurrency",
+  "lexicalRebuildClaimBatchSize",
+  "lexicalRebuildDatabaseBatchSize",
+  "lexicalRebuildMaxInFlightSourceBytes"
+] as const satisfies readonly (
+  keyof Omit<MaintenanceSettings, "reconciliationEnabled" | "knowledgeBaseMaintenanceMode">
+)[];
 
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
@@ -217,7 +224,11 @@ const graphTipItems = [...graphNumberFields, ...graphBooleanFields].map((field) 
   descriptionKey: `settings.tips.graph.${field}`
 }));
 
-const maintenanceTipItems = ["reconciliationEnabled", ...maintenanceNumberFields].map((field) => ({
+const maintenanceTipItems = [
+  "knowledgeBaseMaintenanceMode",
+  "reconciliationEnabled",
+  ...maintenanceNumberFields
+].map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.maintenance.${field}`
 }));
@@ -258,7 +269,10 @@ type EditablePublicationSettings = {
 type EditableGraphSettings = Record<GraphNumberField, EditableNumber> &
   Pick<GraphSettings, "modelReviewEnabled">;
 type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber> &
-  Pick<MaintenanceSettings, "reconciliationEnabled">;
+  Pick<
+    MaintenanceSettings,
+    "reconciliationEnabled" | "knowledgeBaseMaintenanceMode"
+  >;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -268,7 +282,7 @@ type EditableModelForm = {
   isActive: boolean;
 } & Record<ModelNumberField, EditableNumber>;
 
-export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
+export function SettingsPanel() {
   const { t } = useTranslation();
   const [data, setData] = useState<RuntimeSettingsResponse | null>(null);
   const [rateLimits, setRateLimits] = useState<EditableRateLimitSettings | null>(null);
@@ -282,6 +296,13 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   const [hasModelFormError, setHasModelFormError] = useState(false);
   const [deleteModelTarget, setDeleteModelTarget] = useState<RuntimeModelConfig | null>(null);
   const [modelForm, setModelForm] = useState(createEmptyModelForm);
+  const maintenanceHealth = deriveMaintenanceHealth({
+    reconciliation: data?.maintenanceStatus ?? null,
+    protection: data?.objectProtectionStatus ?? null
+  });
+  const objectProtectionProgress = deriveObjectProtectionProgress(
+    data?.objectProtectionStatus ?? null
+  );
 
   useEffect(() => {
     void loadSettings();
@@ -493,28 +514,8 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
   }
 
   return (
-    <main className="min-h-svh min-w-0 overflow-x-hidden bg-background">
-      <header className="border-b bg-card">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <Button type="button" variant="ghost" size="icon-sm" onClick={onBack}>
-              <ArrowLeftIcon />
-            </Button>
-            <img src="/logo.svg" alt="" className="size-10 object-contain" />
-            <div className="min-w-0">
-              <p className="text-sm text-muted-foreground">{t("app.name")}</p>
-              <h1 className="text-xl font-medium">{t("settings.title")}</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <LanguageSwitch />
-            <Button type="button" variant="outline" onClick={onLogout}>
-              {t("auth.logout")}
-            </Button>
-          </div>
-        </div>
-      </header>
-      <section className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
+    <div className="flex min-w-0 flex-col gap-6">
+      <section className="flex min-w-0 flex-col gap-6">
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>{t(error)}</AlertTitle>
@@ -754,6 +755,36 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                   >
                     <form noValidate onSubmit={handleMaintenanceSave}>
                       <FieldGroup>
+                        <Field>
+                          <FieldLabel htmlFor="maintenance-knowledgeBaseMaintenanceMode">
+                            <RequiredLabel
+                              label={t("settings.fields.knowledgeBaseMaintenanceMode")}
+                              required
+                            />
+                          </FieldLabel>
+                          <Select
+                            value={maintenance.knowledgeBaseMaintenanceMode}
+                            onValueChange={(value) =>
+                              setMaintenance({
+                                ...maintenance,
+                                knowledgeBaseMaintenanceMode:
+                                  value as MaintenanceSettings["knowledgeBaseMaintenanceMode"]
+                              })
+                            }
+                          >
+                            <SelectTrigger id="maintenance-knowledgeBaseMaintenanceMode">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="manual">
+                                {t("settings.maintenanceModes.manual")}
+                              </SelectItem>
+                              <SelectItem value="automatic">
+                                {t("settings.maintenanceModes.automatic")}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                           <Field>
                             <FieldLabel htmlFor="maintenance-reconciliationEnabled">
@@ -781,15 +812,35 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                               key={field}
                               id={`maintenance-${field}`}
                               label={t(`settings.fields.${field}`)}
+                              disabled={
+                                field === "knowledgeBaseMaintenanceScanIntervalSeconds"
+                                && maintenance.knowledgeBaseMaintenanceMode === "manual"
+                              }
                               min={field === "confirmationPasses" ? 2 : 1}
                               {...(field === "scanBatchSize" || field === "deletionBatchSize"
                                 ? { max: 1_000 }
+                                : field === "knowledgeBaseMaintenanceScanIntervalSeconds"
+                                  ? { min: 60, max: 2_592_000 }
+                                  : field === "knowledgeBaseMaintenanceConcurrency"
+                                    ? { max: 16 }
                                 : field === "projectionRepairConcurrency"
                                   ? { max: 16 }
                                   : field === "projectionRepairDatabaseBatchSize"
                                     ? { min: 100, max: 10_000 }
                                     : field === "projectionRepairObjectWriteConcurrency"
                                       ? { max: 32 }
+                                      : field === "lexicalRebuildConcurrency"
+                                        ? { max: 16 }
+                                        : field === "lexicalRebuildSourceReadConcurrency"
+                                          ? { max: 32 }
+                                          : field === "lexicalRebuildDatabaseWriteConcurrency"
+                                            ? { max: 16 }
+                                            : field === "lexicalRebuildClaimBatchSize"
+                                              ? { min: 50, max: 2_000 }
+                                              : field === "lexicalRebuildDatabaseBatchSize"
+                                                ? { max: 250 }
+                                                : field === "lexicalRebuildMaxInFlightSourceBytes"
+                                                  ? { min: 1_048_576, max: 536_870_912 }
                                 : {})}
                               value={maintenance[field]}
                               required
@@ -804,6 +855,10 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                     </form>
                   </SettingsCard>
                   <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.health")}
+                      value={t(`settings.maintenance.status.healthStates.${maintenanceHealth}`)}
+                    />
                     <MaintenanceStatusItem
                       label={t("settings.maintenance.status.state")}
                       value={data?.maintenanceStatus
@@ -826,6 +881,14 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                       value={String(data?.maintenanceStatus?.quarantinedCount ?? 0)}
                     />
                     <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.resolved")}
+                      value={String(data?.maintenanceStatus?.resolvedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.pending")}
+                      value={String(data?.maintenanceStatus?.pendingCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
                       label={t("settings.maintenance.status.deleted")}
                       value={String(data?.maintenanceStatus?.deletedCount ?? 0)}
                     />
@@ -838,8 +901,121 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
                       value={String(data?.maintenanceStatus?.retryCount ?? 0)}
                     />
                     <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.databaseChunkSize")}
+                      value={data?.maintenanceStatus?.databaseChunkSize === null
+                        || data?.maintenanceStatus?.databaseChunkSize === undefined
+                        ? t("settings.maintenance.status.none")
+                        : String(data.maintenanceStatus.databaseChunkSize)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.reconciliationThroughput")}
+                      value={formatOptionalNumber(
+                        data?.maintenanceStatus?.recentObjectsPerSecond,
+                        1
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.reconciliationBatchLatency")}
+                      value={formatOptionalNumber(
+                        data?.maintenanceStatus?.rollingBatchLatencyMs
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.heartbeat")}
+                      value={formatMaintenanceTime(
+                        data?.maintenanceStatus?.heartbeatAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.lastProgress")}
+                      value={formatMaintenanceTime(
+                        data?.maintenanceStatus?.lastProgressAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
                       label={t("settings.maintenance.status.lastError")}
                       value={data?.maintenanceStatus?.lastErrorCode
+                        ?? t("settings.maintenance.status.none")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionState")}
+                      value={data?.objectProtectionStatus
+                        ? t(
+                            `settings.maintenance.status.protectionStates.${
+                              data.objectProtectionStatus.readiness
+                            }`
+                          )
+                        : t("settings.maintenance.status.notRun")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionPhase")}
+                      value={data?.objectProtectionStatus
+                        ? t(
+                            `settings.maintenance.status.protectionPhases.${
+                              data.objectProtectionStatus.phase
+                            }`
+                          )
+                        : t("settings.maintenance.status.notRun")}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionProgress")}
+                      value={`${objectProtectionProgress.completed} / ${
+                        objectProtectionProgress.expected
+                      }`}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionDirty")}
+                      value={String(data?.objectProtectionStatus?.dirtyCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionVerified")}
+                      value={String(data?.objectProtectionStatus?.verifiedCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionRetries")}
+                      value={String(data?.objectProtectionStatus?.retryCount ?? 0)}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.throughput")}
+                      value={formatOptionalNumber(
+                        data?.objectProtectionStatus?.recentObjectsPerSecond,
+                        1
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.batchLatency")}
+                      value={formatOptionalNumber(
+                        data?.objectProtectionStatus?.rollingBatchLatencyMs
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionHeartbeat")}
+                      value={formatMaintenanceTime(
+                        data?.objectProtectionStatus?.heartbeatAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionLastProgress")}
+                      value={formatMaintenanceTime(
+                        data?.objectProtectionStatus?.lastProgressAt ?? null,
+                        t("settings.maintenance.status.notRun")
+                      )}
+                    />
+                    {data?.objectProtectionStatus?.estimatedCompletionAt ? (
+                      <MaintenanceStatusItem
+                        label={t("settings.maintenance.status.estimatedCompletion")}
+                        value={formatMaintenanceTime(
+                          data.objectProtectionStatus.estimatedCompletionAt,
+                          t("settings.maintenance.status.notRun")
+                        )}
+                      />
+                    ) : null}
+                    <MaintenanceStatusItem
+                      label={t("settings.maintenance.status.protectionError")}
+                      value={data?.objectProtectionStatus?.lastErrorCode
                         ?? t("settings.maintenance.status.none")}
                     />
                   </div>
@@ -1095,7 +1271,7 @@ export function SettingsPage({ onBack, onLogout }: SettingsPageProps) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </main>
+    </div>
   );
 }
 
@@ -1112,6 +1288,11 @@ function formatMaintenanceTime(value: string | null, fallback: string): string {
   if (!value) return fallback;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
+function formatOptionalNumber(value: number | null | undefined, digits?: number): string {
+  if (value === null || value === undefined) return "-";
+  return digits === undefined ? String(value) : value.toFixed(digits);
 }
 
 function SettingsCard({
@@ -1173,6 +1354,7 @@ function NumberField({
   value,
   min = 1,
   max,
+  disabled = false,
   required = false,
   onChange
 }: {
@@ -1181,11 +1363,12 @@ function NumberField({
   value: EditableNumber;
   min?: number;
   max?: number;
+  disabled?: boolean;
   required?: boolean;
   onChange: (value: EditableNumber) => void;
 }) {
   return (
-    <Field>
+    <Field data-disabled={disabled || undefined}>
       <FieldLabel htmlFor={id}>
         <RequiredLabel label={label} required={required} />
       </FieldLabel>
@@ -1196,6 +1379,7 @@ function NumberField({
         max={max}
         step={1}
         required={required}
+        disabled={disabled}
         value={value === "" ? "" : String(value)}
         onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))}
       />
@@ -1382,18 +1566,34 @@ function buildMaintenanceSettings(
   if (
     settings.scanBatchSize > 1_000 ||
     settings.deletionBatchSize > 1_000 ||
+    settings.knowledgeBaseMaintenanceScanIntervalSeconds < 60 ||
+    settings.knowledgeBaseMaintenanceScanIntervalSeconds > 2_592_000 ||
+    settings.knowledgeBaseMaintenanceConcurrency > 16 ||
     settings.confirmationPasses < 2 ||
     settings.migrationBackfillConcurrency > 16 ||
     settings.compactionConcurrency > 16 ||
     settings.projectionRepairConcurrency > 16 ||
     settings.projectionRepairDatabaseBatchSize < 100 ||
     settings.projectionRepairDatabaseBatchSize > 10_000 ||
-    settings.projectionRepairObjectWriteConcurrency > 32
+    settings.projectionRepairObjectWriteConcurrency > 32 ||
+    settings.lexicalRebuildConcurrency > 16 ||
+    settings.lexicalRebuildSourceReadConcurrency > 32 ||
+    settings.lexicalRebuildDatabaseWriteConcurrency > 16 ||
+    settings.lexicalRebuildDatabaseWriteConcurrency
+      > settings.lexicalRebuildConcurrency ||
+    settings.lexicalRebuildClaimBatchSize < 50 ||
+    settings.lexicalRebuildClaimBatchSize > 2_000 ||
+    settings.lexicalRebuildDatabaseBatchSize > 250 ||
+    settings.lexicalRebuildDatabaseBatchSize
+      > settings.lexicalRebuildClaimBatchSize ||
+    settings.lexicalRebuildMaxInFlightSourceBytes < 1_048_576 ||
+    settings.lexicalRebuildMaxInFlightSourceBytes > 536_870_912
   ) {
     return null;
   }
 
   return {
+    knowledgeBaseMaintenanceMode: input.knowledgeBaseMaintenanceMode,
     reconciliationEnabled: input.reconciliationEnabled,
     ...settings
   };

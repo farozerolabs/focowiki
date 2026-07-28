@@ -52,6 +52,7 @@ export type PublicationGenerationRepository = {
     changeFactId: string;
     impacts?: PublicationImpact[];
     planningContext?: {
+      searchDocumentId: string;
       graphNeighborSourceFileIds: string[];
       graphEdgeIds: string[];
       removedGraphEdgeIds: string[];

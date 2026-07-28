@@ -73,8 +73,15 @@ describe("active tree and generated-content repository contract", () => {
     expect(treeReadModel).not.toContain(
       "${query} <> '' or coalesce(record.parent_path, '') = ${input.parentpath}"
     );
-    expect(treeReadModel).toContain("(coalesce(record.sort_key, ''), record.record_id) >");
-    expect(treeReadModel).toContain("order by coalesce(record.sort_key, ''), record.record_id");
+    expect(treeReadModel).toContain(
+      "coalesce(record.sort_key, '') collate \"c\" >"
+    );
+    expect(treeReadModel).toContain(
+      "record.record_id collate \"c\" >"
+    );
+    expect(treeReadModel).toContain(
+      "order by coalesce(record.sort_key, '') collate \"c\", record.record_id collate \"c\""
+    );
     expect(treeReadModel).toContain("source.id = record.source_file_id");
     expect(treeReadModel).toContain("limit ${input.limit + 1}");
     expect(treeReadModel).toContain("logical_path in ${sql(ancestorpaths)}");

@@ -50,6 +50,8 @@ export type ProjectionRepairWorkRepository = {
     settings: ProjectionRepairSettingsSnapshot;
     maxAttempts: number;
     now: string;
+    knowledgeBaseIds?: string[] | undefined;
+    requireActiveMaintenanceRequest?: boolean | undefined;
   }) => Promise<number>;
   planNext: (input: {
     repairVersion: number;
@@ -152,6 +154,13 @@ export type ProjectionRepairBuildRepository = {
     entries: OrderedDirectoryEntry[];
       nextCursor: ProjectionRepairDirectoryCursor | null;
   }>;
+  listActiveDirectoryReferences: (input: {
+    task: ProjectionRepairWorkItem;
+  }) => Promise<Array<{
+    refKind: "directory_root" | "directory_leaf";
+    refKey: string;
+    logicalPath: string;
+  }>>;
   directoryExists: (input: {
     task: ProjectionRepairWorkItem;
   }) => Promise<boolean>;

@@ -275,26 +275,29 @@ export function createSourceFileQueueProcessor(
           if (!lexicalProjection) {
             throw new Error("Lexical projection service is unavailable");
           }
-          await runBudgeted(resourceBudgets?.databaseMutation, () =>
-            persistBodySearchProjection({
-              repository: lexicalProjection.repository,
-              tokenizer: lexicalProjection.tokenizer,
-              knowledgeBaseId: input.knowledgeBaseId,
-              sourceFileId: source.id,
-              sourceRevisionId,
-              relativePath: source.relativePath,
-              title: readMetadataText(metadataResult.resolved.metadata.title)
-                ?? source.relativePath.split("/").at(-1)
-                ?? source.relativePath,
-              summary: readMetadataText(metadataResult.resolved.metadata.description),
-              body: metadataResult.resolved.body,
-              completedAt: progressClock()
-            })
+          const searchProjection = await runBudgeted(
+            resourceBudgets?.databaseMutation,
+            () =>
+              persistBodySearchProjection({
+                repository: lexicalProjection.repository,
+                tokenizer: lexicalProjection.tokenizer,
+                knowledgeBaseId: input.knowledgeBaseId,
+                sourceFileId: source.id,
+                sourceRevisionId,
+                relativePath: source.relativePath,
+                title: readMetadataText(metadataResult.resolved.metadata.title)
+                  ?? source.relativePath.split("/").at(-1)
+                  ?? source.relativePath,
+                summary: readMetadataText(metadataResult.resolved.metadata.description),
+                body: metadataResult.resolved.body,
+                completedAt: progressClock()
+              })
           );
           await runBudgeted(resourceBudgets?.databaseMutation, () => completion.complete({
             knowledgeBaseId: input.knowledgeBaseId,
             sourceFileId: source.id,
             sourceRevisionId,
+            searchDocumentId: searchProjection.documentId,
             graphNeighborSourceFileIds: graphStageResult.affectedSourceFileIds.filter(
               (sourceFileId) => sourceFileId !== source.id
             ),

@@ -36,9 +36,14 @@ function uniqueTerms(values: string[], limit: number): string[] {
     output.push(normalized);
     if (output.length >= limit) break;
   }
-  return output;
+  const informative = output.filter((value) => !isSingleNumericFragment(value));
+  return informative.length > 0 ? informative : output.slice(0, 1);
 }
 
 function normalizeToken(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase("en-US").trim();
+}
+
+function isSingleNumericFragment(value: string): boolean {
+  return /^\p{N}$/u.test(value);
 }

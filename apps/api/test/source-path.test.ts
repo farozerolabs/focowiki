@@ -65,6 +65,15 @@ describe("source path policy", () => {
     expect(() => normalizeSourceRelativePath(input)).toThrow(SourcePathValidationError);
   });
 
+  it.each([
+    "root/report\u202Efdp.md",
+    "root/report\u2066safe.md"
+  ])("rejects bidirectional control characters in source path %s", (input) => {
+    expect(() => normalizeSourceRelativePath(input)).toThrow(
+      expect.objectContaining({ code: "control_character" })
+    );
+  });
+
   it("allows equal basenames at different relative paths", () => {
     const left = normalizeSourceRelativePath("department-a/guide.md");
     const right = normalizeSourceRelativePath("department-b/guide.md");

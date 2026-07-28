@@ -5,6 +5,7 @@ const DEFAULT_DATABASE_POOL_MAX = 10;
 const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
 const DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX = 4;
 const DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX = 8;
+const DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX = 8;
 const DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX = 2;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
 const DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE = 200;
@@ -155,6 +156,7 @@ export type RuntimeConfig = {
     sourceWorkerPoolMax?: number;
     publicationWorkerPoolMax?: number;
     projectionRepairWorkerPoolMax?: number;
+    lexicalRebuildWorkerPoolMax?: number;
     maintenanceWorkerPoolMax?: number;
   };
   redis: {
@@ -289,6 +291,12 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX,
     issues
   );
+  const lexicalRebuildWorkerPoolMax = optionalPositiveInteger(
+    env,
+    "LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX",
+    DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX,
+    issues
+  );
   const maintenanceWorkerPoolMax = optionalPositiveInteger(
     env,
     "MAINTENANCE_WORKER_DATABASE_POOL_MAX",
@@ -341,6 +349,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       sourceWorkerPoolMax,
       publicationWorkerPoolMax,
       projectionRepairWorkerPoolMax,
+      lexicalRebuildWorkerPoolMax,
       maintenanceWorkerPoolMax
     },
     redis: {

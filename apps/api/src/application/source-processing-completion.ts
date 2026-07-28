@@ -14,6 +14,7 @@ export type SourceProcessingCompletion = {
     knowledgeBaseId: string;
     sourceFileId: string;
     sourceRevisionId: string;
+    searchDocumentId: string;
     graphNeighborSourceFileIds: string[];
     graphEdgeIds: string[];
     removedGraphEdgeIds: string[];
@@ -62,6 +63,7 @@ export function createSourceProcessingCompletion(input: {
         operationId: current.operationId,
         changeFactId,
         planningContext: {
+          searchDocumentId: request.searchDocumentId,
           graphNeighborSourceFileIds: request.graphNeighborSourceFileIds,
           graphEdgeIds: request.graphEdgeIds,
           removedGraphEdgeIds: request.removedGraphEdgeIds,

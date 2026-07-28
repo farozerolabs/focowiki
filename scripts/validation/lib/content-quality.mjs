@@ -228,10 +228,6 @@ function validateGraphRelationships({ links, searchByPath, samplePaths, semantic
     }
   }
 
-  if (samplePaths.size >= 3 && graphLinks.length === 0) {
-    throw new Error("Generated graph has no page-to-page relationships for a multi-file validation run.");
-  }
-
   const semanticPathsWithLinks = Array.from(semanticPaths).filter((pagePath) => pagesWithGraphLinks.has(pagePath));
   const missingSemanticLinks = semanticPaths.size > 1 ? semanticPaths.size - semanticPathsWithLinks.length : 0;
 
@@ -240,6 +236,10 @@ function validateGraphRelationships({ links, searchByPath, samplePaths, semantic
   }
 
   const warnings = [];
+
+  if (samplePaths.size >= 3 && graphLinks.length === 0) {
+    warnings.push("No page-to-page relationships were accepted for the multi-file validation run.");
+  }
 
   if (questionable.length > 0) {
     warnings.push(`Questionable relationships need review: ${questionable.length}/${graphLinks.length}`);

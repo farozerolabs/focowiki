@@ -390,8 +390,9 @@ describe("lightweight architecture boundaries", () => {
     );
 
     expect(repository).toContain("FROM unnest(");
-    expect(repository).toContain("orphanObjects.map((object) => object.key)");
-    expect(repository).not.toContain("for (const object of orphanObjects)");
+    expect(repository).toContain("upsertOrphanCandidates(");
+    expect(repository).toContain("${objects.map((object) => object.key)}::text[]");
+    expect(repository).not.toContain("for (const object of objects)");
   });
 
   it("keeps role worker queue state restartable and bounded", () => {
@@ -430,6 +431,18 @@ describe("lightweight architecture boundaries", () => {
     expect(repairMain).toContain("createPostgresProjectionRepairWorkRepository");
     expect(repairMain).toContain('role: "projection_repair"');
     expect(repairMain).toContain("work.claimBatch");
+  });
+
+  it("keeps every maintenance-owned projection bootstrap behind request ownership", () => {
+    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
+    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
+
+    expect(maintenanceMain).toMatch(
+      /projectionRepairs\.bootstrap\(\{[\s\S]*?requireActiveMaintenanceRequest: true[\s\S]*?\}\)/
+    );
+    expect(repairMain).toMatch(
+      /work\.bootstrap\(\{[\s\S]*?requireActiveMaintenanceRequest: true[\s\S]*?\}\)/
+    );
   });
 
   it("keeps the last valid repair settings when a live refresh is temporarily unavailable", () => {
@@ -525,10 +538,14 @@ describe("lightweight architecture boundaries", () => {
 
   it("keeps Admin polling page-scoped and visibility-aware", () => {
     const detailPage = readWorkspaceFile("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx");
+    const detailRefresh = readWorkspaceFile(
+      "apps/admin/src/hooks/use-detail-page-refresh.ts"
+    );
+    const pollingBoundary = `${detailPage}\n${detailRefresh}`;
 
-    expect(detailPage).toContain("document.visibilityState");
-    expect(detailPage).toContain("shouldScheduleSourceFileRefresh");
-    expect(detailPage).not.toContain("window.setInterval");
+    expect(pollingBoundary).toContain("document.visibilityState");
+    expect(pollingBoundary).toContain("shouldScheduleSourceFileRefresh");
+    expect(pollingBoundary).not.toContain("window.setInterval");
   });
 
   it("keeps active read models out of queue, assembly, compaction, and migration advancement", () => {

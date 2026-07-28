@@ -10,7 +10,7 @@ export type SourceFileRefreshSnapshot = {
 };
 
 export type SourceFileRefreshScheduleInput = {
-  activeView: "file" | "processing";
+  activeView: "file" | "processing" | "settings";
   isVisible: boolean;
   sourceFiles: SourceFileRecord[];
 };
@@ -32,6 +32,13 @@ export function shouldScheduleSourceFileRefresh({
   sourceFiles
 }: SourceFileRefreshScheduleInput): boolean {
   return activeView === "processing" && isVisible && sourceFiles.some(isActiveSourceFile);
+}
+
+export function shouldScheduleMaintenanceRefresh(input: {
+  activeView: SourceFileRefreshScheduleInput["activeView"];
+  isVisible: boolean;
+}): boolean {
+  return input.activeView === "settings" && input.isVisible;
 }
 
 export function normalizeSourceFileRefreshAfterMs(

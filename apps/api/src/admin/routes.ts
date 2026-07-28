@@ -70,7 +70,14 @@ import type { SourceDispatchRepository } from "../application/ports/source-dispa
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
 import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
+import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
 import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
+import type {
+  KnowledgeBaseIndexMaintenanceRepository
+} from "../application/ports/knowledge-base-index-maintenance-repository.js";
+import {
+  registerAdminKnowledgeBaseIndexMaintenanceRoutes
+} from "./knowledge-base-index-maintenance-routes.js";
 
 export type AdminApiServices = {
   config: RuntimeConfig;
@@ -90,7 +97,9 @@ export type AdminApiServices = {
   sourceFileRetries: SourceFileRetryRepository | null;
   sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
   storageReconciliation: StorageReconciliationRepository | null;
+  objectProtection: ObjectProtectionRepository | null;
   maintenanceProgress: MaintenanceProgressRepository | null;
+  knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
@@ -130,6 +139,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     {
       runtimeSettings,
       storageReconciliation: services.storageReconciliation,
+      objectProtection: services.objectProtection,
       storagePrefix: config.storage.prefix
     },
     {
@@ -208,10 +218,24 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       roleJobs: services.roleJobs,
       publicationGenerations: services.publicationGenerations,
       sourceDispatch: services.sourceDispatch,
-      maintenanceProgress: services.maintenanceProgress
+      maintenanceProgress: services.maintenanceProgress,
+      knowledgeBaseIndexMaintenance: services.knowledgeBaseIndexMaintenance
     },
     {
       requireAuth
+    }
+  );
+  registerAdminKnowledgeBaseIndexMaintenanceRoutes(
+    app,
+    {
+      config,
+      repositories,
+      requests: services.knowledgeBaseIndexMaintenance,
+      runtimeSettings
+    },
+    {
+      requireAuth,
+      requireWriteProtection
     }
   );
   registerAdminPublicUrlRoutes(

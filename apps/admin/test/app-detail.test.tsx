@@ -8,9 +8,11 @@ import {
   deleteKnowledgeBaseSourceFileTasks,
   fetchKnowledgeBaseFileDetail,
   fetchKnowledgeBaseFileTree,
+  fetchKnowledgeBaseProcessingSummary,
   fetchKnowledgeBasePublicUrls,
   listSourceFiles,
   loginAdmin,
+  requestKnowledgeBaseIndexMaintenance,
   searchKnowledgeBaseFileTree,
 } from "../src/lib/admin-api";
 
@@ -180,6 +182,21 @@ vi.mock("../src/lib/admin-api", () => ({
       },
       compaction: { active: null, latestCompleted: null }
     },
+    indexMaintenance: {
+      requestId: null,
+      state: "idle",
+      trigger: null,
+      stage: null,
+      active: false,
+      completedCount: 0,
+      expectedCount: 0,
+      retryCount: 0,
+      lastProgressAt: null,
+      lastCompletedAt: null,
+      maintenanceRequired: true,
+      safeErrorCode: null,
+      safeErrorMessage: null
+    },
     dirtySourceFiles: {
       count: 0,
       oldestDirtyAt: null
@@ -237,6 +254,19 @@ vi.mock("../src/lib/admin-api", () => ({
   })),
   loginAdmin: vi.fn(async () => true),
   logoutAdmin: vi.fn(async () => undefined),
+  requestKnowledgeBaseIndexMaintenance: vi.fn(async () => ({
+    result: "accepted",
+    maintenance: {
+      requestId: "index-maintenance-001",
+      state: "queued",
+      trigger: "manual",
+      active: true,
+      stage: "queued",
+      completedCount: 0,
+      expectedCount: 0,
+      lastProgressAt: null
+    }
+  })),
   setAdminAuthFailureHandler: vi.fn(),
   uploadKnowledgeBaseSources: vi.fn(),
   uploadSources: vi.fn()
@@ -303,6 +333,13 @@ describe("Admin knowledge base detail", () => {
     });
     expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
     expect(screen.getByText(/type: guide/)).toBeTruthy();
+    expect(
+      document.querySelector('[data-slot="sidebar-wrapper"]')?.className.split(/\s+/u)
+    ).toContain("h-svh");
+    expect(document.querySelector('[data-slot="sidebar-inset"]')?.className).toContain("min-h-0");
+    expect(
+      document.querySelector('[data-slot="knowledge-base-detail-content"]')?.className
+    ).toContain("min-h-0");
   });
 
   it("exposes source-file editing actions from the file tree menu", async () => {
@@ -523,6 +560,91 @@ describe("Admin knowledge base detail", () => {
       )
     ).toBeTruthy();
     expect(screen.queryByText("No active maintenance")).toBeNull();
+  });
+
+  it("requests index maintenance from the knowledge-base settings view", async () => {
+    await openDetail();
+
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    fireEvent.click(settingsButton);
+    await waitFor(() => {
+      expect(settingsButton.getAttribute("data-active")).toBe("true");
+    });
+    expect(await screen.findByRole("heading", { name: "Index maintenance" })).toBeTruthy();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    const primarySetting = screen.getByText("Knowledge base indexes");
+    const maintenanceRequirement = screen.getByText("Maintenance requirement");
+    expect(
+      primarySetting.compareDocumentPosition(maintenanceRequirement)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(screen.getByText("Maintenance required")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Maintain index" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "Maintain this knowledge base?"
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start maintenance" }));
+
+    await waitFor(() => {
+      expect(requestKnowledgeBaseIndexMaintenance).toHaveBeenCalledWith({
+        knowledgeBaseId: "kb-docs",
+        idempotencyKey: expect.any(String)
+      });
+    });
+    expect(await screen.findByText("Maintenance started")).toBeTruthy();
+  });
+
+  it("disables the maintenance action while the server reports active work", async () => {
+    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+      knowledgeBaseId: "kb-docs"
+    });
+    expect(currentSummary).not.toBeNull();
+    if (!currentSummary) {
+      throw new Error("Expected the processing summary fixture.");
+    }
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
+      ...currentSummary,
+      indexMaintenance: {
+        ...currentSummary.indexMaintenance,
+        requestId: "index-maintenance-active",
+        state: "running",
+        trigger: "automatic",
+        stage: "projection:tree",
+        active: true,
+        completedCount: 20,
+        expectedCount: 100
+      }
+    });
+    await openDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const button = await screen.findByRole("button", {
+      name: "Maintenance in progress"
+    });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("20 / 100")).toBeTruthy();
+    expect(screen.getByText("Updating file navigation and relationships")).toBeTruthy();
+  });
+
+  it("shows when index maintenance is not required", async () => {
+    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+      knowledgeBaseId: "kb-docs"
+    });
+    expect(currentSummary).not.toBeNull();
+    if (!currentSummary) {
+      throw new Error("Expected the processing summary fixture.");
+    }
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
+      ...currentSummary,
+      indexMaintenance: {
+        ...currentSummary.indexMaintenance,
+        maintenanceRequired: false
+      }
+    });
+    await openDetail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Up to date")).toBeTruthy();
   });
 
   it("deletes only selected eligible task rows from the current page", async () => {

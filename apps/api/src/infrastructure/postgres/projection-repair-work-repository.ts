@@ -65,20 +65,40 @@ export function createPostgresProjectionRepairWorkRepository(
             base_generation_id, base_resource_revision,
             source_watermark, activation_watermark,
             state, current_phase, settings_revision, settings_snapshot_json,
+            maintenance_request_id, maintenance_request_attempt,
             next_attempt_at, started_at, last_progress_at, created_at, updated_at
           )
           SELECT knowledge_base.id, ${input.repairVersion}, ${input.plannerVersion},
                  knowledge_base.active_generation_id, knowledge_base.resource_revision,
                  knowledge_base.resource_revision, knowledge_base.resource_revision,
                  'pending', 'planning', ${input.settingsRevision},
-                 ${transaction.json(input.settings)}, ${input.now}, ${input.now},
+                 ${transaction.json(input.settings)},
+                 maintenance_request.id,
+                 coalesce(maintenance_request.retry_count, 0),
+                 ${input.now}, ${input.now},
                  ${input.now}, ${input.now}, ${input.now}
           FROM focowiki.knowledge_bases knowledge_base
           JOIN focowiki.publication_generations active_generation
             ON active_generation.id = knowledge_base.active_generation_id
            AND active_generation.knowledge_base_id = knowledge_base.id
            AND active_generation.state = 'active'
+          LEFT JOIN LATERAL (
+            SELECT request.id, request.retry_count
+            FROM focowiki.knowledge_base_index_maintenance_requests request
+            WHERE request.knowledge_base_id = knowledge_base.id
+              AND request.state IN ('planning', 'running', 'validating')
+            ORDER BY request.created_at DESC, request.id DESC
+            LIMIT 1
+          ) maintenance_request ON true
           WHERE knowledge_base.deleted_at IS NULL
+            AND (
+              ${input.knowledgeBaseIds === undefined}
+              OR knowledge_base.id = ANY(${input.knowledgeBaseIds ?? []})
+            )
+            AND (
+              ${input.requireActiveMaintenanceRequest !== true}
+              OR maintenance_request.id IS NOT NULL
+            )
             AND (
               NOT EXISTS (
                 SELECT 1
@@ -105,7 +125,63 @@ export function createPostgresProjectionRepairWorkRepository(
                   AND version.input_version = ${REQUIRED_PROJECTION_REPAIR_VERSIONS.graph}
               )
             )
-          ON CONFLICT (knowledge_base_id, repair_version) DO NOTHING
+          ON CONFLICT (knowledge_base_id, repair_version) DO UPDATE
+          SET planner_version = EXCLUDED.planner_version,
+              base_generation_id = EXCLUDED.base_generation_id,
+              target_generation_id = NULL,
+              base_resource_revision = EXCLUDED.base_resource_revision,
+              source_watermark = EXCLUDED.source_watermark,
+              activation_watermark = EXCLUDED.activation_watermark,
+              state = 'pending',
+              checkpoint_json = '{}'::jsonb,
+              lease_token = NULL,
+              lease_expires_at = NULL,
+              attempt_count = 0,
+              next_attempt_at = EXCLUDED.next_attempt_at,
+              last_error_code = NULL,
+              last_error_message = NULL,
+              completed_at = NULL,
+              settings_revision = EXCLUDED.settings_revision,
+              settings_snapshot_json = EXCLUDED.settings_snapshot_json,
+              maintenance_request_id = EXCLUDED.maintenance_request_id,
+              maintenance_request_attempt = EXCLUDED.maintenance_request_attempt,
+              current_phase = 'planning',
+              expected_subtask_count = 0,
+              completed_subtask_count = 0,
+              expected_record_count = 0,
+              completed_record_count = 0,
+              expected_directory_count = 0,
+              completed_directory_count = 0,
+              expected_object_count = 0,
+              object_write_count = 0,
+              object_reuse_count = 0,
+              retry_count = 0,
+              required_projection_kinds = '{}'::text[],
+              completed_projection_kinds = '{}'::text[],
+              recent_records_per_second = NULL,
+              rolling_batch_latency_ms = NULL,
+              started_at = EXCLUDED.started_at,
+              last_progress_at = EXCLUDED.last_progress_at,
+              last_heartbeat_at = NULL,
+              estimated_completion_at = NULL,
+              updated_at = EXCLUDED.updated_at
+          WHERE focowiki.knowledge_base_projection_repairs.state = 'superseded'
+             OR (
+               focowiki.knowledge_base_projection_repairs.state = 'failed'
+               AND (
+                 ${input.requireActiveMaintenanceRequest !== true}
+                 OR (
+                   EXCLUDED.maintenance_request_id IS NOT NULL
+                   AND (
+                     focowiki.knowledge_base_projection_repairs.maintenance_request_id
+                       IS DISTINCT FROM EXCLUDED.maintenance_request_id
+                     OR focowiki.knowledge_base_projection_repairs
+                          .maintenance_request_attempt
+                        < EXCLUDED.maintenance_request_attempt
+                   )
+                 )
+               )
+             )
           RETURNING knowledge_base_id
         `;
         return rows.length;
@@ -844,6 +920,7 @@ export function createPostgresProjectionRepairWorkRepository(
           settings_revision: number;
           settings_snapshot_json: SerializableJson;
           max_attempts: number;
+          forward_work_pending: boolean;
         }>>`
           SELECT task.knowledge_base_id, task.repair_version,
                  task.target_generation_id,
@@ -854,7 +931,61 @@ export function createPostgresProjectionRepairWorkRepository(
                  repair.required_projection_kinds,
                  repair.settings_revision,
                  repair.settings_snapshot_json,
-                 task.max_attempts
+                 task.max_attempts,
+                 (
+                   EXISTS (
+                     SELECT 1
+                     FROM focowiki.resource_operations operation
+                     WHERE operation.knowledge_base_id = task.knowledge_base_id
+                       AND operation.state IN (
+                         'accepted', 'validating', 'processing', 'publishing'
+                       )
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.source_files source
+                     WHERE source.knowledge_base_id = task.knowledge_base_id
+                       AND source.processing_status IN ('queued', 'running')
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.source_dispatch_markers marker
+                     WHERE marker.knowledge_base_id = task.knowledge_base_id
+                       AND marker.status IN ('pending', 'claimed')
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.publication_change_facts fact
+                     WHERE fact.knowledge_base_id = task.knowledge_base_id
+                       AND fact.assembly_state IN ('pending', 'claimed')
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.publication_generations generation
+                     WHERE generation.knowledge_base_id = task.knowledge_base_id
+                       AND generation.generation_kind = 'normal'
+                       AND generation.state IN ('frozen', 'building', 'validating')
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.deletion_intents intent
+                     WHERE intent.knowledge_base_id = task.knowledge_base_id
+                       AND intent.state IN ('accepted', 'running')
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.upload_sessions upload
+                     WHERE upload.knowledge_base_id = task.knowledge_base_id
+                       AND upload.state = 'finalizing'
+                   )
+                   OR EXISTS (
+                     SELECT 1
+                     FROM focowiki.role_jobs job
+                     WHERE job.knowledge_base_id = task.knowledge_base_id
+                       AND job.role IN ('source', 'publication')
+                       AND job.status IN ('queued', 'running')
+                   )
+                 ) AS forward_work_pending
           FROM focowiki.projection_repair_subtasks task
           JOIN focowiki.knowledge_base_projection_repairs repair
             ON repair.knowledge_base_id = task.knowledge_base_id
@@ -877,14 +1008,23 @@ export function createPostgresProjectionRepairWorkRepository(
         if (row.active_generation_id === row.target_generation_id) {
           return "ready";
         }
-        if (
-          row.active_generation_id === row.task_base_generation_id
-          && Number(row.resource_revision) === Number(row.task_source_watermark)
-        ) {
-          return "ready";
-        }
-
         if (row.active_generation_id === row.task_base_generation_id) {
+          if (
+            row.forward_work_pending
+            && await canActivateBeforeRecoverablePublication(
+              transaction,
+              row.knowledge_base_id,
+              row.task_base_generation_id
+            )
+          ) {
+            return "ready";
+          }
+          if (
+            !row.forward_work_pending
+            && Number(row.resource_revision) === Number(row.task_source_watermark)
+          ) {
+            return "ready";
+          }
           await deferFinalizeForCatchUp(transaction, {
             taskId: input.task.id,
             scheduledAt: input.scheduledAt,
@@ -893,7 +1033,10 @@ export function createPostgresProjectionRepairWorkRepository(
           });
           await transaction`
             UPDATE focowiki.knowledge_base_projection_repairs
-            SET current_phase = 'catch_up',
+            SET current_phase = CASE
+                  WHEN ${row.forward_work_pending} THEN 'finalizing'
+                  ELSE 'catch_up'
+                END,
                 activation_watermark = ${row.task_source_watermark},
                 last_progress_at = ${input.scheduledAt},
                 last_heartbeat_at = ${input.scheduledAt},
@@ -908,7 +1051,6 @@ export function createPostgresProjectionRepairWorkRepository(
 
         const lineage = await transaction<Array<{
           generation_id: string;
-          resource_watermark: number | null;
         }>>`
           WITH RECURSIVE lineage AS (
             SELECT generation.id, generation.predecessor_generation_id, 0 AS depth
@@ -923,21 +1065,13 @@ export function createPostgresProjectionRepairWorkRepository(
             WHERE lineage.id <> ${row.task_base_generation_id}
               AND lineage.depth < 10_000
           )
-          SELECT lineage.id AS generation_id,
-                 max(fact.resource_revision)::bigint AS resource_watermark
+          SELECT lineage.id AS generation_id
           FROM lineage
-          LEFT JOIN focowiki.publication_change_facts fact
-            ON fact.knowledge_base_id = ${row.knowledge_base_id}
-           AND fact.generation_id = lineage.id
           WHERE lineage.id <> ${row.task_base_generation_id}
-          GROUP BY lineage.id, lineage.depth
           ORDER BY lineage.depth DESC
         `;
         const generationIds = lineage.map((generation) => generation.generation_id);
-        const activeWatermark = Math.max(
-          Number(row.task_source_watermark),
-          ...lineage.map((generation) => Number(generation.resource_watermark ?? 0))
-        );
+        const activeWatermark = Number(row.resource_revision);
         const impacts = generationIds.length === 0
           ? []
           : await transaction<Array<{
@@ -1045,7 +1179,9 @@ export function createPostgresProjectionRepairWorkRepository(
             WHERE path.directory_path IS NOT NULL
             ORDER BY path.directory_path
           `;
-          directories = fallback.map((directory) => directory.directory_path);
+          directories = fallback.map((directory) =>
+            normalizeDirectoryPath(directory.directory_path)
+          );
         }
         if (required.has("graph") && graphPartitions.length === 0) {
           const fallback = await transaction<Array<{
@@ -1322,6 +1458,129 @@ export function createPostgresProjectionRepairWorkRepository(
   };
 }
 
+async function canActivateBeforeRecoverablePublication(
+  transaction: TransactionSql<Record<string, never>>,
+  knowledgeBaseId: string,
+  predecessorGenerationId: string
+): Promise<boolean> {
+  const rows = await transaction<Array<{ ready: boolean }>>`
+    WITH recoverable_generations AS MATERIALIZED (
+      SELECT generation.id
+      FROM focowiki.publication_generations generation
+      WHERE generation.knowledge_base_id = ${knowledgeBaseId}
+        AND generation.predecessor_generation_id = ${predecessorGenerationId}
+        AND generation.generation_kind = 'normal'
+        AND generation.state = 'failed'
+        AND (
+          generation.safe_error_message LIKE '%DIRECTORY_NAVIGATION_COUNT_MISMATCH:%'
+          OR generation.safe_error_message LIKE '%DIRECTORY_STATISTICS_MISMATCH:%'
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM focowiki.publication_change_facts fact
+          WHERE fact.knowledge_base_id = generation.knowledge_base_id
+            AND fact.generation_id = generation.id
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM focowiki.publication_change_facts fact
+          WHERE fact.knowledge_base_id = generation.knowledge_base_id
+            AND fact.generation_id = generation.id
+            AND NOT (
+              (
+                fact.planning_payload_json ? 'preplannedImpacts'
+                AND jsonb_typeof(
+                  fact.planning_payload_json -> 'preplannedImpacts'
+                ) = 'array'
+              )
+              OR (
+                fact.planning_payload_json ? 'impactPlanner'
+                AND jsonb_typeof(
+                  fact.planning_payload_json -> 'impactPlanner'
+                ) = 'object'
+              )
+            )
+        )
+    ),
+    recoverable_operations AS MATERIALIZED (
+      SELECT DISTINCT fact.operation_id
+      FROM focowiki.publication_change_facts fact
+      WHERE fact.knowledge_base_id = ${knowledgeBaseId}
+        AND fact.generation_id IN (SELECT id FROM recoverable_generations)
+        AND fact.operation_id IS NOT NULL
+    ),
+    recoverable_deletions AS MATERIALIZED (
+      SELECT DISTINCT fact.deletion_intent_id
+      FROM focowiki.publication_change_facts fact
+      WHERE fact.knowledge_base_id = ${knowledgeBaseId}
+        AND fact.generation_id IN (SELECT id FROM recoverable_generations)
+        AND fact.deletion_intent_id IS NOT NULL
+    )
+    SELECT EXISTS (SELECT 1 FROM recoverable_generations)
+      AND NOT (
+        EXISTS (
+          SELECT 1
+          FROM focowiki.resource_operations operation
+          WHERE operation.knowledge_base_id = ${knowledgeBaseId}
+            AND operation.state IN (
+              'accepted', 'validating', 'processing', 'publishing'
+            )
+            AND operation.id NOT IN (
+              SELECT operation_id FROM recoverable_operations
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.source_files source
+          WHERE source.knowledge_base_id = ${knowledgeBaseId}
+            AND source.processing_status IN ('queued', 'running')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.source_dispatch_markers marker
+          WHERE marker.knowledge_base_id = ${knowledgeBaseId}
+            AND marker.status IN ('pending', 'claimed')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.publication_change_facts fact
+          WHERE fact.knowledge_base_id = ${knowledgeBaseId}
+            AND fact.assembly_state IN ('pending', 'claimed')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.publication_generations generation
+          WHERE generation.knowledge_base_id = ${knowledgeBaseId}
+            AND generation.generation_kind = 'normal'
+            AND generation.state IN ('frozen', 'building', 'validating')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.deletion_intents intent
+          WHERE intent.knowledge_base_id = ${knowledgeBaseId}
+            AND intent.state IN ('accepted', 'running')
+            AND intent.id NOT IN (
+              SELECT deletion_intent_id FROM recoverable_deletions
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.upload_sessions upload
+          WHERE upload.knowledge_base_id = ${knowledgeBaseId}
+            AND upload.state = 'finalizing'
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM focowiki.role_jobs job
+          WHERE job.knowledge_base_id = ${knowledgeBaseId}
+            AND job.role IN ('source', 'publication')
+            AND job.status IN ('queued', 'running')
+        )
+      ) AS ready
+  `;
+  return rows[0]?.ready ?? false;
+}
+
 async function recoverDirectoryValidationFailures(
   transaction: TransactionSql,
   input: {
@@ -1472,7 +1731,8 @@ async function deferFinalizeForCatchUp(
 
 function normalizeDirectoryPath(projectionKey: string): string {
   const normalized = projectionKey.split("/").filter(Boolean).join("/");
-  return normalized ? `pages/${normalized}` : "pages";
+  if (!normalized || normalized === "pages") return "pages";
+  return normalized.startsWith("pages/") ? normalized : `pages/${normalized}`;
 }
 
 function uniqueSorted(values: string[]): string[] {

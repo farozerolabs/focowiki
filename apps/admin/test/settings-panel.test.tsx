@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SettingsPage } from "../src/pages/SettingsPage";
+import { SettingsPanel } from "../src/components/settings-panel";
 import { initI18n } from "../src/i18n";
 import {
   createRuntimeModel,
@@ -124,6 +124,9 @@ vi.mock("@/lib/admin-api", () => ({
         genericPhraseThreshold: 4
       },
       maintenance: {
+        knowledgeBaseMaintenanceMode: "manual",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
+        knowledgeBaseMaintenanceConcurrency: 1,
         reconciliationEnabled: true,
         scanIntervalSeconds: 21600,
         scanBatchSize: 500,
@@ -136,7 +139,13 @@ vi.mock("@/lib/admin-api", () => ({
         compactionConcurrency: 1,
         projectionRepairConcurrency: 4,
         projectionRepairDatabaseBatchSize: 2000,
-        projectionRepairObjectWriteConcurrency: 8
+        projectionRepairObjectWriteConcurrency: 8,
+        lexicalRebuildConcurrency: 4,
+        lexicalRebuildSourceReadConcurrency: 8,
+        lexicalRebuildDatabaseWriteConcurrency: 2,
+        lexicalRebuildClaimBatchSize: 500,
+        lexicalRebuildDatabaseBatchSize: 50,
+        lexicalRebuildMaxInFlightSourceBytes: 67_108_864
       },
       activeModel: {
         id: "model-001"
@@ -162,7 +171,42 @@ vi.mock("@/lib/admin-api", () => ({
         updatedAt: "2026-06-14T00:00:00.000Z",
         lastUsedAt: null
       }
-    ]
+    ],
+    maintenanceStatus: {
+      state: "scanning",
+      lastScanStartedAt: "2026-07-27T10:00:00.000Z",
+      lastScanCompletedAt: "2026-07-27T09:00:00.000Z",
+      listedCount: 500,
+      quarantinedCount: 2,
+      deletedCount: 1,
+      missingCount: 0,
+      retryCount: 0,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      resolvedCount: 3,
+      pendingCount: 4,
+      databaseChunkSize: 100,
+      recentObjectsPerSecond: 50.1234,
+      rollingBatchLatencyMs: 20,
+      heartbeatAt: "2099-07-27T10:00:00.000Z",
+      lastProgressAt: "2099-07-27T10:00:00.000Z"
+    },
+    objectProtectionStatus: {
+      readiness: "backfilling",
+      phase: "source_files",
+      processedCount: 400,
+      expectedCount: 1_000,
+      verifiedCount: 0,
+      dirtyCount: 3,
+      retryCount: 0,
+      recentObjectsPerSecond: 80,
+      rollingBatchLatencyMs: 25,
+      lastProgressAt: "2099-07-27T10:00:00.000Z",
+      heartbeatAt: "2099-07-27T10:00:01.000Z",
+      estimatedCompletionAt: "2099-07-27T10:01:00.000Z",
+      lastErrorCode: null,
+      lastErrorMessage: null
+    }
   })),
   pauseRuntimeModel: vi.fn(),
   resumeRuntimeModel: vi.fn(),
@@ -182,16 +226,16 @@ vi.mock("@/lib/admin-api", () => ({
   } }))
 }));
 
-describe("SettingsPage", () => {
+describe("SettingsPanel", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     await initI18n("en-US").then((i18n) => i18n.changeLanguage("en-US"));
   });
 
   it("loads runtime settings and confirms model deletion", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -217,9 +261,9 @@ describe("SettingsPage", () => {
   });
 
   it("keeps empty required number fields empty and blocks settings save", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const maxRequests = document.getElementById("adminLogin-max") as HTMLInputElement | null;
     expect(maxRequests).toBeTruthy();
     if (!maxRequests) {
@@ -237,9 +281,9 @@ describe("SettingsPage", () => {
   });
 
   it("shows and saves bounded maintenance settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const maintenanceTab = screen.getByRole("tab", { name: "Maintenance" });
     fireEvent.pointerDown(maintenanceTab);
     fireEvent.mouseDown(maintenanceTab);
@@ -249,7 +293,16 @@ describe("SettingsPage", () => {
       expect(maintenanceTab.getAttribute("data-state")).toBe("active");
     });
     const scanBatchSize = document.getElementById("maintenance-scanBatchSize") as HTMLInputElement;
+    const automaticInterval = document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceScanIntervalSeconds"
+    ) as HTMLInputElement;
+    const knowledgeBaseConcurrency = document.getElementById(
+      "maintenance-knowledgeBaseMaintenanceConcurrency"
+    ) as HTMLInputElement;
     expect(scanBatchSize?.value).toBe("500");
+    expect(automaticInterval?.value).toBe("21600");
+    expect(automaticInterval?.disabled).toBe(true);
+    expect(knowledgeBaseConcurrency?.value).toBe("1");
     const repairConcurrency = document.getElementById(
       "maintenance-projectionRepairConcurrency"
     ) as HTMLInputElement;
@@ -259,35 +312,85 @@ describe("SettingsPage", () => {
     const repairObjectWrites = document.getElementById(
       "maintenance-projectionRepairObjectWriteConcurrency"
     ) as HTMLInputElement;
+    const lexicalConcurrency = document.getElementById(
+      "maintenance-lexicalRebuildConcurrency"
+    ) as HTMLInputElement;
+    const lexicalSourceReads = document.getElementById(
+      "maintenance-lexicalRebuildSourceReadConcurrency"
+    ) as HTMLInputElement;
+    const lexicalDatabaseWrites = document.getElementById(
+      "maintenance-lexicalRebuildDatabaseWriteConcurrency"
+    ) as HTMLInputElement;
+    const lexicalClaimBatch = document.getElementById(
+      "maintenance-lexicalRebuildClaimBatchSize"
+    ) as HTMLInputElement;
+    const lexicalDatabaseBatch = document.getElementById(
+      "maintenance-lexicalRebuildDatabaseBatchSize"
+    ) as HTMLInputElement;
+    const lexicalInFlightBytes = document.getElementById(
+      "maintenance-lexicalRebuildMaxInFlightSourceBytes"
+    ) as HTMLInputElement;
     expect(repairConcurrency?.value).toBe("4");
     expect(repairBatchSize?.value).toBe("2000");
     expect(repairObjectWrites?.value).toBe("8");
+    expect(lexicalConcurrency?.value).toBe("4");
+    expect(lexicalSourceReads?.value).toBe("8");
+    expect(lexicalDatabaseWrites?.value).toBe("2");
+    expect(lexicalClaimBatch?.value).toBe("500");
+    expect(lexicalDatabaseBatch?.value).toBe("50");
+    expect(lexicalInFlightBytes?.value).toBe("67108864");
     expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
-    expect(screen.getByText(/S3 page limit is 1,000 objects/)).toBeTruthy();
+    expect(document.getElementById("maintenance-lexicalRebuildWorkerPoolMax")).toBeNull();
+    expect(screen.getByText(/Larger pages also create more bounded database chunks/)).toBeTruthy();
+    expect(screen.getByText(/Concurrent lexical rebuild work lanes/)).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.getByText("Source file protection")).toBeTruthy();
+    expect(screen.getByText(/Objects resolved/)).toBeTruthy();
+    expect(screen.getByText(/Pending candidates/)).toBeTruthy();
+    expect(screen.getByText(/Database chunk size/)).toBeTruthy();
+    expect(screen.getByText(/Protection verified/)).toBeTruthy();
+    expect(screen.getByText(/Reconciliation heartbeat/)).toBeTruthy();
+    expect(screen.getByText(/Estimated completion/)).toBeTruthy();
+    expect(screen.getByText("50.1")).toBeTruthy();
 
     fireEvent.change(repairConcurrency, { target: { value: "6" } });
     fireEvent.change(repairBatchSize, { target: { value: "3000" } });
     fireEvent.change(repairObjectWrites, { target: { value: "10" } });
+    fireEvent.change(lexicalConcurrency, { target: { value: "6" } });
+    fireEvent.change(lexicalSourceReads, { target: { value: "12" } });
+    fireEvent.change(lexicalDatabaseWrites, { target: { value: "3" } });
+    fireEvent.change(lexicalClaimBatch, { target: { value: "750" } });
+    fireEvent.change(lexicalDatabaseBatch, { target: { value: "75" } });
+    fireEvent.change(lexicalInFlightBytes, { target: { value: "134217728" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateMaintenanceSettings).toHaveBeenCalledWith(
         expect.objectContaining({
+          knowledgeBaseMaintenanceMode: "manual",
+          knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
+          knowledgeBaseMaintenanceConcurrency: 1,
           reconciliationEnabled: true,
           scanBatchSize: 500,
           confirmationPasses: 2,
           projectionRepairConcurrency: 6,
           projectionRepairDatabaseBatchSize: 3000,
-          projectionRepairObjectWriteConcurrency: 10
+          projectionRepairObjectWriteConcurrency: 10,
+          lexicalRebuildConcurrency: 6,
+          lexicalRebuildSourceReadConcurrency: 12,
+          lexicalRebuildDatabaseWriteConcurrency: 3,
+          lexicalRebuildClaimBatchSize: 750,
+          lexicalRebuildDatabaseBatchSize: 75,
+          lexicalRebuildMaxInFlightSourceBytes: 134_217_728
         })
       );
     });
   });
 
   it("shows model required-field feedback only after an invalid submit", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     const modelsTab = screen.getByRole("tab", { name: "Models" });
     fireEvent.pointerDown(modelsTab);
     fireEvent.mouseDown(modelsTab);
@@ -305,17 +408,17 @@ describe("SettingsPage", () => {
   });
 
   it("removes upload admission controls from the settings surface", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
+    render(<SettingsPanel />);
 
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Upload and generation" })).toBeNull();
     expect(document.getElementById("upload-generation-maxBytes")).toBeNull();
     expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
   });
 
   it("saves source worker generation and hysteresis settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Worker" }));
 
     const generationBatchSize = await waitFor(() => {
@@ -340,8 +443,8 @@ describe("SettingsPage", () => {
   });
 
   it("saves publication pressure and bounded work settings", async () => {
-    render(<SettingsPage onBack={vi.fn()} onLogout={vi.fn()} />);
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    render(<SettingsPanel />);
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Publication" }));
 
     const impactBatchSize = await waitFor(() => {

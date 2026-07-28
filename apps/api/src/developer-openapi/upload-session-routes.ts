@@ -14,8 +14,13 @@ import {
   repositoryUnavailable,
   validationError
 } from "./errors.js";
-import { readLimit, safe } from "./route-helpers.js";
+import {
+  readDeveloperJsonObjectBody,
+  readLimit,
+  safe
+} from "./route-helpers.js";
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
+import { readIdempotencyKey } from "./idempotency-key.js";
 
 export function registerDeveloperOpenApiUploadSessionRoutes(
   app: Hono,
@@ -26,14 +31,15 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
   app.post(prefix, async (context) =>
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const body = await readJsonBody(context.req.raw);
-      const idempotencyKey = context.req.header("idempotency-key")?.trim() ?? "";
+      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const idempotencyKey = readIdempotencyKey(
+        context.req.header("idempotency-key")
+      );
       if (
-        !idempotencyKey ||
         !isNonNegativeInteger(body.declaredFileCount) ||
         !isNonNegativeInteger(body.declaredByteCount)
       ) {
-        throw validationError("Upload session totals and Idempotency-Key are required.");
+        throw validationError("Upload session totals are required.");
       }
       const declaredFileCount = body.declaredFileCount;
       const declaredByteCount = body.declaredByteCount;
@@ -59,7 +65,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
   app.post(`${prefix}/:uploadSessionId/entries`, async (context) =>
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const body = await readJsonBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(context.req.raw);
       if (!Array.isArray(body.entries) || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE) {
         await recordUploadSessionAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_MANIFEST_PAGE");
         throw validationError("Manifest page is invalid.");
@@ -305,13 +311,6 @@ function readManifestEntry(value: unknown) {
         checksumSha256: record.checksumSha256 ?? null
       }
     : null;
-}
-
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
-  const body = await request.json().catch(() => null);
-  return body && typeof body === "object" && !Array.isArray(body)
-    ? (body as Record<string, unknown>)
-    : {};
 }
 
 function readTransferState(value: string | undefined): "missing" | "failed" | "uploaded" | null {

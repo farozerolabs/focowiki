@@ -13,6 +13,7 @@ export async function runIncrementalStatisticsReconciliationSlice(input: {
   now: string;
   leaseExpiresAt: string;
   reconciledBefore: string;
+  knowledgeBaseId?: string | undefined;
 }): Promise<IncrementalStatisticsReconciliationResult> {
   const claim = await input.repository.claimForReconciliation(input);
   if (!claim) return { claimed: false, changed: false, failed: false };

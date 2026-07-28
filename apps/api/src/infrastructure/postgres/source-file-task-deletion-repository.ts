@@ -24,11 +24,16 @@ type SourceRow = {
   deleted_at: Date | null;
   task_deleted_at: Date | null;
   deletion_intent_id: string | null;
+  candidate_operation_id: string | null;
 };
 
 type RoleJobRow = {
   source_file_id: string;
   status: string;
+};
+
+type ActiveOperationTargetRow = {
+  source_file_id: string;
 };
 
 type GenerationRow = {
@@ -62,9 +67,11 @@ export function createPostgresSourceFileTaskDeletionRepository(
         const sources = await transaction<SourceRow[]>`
           SELECT id, knowledge_base_id, active_revision_id, relative_path,
                  resource_revision, processing_status,
-                 deleted_at, task_deleted_at, deletion_intent_id
+                 deleted_at, task_deleted_at, deletion_intent_id,
+                 candidate_operation_id
           FROM focowiki.source_files
           WHERE id = ANY(${sourceFileIds})
+          ORDER BY id
           FOR UPDATE
         `;
         const sourceJobs = await transaction<RoleJobRow[]>`
@@ -75,6 +82,21 @@ export function createPostgresSourceFileTaskDeletionRepository(
             AND status IN ('queued', 'running')
           FOR UPDATE
         `;
+        const activeOperationTargets =
+          await transaction<ActiveOperationTargetRow[]>`
+            SELECT target.target_id AS source_file_id
+            FROM focowiki.resource_operation_targets target
+            JOIN focowiki.resource_operations operation
+              ON operation.id = target.operation_id
+             AND operation.knowledge_base_id = ${input.knowledgeBaseId}
+             AND operation.state IN (
+               'accepted', 'validating', 'processing', 'publishing'
+             )
+            WHERE target.target_kind = 'source_file'
+              AND target.target_id = ANY(${sourceFileIds})
+            ORDER BY target.target_id, operation.id
+            FOR UPDATE OF operation
+          `;
         const activeRows = await transaction<Array<{
           source_file_id: string;
           file_id: string | null;
@@ -100,6 +122,9 @@ export function createPostgresSourceFileTaskDeletionRepository(
 
         const sourceById = new Map(sources.map((source) => [source.id, source]));
         const jobsBySourceId = groupJobs(sourceJobs);
+        const activeOperationSourceIds = new Set(
+          activeOperationTargets.map((target) => target.source_file_id)
+        );
         const activeBySourceId = new Map(activeRows.map((row) => [row.source_file_id, row]));
         const graphBySourceId = groupGraphEdges(graphEdges);
         const results: SourceFileTaskDeletionRepositoryResult[] = [];
@@ -119,6 +144,13 @@ export function createPostgresSourceFileTaskDeletionRepository(
             continue;
           }
           if (source.processing_status === "running") {
+            results.push({ sourceFileId, outcome: "skipped", reason: "running" });
+            continue;
+          }
+          if (
+            source.candidate_operation_id
+            || activeOperationSourceIds.has(sourceFileId)
+          ) {
             results.push({ sourceFileId, outcome: "skipped", reason: "running" });
             continue;
           }
@@ -326,6 +358,7 @@ async function commitDeletionProjection(
     changeKind: "source_deleted",
     sourceFileId: input.source.id,
     sourceRevisionId: input.source.active_revision_id,
+    deletionIntentId: input.deletionIntentId,
     previousPath: input.source.relative_path,
     path: null,
     impacts,

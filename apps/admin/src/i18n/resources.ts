@@ -65,6 +65,9 @@ export const resources = {
         directoryAcceptedDescription: "{{count}} source files will be removed after publication."
       },
       home: {
+        sectionNavigation: "Home sections",
+        toggleSidebar: "Toggle sidebar",
+        toggleSidebarRail: "Collapse or expand sidebar",
         knowledgeBasesTab: "Knowledge bases",
         openapiKeysTab: "OpenAPI keys",
         createAction: "Create knowledge base",
@@ -120,16 +123,36 @@ export const resources = {
         },
         maintenance: {
           title: "Maintenance",
-          description: "Tune bounded generated-object reconciliation without restarting the service.",
+          description: "Control knowledge-base index maintenance and generated-object reconciliation.",
           status: {
+            health: "Reconciliation health",
             state: "Last run state",
             completedAt: "Last completed",
             scanned: "Objects scanned",
             quarantined: "Objects quarantined",
+            resolved: "Objects resolved",
+            pending: "Pending candidates",
             deleted: "Objects deleted",
             missing: "Registered objects missing",
             retries: "Retries",
+            databaseChunkSize: "Database chunk size",
+            reconciliationThroughput: "Reconciliation objects per second",
+            reconciliationBatchLatency: "Reconciliation batch latency ms",
+            heartbeat: "Reconciliation heartbeat",
             lastError: "Last error",
+            protectionState: "Protection readiness",
+            protectionPhase: "Protection phase",
+            protectionProgress: "Protection progress",
+            protectionDirty: "Pending refresh",
+            protectionVerified: "Protection verified",
+            protectionRetries: "Protection retries",
+            throughput: "Recent objects per second",
+            batchLatency: "Database batch latency ms",
+            lastProgress: "Reconciliation last progress",
+            protectionHeartbeat: "Protection heartbeat",
+            protectionLastProgress: "Protection last progress",
+            estimatedCompletion: "Estimated completion",
+            protectionError: "Protection error",
             notRun: "Not run",
             none: "None",
             states: {
@@ -137,8 +160,39 @@ export const resources = {
               scanning: "Scanning",
               verifying: "Verifying",
               failed: "Failed"
+            },
+            healthStates: {
+              notRun: "Not run",
+              active: "Active",
+              slow: "Slow",
+              retrying: "Retrying",
+              blocked: "Blocked",
+              failed: "Failed",
+              completed: "Completed"
+            },
+            protectionStates: {
+              pending: "Pending",
+              backfilling: "Building protection index",
+              verifying: "Verifying protection index",
+              ready: "Ready for safe reconciliation",
+              retrying: "Waiting to retry",
+              failed: "Failed"
+            },
+            protectionPhases: {
+              immutable_objects: "Generated object protection",
+              source_files: "Source file protection",
+              projection_segments: "Projection segment protection",
+              dirty_refresh: "Refreshing changed ownership",
+              verify_immutable_objects: "Verifying generated objects",
+              verify_source_files: "Verifying source files",
+              verify_projection_segments: "Verifying projection segments",
+              ready: "Ready"
             }
           }
+        },
+        maintenanceModes: {
+          manual: "Manual",
+          automatic: "Automatic"
         },
         publicationModes: {
           batch: "Batch",
@@ -255,9 +309,12 @@ export const resources = {
             genericPhraseThreshold: "Minimum normalized phrase length for generic shared-phrase filtering. Recommended: 4."
           },
           maintenance: {
+            knowledgeBaseMaintenanceMode: "Controls scheduled knowledge-base index maintenance. Manual mode runs maintenance only from a knowledge base. Automatic mode also checks for due knowledge bases. Recommended: Manual.",
+            knowledgeBaseMaintenanceScanIntervalSeconds: "Time between scheduled knowledge-base maintenance checks in automatic mode. Recommended: 21600 seconds (6 hours).",
+            knowledgeBaseMaintenanceConcurrency: "Knowledge bases maintained at the same time. Recommended: 1, then increase after observing database and storage load.",
             reconciliationEnabled: "Runs bounded reconciliation in the maintenance worker. Keep enabled for normal deployments.",
             scanIntervalSeconds: "Time between complete reconciliation cycles. Recommended: 21600 seconds (6 hours).",
-            scanBatchSize: "Objects listed in one bounded storage page. The S3 page limit is 1,000 objects. Recommended: 500.",
+            scanBatchSize: "Objects listed in one bounded storage page. Larger pages also create more bounded database chunks and increase short-lived database pressure. The S3 page limit is 1,000 objects. Recommended: 500.",
             deletionBatchSize: "Confirmed candidates deleted in one bounded pass. Maximum: 1,000. Recommended: 100.",
             quarantineGracePeriodSeconds: "Minimum time an unregistered object remains quarantined before deletion can be considered. Recommended: 86400 seconds (24 hours).",
             confirmationPasses: "Separate completed scan cycles that must observe the candidate before deletion. Minimum: 2. Recommended: 2.",
@@ -267,7 +324,13 @@ export const resources = {
             compactionConcurrency: "Concurrent projection compaction partitions. Recommended: 1 to 2.",
             projectionRepairConcurrency: "Projection repair subtasks processed at the same time. For an 8-core, 32-GiB server, recommended: 4 to 8. Range: 1 to 16.",
             projectionRepairDatabaseBatchSize: "Projection records handled in one bounded database batch. For an 8-core, 32-GiB server, recommended: 2000. Range: 100 to 10000.",
-            projectionRepairObjectWriteConcurrency: "Generated projection objects written at the same time during repair. For an 8-core, 32-GiB server, recommended: 8. Range: 1 to 32."
+            projectionRepairObjectWriteConcurrency: "Generated projection objects written at the same time during repair. For an 8-core, 32-GiB server, recommended: 8. Range: 1 to 32.",
+            lexicalRebuildConcurrency: "Concurrent lexical rebuild work lanes. For an 8-core, 32-GiB server, recommended: 4. Range: 1 to 16.",
+            lexicalRebuildSourceReadConcurrency: "Source Markdown objects read from storage at the same time. For an 8-core, 32-GiB server, recommended: 2. Range: 1 to 32.",
+            lexicalRebuildDatabaseWriteConcurrency: "Lexical projection batches committed at the same time. For an 8-core, 32-GiB server, recommended: 2. Range: 1 to 16 and no higher than lexical rebuild concurrency.",
+            lexicalRebuildClaimBatchSize: "Durable source work items claimed per cycle. For an 8-core, 32-GiB server, recommended: 500. Range: 50 to 2000.",
+            lexicalRebuildDatabaseBatchSize: "Source files committed in one atomic lexical database batch. For an 8-core, 32-GiB server, recommended: 50. Range: 1 to 250 and no higher than claim batch size.",
+            lexicalRebuildMaxInFlightSourceBytes: "Maximum source Markdown bytes held by active lexical reads. For an 8-core, 32-GiB server, recommended: 67108864 bytes (64 MiB). Range: 1048576 to 536870912."
           },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
@@ -351,6 +414,9 @@ export const resources = {
           publicationShardSize: "Graph publication shard size",
           cacheTtlSeconds: "Graph cache TTL seconds",
           genericPhraseThreshold: "Generic phrase threshold",
+          knowledgeBaseMaintenanceMode: "Knowledge-base maintenance mode",
+          knowledgeBaseMaintenanceScanIntervalSeconds: "Automatic maintenance interval seconds",
+          knowledgeBaseMaintenanceConcurrency: "Knowledge-base maintenance concurrency",
           reconciliationEnabled: "Storage reconciliation",
           scanIntervalSeconds: "Scan interval seconds",
           scanBatchSize: "Scan batch size",
@@ -364,6 +430,12 @@ export const resources = {
           projectionRepairConcurrency: "Projection repair concurrency",
           projectionRepairDatabaseBatchSize: "Projection repair database batch size",
           projectionRepairObjectWriteConcurrency: "Projection repair object write concurrency",
+          lexicalRebuildConcurrency: "Lexical rebuild concurrency",
+          lexicalRebuildSourceReadConcurrency: "Lexical source read concurrency",
+          lexicalRebuildDatabaseWriteConcurrency: "Lexical database write concurrency",
+          lexicalRebuildClaimBatchSize: "Lexical claim batch size",
+          lexicalRebuildDatabaseBatchSize: "Lexical database batch size",
+          lexicalRebuildMaxInFlightSourceBytes: "Lexical in-flight source bytes",
           rootSummaryLimit: "Root summary limit",
           directoryIndexMaxEntries: "Directory index entries per page",
           directoryIndexMaxBytes: "Directory index bytes per page",
@@ -439,6 +511,7 @@ export const resources = {
       },
       detail: {
         back: "Back",
+        settings: "Settings",
         toggleSidebar: "Toggle sidebar",
         resizeSidebar: "Resize sidebar",
         emptyFiles: "Generated files will appear after upload parsing finishes.",
@@ -458,6 +531,59 @@ export const resources = {
         relationshipWeight: "Weight: {{weight}}",
         sourceFiles: "Source files",
         emptyList: "No records"
+      },
+      indexMaintenance: {
+        title: "Index maintenance",
+        description: "Check and update this knowledge base's file tree, search, graph, statistics, and indexes.",
+        cardTitle: "Knowledge base indexes",
+        cardDescription: "Review maintenance status and start a background maintenance run.",
+        requirement: "Maintenance requirement",
+        required: "Maintenance required",
+        upToDate: "Up to date",
+        status: "Status",
+        stage: "Current stage",
+        stageValue: "{{stage}}",
+        progress: "Progress",
+        progressValue: "{{completed}} / {{expected}}",
+        lastCompleted: "Last completed",
+        neverCompleted: "Not completed yet",
+        failure: "Last error",
+        preparing: "Preparing",
+        action: "Maintain index",
+        running: "Maintenance in progress",
+        confirmTitle: "Maintain this knowledge base?",
+        confirmDescription: "Maintenance runs in the background. Existing content remains available while it completes.",
+        confirmAction: "Start maintenance",
+        submitting: "Starting",
+        states: {
+          idle: "Idle",
+          queued: "Queued",
+          planning: "Planning",
+          running: "Running",
+          validating: "Validating",
+          completed: "Completed",
+          failed: "Failed",
+          superseded: "Superseded",
+          canceled: "Canceled"
+        },
+        toast: {
+          accepted: "Maintenance started",
+          alreadyActive: "Maintenance is already in progress",
+          failed: "Maintenance could not start"
+        },
+        stages: {
+          preparing: "Preparing maintenance",
+          projection: "Updating file navigation and relationships",
+          search: "Updating search indexes",
+          compaction: "Optimizing index storage",
+          validating: "Checking maintenance results",
+          retrying: "Waiting to retry"
+        },
+        failures: {
+          general: "Maintenance could not complete. Try again after checking the service status.",
+          statistics: "Knowledge-base statistics could not be updated.",
+          compaction: "Knowledge-base indexes could not be optimized."
+        }
       },
       tasks: {
         title: "File processing",
@@ -626,6 +752,10 @@ export const resources = {
             superseded: "Refreshing the repair plan"
           },
           lexicalRebuildState: "{{phase}} · {{processed}}/{{total}} files",
+          lexicalRebuildWorkers: "{{workers}} workers · {{running}} active · {{pending}} waiting",
+          lexicalRebuildRate: "{{rate}} files/s",
+          lexicalRebuildRetries: "{{count}} retries",
+          lexicalRebuildEta: "ETA {{time}}",
           lexicalRebuildPhase: {
             documents: "Indexing source content",
             lexical_profiles: "Refreshing lexical fields",
@@ -742,6 +872,11 @@ export const resources = {
         editKnowledgeBaseFailed: "Knowledge base update failed",
         loadDirectoriesFailed: "Directories could not be loaded",
         loadSourceContentFailed: "Source content could not be loaded",
+        indexMaintenanceUnavailable: "Knowledge-base maintenance is unavailable",
+        knowledgeBaseNotFound: "Knowledge base not found",
+        knowledgeBaseUnavailable: "Knowledge base is unavailable",
+        indexMaintenanceRequestFailed: "Knowledge-base maintenance could not start",
+        invalidIndexMaintenanceRequest: "Knowledge-base maintenance request is invalid",
         replaceSourceContentFailed: "Source content replacement failed",
         loadOperationsFailed: "Resource operations could not be loaded",
         resourceEditFailed: "Resource update failed",
@@ -820,6 +955,9 @@ export const resources = {
         directoryAcceptedDescription: "发布完成后将移除 {{count}} 个来源文件。"
       },
       home: {
+        sectionNavigation: "首页导航",
+        toggleSidebar: "切换侧边栏",
+        toggleSidebarRail: "收起或展开侧边栏",
         knowledgeBasesTab: "知识库",
         openapiKeysTab: "OpenAPI keys",
         createAction: "创建知识库",
@@ -875,16 +1013,36 @@ export const resources = {
         },
         maintenance: {
           title: "维护",
-          description: "实时调整生成对象的有界存储对账参数，无需重启服务。",
+          description: "设置知识库索引维护和生成对象存储对账。",
           status: {
+            health: "存储对账状态",
             state: "最近运行状态",
             completedAt: "最近完成时间",
             scanned: "已扫描对象",
             quarantined: "已隔离对象",
+            resolved: "已恢复对象",
+            pending: "待确认对象",
             deleted: "已删除对象",
             missing: "缺失的登记对象",
             retries: "重试次数",
+            databaseChunkSize: "数据库处理批次",
+            reconciliationThroughput: "存储对账每秒处理对象",
+            reconciliationBatchLatency: "存储对账批次延迟毫秒",
+            heartbeat: "存储对账心跳",
             lastError: "最近错误",
+            protectionState: "对象保护状态",
+            protectionPhase: "对象保护阶段",
+            protectionProgress: "对象保护进度",
+            protectionDirty: "等待刷新",
+            protectionVerified: "已校验保护对象",
+            protectionRetries: "对象保护重试次数",
+            throughput: "最近每秒处理对象",
+            batchLatency: "数据库批次延迟毫秒",
+            lastProgress: "存储对账最近进度",
+            protectionHeartbeat: "对象保护心跳",
+            protectionLastProgress: "对象保护最近进度",
+            estimatedCompletion: "预计完成时间",
+            protectionError: "对象保护错误",
             notRun: "尚未运行",
             none: "无",
             states: {
@@ -892,8 +1050,39 @@ export const resources = {
               scanning: "扫描中",
               verifying: "校验中",
               failed: "失败"
+            },
+            healthStates: {
+              notRun: "尚未运行",
+              active: "运行中",
+              slow: "处理较慢",
+              retrying: "等待重试",
+              blocked: "等待前置处理",
+              failed: "失败",
+              completed: "已完成"
+            },
+            protectionStates: {
+              pending: "等待开始",
+              backfilling: "正在建立保护索引",
+              verifying: "正在校验保护索引",
+              ready: "可安全对账",
+              retrying: "等待重试",
+              failed: "失败"
+            },
+            protectionPhases: {
+              immutable_objects: "登记生成对象",
+              source_files: "登记来源文件",
+              projection_segments: "登记投影分片",
+              dirty_refresh: "刷新已变更归属",
+              verify_immutable_objects: "校验生成对象",
+              verify_source_files: "校验来源文件",
+              verify_projection_segments: "校验投影分片",
+              ready: "已就绪"
             }
           }
+        },
+        maintenanceModes: {
+          manual: "手动维护",
+          automatic: "自动维护"
         },
         publicationModes: {
           batch: "批量",
@@ -1010,9 +1199,12 @@ export const resources = {
             genericPhraseThreshold: "通用共享短语过滤的最小归一化长度。推荐 4。"
           },
           maintenance: {
+            knowledgeBaseMaintenanceMode: "控制知识库索引维护的启动方式。手动维护仅从知识库详情页启动；自动维护还会定期检查需要维护的知识库。推荐手动维护。",
+            knowledgeBaseMaintenanceScanIntervalSeconds: "自动维护模式下检查知识库是否需要维护的间隔。推荐 21600 秒，也就是 6 小时。",
+            knowledgeBaseMaintenanceConcurrency: "同时维护的知识库数量。推荐从 1 开始，根据数据库和存储负载逐步调整。",
             reconciliationEnabled: "是否由维护 Worker 执行有界存储对账。正常部署推荐开启。",
             scanIntervalSeconds: "完整对账周期之间的间隔。推荐 21600 秒，也就是 6 小时。",
-            scanBatchSize: "单个有界存储页列出的对象数量。S3 单页上限为 1000，推荐 500。",
+            scanBatchSize: "单个有界存储页列出的对象数量。页面越大，内部拆分出的数据库批次越多，短时数据库压力也会增加。S3 单页上限为 1000，推荐 500。",
             deletionBatchSize: "单轮删除的已确认候选数量。最大 1000，推荐 100。",
             quarantineGracePeriodSeconds: "未登记对象在允许删除前必须经过的最短隔离时间。推荐 86400 秒，也就是 24 小时。",
             confirmationPasses: "候选对象必须被不同完整扫描周期重复发现的次数。最小 2，推荐 2。",
@@ -1022,7 +1214,13 @@ export const resources = {
             compactionConcurrency: "同时压缩的投影分区数量。推荐 1 到 2。",
             projectionRepairConcurrency: "同时处理的投影修复子任务数量。8 核 32 GiB 服务器推荐 4 到 8，允许范围 1 到 16。",
             projectionRepairDatabaseBatchSize: "单个有界数据库批次处理的投影记录数量。8 核 32 GiB 服务器推荐 2000，允许范围 100 到 10000。",
-            projectionRepairObjectWriteConcurrency: "投影修复期间同时写入的生成对象数量。8 核 32 GiB 服务器推荐 8，允许范围 1 到 32。"
+            projectionRepairObjectWriteConcurrency: "投影修复期间同时写入的生成对象数量。8 核 32 GiB 服务器推荐 8，允许范围 1 到 32。",
+            lexicalRebuildConcurrency: "同时执行的词法重建工作通道数量。8 核 32 GiB 服务器推荐 4，允许范围 1 到 16。",
+            lexicalRebuildSourceReadConcurrency: "同时从存储读取 Markdown 正文的数量。8 核 32 GiB 服务器推荐 2，允许范围 1 到 32。",
+            lexicalRebuildDatabaseWriteConcurrency: "同时提交的词法投影数据库批次数量。8 核 32 GiB 服务器推荐 2，允许范围 1 到 16，并且不能高于词法重建并发。",
+            lexicalRebuildClaimBatchSize: "每轮领取的持久化来源工作项数量。8 核 32 GiB 服务器推荐 500，允许范围 50 到 2000。",
+            lexicalRebuildDatabaseBatchSize: "单次原子数据库批次提交的来源文件数量。8 核 32 GiB 服务器推荐 50，允许范围 1 到 250，并且不能高于领取批次大小。",
+            lexicalRebuildMaxInFlightSourceBytes: "词法重建读取期间允许驻留的 Markdown 正文字节总量。8 核 32 GiB 服务器推荐 67108864 字节，也就是 64 MiB，允许范围 1048576 到 536870912。"
           },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
@@ -1106,6 +1304,9 @@ export const resources = {
           publicationShardSize: "图发布分片大小",
           cacheTtlSeconds: "图缓存 TTL 秒数",
           genericPhraseThreshold: "通用短语阈值",
+          knowledgeBaseMaintenanceMode: "知识库维护模式",
+          knowledgeBaseMaintenanceScanIntervalSeconds: "自动维护间隔秒数",
+          knowledgeBaseMaintenanceConcurrency: "知识库维护并发",
           reconciliationEnabled: "存储对账",
           scanIntervalSeconds: "扫描间隔秒数",
           scanBatchSize: "扫描批次大小",
@@ -1119,6 +1320,12 @@ export const resources = {
           projectionRepairConcurrency: "投影修复并发",
           projectionRepairDatabaseBatchSize: "投影修复数据库批次大小",
           projectionRepairObjectWriteConcurrency: "投影修复对象写入并发",
+          lexicalRebuildConcurrency: "词法重建并发",
+          lexicalRebuildSourceReadConcurrency: "词法来源读取并发",
+          lexicalRebuildDatabaseWriteConcurrency: "词法数据库写入并发",
+          lexicalRebuildClaimBatchSize: "词法领取批次大小",
+          lexicalRebuildDatabaseBatchSize: "词法数据库批次大小",
+          lexicalRebuildMaxInFlightSourceBytes: "词法在途正文字节数",
           rootSummaryLimit: "根摘要上限",
           directoryIndexMaxEntries: "目录索引单页条目数",
           directoryIndexMaxBytes: "目录索引单页字节数",
@@ -1194,6 +1401,7 @@ export const resources = {
       },
       detail: {
         back: "返回",
+        settings: "设置",
         toggleSidebar: "切换侧边栏",
         resizeSidebar: "调整侧边栏宽度",
         emptyFiles: "上传解析完成后会显示生成文件。",
@@ -1213,6 +1421,59 @@ export const resources = {
         relationshipWeight: "权重：{{weight}}",
         sourceFiles: "来源文件",
         emptyList: "暂无记录"
+      },
+      indexMaintenance: {
+        title: "索引维护",
+        description: "检查并更新当前知识库的文件树、搜索、图关系、统计和索引。",
+        cardTitle: "知识库索引",
+        cardDescription: "查看维护状态并启动后台维护。",
+        requirement: "维护要求",
+        required: "需要维护",
+        upToDate: "当前无需维护",
+        status: "状态",
+        stage: "当前阶段",
+        stageValue: "{{stage}}",
+        progress: "进度",
+        progressValue: "{{completed}} / {{expected}}",
+        lastCompleted: "最近完成",
+        neverCompleted: "尚未完成过",
+        failure: "最近错误",
+        preparing: "准备中",
+        action: "维护索引",
+        running: "正在维护",
+        confirmTitle: "维护当前知识库？",
+        confirmDescription: "维护将在后台运行，完成前现有内容仍可正常读取。",
+        confirmAction: "开始维护",
+        submitting: "正在启动",
+        states: {
+          idle: "空闲",
+          queued: "等待中",
+          planning: "正在规划",
+          running: "正在运行",
+          validating: "正在校验",
+          completed: "已完成",
+          failed: "失败",
+          superseded: "已由新维护替代",
+          canceled: "已取消"
+        },
+        toast: {
+          accepted: "维护已启动",
+          alreadyActive: "当前知识库正在维护",
+          failed: "无法启动维护"
+        },
+        stages: {
+          preparing: "正在准备维护",
+          projection: "正在更新文件导航和关系",
+          search: "正在更新搜索索引",
+          compaction: "正在优化索引存储",
+          validating: "正在检查维护结果",
+          retrying: "等待重试"
+        },
+        failures: {
+          general: "维护未能完成，请检查服务状态后重试。",
+          statistics: "无法更新知识库统计。",
+          compaction: "无法优化知识库索引。"
+        }
       },
       tasks: {
         title: "文件处理",
@@ -1381,6 +1642,10 @@ export const resources = {
             superseded: "正在刷新修复计划"
           },
           lexicalRebuildState: "{{phase}} · {{processed}}/{{total}} 个文件",
+          lexicalRebuildWorkers: "{{workers}} 个 Worker · {{running}} 个处理中 · {{pending}} 个等待中",
+          lexicalRebuildRate: "每秒 {{rate}} 个文件",
+          lexicalRebuildRetries: "已重试 {{count}} 次",
+          lexicalRebuildEta: "预计 {{time}} 完成",
           lexicalRebuildPhase: {
             documents: "正在索引源文件内容",
             lexical_profiles: "正在刷新词法字段",
@@ -1497,6 +1762,11 @@ export const resources = {
         editKnowledgeBaseFailed: "知识库修改失败",
         loadDirectoriesFailed: "无法加载目录",
         loadSourceContentFailed: "无法加载来源正文",
+        indexMaintenanceUnavailable: "知识库维护当前不可用",
+        knowledgeBaseNotFound: "知识库不存在",
+        knowledgeBaseUnavailable: "知识库当前不可用",
+        indexMaintenanceRequestFailed: "无法启动知识库维护",
+        invalidIndexMaintenanceRequest: "知识库维护请求无效",
         replaceSourceContentFailed: "来源正文替换失败",
         loadOperationsFailed: "无法加载资源操作",
         resourceEditFailed: "资源修改失败",

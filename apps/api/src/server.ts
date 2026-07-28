@@ -1,76 +1,21 @@
-import {
-  createOpenAIModelClient,
-  type OpenAIModelClient
-} from "@focowiki/okf";
+import { createOpenAIModelClient } from "@focowiki/okf";
 import { Hono } from "hono";
-import { resolveSecurityConfig, type RuntimeConfig } from "./config.js";
+import { resolveSecurityConfig } from "./config.js";
 import {
-  createAdminSessionManager,
-  type AdminSessionManager
+  createAdminSessionManager
 } from "./auth/session.js";
 import { createBaseApp } from "./app/base.js";
-import type { AdminRepositories } from "./db/admin-repositories.js";
-import type { RedisCoordinator } from "./redis/coordination.js";
+import type { ApiAppOptions } from "./app/api-app-options.js";
 import { registerAdminApiRoutes } from "./admin/routes.js";
 import { registerDeveloperOpenApiRoutes } from "./developer-openapi/routes.js";
-import { createS3StorageAdapter, type StorageAdapter } from "./storage/s3.js";
+import { createS3StorageAdapter } from "./storage/s3.js";
 import {
-  createRuntimeSettingsService,
-  type RuntimeSettingsService
+  createRuntimeSettingsService
 } from "./runtime-settings/service.js";
-import type { ApplicationRuntime } from "./application/ports/runtime.js";
-import type { UploadSessionStoragePort } from "./application/ports/upload-session-storage.js";
 import { systemApplicationRuntime } from "./infrastructure/runtime/system-runtime.js";
 import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
-import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
-import type { ActiveGenerationReadRepository } from "./application/ports/active-generation-read-repository.js";
-import type { RoleJobRepository } from "./application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "./application/ports/publication-generation-repository.js";
-import type { SourceDispatchRepository } from "./application/ports/source-dispatch-repository.js";
-import type { SourceFileRetryRepository } from "./application/ports/source-file-retry-repository.js";
-import type { SourceFileTaskDeletionRepository } from "./application/ports/source-file-task-deletion-repository.js";
-import type { StorageReconciliationRepository } from "./application/ports/storage-reconciliation-repository.js";
-import type { MaintenanceProgressRepository } from "./application/ports/maintenance-progress-repository.js";
-
-export type ApiAppOptions = {
-  config: RuntimeConfig;
-  storage?: StorageAdapter;
-  modelClient?: OpenAIModelClient;
-  redis?: RedisCoordinator;
-  repositories?: AdminRepositories;
-  runtimeSettings?: RuntimeSettingsService;
-  logger?: RuntimeLogger;
-  activeGenerationReads?: ActiveGenerationReadRepository;
-  roleJobs?: RoleJobRepository;
-  publicationGenerations?: PublicationGenerationRepository;
-  sourceDispatch?: SourceDispatchRepository;
-  sourceFileRetries?: SourceFileRetryRepository;
-  sourceFileTaskDeletions?: SourceFileTaskDeletionRepository;
-  storageReconciliation?: StorageReconciliationRepository;
-  maintenanceProgress?: MaintenanceProgressRepository;
-};
-
-type ApiAppServices = {
-  config: RuntimeConfig;
-  storage: StorageAdapter;
-  modelClient: OpenAIModelClient | null;
-  sessionManager: AdminSessionManager | null;
-  redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
-  runtimeSettings: RuntimeSettingsService | null;
-  applicationRuntime: ApplicationRuntime;
-  uploadSessionStorage: UploadSessionStoragePort;
-  logger: RuntimeLogger;
-  activeGenerationReads: ActiveGenerationReadRepository | null;
-  roleJobs: RoleJobRepository | null;
-  publicationGenerations: PublicationGenerationRepository | null;
-  sourceDispatch: SourceDispatchRepository | null;
-  sourceFileRetries: SourceFileRetryRepository | null;
-  sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
-  storageReconciliation: StorageReconciliationRepository | null;
-  maintenanceProgress: MaintenanceProgressRepository | null;
-};
-
+import { createRuntimeLogger } from "./logger.js";
+export type { ApiAppOptions } from "./app/api-app-options.js";
 export function createAdminApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config, services.logger);
@@ -78,7 +23,6 @@ export function createAdminApiApp(options: ApiAppOptions): Hono {
 
   return app;
 }
-
 export function createPublicOpenApiApp(options: ApiAppOptions): Hono {
   const services = resolveApiAppServices(options);
   const app = createBaseApp(services.config, services.logger);
@@ -98,7 +42,7 @@ export function createApiApp(options: ApiAppOptions): Hono {
   return app;
 }
 
-function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
+function resolveApiAppServices(options: ApiAppOptions) {
   const repositories = options.repositories ?? null;
   const storage = options.storage ?? createS3StorageAdapter(options.config.storage);
   const runtimeSettings =
@@ -144,6 +88,8 @@ function resolveApiAppServices(options: ApiAppOptions): ApiAppServices {
     sourceFileRetries: options.sourceFileRetries ?? null,
     sourceFileTaskDeletions: options.sourceFileTaskDeletions ?? null,
     storageReconciliation: options.storageReconciliation ?? null,
-    maintenanceProgress: options.maintenanceProgress ?? null
+    objectProtection: options.objectProtection ?? null,
+    maintenanceProgress: options.maintenanceProgress ?? null,
+    knowledgeBaseIndexMaintenance: options.knowledgeBaseIndexMaintenance ?? null
   };
 }

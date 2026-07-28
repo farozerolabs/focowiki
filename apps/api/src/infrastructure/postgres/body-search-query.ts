@@ -10,6 +10,7 @@ import {
   createSearchQueryEvidence,
   SEARCH_MULTI_TERM_MIN_COVERAGE
 } from "../../search/search-query-evidence.js";
+import { isSelectiveExactMatch } from "../../search/exact-match-strategy.js";
 import type { TransactionSql } from "postgres";
 
 type ReadSql = DatabaseClient | TransactionSql;
@@ -27,6 +28,17 @@ const CANDIDATE_MIN = 100;
 const CANDIDATE_MAX = 2_000;
 const CANDIDATE_MULTIPLIER = 10;
 
+export function createBodySearchStrategy(input: {
+  hasVisibleExactMatch: boolean;
+  phrase: string;
+}): { runTokenCandidates: boolean; runTrigramCandidates: boolean } {
+  const narrowToExactMatch = isSelectiveExactMatch(input);
+  return {
+    runTokenCandidates: !narrowToExactMatch,
+    runTrigramCandidates: !narrowToExactMatch
+  };
+}
+
 export async function searchBodyProjection(input: {
   sql: ReadSql;
   tokenizer: LexicalTokenizer;
@@ -38,6 +50,15 @@ export async function searchBodyProjection(input: {
 }): Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationScoredCursor>> {
   const evidence = createSearchQueryEvidence(input.query, input.tokenizer);
   if (!evidence.phrase) return { items: [], nextCursor: null };
+  const strategy = createBodySearchStrategy({
+    hasVisibleExactMatch: await hasVisibleExactBodyMatch({
+      sql: input.sql,
+      knowledgeBaseId: input.knowledgeBaseId,
+      generationId: input.generationId,
+      phrase: evidence.phrase
+    }),
+    phrase: evidence.phrase
+  });
   const candidateLimit = Math.min(
     CANDIDATE_MAX,
     Math.max(CANDIDATE_MIN, input.limit * CANDIDATE_MULTIPLIER)
@@ -65,7 +86,7 @@ export async function searchBodyProjection(input: {
                websearch_to_tsquery('simple', ${tokenQuery})
              ))::real AS rank_score
       FROM focowiki.search_projection_segments segment
-      WHERE ${hasTerms}
+      WHERE ${strategy.runTokenCandidates && hasTerms}
         AND segment.knowledge_base_id = ${input.knowledgeBaseId}
         AND segment.lexical_vector
             @@ websearch_to_tsquery('simple', ${tokenQuery})
@@ -94,7 +115,8 @@ export async function searchBodyProjection(input: {
                lower(${evidence.phrase})
              ))::real AS similarity_score
       FROM focowiki.search_projection_segments segment
-      WHERE segment.knowledge_base_id = ${input.knowledgeBaseId}
+      WHERE ${strategy.runTrigramCandidates}
+        AND segment.knowledge_base_id = ${input.knowledgeBaseId}
         AND lower(segment.normalized_text)
             OPERATOR(focowiki.%) lower(${evidence.phrase})
       GROUP BY segment.document_id
@@ -113,7 +135,8 @@ export async function searchBodyProjection(input: {
                      ) * 20
                  )::real AS family_score
           FROM focowiki.generation_search_projection_refs reference
-          WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+          WHERE ${strategy.runTrigramCandidates}
+            AND reference.knowledge_base_id = ${input.knowledgeBaseId}
             AND reference.generation_id = ${input.generationId}
             AND (
               lower(reference.title) OPERATOR(focowiki.%) lower(${evidence.phrase})
@@ -271,6 +294,32 @@ export async function searchBodyProjection(input: {
       ? { score: Number(last.score), recordId: last.source_file_id }
       : null
   };
+}
+
+async function hasVisibleExactBodyMatch(input: {
+  sql: ReadSql;
+  knowledgeBaseId: string;
+  generationId: string;
+  phrase: string;
+}): Promise<boolean> {
+  const rows = await input.sql<Array<{ exact_match: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM focowiki.generation_search_projection_refs reference
+      JOIN focowiki.source_files source
+        ON source.knowledge_base_id = reference.knowledge_base_id
+       AND source.id = reference.source_file_id
+       AND source.deleted_at IS NULL
+       AND source.deletion_intent_id IS NULL
+      WHERE reference.knowledge_base_id = ${input.knowledgeBaseId}
+        AND reference.generation_id = ${input.generationId}
+        AND (
+          lower(reference.title) = lower(${input.phrase})
+          OR lower(reference.logical_path) = lower(${input.phrase})
+        )
+    ) AS exact_match
+  `;
+  return rows[0]?.exact_match ?? false;
 }
 
 function parentPath(path: string): string | null {

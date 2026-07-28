@@ -197,14 +197,25 @@ async function executeTask(
     });
     const records = await input.builds.listStagedTreePartition({
       task,
-      limit: Math.max(task.settings.databaseBatchSize, task.expectedRecordCount)
+      limit: Math.max(
+        task.settings.databaseBatchSize,
+        task.expectedRecordCount,
+        staged
+      )
     });
-    if (records.length !== staged || staged !== task.expectedRecordCount) {
+    if (records.length !== staged) {
       throw terminalFailure(
         "PROJECTION_REPAIR_TREE_PARITY_FAILED",
         "Projection repair tree partition count does not match its plan"
       );
     }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: staged,
+      errorCode: "PROJECTION_REPAIR_TREE_PARITY_FAILED",
+      errorMessage: "Projection repair tree partition count does not match its plan"
+    });
     if (records.length === 0) return 0;
     const result = await input.shards.applyBatch({
       knowledgeBaseId: task.knowledgeBaseId,
@@ -237,14 +248,25 @@ async function executeTask(
     });
     const changes = await input.builds.listStagedTreeRebaseChanges({
       task: effectiveTask,
-      limit: Math.max(task.settings.databaseBatchSize, task.expectedRecordCount)
+      limit: Math.max(
+        task.settings.databaseBatchSize,
+        task.expectedRecordCount,
+        staged
+      )
     });
-    if (changes.length !== staged || staged !== task.expectedRecordCount) {
+    if (changes.length !== staged) {
       throw terminalFailure(
         "PROJECTION_REPAIR_TREE_REBASE_PARITY_FAILED",
         "Projection repair tree catch-up count does not match its plan"
       );
     }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: staged,
+      errorCode: "PROJECTION_REPAIR_TREE_REBASE_PARITY_FAILED",
+      errorMessage: "Projection repair tree catch-up count does not match its plan"
+    });
     if (changes.length === 0) return 0;
     const result = await input.shards.applyBatch({
       knowledgeBaseId: task.knowledgeBaseId,
@@ -266,7 +288,20 @@ async function executeTask(
     const effectiveTask = task.kind === "directory_rebase"
       ? { ...task, partitionKey: decodeRebasePartitionKey(task.partitionKey) }
       : task;
+    const activeReferences = await input.builds.listActiveDirectoryReferences({
+      task: effectiveTask
+    });
     await input.builds.resetDirectorySnapshot({ task: effectiveTask });
+    for (const reference of activeReferences) {
+      await input.references.stageDelete({
+        knowledgeBaseId: task.knowledgeBaseId,
+        generationId: task.targetGenerationId,
+        refKind: reference.refKind,
+        refKey: reference.refKey,
+        logicalPath: reference.logicalPath,
+        sourceFileId: null
+      });
+    }
     if (
       task.kind === "directory_rebase"
       && !(await input.builds.directoryExists({ task: effectiveTask }))
@@ -315,12 +350,13 @@ async function executeTask(
       cursor = page.nextCursor;
     } while (cursor);
     const summary = await stream.finish();
-    if (summary.entryCount !== task.expectedRecordCount) {
-      throw terminalFailure(
-        "PROJECTION_REPAIR_DIRECTORY_PARITY_FAILED",
-        "Projection repair directory count does not match its plan"
-      );
-    }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: summary.entryCount,
+      errorCode: "PROJECTION_REPAIR_DIRECTORY_PARITY_FAILED",
+      errorMessage: "Projection repair directory count does not match its plan"
+    });
     await input.builds.completeDirectorySnapshot({
       task: effectiveTask,
       entryCount: summary.entryCount,
@@ -381,14 +417,25 @@ async function executeTask(
       task,
       projectionKind,
       shardKey,
-      limit: Math.max(task.settings.databaseBatchSize, task.expectedRecordCount)
+      limit: Math.max(
+        task.settings.databaseBatchSize,
+        task.expectedRecordCount,
+        staged
+      )
     });
-    if (records.length !== staged || staged !== task.expectedRecordCount) {
+    if (records.length !== staged) {
       throw terminalFailure(
         "PROJECTION_REPAIR_GRAPH_PARTITION_PARITY_FAILED",
         "Projection repair graph partition count does not match its plan"
       );
     }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: staged,
+      errorCode: "PROJECTION_REPAIR_GRAPH_PARTITION_PARITY_FAILED",
+      errorMessage: "Projection repair graph partition count does not match its plan"
+    });
     if (records.length === 0) return 0;
     const result = await input.shards.applyBatch({
       knowledgeBaseId: task.knowledgeBaseId,
@@ -435,14 +482,26 @@ async function executeTask(
       task: effectiveTask,
       projectionKind,
       shardKey,
-      limit: Math.max(task.settings.databaseBatchSize, task.expectedRecordCount)
+      limit: Math.max(
+        task.settings.databaseBatchSize,
+        task.expectedRecordCount,
+        staged
+      )
     });
-    if (changes.length !== staged || staged !== task.expectedRecordCount) {
+    if (changes.length !== staged) {
       throw terminalFailure(
         "PROJECTION_REPAIR_GRAPH_REBASE_PARITY_FAILED",
-        "Projection repair graph catch-up count does not match its plan"
+        "Projection repair graph catch-up count does not match its plan "
+          + `(staged=${staged}, loaded=${changes.length})`
       );
     }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: staged,
+      errorCode: "PROJECTION_REPAIR_GRAPH_REBASE_PARITY_FAILED",
+      errorMessage: "Projection repair graph catch-up count does not match its plan"
+    });
     if (changes.length === 0) return 0;
     const result = await input.shards.applyBatch({
       knowledgeBaseId: task.knowledgeBaseId,
@@ -466,12 +525,13 @@ async function executeTask(
       updatedAt: now().toISOString()
     });
     const total = result.nodeCount + result.edgeCount;
-    if (total !== task.expectedRecordCount) {
-      throw terminalFailure(
-        "PROJECTION_REPAIR_GRAPH_PARITY_FAILED",
-        "Projection repair graph count does not match its plan"
-      );
-    }
+    await acceptCountDriftAfterGenerationAdvance({
+      input,
+      task,
+      actualCount: total,
+      errorCode: "PROJECTION_REPAIR_GRAPH_PARITY_FAILED",
+      errorMessage: "Projection repair graph count does not match its plan"
+    });
     return 0;
   }
 
@@ -490,7 +550,7 @@ async function executeTask(
     );
   }
   if (descriptor.activeGenerationId === task.targetGenerationId) {
-    return 1;
+    return 0;
   }
   if (
     descriptor.activeGenerationId !== task.baseGenerationId
@@ -620,7 +680,31 @@ async function executeTask(
       retryable: true
     });
   }
-  return 1;
+  return 0;
+}
+
+async function acceptCountDriftAfterGenerationAdvance(input: {
+  input: Parameters<typeof createProjectionRepairTaskProcessor>[0];
+  task: ProjectionRepairWorkItem;
+  actualCount: number;
+  errorCode: string;
+  errorMessage: string;
+}): Promise<void> {
+  if (input.actualCount === input.task.expectedRecordCount) return;
+  const descriptor = await input.input.builds.readRepairDescriptor({
+    task: input.task
+  });
+  if (
+    descriptor
+    && descriptor.activeGenerationId !== input.task.baseGenerationId
+  ) {
+    return;
+  }
+  throw terminalFailure(
+    input.errorCode,
+    `${input.errorMessage} `
+      + `(expected=${input.task.expectedRecordCount}, actual=${input.actualCount})`
+  );
 }
 
 async function stageBatches(input: {

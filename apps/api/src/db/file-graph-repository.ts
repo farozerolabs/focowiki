@@ -418,6 +418,33 @@ async function applyGraphMutationSet(
   removedEdgeIds: string[];
 }> {
   return sql.begin(async (transaction) => {
+    const mutationSourceIds = unique([
+      input.sourceFileId,
+      input.target.fileId,
+      ...input.acceptedEdges.flatMap((edge) => [edge.fromFileId, edge.toFileId]),
+      ...input.rejectedEdges.flatMap((edge) => [edge.fromFileId, edge.toFileId])
+    ]);
+    const lockedSources = await transaction<Array<{
+      id: string;
+      deleted_at: Date | null;
+      deletion_intent_id: string | null;
+    }>>`
+      SELECT id, deleted_at, deletion_intent_id
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+        AND id = ANY(${mutationSourceIds})
+      ORDER BY id
+      FOR UPDATE
+    `;
+    const source = lockedSources.find((row) => row.id === input.sourceFileId);
+    if (!source || source.deleted_at || source.deletion_intent_id) {
+      return {
+        edgeCount: 0,
+        affectedSourceFileIds: [input.sourceFileId],
+        edgeIds: [],
+        removedEdgeIds: []
+      };
+    }
     const removed = await transaction<GraphMutationEdgeRow[]>`
       DELETE FROM focowiki.source_file_graph_edges
       WHERE knowledge_base_id = ${input.knowledgeBaseId}
@@ -464,6 +491,7 @@ async function applyGraphMutationSet(
               AND source.deletion_intent_id IS NULL
             ORDER BY document.source_file_id ASC
             LIMIT ${Math.max(1, Math.min(1_000, input.limit))}
+            FOR UPDATE OF source
           )
           INSERT INTO focowiki.source_file_graph_edges (
             id, knowledge_base_id, from_source_file_id, to_source_file_id,

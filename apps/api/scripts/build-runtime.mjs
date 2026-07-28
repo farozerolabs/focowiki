@@ -29,6 +29,7 @@ await build({
     "source-worker": "src/source-worker-main.ts",
     "publication-worker": "src/publication-worker-main.ts",
     "projection-repair-worker": "src/projection-repair-worker-main.ts",
+    "lexical-rebuild-worker": "src/lexical-rebuild-worker-main.ts",
     "maintenance-worker": "src/maintenance-worker-main.ts"
   },
   format: "esm",

@@ -13,6 +13,7 @@ export type StorageReconciliationCycle = {
   state: "scanning" | "verifying";
   continuationToken: string | null;
   verificationCursor: string | null;
+  databaseChunkSize: number | null;
 };
 
 export type StorageReconciliationCandidate = ManagedImmutableObjectIdentity & {
@@ -36,6 +37,14 @@ export type StorageReconciliationStatus = {
   missingCount: number;
   retryCount: number;
   lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  resolvedCount: number;
+  pendingCount: number;
+  databaseChunkSize: number | null;
+  recentObjectsPerSecond: number | null;
+  rollingBatchLatencyMs: number | null;
+  heartbeatAt: string | null;
+  lastProgressAt: string | null;
 };
 
 export type StorageReconciliationRepository = {
@@ -52,12 +61,44 @@ export type StorageReconciliationRepository = {
     renewedAt: string;
     leaseExpiresAt: string;
   }) => Promise<boolean>;
-  recordScanPage: (input: {
+  getProtectionReadiness: () => Promise<
+    "pending" | "backfilling" | "verifying" | "ready" | "retrying" | "failed"
+  >;
+  prepareScanPage: (input: {
     cycle: StorageReconciliationCycle;
     leaseToken: string;
-    objects: ManagedImmutableObjectIdentity[];
+    pageId: string;
     nextContinuationToken: string | null;
+    listedCount: number;
+    databaseChunkSize: number;
+    preparedAt: string;
+  }) => Promise<{
+    completedObjectCount: number;
+    databaseChunkSize: number;
+    committed: boolean;
+  } | null>;
+  recordScanChunk: (input: {
+    cycle: StorageReconciliationCycle;
+    leaseToken: string;
+    pageId: string;
+    objectOffset: number;
+    objects: ManagedImmutableObjectIdentity[];
+    allowQuarantine: boolean;
     recordedAt: string;
+  }) => Promise<boolean>;
+  reduceScanPageChunkSize: (input: {
+    cycle: StorageReconciliationCycle;
+    leaseToken: string;
+    pageId: string;
+    databaseChunkSize: number;
+    reducedAt: string;
+  }) => Promise<boolean>;
+  completeScanPage: (input: {
+    cycle: StorageReconciliationCycle;
+    leaseToken: string;
+    pageId: string;
+    completedAt: string;
+    batchLatencyMs: number;
   }) => Promise<boolean>;
   claimDeletionCandidates: (input: {
     cycle: StorageReconciliationCycle;
@@ -78,19 +119,19 @@ export type StorageReconciliationRepository = {
     authorizedAt: string;
   }) => Promise<boolean>;
   refreshCandidateObservation: (input: {
-    prefix: string;
+    cycle: StorageReconciliationCycle;
     leaseToken: string;
     object: ManagedImmutableObjectIdentity;
     observedAt: string;
   }) => Promise<void>;
   completeCandidateDeletion: (input: {
-    prefix: string;
+    cycle: StorageReconciliationCycle;
     leaseToken: string;
     objectKey: string;
     completedAt: string;
   }) => Promise<void>;
   failCandidateDeletion: (input: {
-    prefix: string;
+    cycle: StorageReconciliationCycle;
     leaseToken: string;
     objectKey: string;
     errorCode: string;
@@ -121,6 +162,7 @@ export type StorageReconciliationRepository = {
     errorCode: string;
     retryAt: string;
     failedAt: string;
+    databaseChunkSize?: number;
   }) => Promise<void>;
   getStatus: (prefix: string) => Promise<StorageReconciliationStatus | null>;
 };

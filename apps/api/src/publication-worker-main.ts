@@ -13,6 +13,7 @@ import { createPostgresProjectionRecordRepository } from "./infrastructure/postg
 import { createPostgresProjectionCatalogRepository } from "./infrastructure/postgres/projection-catalog-repository.js";
 import { createPostgresProjectionSegmentRepository } from "./infrastructure/postgres/projection-segment-repository.js";
 import { createPostgresPublicationGenerationRepository } from "./infrastructure/postgres/publication-generation-repository.js";
+import { createPostgresPublicationGraphSummaryFinalizer } from "./infrastructure/postgres/publication-graph-summary-finalizer.js";
 import { createPostgresPublicationImpactRepository } from "./infrastructure/postgres/publication-impact-repository.js";
 import { createPostgresPublicationSubtaskRepository } from "./infrastructure/postgres/publication-subtask-repository.js";
 import { createPostgresPublicationActivationStateRepository } from "./infrastructure/postgres/publication-activation-state-repository.js";
@@ -128,6 +129,7 @@ async function runPublicationWorker(): Promise<void> {
       immutableObjects,
       maxShardDescriptors: INCREMENTAL_PUBLICATION_DEFAULTS.maxShardDescriptors
     });
+    const graphSummaryFinalizer = createPostgresPublicationGraphSummaryFinalizer(sql);
     const directoryWriter = {
       async write(
         impact: Parameters<typeof requiredWriter.write>[0],
@@ -173,7 +175,7 @@ async function runPublicationWorker(): Promise<void> {
       references,
       immutableObjects,
       writers: [requiredWriter, directoryWriter, rootWriter],
-      finalizers: [catalogWriter],
+      finalizers: [graphSummaryFinalizer, catalogWriter],
       impactLockTtlSeconds: 300,
       retryDelayMs: 5_000,
       validationIssueLimit: 50
@@ -238,7 +240,7 @@ async function runPublicationWorker(): Promise<void> {
         validation,
         references,
         immutableObjects,
-        finalizers: [catalogWriter],
+        finalizers: [graphSummaryFinalizer, catalogWriter],
         validationIssueLimit: 50
       }),
       resourceBudgets: {

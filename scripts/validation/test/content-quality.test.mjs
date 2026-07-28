@@ -138,6 +138,41 @@ test("content quality validation allows sparse explainable graph links", () => {
   }
 });
 
+test("content quality validation reports an empty graph without failing unrelated files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "focowiki-content-quality-empty-graph-"));
+
+  try {
+    const samples = Array.from({ length: 3 }, (_, index) =>
+      writeSample(root, `independent-${index + 1}.md`, {
+        title: `Independent Topic ${index + 1}`,
+        type: "page",
+        body: `Independent topic ${index + 1} has no supported relationship to the other files.`
+      })
+    );
+    const bodies = new Map(
+      samples.map((sample) => [
+        `pages/${sample.basename}`,
+        `---\ntype: page\ntitle: ${sample.title}\n---\n# ${sample.title}\n\n${fs.readFileSync(sample.filePath, "utf8").split("\n\n").at(-1)?.trim()}`
+      ])
+    );
+    const indexes = buildIndexes(samples);
+    indexes.links.links = [];
+
+    const summary = validateGeneratedContentQuality({
+      samples,
+      bodies,
+      indexes,
+      modelAssistance: { enabled: false },
+      semanticSampleLimit: 3
+    });
+
+    assert.equal(summary.graphLinks, 0);
+    assert.match(summary.warnings.join("\n"), /No page-to-page relationships/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("content quality sample limit validates configured bounds", () => {
   assert.equal(readContentQualitySampleLimit({}), 25);
   assert.equal(readContentQualitySampleLimit({ FOCOWIKI_VALIDATION_CONTENT_SAMPLE_COUNT: "200" }), 200);

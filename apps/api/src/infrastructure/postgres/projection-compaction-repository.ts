@@ -65,24 +65,34 @@ export function createPostgresProjectionCompactionRepository(
             ON knowledge_base.id = statistics.knowledge_base_id
            AND knowledge_base.deleted_at IS NULL
            AND knowledge_base.active_generation_id IS NOT NULL
-          WHERE ${current?.knowledge_base_id ?? null}::text IS NULL
-             OR (statistics.knowledge_base_id, statistics.projection_kind,
-                 statistics.logical_partition) > (
-                  ${current?.knowledge_base_id ?? ""},
-                  ${current?.projection_kind ?? ""},
-                  ${current?.logical_partition ?? ""}
-                )
+          WHERE (
+            ${input.knowledgeBaseIds !== undefined}
+            OR
+            ${current?.knowledge_base_id ?? null}::text IS NULL
+            OR (statistics.knowledge_base_id, statistics.projection_kind,
+                statistics.logical_partition) > (
+                 ${current?.knowledge_base_id ?? ""},
+                 ${current?.projection_kind ?? ""},
+                 ${current?.logical_partition ?? ""}
+               )
+          )
+          AND (
+            ${input.knowledgeBaseIds === undefined}
+            OR statistics.knowledge_base_id = ANY(${input.knowledgeBaseIds ?? []})
+          )
           ORDER BY statistics.knowledge_base_id, statistics.projection_kind,
                    statistics.logical_partition
           LIMIT ${input.partitionLimit}
         `;
         if (partitions.length === 0) {
-          await transaction`
-            UPDATE focowiki.projection_compaction_scan_cursor
-            SET knowledge_base_id = NULL, projection_kind = NULL,
-                logical_partition = NULL, updated_at = ${input.discoveredAt}
-            WHERE singleton = true
-          `;
+          if (input.knowledgeBaseIds === undefined) {
+            await transaction`
+              UPDATE focowiki.projection_compaction_scan_cursor
+              SET knowledge_base_id = NULL, projection_kind = NULL,
+                  logical_partition = NULL, updated_at = ${input.discoveredAt}
+              WHERE singleton = true
+            `;
+          }
           return 0;
         }
 
@@ -171,15 +181,17 @@ export function createPostgresProjectionCompactionRepository(
                   <> EXCLUDED.expected_segment_ids
           `;
         }
-        const last = partitions.at(-1)!;
-        await transaction`
-          UPDATE focowiki.projection_compaction_scan_cursor
-          SET knowledge_base_id = ${last.knowledge_base_id},
-              projection_kind = ${last.projection_kind},
-              logical_partition = ${last.logical_partition},
-              updated_at = ${input.discoveredAt}
-          WHERE singleton = true
-        `;
+        if (input.knowledgeBaseIds === undefined) {
+          const last = partitions.at(-1)!;
+          await transaction`
+            UPDATE focowiki.projection_compaction_scan_cursor
+            SET knowledge_base_id = ${last.knowledge_base_id},
+                projection_kind = ${last.projection_kind},
+                logical_partition = ${last.logical_partition},
+                updated_at = ${input.discoveredAt}
+            WHERE singleton = true
+          `;
+        }
         return candidates.length;
       });
     },
@@ -195,6 +207,11 @@ export function createPostgresProjectionCompactionRepository(
             OR (state = 'running' AND lease_expires_at <= ${input.now})
           )
             AND attempt_count < max_attempts
+            AND (
+              ${input.knowledgeBaseIds === undefined}
+              OR knowledge_base_id = ANY(${input.knowledgeBaseIds ?? []})
+              OR state = 'running'
+            )
           ORDER BY run_after, updated_at, id
           LIMIT ${input.limit}
           FOR UPDATE SKIP LOCKED

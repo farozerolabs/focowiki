@@ -23,6 +23,7 @@ import {
   fingerprintRuntimeSecret
 } from "../src/runtime-settings/encryption.js";
 import type { StorageReconciliationRepository } from "../src/application/ports/storage-reconciliation-repository.js";
+import type { ObjectProtectionRepository } from "../src/application/ports/object-protection-repository.js";
 
 describe("runtime settings service", () => {
   it("bootstraps settings and keeps model assistance optional", async () => {
@@ -73,6 +74,9 @@ describe("runtime settings service", () => {
     });
     expect(snapshot.maintenance).toEqual({
       reconciliationEnabled: true,
+      knowledgeBaseMaintenanceMode: "manual",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
+      knowledgeBaseMaintenanceConcurrency: 1,
       scanIntervalSeconds: 21_600,
       scanBatchSize: 500,
       deletionBatchSize: 100,
@@ -84,7 +88,13 @@ describe("runtime settings service", () => {
       compactionConcurrency: 1,
       projectionRepairConcurrency: 4,
       projectionRepairDatabaseBatchSize: 2_000,
-      projectionRepairObjectWriteConcurrency: 8
+      projectionRepairObjectWriteConcurrency: 8,
+      lexicalRebuildConcurrency: 4,
+      lexicalRebuildSourceReadConcurrency: 2,
+      lexicalRebuildDatabaseWriteConcurrency: 2,
+      lexicalRebuildClaimBatchSize: 500,
+      lexicalRebuildDatabaseBatchSize: 50,
+      lexicalRebuildMaxInFlightSourceBytes: 64 * 1_024 * 1_024
     });
     expect(snapshot.activeModel).toBeNull();
   });
@@ -111,6 +121,15 @@ describe("runtime settings service", () => {
     delete publication.directoryMaterializationConcurrency;
     delete maintenance.migrationBackfillConcurrency;
     delete maintenance.compactionConcurrency;
+    delete maintenance.knowledgeBaseMaintenanceMode;
+    delete maintenance.knowledgeBaseMaintenanceScanIntervalSeconds;
+    delete maintenance.knowledgeBaseMaintenanceConcurrency;
+    delete maintenance.lexicalRebuildConcurrency;
+    delete maintenance.lexicalRebuildSourceReadConcurrency;
+    delete maintenance.lexicalRebuildDatabaseWriteConcurrency;
+    delete maintenance.lexicalRebuildClaimBatchSize;
+    delete maintenance.lexicalRebuildDatabaseBatchSize;
+    delete maintenance.lexicalRebuildMaxInFlightSourceBytes;
     worker.sourceFileConcurrency = 3;
     await repository.upsertSetting({ key: "worker", value: worker, source: "admin" });
     await repository.upsertSetting({ key: "publication", value: publication, source: "admin" });
@@ -140,6 +159,9 @@ describe("runtime settings service", () => {
       directoryMaterializationConcurrency: 4
     });
     expect(snapshot.maintenance).toMatchObject({
+      knowledgeBaseMaintenanceMode: "manual",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
+      knowledgeBaseMaintenanceConcurrency: 1,
       migrationBackfillConcurrency: 2,
       compactionConcurrency: 1,
       projectionRepairConcurrency: 4,
@@ -352,6 +374,71 @@ describe("runtime settings service", () => {
     expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
   });
 
+  it("validates knowledge-base maintenance scheduling atomically", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "scheduled"
+      } as never
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "knowledgeBaseMaintenanceMode" })
+      ])
+    });
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "automatic",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 59
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          field: "knowledgeBaseMaintenanceScanIntervalSeconds"
+        })
+      ])
+    });
+    await expect(service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceConcurrency: 17
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: "knowledgeBaseMaintenanceConcurrency" })
+      ])
+    });
+
+    expect((await service.getSnapshot()).maintenance).toEqual(initial.maintenance);
+
+    const automatic = await service.updateMaintenance({
+      value: {
+        ...initial.maintenance,
+        knowledgeBaseMaintenanceMode: "automatic",
+        knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
+        knowledgeBaseMaintenanceConcurrency: 2
+      }
+    });
+    expect(automatic.maintenance).toMatchObject({
+      knowledgeBaseMaintenanceMode: "automatic",
+      knowledgeBaseMaintenanceScanIntervalSeconds: 3_600,
+      knowledgeBaseMaintenanceConcurrency: 2
+    });
+    await expect(service.getMaintenanceRevision()).resolves.toBeGreaterThan(1);
+  });
+
   it("propagates concurrent live updates and preserves them after service restart", async () => {
     const repository = new MemoryRuntimeSettingsRepository();
     const redis = createTestRedisCoordinator();
@@ -557,7 +644,8 @@ describe("runtime settings service", () => {
           }
         }
       },
-      storageReconciliation: createStorageReconciliationRepository()
+      storageReconciliation: createStorageReconciliationRepository(),
+      objectProtection: createObjectProtectionRepository()
     });
     const cookie = await loginAndReadSessionCookie(app);
     const initial = await app.request("/admin/api/settings/runtime", {
@@ -579,6 +667,7 @@ describe("runtime settings service", () => {
       settings: RuntimeSettingsSnapshot;
       models: unknown[];
       maintenanceStatus: unknown;
+      objectProtectionStatus: unknown;
     };
     expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
     expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
@@ -596,12 +685,37 @@ describe("runtime settings service", () => {
       deletedCount: 1,
       missingCount: 0,
       retryCount: 1,
-      lastErrorCode: null
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      resolvedCount: 0,
+      pendingCount: 0,
+      databaseChunkSize: 100,
+      recentObjectsPerSecond: 50,
+      rollingBatchLatencyMs: 20,
+      heartbeatAt: "2026-07-18T10:00:00.000Z",
+      lastProgressAt: "2026-07-18T10:00:00.000Z"
+    });
+    expect(initialBody.objectProtectionStatus).toEqual({
+      readiness: "backfilling",
+      phase: "source_files",
+      processedCount: 400,
+      expectedCount: 1_000,
+      verifiedCount: 0,
+      dirtyCount: 3,
+      retryCount: 1,
+      recentObjectsPerSecond: 80,
+      rollingBatchLatencyMs: 25,
+      lastProgressAt: "2026-07-18T10:00:00.000Z",
+      heartbeatAt: "2026-07-18T10:00:01.000Z",
+      estimatedCompletionAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null
     });
     const serializedInitial = JSON.stringify(initialBody);
     for (const forbidden of [
       "objectKey", "checksumSha256", "secretAccessKey", "SELECT ",
-      "storage_reconciliation_candidates", "tenant/demo/generated"
+      "storage_reconciliation_candidates", "tenant/demo/generated",
+      "leaseToken", "workerId", "cursorObjectKey"
     ]) {
       expect(serializedInitial).not.toContain(forbidden);
     }
@@ -735,11 +849,53 @@ describe("runtime settings service", () => {
   });
 });
 
+function createObjectProtectionRepository(): ObjectProtectionRepository {
+  return {
+    async protectIdentities() {},
+    async markIdentitiesDirty() {},
+    async lookupIdentities() { return []; },
+    async getReadiness() { return "backfilling"; },
+    async claimMaintenance() { return null; },
+    async renewMaintenanceLease() { return true; },
+    async runBackfillBatch() {
+      return { processed: 0, completed: false, phase: "source_files" };
+    },
+    async refreshDirtyBatch() {
+      return { processed: 0, completed: false, phase: "dirty_refresh" };
+    },
+    async failMaintenance() {},
+    async getStatus() {
+      return {
+        readiness: "backfilling",
+        phase: "source_files",
+        processedCount: 400,
+        expectedCount: 1_000,
+        verifiedCount: 0,
+        dirtyCount: 3,
+        retryCount: 1,
+        recentObjectsPerSecond: 80,
+        rollingBatchLatencyMs: 25,
+        lastProgressAt: "2026-07-18T10:00:00.000Z",
+        heartbeatAt: "2026-07-18T10:00:01.000Z",
+        estimatedCompletionAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null
+      };
+    }
+  };
+}
+
 function createStorageReconciliationRepository(): StorageReconciliationRepository {
   return {
     async claimCycle() { return null; },
     async renewCycleLease() { return true; },
-    async recordScanPage() { return true; },
+    async getProtectionReadiness() { return "ready"; },
+    async prepareScanPage() {
+      return { completedObjectCount: 0, databaseChunkSize: 100, committed: false };
+    },
+    async recordScanChunk() { return true; },
+    async reduceScanPageChunkSize() { return true; },
+    async completeScanPage() { return true; },
     async claimDeletionCandidates() { return []; },
     async authorizeCandidateDeletion() { return false; },
     async refreshCandidateObservation() {},
@@ -759,7 +915,15 @@ function createStorageReconciliationRepository(): StorageReconciliationRepositor
         deletedCount: 1,
         missingCount: 0,
         retryCount: 1,
-        lastErrorCode: null
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        resolvedCount: 0,
+        pendingCount: 0,
+        databaseChunkSize: 100,
+        recentObjectsPerSecond: 50,
+        rollingBatchLatencyMs: 20,
+        heartbeatAt: "2026-07-18T10:00:00.000Z",
+        lastProgressAt: "2026-07-18T10:00:00.000Z"
       };
     }
   };

@@ -108,13 +108,16 @@ export function createSourceResourceService(
         throw new SourceResourceError("INVALID_RESOURCE_MUTATION");
       }
       const payload = normalizeOperationPayload(input.kind, input.payload);
+      const fingerprintPayload = input.kind === "source_file_replace"
+        ? replacementFingerprintPayload(payload)
+        : payload;
       const fingerprint = createHash("sha256")
         .update(JSON.stringify({
           kind: input.kind,
           targetKind: input.targetKind,
           targetId: input.targetId,
           expectedResourceRevision: input.expectedResourceRevision,
-          payload
+          payload: fingerprintPayload
         }))
         .digest("hex");
       return repository.createOperation({
@@ -171,6 +174,17 @@ function normalizeOperationPayload(
     sizeBytes,
     contentType: "text/markdown; charset=utf-8",
     ...(relativePath ? { relativePath } : {})
+  };
+}
+
+function replacementFingerprintPayload(
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    checksumSha256: payload.checksumSha256,
+    sizeBytes: payload.sizeBytes,
+    contentType: payload.contentType,
+    ...(payload.relativePath ? { relativePath: payload.relativePath } : {})
   };
 }
 

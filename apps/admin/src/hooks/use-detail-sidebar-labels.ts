@@ -6,6 +6,7 @@ export function useDetailSidebarLabels() {
     back: t("detail.back"),
     files: t("result.fileTree"),
     uploadProgress: t("tasks.title"),
+    settings: t("detail.settings"),
     loadMore: t("home.loadMore"),
     logout: t("auth.logout"),
     running: t("tasks.runningShort"),

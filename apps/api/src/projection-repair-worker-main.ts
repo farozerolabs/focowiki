@@ -170,7 +170,8 @@ async function runProjectionRepairWorker(): Promise<void> {
             settingsRevision,
             settings,
             maxAttempts: snapshot.maintenance.maxAttempts,
-            now: now.toISOString()
+            now: now.toISOString(),
+            requireActiveMaintenanceRequest: true
           });
           for (let index = 0; index < concurrency.effectiveConcurrency; index += 1) {
             const planned = await work.planNext({

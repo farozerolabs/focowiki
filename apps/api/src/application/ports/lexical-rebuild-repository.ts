@@ -32,6 +32,7 @@ export type LexicalRebuildRepository = {
     contentProfileVersion: string;
     graphLexicalProjectionVersion: string;
     now: string;
+    knowledgeBaseIds?: string[] | undefined;
   }) => Promise<number>;
   claimNext: (input: {
     workerId: string;
@@ -84,7 +85,8 @@ export type LexicalRebuildRepository = {
     workerId: string;
     leaseToken: string;
     activatedAt: string;
-  }) => Promise<"activated" | "rebased">;
+    retryDelayMs: number;
+  }) => Promise<"activated" | "rebased" | "deferred">;
   complete: (input: {
     knowledgeBaseId: string;
     workerId: string;

@@ -66,6 +66,18 @@ describe("projection repair task processor", () => {
 
   it("streams a directory into final leaves and writes the root once", async () => {
     const fixture = createFixture({ directoryMaxEntries: 2 });
+    fixture.builds.listActiveDirectoryReferences.mockResolvedValue([
+      {
+        refKind: "directory_root",
+        refKey: "directory-root:pages",
+        logicalPath: "pages/index.md"
+      },
+      {
+        refKind: "directory_leaf",
+        refKey: "directory-leaf:pages:legacy-leaf",
+        logicalPath: "pages/index-legacy-leaf.md"
+      }
+    ]);
     fixture.builds.listDirectoryEntryPage.mockResolvedValue({
       entries: [
         entry("a"),
@@ -88,11 +100,39 @@ describe("projection repair task processor", () => {
     expect(fixture.builds.completeDirectorySnapshot).toHaveBeenCalledWith(expect.objectContaining({
       entryCount: 3
     }));
+    expect(fixture.references.stageDelete).toHaveBeenCalledTimes(2);
     expect(fixture.references.stageUpsert).toHaveBeenCalledTimes(3);
     expect(fixture.work.completeTask).toHaveBeenCalledWith(expect.objectContaining({
       objectWriteCount: 3,
       objectReuseCount: 0
     }));
+  });
+
+  it("accepts directory count drift after the active generation advances", async () => {
+    const fixture = createFixture();
+    fixture.builds.listDirectoryEntryPage.mockResolvedValue({
+      entries: [entry("a"), entry("b")],
+      nextCursor: null
+    });
+    fixture.builds.readRepairDescriptor.mockResolvedValue({
+      id: "kb-one",
+      name: "Knowledge",
+      description: null,
+      sourceFileCount: 2,
+      graphEdgeCount: 0,
+      rootEntryCount: 2,
+      activeGenerationId: "generation-next",
+      resourceRevision: 8
+    });
+
+    const result = await fixture.process(task({
+      kind: "directory",
+      partitionKey: "pages",
+      expectedRecordCount: 1
+    }));
+
+    expect(result).toEqual({ status: "completed", processedRecordCount: 2 });
+    expect(fixture.work.retryTask).not.toHaveBeenCalled();
   });
 
   it("defers finalization when bounded catch-up work is scheduled", async () => {
@@ -114,6 +154,18 @@ describe("projection repair task processor", () => {
 
   it("removes candidate navigation when a directory disappears during catch-up", async () => {
     const fixture = createFixture();
+    fixture.builds.listActiveDirectoryReferences.mockResolvedValue([
+      {
+        refKind: "directory_root",
+        refKey: "directory-root:pages/removed",
+        logicalPath: "pages/removed/index.md"
+      },
+      {
+        refKind: "directory_leaf",
+        refKey: "directory-leaf:pages/removed:legacy-leaf",
+        logicalPath: "pages/removed/index-legacy-leaf.md"
+      }
+    ]);
     fixture.builds.directoryExists.mockResolvedValue(false);
 
     const result = await fixture.process(task({
@@ -131,6 +183,7 @@ describe("projection repair task processor", () => {
       })
     });
     expect(fixture.builds.listDirectoryEntryPage).not.toHaveBeenCalled();
+    expect(fixture.references.stageDelete).toHaveBeenCalledTimes(2);
     expect(fixture.references.stageUpsert).not.toHaveBeenCalled();
   });
 
@@ -163,6 +216,35 @@ describe("projection repair task processor", () => {
       projectionKind: "graph_edge",
       shardKey: "graph_edge/v1/0000",
       changes: [{ recordId: "edge-removed", record: null }]
+    }));
+  });
+
+  it("reports graph catch-up staging and loading counts on parity failure", async () => {
+    const fixture = createFixture();
+    fixture.builds.stageGraphRebaseBatch.mockResolvedValue({
+      processedRecordCount: 2,
+      nextCursor: "node-two",
+      complete: true
+    });
+    fixture.builds.listStagedGraphRebaseChanges.mockResolvedValue([
+      { recordId: "node-one", record: projection("node-one") }
+    ]);
+    fixture.work.retryTask.mockResolvedValue("failed");
+
+    const result = await fixture.process(task({
+      kind: "graph_rebase",
+      partitionKey:
+        "generation-next\u001egraph_node\u001fgraph_node/v1/0000",
+      baseGenerationId: "generation-next",
+      expectedRecordCount: 2
+    }));
+
+    expect(result.status).toBe("failed");
+    expect(fixture.work.retryTask).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "PROJECTION_REPAIR_GRAPH_REBASE_PARITY_FAILED",
+      errorMessage:
+        "Projection repair graph catch-up count does not match its plan (staged=2, loaded=1)",
+      retryable: false
     }));
   });
 
@@ -222,6 +304,8 @@ describe("projection repair task processor", () => {
     expect(result.status).toBe("failed");
     expect(fixture.work.retryTask).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: "PROJECTION_REPAIR_GRAPH_PARITY_FAILED",
+      errorMessage:
+        "Projection repair graph count does not match its plan (expected=4, actual=3)",
       retryable: false
     }));
   });
@@ -249,7 +333,7 @@ describe("projection repair task processor", () => {
 
     const result = await fixture.process(task({ kind: "finalize" }));
 
-    expect(result.status).toBe("completed");
+    expect(result).toEqual({ status: "completed", processedRecordCount: 0 });
     expect(fixture.builds.inheritSearchProjectionReferences).toHaveBeenCalledWith({
       task: expect.objectContaining({
         baseGenerationId: "generation-active",
@@ -275,7 +359,7 @@ describe("projection repair task processor", () => {
 
     const result = await fixture.process(task({ kind: "finalize" }));
 
-    expect(result).toEqual({ status: "completed", processedRecordCount: 1 });
+    expect(result).toEqual({ status: "completed", processedRecordCount: 0 });
     expect(fixture.validation.validateChangedClosure).not.toHaveBeenCalled();
     expect(fixture.generations.activateGeneration).not.toHaveBeenCalled();
     expect(fixture.work.completeRepair).toHaveBeenCalledWith(expect.objectContaining({
@@ -299,6 +383,7 @@ function createFixture(options: { directoryMaxEntries?: number } = {}) {
     stageTreeRebaseBatch: vi.fn(),
     listStagedTreeRebaseChanges: vi.fn(),
     listDirectoryEntryPage: vi.fn(),
+    listActiveDirectoryReferences: vi.fn().mockResolvedValue([]),
     directoryExists: vi.fn().mockResolvedValue(true),
     resetDirectorySnapshot: vi.fn(),
     upsertDirectoryLeaf: vi.fn(),
@@ -314,6 +399,7 @@ function createFixture(options: { directoryMaxEntries?: number } = {}) {
   const shards = { applyBatch: vi.fn() };
   const references = {
     stageUpsert: vi.fn(),
+    stageDelete: vi.fn(),
     findStagedByRef: vi.fn(),
     findActiveByRef: vi.fn()
   };

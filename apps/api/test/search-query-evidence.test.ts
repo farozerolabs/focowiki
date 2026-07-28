@@ -47,4 +47,29 @@ describe("search query evidence", () => {
 
     expect(evidence.terms.length).toBeLessThanOrEqual(32);
   });
+
+  it("removes low-selectivity numeric fragments from multi-term queries", () => {
+    const fragmentedTokenizer: LexicalTokenizer = {
+      ...tokenizer,
+      tokenizeQuery() {
+        return ["景德镇", "陶瓷", "2", "0", "4", "3", "2024-04-03__"];
+      }
+    };
+
+    expect(createSearchQueryEvidence(
+      "景德镇陶瓷保护条例__2024-04-03",
+      fragmentedTokenizer
+    ).terms).toEqual(["景德镇", "陶瓷", "2024-04-03__"]);
+  });
+
+  it("retains a single numeric term when it is the complete query evidence", () => {
+    const numericTokenizer: LexicalTokenizer = {
+      ...tokenizer,
+      tokenizeQuery() {
+        return ["2"];
+      }
+    };
+
+    expect(createSearchQueryEvidence("2", numericTokenizer).terms).toEqual(["2"]);
+  });
 });

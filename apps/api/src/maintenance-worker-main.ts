@@ -10,33 +10,49 @@ import { createPostgresAdminRepositories } from "./db/admin-repositories.js";
 import { createPostgresGenerationCleanupRepository } from "./infrastructure/postgres/generation-cleanup-repository.js";
 import { createPostgresImmutableObjectRepository } from "./infrastructure/postgres/immutable-object-repository.js";
 import { createPostgresIncrementalStatisticsRepository } from "./infrastructure/postgres/incremental-statistics-repository.js";
+import {
+  createPostgresKnowledgeBaseIndexMaintenanceRepository
+} from "./infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
+import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
 import { createPostgresProjectionCompactionRepository } from "./infrastructure/postgres/projection-compaction-repository.js";
+import {
+  createPostgresProjectionRepairWorkRepository
+} from "./infrastructure/postgres/projection-repair-work-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
-import { createPostgresSearchProjectionRepository } from "./infrastructure/postgres/search-projection-repository.js";
 import {
   createPostgresRuntimePressureRepository,
   RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
 } from "./infrastructure/postgres/runtime-pressure-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
+import { createPostgresObjectProtectionRepository } from "./infrastructure/postgres/object-protection-repository.js";
 import { createUploadSessionStoragePort } from "./infrastructure/storage/upload-session-storage.js";
 import {
   assertNodeJiebaRuntimeAvailable,
   createNodeJiebaTokenizer,
   getNodeJiebaRuntimeEvidence
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
-import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
+import { createRuntimeLogger } from "./logger.js";
 import { runImmutableWriteRecoverySlice } from "./maintenance/immutable-write-recovery.js";
 import { runIncrementalStatisticsReconciliationSlice } from "./maintenance/incremental-statistics-reconciliation.js";
 import { runProjectionCompactionSlice } from "./maintenance/projection-compaction.js";
 import { runMaintenanceBackground } from "./maintenance/runtime.js";
 import { runOptimizationMigrationSlice } from "./maintenance/optimization-migration.js";
+import { bootstrapLexicalRebuildWork } from "./maintenance/lexical-rebuild-bootstrap.js";
 import {
-  runLexicalRebuildSlice,
-  type LexicalRebuildEvent
-} from "./maintenance/lexical-rebuild.js";
+  KnowledgeBaseIndexMaintenanceExecutionError,
+  runKnowledgeBaseIndexMaintenanceSlice
+} from "./maintenance/knowledge-base-index-maintenance.js";
+import {
+  CURRENT_PROJECTION_REPAIR_PLANNER_VERSION,
+  CURRENT_PROJECTION_REPAIR_VERSION
+} from "./maintenance/projection-repair-plan.js";
 import { runStorageReconciliationSlice } from "./maintenance/storage-reconciliation.js";
+import {
+  createMaintenanceReconciliationTelemetry
+} from "./maintenance/reconciliation-telemetry.js";
+import { runObjectProtectionMaintenanceSlice } from "./maintenance/object-protection-maintenance.js";
 import { runUploadSessionExpirationSlice } from "./maintenance/upload-session-expiration.js";
 import { createImmutableObjectWriter } from "./publication/immutable-object-writer.js";
 import { createRedisClient, createRedisCoordinator } from "./redis/coordination.js";
@@ -124,10 +140,14 @@ async function runMaintenanceWorker(): Promise<void> {
     };
     const compaction = createPostgresProjectionCompactionRepository(sql);
     const reconciliation = createPostgresStorageReconciliationRepository(sql);
+    const objectProtection = createPostgresObjectProtectionRepository(sql);
     const optimizationMigrations = createPostgresOptimizationMigrationRepository(sql);
     const lexicalRebuilds = createPostgresLexicalRebuildRepository(sql);
-    const searchProjections = createPostgresSearchProjectionRepository(sql);
     const incrementalStatistics = createPostgresIncrementalStatisticsRepository(sql);
+    const indexMaintenance =
+      createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
+    const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
+    const projectionRepairs = createPostgresProjectionRepairWorkRepository(sql);
     const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
       role: "maintenance",
@@ -204,8 +224,8 @@ async function runMaintenanceWorker(): Promise<void> {
     });
     const maintenanceOwner = `maintenance-sweep-${randomUUID()}`;
     const reconciliationLeaseToken = `storage-reconciliation-${randomUUID()}`;
+    const reconciliationTelemetry = createMaintenanceReconciliationTelemetry(logger);
     const optimizationMigrationLeaseToken = `optimization-migration-${randomUUID()}`;
-    const lexicalRebuildLeaseToken = `lexical-rebuild-${randomUUID()}`;
     const statisticsLeaseToken = `incremental-statistics-${randomUUID()}`;
     await Promise.all([
       runtime.run(abort.signal),
@@ -232,6 +252,10 @@ async function runMaintenanceWorker(): Promise<void> {
                 reconciliationDeleted: 0,
                 reconciliationVerified: 0,
                 reconciliationFailed: 0,
+                objectProtectionPhase: "contended",
+                objectProtectionProcessed: 0,
+                objectProtectionCompleted: false,
+                objectProtectionFailed: false,
                 migrationPhase: "contended",
                 migrationProcessed: 0,
                 migrationCompleted: false,
@@ -298,62 +322,108 @@ async function runMaintenanceWorker(): Promise<void> {
                 }
               })
             );
-            const lexicalNow = new Date();
-            const lexicalRebuildResult = await resourceBudgets.migrationBackfill.run(
-              () => runLexicalRebuildSlice({
-                rebuilds: lexicalRebuilds,
-                search: searchProjections,
-                graph,
-                storage,
-                tokenizer,
-                workerId: maintenanceOwner,
-                leaseToken: lexicalRebuildLeaseToken,
-                now: lexicalNow.toISOString(),
-                leaseExpiresAt: new Date(
-                  lexicalNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
-                ).toISOString(),
-                leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000,
-                batchSize: snapshot.maintenance.scanBatchSize,
-                concurrency: Math.min(
-                  snapshot.maintenance.migrationBackfillConcurrency,
-                  snapshot.maintenance.scanBatchSize
-                ),
-                retryDelayMs: snapshot.maintenance.retryDelayMs,
-                cleanupRetentionMs:
-                  snapshot.publication.generationRetentionDays * 24 * 60 * 60 * 1_000,
-                onEvent(event) {
-                  logLexicalRebuildEvent(logger, event);
-                }
-              })
-            );
-            const statisticsNow = new Date();
-            const statisticsResult = await runIncrementalStatisticsReconciliationSlice({
-              repository: incrementalStatistics,
+            let lexicalScheduled = 0;
+            let statisticsResult = {
+              claimed: false,
+              changed: false,
+              failed: false
+            };
+            let compactionResult = {
+              discovered: 0,
+              claimed: 0,
+              completed: 0,
+              superseded: 0,
+              failed: 0
+            };
+            await runKnowledgeBaseIndexMaintenanceSlice({
+              requests: indexMaintenance,
+              progress: maintenanceProgress,
+              runtimeSettings,
               workerId: maintenanceOwner,
-              leaseToken: statisticsLeaseToken,
-              now: statisticsNow.toISOString(),
-              leaseExpiresAt: new Date(
-                statisticsNow.getTime() + snapshot.worker.lockTtlSeconds * 1_000
-              ).toISOString(),
-              reconciledBefore: new Date(
-                statisticsNow.getTime() - snapshot.maintenance.scanIntervalSeconds * 1_000
-              ).toISOString()
+              leaseTtlSeconds: snapshot.worker.lockTtlSeconds,
+              async schedule({ request, now }) {
+                const requestSnapshot = await runtimeSettings.getSnapshot();
+                const projectionSettings = {
+                  concurrency: requestSnapshot.maintenance.projectionRepairConcurrency,
+                  databaseBatchSize:
+                    requestSnapshot.maintenance.projectionRepairDatabaseBatchSize,
+                  objectWriteConcurrency:
+                    requestSnapshot.maintenance.projectionRepairObjectWriteConcurrency
+                };
+                await projectionRepairs.bootstrap({
+                  repairVersion: CURRENT_PROJECTION_REPAIR_VERSION,
+                  plannerVersion: CURRENT_PROJECTION_REPAIR_PLANNER_VERSION,
+                  settingsRevision: request.settingsRevision,
+                  settings: projectionSettings,
+                  maxAttempts: requestSnapshot.maintenance.maxAttempts,
+                  now,
+                  knowledgeBaseIds: [request.knowledgeBaseId],
+                  requireActiveMaintenanceRequest: true
+                });
+                lexicalScheduled += await bootstrapLexicalRebuildWork({
+                  rebuilds: lexicalRebuilds,
+                  tokenizer,
+                  now,
+                  knowledgeBaseIds: [request.knowledgeBaseId]
+                });
+                const statisticsNow = new Date(now);
+                const currentStatistics =
+                  await runIncrementalStatisticsReconciliationSlice({
+                    repository: incrementalStatistics,
+                    workerId: maintenanceOwner,
+                    leaseToken:
+                      `${statisticsLeaseToken}-${request.knowledgeBaseId}`,
+                    now,
+                    leaseExpiresAt: new Date(
+                      statisticsNow.getTime()
+                        + requestSnapshot.worker.lockTtlSeconds * 1_000
+                    ).toISOString(),
+                    reconciledBefore: now,
+                    knowledgeBaseId: request.knowledgeBaseId
+                  });
+                statisticsResult = {
+                  claimed: statisticsResult.claimed || currentStatistics.claimed,
+                  changed: statisticsResult.changed || currentStatistics.changed,
+                  failed: statisticsResult.failed || currentStatistics.failed
+                };
+                if (currentStatistics.failed) {
+                  throw new KnowledgeBaseIndexMaintenanceExecutionError(
+                    "INDEX_MAINTENANCE_STATISTICS_FAILED",
+                    "Knowledge-base statistics maintenance could not complete"
+                  );
+                }
+                const currentCompaction = await runProjectionCompactionSlice({
+                  repository: compaction,
+                  immutableObjects,
+                  budget: resourceBudgets.compaction,
+                  workerId: maintenanceOwner,
+                  concurrency: requestSnapshot.maintenance.compactionConcurrency,
+                  partitionScanLimit: requestSnapshot.maintenance.scanBatchSize,
+                  recordPageSize: requestSnapshot.maintenance.scanBatchSize,
+                  maxAttempts: requestSnapshot.maintenance.maxAttempts,
+                  retryDelayMs: requestSnapshot.maintenance.retryDelayMs,
+                  lockTtlSeconds: requestSnapshot.worker.lockTtlSeconds,
+                  knowledgeBaseIds: [request.knowledgeBaseId]
+                });
+                compactionResult = {
+                  discovered: compactionResult.discovered + currentCompaction.discovered,
+                  claimed: compactionResult.claimed + currentCompaction.claimed,
+                  completed: compactionResult.completed + currentCompaction.completed,
+                  superseded: compactionResult.superseded + currentCompaction.superseded,
+                  failed: compactionResult.failed + currentCompaction.failed
+                };
+                if (currentCompaction.failed > 0) {
+                  throw new KnowledgeBaseIndexMaintenanceExecutionError(
+                    "INDEX_MAINTENANCE_COMPACTION_FAILED",
+                    "Knowledge-base projection compaction could not complete"
+                  );
+                }
+              }
             });
+            const statisticsNow = new Date();
             const pressureResult = await runtimePressure.reconcileIfDue({
               now: statisticsNow.toISOString(),
               intervalSeconds: RUNTIME_PRESSURE_RECONCILIATION_INTERVAL_SECONDS
-            });
-            const compactionResult = await runProjectionCompactionSlice({
-              repository: compaction,
-              immutableObjects,
-              budget: resourceBudgets.compaction,
-              workerId: maintenanceOwner,
-              concurrency: snapshot.maintenance.compactionConcurrency,
-              partitionScanLimit: snapshot.maintenance.scanBatchSize,
-              recordPageSize: snapshot.maintenance.scanBatchSize,
-              maxAttempts: snapshot.maintenance.maxAttempts,
-              retryDelayMs: snapshot.maintenance.retryDelayMs,
-              lockTtlSeconds: snapshot.worker.lockTtlSeconds
             });
             const recoveryResult = await runImmutableWriteRecoverySlice({
               repository: immutableRepository,
@@ -371,12 +441,40 @@ async function runMaintenanceWorker(): Promise<void> {
                 now: new Date()
               })
             );
+            const objectProtectionResult = await resourceBudgets.migrationBackfill.run(
+              () => runObjectProtectionMaintenanceSlice({
+                repository: objectProtection,
+                batchSize: Math.min(snapshot.maintenance.scanBatchSize, 1_000)
+              })
+            );
             const reconciliationResult = await runStorageReconciliationSlice({
               repository: reconciliation,
               storage,
               settings: snapshot.maintenance,
               versionPurgeEnabled: snapshot.worker.hardDeleteVersionPurgeEnabled,
               leaseToken: reconciliationLeaseToken
+            });
+            const shouldReadReconciliationStatus =
+              objectProtectionResult.claimed
+              || objectProtectionResult.failed
+              || reconciliationResult.claimed
+              || reconciliationResult.failed > 0;
+            const [reconciliationStatus, objectProtectionStatus] =
+              shouldReadReconciliationStatus
+                ? await Promise.all([
+                    reconciliation.getStatus(`${storage.keyspace.prefix}/generated/`),
+                    objectProtection.getStatus()
+                  ])
+                : [null, null];
+            reconciliationTelemetry.record({
+              reconciliation: {
+                result: reconciliationResult,
+                status: reconciliationStatus
+              },
+              protection: {
+                result: objectProtectionResult,
+                status: objectProtectionStatus
+              }
             });
             return {
               repairPhase: "isolated",
@@ -386,14 +484,18 @@ async function runMaintenanceWorker(): Promise<void> {
               reconciliationDeleted: reconciliationResult.deleted,
               reconciliationVerified: reconciliationResult.verified,
               reconciliationFailed: reconciliationResult.failed,
+              objectProtectionPhase: objectProtectionResult.phase,
+              objectProtectionProcessed: objectProtectionResult.processed,
+              objectProtectionCompleted: objectProtectionResult.completed,
+              objectProtectionFailed: objectProtectionResult.failed,
               migrationPhase: migrationResult.phase,
               migrationProcessed: migrationResult.processed,
               migrationCompleted: migrationResult.completed,
               migrationFailed: migrationResult.failed,
-              lexicalRebuildPhase: lexicalRebuildResult.phase,
-              lexicalRebuildProcessed: lexicalRebuildResult.processed,
-              lexicalRebuildCompleted: lexicalRebuildResult.completed,
-              lexicalRebuildFailed: lexicalRebuildResult.failed,
+              lexicalRebuildPhase: lexicalScheduled > 0 ? "scheduled" : "delegated",
+              lexicalRebuildProcessed: 0,
+              lexicalRebuildCompleted: false,
+              lexicalRebuildFailed: false,
               statisticsClaimed: statisticsResult.claimed,
               statisticsChanged: statisticsResult.changed,
               statisticsFailed: statisticsResult.failed,
@@ -424,52 +526,6 @@ async function runMaintenanceWorker(): Promise<void> {
   } finally {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);
-  }
-}
-
-function logLexicalRebuildEvent(
-  logger: RuntimeLogger,
-  event: LexicalRebuildEvent
-): void {
-  switch (event.type) {
-    case "bootstrap":
-      if (event.scheduledCount > 0) {
-        logger.info("Lexical projection rebuild bootstrap completed", event);
-      }
-      return;
-    case "claim":
-      logger.info("Lexical projection rebuild lease claimed", event);
-      return;
-    case "lease_recovery":
-      logger.warn("Lexical projection rebuild lease recovered", event);
-      return;
-    case "slice_completed":
-      logger.info("Lexical projection rebuild slice completed", event);
-      return;
-    case "validation":
-      if (event.passed) {
-        logger.info("Lexical projection rebuild validation passed", event);
-      } else {
-        logger.warn("Lexical projection rebuild validation failed", event);
-      }
-      return;
-    case "activation":
-      logger.info("Lexical projection rebuild activated", event);
-      return;
-    case "rebase":
-      logger.info("Lexical projection rebuild rebased", event);
-      return;
-    case "cleanup":
-      logger.info("Lexical projection rebuild cleanup completed", event);
-      return;
-    case "retry":
-      logger.warn("Lexical projection rebuild retry scheduled", event);
-      return;
-    case "failure":
-      logger.error("Lexical projection rebuild failed", event);
-      return;
-    case "rollback":
-      logger.warn("Lexical projection rebuild visibility rollback completed", event);
   }
 }
 

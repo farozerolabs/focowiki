@@ -1,3 +1,7 @@
+import { compareUtf8Text } from "../domain/deterministic-text-order.js";
+
+export const UTF8_DIRECTORY_ORDER_VERSION = 3;
+
 export type OrderedDirectoryEntry = {
   id: string;
   sortKey: string;
@@ -23,14 +27,21 @@ export type OrderedDirectoryLeafMutation = {
   removedLeafIds: string[];
 };
 
+export type OrderedDirectoryEntryComparator = (
+  left: OrderedDirectoryEntry,
+  right: OrderedDirectoryEntry
+) => number;
+
 export function insertDirectoryEntry(input: {
   leaves: OrderedDirectoryLeaf[];
   entry: OrderedDirectoryEntry;
   limits: OrderedDirectoryLeafLimits;
   createLeafId: () => string;
+  compareEntries?: OrderedDirectoryEntryComparator;
 }): OrderedDirectoryLeafMutation {
   validateLimits(input.limits);
-  const leaves = cloneAndValidate(input.leaves);
+  const compareEntries = input.compareEntries ?? compareOrderedDirectoryEntries;
+  const leaves = cloneAndValidate(input.leaves, compareEntries);
   if (leaves.some((leaf) => leaf.entries.some((entry) => entry.id === input.entry.id))) {
     return { leaves, touchedLeafIds: [], removedLeafIds: [] };
   }
@@ -44,7 +55,7 @@ export function insertDirectoryEntry(input: {
     };
   }
 
-  const leafIndex = findInsertionLeaf(leaves, input.entry);
+  const leafIndex = findInsertionLeaf(leaves, input.entry, compareEntries);
   const target = leaves[leafIndex]!;
   target.entries.push(input.entry);
   target.entries.sort(compareEntries);
@@ -74,9 +85,11 @@ export function removeDirectoryEntry(input: {
   leaves: OrderedDirectoryLeaf[];
   entryId: string;
   limits: OrderedDirectoryLeafLimits;
+  compareEntries?: OrderedDirectoryEntryComparator;
 }): OrderedDirectoryLeafMutation {
   validateLimits(input.limits);
-  const leaves = cloneAndValidate(input.leaves);
+  const compareEntries = input.compareEntries ?? compareOrderedDirectoryEntries;
+  const leaves = cloneAndValidate(input.leaves, compareEntries);
   const leafIndex = leaves.findIndex((leaf) =>
     leaf.entries.some((entry) => entry.id === input.entryId)
   );
@@ -158,7 +171,8 @@ function chooseSplitIndex(
 
 function findInsertionLeaf(
   leaves: OrderedDirectoryLeaf[],
-  entry: OrderedDirectoryEntry
+  entry: OrderedDirectoryEntry,
+  compareEntries: OrderedDirectoryEntryComparator
 ): number {
   const index = leaves.findIndex((leaf) => {
     const last = leaf.entries.at(-1);
@@ -167,7 +181,10 @@ function findInsertionLeaf(
   return index < 0 ? leaves.length - 1 : index;
 }
 
-function cloneAndValidate(leaves: OrderedDirectoryLeaf[]): OrderedDirectoryLeaf[] {
+function cloneAndValidate(
+  leaves: OrderedDirectoryLeaf[],
+  compareEntries: OrderedDirectoryEntryComparator
+): OrderedDirectoryLeaf[] {
   const ids = new Set<string>();
   const entryIds = new Set<string>();
   const cloned = leaves.map((leaf) => {
@@ -186,7 +203,9 @@ function cloneAndValidate(leaves: OrderedDirectoryLeaf[]): OrderedDirectoryLeaf[
   });
   const flattened = cloned.flatMap((leaf) => leaf.entries);
   for (let index = 1; index < flattened.length; index += 1) {
-    if (compareEntries(flattened[index - 1]!, flattened[index]!) > 0) {
+    if (
+      compareEntries(flattened[index - 1]!, flattened[index]!) > 0
+    ) {
       throw new Error("Directory leaves are not globally ordered");
     }
   }
@@ -203,8 +222,20 @@ function leafExceedsLimits(
   );
 }
 
-function compareEntries(a: OrderedDirectoryEntry, b: OrderedDirectoryEntry): number {
-  return a.sortKey.localeCompare(b.sortKey, "en") || a.id.localeCompare(b.id, "en");
+export function compareOrderedDirectoryEntries(
+  left: OrderedDirectoryEntry,
+  right: OrderedDirectoryEntry
+): number {
+  return compareUtf8Text(left.sortKey, right.sortKey)
+    || compareUtf8Text(left.id, right.id);
+}
+
+export function compareLegacyDirectoryEntries(
+  left: OrderedDirectoryEntry,
+  right: OrderedDirectoryEntry
+): number {
+  return left.sortKey.localeCompare(right.sortKey, "en")
+    || left.id.localeCompare(right.id, "en");
 }
 
 function validateLimits(limits: OrderedDirectoryLeafLimits): void {

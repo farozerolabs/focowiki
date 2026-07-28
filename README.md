@@ -42,8 +42,8 @@ Run Focowiki with Docker Compose and the published images on GHCR.
 
 Before installing Focowiki, make sure your machine meets these requirements:
 
-- Minimum: CPU >= 2 cores, RAM >= 2 GiB
-- Recommended: CPU >= 2 cores, RAM >= 4 GiB or more
+- Minimum: CPU >= 2 cores, RAM >= 4 GiB; 6 GiB RAM is preferred for background processing
+- Recommended: CPU >= 4 cores, RAM >= 8 GiB or more
 
 ```bash
 git clone https://github.com/farozerolabs/focowiki.git && cd focowiki
@@ -89,13 +89,14 @@ Full documentation is available at [docs.focowiki.com](https://docs.focowiki.com
 
 ## What Focowiki Provides
 
-- Markdown-only upload workflow for `.md` files.
-- Frontmatter, headings, links, and body content extraction.
-- OKF-style files: `index.md`, `log.md`, `schema.md`, `pages/*.md`, `_index/*.json`, and `_graph/*`.
-- PostgreSQL records, Redis coordination, and S3-compatible file storage.
-- Isolated source-processing, publication, and maintenance Worker roles with durable database-backed progress.
-- Admin UI for knowledge-base management, uploads, file browsing, processing status, and OpenAPI keys.
-- Developer OpenAPI for backend and Agent integration.
+Focowiki takes Markdown files and folders and turns them into a knowledge base that people, applications, and AI agents can explore.
+
+- **Upload documents and folders.** Add individual Markdown files or complete folder trees. Focowiki keeps their paths, names, metadata, links, and content.
+- **Browse organized knowledge.** Open documents from a file tree, move or rename files and folders, replace content, and remove outdated material.
+- **Find relevant documents.** Search file content, browse directory indexes, follow related documents, and explore relationships through the knowledge graph.
+- **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
+- **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
+- **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, and S3-compatible storage.
 
 ## Admin UI Preview
 

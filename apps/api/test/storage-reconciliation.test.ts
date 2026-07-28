@@ -53,7 +53,7 @@ describe("storage reconciliation", () => {
 
     await runStorageReconciliationSlice(createInput(repository, storage));
 
-    expect(repository.recordScanPage).toHaveBeenCalledWith(expect.objectContaining({
+    expect(repository.recordScanChunk).toHaveBeenCalledWith(expect.objectContaining({
       objects: [expect.objectContaining({ key, checksumSha256: checksum, formatVersion: 1 })]
     }));
     expect(storage.deleteObjects).not.toHaveBeenCalled();
@@ -290,6 +290,46 @@ describe("storage reconciliation", () => {
     expect(repository.completeCandidateDeletion).not.toHaveBeenCalled();
   });
 
+  it("stops verification when cycle ownership expires before recording the check", async () => {
+    const object = candidate("f");
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("verifying")),
+      claimDeletionCandidates: vi.fn().mockResolvedValue([]),
+      listRegisteredObjectsForVerification: vi.fn().mockResolvedValue([{
+        checksumSha256: object.checksumSha256,
+        formatVersion: object.formatVersion,
+        objectKey: object.key
+      }]),
+      recordRegisteredObjectCheck: vi.fn().mockResolvedValue(false)
+    });
+    const storage = createStorage({ headObjectMetadata: vi.fn().mockResolvedValue(null) });
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(repository.finishCycle).not.toHaveBeenCalled();
+    expect(repository.failCycle).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "STORAGE_RECONCILIATION_OWNERSHIP_EXPIRED"
+    }));
+  });
+
+  it("does not report completion when final cycle ownership expires", async () => {
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("verifying")),
+      claimDeletionCandidates: vi.fn().mockResolvedValue([]),
+      listRegisteredObjectsForVerification: vi.fn().mockResolvedValue([]),
+      finishCycle: vi.fn().mockResolvedValue(false)
+    });
+
+    const result = await runStorageReconciliationSlice(
+      createInput(repository, createStorage())
+    );
+
+    expect(result.phase).toBe("failed");
+    expect(repository.failCycle).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "STORAGE_RECONCILIATION_OWNERSHIP_EXPIRED"
+    }));
+  });
+
   it("ignores malformed and non-managed keys during discovery", async () => {
     const repository = createRepository({
       claimCycle: vi.fn().mockResolvedValue(cycle("scanning"))
@@ -306,8 +346,200 @@ describe("storage reconciliation", () => {
 
     await runStorageReconciliationSlice(createInput(repository, storage));
 
-    expect(repository.recordScanPage).toHaveBeenCalledWith(expect.objectContaining({ objects: [] }));
+    expect(repository.prepareScanPage).toHaveBeenCalledWith(expect.objectContaining({
+      listedCount: 0
+    }));
+    expect(repository.recordScanChunk).not.toHaveBeenCalled();
+    expect(repository.completeScanPage).toHaveBeenCalledOnce();
     expect(storage.deleteObjects).not.toHaveBeenCalled();
+  });
+
+  it("processes one storage page through bounded database chunks", async () => {
+    const objects = Array.from({ length: 250 }, (_, index) => {
+      const checksum = index.toString(16).padStart(64, "0");
+      return {
+        key: createImmutableObjectKey({
+          prefix: "tenant/test",
+          checksumSha256: checksum
+        }),
+        sizeBytes: 12,
+        etag: null,
+        lastModified: null
+      };
+    });
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+      prepareScanPage: vi.fn().mockImplementation(async (input) => ({
+        completedObjectCount: 0,
+        databaseChunkSize: input.databaseChunkSize,
+        committed: false
+      }))
+    });
+    const storage = createStorage({
+      listObjectMetadata: vi.fn().mockResolvedValue({
+        objects,
+        nextContinuationToken: "next-page"
+      })
+    });
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(repository.prepareScanPage).toHaveBeenCalledWith(
+      expect.objectContaining({ databaseChunkSize: 250 })
+    );
+    expect(repository.recordScanChunk).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(repository.recordScanChunk).mock.calls.map(
+      ([call]) => [call.objectOffset, call.objects.length]
+    )).toEqual([[0, 250]]);
+    expect(repository.completeScanPage).toHaveBeenCalledOnce();
+    expect(repository.renewCycleLease).toHaveBeenCalledTimes(3);
+  });
+
+  it("waits for an in-flight lease heartbeat before committing listed work", async () => {
+    vi.useFakeTimers();
+    try {
+      const listing = createDeferred<{
+        objects: [];
+        nextContinuationToken: null;
+      }>();
+      const heartbeat = createDeferred<boolean>();
+      const repository = createRepository({
+        claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+        renewCycleLease: vi.fn()
+          .mockResolvedValueOnce(true)
+          .mockImplementationOnce(() => heartbeat.promise)
+          .mockResolvedValue(true)
+      });
+      const storage = createStorage({
+        listObjectMetadata: vi.fn().mockImplementation(() => listing.promise)
+      });
+
+      const run = runStorageReconciliationSlice(createInput(repository, storage));
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(repository.renewCycleLease).toHaveBeenCalledTimes(2);
+
+      listing.resolve({ objects: [], nextContinuationToken: null });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(repository.prepareScanPage).not.toHaveBeenCalled();
+
+      heartbeat.resolve(true);
+      await run;
+      expect(repository.prepareScanPage).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes a repeated page after its durable completed prefix", async () => {
+    const objects = Array.from({ length: 250 }, (_, index) => {
+      const checksum = index.toString(16).padStart(64, "0");
+      return {
+        key: createImmutableObjectKey({
+          prefix: "tenant/test",
+          checksumSha256: checksum
+        }),
+        sizeBytes: 12,
+        etag: null,
+        lastModified: null
+      };
+    });
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+      prepareScanPage: vi.fn().mockResolvedValue({
+        completedObjectCount: 100,
+        databaseChunkSize: 50,
+        committed: false
+      })
+    });
+    const storage = createStorage({
+      listObjectMetadata: vi.fn().mockResolvedValue({
+        objects,
+        nextContinuationToken: "next-page"
+      })
+    });
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(vi.mocked(repository.recordScanChunk).mock.calls.map(
+      ([call]) => [call.objectOffset, call.objects.length]
+    )).toEqual([[100, 50], [150, 50], [200, 50]]);
+  });
+
+  it("keeps unknown identities pending while protection backfill is incomplete", async () => {
+    const checksum = "7".repeat(64);
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+      getProtectionReadiness: vi.fn().mockResolvedValue("backfilling")
+    });
+    const storage = createStorage({
+      listObjectMetadata: vi.fn().mockResolvedValue({
+        objects: [{
+          key: createImmutableObjectKey({
+            prefix: "tenant/test",
+            checksumSha256: checksum
+          }),
+          sizeBytes: 12,
+          etag: null,
+          lastModified: null
+        }],
+        nextContinuationToken: null
+      })
+    });
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(repository.recordScanChunk).toHaveBeenCalledWith(
+      expect.objectContaining({ allowQuarantine: false })
+    );
+    expect(repository.claimDeletionCandidates).not.toHaveBeenCalled();
+  });
+
+  it("shrinks the database chunk after a retryable timeout without advancing the page", async () => {
+    const checksum = "6".repeat(64);
+    const timeout = Object.assign(new Error("statement timeout"), { code: "57014" });
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+      recordScanChunk: vi.fn().mockRejectedValue(timeout)
+    });
+    const storage = createStorage({
+      listObjectMetadata: vi.fn().mockResolvedValue({
+        objects: [{
+          key: createImmutableObjectKey({
+            prefix: "tenant/test",
+            checksumSha256: checksum
+          }),
+          sizeBytes: 12,
+          etag: null,
+          lastModified: null
+        }],
+        nextContinuationToken: null
+      })
+    });
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(repository.reduceScanPageChunkSize).toHaveBeenCalledWith(
+      expect.objectContaining({ databaseChunkSize: 50 })
+    );
+    expect(repository.completeScanPage).not.toHaveBeenCalled();
+    expect(repository.failCycle).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "STORAGE_RECONCILIATION_RETRYABLE_TIMEOUT",
+      databaseChunkSize: 50
+    }));
+  });
+
+  it("rejects cursor progress after page ownership expires", async () => {
+    const repository = createRepository({
+      claimCycle: vi.fn().mockResolvedValue(cycle("scanning")),
+      completeScanPage: vi.fn().mockResolvedValue(false)
+    });
+    const storage = createStorage();
+
+    await runStorageReconciliationSlice(createInput(repository, storage));
+
+    expect(repository.failCycle).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "STORAGE_RECONCILIATION_OWNERSHIP_EXPIRED"
+    }));
   });
 
   it("records one safe cycle failure when a persisted continuation is rejected", async () => {
@@ -366,7 +598,8 @@ function cycle(state: StorageReconciliationCycle["state"]): StorageReconciliatio
     cycleId: "cycle-test",
     state,
     continuationToken: null,
-    verificationCursor: null
+    verificationCursor: null,
+    databaseChunkSize: null
   };
 }
 
@@ -376,7 +609,15 @@ function createRepository(
   return {
     claimCycle: vi.fn().mockResolvedValue(null),
     renewCycleLease: vi.fn().mockResolvedValue(true),
-    recordScanPage: vi.fn().mockResolvedValue(true),
+    getProtectionReadiness: vi.fn().mockResolvedValue("ready"),
+    prepareScanPage: vi.fn().mockResolvedValue({
+      completedObjectCount: 0,
+      databaseChunkSize: 100,
+      committed: false
+    }),
+    recordScanChunk: vi.fn().mockResolvedValue(true),
+    reduceScanPageChunkSize: vi.fn().mockResolvedValue(true),
+    completeScanPage: vi.fn().mockResolvedValue(true),
     claimDeletionCandidates: vi.fn().mockResolvedValue([]),
     authorizeCandidateDeletion: vi.fn().mockResolvedValue(true),
     refreshCandidateObservation: vi.fn(),
@@ -418,4 +659,15 @@ function candidate(
     etag: metadata.etag ?? "etag",
     lastModified: "2026-07-18T10:00:00.000Z"
   };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
 }

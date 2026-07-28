@@ -137,9 +137,11 @@ OpenAPI key 通过 Admin UI 创建，存储在数据库中，不应写入 `.env`
 | --- | --- | --- |
 | `SOURCE_WORKER_DATABASE_POOL_MAX` | 是 | 单个 source-worker 进程最多使用的 PostgreSQL 连接数。8C/32G 服务器可从 `8` 开始。 |
 | `PUBLICATION_WORKER_DATABASE_POOL_MAX` | 是 | 单个 publication-worker 进程最多使用的 PostgreSQL 连接数。可从 `4` 开始。 |
+| `PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX` | 是 | 单个 projection-repair-worker 进程最多使用的 PostgreSQL 连接数。可从 `8` 开始。 |
+| `LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX` | 是 | 单个 lexical-rebuild-worker 进程最多使用的 PostgreSQL 连接数。可从 `8` 开始；这是启动拓扑，运行时词法工作并发在 Admin 配置中管理。 |
 | `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | 是 | 单个 maintenance-worker 进程最多使用的 PostgreSQL 连接数。可从 `2` 开始。 |
 
-每个角色会在启动时创建自己的 PostgreSQL 连接池。修改 `.env` 后需要重启对应角色。总连接预算按 `API 副本数 * DATABASE_POOL_MAX + source-worker 副本数 * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker 副本数 * PUBLICATION_WORKER_DATABASE_POOL_MAX + maintenance-worker 副本数 * MAINTENANCE_WORKER_DATABASE_POOL_MAX + 迁移与运维余量` 计算。
+每个角色会在启动时创建自己的 PostgreSQL 连接池。修改 `.env` 后需要重启对应角色。总连接预算按 `API 副本数 * DATABASE_POOL_MAX + source-worker 副本数 * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker 副本数 * PUBLICATION_WORKER_DATABASE_POOL_MAX + projection-repair-worker 副本数 * PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX + lexical-rebuild-worker 副本数 * LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX + maintenance-worker 副本数 * MAINTENANCE_WORKER_DATABASE_POOL_MAX + 迁移与运维余量` 计算。
 
 ## 安全审计
 

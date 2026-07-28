@@ -281,6 +281,28 @@ describeDatabase("projection compaction repository integration", () => {
   }
 
   async function cleanup(): Promise<void> {
+    await sql`
+      DELETE FROM focowiki.active_projection_segments
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+         OR segment_id IN (
+           SELECT id
+           FROM focowiki.projection_segments
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+         )
+    `;
+    await sql`
+      DELETE FROM focowiki.generation_projection_segments
+      WHERE generation_id IN (
+          SELECT id
+          FROM focowiki.publication_generations
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+        )
+         OR segment_id IN (
+           SELECT id
+           FROM focowiki.projection_segments
+           WHERE knowledge_base_id = ${knowledgeBaseId}
+         )
+    `;
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;
   }
 });

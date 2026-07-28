@@ -292,7 +292,20 @@ export type ProcessingSummary = {
       contentProfileVersion: string;
       graphLexicalProjectionVersion: string;
       processedSourceCount: number;
+      pendingSourceCount: number;
+      runningSourceCount: number;
+      retrySourceCount: number;
+      failedSourceCount: number;
       totalSourceCount: number;
+      activeWorkerCount: number;
+      sourceReadRetryCount: number;
+      databaseRetryCount: number;
+      filesPerSecond: number | null;
+      sourceReadLatencyMs: number | null;
+      databaseBatchLatencyMs: number | null;
+      lastProgressAt: string | null;
+      lastWorkerHeartbeatAt: string | null;
+      estimatedCompletionAt: string | null;
       attemptCount: number;
       maxAttempts: number;
       updatedAt: string;
@@ -330,6 +343,30 @@ export type ProcessingSummary = {
       active: MaintenanceCompactionProgress | null;
       latestCompleted: MaintenanceCompactionProgress | null;
     };
+  };
+  indexMaintenance: {
+    requestId: string | null;
+    state:
+      | "idle"
+      | "queued"
+      | "planning"
+      | "running"
+      | "validating"
+      | "completed"
+      | "failed"
+      | "superseded"
+      | "canceled";
+    trigger: "manual" | "automatic" | null;
+    stage: string | null;
+    active: boolean;
+    completedCount: number;
+    expectedCount: number;
+    retryCount: number;
+    lastProgressAt: string | null;
+    lastCompletedAt: string | null;
+    maintenanceRequired: boolean;
+    safeErrorCode: string | null;
+    safeErrorMessage: string | null;
   };
   dirtySourceFiles: {
     count: number;
@@ -439,6 +476,9 @@ export type GraphSettings = {
 };
 
 export type MaintenanceSettings = {
+  knowledgeBaseMaintenanceMode: "manual" | "automatic";
+  knowledgeBaseMaintenanceScanIntervalSeconds: number;
+  knowledgeBaseMaintenanceConcurrency: number;
   reconciliationEnabled: boolean;
   scanIntervalSeconds: number;
   scanBatchSize: number;
@@ -452,6 +492,12 @@ export type MaintenanceSettings = {
   projectionRepairConcurrency: number;
   projectionRepairDatabaseBatchSize: number;
   projectionRepairObjectWriteConcurrency: number;
+  lexicalRebuildConcurrency: number;
+  lexicalRebuildSourceReadConcurrency: number;
+  lexicalRebuildDatabaseWriteConcurrency: number;
+  lexicalRebuildClaimBatchSize: number;
+  lexicalRebuildDatabaseBatchSize: number;
+  lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
 export type RuntimeModelConfig = {
@@ -494,6 +540,44 @@ export type RuntimeSettingsResponse = {
     missingCount: number;
     retryCount: number;
     lastErrorCode: string | null;
+    lastErrorMessage: string | null;
+    resolvedCount: number;
+    pendingCount: number;
+    databaseChunkSize: number | null;
+    recentObjectsPerSecond: number | null;
+    rollingBatchLatencyMs: number | null;
+    heartbeatAt: string | null;
+    lastProgressAt: string | null;
+  } | null;
+  objectProtectionStatus: {
+    readiness:
+      | "pending"
+      | "backfilling"
+      | "verifying"
+      | "ready"
+      | "retrying"
+      | "failed";
+    phase:
+      | "immutable_objects"
+      | "source_files"
+      | "projection_segments"
+      | "dirty_refresh"
+      | "verify_immutable_objects"
+      | "verify_source_files"
+      | "verify_projection_segments"
+      | "ready";
+    processedCount: number;
+    expectedCount: number;
+    verifiedCount: number;
+    dirtyCount: number;
+    retryCount: number;
+    recentObjectsPerSecond: number | null;
+    rollingBatchLatencyMs: number | null;
+    lastProgressAt: string | null;
+    heartbeatAt: string | null;
+    estimatedCompletionAt: string | null;
+    lastErrorCode: string | null;
+    lastErrorMessage: string | null;
   } | null;
 };
 
@@ -1256,6 +1340,40 @@ export async function fetchKnowledgeBaseProcessingSummary(input: {
   }
 
   return (await response.json()) as ProcessingSummary;
+}
+
+export async function requestKnowledgeBaseIndexMaintenance(input: {
+  knowledgeBaseId: string;
+  idempotencyKey: string;
+}): Promise<{
+  result: "accepted" | "already_active";
+  maintenance: ProcessingSummary["indexMaintenance"];
+} | ApiFailure> {
+  const response = await adminFetch(
+    `/admin/api/knowledge-bases/${encodeURIComponent(input.knowledgeBaseId)}/index-maintenance`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": input.idempotencyKey
+      },
+      body: JSON.stringify({ idempotencyKey: input.idempotencyKey })
+    }
+  );
+  const body = (await response.json()) as
+    | {
+        result: "accepted" | "already_active";
+        maintenance: ProcessingSummary["indexMaintenance"];
+      }
+    | { error?: { messageKey?: string } };
+
+  if (!response.ok) {
+    return readFailure(body, "errors.indexMaintenanceRequestFailed");
+  }
+  return body as {
+    result: "accepted" | "already_active";
+    maintenance: ProcessingSummary["indexMaintenance"];
+  };
 }
 
 export async function fetchKnowledgeBasePublicUrls(input: {

@@ -34,6 +34,7 @@ type ChangeFactRow = {
   source_file_id: string | null;
   source_revision_id: string | null;
   operation_id: string | null;
+  deletion_intent_id: string | null;
   kind: ChangeFactKind;
   previous_path: string | null;
   path: string | null;
@@ -50,11 +51,17 @@ export async function assemblePendingPublicationChanges(
   if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
     throw new Error("Generation assembly limit must be a positive integer");
   }
-  return sql.begin(async (transaction) => {
+  return sql.begin("ISOLATION LEVEL REPEATABLE READ", async (transaction) => {
+    await transaction`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
+      )
+    `;
     const facts = await transaction<ChangeFactRow[]>`
       SELECT id, knowledge_base_id, source_file_id, source_revision_id,
-             operation_id, kind, previous_path, path, planning_payload_json,
-             settings_snapshot_json, publication_max_attempts, created_at
+             operation_id, deletion_intent_id, kind, previous_path, path,
+             planning_payload_json, settings_snapshot_json,
+             publication_max_attempts, created_at
       FROM focowiki.publication_change_facts
       WHERE knowledge_base_id = ${input.knowledgeBaseId}
         AND generation_id IS NULL
@@ -99,22 +106,12 @@ export async function assemblePendingPublicationChanges(
         changeKind: entry.fact.kind,
         sourceFileId: entry.fact.source_file_id,
         sourceRevisionId: entry.fact.source_revision_id,
+        operationId: entry.fact.operation_id,
+        deletionIntentId: entry.fact.deletion_intent_id,
         previousPath: entry.fact.previous_path,
         path: entry.fact.path,
         impacts: entry.impacts
       }));
-      const capturedInputs = await capturePublicationProjectionInputsBatch(transaction, {
-        knowledgeBaseId: input.knowledgeBaseId,
-        generationId: "unassigned",
-        changes: captureChanges,
-        now: input.assembledAt
-      });
-
-      await transaction`
-        SELECT pg_advisory_xact_lock(
-          hashtextextended('focowiki:generation:' || ${input.knowledgeBaseId}, 0)
-        )
-      `;
       generation = await requireOpenGeneration(transaction, {
         knowledgeBaseId: input.knowledgeBaseId,
         now: input.assembledAt,
@@ -122,6 +119,30 @@ export async function assemblePendingPublicationChanges(
           fact.planning_payload_json.allowDeletedKnowledgeBase === true
         )
       });
+      const existingVisibility = await transaction<Array<{
+        operation_id: string | null;
+        deletion_intent_id: string | null;
+      }>>`
+        SELECT operation_id, deletion_intent_id
+        FROM focowiki.publication_change_facts
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND generation_id = ${generation.id}
+      `;
+      const capturedInputs = await capturePublicationProjectionInputsBatch(transaction, {
+        knowledgeBaseId: input.knowledgeBaseId,
+        generationId: generation.id,
+        changes: captureChanges,
+        visibility: {
+          operationIds: existingVisibility.flatMap((fact) =>
+            fact.operation_id ? [fact.operation_id] : []
+          ),
+          deletionIntentIds: existingVisibility.flatMap((fact) =>
+            fact.deletion_intent_id ? [fact.deletion_intent_id] : []
+          )
+        },
+        now: input.assembledAt
+      });
+
       await persistCapturedProjectionInputs(transaction, {
         knowledgeBaseId: input.knowledgeBaseId,
         generationId: generation.id,
@@ -137,6 +158,7 @@ export async function assemblePendingPublicationChanges(
           kind: fact.kind,
           sourceFileId: fact.source_file_id,
           sourceRevisionId: fact.source_revision_id,
+          searchDocumentId: fact.planning_payload_json.searchDocumentId ?? null,
           path: fact.path
         })),
         now: input.assembledAt

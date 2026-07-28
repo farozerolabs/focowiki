@@ -92,7 +92,10 @@ export type StorageAdapter = {
     key: string,
     options?: { maxBytes?: number }
   ) => Promise<Uint8Array | null>;
-  getObjectText: (key: string, options?: { maxBytes?: number }) => Promise<string | null>;
+  getObjectText: (
+    key: string,
+    options?: { maxBytes?: number; signal?: AbortSignal }
+  ) => Promise<string | null>;
 };
 
 type S3StorageOptions = {
@@ -418,35 +421,32 @@ export class S3StorageAdapter implements StorageAdapter {
 
   public async getObjectText(
     key: string,
-    options: { maxBytes?: number } = {}
+    options: { maxBytes?: number; signal?: AbortSignal } = {}
   ): Promise<string | null> {
     try {
-      if (options.maxBytes) {
-        const head = await this.client.send(
-          new HeadObjectCommand({
-            Bucket: this.bucket,
-            Key: key
-          })
-        );
-        const sizeBytes = head.ContentLength ?? 0;
-
-        if (sizeBytes > options.maxBytes) {
-          throw new StorageObjectTooLargeError({
-            key,
-            sizeBytes,
-            maxBytes: options.maxBytes
-          });
-        }
-      }
-
       const response = await this.client.send(
         new GetObjectCommand({
           Bucket: this.bucket,
           Key: key
-        })
+        }),
+        options.signal ? { abortSignal: options.signal } : undefined
       );
 
-      return await responseBodyToString(response.Body);
+      if (
+        options.maxBytes !== undefined
+        && response.ContentLength !== undefined
+        && response.ContentLength > options.maxBytes
+      ) {
+        throw new StorageObjectTooLargeError({
+          key,
+          sizeBytes: response.ContentLength,
+          maxBytes: options.maxBytes
+        });
+      }
+
+      return new TextDecoder().decode(
+        await responseBodyToBytes(response.Body, options.maxBytes, key)
+      );
     } catch (error) {
       if (error instanceof NoSuchKey || isNoSuchKeyError(error)) {
         return null;
@@ -602,41 +602,6 @@ function uint8ArrayToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
-async function responseBodyToString(body: unknown): Promise<string> {
-  if (!body) {
-    return "";
-  }
-
-  if (typeof body === "string") {
-    return body;
-  }
-
-  if (body instanceof Uint8Array) {
-    return new TextDecoder().decode(body);
-  }
-
-  const streamBody = body as {
-    transformToString?: () => Promise<string>;
-    [Symbol.asyncIterator]?: () => AsyncIterator<Uint8Array | string>;
-  };
-
-  if (typeof streamBody.transformToString === "function") {
-    return streamBody.transformToString();
-  }
-
-  if (typeof streamBody[Symbol.asyncIterator] === "function") {
-    const chunks: Uint8Array[] = [];
-
-    for await (const chunk of streamBody as AsyncIterable<Uint8Array | string>) {
-      chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
-    }
-
-    return new TextDecoder().decode(concatUint8Arrays(chunks));
-  }
-
-  throw new TypeError("Unsupported S3 response body");
-}
-
 async function responseBodyToBytes(
   body: unknown,
   maxBytes: number | undefined,
@@ -697,10 +662,14 @@ function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
 }
 
 function isNoSuchKeyError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name: unknown }).name === "NoSuchKey"
-  );
+  if (typeof error !== "object" || error === null || !("name" in error)) {
+    return false;
+  }
+  const name = (error as { name: unknown }).name;
+  if (name === "NoSuchKey") return true;
+  if (name !== "NotFound" || !("$metadata" in error)) return false;
+  const metadata = (error as {
+    $metadata?: { httpStatusCode?: unknown };
+  }).$metadata;
+  return metadata?.httpStatusCode === 404;
 }

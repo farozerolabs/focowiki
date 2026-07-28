@@ -65,7 +65,20 @@ type LexicalRebuildRow = {
   target_content_profile_version: string;
   target_graph_lexical_projection_version: string;
   processed_source_count: number;
+  pending_source_count: number;
+  running_source_count: number;
+  retry_source_count: number;
+  failed_source_count: number;
   total_source_count: number;
+  active_worker_count: number;
+  source_read_retry_count: number;
+  database_retry_count: number;
+  recent_files_per_second: number | null;
+  rolling_source_read_latency_ms: number | null;
+  rolling_database_batch_latency_ms: number | null;
+  last_progress_at: Date | null;
+  last_worker_heartbeat_at: Date | null;
+  estimated_completion_at: Date | null;
   attempt_count: number;
   max_attempts: number;
   updated_at: Date;
@@ -91,7 +104,19 @@ export function createPostgresMaintenanceProgressRepository(
                  target_tokenizer_contract_version, target_segmentation_version,
                  target_content_profile_version,
                  target_graph_lexical_projection_version,
-                 processed_source_count, total_source_count,
+                 processed_source_count, pending_source_count,
+                 running_source_count, retry_source_count, failed_source_count,
+                 total_source_count, source_read_retry_count,
+                 database_retry_count, recent_files_per_second,
+                 rolling_source_read_latency_ms,
+                 rolling_database_batch_latency_ms, last_progress_at,
+                 last_worker_heartbeat_at, estimated_completion_at,
+                 (
+                   SELECT count(*)::int
+                   FROM focowiki.role_heartbeats heartbeat
+                   WHERE heartbeat.role = 'lexical_rebuild'
+                     AND heartbeat.last_seen_at >= now() - interval '2 minutes'
+                 ) AS active_worker_count,
                  attempt_count, max_attempts, updated_at, completed_at,
                  last_error_code, last_error_message
           FROM focowiki.knowledge_base_lexical_rebuilds
@@ -159,7 +184,20 @@ function mapLexicalRebuild(
     contentProfileVersion: row.target_content_profile_version,
     graphLexicalProjectionVersion: row.target_graph_lexical_projection_version,
     processedSourceCount: Number(row.processed_source_count),
+    pendingSourceCount: Number(row.pending_source_count),
+    runningSourceCount: Number(row.running_source_count),
+    retrySourceCount: Number(row.retry_source_count),
+    failedSourceCount: Number(row.failed_source_count),
     totalSourceCount: Number(row.total_source_count),
+    activeWorkerCount: Number(row.active_worker_count),
+    sourceReadRetryCount: Number(row.source_read_retry_count),
+    databaseRetryCount: Number(row.database_retry_count),
+    filesPerSecond: nullableNumber(row.recent_files_per_second),
+    sourceReadLatencyMs: nullableNumber(row.rolling_source_read_latency_ms),
+    databaseBatchLatencyMs: nullableNumber(row.rolling_database_batch_latency_ms),
+    lastProgressAt: row.last_progress_at?.toISOString() ?? null,
+    lastWorkerHeartbeatAt: row.last_worker_heartbeat_at?.toISOString() ?? null,
+    estimatedCompletionAt: row.estimated_completion_at?.toISOString() ?? null,
     attemptCount: row.attempt_count,
     maxAttempts: row.max_attempts,
     updatedAt: row.updated_at.toISOString(),
