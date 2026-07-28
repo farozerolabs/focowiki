@@ -116,7 +116,7 @@ Maintenance settings control knowledge-base index maintenance and bounded reconc
 | Knowledge-base maintenance concurrency | Maximum knowledge bases maintained at the same time. Additional requests wait until capacity is available. | `1`; increase after observing database and object-storage capacity. |
 | Storage reconciliation | Enables bounded generated-object reconciliation. | Keep enabled for normal deployments. |
 | Scan interval seconds | Time between complete reconciliation cycles. | `21600` seconds. |
-| Scan batch size | Generated-object metadata records listed in one bounded page. | `500`; maximum `1000`. |
+| Scan batch size | Generated-object metadata records listed in one bounded storage page. Larger pages create more short database batches and increase temporary database pressure. | `500`; maximum `1000`. |
 | Deletion batch size | Confirmed orphan objects deleted in one bounded batch. | `100`; maximum `1000`. |
 | Quarantine grace seconds | Minimum time an unregistered candidate remains quarantined before deletion. | `86400` seconds or longer. |
 | Confirmation passes | Completed discovery passes required before deletion eligibility. | `2` or more. |
@@ -140,7 +140,7 @@ Projection repair runs in its own Worker role. Saved values apply to later repai
 
 Lexical rebuild also runs in its own Worker role. Saved values apply to later claims; active claims keep their captured revision. Maintenance status reports exact completed, active, waiting, retrying, failed, and total file counts together with active workers, recent throughput, retries, last progress, heartbeat, and estimated completion. The current active generation remains readable while the candidate is built.
 
-The maintenance status also reports aggregate scan, quarantine, deletion, retry, and registered-but-missing counts. It does not return object keys, checksums, storage credentials, SQL, Redis keys, or internal worker payloads.
+The maintenance status also reports protection readiness, bounded progress, recent throughput, batch latency, heartbeat freshness, safe retry information, and aggregate scan, quarantine, resolution, deletion, and registered-but-missing counts.
 
 After an upgrade changes the search representation, maintenance rebuilds search, lexical, and graph-term data in bounded background pages. The currently active knowledge base remains readable until the rebuilt data has been validated and activated. Existing source files do not need to be uploaded again, accepted relationships are retained, and the rebuild does not call a model.
 

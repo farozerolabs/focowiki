@@ -17,6 +17,7 @@ import { createPostgresSourceDispatchRepository } from "./infrastructure/postgre
 import { createPostgresSourceFileRetryRepository } from "./infrastructure/postgres/source-file-retry-repository.js";
 import { createPostgresSourceFileTaskDeletionRepository } from "./infrastructure/postgres/source-file-task-deletion-repository.js";
 import { createPostgresStorageReconciliationRepository } from "./infrastructure/postgres/storage-reconciliation-repository.js";
+import { createPostgresObjectProtectionRepository } from "./infrastructure/postgres/object-protection-repository.js";
 import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
 import {
   createPostgresKnowledgeBaseIndexMaintenanceRepository
@@ -43,6 +44,7 @@ const sourceDispatch = createPostgresSourceDispatchRepository(sql);
 const sourceFileRetries = createPostgresSourceFileRetryRepository(sql);
 const sourceFileTaskDeletions = createPostgresSourceFileTaskDeletionRepository(sql);
 const storageReconciliation = createPostgresStorageReconciliationRepository(sql);
+const objectProtection = createPostgresObjectProtectionRepository(sql);
 const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
 const knowledgeBaseIndexMaintenance =
   createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
@@ -58,6 +60,7 @@ const sharedServices = {
   sourceFileRetries,
   sourceFileTaskDeletions,
   storageReconciliation,
+  objectProtection,
   maintenanceProgress,
   knowledgeBaseIndexMaintenance,
   logger,

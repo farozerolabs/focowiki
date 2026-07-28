@@ -56,8 +56,8 @@ export function FilePreviewPanel({
   }
 
   return (
-    <Card className="min-h-[calc(100svh-5.5rem)] min-w-0">
-      <CardHeader>
+    <Card className="min-h-0 min-w-0 flex-1">
+      <CardHeader className="shrink-0">
         <CardTitle>{selectedFileTitle || selectedFilePath || t("detail.noFileSelected")}</CardTitle>
         <CardDescription>{t("result.preview")}</CardDescription>
         {copyUrl ? (
@@ -74,11 +74,14 @@ export function FilePreviewPanel({
           </CardAction>
         ) : null}
       </CardHeader>
-      <CardContent>
+      <CardContent
+        data-slot="file-preview-scroll"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+      >
         {copiedUrl ? <p className="mb-3 text-sm text-muted-foreground">{t("result.copied")}</p> : null}
         {previewHtml ? (
           <article
-            className="prose prose-sm max-w-none text-foreground"
+            className="prose prose-sm min-w-0 max-w-none text-foreground"
             onClick={handlePreviewClick}
             dangerouslySetInnerHTML={{ __html: previewHtml }}
           />

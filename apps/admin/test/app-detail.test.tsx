@@ -333,6 +333,13 @@ describe("Admin knowledge base detail", () => {
     });
     expect(await screen.findByRole("heading", { name: "Intro", level: 1 })).toBeTruthy();
     expect(screen.getByText(/type: guide/)).toBeTruthy();
+    expect(
+      document.querySelector('[data-slot="sidebar-wrapper"]')?.className.split(/\s+/u)
+    ).toContain("h-svh");
+    expect(document.querySelector('[data-slot="sidebar-inset"]')?.className).toContain("min-h-0");
+    expect(
+      document.querySelector('[data-slot="knowledge-base-detail-content"]')?.className
+    ).toContain("min-h-0");
   });
 
   it("exposes source-file editing actions from the file tree menu", async () => {

@@ -390,8 +390,9 @@ describe("lightweight architecture boundaries", () => {
     );
 
     expect(repository).toContain("FROM unnest(");
-    expect(repository).toContain("orphanObjects.map((object) => object.key)");
-    expect(repository).not.toContain("for (const object of orphanObjects)");
+    expect(repository).toContain("upsertOrphanCandidates(");
+    expect(repository).toContain("${objects.map((object) => object.key)}::text[]");
+    expect(repository).not.toContain("for (const object of objects)");
   });
 
   it("keeps role worker queue state restartable and bounded", () => {

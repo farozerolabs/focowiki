@@ -23,6 +23,7 @@ import {
   fingerprintRuntimeSecret
 } from "../src/runtime-settings/encryption.js";
 import type { StorageReconciliationRepository } from "../src/application/ports/storage-reconciliation-repository.js";
+import type { ObjectProtectionRepository } from "../src/application/ports/object-protection-repository.js";
 
 describe("runtime settings service", () => {
   it("bootstraps settings and keeps model assistance optional", async () => {
@@ -643,7 +644,8 @@ describe("runtime settings service", () => {
           }
         }
       },
-      storageReconciliation: createStorageReconciliationRepository()
+      storageReconciliation: createStorageReconciliationRepository(),
+      objectProtection: createObjectProtectionRepository()
     });
     const cookie = await loginAndReadSessionCookie(app);
     const initial = await app.request("/admin/api/settings/runtime", {
@@ -665,6 +667,7 @@ describe("runtime settings service", () => {
       settings: RuntimeSettingsSnapshot;
       models: unknown[];
       maintenanceStatus: unknown;
+      objectProtectionStatus: unknown;
     };
     expect(initialBody).toMatchObject({ settings: { activeModel: null }, models: [] });
     expect(initialBody.settings).not.toHaveProperty("uploadGeneration");
@@ -682,12 +685,37 @@ describe("runtime settings service", () => {
       deletedCount: 1,
       missingCount: 0,
       retryCount: 1,
-      lastErrorCode: null
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      resolvedCount: 0,
+      pendingCount: 0,
+      databaseChunkSize: 100,
+      recentObjectsPerSecond: 50,
+      rollingBatchLatencyMs: 20,
+      heartbeatAt: "2026-07-18T10:00:00.000Z",
+      lastProgressAt: "2026-07-18T10:00:00.000Z"
+    });
+    expect(initialBody.objectProtectionStatus).toEqual({
+      readiness: "backfilling",
+      phase: "source_files",
+      processedCount: 400,
+      expectedCount: 1_000,
+      verifiedCount: 0,
+      dirtyCount: 3,
+      retryCount: 1,
+      recentObjectsPerSecond: 80,
+      rollingBatchLatencyMs: 25,
+      lastProgressAt: "2026-07-18T10:00:00.000Z",
+      heartbeatAt: "2026-07-18T10:00:01.000Z",
+      estimatedCompletionAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null
     });
     const serializedInitial = JSON.stringify(initialBody);
     for (const forbidden of [
       "objectKey", "checksumSha256", "secretAccessKey", "SELECT ",
-      "storage_reconciliation_candidates", "tenant/demo/generated"
+      "storage_reconciliation_candidates", "tenant/demo/generated",
+      "leaseToken", "workerId", "cursorObjectKey"
     ]) {
       expect(serializedInitial).not.toContain(forbidden);
     }
@@ -821,11 +849,53 @@ describe("runtime settings service", () => {
   });
 });
 
+function createObjectProtectionRepository(): ObjectProtectionRepository {
+  return {
+    async protectIdentities() {},
+    async markIdentitiesDirty() {},
+    async lookupIdentities() { return []; },
+    async getReadiness() { return "backfilling"; },
+    async claimMaintenance() { return null; },
+    async renewMaintenanceLease() { return true; },
+    async runBackfillBatch() {
+      return { processed: 0, completed: false, phase: "source_files" };
+    },
+    async refreshDirtyBatch() {
+      return { processed: 0, completed: false, phase: "dirty_refresh" };
+    },
+    async failMaintenance() {},
+    async getStatus() {
+      return {
+        readiness: "backfilling",
+        phase: "source_files",
+        processedCount: 400,
+        expectedCount: 1_000,
+        verifiedCount: 0,
+        dirtyCount: 3,
+        retryCount: 1,
+        recentObjectsPerSecond: 80,
+        rollingBatchLatencyMs: 25,
+        lastProgressAt: "2026-07-18T10:00:00.000Z",
+        heartbeatAt: "2026-07-18T10:00:01.000Z",
+        estimatedCompletionAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null
+      };
+    }
+  };
+}
+
 function createStorageReconciliationRepository(): StorageReconciliationRepository {
   return {
     async claimCycle() { return null; },
     async renewCycleLease() { return true; },
-    async recordScanPage() { return true; },
+    async getProtectionReadiness() { return "ready"; },
+    async prepareScanPage() {
+      return { completedObjectCount: 0, databaseChunkSize: 100, committed: false };
+    },
+    async recordScanChunk() { return true; },
+    async reduceScanPageChunkSize() { return true; },
+    async completeScanPage() { return true; },
     async claimDeletionCandidates() { return []; },
     async authorizeCandidateDeletion() { return false; },
     async refreshCandidateObservation() {},
@@ -845,7 +915,15 @@ function createStorageReconciliationRepository(): StorageReconciliationRepositor
         deletedCount: 1,
         missingCount: 0,
         retryCount: 1,
-        lastErrorCode: null
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        resolvedCount: 0,
+        pendingCount: 0,
+        databaseChunkSize: 100,
+        recentObjectsPerSecond: 50,
+        rollingBatchLatencyMs: 20,
+        heartbeatAt: "2026-07-18T10:00:00.000Z",
+        lastProgressAt: "2026-07-18T10:00:00.000Z"
       };
     }
   };

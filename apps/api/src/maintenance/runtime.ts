@@ -9,6 +9,10 @@ export async function runMaintenanceBackground(input: {
     reconciliationDeleted: number;
     reconciliationVerified: number;
     reconciliationFailed: number;
+    objectProtectionPhase: string;
+    objectProtectionProcessed: number;
+    objectProtectionCompleted: boolean;
+    objectProtectionFailed: boolean;
     migrationPhase: string;
     migrationProcessed: number;
     migrationCompleted: boolean;

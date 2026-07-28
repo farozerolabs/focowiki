@@ -540,6 +540,44 @@ export type RuntimeSettingsResponse = {
     missingCount: number;
     retryCount: number;
     lastErrorCode: string | null;
+    lastErrorMessage: string | null;
+    resolvedCount: number;
+    pendingCount: number;
+    databaseChunkSize: number | null;
+    recentObjectsPerSecond: number | null;
+    rollingBatchLatencyMs: number | null;
+    heartbeatAt: string | null;
+    lastProgressAt: string | null;
+  } | null;
+  objectProtectionStatus: {
+    readiness:
+      | "pending"
+      | "backfilling"
+      | "verifying"
+      | "ready"
+      | "retrying"
+      | "failed";
+    phase:
+      | "immutable_objects"
+      | "source_files"
+      | "projection_segments"
+      | "dirty_refresh"
+      | "verify_immutable_objects"
+      | "verify_source_files"
+      | "verify_projection_segments"
+      | "ready";
+    processedCount: number;
+    expectedCount: number;
+    verifiedCount: number;
+    dirtyCount: number;
+    retryCount: number;
+    recentObjectsPerSecond: number | null;
+    rollingBatchLatencyMs: number | null;
+    lastProgressAt: string | null;
+    heartbeatAt: string | null;
+    estimatedCompletionAt: string | null;
+    lastErrorCode: string | null;
+    lastErrorMessage: string | null;
   } | null;
 };
 

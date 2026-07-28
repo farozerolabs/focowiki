@@ -171,7 +171,42 @@ vi.mock("@/lib/admin-api", () => ({
         updatedAt: "2026-06-14T00:00:00.000Z",
         lastUsedAt: null
       }
-    ]
+    ],
+    maintenanceStatus: {
+      state: "scanning",
+      lastScanStartedAt: "2026-07-27T10:00:00.000Z",
+      lastScanCompletedAt: "2026-07-27T09:00:00.000Z",
+      listedCount: 500,
+      quarantinedCount: 2,
+      deletedCount: 1,
+      missingCount: 0,
+      retryCount: 0,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      resolvedCount: 3,
+      pendingCount: 4,
+      databaseChunkSize: 100,
+      recentObjectsPerSecond: 50.1234,
+      rollingBatchLatencyMs: 20,
+      heartbeatAt: "2099-07-27T10:00:00.000Z",
+      lastProgressAt: "2099-07-27T10:00:00.000Z"
+    },
+    objectProtectionStatus: {
+      readiness: "backfilling",
+      phase: "source_files",
+      processedCount: 400,
+      expectedCount: 1_000,
+      verifiedCount: 0,
+      dirtyCount: 3,
+      retryCount: 0,
+      recentObjectsPerSecond: 80,
+      rollingBatchLatencyMs: 25,
+      lastProgressAt: "2099-07-27T10:00:00.000Z",
+      heartbeatAt: "2099-07-27T10:00:01.000Z",
+      estimatedCompletionAt: "2099-07-27T10:01:00.000Z",
+      lastErrorCode: null,
+      lastErrorMessage: null
+    }
   })),
   pauseRuntimeModel: vi.fn(),
   resumeRuntimeModel: vi.fn(),
@@ -306,8 +341,17 @@ describe("SettingsPanel", () => {
     expect(lexicalInFlightBytes?.value).toBe("67108864");
     expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
     expect(document.getElementById("maintenance-lexicalRebuildWorkerPoolMax")).toBeNull();
-    expect(screen.getByText(/S3 page limit is 1,000 objects/)).toBeTruthy();
+    expect(screen.getByText(/Larger pages also create more bounded database chunks/)).toBeTruthy();
     expect(screen.getByText(/Concurrent lexical rebuild work lanes/)).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.getByText("Source file protection")).toBeTruthy();
+    expect(screen.getByText(/Objects resolved/)).toBeTruthy();
+    expect(screen.getByText(/Pending candidates/)).toBeTruthy();
+    expect(screen.getByText(/Database chunk size/)).toBeTruthy();
+    expect(screen.getByText(/Protection verified/)).toBeTruthy();
+    expect(screen.getByText(/Reconciliation heartbeat/)).toBeTruthy();
+    expect(screen.getByText(/Estimated completion/)).toBeTruthy();
+    expect(screen.getByText("50.1")).toBeTruthy();
 
     fireEvent.change(repairConcurrency, { target: { value: "6" } });
     fireEvent.change(repairBatchSize, { target: { value: "3000" } });

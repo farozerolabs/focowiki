@@ -662,10 +662,14 @@ function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
 }
 
 function isNoSuchKeyError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name: unknown }).name === "NoSuchKey"
-  );
+  if (typeof error !== "object" || error === null || !("name" in error)) {
+    return false;
+  }
+  const name = (error as { name: unknown }).name;
+  if (name === "NoSuchKey") return true;
+  if (name !== "NotFound" || !("$metadata" in error)) return false;
+  const metadata = (error as {
+    $metadata?: { httpStatusCode?: unknown };
+  }).$metadata;
+  return metadata?.httpStatusCode === 404;
 }

@@ -53,6 +53,7 @@
     "validate:large-scale:full-system:plan": "node scripts/validation/large-scale-full-system-e2e.mjs plan",
     "validate:incremental-scale": "pnpm --dir apps/api exec tsx scripts/incremental-scale-evidence.ts",
     "validate:tree-storage-scale": "pnpm --dir apps/api exec tsx scripts/tree-storage-reconciliation-scale-evidence.ts",
+    "validate:storage-reconciliation-scale": "pnpm --dir apps/api exec tsx scripts/storage-reconciliation-throughput-evidence.ts",
     "validate:active-read-repair-scale": "pnpm --dir apps/api exec tsx scripts/active-read-repair-scale-evidence.ts",
     "validate:projection-repair-scale": "pnpm --dir apps/api exec tsx scripts/projection-repair-scale-evidence.ts",
     "validate:lexical-rebuild-scale": "pnpm --dir apps/api exec tsx scripts/lexical-rebuild-scale-evidence.ts",

@@ -105,6 +105,12 @@ const EXPECTED_MIGRATIONS = [
     "lexical-rebuild-worker-v15",
     "knowledge-base-index-maintenance-v16",
     "compatible_with_persisted_work"
+  ],
+  [
+    "017_indexed_storage_object_protection.sql",
+    "knowledge-base-index-maintenance-v16",
+    "indexed-storage-object-protection-v17",
+    "compatible_with_persisted_work"
   ]
 ] as const;
 

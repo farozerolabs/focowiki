@@ -9,6 +9,27 @@ beforeAll(async () => {
 });
 
 describe("generated Markdown preview links", () => {
+  it("keeps long generated content inside a scrollable preview region", () => {
+    const { container } = render(
+      <FilePreviewPanel
+        copiedUrl=""
+        previewHtml={"<pre>" + "content\n".repeat(500) + "</pre>"}
+        publicUrls={null}
+        selectedFileTitle="0019.json"
+        selectedFilePath="_index/search/v1/0019.json"
+        onCopy={vi.fn()}
+        onOpenPreviewPath={vi.fn()}
+      />
+    );
+
+    const scrollRegion = container.querySelector('[data-slot="file-preview-scroll"]');
+    const previewCard = container.querySelector('[data-slot="card"]');
+
+    expect(previewCard?.className).toContain("flex-1");
+    expect(scrollRegion?.className).toContain("overflow-y-auto");
+    expect(scrollRegion?.className).toContain("min-h-0");
+  });
+
   it.each([
     ["Relationship graph", "_graph/index.md"],
     ["Update history", "log.md"]

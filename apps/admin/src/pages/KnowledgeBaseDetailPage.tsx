@@ -14,7 +14,10 @@ import {
 } from "@/components/source-resource-editor";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { escapeHtml, renderMarkdownPreview } from "@/lib/markdown-preview";
+import {
+  renderGeneratedTextPreview,
+  renderMarkdownPreview
+} from "@/lib/markdown-preview";
 import {
   completeCursorPageRequest,
   createInitialCursorPageState,
@@ -297,7 +300,10 @@ export function KnowledgeBaseDetailPage({
       return;
     }
 
-    setPreviewHtml(`<pre>${escapeHtml(detail.content)}</pre>`);
+    setPreviewHtml(renderGeneratedTextPreview(detail.content, {
+      contentType: detail.file.contentType,
+      logicalPath
+    }));
   }
 
   function clearSelectedFile() {
@@ -521,7 +527,10 @@ export function KnowledgeBaseDetailPage({
   }
 
   return (
-    <SidebarProvider style={sidebarProviderStyle}>
+    <SidebarProvider
+      className="h-svh min-h-0 overflow-hidden"
+      style={sidebarProviderStyle}
+    >
       <AppSidebar
         appName={t("app.name")}
         knowledgeBaseName={knowledgeBase.name}
@@ -568,7 +577,7 @@ export function KnowledgeBaseDetailPage({
           onWidthChange: setDetailSidebarWidth
         }}
       />
-      <SidebarInset className="min-w-0 overflow-hidden">
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
         <AdminPageHeader
           start={
             <>
@@ -588,7 +597,10 @@ export function KnowledgeBaseDetailPage({
           }
           end={<LanguageSwitch />}
         />
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-4">
+        <section
+          data-slot="knowledge-base-detail-content"
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4"
+        >
           {activeView === "processing" ? (
             <SourceFileProgressPanel
               sourceFiles={sourceFiles}

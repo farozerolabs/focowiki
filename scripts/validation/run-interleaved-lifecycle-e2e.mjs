@@ -346,6 +346,18 @@ async function executeScenario(scenario) {
               requiredActiveSegmentCount: precondition.requiredActiveSegmentCount
             });
           }
+          if (cases.maintenanceKind !== "storage-reconciliation") {
+            const requested = await requestKnowledgeBaseIndexMaintenance({
+              knowledgeBaseId,
+              idempotencyKey: `${runId}-${scenario.id}-index-maintenance`
+            });
+            controller.recordBarrier(scenario.id, {
+              name: "maintenance-requested",
+              lifecycle: "maintenance",
+              state: requested.maintenance?.state ?? requested.result,
+              details: { kind: cases.maintenanceKind }
+            });
+          }
           const observe = () => maintenanceObserver.observe({
             kind: cases.maintenanceKind,
             knowledgeBaseId,
@@ -905,6 +917,26 @@ async function createOpenApiKey() {
     id: response.key.id,
     rawKey: response.oneTimeKey.rawKey
   };
+}
+
+async function requestKnowledgeBaseIndexMaintenance(input) {
+  const response = await admin.request(
+    `/admin/api/knowledge-bases/${encodeURIComponent(
+      input.knowledgeBaseId
+    )}/index-maintenance`,
+    {
+      method: "POST",
+      headers: {
+        origin: adminOrigin,
+        "content-type": "application/json",
+        "idempotency-key": input.idempotencyKey
+      },
+      json: { idempotencyKey: input.idempotencyKey }
+    }
+  );
+  const body = await readResponseBody(response);
+  if (!response.ok) throw responseError(response, body);
+  return body;
 }
 
 async function readKnowledgeBase(knowledgeBaseId) {

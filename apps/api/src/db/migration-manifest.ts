@@ -108,6 +108,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "lexical-rebuild-worker-v15",
     targetGeneration: "knowledge-base-index-maintenance-v16",
     safety: "compatible_with_persisted_work"
+  },
+  {
+    fileName: "017_indexed_storage_object_protection.sql",
+    sourceGeneration: "knowledge-base-index-maintenance-v16",
+    targetGeneration: "indexed-storage-object-protection-v17",
+    safety: "compatible_with_persisted_work"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
