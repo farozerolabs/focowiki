@@ -315,6 +315,9 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("subject-digest: ${{ steps.build-api.outputs.digest }}");
     expect(workflow).toContain("provenance: mode=max");
     expect(workflow).toContain("sbom: true");
+    expect(
+      workflow.split('docker image rm --force "${image}" >/dev/null 2>&1 || true').length - 1
+    ).toBe(3);
     expect(workflow).not.toContain("focowiki-lexical-rebuild-worker");
     expect(workflow).not.toContain("LEXICAL_IMAGE");
     expect(workflow).toContain("http://127.0.0.1:43000/healthz");
