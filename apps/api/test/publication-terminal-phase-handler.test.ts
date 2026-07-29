@@ -114,6 +114,82 @@ describe("publication terminal phase handlers", () => {
         message: "GRAPH_SUMMARY_MISMATCH:generation-1"
       });
   });
+
+  it("plans search work during validation and waits without consuming retries", async () => {
+    const prepare = vi.fn().mockResolvedValue({
+      status: "pending",
+      epoch: 2
+    });
+    const status = vi.fn().mockResolvedValue({
+      status: "pending",
+      epoch: 2
+    });
+    const handlers = createPublicationTerminalPhaseHandlers({
+      generations: {
+        markGenerationState: vi.fn().mockResolvedValue(true),
+        activateGeneration: vi.fn()
+      },
+      state: {
+        getActivationContext: vi.fn().mockResolvedValue({
+          state: "building",
+          predecessorGenerationId: "generation-active"
+        })
+      },
+      validation: { validateChangedClosure: vi.fn().mockResolvedValue([]) },
+      references: referenceRepository(),
+      immutableObjects: { write: vi.fn() },
+      finalizers: [],
+      searchProjection: { prepare, status },
+      validationIssueLimit: 20
+    });
+
+    await expect(handlers.validation({ ...terminalTask(), taskKind: "validation" }))
+      .resolves.toBeUndefined();
+    expect(prepare).toHaveBeenCalledOnce();
+
+    await expect(handlers.activation({ ...terminalTask(), taskKind: "activation" }))
+      .rejects.toMatchObject({
+        code: "PUBLICATION_PHASE_BUSY",
+        retryable: true
+      });
+  });
+
+  it("restarts failed search work during activation without consuming retries", async () => {
+    const prepare = vi.fn().mockResolvedValue({
+      status: "pending",
+      epoch: 2
+    });
+    const status = vi.fn().mockResolvedValue({
+      status: "failed",
+      epoch: 2
+    });
+    const handlers = createPublicationTerminalPhaseHandlers({
+      generations: {
+        markGenerationState: vi.fn(),
+        activateGeneration: vi.fn()
+      },
+      state: {
+        getActivationContext: vi.fn().mockResolvedValue({
+          state: "validating",
+          predecessorGenerationId: "generation-active"
+        })
+      },
+      validation: { validateChangedClosure: vi.fn() },
+      references: referenceRepository(),
+      immutableObjects: { write: vi.fn() },
+      finalizers: [],
+      searchProjection: { prepare, status },
+      validationIssueLimit: 20
+    });
+    const task = { ...terminalTask(), taskKind: "activation" as const };
+
+    await expect(handlers.activation(task)).rejects.toMatchObject({
+      code: "PUBLICATION_PHASE_BUSY",
+      retryable: true
+    });
+    expect(status).toHaveBeenCalledWith(task);
+    expect(prepare).toHaveBeenCalledWith(task);
+  });
 });
 
 function terminalTask(): PublicationSubtask {

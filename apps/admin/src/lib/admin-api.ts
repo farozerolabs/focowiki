@@ -500,6 +500,31 @@ export type MaintenanceSettings = {
   lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
+export type SearchSettings = {
+  requestTimeoutMs: number;
+  engineSearchCutoffMs: number;
+  branchCandidateLimit: number;
+  fusedCandidateLimit: number;
+  overfetchFactor: number;
+  graphSeedLimit: number;
+  graphNeighborLimit: number;
+  cacheTtlSeconds: number;
+  indexBatchDocumentCount: number;
+  indexBatchCompressedBytes: number;
+  maxInFlightTasks: number;
+  engineQueueLatencyLimitMs: number;
+  engineResidentMemoryLimitBytes: number;
+  engineDatabaseSizeLimitBytes: number;
+  engineTaskQueueSizeLimitBytes: number;
+  taskPollIntervalMs: number;
+  taskTimeoutMs: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  cleanupBatchSize: number;
+  stagingRetentionHours: number;
+  cropLength: number;
+};
+
 export type RuntimeModelConfig = {
   id: string;
   displayName: string;
@@ -527,6 +552,7 @@ export type RuntimeSettingsResponse = {
     publication: PublicationSettings;
     graph: GraphSettings;
     maintenance: MaintenanceSettings;
+    search: SearchSettings;
     activeModel: RuntimeModelConfig | null;
   };
   models: RuntimeModelConfig[];
@@ -808,6 +834,12 @@ export async function updateMaintenanceSettings(
   input: MaintenanceSettings
 ): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
   return updateRuntimeSettings("/admin/api/settings/maintenance", input);
+}
+
+export async function updateSearchSettings(
+  input: SearchSettings
+): Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure> {
+  return updateRuntimeSettings("/admin/api/settings/search", input);
 }
 
 export async function createRuntimeModel(input: {

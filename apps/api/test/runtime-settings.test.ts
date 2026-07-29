@@ -96,7 +96,70 @@ describe("runtime settings service", () => {
       lexicalRebuildDatabaseBatchSize: 50,
       lexicalRebuildMaxInFlightSourceBytes: 64 * 1_024 * 1_024
     });
+    expect(snapshot.search).toEqual({
+      requestTimeoutMs: 3_000,
+      engineSearchCutoffMs: 1_000,
+      branchCandidateLimit: 200,
+      fusedCandidateLimit: 100,
+      overfetchFactor: 3,
+      graphSeedLimit: 100,
+      graphNeighborLimit: 20,
+      cacheTtlSeconds: 15,
+      indexBatchDocumentCount: 500,
+      indexBatchCompressedBytes: 8 * 1_024 * 1_024,
+      maxInFlightTasks: 8,
+      engineQueueLatencyLimitMs: 30_000,
+      engineResidentMemoryLimitBytes: 3_221_225_472,
+      engineDatabaseSizeLimitBytes: 107_374_182_400,
+      engineTaskQueueSizeLimitBytes: 536_870_912,
+      taskPollIntervalMs: 500,
+      taskTimeoutMs: 600_000,
+      maxAttempts: 5,
+      retryDelayMs: 2_000,
+      cleanupBatchSize: 1_000,
+      stagingRetentionHours: 24,
+      cropLength: 1_200
+    });
     expect(snapshot.activeModel).toBeNull();
+  });
+
+  it("validates and persists bounded search settings", async () => {
+    const repository = new MemoryRuntimeSettingsRepository();
+    const service = createRuntimeSettingsService({
+      config: createConfig({ modelEnabled: false }),
+      repository,
+      redis: createTestRedisCoordinator(),
+      deploymentSecretDirectory: createRuntimeSecretDirectory()
+    });
+    const initial = await service.getSnapshot();
+
+    const updated = await service.updateSearch({
+      actor: "admin",
+      value: {
+        ...initial.search,
+        branchCandidateLimit: 300,
+        fusedCandidateLimit: 150,
+        maxInFlightTasks: 12,
+        engineQueueLatencyLimitMs: 45_000
+      }
+    });
+
+    expect(updated.search).toMatchObject({
+      branchCandidateLimit: 300,
+      fusedCandidateLimit: 150,
+      maxInFlightTasks: 12,
+      engineQueueLatencyLimitMs: 45_000
+    });
+    await expect(service.updateSearch({
+      actor: "admin",
+      value: {
+        ...updated.search,
+        branchCandidateLimit: 50,
+        fusedCandidateLimit: 100
+      }
+    })).rejects.toMatchObject({
+      code: "RUNTIME_SETTINGS_VALIDATION_FAILED"
+    });
   });
 
   it("adds resource budget defaults to saved setting documents without rewriting history", async () => {

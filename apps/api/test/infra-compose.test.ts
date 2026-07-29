@@ -34,7 +34,8 @@ describe("Docker Compose infrastructure", () => {
       "maintenance-worker:",
       "migrate:",
       "postgres:",
-      "redis:"
+      "redis:",
+      "meilisearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -49,15 +50,27 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("DATABASE_URL: postgres://${POSTGRES_USER:");
     expect(compose).toContain("@postgres:5432/");
     expect(compose).toContain("REDIS_URL: redis://redis:6379/0");
+    expect(compose).toContain("MEILI_HOST: http://meilisearch:7700");
     expect(compose).toContain("ADMIN_API_PROXY_TARGET: http://api:");
     expect(compose).toContain("${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432");
     expect(compose).toContain("${REDIS_PORT:?Set REDIS_PORT in .env}:6379");
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
+    expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
+    expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain(
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+    );
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("TMPDIR: /meili_data/tmp");
+    expect(compose).not.toContain("7700:7700");
+    expect(compose).not.toContain("MEILI_PORT");
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
@@ -80,7 +93,8 @@ describe("Docker Compose infrastructure", () => {
       "maintenance-worker:",
       "migrate:",
       "postgres:",
-      "redis:"
+      "redis:",
+      "meilisearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -104,9 +118,19 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./runtime-secrets:/app/runtime-secrets");
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
+    expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
+    expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain(
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+    );
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("TMPDIR: /meili_data/tmp");
+    expect(compose).toContain("getmeili/meilisearch:v1.51.0");
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
@@ -123,7 +147,8 @@ describe("Docker Compose infrastructure", () => {
       "maintenance-worker:",
       "migrate:",
       "postgres:",
-      "redis:"
+      "redis:",
+      "meilisearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -148,6 +173,16 @@ describe("Docker Compose infrastructure", () => {
     );
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
+    expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
+    expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain(
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+    );
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("TMPDIR: /meili_data/tmp");
+    expect(compose).toContain("getmeili/meilisearch:v1.51.0");
     expect(compose).toContain("./logs:/app/logs");
     expect(compose).toContain("./runtime-secrets:/app/runtime-secrets");
     expect(compose).not.toContain("postgres-data:");
@@ -161,7 +196,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -240,7 +275,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("services:");
     expect(workflow).toContain("postgres:18-alpine");
     expect(workflow).toContain("redis:8-alpine");
+    expect(workflow).toContain("getmeili/meilisearch:v1.51.0");
     expect(workflow).toContain("FOCOWIKI_TEST_DATABASE_URL");
+    expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_URL");
+    expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_API_KEY");
     expect(workflow).toContain("Migrate CI database with API image");
     expect(workflow).toContain("Start S3 health fixture");
     expect(workflow).toContain("Validate API image role health");
@@ -255,6 +293,9 @@ describe("Docker Compose infrastructure", () => {
   it("proves the published API image supports every runtime role", () => {
     const workflow = readFileSync(dockerBuildWorkflowPath, "utf8");
 
+    expect(workflow).toContain("getmeili/meilisearch:v1.51.0");
+    expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_URL");
+    expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_API_KEY");
     expect(workflow).toContain("Validate published API image roles");
     expect(workflow).toContain("Start S3 health fixture");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
@@ -267,6 +308,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("Validate release native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).toContain("docker/setup-qemu-action@v4.2.0");
+    expect(workflow).toContain("platforms: linux/amd64,linux/arm64");
+    expect(workflow).toContain("for platform in linux/amd64 linux/arm64");
+    expect(workflow).toContain("Validate published Admin image architectures");
     expect(workflow).toContain("subject-digest: ${{ steps.build-api.outputs.digest }}");
     expect(workflow).toContain("provenance: mode=max");
     expect(workflow).toContain("sbom: true");
@@ -274,6 +319,37 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).not.toContain("LEXICAL_IMAGE");
     expect(workflow).toContain("http://127.0.0.1:43000/healthz");
     expect(workflow).toContain("http://127.0.0.1:43200/healthz");
+  });
+
+  it("keeps the Meilisearch master key out of application runtimes", () => {
+    for (const composePath of [
+      deploymentComposeTemplatePath,
+      devComposeTemplatePath,
+      localComposeTemplatePath
+    ]) {
+      const compose = readFileSync(composePath, "utf8");
+
+      expect(compose).toContain("x-runtime-environment: &runtime-environment");
+      expect(compose).toContain('MEILI_MASTER_KEY: ""');
+      expect(compose).toContain("MEILI_API_KEY: ${MEILI_API_KEY:");
+      expect(compose).toContain(
+        "MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:"
+      );
+      expect(compose).toContain('MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"');
+      expect(compose).toContain("environment: *runtime-environment");
+    }
+  });
+
+  it("allows an external Meilisearch service without starting the bundled container", () => {
+    const deploymentCompose = readFileSync(deploymentComposeTemplatePath, "utf8");
+    const deploymentEnv = readFileSync(deploymentEnvTemplatePath, "utf8");
+
+    expect(deploymentCompose).toContain('profiles: ["bundled-search"]');
+    expect(deploymentCompose).not.toMatch(
+      /depends_on:\n(?:\s{6,}.+\n)*\s{6}meilisearch:\n\s{8}condition: service_healthy/u
+    );
+    expect(deploymentEnv).toContain("COMPOSE_PROFILES=bundled-search");
+    expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
   });
 
   it("keeps startup config from requiring Admin UI managed upload-generation env fields", () => {
@@ -399,6 +475,15 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).not.toContain("ADMIN_SESSION_SECRET_MIN_LENGTH");
     expect(deploymentEnv).toContain("DATABASE_URL=postgres://");
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
+    expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
+    expect(deploymentEnv).toContain("MEILI_MASTER_KEY=");
+    expect(deploymentEnv).toContain("MEILI_API_KEY=");
+    expect(deploymentEnv).toContain("MEILI_METRICS_API_KEY=");
+    expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_MEMORY=2GiB");
+    expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_THREADS=2");
+    expect(deploymentEnv).toContain("MEILI_SNAPSHOT_DIR=/meili_snapshots");
+    expect(deploymentEnv).toContain("MEILI_SCHEDULE_SNAPSHOT=86400");
+    expect(deploymentEnv).toContain("MEILI_DUMP_DIR=/meili_dumps");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
     expect(deploymentEnv).toContain("FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:latest");
     expect(deploymentEnv).toContain("FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:latest");

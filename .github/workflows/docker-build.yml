@@ -24,6 +24,8 @@ env:
   API_IMAGE: ghcr.io/farozerolabs/focowiki-api
   ADMIN_IMAGE: ghcr.io/farozerolabs/focowiki-admin
   FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+  FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
+  FOCOWIKI_TEST_MEILISEARCH_API_KEY: focowiki-development-master-key
   REDIS_URL: redis://127.0.0.1:56379/0
 
 jobs:
@@ -54,6 +56,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      meilisearch:
+        image: getmeili/meilisearch:v1.51.0
+        env:
+          MEILI_ENV: production
+          MEILI_MASTER_KEY: focowiki-development-master-key
+          MEILI_NO_ANALYTICS: "true"
+          MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+        ports:
+          - 57700:7700
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:7700/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     steps:
       - name: Checkout
@@ -143,6 +159,11 @@ jobs:
           pnpm test:validation
           pnpm openapi:validate
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4.2.0
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0
 
@@ -190,6 +211,7 @@ jobs:
           context: .
           file: Dockerfile
           target: api
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
@@ -209,31 +231,33 @@ jobs:
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
-          docker pull "${image}"
-          docker tag "${image}" focowiki-api:release-smoke
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
-          docker run --rm --entrypoint node focowiki-api:release-smoke -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
-          docker run --rm --entrypoint sh focowiki-api:release-smoke -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
+            docker run --rm --platform "${platform}" --entrypoint node "${image}" -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+          done
 
       - name: Validate published API image roles
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
-          docker pull "${image}"
-          docker tag "${image}" focowiki-api:release-smoke
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migrate.mjs
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/migration-preflight.mjs
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/source-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/publication-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/projection-repair-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/maintenance-worker.mjs --healthcheck
-          api_container="$(docker run -d --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:release-smoke node apps/api/runtime/main.mjs)"
-          trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
-          docker rm -f "${api_container}" >/dev/null
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migrate.mjs
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migration-preflight.mjs
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/source-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/publication-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/projection-repair-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/maintenance-worker.mjs --healthcheck
+            api_container="$(docker run -d --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/main.mjs)"
+            trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
+            curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
+            curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
+            docker rm -f "${api_container}" >/dev/null
+          done
           trap - EXIT
 
       - name: Build and push Admin image
@@ -243,12 +267,22 @@ jobs:
           context: .
           file: Dockerfile
           target: admin
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta-admin.outputs.tags }}
           labels: ${{ steps.meta-admin.outputs.labels }}
           provenance: mode=max
           cache-from: type=gha,scope=admin
           cache-to: type=gha,mode=max,scope=admin
+
+      - name: Validate published Admin image architectures
+        shell: bash
+        run: |
+          image="${ADMIN_IMAGE}@${{ steps.build-admin.outputs.digest }}"
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --entrypoint nginx "${image}" -t
+          done
 
       - name: Attest API image
         uses: actions/attest-build-provenance@v4.1.0

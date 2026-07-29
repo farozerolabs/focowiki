@@ -10,7 +10,14 @@ import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
 import { createPostgresLexicalRebuildWorkRepository } from "./infrastructure/postgres/lexical-rebuild-work-repository.js";
+import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import {
+  createPostgresSearchProjectionDocumentRepository
+} from "./infrastructure/postgres/search-projection-document-repository.js";
+import {
+  createPostgresSearchProjectionStateRepository
+} from "./infrastructure/postgres/search-projection-state-repository.js";
 import { createPostgresSearchProjectionRepository } from "./infrastructure/postgres/search-projection-repository.js";
 import {
   assertNodeJiebaRuntimeAvailable,
@@ -30,6 +37,7 @@ import { resolveResourceBudgetLimits } from "./runtime-settings/resource-budget-
 import { createRuntimeSettingsRepository } from "./runtime-settings/repository.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
+import { runSearchIndexingCycle } from "./search/search-indexing-runtime.js";
 
 const PLANNING_INTERVAL_MS = 60_000;
 const MAX_PLANNED_KNOWLEDGE_BASES_PER_INTERVAL = 100;
@@ -83,6 +91,19 @@ async function runLexicalRebuildWorker(): Promise<void> {
     const work = createPostgresLexicalRebuildWorkRepository(sql);
     const search = createPostgresSearchProjectionRepository(sql);
     const roleJobs = createPostgresRoleJobRepository(sql);
+    if (!config.search) {
+      throw new Error("Search service configuration is unavailable");
+    }
+    const searchTransport = createMeilisearchTransport({
+      endpoint: config.search.endpoint,
+      apiKey: config.search.apiKey,
+      metricsApiKey: config.search.metricsApiKey,
+      timeoutMs: 30_000,
+      maxAttempts: 2,
+      retryDelayMs: 250
+    });
+    const searchStates = createPostgresSearchProjectionStateRepository(sql);
+    const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
     const budgets = createProcessResourceBudgets(
       resolveResourceBudgetLimits(lastValidSnapshot)
     );
@@ -123,6 +144,35 @@ async function runLexicalRebuildWorker(): Promise<void> {
           databaseMutation: settings.databaseWriteConcurrency
         });
         resourceBudgetReporter.report(budgets);
+
+        const searchCycle = await runSearchIndexingCycle({
+          workerId,
+          leaseTokenPrefix: randomUUID(),
+          states: searchStates,
+          documents: searchDocuments,
+          transport: searchTransport,
+          indexPrefix: config.search.indexPrefix,
+          settings: {
+            engineSearchCutoffMs: snapshot.search.engineSearchCutoffMs,
+            taskPollIntervalMs: snapshot.search.taskPollIntervalMs,
+            taskTimeoutMs: snapshot.search.taskTimeoutMs,
+            retryDelayMs: snapshot.search.retryDelayMs,
+            maxDocumentCount: snapshot.search.indexBatchDocumentCount,
+            maxCompressedBytes: snapshot.search.indexBatchCompressedBytes,
+            maxInFlightTasks: snapshot.search.maxInFlightTasks,
+            engineQueueLatencyLimitMs: snapshot.search.engineQueueLatencyLimitMs,
+            engineResidentMemoryLimitBytes:
+              snapshot.search.engineResidentMemoryLimitBytes,
+            engineDatabaseSizeLimitBytes:
+              snapshot.search.engineDatabaseSizeLimitBytes,
+            engineTaskQueueSizeLimitBytes:
+              snapshot.search.engineTaskQueueSizeLimitBytes
+          },
+          leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000
+        });
+        if (searchCycle.claimed > 0 || searchCycle.submissionPaused) {
+          logger.info("Search indexing cycle completed", searchCycle);
+        }
 
         const cycleNow = new Date();
         const settingsRevision = await readSettingsRevision(sql);
@@ -289,6 +339,21 @@ async function runHealthcheck(): Promise<void> {
     redisConnected = true;
     await redisClient.ping();
     await storage.checkHealth?.();
+    if (!config.search) {
+      throw new Error("Search service configuration is unavailable");
+    }
+    const search = createMeilisearchTransport({
+      endpoint: config.search.endpoint,
+      apiKey: config.search.apiKey,
+      metricsApiKey: config.search.metricsApiKey,
+      timeoutMs: 5_000,
+      maxAttempts: 1,
+      retryDelayMs: 0
+    });
+    const health = await search.health();
+    if (!health.available) {
+      throw new Error("Search service health check failed");
+    }
   } finally {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);

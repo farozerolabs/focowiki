@@ -931,14 +931,15 @@ export function createPostgresProjectionRepairBuildRepository(
           INSERT INTO focowiki.generation_search_projection_refs (
             knowledge_base_id, generation_id, source_file_id, source_revision_id,
             search_document_id, search_schema_version, tokenizer_contract_version,
-            segmentation_version, logical_path, title, summary, source_url,
+            segmentation_version, path_revision, logical_path, title, summary, source_url,
             metadata_json, created_at, updated_at
           )
           SELECT reference.knowledge_base_id, ${input.task.targetGenerationId},
                  reference.source_file_id, reference.source_revision_id,
                  reference.search_document_id, reference.search_schema_version,
                  reference.tokenizer_contract_version,
-                 reference.segmentation_version, reference.logical_path,
+                 reference.segmentation_version, reference.path_revision,
+                 reference.logical_path,
                  reference.title, reference.summary, reference.source_url,
                  reference.metadata_json, now(), now()
           FROM focowiki.generation_search_projection_refs reference

@@ -187,6 +187,7 @@ function aggregateProgress(
 } {
   const projection = progress.projectionRepair;
   const lexical = progress.lexicalRebuild;
+  const search = progress.searchProjection;
   const compaction = progress.compaction.active;
   const startedAtMs = Date.parse(requestStartedAt);
   const projectionActive = Boolean(
@@ -203,6 +204,12 @@ function aggregateProgress(
       && ["pending", "running", "validating", "activating", "failed"].includes(lexical.state)
       && lexical.attemptCount < lexical.maxAttempts
   );
+  const searchActive = Boolean(
+    search
+      && search.pendingEpoch !== null
+      && search.failedCount === 0
+      && search.canceledCount === 0
+  );
   const failures = [
     projection?.state === "failed" && isCurrentProgress(projection.updatedAt, startedAtMs)
       ? safeFailure(projection.safeErrorCode, projection.safeErrorMessage)
@@ -212,6 +219,12 @@ function aggregateProgress(
       && isCurrentProgress(lexical.updatedAt, startedAtMs)
       ? safeFailure(lexical.safeErrorCode, lexical.safeErrorMessage)
       : null,
+    search
+      && search.pendingEpoch !== null
+      && (search.failedCount > 0 || search.canceledCount > 0)
+      && isCurrentProgress(search.updatedAt, startedAtMs)
+      ? safeFailure(search.safeErrorCode, search.safeErrorMessage)
+      : null,
     compaction?.state === "failed" && isCurrentProgress(compaction.updatedAt, startedAtMs)
       ? safeFailure(compaction.safeErrorCode, null)
       : null
@@ -220,17 +233,21 @@ function aggregateProgress(
   const completed =
     (projection?.completedRecordCount ?? 0)
     + (lexical?.processedSourceCount ?? 0)
+    + (search?.succeededCount ?? 0)
     + (progress.compaction.latestCompleted ? 1 : 0);
   const expected =
     (projection?.totalRecordCount ?? 0)
     + (lexical?.totalSourceCount ?? 0)
+    + (search?.totalCount ?? 0)
     + (compaction ? 1 : 0);
   return {
-    active: projectionActive || lexicalActive || Boolean(compaction),
+    active: projectionActive || lexicalActive || searchActive || Boolean(compaction),
     stage: projectionActive
       ? `projection:${projection?.phase ?? "planning"}`
       : lexicalActive
         ? `search:${lexical?.phase ?? "planning"}`
+        : searchActive
+          ? "search:indexing"
         : compaction
           ? "compaction"
           : "validating",

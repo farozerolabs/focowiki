@@ -100,7 +100,7 @@ describeDatabase("runtime pressure repository integration", () => {
         AND counter_shard = 0
     `;
     await sql`UPDATE focowiki.runtime_pressure_counters SET reconciled_at = NULL`;
-    const first = await repository.reconcileIfDue({
+    const first = await reconcileUntilCompleted({
       now: new Date().toISOString(),
       intervalSeconds: 60
     });
@@ -159,10 +159,22 @@ describeDatabase("runtime pressure repository integration", () => {
 
   async function forceReconciliation() {
     await sql`UPDATE focowiki.runtime_pressure_counters SET reconciled_at = NULL`;
-    await repository.reconcileIfDue({
+    await reconcileUntilCompleted({
       now: new Date().toISOString(),
       intervalSeconds: 60
     });
+  }
+
+  async function reconcileUntilCompleted(input: {
+    now: string;
+    intervalSeconds: number;
+  }) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const result = await repository.reconcileIfDue(input);
+      if (result.reconciled) return result;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("Runtime pressure reconciliation lock was not released");
   }
 
   async function cleanup() {

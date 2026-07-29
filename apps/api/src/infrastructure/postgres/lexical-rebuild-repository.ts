@@ -607,6 +607,14 @@ export function createPostgresLexicalRebuildRepository(
           WHERE id = ${input.knowledgeBaseId}
             AND active_generation_id = ${context.baseGenerationId}
         `;
+        await transaction`
+          UPDATE focowiki.knowledge_base_search_states
+          SET active_generation_id = ${context.targetGenerationId},
+              updated_at = ${input.activatedAt}
+          WHERE knowledge_base_id = ${input.knowledgeBaseId}
+            AND active_generation_id = ${context.baseGenerationId}
+            AND pending_epoch IS NULL
+        `;
         await advanceProjectionVersionOwnership(transaction, {
           knowledgeBaseId: input.knowledgeBaseId,
           activeGenerationId: context.targetGenerationId,

@@ -6,7 +6,13 @@ import type {
   WorkerRuntimeConfig
 } from "../config.js";
 
-export type RuntimeSettingKey = "rate_limits" | "worker" | "publication" | "graph" | "maintenance";
+export type RuntimeSettingKey =
+  | "rate_limits"
+  | "worker"
+  | "publication"
+  | "graph"
+  | "maintenance"
+  | "search";
 export type ModelConfigStatus = "active" | "paused" | "deleted";
 export type ModelApiMode = "responses" | "chat_completions";
 
@@ -54,12 +60,38 @@ export type RuntimeMaintenanceSettings = {
   lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
+export type RuntimeSearchSettings = {
+  requestTimeoutMs: number;
+  engineSearchCutoffMs: number;
+  branchCandidateLimit: number;
+  fusedCandidateLimit: number;
+  overfetchFactor: number;
+  graphSeedLimit: number;
+  graphNeighborLimit: number;
+  cacheTtlSeconds: number;
+  indexBatchDocumentCount: number;
+  indexBatchCompressedBytes: number;
+  maxInFlightTasks: number;
+  engineQueueLatencyLimitMs: number;
+  engineResidentMemoryLimitBytes: number;
+  engineDatabaseSizeLimitBytes: number;
+  engineTaskQueueSizeLimitBytes: number;
+  taskPollIntervalMs: number;
+  taskTimeoutMs: number;
+  maxAttempts: number;
+  retryDelayMs: number;
+  cleanupBatchSize: number;
+  stagingRetentionHours: number;
+  cropLength: number;
+};
+
 export type RuntimeSettingsSnapshot = {
   rateLimits: RuntimeRateLimitSettings;
   worker: RuntimeWorkerSettings;
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  search: RuntimeSearchSettings;
   activeModel: RuntimeModelConfigPrivate | null;
 };
 
@@ -134,6 +166,7 @@ export type RuntimeSettingsDefaults = {
   publication: RuntimePublicationSettings;
   graph: RuntimeGraphSettings;
   maintenance: RuntimeMaintenanceSettings;
+  search: RuntimeSearchSettings;
   model: RuntimeModelConfigDraft | null;
 };
 

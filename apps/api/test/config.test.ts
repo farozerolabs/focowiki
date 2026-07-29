@@ -7,6 +7,10 @@ const validEnv = {
   ADMIN_PASSWORD: "admin-password",
   DATABASE_URL: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
   REDIS_URL: "redis://127.0.0.1:6379/0",
+  MEILI_HOST: "http://127.0.0.1:7700",
+  MEILI_API_KEY: "development-search-key",
+  MEILI_METRICS_API_KEY: "development-search-metrics-key",
+  MEILI_INDEX_PREFIX: "focowiki_test",
   ADMIN_API_PORT: "43000",
   ADMIN_UI_PORT: "43100",
   PUBLIC_OPENAPI_PORT: "43200",
@@ -38,6 +42,13 @@ describe("parseRuntimeConfig", () => {
       maintenanceWorkerPoolMax: 2
     });
     expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
+    expect(config.search).toEqual({
+      endpoint: "http://127.0.0.1:7700",
+      apiKey: "development-search-key",
+      metricsApiKey: "development-search-metrics-key",
+      indexPrefix: "focowiki_test"
+    });
+    expect(config).not.toHaveProperty("meiliMasterKey");
     expect(config.ports).toEqual({
       adminApi: 43_000,
       adminUi: 43_100,
@@ -195,6 +206,41 @@ describe("parseRuntimeConfig", () => {
         REDIS_URL: "https://redis.example.com"
       })
     ).toThrow(/REDIS_URL/);
+  });
+
+  it("validates search endpoint and production scoped credentials", () => {
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        MEILI_HOST: "file:///tmp/search"
+      })
+    ).toThrow(/MEILI_HOST/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "production-admin-password",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+        MEILI_API_KEY: ""
+      })
+    ).toThrow(/MEILI_API_KEY/);
+
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        APP_ENV: "production",
+        ADMIN_PASSWORD: "production-admin-password",
+        ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+        ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+        PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+        ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+        MEILI_METRICS_API_KEY: ""
+      })
+    ).toThrow(/MEILI_METRICS_API_KEY/);
   });
 
   it("parses conservative security defaults for local deployments", () => {

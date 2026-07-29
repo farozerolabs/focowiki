@@ -144,6 +144,35 @@ The maintenance status also reports protection readiness, bounded progress, rece
 
 After an upgrade changes the search representation, maintenance rebuilds search, lexical, and graph-term data in bounded background pages. The currently active knowledge base remains readable until the rebuilt data has been validated and activated. Existing source files do not need to be uploaded again, accepted relationships are retained, and the rebuild does not call a model.
 
+## Search
+
+Search settings bound request latency, candidate retrieval, graph expansion, Redis caching, indexing work, retries, and cleanup. They apply to later requests and newly claimed background work.
+
+| Field | Meaning | Recommended value |
+| --- | --- | --- |
+| Search request timeout ms | Maximum end-to-end time for one search request. | `3000`. |
+| Engine search cutoff ms | Maximum time allowed for one bounded search-engine request. Keep it below the request timeout. | `1000`. |
+| Branch candidate limit | Maximum candidates collected by each exact, strict, regular, or relaxed retrieval branch. | 100 to 200. |
+| Fused candidate limit | Maximum files kept after deterministic branch fusion. This value cannot exceed the branch candidate limit. | 50 to 100. |
+| Overfetch factor | Extra candidates requested so a page can still be filled after PostgreSQL removes stale or invisible results. | 2 to 3. |
+| Graph seed limit | Maximum seed files selected before graph traversal. | 50 to 100. |
+| Graph neighbor limit | Maximum accepted neighboring files expanded from each seed. | 10 to 20. |
+| Cache TTL seconds | Time a successful bounded search page remains in Redis. | 10 to 30 seconds. |
+| Index batch document count | Maximum search documents submitted in one indexing batch. | `500`. |
+| Index batch compressed bytes | Maximum gzip-compressed size of one indexing batch. | `8388608` bytes (8 MiB). |
+| Maximum in-flight tasks | Maximum accepted indexing tasks waiting for completion at one time. | 4 to 8. |
+| Queue latency limit ms | New indexing submissions pause when search task queue latency exceeds this value. Accepted tasks continue to be checked. | `30000`. |
+| Resident memory limit bytes | New indexing submissions pause when search service resident memory exceeds this value. | `3221225472` bytes (3 GiB) with the default 2 GiB indexing-memory limit. |
+| Search database limit bytes | New indexing submissions pause when search data exceeds this disk budget. | `107374182400` bytes (100 GiB), or a lower value that leaves sufficient free disk space. |
+| Task queue limit bytes | New indexing submissions pause when the durable search task queue exceeds this byte budget. | `536870912` bytes (512 MiB). |
+| Task poll interval ms | Interval between indexing task status checks. | 500 to 1000 ms. |
+| Task timeout ms | Maximum time allowed for one indexing task before safe retry handling. | `600000`. |
+| Maximum attempts | Attempts allowed for one indexing or cleanup work item. | `5`. |
+| Retry delay ms | Delay after a temporary indexing or cleanup failure. | 2000 to 10000 ms. |
+| Search cleanup batch size | Maximum expired search documents removed in one cleanup batch. | 500 to 1000. |
+| Staging retention hours | Time failed or superseded temporary search data is retained for bounded diagnosis. | `24`. |
+| Search evidence crop length | Maximum evidence characters requested per search hit before public response limits apply. | 800 to 1200. |
+
 ## Models
 
 Model assistance is optional. Source processing continues with deterministic metadata, navigation, search, and graph inputs when no model is active. One model can be active at a time.

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createPostgresSearchProjectionRepository } from "../src/infrastructure/postgres/search-projection-repository.js";
+import { createPostgresSearchProjectionDocumentRepository } from "../src/infrastructure/postgres/search-projection-document-repository.js";
 import { updateGenerationSearchReferences } from "../src/infrastructure/postgres/generation-search-reference-writer.js";
 import { searchBodyProjection } from "../src/infrastructure/postgres/body-search-query.js";
 import { createPostgresActiveGenerationReadRepository } from "../src/infrastructure/postgres/active-generation-read-repository.js";
@@ -15,6 +16,7 @@ const describeDatabase = databaseUrl ? describe : describe.skip;
 describeDatabase("search projection repository integration", () => {
   const sql = postgres(databaseUrl!, { max: 3 });
   const repository = createPostgresSearchProjectionRepository(sql);
+  const documentRepository = createPostgresSearchProjectionDocumentRepository(sql);
   const knowledgeBaseId = "kb-search-projection-repository";
   const sourceFileId = "source-file-search-projection-repository";
   const sourceRevisionId = "source-revision-search-projection-repository";
@@ -159,6 +161,55 @@ describeDatabase("search projection repository integration", () => {
       reference_count: 1,
       document_count: 1
     }]);
+  });
+
+  it("replays planned records after the mutable source revision advances", async () => {
+    const document = testDocument();
+    await repository.persistDocument({
+      document,
+      completedAt: "2026-07-24T01:00:00.000Z"
+    });
+    await repository.attachGenerationReference({
+      knowledgeBaseId,
+      generationId,
+      sourceFileId,
+      sourceRevisionId,
+      searchDocumentId: document.documentId,
+      searchSchemaVersion: document.searchSchemaVersion,
+      tokenizerContractVersion: document.tokenizerContractVersion,
+      segmentationVersion: document.segmentationVersion,
+      logicalPath: document.logicalPath,
+      title: document.title,
+      summary: document.summary,
+      sourceUrl: null,
+      metadata: {}
+    });
+    const scope = {
+      knowledgeBaseId,
+      generationId,
+      activeGenerationId: generationId,
+      activeEpoch: 0,
+      pendingEpoch: 1,
+      indexKind: "content" as const
+    };
+    const planned = await documentRepository.listRecords({
+      ...scope,
+      cursor: null,
+      limit: 10
+    });
+    expect(planned.records.length).toBeGreaterThan(0);
+
+    await sql`
+      UPDATE focowiki.source_files
+      SET resource_revision = resource_revision + 1
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${sourceFileId}
+    `;
+
+    await expect(documentRepository.loadRecords({
+      ...scope,
+      recordKeys: planned.records.map((record) => record.key)
+    })).resolves.toEqual(planned.records);
   });
 
   it("cleans only documents that have no generation reference", async () => {

@@ -15,6 +15,13 @@ import {
 } from "./infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
 import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
+import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
+import {
+  createPostgresSearchProjectionDocumentRepository
+} from "./infrastructure/postgres/search-projection-document-repository.js";
+import {
+  createPostgresSearchProjectionStateRepository
+} from "./infrastructure/postgres/search-projection-state-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
 import { createPostgresProjectionCompactionRepository } from "./infrastructure/postgres/projection-compaction-repository.js";
 import {
@@ -60,6 +67,16 @@ import { createResilientRedisCoordinator } from "./redis/resilient-coordinator.j
 import { registerWorkerRedisRuntimeEvents } from "./redis/worker-runtime.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { resolveResourceBudgetLimits } from "./runtime-settings/resource-budget-settings.js";
+import {
+  activeSearchProjectionNeedsRebuild
+} from "./search/active-search-projection-health.js";
+import { createSearchProjectionContract } from "./search/index-definitions.js";
+import {
+  createSearchProjectionCleanup
+} from "./search/search-projection-cleanup.js";
+import {
+  ensureSearchProjectionWork
+} from "./search/search-indexing-coordinator.js";
 import { createProcessResourceBudgets } from "./runtime/resource-budget.js";
 import { createResourceBudgetReporter } from "./runtime/resource-budget-reporter.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
@@ -118,6 +135,17 @@ async function runMaintenanceWorker(): Promise<void> {
       redis
     });
     await runtimeSettings.ensureBootstrapped();
+    if (!config.search) {
+      throw new Error("Search service configuration is unavailable");
+    }
+    const searchConfig = config.search;
+    const searchTransport = createMeilisearchTransport({
+      endpoint: searchConfig.endpoint,
+      apiKey: searchConfig.apiKey,
+      timeoutMs: 30_000,
+      maxAttempts: 2,
+      retryDelayMs: 250
+    });
     const initialSnapshot = await runtimeSettings.getSnapshot();
     const resourceBudgets = createProcessResourceBudgets(
       resolveResourceBudgetLimits(initialSnapshot)
@@ -147,6 +175,8 @@ async function runMaintenanceWorker(): Promise<void> {
     const indexMaintenance =
       createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
     const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
+    const searchStates = createPostgresSearchProjectionStateRepository(sql);
+    const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
     const projectionRepairs = createPostgresProjectionRepairWorkRepository(sql);
     const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
@@ -168,11 +198,19 @@ async function runMaintenanceWorker(): Promise<void> {
       },
       async process(job) {
         if (job.kind === "hard_delete") {
-          const worker = (await runtimeSettings.getSnapshot()).worker;
+          const snapshot = await runtimeSettings.getSnapshot();
+          const worker = snapshot.worker;
           await createHardDeleteJobProcessor({
             cleanup,
             storage,
             redis,
+            search: createSearchProjectionCleanup({
+              transport: searchTransport,
+              states: searchStates,
+              indexPrefix: searchConfig.indexPrefix,
+              taskPollIntervalMs: snapshot.search.taskPollIntervalMs,
+              taskTimeoutMs: snapshot.search.taskTimeoutMs
+            }),
             settings: {
               databaseBatchSize: worker.hardDeleteDatabaseBatchSize,
               objectBatchSize: worker.hardDeleteObjectBatchSize,
@@ -366,6 +404,52 @@ async function runMaintenanceWorker(): Promise<void> {
                   now,
                   knowledgeBaseIds: [request.knowledgeBaseId]
                 });
+                const searchState = await searchStates.getState(
+                  request.knowledgeBaseId
+                );
+                if (searchState?.activeGenerationId) {
+                  const forceFullRebuild =
+                    searchState.routeState === "meilisearch"
+                    && await activeSearchProjectionNeedsRebuild({
+                      transport: searchTransport,
+                      indexPrefix: searchConfig.indexPrefix,
+                      knowledgeBaseId: request.knowledgeBaseId,
+                      activeEpoch: searchState.activeEpoch,
+                      searchCutoffMs:
+                        requestSnapshot.search.engineSearchCutoffMs,
+                      pollIntervalMs:
+                        requestSnapshot.search.taskPollIntervalMs,
+                      taskTimeoutMs:
+                        requestSnapshot.search.taskTimeoutMs
+                    });
+                  const searchResult = await ensureSearchProjectionWork({
+                    states: searchStates,
+                    documents: searchDocuments,
+                    knowledgeBaseId: request.knowledgeBaseId,
+                    generationId: searchState.activeGenerationId,
+                    maintenanceRequestId: request.id,
+                    forceCompatibilityCutover: true,
+                    forceFullRebuild,
+                    scanBatchSize:
+                      requestSnapshot.search.indexBatchDocumentCount,
+                    indexBatchDocumentCount:
+                      requestSnapshot.search.indexBatchDocumentCount,
+                    indexBatchCompressedBytes:
+                      requestSnapshot.search.indexBatchCompressedBytes,
+                    maxAttempts: requestSnapshot.search.maxAttempts,
+                    contract: createSearchProjectionContract({
+                      searchCutoffMs:
+                        requestSnapshot.search.engineSearchCutoffMs
+                    }),
+                    now
+                  });
+                  if (searchResult.status === "failed") {
+                    throw new KnowledgeBaseIndexMaintenanceExecutionError(
+                      "INDEX_MAINTENANCE_SEARCH_FAILED",
+                      "Knowledge-base search maintenance could not complete"
+                    );
+                  }
+                }
                 const statisticsNow = new Date(now);
                 const currentStatistics =
                   await runIncrementalStatisticsReconciliationSlice({
@@ -547,6 +631,19 @@ async function runHealthcheck(): Promise<void> {
     redisConnected = true;
     await redisClient.ping();
     await storage.checkHealth?.();
+    if (!config.search) {
+      throw new Error("Search service configuration is unavailable");
+    }
+    const search = createMeilisearchTransport({
+      endpoint: config.search.endpoint,
+      apiKey: config.search.apiKey,
+      timeoutMs: 5_000,
+      maxAttempts: 1,
+      retryDelayMs: 0
+    });
+    if (!(await search.health()).available) {
+      throw new Error("Search service is unavailable");
+    }
   } finally {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);

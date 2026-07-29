@@ -162,6 +162,12 @@ export type RuntimeConfig = {
   redis: {
     url: string;
   };
+  search?: {
+    endpoint: string;
+    apiKey: string;
+    metricsApiKey: string;
+    indexPrefix: string;
+  };
   ports: {
     adminApi: number;
     adminUi: number;
@@ -333,6 +339,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     issues
   );
   const logging = parseLoggingConfig(env, security.environment, issues);
+  const search = parseSearchConfig(env, security.environment, issues);
 
   if (issues.length > 0) {
     throw new ConfigValidationError(issues.map((issue) => redactSecrets(issue)));
@@ -355,6 +362,7 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     redis: {
       url: redisUrl
     },
+    search,
     ports,
     pagination,
     okf,
@@ -764,6 +772,46 @@ function requireRedisUrl(env: RuntimeEnv, field: string, issues: string[]): stri
     issues.push(`${field} must be a valid Redis URL`);
     return value;
   }
+}
+
+function parseSearchConfig(
+  env: RuntimeEnv,
+  environment: RuntimeSecurityConfig["environment"],
+  issues: string[]
+): NonNullable<RuntimeConfig["search"]> {
+  const endpoint = optionalString(env, "MEILI_HOST") ?? "http://127.0.0.1:7700";
+  const apiKey = optionalString(env, "MEILI_API_KEY") ?? "";
+  const metricsApiKey = optionalString(env, "MEILI_METRICS_API_KEY") ?? "";
+  const indexPrefix = optionalString(env, "MEILI_INDEX_PREFIX") ?? "focowiki";
+
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      issues.push("MEILI_HOST must use http or https");
+    }
+  } catch {
+    issues.push("MEILI_HOST must be a valid URL");
+  }
+
+  if (environment === "production" && !apiKey) {
+    issues.push("MEILI_API_KEY is required in production");
+  }
+  if (environment === "production" && !metricsApiKey) {
+    issues.push("MEILI_METRICS_API_KEY is required in production");
+  }
+
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(indexPrefix)) {
+    issues.push(
+      "MEILI_INDEX_PREFIX must start with a lowercase letter or number and contain at most 32 lowercase letters, numbers, underscores, or hyphens"
+    );
+  }
+
+  return {
+    endpoint: endpoint.replace(/\/+$/u, ""),
+    apiKey,
+    metricsApiKey: metricsApiKey || apiKey,
+    indexPrefix
+  };
 }
 
 function normalizePrefix(prefix: string, issues: string[]): string {

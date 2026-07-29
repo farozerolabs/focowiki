@@ -122,8 +122,9 @@ export async function assemblePendingPublicationChanges(
       const existingVisibility = await transaction<Array<{
         operation_id: string | null;
         deletion_intent_id: string | null;
+        source_file_id: string | null;
       }>>`
-        SELECT operation_id, deletion_intent_id
+        SELECT operation_id, deletion_intent_id, source_file_id
         FROM focowiki.publication_change_facts
         WHERE knowledge_base_id = ${input.knowledgeBaseId}
           AND generation_id = ${generation.id}
@@ -138,6 +139,9 @@ export async function assemblePendingPublicationChanges(
           ),
           deletionIntentIds: existingVisibility.flatMap((fact) =>
             fact.deletion_intent_id ? [fact.deletion_intent_id] : []
+          ),
+          sourceFileIds: existingVisibility.flatMap((fact) =>
+            fact.source_file_id ? [fact.source_file_id] : []
           )
         },
         now: input.assembledAt

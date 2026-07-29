@@ -10,6 +10,10 @@ import { PublicationGenerationBusyError } from "../../domain/publication.js";
 import { appendPublicationChangeFact } from "./publication-change-fact-writer.js";
 import { assemblePendingPublicationChanges } from "./generation-assembler.js";
 import { advanceProjectionVersionOwnership } from "./projection-version-ownership.js";
+import {
+  resolveSearchEpochActivation,
+  type SearchEpochActivationDecision
+} from "../../search/search-epoch-activation.js";
 
 type GenerationRow = {
   id: string;
@@ -32,6 +36,25 @@ type SearchProjectionReadinessRow = {
   segmentation_version: string | null;
   version_tuple_count: number;
 };
+
+type SearchStateActivationRow = {
+  route_state: "postgres_compatibility" | "meilisearch";
+  active_epoch: number | string;
+  pending_epoch: number | string | null;
+  pending_activation_state: "indexing" | "swapping";
+  active_generation_id: string | null;
+  pending_generation_id: string | null;
+  pending_content_schema_version: string | null;
+  pending_graph_schema_version: string | null;
+  pending_content_settings_checksum: string | null;
+  pending_graph_settings_checksum: string | null;
+};
+
+type GenerationSearchActivation =
+  | { outcome: "compatibility"; supersedePending: boolean }
+  | { outcome: "reuse" }
+  | Extract<SearchEpochActivationDecision, { outcome: "activate" }>
+  | { outcome: "blocked" };
 
 export function createPostgresPublicationGenerationRepository(
   sql: DatabaseClient
@@ -427,6 +450,16 @@ export function createPostgresPublicationGenerationRepository(
         ) {
           return false;
         }
+        const generationSearchActivation =
+          await resolveGenerationSearchActivation(transaction, {
+            knowledgeBaseId: input.knowledgeBaseId,
+            generationId: input.generationId,
+            generationKind: candidates[0]!.generation_kind,
+            strict: input.searchActivationRequired ?? false
+          });
+        if (generationSearchActivation.outcome === "blocked") {
+          return false;
+        }
         const invalidObjectReferences = await transaction<Array<{ total: number }>>`
           SELECT count(reference.ref_key)::int AS total
           FROM focowiki.generation_object_refs reference
@@ -768,6 +801,12 @@ export function createPostgresPublicationGenerationRepository(
           SET active_generation_id = ${input.generationId}, updated_at = ${input.activatedAt}
           WHERE id = ${input.knowledgeBaseId}
         `;
+        await applyGenerationSearchActivation(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: input.generationId,
+          activation: generationSearchActivation,
+          activatedAt: input.activatedAt
+        });
         await advanceProjectionVersionOwnership(transaction, {
           knowledgeBaseId: input.knowledgeBaseId,
           activeGenerationId: input.generationId,
@@ -866,6 +905,196 @@ export function createPostgresPublicationGenerationRepository(
       });
     }
   };
+}
+
+async function resolveGenerationSearchActivation(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    generationKind: "normal" | "projection_repair" | "lexical_rebuild";
+    strict: boolean;
+  }
+): Promise<GenerationSearchActivation> {
+  const rows = await transaction<SearchStateActivationRow[]>`
+    SELECT route_state, active_epoch, pending_epoch, pending_activation_state,
+           active_generation_id, pending_generation_id,
+           pending_content_schema_version, pending_graph_schema_version,
+           pending_content_settings_checksum, pending_graph_settings_checksum
+    FROM focowiki.knowledge_base_search_states
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+    FOR UPDATE
+  `;
+  const state = rows[0];
+  if (!state) return { outcome: "blocked" };
+
+  if (!input.strict && state.pending_epoch === null) {
+    return state.route_state === "meilisearch"
+      ? { outcome: "reuse" }
+      : { outcome: "compatibility", supersedePending: false };
+  }
+  if (input.generationKind !== "normal" && state.pending_epoch === null) {
+    return { outcome: "reuse" };
+  }
+  if (state.pending_epoch === null) {
+    return state.route_state === "postgres_compatibility"
+      && state.active_generation_id !== null
+      ? { outcome: "compatibility", supersedePending: false }
+      : { outcome: "blocked" };
+  }
+  if (state.pending_generation_id !== input.generationId) {
+    return state.route_state === "postgres_compatibility"
+      && state.active_generation_id !== null
+      ? { outcome: "compatibility", supersedePending: true }
+      : { outcome: "blocked" };
+  }
+
+  const progressRows = await transaction<Array<{
+    total: number;
+    queued: number;
+    submitted: number;
+    retry: number;
+    succeeded: number;
+    failed: number;
+    canceled: number;
+    superseded: number;
+    activation_ready: boolean;
+  }>>`
+    SELECT
+      count(*) FILTER (WHERE work_kind <> 'cleanup')::int AS total,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'queued'
+      )::int AS queued,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'submitted'
+      )::int AS submitted,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'retry'
+      )::int AS retry,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'succeeded'
+      )::int AS succeeded,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'failed'
+      )::int AS failed,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'canceled'
+      )::int AS canceled,
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup' AND state = 'superseded'
+      )::int AS superseded,
+      coalesce(
+        bool_or(work_kind = 'activate' AND state = 'succeeded'),
+        false
+      ) AS activation_ready
+    FROM focowiki.search_projection_work
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND epoch = ${Number(state.pending_epoch)}
+      AND generation_id = ${input.generationId}
+  `;
+  const progress = progressRows[0]!;
+  const decision = resolveSearchEpochActivation({
+    generationId: input.generationId,
+    state: {
+      routeState: state.route_state,
+      pendingActivationState: state.pending_activation_state,
+      pendingEpoch: Number(state.pending_epoch),
+      pendingGenerationId: state.pending_generation_id,
+      pendingContentSchemaVersion: state.pending_content_schema_version,
+      pendingGraphSchemaVersion: state.pending_graph_schema_version,
+      pendingContentSettingsChecksum: state.pending_content_settings_checksum,
+      pendingGraphSettingsChecksum: state.pending_graph_settings_checksum
+    },
+    progress: {
+      total: Number(progress.total),
+      queued: Number(progress.queued),
+      submitted: Number(progress.submitted),
+      retry: Number(progress.retry),
+      succeeded: Number(progress.succeeded),
+      failed: Number(progress.failed),
+      canceled: Number(progress.canceled),
+      superseded: Number(progress.superseded),
+      activationReady: progress.activation_ready
+    }
+  });
+  return decision.outcome === "activate"
+    ? decision
+    : { outcome: "blocked" };
+}
+
+async function applyGenerationSearchActivation(
+  transaction: TransactionSql<Record<string, never>>,
+  input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    activation: Exclude<GenerationSearchActivation, { outcome: "blocked" }>;
+    activatedAt: string;
+  }
+): Promise<void> {
+  if (input.activation.outcome === "compatibility") {
+    if (input.activation.supersedePending) {
+      await transaction`
+        UPDATE focowiki.search_projection_work
+        SET state = 'canceled',
+            task_uid = NULL,
+            submitted_at = NULL,
+            lease_owner = NULL,
+            lease_token = NULL,
+            lease_expires_at = NULL,
+            completed_at = ${input.activatedAt},
+            safe_error_code = 'SEARCH_INDEX_GENERATION_SUPERSEDED',
+            safe_error_message =
+              'Search indexing will restart from the latest active generation.',
+            updated_at = ${input.activatedAt}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND work_kind <> 'cleanup'
+          AND state IN ('queued', 'submitted', 'retry')
+      `;
+    }
+    await transaction`
+      UPDATE focowiki.knowledge_base_search_states
+      SET active_generation_id = ${input.generationId},
+          pending_activation_state = CASE
+            WHEN ${input.activation.supersedePending} THEN 'indexing'
+            ELSE pending_activation_state
+          END,
+          maintenance_required = true,
+          updated_at = ${input.activatedAt}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+    `;
+    return;
+  }
+  if (input.activation.outcome === "reuse") {
+    await transaction`
+      UPDATE focowiki.knowledge_base_search_states
+      SET active_generation_id = ${input.generationId},
+          updated_at = ${input.activatedAt}
+      WHERE knowledge_base_id = ${input.knowledgeBaseId}
+    `;
+    return;
+  }
+  await transaction`
+    UPDATE focowiki.knowledge_base_search_states
+    SET route_state = 'meilisearch',
+        active_epoch = ${input.activation.epoch},
+        pending_epoch = NULL,
+        pending_activation_state = 'indexing',
+        pending_full_rebuild = false,
+        active_generation_id = ${input.generationId},
+        pending_generation_id = NULL,
+        content_schema_version = ${input.activation.contentSchemaVersion},
+        graph_schema_version = ${input.activation.graphSchemaVersion},
+        content_settings_checksum = ${input.activation.contentSettingsChecksum},
+        graph_settings_checksum = ${input.activation.graphSettingsChecksum},
+        pending_content_schema_version = NULL,
+        pending_graph_schema_version = NULL,
+        pending_content_settings_checksum = NULL,
+        pending_graph_settings_checksum = NULL,
+        maintenance_required = false,
+        activated_at = ${input.activatedAt},
+        updated_at = ${input.activatedAt}
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+  `;
 }
 
 async function resolveCandidateSearchVersion(

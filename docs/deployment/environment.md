@@ -30,7 +30,7 @@ Focowiki writes product runtime logs to files and continues writing stdout/stder
 
 Docker Compose stores runtime logs in `./logs` under the deployment directory that contains `docker-compose.yml` and `.env`. The API image creates `/app/logs` inside the container and assigns it to the runtime user before starting the server or migration process.
 
-Docker Compose stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, and saved provider key protection material in `./runtime-secrets`. Keep these directories with the deployment data when moving a server. Removing `./runtime-secrets` requires re-entering saved model API keys in Admin Settings.
+Docker Compose stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, search data in `./data/meilisearch`, optional search backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and saved provider key protection material in `./runtime-secrets`. Keep these directories with the deployment data when moving a server. Removing `./runtime-secrets` requires re-entering saved model API keys in Admin Settings.
 
 ## Deployment Images
 
@@ -92,6 +92,28 @@ Admin login uses a server-side session. The browser receives an HTTP-only sessio
 | `REDIS_URL` | Yes | API Redis connection string. In Docker Compose, use `redis://redis:6379/0`. |
 
 `REDIS_PORT` exposes Redis to the host. `REDIS_URL` is used by the API, Worker, migration process, sessions, cursors, coordination, and rate limits.
+
+## Search Service
+
+The Compose template starts a private Meilisearch service for file, graph, and hybrid search. It has no host port by default. PostgreSQL and S3-compatible storage remain the durable source for rebuilding search data.
+
+| Variable | Required | How to fill |
+| --- | --- | --- |
+| `COMPOSE_PROFILES` | Yes for bundled search | Use `bundled-search` to start the Meilisearch container included in the Compose template. Leave empty when `MEILI_HOST` points to an externally managed service. |
+| `MEILI_HOST` | Yes | Internal service URL. Bundled Compose uses `http://meilisearch:7700`. Use a private HTTPS or private-network URL for an external service. |
+| `MEILI_MASTER_KEY` | Yes for bundled search | Strong, unique bootstrap key used only by the Meilisearch container. Use at least 16 bytes of random material. Focowiki application containers do not receive this value. |
+| `MEILI_API_KEY` | Yes | Server-side runtime key restricted to the Focowiki index prefix and required search, document, index, settings, task, and swap operations. Do not use the master key. |
+| `MEILI_METRICS_API_KEY` | Yes | Server-side key restricted to the `metrics.get` action and all indexes, as required by Meilisearch metrics authorization. Do not grant search, document, index, settings, task, or key-management actions. |
+| `MEILI_INDEX_PREFIX` | Yes | Dedicated index namespace for this deployment, such as `focowiki` or `focowiki_staging`. Use a different prefix for every environment. |
+| `MEILI_MAX_INDEXING_MEMORY` | Yes for bundled search | Memory budget used by indexing. Start with `2GiB` on a 4C/8G server and measure before increasing it. |
+| `MEILI_MAX_INDEXING_THREADS` | Yes for bundled search | Threads used by indexing. Start with `2` on a 4-core server. |
+| `MEILI_SNAPSHOT_DIR` | Yes for bundled search | Container path for snapshots. The template uses `/meili_snapshots`, persisted at `./data/meilisearch-snapshots`. |
+| `MEILI_SCHEDULE_SNAPSHOT` | Yes for bundled search | Snapshot interval in seconds. The template uses `86400` for one snapshot per day. |
+| `MEILI_DUMP_DIR` | Yes for bundled search | Container path for dumps. The template uses `/meili_dumps`, persisted at `./data/meilisearch-dumps`. |
+
+Create both restricted keys through the Meilisearch key-management API or your managed provider. Limit the runtime key to indexes matching `MEILI_INDEX_PREFIX`. Limit the metrics key to `metrics.get` and all indexes so the indexing worker can pause new submissions under queue, memory, or disk pressure. Keep every key out of Admin UI, browser code, Developer OpenAPI, and logs.
+
+For an external service, set `COMPOSE_PROFILES=` and update `MEILI_HOST`, `MEILI_API_KEY`, and `MEILI_INDEX_PREFIX`. The endpoint must be reachable from every API and Worker container, and authenticated metrics must be enabled.
 
 ## Developer OpenAPI
 
@@ -156,10 +178,11 @@ API rate limits are managed in [Admin Settings](./admin-settings.md). Tune runti
 Before running `docker compose up -d`, confirm:
 
 1. Every placeholder value has been replaced.
-2. `POSTGRES_PASSWORD` and `S3_SECRET_ACCESS_KEY` are private.
+2. `POSTGRES_PASSWORD`, `S3_SECRET_ACCESS_KEY`, `MEILI_MASTER_KEY`, `MEILI_API_KEY`, and `MEILI_METRICS_API_KEY` are private.
 3. Public origins match your reverse proxy domains.
 4. `ALLOWED_HOSTS` includes Admin UI, Admin API, Developer OpenAPI, `127.0.0.1`, and `localhost` when local health checks run inside containers.
 5. `DATABASE_URL` and `REDIS_URL` use Compose service names in Docker deployments.
 6. The deployment directory has writable `data`, `logs`, and `runtime-secrets` directories, or Docker can create them.
 7. S3 credentials can read and write the configured bucket and prefix.
-8. Open Admin UI after startup and review [Admin Settings](./admin-settings.md).
+8. The search service is reachable from the API and Worker containers, and its runtime key is restricted to this deployment's index prefix.
+9. Open Admin UI after startup and review [Admin Settings](./admin-settings.md).

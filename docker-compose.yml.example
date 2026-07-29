@@ -4,6 +4,13 @@ x-docker-logging: &docker-logging
     max-size: "50m"
     max-file: "3"
 
+x-runtime-environment: &runtime-environment
+  MEILI_HOST: ${MEILI_HOST:?Set MEILI_HOST in .env}
+  MEILI_MASTER_KEY: ""
+  MEILI_API_KEY: ${MEILI_API_KEY:?Set MEILI_API_KEY in .env}
+  MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:?Set MEILI_METRICS_API_KEY in .env}
+  MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
+
 services:
   admin:
     image: ${FOCOWIKI_ADMIN_IMAGE:-ghcr.io/farozerolabs/focowiki-admin:latest}
@@ -27,6 +34,7 @@ services:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     env_file:
       - .env
+    environment: *runtime-environment
     ports:
       - "${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"
       - "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
@@ -54,6 +62,7 @@ services:
     command: ["node", "apps/api/runtime/source-worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -79,6 +88,7 @@ services:
     command: ["node", "apps/api/runtime/publication-worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -104,6 +114,7 @@ services:
     command: ["node", "apps/api/runtime/projection-repair-worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -129,6 +140,7 @@ services:
     command: ["node", "apps/api/runtime/lexical-rebuild-worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -154,6 +166,7 @@ services:
     command: ["node", "apps/api/runtime/maintenance-worker.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -179,6 +192,7 @@ services:
     command: ["node", "apps/api/runtime/migrate.mjs"]
     env_file:
       - .env
+    environment: *runtime-environment
     volumes:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
@@ -218,5 +232,32 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    logging: *docker-logging
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.51.0
+    profiles: ["bundled-search"]
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}
+      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:?Set MEILI_MAX_INDEXING_MEMORY in .env}
+      MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS:?Set MEILI_MAX_INDEXING_THREADS in .env}
+      MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:?Set MEILI_SNAPSHOT_DIR in .env}
+      MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:?Set MEILI_SCHEDULE_SNAPSHOT in .env}
+      MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:?Set MEILI_DUMP_DIR in .env}
+      TMPDIR: /meili_data/tmp
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+    volumes:
+      - ./data/meilisearch:/meili_data
+      - ./data/meilisearch-snapshots:/meili_snapshots
+      - ./data/meilisearch-dumps:/meili_dumps
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     logging: *docker-logging
     restart: unless-stopped

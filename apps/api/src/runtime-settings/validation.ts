@@ -14,6 +14,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSearchSettings,
   type RuntimeSettingsDefaults,
   type RuntimeSettingsValidationIssue,
   type RuntimeWorkerSettings
@@ -50,6 +51,31 @@ export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   lexicalRebuildMaxInFlightSourceBytes: 67_108_864
 };
 
+export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
+  requestTimeoutMs: 3_000,
+  engineSearchCutoffMs: 1_000,
+  branchCandidateLimit: 200,
+  fusedCandidateLimit: 100,
+  overfetchFactor: 3,
+  graphSeedLimit: 100,
+  graphNeighborLimit: 20,
+  cacheTtlSeconds: 15,
+  indexBatchDocumentCount: 500,
+  indexBatchCompressedBytes: 8 * 1_024 * 1_024,
+  maxInFlightTasks: 8,
+  engineQueueLatencyLimitMs: 30_000,
+  engineResidentMemoryLimitBytes: 3 * 1_024 * 1_024 * 1_024,
+  engineDatabaseSizeLimitBytes: 100 * 1_024 * 1_024 * 1_024,
+  engineTaskQueueSizeLimitBytes: 512 * 1_024 * 1_024,
+  taskPollIntervalMs: 500,
+  taskTimeoutMs: 600_000,
+  maxAttempts: 5,
+  retryDelayMs: 2_000,
+  cleanupBatchSize: 1_000,
+  stagingRetentionHours: 24,
+  cropLength: 1_200
+};
+
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
   return {
     rateLimits: resolveSecurityConfig(config).rateLimits,
@@ -76,6 +102,7 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
     },
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
+    search: { ...DEFAULT_SEARCH_SETTINGS },
     model: config.model.enabled
         ? {
           displayName: config.model.modelName,
@@ -92,6 +119,102 @@ export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSet
           isActive: true
         }
       : null
+  };
+}
+
+export function validateSearchSettings(input: unknown): RuntimeSettingsValidationIssue[] {
+  const issues: RuntimeSettingsValidationIssue[] = [];
+  const value = objectValue(input);
+  for (const field of Object.keys(DEFAULT_SEARCH_SETTINGS)) {
+    requirePositiveInteger(value[field], field, issues);
+  }
+  validateIntegerRange(value, "requestTimeoutMs", 100, 30_000, issues);
+  validateIntegerRange(value, "engineSearchCutoffMs", 50, 10_000, issues);
+  validateIntegerRange(value, "branchCandidateLimit", 10, 500, issues);
+  validateIntegerRange(value, "fusedCandidateLimit", 10, 500, issues);
+  validateIntegerRange(value, "overfetchFactor", 1, 10, issues);
+  validateIntegerRange(value, "graphSeedLimit", 1, 500, issues);
+  validateIntegerRange(value, "graphNeighborLimit", 1, 100, issues);
+  validateIntegerRange(value, "cacheTtlSeconds", 1, 300, issues);
+  validateIntegerRange(value, "indexBatchDocumentCount", 1, 2_000, issues);
+  validateIntegerRange(
+    value,
+    "indexBatchCompressedBytes",
+    65_536,
+    33_554_432,
+    issues
+  );
+  validateIntegerRange(value, "maxInFlightTasks", 1, 32, issues);
+  validateIntegerRange(value, "engineQueueLatencyLimitMs", 1_000, 600_000, issues);
+  validateIntegerRange(
+    value,
+    "engineResidentMemoryLimitBytes",
+    268_435_456,
+    137_438_953_472,
+    issues
+  );
+  validateIntegerRange(
+    value,
+    "engineDatabaseSizeLimitBytes",
+    1_073_741_824,
+    17_592_186_044_416,
+    issues
+  );
+  validateIntegerRange(
+    value,
+    "engineTaskQueueSizeLimitBytes",
+    16_777_216,
+    8_589_934_592,
+    issues
+  );
+  validateIntegerRange(value, "taskPollIntervalMs", 100, 30_000, issues);
+  validateIntegerRange(value, "taskTimeoutMs", 10_000, 3_600_000, issues);
+  validateIntegerRange(value, "maxAttempts", 1, 20, issues);
+  validateIntegerRange(value, "retryDelayMs", 100, 300_000, issues);
+  validateIntegerRange(value, "cleanupBatchSize", 1, 5_000, issues);
+  validateIntegerRange(value, "stagingRetentionHours", 1, 720, issues);
+  validateIntegerRange(value, "cropLength", 50, 5_000, issues);
+  validateAtMost(
+    value,
+    "fusedCandidateLimit",
+    "branchCandidateLimit",
+    issues
+  );
+  validateAtMost(
+    value,
+    "engineSearchCutoffMs",
+    "requestTimeoutMs",
+    issues
+  );
+  return issues;
+}
+
+export function sanitizeSearchSettings(
+  input: RuntimeSearchSettings
+): RuntimeSearchSettings {
+  return {
+    requestTimeoutMs: input.requestTimeoutMs,
+    engineSearchCutoffMs: input.engineSearchCutoffMs,
+    branchCandidateLimit: input.branchCandidateLimit,
+    fusedCandidateLimit: input.fusedCandidateLimit,
+    overfetchFactor: input.overfetchFactor,
+    graphSeedLimit: input.graphSeedLimit,
+    graphNeighborLimit: input.graphNeighborLimit,
+    cacheTtlSeconds: input.cacheTtlSeconds,
+    indexBatchDocumentCount: input.indexBatchDocumentCount,
+    indexBatchCompressedBytes: input.indexBatchCompressedBytes,
+    maxInFlightTasks: input.maxInFlightTasks,
+    engineQueueLatencyLimitMs: input.engineQueueLatencyLimitMs,
+    engineResidentMemoryLimitBytes: input.engineResidentMemoryLimitBytes,
+    engineDatabaseSizeLimitBytes: input.engineDatabaseSizeLimitBytes,
+    engineTaskQueueSizeLimitBytes: input.engineTaskQueueSizeLimitBytes,
+    taskPollIntervalMs: input.taskPollIntervalMs,
+    taskTimeoutMs: input.taskTimeoutMs,
+    maxAttempts: input.maxAttempts,
+    retryDelayMs: input.retryDelayMs,
+    cleanupBatchSize: input.cleanupBatchSize,
+    stagingRetentionHours: input.stagingRetentionHours,
+    cropLength: input.cropLength
   };
 }
 

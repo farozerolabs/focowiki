@@ -11,6 +11,17 @@ type PublicationFinalizer = {
   finalize(input: { knowledgeBaseId: string; generationId: string }): Promise<void>;
 };
 
+type SearchProjectionCoordinator = {
+  prepare(input: {
+    knowledgeBaseId: string;
+    generationId: string;
+  }): Promise<{ status: "compatibility" | "pending" | "ready" | "failed" }>;
+  status(input: {
+    knowledgeBaseId: string;
+    generationId: string;
+  }): Promise<{ status: "compatibility" | "pending" | "ready" | "failed" }>;
+};
+
 export type PublicationTerminalPhaseHandlers = {
   object(task: PublicationSubtask): Promise<void>;
   validation(task: PublicationSubtask): Promise<void>;
@@ -33,6 +44,7 @@ export function createPublicationTerminalPhaseHandlers(input: {
     }): Promise<ImmutableObjectWriteResult>;
   };
   finalizers: PublicationFinalizer[];
+  searchProjection?: SearchProjectionCoordinator;
   validationIssueLimit: number;
   now?: () => Date;
 }): PublicationTerminalPhaseHandlers {
@@ -69,6 +81,15 @@ export function createPublicationTerminalPhaseHandlers(input: {
           .map((issue) => `${issue.code}:${issue.reference ?? "-"}`)
           .join(", "));
       }
+      if (input.searchProjection) {
+        const search = await input.searchProjection.prepare(task);
+        if (search.status === "failed") {
+          throw terminalPhaseError(
+            "Search projection could not be prepared",
+            "SEARCH_PROJECTION_FAILED"
+          );
+        }
+      }
     },
 
     async activation(task) {
@@ -76,6 +97,18 @@ export function createPublicationTerminalPhaseHandlers(input: {
       if (context.state === "active") return;
       if (context.state !== "validating") {
         throw retryablePhaseError(`Generation cannot be activated from state: ${context.state}`);
+      }
+      if (input.searchProjection) {
+        let search = await input.searchProjection.status(task);
+        if (search.status === "failed") {
+          search = await input.searchProjection.prepare(task);
+        }
+        if (search.status === "pending") {
+          throw retryablePhaseError("Search projection is still being prepared");
+        }
+        if (search.status === "failed") {
+          throw retryablePhaseError("Search projection recovery is still being prepared");
+        }
       }
       const roots = [];
       for (const path of GENERATED_ROOT_MANIFEST_PATHS) {
@@ -128,7 +161,8 @@ export function createPublicationTerminalPhaseHandlers(input: {
         expectedPredecessorGenerationId: context.predecessorGenerationId,
         rootManifestChecksumSha256: manifest.checksumSha256,
         rootManifestObjectKey: manifest.objectKey,
-        activatedAt: now().toISOString()
+        activatedAt: now().toISOString(),
+        searchActivationRequired: Boolean(input.searchProjection)
       });
       if (!activated) throw retryablePhaseError("Generation activation is busy");
     }

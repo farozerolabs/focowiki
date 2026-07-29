@@ -13,7 +13,10 @@ import type {
   PublicationProjectionInput,
   PublicationSourceSnapshot
 } from "../../application/ports/publication-projection-input.js";
-import { toProjectionInputJson } from "../../application/ports/publication-projection-input.js";
+import {
+  toCurrentGraphEdgeProjectionInput,
+  toProjectionInputJson
+} from "../../application/ports/publication-projection-input.js";
 import type { ChangeFactKind } from "../../domain/generation.js";
 import { generatedPagePath } from "../../domain/source-path.js";
 import type { PublicationImpact } from "../../publication/impact-planner.js";
@@ -92,6 +95,7 @@ type DirectoryRow = {
 type ProjectionCaptureVisibility = {
   operationIds: string[];
   deletionIntentIds: string[];
+  sourceFileIds: string[];
 };
 
 export type CapturedProjectionInput = {
@@ -180,6 +184,12 @@ export async function capturePublicationProjectionInputsBatch(
       change.deletionIntentId ? [change.deletionIntentId] : []
     )
   ]);
+  const visibleSourceFileIds = unique([
+    ...(input.visibility?.sourceFileIds ?? []),
+    ...input.changes.flatMap((change) =>
+      change.sourceFileId ? [change.sourceFileId] : []
+    )
+  ]);
   const sourceIds = unique(impacts.flatMap((impact) =>
     requiresSourceInput(impact) ? [impact.recordIdentity] : []
   ));
@@ -213,14 +223,14 @@ export async function capturePublicationProjectionInputsBatch(
     transaction,
     input.knowledgeBaseId,
     directoryPaths,
-    { operationIds, deletionIntentIds }
+    { operationIds, deletionIntentIds, sourceFileIds: visibleSourceFileIds }
   );
   const knowledgeBaseInput = impacts.some((impact) => impact.projectionKind === "root")
     || directoryPaths.includes("")
     ? await captureKnowledgeBase(
         transaction,
         input.knowledgeBaseId,
-        { operationIds, deletionIntentIds }
+        { operationIds, deletionIntentIds, sourceFileIds: visibleSourceFileIds }
       )
     : null;
   const result = new Map<string, CapturedProjectionInput>();
@@ -232,7 +242,7 @@ export async function capturePublicationProjectionInputsBatch(
         ?? missingSourceProjectionInput(impact);
     } else if (requiresGraphEdgeInput(impact)) {
       const edge = edgeInputs.get(impact.recordIdentity);
-      projectionInput = edge ? { kind: "graph_edge", edge } : null;
+      projectionInput = toCurrentGraphEdgeProjectionInput(edge ?? null);
     } else if (requiresDirectoryInput(impact)) {
       const relativePath = impact.recordIdentity.slice("directory:".length);
       const directory = relativePath
@@ -616,6 +626,7 @@ async function captureDirectories(
                )
                AND (
                  source.processing_status = 'completed'
+                 OR source.id = ANY(${visibility.sourceFileIds})
                  OR EXISTS (
                    SELECT 1
                    FROM focowiki.active_projection_records active_source
@@ -931,6 +942,7 @@ async function captureVisibleRootStatistics(
                )
                AND (
                  source.processing_status = 'completed'
+                 OR source.id = ANY(${visibility.sourceFileIds})
                  OR EXISTS (
                    SELECT 1
                    FROM focowiki.active_projection_records active_source

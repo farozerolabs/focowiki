@@ -145,17 +145,21 @@ export function createPostgresSearchProjectionRepository(
         INSERT INTO focowiki.generation_search_projection_refs (
           knowledge_base_id, generation_id, source_file_id, source_revision_id,
           search_document_id, search_schema_version, tokenizer_contract_version,
-          segmentation_version,
+          segmentation_version, path_revision,
           logical_path, title, summary, source_url, metadata_json, updated_at
         )
         SELECT
           ${input.knowledgeBaseId}, ${input.generationId}, ${input.sourceFileId},
           ${input.sourceRevisionId}, document.id, ${input.searchSchemaVersion},
           ${input.tokenizerContractVersion}, ${input.segmentationVersion},
+          source.resource_revision,
           ${input.logicalPath}, ${input.title},
           ${input.summary}, ${input.sourceUrl},
           ${sql.json(input.metadata as never)}, now()
         FROM focowiki.search_projection_documents document
+        JOIN focowiki.source_files source
+          ON source.knowledge_base_id = document.knowledge_base_id
+         AND source.id = document.source_file_id
         WHERE document.id = ${input.searchDocumentId}
           AND document.knowledge_base_id = ${input.knowledgeBaseId}
           AND document.source_file_id = ${input.sourceFileId}
@@ -169,6 +173,7 @@ export function createPostgresSearchProjectionRepository(
             search_schema_version = EXCLUDED.search_schema_version,
             tokenizer_contract_version = EXCLUDED.tokenizer_contract_version,
             segmentation_version = EXCLUDED.segmentation_version,
+            path_revision = EXCLUDED.path_revision,
             logical_path = EXCLUDED.logical_path,
             title = EXCLUDED.title,
             summary = EXCLUDED.summary,

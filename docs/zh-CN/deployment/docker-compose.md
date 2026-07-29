@@ -14,22 +14,25 @@ title: Docker Compose 部署
 | --- | --- |
 | PostgreSQL | 保存来源修订、持久化角色任务、发布 generation、投影记录、OpenAPI key、运行配置和审计证据。 |
 | Redis | 保存 session、限流计数、cursor、短期缓存、通知和范围协调状态。 |
+| Meilisearch | 保存文件、图种子和混合搜索索引。搜索数据可以从备份还原，也可以根据 PostgreSQL 与 S3 兼容存储重建。 |
 | S3 兼容存储 | 保存上传来源修订和内容寻址的生成 Markdown 与投影对象。 |
 | 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS public origins。 |
 
-Compose 模板会启动 PostgreSQL 和 Redis。外部 S3 兼容服务需要在 `.env` 中配置。
+Compose 模板会启动 PostgreSQL、Redis 和私有 Meilisearch。外部 S3 兼容服务需要在 `.env` 中配置。
 
 ## 准备文件
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-mkdir -p data/postgres data/redis runtime-secrets logs backups
+mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps runtime-secrets logs backups
 ```
 
 启动前填写 `.env`。启动变量、必填项、可选项和生产填写方式见 [环境变量配置](./environment.md)。在 Admin UI 中修改的运行时配置见 [Admin 配置](./admin-settings.md)。
 
 真实 `.env` 文件和复制后的 Compose 文件应留在 git 之外。
+
+默认的 `COMPOSE_PROFILES=bundled-search` 会启动内置 Meilisearch，并且不会把它的端口映射到宿主机。模板会启用受鉴权保护的指标，使 Worker 能够在资源压力过高时暂停提交新的索引任务。使用托管或独立部署的 Meilisearch 时，清空 `COMPOSE_PROFILES`，启用指标端点，并在 `.env` 中填写私有服务地址和受限运行密钥。
 
 ## Runtime logging
 
@@ -61,7 +64,7 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 
 更新前先阅读发行说明。发行说明会写明该版本是否调整数据库、是否要求先完成异步任务，以及是否更新知识库索引。
 
-1. 备份 PostgreSQL 和当前配置的 S3 兼容存储。
+1. 备份 PostgreSQL、Meilisearch 和当前配置的 S3 兼容存储。
 2. 更新 `.env` 中的镜像标签并拉取镜像。
 3. 如果发行说明要求先完成异步任务，在停止当前服务前完成该要求。
 4. 执行数据库迁移命令。
@@ -139,6 +142,8 @@ backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis 
 
 外部 S3 兼容 bucket 或 prefix 需要通过存储服务提供的快照、复制或导出功能单独备份。PostgreSQL 和 S3 备份应来自同一个时间点。
 
+内置搜索服务每天会把一个 snapshot 写入 `data/meilisearch-snapshots`。snapshot 用于同版本恢复。修改 Meilisearch 版本前需要创建并保留 dump，同时把 snapshot 或 dump 复制到部署服务器之外。
+
 ## 从备份还原
 
 只在目标部署目录中执行还原。继续前先给当前状态再做一次备份。
@@ -166,7 +171,9 @@ backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis 
    docker compose -f docker-compose.yml up -d
    ```
 
-6. 检查 Admin UI 登录、知识库列表、文件预览、Developer OpenAPI health 和 Worker 状态。
+6. 检查 Admin UI 登录、知识库列表、文件预览、搜索、Developer OpenAPI health 和 Worker 状态。
+
+搜索数据目录、snapshot 和 dump 都不可用时，先还原 PostgreSQL 和 S3 兼容存储，启动服务后再对每个受影响知识库执行**维护索引**。搜索重建期间，现有文件仍然可读。
 
 ## 图关系处理说明
 

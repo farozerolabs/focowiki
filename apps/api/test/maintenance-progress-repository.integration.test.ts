@@ -73,6 +73,14 @@ describeDatabase("maintenance progress repository integration", () => {
         maxAttempts: 5,
         safeErrorCode: null
       },
+      searchProjection: {
+        routeState: "postgres_compatibility",
+        maintenanceRequired: true,
+        activeEpoch: 0,
+        pendingEpoch: null,
+        totalCount: 0,
+        safeErrorCode: null
+      },
       projectionRepair: {
         repairVersion: 3,
         state: "running",
@@ -120,6 +128,7 @@ describeDatabase("maintenance progress repository integration", () => {
     await expect(repository.getSummary({ knowledgeBaseId: "kb-missing" })).resolves.toEqual({
       migration: null,
       lexicalRebuild: null,
+      searchProjection: null,
       projectionRepair: null,
       compaction: { active: null, latestCompleted: null }
     });

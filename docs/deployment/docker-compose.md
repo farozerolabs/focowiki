@@ -14,22 +14,25 @@ Production deployment requires:
 | --- | --- |
 | PostgreSQL | Source revisions, durable role jobs, publication generations, projection records, OpenAPI keys, settings, and audit evidence. |
 | Redis | Sessions, rate limits, cursors, short-lived caches, notifications, and scoped coordination. |
+| Meilisearch | File, graph-seed, and hybrid search indexes. Search data can be restored from backup or rebuilt from PostgreSQL and S3-compatible storage. |
 | S3-compatible storage | Uploaded source revisions and content-addressed generated Markdown and projection objects. |
 | Reverse proxy | HTTPS public origins for Admin UI, Admin API, and Developer OpenAPI. |
 
-The Compose template starts PostgreSQL and Redis. Configure an external S3-compatible service in `.env`.
+The Compose template starts PostgreSQL, Redis, and a private Meilisearch service. Configure an external S3-compatible service in `.env`.
 
 ## Prepare Files
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-mkdir -p data/postgres data/redis runtime-secrets logs backups
+mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps runtime-secrets logs backups
 ```
 
 Fill `.env` before starting the stack. See [Environment Configuration](./environment.md) for every startup variable, required values, optional values, and production examples. Runtime values changed from Admin UI are documented in [Admin Settings](./admin-settings.md).
 
 Keep real `.env` files and copied Compose files out of git.
+
+The default `COMPOSE_PROFILES=bundled-search` starts the included Meilisearch service without publishing its port to the host. Authenticated metrics are enabled so the Worker can pause new indexing submissions under resource pressure. To use a managed or separately deployed Meilisearch service, leave `COMPOSE_PROFILES` empty, enable its metrics endpoint, and set its private endpoint and scoped runtime key in `.env`.
 
 ## Runtime Logging
 
@@ -61,7 +64,7 @@ FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:0.0.1
 
 Read the release notes before updating. They state whether the release changes the database, requires asynchronous work to finish first, or changes knowledge-base indexes.
 
-1. Back up PostgreSQL and the configured S3-compatible storage.
+1. Back up PostgreSQL, Meilisearch, and the configured S3-compatible storage.
 2. Update the image tags in `.env`, then pull the images.
 3. Follow any drain requirement in the release notes before stopping the current services.
 4. Run the database migration command.
@@ -139,6 +142,8 @@ backup_id="$(date +%Y%m%d-%H%M%S)" && mkdir -p backups data/postgres data/redis 
 
 Back up the external S3-compatible bucket or prefix separately with the storage provider's snapshot, replication, or export feature. PostgreSQL and S3 backups should represent the same point in time.
 
+The bundled search service writes one snapshot per day to `data/meilisearch-snapshots`. Snapshots are for same-version recovery. Create and retain a Meilisearch dump before changing the Meilisearch version, and keep copied snapshots or dumps outside the deployment server.
+
 ## Restore From Backup
 
 Restore only into the intended deployment directory. Create a fresh backup of the current state before continuing.
@@ -166,7 +171,9 @@ Restore only into the intended deployment directory. Create a fresh backup of th
    docker compose -f docker-compose.yml up -d
    ```
 
-6. Verify Admin UI login, knowledge-base list, file preview, Developer OpenAPI health, and Worker status.
+6. Verify Admin UI login, knowledge-base list, file preview, search, Developer OpenAPI health, and Worker status.
+
+If the search data directory, snapshot, or dump is unavailable, restore PostgreSQL and S3-compatible storage first, start the services, then run **Maintain index** for each affected knowledge base. Existing files remain readable while search data is rebuilt.
 
 ## Graph Processing Notes
 

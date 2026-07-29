@@ -40,6 +40,7 @@ export type ActiveGenerationCursor = {
 export type ActiveGenerationScoredCursor = {
   score: number;
   recordId: string;
+  exactPriority?: number;
 };
 
 export type ActiveGenerationPage<T, TCursor> = {
@@ -54,9 +55,18 @@ export type ActiveGenerationGraphSummary = {
   persisted: boolean;
 };
 
+export type ActiveGenerationSearchIdentity = {
+  activeEpoch: number;
+  contentSchemaVersion: string;
+  graphSchemaVersion: string;
+  contentSettingsChecksum: string;
+  graphSettingsChecksum: string;
+};
+
 export type ActiveGenerationReadScope = {
   knowledgeBaseId: string;
   generationId: string;
+  searchIdentity: ActiveGenerationSearchIdentity;
   findFileById: (fileId: string) => Promise<ActiveGenerationFile | null>;
   findFileByPath: (path: string) => Promise<ActiveGenerationFile | null>;
   findFilesBySourceIds: (sourceFileIds: string[]) => Promise<ActiveGenerationFile[]>;
@@ -78,9 +88,15 @@ export type ActiveGenerationReadScope = {
   search: (input: {
     query: string;
     mode: "file" | "graph" | "hybrid";
+    scope?: "all" | "path" | "metadata";
+    fileKind?: string | null;
+    graphDepth?: 0 | 1 | 2;
     limit: number;
     cursor: ActiveGenerationScoredCursor | null;
   }) => Promise<ActiveGenerationPage<ActiveGenerationProjection, ActiveGenerationScoredCursor>>;
+  revalidateSearchPage: (
+    items: ActiveGenerationProjection[]
+  ) => Promise<boolean>;
   listRelated: (input: {
     sourceFileId: string;
     limit: number;

@@ -30,7 +30,7 @@ Focowiki 会把产品运行日志写入文件，同时继续输出 stdout/stderr
 
 Docker Compose 会把运行日志保存在部署目录下的 `./logs`。API 镜像会在启动 server 或 migration 前创建容器内 `/app/logs` 目录，并把目录权限交给运行时用户。
 
-Docker Compose 会把 PostgreSQL 数据保存在 `./data/postgres`，把 Redis 数据保存在 `./data/redis`，把已保存 provider key 的保护材料保存在 `./runtime-secrets`。迁移服务器时需要随部署数据一起保留这些目录。删除 `./runtime-secrets` 后，需要在 Admin 配置中重新录入已保存的模型 API key。
+Docker Compose 会把 PostgreSQL 数据保存在 `./data/postgres`，把 Redis 数据保存在 `./data/redis`，把搜索数据保存在 `./data/meilisearch`，把可选的搜索备份保存在 `./data/meilisearch-snapshots` 和 `./data/meilisearch-dumps`，把已保存 provider key 的保护材料保存在 `./runtime-secrets`。迁移服务器时需要随部署数据一起保留这些目录。删除 `./runtime-secrets` 后，需要在 Admin 配置中重新录入已保存的模型 API key。
 
 ## 部署镜像
 
@@ -92,6 +92,28 @@ Docker Compose 会把 PostgreSQL 数据保存在 `./data/postgres`，把 Redis �
 | `REDIS_URL` | 是 | API 使用的 Redis 连接串。Docker Compose 中使用 `redis://redis:6379/0`。 |
 
 `REDIS_PORT` 用于宿主机访问 Redis。`REDIS_URL` 由 API、Worker、迁移进程、sessions、cursors、coordination 和 rate limits 使用。
+
+## 搜索服务
+
+Compose 模板会启动一个私有 Meilisearch 服务，用于文件、图关系和混合搜索，默认不映射宿主机端口。PostgreSQL 和 S3 兼容存储保留重建搜索数据所需的持久数据。
+
+| 变量 | 是否必填 | 填写方式 |
+| --- | --- | --- |
+| `COMPOSE_PROFILES` | 使用内置搜索时必填 | 使用 `bundled-search` 启动 Compose 模板内的 Meilisearch。使用外部搜索服务时留空。 |
+| `MEILI_HOST` | 是 | 搜索服务内部地址。内置 Compose 使用 `http://meilisearch:7700`。外部服务使用容器可访问的私有 HTTPS 或私有网络地址。 |
+| `MEILI_MASTER_KEY` | 使用内置搜索时必填 | 只提供给 Meilisearch 容器的高强度独立初始化密钥，至少使用 16 字节随机内容。Focowiki 应用容器不会收到该值。 |
+| `MEILI_API_KEY` | 是 | 后端运行密钥，只允许访问当前部署的索引前缀，以及必要的搜索、文档、索引、配置、任务和切换操作。禁止填写 master key。 |
+| `MEILI_METRICS_API_KEY` | 是 | 后端指标密钥，只授予 `metrics.get`，并按 Meilisearch 指标鉴权要求允许全部索引。禁止授予搜索、文档、索引、配置、任务或密钥管理权限。 |
+| `MEILI_INDEX_PREFIX` | 是 | 当前部署独占的索引命名空间，例如 `focowiki` 或 `focowiki_staging`。不同环境使用不同前缀。 |
+| `MEILI_MAX_INDEXING_MEMORY` | 使用内置搜索时必填 | 索引过程可使用的内存。4C/8G 服务器可从 `2GiB` 开始，观察后再调整。 |
+| `MEILI_MAX_INDEXING_THREADS` | 使用内置搜索时必填 | 索引过程使用的线程数。4 核服务器可从 `2` 开始。 |
+| `MEILI_SNAPSHOT_DIR` | 使用内置搜索时必填 | snapshot 容器目录。模板使用 `/meili_snapshots`，并持久化到 `./data/meilisearch-snapshots`。 |
+| `MEILI_SCHEDULE_SNAPSHOT` | 使用内置搜索时必填 | snapshot 间隔秒数。模板使用 `86400`，每天生成一次 snapshot。 |
+| `MEILI_DUMP_DIR` | 使用内置搜索时必填 | dump 容器目录。模板使用 `/meili_dumps`，并持久化到 `./data/meilisearch-dumps`。 |
+
+通过 Meilisearch key 管理 API 或托管服务创建两个受限密钥。运行密钥的索引范围限制为 `MEILI_INDEX_PREFIX`。指标密钥只授予 `metrics.get` 并允许全部索引，使索引 Worker 可以在队列、内存或磁盘压力过高时暂停提交新任务。Admin UI、浏览器代码、Developer OpenAPI 和日志中都不应出现任何密钥。
+
+使用外部服务时，设置 `COMPOSE_PROFILES=`，并更新 `MEILI_HOST`、`MEILI_API_KEY` 和 `MEILI_INDEX_PREFIX`。API 与所有 Worker 容器都需要能够访问该地址，外部服务还需要启用受鉴权保护的指标端点。
 
 ## Developer OpenAPI
 
@@ -156,10 +178,11 @@ API 限流在 [Admin 配置](./admin-settings.md) 中管理。运行时限流应
 执行 `docker compose up -d` 前确认：
 
 1. 所有占位符都已替换。
-2. `POSTGRES_PASSWORD` 和 `S3_SECRET_ACCESS_KEY` 保持私密。
+2. `POSTGRES_PASSWORD`、`S3_SECRET_ACCESS_KEY`、`MEILI_MASTER_KEY`、`MEILI_API_KEY` 和 `MEILI_METRICS_API_KEY` 保持私密。
 3. 公网 origins 与反向代理域名一致。
 4. `ALLOWED_HOSTS` 包含 Admin UI、Admin API、Developer OpenAPI、`127.0.0.1` 和 `localhost`，以支持容器内本地健康检查。
 5. Docker 部署中的 `DATABASE_URL` 和 `REDIS_URL` 使用 Compose service names。
 6. 部署目录下有可写的 `data`、`logs` 和 `runtime-secrets` 目录，或者 Docker 能够自动创建这些目录。
 7. S3 凭据可以读写配置的 bucket 和 prefix。
-8. 启动后打开 Admin UI，并检查 [Admin 配置](./admin-settings.md)。
+8. API 和 Worker 容器可以访问搜索服务，运行密钥只允许访问当前部署的索引前缀。
+9. 启动后打开 Admin UI，并检查 [Admin 配置](./admin-settings.md)。

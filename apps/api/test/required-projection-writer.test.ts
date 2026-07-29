@@ -159,6 +159,36 @@ describe("required projection writer", () => {
     }));
   });
 
+  it("deduplicates compatible related-file impacts for the same source", async () => {
+    const recordUpsert = vi.fn(async () => undefined);
+    const shardApplyBatch = vi.fn(async () => ({
+      deleted: false,
+      recordCount: 1,
+      reused: false
+    }));
+    const writer = createWriter({ recordUpsert, shardApplyBatch });
+    const relatedFiles = relatedFileImpact("related_files");
+    const reverseNeighbor = relatedFileImpact("graph_reverse_neighbor");
+
+    await expect(writer.writeBatch([relatedFiles, reverseNeighbor])).resolves.toEqual({
+      handled: true,
+      touchedShardCount: 1
+    });
+
+    expect(recordUpsert).toHaveBeenCalledTimes(1);
+    expect(shardApplyBatch).toHaveBeenCalledWith(expect.objectContaining({
+      projectionKind: "related_files",
+      shardKey: "source-file-1",
+      changes: [{
+        recordId: "source-file-1",
+        record: expect.objectContaining({
+          id: "source-file-1",
+          relationships: []
+        })
+      }]
+    }));
+  });
+
   it("writes directory records into the tree projection", async () => {
     const recordUpsert = vi.fn(async () => undefined);
     const shardApplyBatch = vi.fn(async () => ({
@@ -405,6 +435,19 @@ function graphLinkImpact() {
         evidence: { sharedSubjects: ["deployment"] }
       }
     }
+  };
+}
+
+function relatedFileImpact(
+  projectionKind: "related_files" | "graph_reverse_neighbor"
+) {
+  return {
+    ...impact("search"),
+    id: `impact-${projectionKind}-source-file-1`,
+    projectionKind,
+    projectionKey: "source-file-1",
+    recordIdentity: "source-file-1",
+    projectionInput: sourceProjectionInput()
   };
 }
 

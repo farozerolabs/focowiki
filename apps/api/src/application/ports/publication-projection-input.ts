@@ -79,6 +79,12 @@ export type PublicationProjectionInput =
   | { kind: "knowledge_base"; descriptor: PublicationKnowledgeBaseSnapshot; rootEntryCount: number }
   | { kind: "empty" };
 
+export function toCurrentGraphEdgeProjectionInput(
+  edge: PublicationGraphEdgeSnapshot | null
+): Extract<PublicationProjectionInput, { kind: "graph_edge" | "empty" }> {
+  return edge ? { kind: "graph_edge", edge } : { kind: "empty" };
+}
+
 export function toProjectionInputJson(input: PublicationProjectionInput): SerializableJson {
   return JSON.parse(JSON.stringify(input)) as SerializableJson;
 }

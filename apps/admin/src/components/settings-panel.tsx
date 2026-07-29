@@ -53,6 +53,7 @@ import {
   updateMaintenanceSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
+  updateSearchSettings,
   updateWorkerSettings,
   type ApiFailure,
   type GraphSettings,
@@ -61,6 +62,7 @@ import {
   type RateLimitSettings,
   type RuntimeModelConfig,
   type RuntimeSettingsResponse,
+  type SearchSettings,
   type WorkerSettings
 } from "@/lib/admin-api";
 import {
@@ -181,6 +183,31 @@ const maintenanceNumberFields = [
   keyof Omit<MaintenanceSettings, "reconciliationEnabled" | "knowledgeBaseMaintenanceMode">
 )[];
 
+const searchNumberFields = [
+  "requestTimeoutMs",
+  "engineSearchCutoffMs",
+  "branchCandidateLimit",
+  "fusedCandidateLimit",
+  "overfetchFactor",
+  "graphSeedLimit",
+  "graphNeighborLimit",
+  "cacheTtlSeconds",
+  "indexBatchDocumentCount",
+  "indexBatchCompressedBytes",
+  "maxInFlightTasks",
+  "engineQueueLatencyLimitMs",
+  "engineResidentMemoryLimitBytes",
+  "engineDatabaseSizeLimitBytes",
+  "engineTaskQueueSizeLimitBytes",
+  "taskPollIntervalMs",
+  "taskTimeoutMs",
+  "maxAttempts",
+  "retryDelayMs",
+  "cleanupBatchSize",
+  "stagingRetentionHours",
+  "cropLength"
+] as const satisfies readonly (keyof SearchSettings)[];
+
 const modelApiModes = ["responses", "chat_completions"] as const satisfies readonly RuntimeModelConfig["apiMode"][];
 
 const modelNumberFields = [
@@ -233,6 +260,11 @@ const maintenanceTipItems = [
   descriptionKey: `settings.tips.maintenance.${field}`
 }));
 
+const searchTipItems = searchNumberFields.map((field) => ({
+  labelKey: `settings.fields.${field}`,
+  descriptionKey: `settings.tips.search.${field}`
+}));
+
 const modelTipItems = [
   "displayName",
   "apiMode",
@@ -251,6 +283,7 @@ type WorkerNumberField = (typeof workerNumberFields)[number];
 type PublicationField = (typeof publicationFields)[number];
 type GraphNumberField = (typeof graphNumberFields)[number];
 type MaintenanceNumberField = (typeof maintenanceNumberFields)[number];
+type SearchNumberField = (typeof searchNumberFields)[number];
 type ModelApiMode = (typeof modelApiModes)[number];
 type ModelNumberField = (typeof modelNumberFields)[number];
 
@@ -273,6 +306,7 @@ type EditableMaintenanceSettings = Record<MaintenanceNumberField, EditableNumber
     MaintenanceSettings,
     "reconciliationEnabled" | "knowledgeBaseMaintenanceMode"
   >;
+type EditableSearchSettings = Record<SearchNumberField, EditableNumber>;
 type EditableModelForm = {
   displayName: string;
   apiMode: ModelApiMode;
@@ -290,6 +324,7 @@ export function SettingsPanel() {
   const [publication, setPublication] = useState<EditablePublicationSettings | null>(null);
   const [graph, setGraph] = useState<EditableGraphSettings | null>(null);
   const [maintenance, setMaintenance] = useState<EditableMaintenanceSettings | null>(null);
+  const [search, setSearch] = useState<EditableSearchSettings | null>(null);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState("");
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false);
@@ -390,6 +425,17 @@ export function SettingsPanel() {
     await saveSettings("maintenance", () => updateMaintenanceSettings(payload));
   }
 
+  async function handleSearchSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!search) return;
+    const payload = buildSearchSettings(search);
+    if (!payload) {
+      showNumberValidationError();
+      return;
+    }
+    await saveSettings("search", () => updateSearchSettings(payload));
+  }
+
   async function saveSettings(
     key: string,
     submit: () => Promise<{ settings: RuntimeSettingsResponse["settings"] } | ApiFailure>
@@ -410,6 +456,7 @@ export function SettingsPanel() {
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
+    setSearch(toEditableSearchSettings(result.settings.search));
     showAdminToast({ title: t("settings.toast.saveSuccess") });
   }
 
@@ -456,6 +503,7 @@ export function SettingsPanel() {
     setPublication(toEditablePublicationSettings(result.settings.publication));
     setGraph(toEditableGraphSettings(result.settings.graph));
     setMaintenance(toEditableMaintenanceSettings(result.settings.maintenance));
+    setSearch(toEditableSearchSettings(result.settings.search));
   }
 
   function showNumberValidationError() {
@@ -534,6 +582,7 @@ export function SettingsPanel() {
                 <TabsTrigger value="publication">{t("settings.tabs.publication")}</TabsTrigger>
                 <TabsTrigger value="graph">{t("settings.tabs.graph")}</TabsTrigger>
                 <TabsTrigger value="maintenance">{t("settings.tabs.maintenance")}</TabsTrigger>
+                <TabsTrigger value="search">{t("settings.tabs.search")}</TabsTrigger>
                 <TabsTrigger value="models">{t("settings.tabs.models")}</TabsTrigger>
               </TabsList>
             </div>
@@ -743,6 +792,35 @@ export function SettingsPanel() {
                     </form>
                   </SettingsCard>
                   <PlainTips items={graphTipItems} />
+                </div>
+              ) : null}
+            </TabsContent>
+            <TabsContent value="search">
+              {search ? (
+                <div className="space-y-3">
+                  <SettingsCard
+                    title={t("settings.search.title")}
+                    description={t("settings.search.description")}
+                  >
+                    <form noValidate onSubmit={handleSearchSave}>
+                      <FieldGroup>
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {searchNumberFields.map((field) => (
+                            <NumberField
+                              key={field}
+                              id={`search-${field}`}
+                              label={t(`settings.fields.${field}`)}
+                              value={search[field]}
+                              required
+                              onChange={(value) => setSearch({ ...search, [field]: value })}
+                            />
+                          ))}
+                        </div>
+                        <SaveButton isSaving={isSaving === "search"} />
+                      </FieldGroup>
+                    </form>
+                  </SettingsCard>
+                  <PlainTips items={searchTipItems} />
                 </div>
               ) : null}
             </TabsContent>
@@ -1466,6 +1544,10 @@ function toEditableMaintenanceSettings(
   return { ...settings };
 }
 
+function toEditableSearchSettings(settings: SearchSettings): EditableSearchSettings {
+  return { ...settings };
+}
+
 function buildRateLimitSettings(input: EditableRateLimitSettings): RateLimitSettings | null {
   const adminLogin = buildRateLimitGroup(input.adminLogin);
   const adminApi = buildRateLimitGroup(input.adminApi);
@@ -1597,6 +1679,51 @@ function buildMaintenanceSettings(
     reconciliationEnabled: input.reconciliationEnabled,
     ...settings
   };
+}
+
+function buildSearchSettings(input: EditableSearchSettings): SearchSettings | null {
+  const settings = buildNumberRecord(input, searchNumberFields);
+  if (
+    !settings
+    || settings.requestTimeoutMs < 100
+    || settings.requestTimeoutMs > 30_000
+    || settings.engineSearchCutoffMs < 50
+    || settings.engineSearchCutoffMs > settings.requestTimeoutMs
+    || settings.branchCandidateLimit < 10
+    || settings.branchCandidateLimit > 500
+    || settings.fusedCandidateLimit < 10
+    || settings.fusedCandidateLimit > settings.branchCandidateLimit
+    || settings.overfetchFactor > 10
+    || settings.graphSeedLimit > 500
+    || settings.graphNeighborLimit > 100
+    || settings.cacheTtlSeconds > 300
+    || settings.indexBatchDocumentCount > 2_000
+    || settings.indexBatchCompressedBytes < 65_536
+    || settings.indexBatchCompressedBytes > 33_554_432
+    || settings.maxInFlightTasks > 32
+    || settings.engineQueueLatencyLimitMs < 1_000
+    || settings.engineQueueLatencyLimitMs > 600_000
+    || settings.engineResidentMemoryLimitBytes < 268_435_456
+    || settings.engineResidentMemoryLimitBytes > 137_438_953_472
+    || settings.engineDatabaseSizeLimitBytes < 1_073_741_824
+    || settings.engineDatabaseSizeLimitBytes > 17_592_186_044_416
+    || settings.engineTaskQueueSizeLimitBytes < 16_777_216
+    || settings.engineTaskQueueSizeLimitBytes > 8_589_934_592
+    || settings.taskPollIntervalMs < 100
+    || settings.taskPollIntervalMs > 30_000
+    || settings.taskTimeoutMs < 10_000
+    || settings.taskTimeoutMs > 3_600_000
+    || settings.maxAttempts > 20
+    || settings.retryDelayMs < 100
+    || settings.retryDelayMs > 300_000
+    || settings.cleanupBatchSize > 5_000
+    || settings.stagingRetentionHours > 720
+    || settings.cropLength < 50
+    || settings.cropLength > 5_000
+  ) {
+    return null;
+  }
+  return settings as SearchSettings;
 }
 
 function isGraphDepth(value: number): value is GraphSettings["searchDefaultDepth"] {

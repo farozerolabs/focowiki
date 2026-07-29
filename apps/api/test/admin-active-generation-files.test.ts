@@ -177,6 +177,13 @@ function createScope(generationId: string): ActiveGenerationReadScope {
   return {
     knowledgeBaseId: "kb-admin-active",
     generationId,
+    searchIdentity: {
+      activeEpoch: 0,
+      contentSchemaVersion: "postgres-search-v1",
+      graphSchemaVersion: "postgres-graph-v1",
+      contentSettingsChecksum: "postgres-compatibility",
+      graphSettingsChecksum: "postgres-compatibility"
+    },
     async findFileById(fileId) {
       return [...files.values()].find((file) => file.fileId === fileId) ?? null;
     },
@@ -210,6 +217,9 @@ function createScope(generationId: string): ActiveGenerationReadScope {
     },
     async search() {
       return { items: [], nextCursor: null };
+    },
+    async revalidateSearchPage() {
+      return true;
     },
     async listRelated() {
       return {

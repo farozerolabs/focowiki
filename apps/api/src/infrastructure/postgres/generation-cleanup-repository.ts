@@ -106,6 +106,18 @@ export function createPostgresGenerationCleanupRepository(
             AND state IN ('pending', 'running', 'validating', 'activating')
         `;
         await transaction`
+          UPDATE focowiki.search_projection_work
+          SET state = 'canceled', lease_owner = NULL, lease_token = NULL,
+              lease_expires_at = NULL, heartbeat_at = NULL,
+              completed_at = ${input.supersededAt},
+              safe_error_code = 'KNOWLEDGE_BASE_DELETED',
+              safe_error_message =
+                'Knowledge base deletion superseded search indexing work.',
+              updated_at = ${input.supersededAt}
+          WHERE knowledge_base_id = ${input.target.knowledgeBaseId}
+            AND state IN ('queued', 'submitted', 'retry')
+        `;
+        await transaction`
           UPDATE focowiki.publication_generations
           SET state = 'superseded', successor_generation_id = NULL,
               updated_at = ${input.supersededAt}

@@ -7,6 +7,11 @@ x-docker-logging: &docker-logging
 x-runtime-environment: &runtime-environment
   DATABASE_URL: postgres://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
   REDIS_URL: redis://redis:6379/0
+  MEILI_HOST: http://meilisearch:7700
+  MEILI_MASTER_KEY: ""
+  MEILI_API_KEY: ${MEILI_API_KEY:?Set MEILI_API_KEY in .env}
+  MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:?Set MEILI_METRICS_API_KEY in .env}
+  MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
 
 services:
   admin:
@@ -260,4 +265,30 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    logging: *docker-logging
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.51.0
+    profiles: ["bundled-search"]
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}
+      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:?Set MEILI_MAX_INDEXING_MEMORY in .env}
+      MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS:?Set MEILI_MAX_INDEXING_THREADS in .env}
+      MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:?Set MEILI_SNAPSHOT_DIR in .env}
+      MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:?Set MEILI_SCHEDULE_SNAPSHOT in .env}
+      MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:?Set MEILI_DUMP_DIR in .env}
+      TMPDIR: /meili_data/tmp
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+    volumes:
+      - ./data/meilisearch:/meili_data
+      - ./data/meilisearch-snapshots:/meili_snapshots
+      - ./data/meilisearch-dumps:/meili_dumps
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     logging: *docker-logging
