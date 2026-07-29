@@ -180,7 +180,7 @@ jobs:
         run: pnpm openapi:validate
 
       - name: Validate API Docker worker runtimes
-        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/projection-repair-worker.mjs','apps/api/runtime/lexical-rebuild-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/meilisearch-bootstrap.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/projection-repair-worker.mjs','apps/api/runtime/lexical-rebuild-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
 
       - name: Validate native tokenizer runtime
         run: |

@@ -101,9 +101,9 @@ The Compose template starts a private Meilisearch service for file, graph, and h
 | --- | --- | --- |
 | `COMPOSE_PROFILES` | Yes for bundled search | Use `bundled-search` to start the Meilisearch container included in the Compose template. Leave empty when `MEILI_HOST` points to an externally managed service. |
 | `MEILI_HOST` | Yes | Internal service URL. Bundled Compose uses `http://meilisearch:7700`. Use a private HTTPS or private-network URL for an external service. |
-| `MEILI_MASTER_KEY` | Yes for bundled search | Strong, unique bootstrap key used only by the Meilisearch container. Use at least 16 bytes of random material. Focowiki application containers do not receive this value. |
-| `MEILI_API_KEY` | Yes | Server-side runtime key restricted to the Focowiki index prefix and required search, document, index, settings, task, and swap operations. Do not use the master key. |
-| `MEILI_METRICS_API_KEY` | Yes | Server-side key restricted to the `metrics.get` action and all indexes, as required by Meilisearch metrics authorization. Do not grant search, document, index, settings, task, or key-management actions. |
+| `MEILI_MASTER_KEY` | Yes for bundled search | Strong, unique bootstrap key used by Meilisearch and the startup initializer. Use at least 16 bytes of random material. The initializer automatically creates the restricted runtime keys, and Focowiki application containers do not receive this value. |
+| `MEILI_API_KEY` | External search only | Existing server-side runtime key restricted to the Focowiki index prefix and required search, document, index, settings, task, and swap operations. Leave this unset with bundled search. |
+| `MEILI_METRICS_API_KEY` | External search only | Existing server-side diagnostics key restricted to the `metrics.get`, `tasks.get`, and `version` actions and all indexes. Leave this unset with bundled search. |
 | `MEILI_INDEX_PREFIX` | Yes | Dedicated index namespace for this deployment, such as `focowiki` or `focowiki_staging`. Use a different prefix for every environment. |
 | `MEILI_MAX_INDEXING_MEMORY` | Yes for bundled search | Memory budget used by indexing. Start with `2GiB` on a 4C/8G server and measure before increasing it. |
 | `MEILI_MAX_INDEXING_THREADS` | Yes for bundled search | Threads used by indexing. Start with `2` on a 4-core server. |
@@ -111,9 +111,9 @@ The Compose template starts a private Meilisearch service for file, graph, and h
 | `MEILI_SCHEDULE_SNAPSHOT` | Yes for bundled search | Snapshot interval in seconds. The template uses `86400` for one snapshot per day. |
 | `MEILI_DUMP_DIR` | Yes for bundled search | Container path for dumps. The template uses `/meili_dumps`, persisted at `./data/meilisearch-dumps`. |
 
-Create both restricted keys through the Meilisearch key-management API or your managed provider. Limit the runtime key to indexes matching `MEILI_INDEX_PREFIX`. Limit the metrics key to `metrics.get` and all indexes so the indexing worker can pause new submissions under queue, memory, or disk pressure. Keep every key out of Admin UI, browser code, Developer OpenAPI, and logs.
+With bundled search, Focowiki creates or reuses both restricted keys during startup and stores them in the private `runtime-secrets` directory. Repeated starts keep the same key identities, and a changed permission contract is applied automatically. Keep the master key and generated runtime keys out of Admin UI, browser code, Developer OpenAPI, and logs.
 
-For an external service, set `COMPOSE_PROFILES=` and update `MEILI_HOST`, `MEILI_API_KEY`, and `MEILI_INDEX_PREFIX`. The endpoint must be reachable from every API and Worker container, and authenticated metrics must be enabled.
+For an external service, set `COMPOSE_PROFILES=` and update `MEILI_HOST`, `MEILI_API_KEY`, `MEILI_METRICS_API_KEY`, and `MEILI_INDEX_PREFIX`. Create both restricted keys through the provider before startup. The endpoint must be reachable from every API and Worker container, and authenticated metrics must be enabled.
 
 ## Developer OpenAPI
 
@@ -178,11 +178,11 @@ API rate limits are managed in [Admin Settings](./admin-settings.md). Tune runti
 Before running `docker compose up -d`, confirm:
 
 1. Every placeholder value has been replaced.
-2. `POSTGRES_PASSWORD`, `S3_SECRET_ACCESS_KEY`, `MEILI_MASTER_KEY`, `MEILI_API_KEY`, and `MEILI_METRICS_API_KEY` are private.
+2. `POSTGRES_PASSWORD`, `S3_SECRET_ACCESS_KEY`, `MEILI_MASTER_KEY`, and any externally supplied Meilisearch keys are private.
 3. Public origins match your reverse proxy domains.
 4. `ALLOWED_HOSTS` includes Admin UI, Admin API, Developer OpenAPI, `127.0.0.1`, and `localhost` when local health checks run inside containers.
 5. `DATABASE_URL` and `REDIS_URL` use Compose service names in Docker deployments.
 6. The deployment directory has writable `data`, `logs`, and `runtime-secrets` directories, or Docker can create them.
 7. S3 credentials can read and write the configured bucket and prefix.
-8. The search service is reachable from the API and Worker containers, and its runtime key is restricted to this deployment's index prefix.
+8. The search service is reachable from the API and Worker containers. Bundled search creates restricted runtime keys automatically; external search keys are restricted to this deployment's index prefix.
 9. Open Admin UI after startup and review [Admin Settings](./admin-settings.md).

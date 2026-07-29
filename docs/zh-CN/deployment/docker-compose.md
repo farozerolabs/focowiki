@@ -32,8 +32,6 @@ mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots da
 
 真实 `.env` 文件和复制后的 Compose 文件应留在 git 之外。
 
-默认的 `COMPOSE_PROFILES=bundled-search` 会启动内置 Meilisearch，并且不会把它的端口映射到宿主机。模板会启用受鉴权保护的指标，使 Worker 能够在资源压力过高时暂停提交新的索引任务。使用托管或独立部署的 Meilisearch 时，清空 `COMPOSE_PROFILES`，启用指标端点，并在 `.env` 中填写私有服务地址和受限运行密钥。
-
 ## Runtime logging
 
 `APP_ENV=production` 会启用生产安全运行方式。API error responses 不会把内部诊断信息写入 response body。Admin UI 生产构建会移除产品代码中的 `console.log`、`console.debug`、`console.info` 和 `debugger` statements。

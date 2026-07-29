@@ -32,6 +32,7 @@ describe("Docker Compose infrastructure", () => {
       "projection-repair-worker:",
       "lexical-rebuild-worker:",
       "maintenance-worker:",
+      "meilisearch-init:",
       "migrate:",
       "postgres:",
       "redis:",
@@ -70,7 +71,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
@@ -91,6 +92,7 @@ describe("Docker Compose infrastructure", () => {
       "projection-repair-worker:",
       "lexical-rebuild-worker:",
       "maintenance-worker:",
+      "meilisearch-init:",
       "migrate:",
       "postgres:",
       "redis:",
@@ -130,7 +132,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("getmeili/meilisearch:v1.51.0");
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
@@ -145,6 +147,7 @@ describe("Docker Compose infrastructure", () => {
       "projection-repair-worker:",
       "lexical-rebuild-worker:",
       "maintenance-worker:",
+      "meilisearch-init:",
       "migrate:",
       "postgres:",
       "redis:",
@@ -196,7 +199,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "50m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -238,6 +241,7 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("deploy/docker/api-entrypoint.sh");
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]');
     expect(dockerfile).toContain("apps/api/runtime/main.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
     expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/projection-repair-worker.mjs");
@@ -260,6 +264,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
     expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(workflow).toContain("apps/api/runtime/main.mjs");
+    expect(workflow).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
     expect(workflow).toContain("Validate native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
@@ -334,12 +339,30 @@ describe("Docker Compose infrastructure", () => {
 
       expect(compose).toContain("x-runtime-environment: &runtime-environment");
       expect(compose).toContain('MEILI_MASTER_KEY: ""');
-      expect(compose).toContain("MEILI_API_KEY: ${MEILI_API_KEY:");
+      expect(compose).toContain('MEILI_API_KEY: ""');
       expect(compose).toContain(
-        "MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:"
+        "MEILI_API_KEY_FILE: /app/runtime-secrets/meilisearch-api-key"
+      );
+      expect(compose).toContain(
+        "MEILI_METRICS_API_KEY_FILE: /app/runtime-secrets/meilisearch-metrics-key"
+      );
+      expect(compose).toContain(
+        'command: ["node", "apps/api/runtime/meilisearch-bootstrap.mjs"]'
+      );
+      expect(compose).toContain(
+        "condition: service_completed_successfully"
       );
       expect(compose).toContain('MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"');
       expect(compose).toContain("environment: *runtime-environment");
+    }
+
+    expect(readFileSync(deploymentComposeTemplatePath, "utf8")).toContain(
+      "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}"
+    );
+    for (const composePath of [devComposeTemplatePath, localComposeTemplatePath]) {
+      expect(readFileSync(composePath, "utf8")).toContain(
+        "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}"
+      );
     }
   });
 
@@ -348,11 +371,11 @@ describe("Docker Compose infrastructure", () => {
     const deploymentEnv = readFileSync(deploymentEnvTemplatePath, "utf8");
 
     expect(deploymentCompose).toContain('profiles: ["bundled-search"]');
-    expect(deploymentCompose).not.toMatch(
-      /depends_on:\n(?:\s{6,}.+\n)*\s{6}meilisearch:\n\s{8}condition: service_healthy/u
-    );
+    expect(deploymentCompose).toContain("required: false");
     expect(deploymentEnv).toContain("COMPOSE_PROFILES=bundled-search");
     expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
+    expect(deploymentEnv).not.toMatch(/^MEILI_API_KEY=/mu);
+    expect(deploymentEnv).not.toMatch(/^MEILI_METRICS_API_KEY=/mu);
   });
 
   it("keeps startup config from requiring Admin UI managed upload-generation env fields", () => {
@@ -480,8 +503,12 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
     expect(deploymentEnv).toContain("MEILI_MASTER_KEY=");
-    expect(deploymentEnv).toContain("MEILI_API_KEY=");
-    expect(deploymentEnv).toContain("MEILI_METRICS_API_KEY=");
+    expect(deploymentEnv).not.toMatch(/^MEILI_API_KEY=/mu);
+    expect(deploymentEnv).not.toMatch(/^MEILI_METRICS_API_KEY=/mu);
+    expect(deploymentEnv).toContain("# MEILI_API_KEY=<provider-runtime-key>");
+    expect(deploymentEnv).toContain(
+      "# MEILI_METRICS_API_KEY=<provider-metrics-key>"
+    );
     expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_MEMORY=2GiB");
     expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_THREADS=2");
     expect(deploymentEnv).toContain("MEILI_SNAPSHOT_DIR=/meili_snapshots");
@@ -599,10 +626,25 @@ describe("Docker Compose infrastructure", () => {
     const devComposeRefs = parseComposeEnvRefs(readFileSync(devComposeTemplatePath, "utf8"));
     const localComposeRefs = parseComposeEnvRefs(readFileSync(localComposeTemplatePath, "utf8"));
     const deploymentOnlyKeys = new Set(["FOCOWIKI_ADMIN_IMAGE", "FOCOWIKI_API_IMAGE"]);
+    const developmentOnlyKeys = new Set([
+      "MEILI_API_KEY",
+      "MEILI_METRICS_API_KEY"
+    ]);
+    const optionalComposeKeys = new Set([
+      "MEILI_API_KEY",
+      "MEILI_METRICS_API_KEY"
+    ]);
     const comparableDeploymentKeys = new Set([...deploymentEnvKeys].filter((key) => !deploymentOnlyKeys.has(key)));
+    const comparableDevKeys = new Set(
+      [...devEnvKeys].filter((key) => !developmentOnlyKeys.has(key))
+    );
 
-    expect([...devEnvKeys].sort()).toEqual([...comparableDeploymentKeys].sort());
-    expect([...deploymentComposeRefs].filter((key) => !deploymentEnvKeys.has(key))).toEqual([]);
+    expect([...comparableDevKeys].sort()).toEqual([...comparableDeploymentKeys].sort());
+    expect(
+      [...deploymentComposeRefs].filter(
+        (key) => !deploymentEnvKeys.has(key) && !optionalComposeKeys.has(key)
+      )
+    ).toEqual([]);
     expect([...devComposeRefs].filter((key) => !devEnvKeys.has(key))).toEqual([]);
     expect([...localComposeRefs].filter((key) => !devEnvKeys.has(key))).toEqual([]);
   });
