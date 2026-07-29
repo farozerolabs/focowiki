@@ -568,6 +568,242 @@ describeDatabase("search projection state repository integration", () => {
     ]);
   });
 
+  it("restarts a partial epoch when only index preparation was attempted", async () => {
+    await sql`
+      INSERT INTO focowiki.knowledge_bases (id, name)
+      VALUES ('kb-search-partial-plan', 'Search partial plan')
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, activated_at
+      ) VALUES (
+        'generation-search-partial-plan', 'kb-search-partial-plan',
+        NULL, 'active', 2, 'normal', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = 'generation-search-partial-plan'
+      WHERE id = 'kb-search-partial-plan'
+    `;
+    await expect(repository.reservePendingEpoch({
+      knowledgeBaseId: "kb-search-partial-plan",
+      generationId: "generation-search-partial-plan",
+      maintenanceRequestId: null,
+      contract: searchContract(),
+      reservedAt: "2099-07-29T00:10:00.000Z"
+    })).resolves.toMatchObject({
+      outcome: "reserved",
+      state: { pendingEpoch: 1 }
+    });
+
+    await repository.createWork([
+      {
+        id: "search-work-partial-prepare",
+        knowledgeBaseId: "kb-search-partial-plan",
+        epoch: 1,
+        generationId: "generation-search-partial-plan",
+        maintenanceRequestId: null,
+        indexKind: "content",
+        workKind: "prepare_index",
+        batchOrdinal: 0,
+        payloadChecksum: createHash("sha256")
+          .update("partial-prepare")
+          .digest("hex"),
+        documentCount: 0,
+        compressedBytes: 0,
+        taskCorrelation: "search-work-partial-prepare",
+        maxAttempts: 5
+      },
+      {
+        id: "search-work-partial-documents",
+        knowledgeBaseId: "kb-search-partial-plan",
+        epoch: 1,
+        generationId: "generation-search-partial-plan",
+        maintenanceRequestId: null,
+        indexKind: "content",
+        workKind: "documents",
+        batchOrdinal: 0,
+        payloadChecksum: createHash("sha256")
+          .update("partial-documents")
+          .digest("hex"),
+        documentCount: 1,
+        compressedBytes: 128,
+        taskCorrelation: "search-work-partial-documents",
+        maxAttempts: 5
+      }
+    ]);
+    await sql`
+      UPDATE focowiki.search_projection_work
+      SET state = CASE
+            WHEN work_kind = 'prepare_index' THEN 'failed'
+            ELSE 'canceled'
+          END,
+          attempt_count = CASE
+            WHEN work_kind = 'prepare_index' THEN 5
+            ELSE 0
+          END,
+          completed_at = now(),
+          safe_error_code = CASE
+            WHEN work_kind = 'prepare_index'
+              THEN 'SEARCH_ENGINE_UNAVAILABLE'
+            ELSE 'SEARCH_INDEX_EPOCH_FAILED'
+          END,
+          safe_error_message = 'Search indexing is temporarily unavailable'
+      WHERE knowledge_base_id = 'kb-search-partial-plan'
+        AND epoch = 1
+    `;
+
+    await sql`
+      UPDATE focowiki.search_projection_work
+      SET heartbeat_at = '2099-07-29T00:10:30.000Z'
+      WHERE id = 'search-work-partial-documents'
+    `;
+    await expect(repository.restartFailedEpoch({
+      knowledgeBaseId: "kb-search-partial-plan",
+      generationId: "generation-search-partial-plan",
+      maintenanceRequestId: null,
+      epoch: 1,
+      resetAll: true,
+      maxAttempts: 5,
+      contract: searchContract(),
+      restartedAt: "2099-07-29T00:10:45.000Z"
+    })).resolves.toBe(false);
+    await sql`
+      UPDATE focowiki.search_projection_work
+      SET heartbeat_at = NULL
+      WHERE id = 'search-work-partial-documents'
+    `;
+
+    await expect(repository.restartFailedEpoch({
+      knowledgeBaseId: "kb-search-partial-plan",
+      generationId: "generation-search-partial-plan",
+      maintenanceRequestId: null,
+      epoch: 1,
+      resetAll: true,
+      maxAttempts: 5,
+      contract: searchContract(),
+      restartedAt: "2099-07-29T00:11:00.000Z"
+    })).resolves.toBe(true);
+
+    const restarted = await sql<Array<{
+      id: string;
+      state: string;
+      attempt_count: number;
+      maintenance_request_id: string | null;
+    }>>`
+      SELECT id, state, attempt_count, maintenance_request_id
+      FROM focowiki.search_projection_work
+      WHERE knowledge_base_id = 'kb-search-partial-plan'
+      ORDER BY id
+    `;
+    expect(restarted).toEqual([
+      {
+        id: "search-work-partial-documents",
+        state: "queued",
+        attempt_count: 0,
+        maintenance_request_id: null
+      },
+      {
+        id: "search-work-partial-prepare",
+        state: "queued",
+        attempt_count: 0,
+        maintenance_request_id: null
+      }
+    ]);
+
+    await sql`
+      INSERT INTO focowiki.knowledge_base_index_maintenance_requests (
+        id, knowledge_base_id, trigger_kind, state, settings_revision,
+        started_at, created_at, updated_at
+      ) VALUES (
+        'maintenance-partial-old', 'kb-search-partial-plan',
+        'manual', 'failed', 1,
+        '2099-07-29T00:12:00.000Z',
+        '2099-07-29T00:12:00.000Z',
+        '2099-07-29T00:12:00.000Z'
+      ), (
+        'maintenance-partial-new', 'kb-search-partial-plan',
+        'manual', 'running', 1,
+        '2099-07-29T00:13:00.000Z',
+        '2099-07-29T00:13:00.000Z',
+        '2099-07-29T00:13:00.000Z'
+      )
+    `;
+    await repository.createWork(
+      (["content", "graph"] as const).map((indexKind, index) => ({
+        id: `search-work-partial-cleanup-${indexKind}`,
+        knowledgeBaseId: "kb-search-partial-plan",
+        epoch: 1,
+        generationId: "generation-search-partial-plan",
+        maintenanceRequestId: "maintenance-partial-old",
+        indexKind,
+        workKind: "cleanup" as const,
+        batchOrdinal: 0,
+        payloadChecksum: createHash("sha256")
+          .update(`partial-cleanup-${index}`)
+          .digest("hex"),
+        documentCount: 0,
+        compressedBytes: 0,
+        taskCorrelation: `search-work-partial-cleanup-${indexKind}`,
+        maxAttempts: 5
+      }))
+    );
+    await sql`
+      UPDATE focowiki.search_projection_work
+      SET state = 'failed',
+          attempt_count = max_attempts,
+          completed_at = now(),
+          safe_error_code = 'SEARCH_ENGINE_UNAVAILABLE',
+          safe_error_message = 'Search indexing is temporarily unavailable'
+      WHERE knowledge_base_id = 'kb-search-partial-plan'
+        AND epoch = 1
+    `;
+
+    await expect(repository.retryFailedCleanup({
+      knowledgeBaseId: "kb-search-partial-plan",
+      generationId: "generation-search-partial-plan",
+      maintenanceRequestId: "maintenance-partial-old",
+      epoch: 1,
+      maxAttempts: 5,
+      retriedAt: "2099-07-29T00:12:30.000Z"
+    })).resolves.toBe(0);
+    await expect(repository.retryFailedCleanup({
+      knowledgeBaseId: "kb-search-partial-plan",
+      generationId: "generation-search-partial-plan",
+      maintenanceRequestId: "maintenance-partial-new",
+      epoch: 1,
+      maxAttempts: 5,
+      retriedAt: "2099-07-29T00:13:30.000Z"
+    })).resolves.toBe(2);
+
+    const cleanup = await sql<Array<{
+      state: string;
+      attempt_count: number;
+      maintenance_request_id: string | null;
+    }>>`
+      SELECT state, attempt_count, maintenance_request_id
+      FROM focowiki.search_projection_work
+      WHERE knowledge_base_id = 'kb-search-partial-plan'
+        AND epoch = 1
+        AND work_kind = 'cleanup'
+      ORDER BY index_kind
+    `;
+    expect(cleanup).toEqual([
+      {
+        state: "queued",
+        attempt_count: 0,
+        maintenance_request_id: "maintenance-partial-new"
+      },
+      {
+        state: "queued",
+        attempt_count: 0,
+        maintenance_request_id: "maintenance-partial-new"
+      }
+    ]);
+  });
+
   it("rebases a failed candidate onto a newer generation without skipping the epoch", async () => {
     await sql`
       INSERT INTO focowiki.publication_generations (

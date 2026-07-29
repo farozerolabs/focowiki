@@ -100,6 +100,7 @@ type SearchProjectionRow = {
   succeeded_count: number | string;
   failed_count: number | string;
   canceled_count: number | string;
+  recovery_active: boolean;
   total_count: number | string;
   progress_updated_at: Date;
   safe_error_code: string | null;
@@ -155,28 +156,53 @@ export function createPostgresMaintenanceProgressRepository(
             state.active_epoch,
             state.pending_epoch,
             state.pending_generation_id,
-            count(work.id) FILTER (WHERE work.state = 'queued') AS queued_count,
-            count(work.id) FILTER (WHERE work.state = 'submitted') AS submitted_count,
-            count(work.id) FILTER (WHERE work.state = 'retry') AS retry_count,
-            count(work.id) FILTER (WHERE work.state = 'succeeded') AS succeeded_count,
-            count(work.id) FILTER (WHERE work.state = 'failed') AS failed_count,
-            count(work.id) FILTER (WHERE work.state = 'canceled') AS canceled_count,
-            count(work.id) AS total_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'queued'
+            ) AS queued_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'submitted'
+            ) AS submitted_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'retry'
+            ) AS retry_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'succeeded'
+            ) AS succeeded_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'failed'
+            ) AS failed_count,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup' AND work.state = 'canceled'
+            ) AS canceled_count,
+            (
+              coalesce(bool_or(
+                work.work_kind <> 'cleanup'
+                AND work.state IN ('failed', 'canceled', 'superseded')
+              ), false)
+              AND coalesce(bool_or(
+                work.work_kind = 'cleanup'
+                AND work.state IN ('queued', 'submitted', 'retry')
+              ), false)
+            ) AS recovery_active,
+            count(work.id) FILTER (
+              WHERE work.work_kind <> 'cleanup'
+            ) AS total_count,
             greatest(
               state.updated_at,
               coalesce(max(work.updated_at), state.updated_at)
             ) AS progress_updated_at,
             max(work.safe_error_code) FILTER (
-              WHERE work.state IN ('failed', 'canceled')
+              WHERE work.work_kind <> 'cleanup'
+                AND work.state IN ('failed', 'canceled')
             ) AS safe_error_code,
             max(work.safe_error_message) FILTER (
-              WHERE work.state IN ('failed', 'canceled')
+              WHERE work.work_kind <> 'cleanup'
+                AND work.state IN ('failed', 'canceled')
             ) AS safe_error_message
           FROM focowiki.knowledge_base_search_states state
           LEFT JOIN focowiki.search_projection_work work
             ON work.knowledge_base_id = state.knowledge_base_id
            AND work.epoch = state.pending_epoch
-           AND work.work_kind <> 'cleanup'
           WHERE state.knowledge_base_id = ${input.knowledgeBaseId}
           GROUP BY state.knowledge_base_id
         `,
@@ -246,6 +272,7 @@ function mapSearchProjection(
     succeededCount: Number(row.succeeded_count),
     failedCount: Number(row.failed_count),
     canceledCount: Number(row.canceled_count),
+    recoveryActive: row.recovery_active,
     totalCount: Number(row.total_count),
     updatedAt: row.progress_updated_at.toISOString(),
     safeErrorCode: row.safe_error_code,

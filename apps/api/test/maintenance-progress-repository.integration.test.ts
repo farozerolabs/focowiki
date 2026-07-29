@@ -134,6 +134,57 @@ describeDatabase("maintenance progress repository integration", () => {
     });
   });
 
+  it("reports active cleanup recovery without counting cleanup as index work", async () => {
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = 'generation-progress-repair-base'
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET pending_epoch = 1,
+          pending_generation_id = 'generation-progress-repair-base',
+          pending_activation_state = 'indexing',
+          pending_full_rebuild = true,
+          pending_content_schema_version = 'content-v1',
+          pending_graph_schema_version = 'graph-v1',
+          pending_content_settings_checksum = ${"c".repeat(64)},
+          pending_graph_settings_checksum = ${"d".repeat(64)},
+          updated_at = '2026-07-20T00:00:05.000Z'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.search_projection_work (
+        id, knowledge_base_id, epoch, generation_id, index_kind, work_kind,
+        batch_ordinal, payload_checksum, document_count, compressed_bytes,
+        task_correlation, state, attempt_count, max_attempts,
+        safe_error_code, safe_error_message, completed_at, updated_at
+      ) VALUES (
+        'search-progress-failed', ${knowledgeBaseId}, 1,
+        'generation-progress-repair-base', 'content', 'prepare_index',
+        0, ${"a".repeat(64)}, 0, 0, 'search-progress-failed',
+        'failed', 5, 5, 'SEARCH_ENGINE_UNAVAILABLE',
+        'Search indexing is temporarily unavailable',
+        '2026-07-20T00:00:06.000Z', '2026-07-20T00:00:06.000Z'
+      ), (
+        'search-progress-cleanup', ${knowledgeBaseId}, 1,
+        'generation-progress-repair-base', 'content', 'cleanup',
+        0, ${"b".repeat(64)}, 0, 0, 'search-progress-cleanup',
+        'queued', 0, 5, NULL, NULL, NULL, '2026-07-20T00:00:07.000Z'
+      )
+    `;
+
+    await expect(repository.getSummary({ knowledgeBaseId })).resolves.toMatchObject({
+      searchProjection: {
+        pendingEpoch: 1,
+        failedCount: 1,
+        recoveryActive: true,
+        totalCount: 1,
+        updatedAt: "2026-07-20T00:00:07.000Z"
+      }
+    });
+  });
+
   it("returns the safe failure details for the latest projection repair", async () => {
     await sql`
       UPDATE focowiki.knowledge_base_projection_repairs

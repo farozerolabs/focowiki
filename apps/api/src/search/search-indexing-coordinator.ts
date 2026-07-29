@@ -95,7 +95,17 @@ export async function ensureSearchProjectionWork(input: {
       contract: input.contract,
       rebasedAt: input.now
     });
-    if (!rebased) return { status: "pending", epoch };
+    if (!rebased) {
+      const failedGenerationId = reservation.state.pendingGenerationId;
+      if (failedGenerationId) {
+        await ensureFailedEpochCleanup({
+          ...input,
+          generationId: failedGenerationId,
+          epoch
+        });
+      }
+      return { status: "pending", epoch };
+    }
     state = rebased;
     reservationOutcome = "reserved";
   }
@@ -123,7 +133,13 @@ export async function ensureSearchProjectionWork(input: {
         contract: input.contract,
         restartedAt: input.now
       });
-      if (!restarted) return { status: "failed", epoch };
+      if (!restarted) {
+        await ensureFailedEpochCleanup({
+          ...input,
+          epoch
+        });
+        return { status: "pending", epoch };
+      }
     }
   }
 
@@ -164,6 +180,30 @@ export async function ensureSearchProjectionWork(input: {
     status: progress.activationReady ? "ready" : "pending",
     epoch
   };
+}
+
+async function ensureFailedEpochCleanup(input: {
+  states: SearchProjectionStateRepository;
+  knowledgeBaseId: string;
+  generationId: string;
+  maintenanceRequestId: string | null;
+  epoch: number;
+  maxAttempts: number;
+  now: string;
+}): Promise<void> {
+  await input.states.createWork(
+    (["content", "graph"] as const).map((indexKind) =>
+      createSearchLifecycleWork(input, indexKind, "cleanup")
+    )
+  );
+  await input.states.retryFailedCleanup({
+    knowledgeBaseId: input.knowledgeBaseId,
+    generationId: input.generationId,
+    maintenanceRequestId: input.maintenanceRequestId,
+    epoch: input.epoch,
+    maxAttempts: input.maxAttempts,
+    retriedAt: input.now
+  });
 }
 
 export async function readSearchProjectionCoordinationStatus(input: {

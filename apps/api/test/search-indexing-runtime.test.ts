@@ -494,6 +494,7 @@ function fakeStates(
     retryOrFail: vi.fn(async () => "retry" as const),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),
+    retryFailedCleanup: vi.fn(),
     beginActivation: vi.fn(async () => true),
     activateEpoch: vi.fn(),
     cancelForKnowledgeBase: vi.fn(),

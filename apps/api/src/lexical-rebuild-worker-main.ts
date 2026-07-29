@@ -167,7 +167,14 @@ async function runLexicalRebuildWorker(): Promise<void> {
             engineTaskQueueSizeLimitBytes:
               snapshot.search.engineTaskQueueSizeLimitBytes
           },
-          leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000
+          leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000,
+          onFailure(event, error) {
+            if (error === undefined) {
+              logger.error("Search indexing work attempt failed", event);
+              return;
+            }
+            logger.error("Search indexing work attempt failed", event, error);
+          }
         });
         if (searchCycle.claimed > 0 || searchCycle.submissionPaused) {
           logger.info("Search indexing cycle completed", searchCycle);

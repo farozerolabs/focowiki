@@ -17,6 +17,7 @@ import {
 } from "./search-index-manager.js";
 import {
   processSearchIndexingWork,
+  type SearchIndexingFailureEvent,
   type SearchIndexingWorkOutcome
 } from "./search-indexing-worker.js";
 
@@ -64,6 +65,10 @@ export async function runSearchIndexingCycle(input: {
   };
   leaseDurationMs: number;
   now?: () => Date;
+  onFailure?: (
+    event: SearchIndexingFailureEvent,
+    error?: unknown
+  ) => void;
 }): Promise<SearchIndexingCycleResult> {
   const pressureReasons = await readPressureReasons(
     input.transport,
@@ -91,6 +96,7 @@ export async function runSearchIndexingCycle(input: {
       indexPrefix: input.indexPrefix,
       settings: input.settings,
       leaseDurationMs: input.leaseDurationMs,
+      ...(input.onFailure ? { onFailure: input.onFailure } : {}),
       ...(input.now ? { now: input.now } : {})
     })
   ));
@@ -141,6 +147,10 @@ export async function processClaimedSearchWork(input: {
   settings: SearchIndexingRuntimeSettings;
   leaseDurationMs: number;
   now?: () => Date;
+  onFailure?: (
+    event: SearchIndexingFailureEvent,
+    error?: unknown
+  ) => void;
 }): Promise<SearchIndexingWorkOutcome> {
   const state = await requireCurrentState(input.states, input.work);
   if (
@@ -318,7 +328,8 @@ export async function processClaimedSearchWork(input: {
     leaseDurationMs: input.leaseDurationMs,
     retryDelayMs: input.settings.retryDelayMs,
     maxDocumentCount: input.settings.maxDocumentCount,
-    maxCompressedBytes: input.settings.maxCompressedBytes
+    maxCompressedBytes: input.settings.maxCompressedBytes,
+    ...(input.onFailure ? { onFailure: input.onFailure } : {})
   });
 }
 
