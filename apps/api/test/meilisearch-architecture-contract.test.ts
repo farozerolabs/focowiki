@@ -20,6 +20,7 @@ describe("Meilisearch architecture contract", () => {
       expect(compose).toContain("meilisearch:");
       expect(compose).toContain("getmeili/meilisearch:");
       expect(compose).toContain("./data/meilisearch:/meili_data");
+      expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
       expect(compose).not.toMatch(/FOCOWIKI_POSTGRES_IMAGE|docker\/postgres|focowiki-postgres/u);
     }
   });

@@ -58,6 +58,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
     expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
     expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
@@ -121,6 +122,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
     expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
     expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
@@ -177,6 +179,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
     expect(compose).toContain("./data/meilisearch:/meili_data");
+    expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
     expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");

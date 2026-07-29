@@ -274,6 +274,7 @@ services:
       MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
     volumes:
       - ./data/meilisearch:/meili_data
+      - ./data/meilisearch/tmp:/meili_data/tmp
       - ./data/meilisearch-snapshots:/meili_snapshots
       - ./data/meilisearch-dumps:/meili_dumps
     healthcheck:
