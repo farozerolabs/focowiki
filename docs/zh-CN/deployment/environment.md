@@ -101,9 +101,9 @@ Compose 模板会启动一个私有 Meilisearch 服务，用于文件、图关�
 | --- | --- | --- |
 | `COMPOSE_PROFILES` | 使用内置搜索时必填 | 使用 `bundled-search` 启动 Compose 模板内的 Meilisearch。使用外部搜索服务时留空。 |
 | `MEILI_HOST` | 是 | 搜索服务内部地址。内置 Compose 使用 `http://meilisearch:7700`。外部服务使用容器可访问的私有 HTTPS 或私有网络地址。 |
-| `MEILI_MASTER_KEY` | 使用内置搜索时必填 | 只提供给 Meilisearch 容器的高强度独立初始化密钥，至少使用 16 字节随机内容。Focowiki 应用容器不会收到该值。 |
-| `MEILI_API_KEY` | 是 | 后端运行密钥，只允许访问当前部署的索引前缀，以及必要的搜索、文档、索引、配置、任务和切换操作。禁止填写 master key。 |
-| `MEILI_METRICS_API_KEY` | 是 | 后端指标密钥，只授予 `metrics.get`，并按 Meilisearch 指标鉴权要求允许全部索引。禁止授予搜索、文档、索引、配置、任务或密钥管理权限。 |
+| `MEILI_MASTER_KEY` | 使用内置搜索时必填 | Meilisearch 和启动初始化程序使用的高强度独立密钥，至少使用 16 字节随机内容。初始化程序会自动创建受限运行密钥，Focowiki 应用容器不会收到 master key。 |
+| `MEILI_API_KEY` | 仅外部搜索服务 | 外部服务已有的后端运行密钥，只允许访问当前部署的索引前缀，以及必要的搜索、文档、索引、配置、任务和切换操作。使用内置搜索时留空。 |
+| `MEILI_METRICS_API_KEY` | 仅外部搜索服务 | 外部服务已有的只读诊断密钥，只授予 `metrics.get`、`tasks.get` 和 `version` 并允许全部索引。使用内置搜索时留空。 |
 | `MEILI_INDEX_PREFIX` | 是 | 当前部署独占的索引命名空间，例如 `focowiki` 或 `focowiki_staging`。不同环境使用不同前缀。 |
 | `MEILI_MAX_INDEXING_MEMORY` | 使用内置搜索时必填 | 索引过程可使用的内存。4C/8G 服务器可从 `2GiB` 开始，观察后再调整。 |
 | `MEILI_MAX_INDEXING_THREADS` | 使用内置搜索时必填 | 索引过程使用的线程数。4 核服务器可从 `2` 开始。 |
@@ -111,9 +111,9 @@ Compose 模板会启动一个私有 Meilisearch 服务，用于文件、图关�
 | `MEILI_SCHEDULE_SNAPSHOT` | 使用内置搜索时必填 | snapshot 间隔秒数。模板使用 `86400`，每天生成一次 snapshot。 |
 | `MEILI_DUMP_DIR` | 使用内置搜索时必填 | dump 容器目录。模板使用 `/meili_dumps`，并持久化到 `./data/meilisearch-dumps`。 |
 
-通过 Meilisearch key 管理 API 或托管服务创建两个受限密钥。运行密钥的索引范围限制为 `MEILI_INDEX_PREFIX`。指标密钥只授予 `metrics.get` 并允许全部索引，使索引 Worker 可以在队列、内存或磁盘压力过高时暂停提交新任务。Admin UI、浏览器代码、Developer OpenAPI 和日志中都不应出现任何密钥。
+使用内置搜索时，Focowiki 会在启动期间创建或复用两个受限密钥，并将它们保存到私有的 `runtime-secrets` 目录。重复启动会沿用相同的密钥身份，权限契约变化时会自动更新。master key 和生成的运行密钥都不应出现在 Admin UI、浏览器代码、Developer OpenAPI 或日志中。
 
-使用外部服务时，设置 `COMPOSE_PROFILES=`，并更新 `MEILI_HOST`、`MEILI_API_KEY` 和 `MEILI_INDEX_PREFIX`。API 与所有 Worker 容器都需要能够访问该地址，外部服务还需要启用受鉴权保护的指标端点。
+使用外部服务时，设置 `COMPOSE_PROFILES=`，并更新 `MEILI_HOST`、`MEILI_API_KEY`、`MEILI_METRICS_API_KEY` 和 `MEILI_INDEX_PREFIX`。启动前通过服务提供方创建两个受限密钥。API 与所有 Worker 容器都需要能够访问该地址，外部服务还需要启用受鉴权保护的指标端点。
 
 ## Developer OpenAPI
 
@@ -178,11 +178,11 @@ API 限流在 [Admin 配置](./admin-settings.md) 中管理。运行时限流应
 执行 `docker compose up -d` 前确认：
 
 1. 所有占位符都已替换。
-2. `POSTGRES_PASSWORD`、`S3_SECRET_ACCESS_KEY`、`MEILI_MASTER_KEY`、`MEILI_API_KEY` 和 `MEILI_METRICS_API_KEY` 保持私密。
+2. `POSTGRES_PASSWORD`、`S3_SECRET_ACCESS_KEY`、`MEILI_MASTER_KEY` 和外部服务提供的 Meilisearch 密钥保持私密。
 3. 公网 origins 与反向代理域名一致。
 4. `ALLOWED_HOSTS` 包含 Admin UI、Admin API、Developer OpenAPI、`127.0.0.1` 和 `localhost`，以支持容器内本地健康检查。
 5. Docker 部署中的 `DATABASE_URL` 和 `REDIS_URL` 使用 Compose service names。
 6. 部署目录下有可写的 `data`、`logs` 和 `runtime-secrets` 目录，或者 Docker 能够自动创建这些目录。
 7. S3 凭据可以读写配置的 bucket 和 prefix。
-8. API 和 Worker 容器可以访问搜索服务，运行密钥只允许访问当前部署的索引前缀。
+8. API 和 Worker 容器可以访问搜索服务。内置搜索会自动创建受限运行密钥；外部服务密钥只允许访问当前部署的索引前缀。
 9. 启动后打开 Admin UI，并检查 [Admin 配置](./admin-settings.md)。

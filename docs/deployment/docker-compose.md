@@ -32,8 +32,6 @@ Fill `.env` before starting the stack. See [Environment Configuration](./environ
 
 Keep real `.env` files and copied Compose files out of git.
 
-The default `COMPOSE_PROFILES=bundled-search` starts the included Meilisearch service without publishing its port to the host. Authenticated metrics are enabled so the Worker can pause new indexing submissions under resource pressure. To use a managed or separately deployed Meilisearch service, leave `COMPOSE_PROFILES` empty, enable its metrics endpoint, and set its private endpoint and scoped runtime key in `.env`.
-
 ## Runtime Logging
 
 `APP_ENV=production` uses production-safe runtime behavior. API error responses keep internal diagnostics out of the response body, and Admin UI production builds remove product-authored `console.log`, `console.debug`, `console.info`, and `debugger` statements.

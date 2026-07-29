@@ -64,6 +64,37 @@ describe("Meilisearch transport", () => {
     });
   });
 
+  it("uses the diagnostics key for the global version endpoint", async () => {
+    const runtimeClient = {
+      health: vi.fn(async () => ({ status: "available" }))
+    };
+    const diagnosticsClient = {
+      getVersion: vi.fn(async () => ({
+        commitSha: "test",
+        commitDate: "2026-07-29",
+        pkgVersion: "1.51.0"
+      }))
+    };
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "prefix-scoped-runtime-key",
+        metricsApiKey: "global-diagnostics-key",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      {
+        client: runtimeClient as never,
+        diagnosticsClient: diagnosticsClient as never
+      }
+    );
+
+    await expect(transport.health()).resolves.toEqual({ available: true });
+    expect(runtimeClient.health).toHaveBeenCalledOnce();
+    expect(diagnosticsClient.getVersion).toHaveBeenCalledOnce();
+  });
+
   it("sends bounded document batches with gzip and safe correlation metadata", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const transport = createMeilisearchTransport(
@@ -149,7 +180,7 @@ describe("Meilisearch transport", () => {
   });
 
   it("maps task terminal states without treating enqueue as completion", async () => {
-    const client = {
+    const diagnosticsClient = {
       tasks: {
         async getTask() {
           return {
@@ -164,11 +195,15 @@ describe("Meilisearch transport", () => {
       {
         endpoint: "http://search.internal:7700",
         apiKey: "server-secret",
+        metricsApiKey: "diagnostics-secret",
         timeoutMs: 100,
         maxAttempts: 1,
         retryDelayMs: 1
       },
-      { client: client as never }
+      {
+        client: {} as never,
+        diagnosticsClient: diagnosticsClient as never
+      }
     );
 
     await expect(transport.getTask(17)).resolves.toEqual({
@@ -177,6 +212,56 @@ describe("Meilisearch transport", () => {
       errorCode: "SEARCH_INDEX_TASK_FAILED"
     });
     expect(SearchEngineTransportError).toBeDefined();
+  });
+
+  it("reads global index-swap tasks through the diagnostics client", async () => {
+    const runtimeClient = {
+      tasks: {
+        getTasks: vi.fn()
+      }
+    };
+    const diagnosticsClient = {
+      tasks: {
+        getTasks: vi.fn(async () => ({
+          results: [{
+            uid: 29,
+            status: "succeeded",
+            details: {
+              swaps: [{
+                indexes: ["focowiki_content_active", "focowiki_content_staging"]
+              }]
+            }
+          }]
+        }))
+      }
+    };
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "prefix-scoped-runtime-key",
+        metricsApiKey: "global-diagnostics-key",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      {
+        client: runtimeClient as never,
+        diagnosticsClient: diagnosticsClient as never
+      }
+    );
+
+    await expect(transport.findIndexSwapTask?.({
+      pairs: [{
+        left: "focowiki_content_active",
+        right: "focowiki_content_staging"
+      }]
+    })).resolves.toEqual({
+      taskUid: 29,
+      status: "succeeded",
+      errorCode: null
+    });
+    expect(runtimeClient.tasks.getTasks).not.toHaveBeenCalled();
+    expect(diagnosticsClient.tasks.getTasks).toHaveBeenCalledOnce();
   });
 
   it("keeps missing indexes and documents available to idempotent lifecycle logic", async () => {

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
+import { readConfiguredSecret } from "./security/configured-secret.js";
 
 const DEFAULT_DATABASE_POOL_MAX = 10;
 const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
@@ -780,8 +781,18 @@ function parseSearchConfig(
   issues: string[]
 ): NonNullable<RuntimeConfig["search"]> {
   const endpoint = optionalString(env, "MEILI_HOST") ?? "http://127.0.0.1:7700";
-  const apiKey = optionalString(env, "MEILI_API_KEY") ?? "";
-  const metricsApiKey = optionalString(env, "MEILI_METRICS_API_KEY") ?? "";
+  const apiKey = readConfiguredSecret({
+    env,
+    valueField: "MEILI_API_KEY",
+    fileField: "MEILI_API_KEY_FILE",
+    issues
+  });
+  const metricsApiKey = readConfiguredSecret({
+    env,
+    valueField: "MEILI_METRICS_API_KEY",
+    fileField: "MEILI_METRICS_API_KEY_FILE",
+    issues
+  });
   const indexPrefix = optionalString(env, "MEILI_INDEX_PREFIX") ?? "focowiki";
 
   try {

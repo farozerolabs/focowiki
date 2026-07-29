@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { parseRuntimeConfig } from "../src/config.js";
@@ -241,6 +244,35 @@ describe("parseRuntimeConfig", () => {
         MEILI_METRICS_API_KEY: ""
       })
     ).toThrow(/MEILI_METRICS_API_KEY/);
+  });
+
+  it("loads production search credentials from runtime secret files", () => {
+    const directory = mkdtempSync(join(tmpdir(), "focowiki-search-secrets-"));
+    const apiKeyFile = join(directory, "meilisearch-api-key");
+    const metricsKeyFile = join(directory, "meilisearch-metrics-key");
+    writeFileSync(apiKeyFile, "runtime-search-key\n", { mode: 0o600 });
+    writeFileSync(metricsKeyFile, "runtime-metrics-key\n", { mode: 0o600 });
+
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      APP_ENV: "production",
+      ADMIN_PASSWORD: "production-admin-password",
+      ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+      ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+      PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+      ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+      S3_ACCESS_KEY_ID: "production-storage-access",
+      S3_SECRET_ACCESS_KEY: "production-storage-secret",
+      MEILI_API_KEY: "",
+      MEILI_METRICS_API_KEY: "",
+      MEILI_API_KEY_FILE: apiKeyFile,
+      MEILI_METRICS_API_KEY_FILE: metricsKeyFile
+    });
+
+    expect(config.search).toMatchObject({
+      apiKey: "runtime-search-key",
+      metricsApiKey: "runtime-metrics-key"
+    });
   });
 
   it("parses conservative security defaults for local deployments", () => {

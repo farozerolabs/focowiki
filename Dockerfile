@@ -35,6 +35,7 @@ COPY deploy/docker/api-entrypoint.sh /usr/local/bin/focowiki-api-entrypoint
 RUN chmod +x /usr/local/bin/focowiki-api-entrypoint
 RUN test -f apps/api/runtime/main.mjs \
     && test -f apps/api/runtime/migration-preflight.mjs \
+    && test -f apps/api/runtime/meilisearch-bootstrap.mjs \
     && test -f apps/api/runtime/source-worker.mjs \
     && test -f apps/api/runtime/publication-worker.mjs \
     && test -f apps/api/runtime/projection-repair-worker.mjs \

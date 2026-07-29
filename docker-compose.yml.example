@@ -7,8 +7,10 @@ x-docker-logging: &docker-logging
 x-runtime-environment: &runtime-environment
   MEILI_HOST: ${MEILI_HOST:?Set MEILI_HOST in .env}
   MEILI_MASTER_KEY: ""
-  MEILI_API_KEY: ${MEILI_API_KEY:?Set MEILI_API_KEY in .env}
-  MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:?Set MEILI_METRICS_API_KEY in .env}
+  MEILI_API_KEY: ""
+  MEILI_METRICS_API_KEY: ""
+  MEILI_API_KEY_FILE: /app/runtime-secrets/meilisearch-api-key
+  MEILI_METRICS_API_KEY_FILE: /app/runtime-secrets/meilisearch-metrics-key
   MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
 
 services:
@@ -187,6 +189,25 @@ services:
     logging: *docker-logging
     restart: unless-stopped
 
+  meilisearch-init:
+    image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
+    command: ["node", "apps/api/runtime/meilisearch-bootstrap.mjs"]
+    environment:
+      MEILI_HOST: ${MEILI_HOST:?Set MEILI_HOST in .env}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}
+      MEILI_API_KEY: ${MEILI_API_KEY:-}
+      MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY:-}
+      MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
+      MEILI_SECRET_DIR: /app/runtime-secrets
+    volumes:
+      - ./runtime-secrets:/app/runtime-secrets
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+        required: false
+    logging: *docker-logging
+    restart: "no"
+
   migrate:
     image: ${FOCOWIKI_API_IMAGE:-ghcr.io/farozerolabs/focowiki-api:latest}
     command: ["node", "apps/api/runtime/migrate.mjs"]
@@ -197,6 +218,8 @@ services:
       - ./logs:/app/logs
       - ./runtime-secrets:/app/runtime-secrets
     depends_on:
+      meilisearch-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

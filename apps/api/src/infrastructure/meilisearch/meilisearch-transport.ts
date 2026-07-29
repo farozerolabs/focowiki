@@ -27,6 +27,7 @@ const SUPPORTED_MEILISEARCH_MINOR = 51;
 
 type TransportDependencies = {
   client?: MeilisearchClient;
+  diagnosticsClient?: MeilisearchClient;
   fetch?: typeof globalThis.fetch;
   sleep?: (milliseconds: number) => Promise<void>;
 };
@@ -41,6 +42,17 @@ export function createMeilisearchTransport(
     timeout: config.timeoutMs,
     clientAgents: ["Focowiki"]
   });
+  const diagnosticsClient = dependencies.diagnosticsClient
+    ?? (
+      config.metricsApiKey && config.metricsApiKey !== config.apiKey
+        ? new Meilisearch({
+            host: config.endpoint,
+            apiKey: config.metricsApiKey,
+            timeout: config.timeoutMs,
+            clientAgents: ["Focowiki"]
+          })
+        : client
+    );
   const fetchImpl = dependencies.fetch ?? globalThis.fetch;
   const sleep = dependencies.sleep ?? wait;
 
@@ -49,7 +61,7 @@ export function createMeilisearchTransport(
       return execute(async () => {
         const result = await client.health();
         if (result.status !== "available") return { available: false };
-        const version = await client.getVersion();
+        const version = await diagnosticsClient.getVersion();
         assertSupportedVersion(version.pkgVersion);
         return { available: true };
       });
@@ -175,7 +187,7 @@ export function createMeilisearchTransport(
     },
 
     async findIndexSwapTask(input) {
-      const tasks = await execute(() => client.tasks.getTasks({
+      const tasks = await execute(() => diagnosticsClient.tasks.getTasks({
         types: ["indexSwap"],
         statuses: ["enqueued", "processing", "succeeded"],
         limit: 100
@@ -194,7 +206,9 @@ export function createMeilisearchTransport(
     },
 
     async getTask(taskUid) {
-      const task = await execute(() => client.tasks.getTask(taskUid));
+      const task = await execute(
+        () => diagnosticsClient.tasks.getTask(taskUid)
+      );
       return normalizeTask(task);
     },
 
