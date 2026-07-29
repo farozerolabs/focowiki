@@ -10,7 +10,9 @@ import { closeDatabaseClient, createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
 import { createPostgresLexicalRebuildWorkRepository } from "./infrastructure/postgres/lexical-rebuild-work-repository.js";
-import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
+import {
+  createRuntimeMeilisearchTransport
+} from "./infrastructure/meilisearch/runtime-meilisearch-transport.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
 import {
   createPostgresSearchProjectionDocumentRepository
@@ -94,10 +96,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
     if (!config.search) {
       throw new Error("Search service configuration is unavailable");
     }
-    const searchTransport = createMeilisearchTransport({
-      endpoint: config.search.endpoint,
-      apiKey: config.search.apiKey,
-      metricsApiKey: config.search.metricsApiKey,
+    const searchTransport = createRuntimeMeilisearchTransport(config.search, {
       timeoutMs: 30_000,
       maxAttempts: 2,
       retryDelayMs: 250
@@ -342,10 +341,7 @@ async function runHealthcheck(): Promise<void> {
     if (!config.search) {
       throw new Error("Search service configuration is unavailable");
     }
-    const search = createMeilisearchTransport({
-      endpoint: config.search.endpoint,
-      apiKey: config.search.apiKey,
-      metricsApiKey: config.search.metricsApiKey,
+    const search = createRuntimeMeilisearchTransport(config.search, {
       timeoutMs: 5_000,
       maxAttempts: 1,
       retryDelayMs: 0

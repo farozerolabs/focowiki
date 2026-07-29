@@ -320,7 +320,8 @@ export function createPostgresKnowledgeBaseIndexMaintenanceRepository(
                (
                  knowledge_base.active_generation_id IS NOT NULL
                  AND (
-                   active_generation.search_schema_version IS NULL
+                   coalesce(search_state.maintenance_required, true)
+                   OR active_generation.search_schema_version IS NULL
                    OR active_generation.tokenizer_contract_version IS NULL
                    OR active_generation.search_segmentation_version IS NULL
                    OR NOT EXISTS (
@@ -364,6 +365,8 @@ export function createPostgresKnowledgeBaseIndexMaintenanceRepository(
         FROM focowiki.knowledge_bases knowledge_base
         LEFT JOIN focowiki.publication_generations active_generation
           ON active_generation.id = knowledge_base.active_generation_id
+        LEFT JOIN focowiki.knowledge_base_search_states search_state
+          ON search_state.knowledge_base_id = knowledge_base.id
         LEFT JOIN LATERAL (
           SELECT latest.*
           FROM focowiki.knowledge_base_index_maintenance_requests latest

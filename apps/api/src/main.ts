@@ -26,7 +26,9 @@ import {
   createNodeJiebaTokenizer,
   getNodeJiebaRuntimeEvidence
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
-import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
+import {
+  createRuntimeMeilisearchTransport
+} from "./infrastructure/meilisearch/runtime-meilisearch-transport.js";
 import { createSearchRetrieval } from "./search/search-retrieval.js";
 import { createActiveSearch } from "./search/active-search.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
@@ -54,9 +56,7 @@ await runtimeSettings.ensureBootstrapped();
 const activeSearch = config.search
   ? createActiveSearch({
       retrieval: createSearchRetrieval({
-        transport: createMeilisearchTransport({
-          endpoint: config.search.endpoint,
-          apiKey: config.search.apiKey,
+        transport: createRuntimeMeilisearchTransport(config.search, {
           timeoutMs: 3_000,
           maxAttempts: 2,
           retryDelayMs: 250

@@ -255,6 +255,11 @@ describeDatabase("knowledge-base index maintenance compatible migration", () => 
         )
       `;
     }
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET maintenance_required = false
+      WHERE knowledge_base_id = 'kb-healthy'
+    `;
 
     await expect(applyMigrations(sql)).resolves.toBeUndefined();
 

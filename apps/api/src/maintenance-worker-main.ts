@@ -15,7 +15,9 @@ import {
 } from "./infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
 import { createPostgresLexicalRebuildRepository } from "./infrastructure/postgres/lexical-rebuild-repository.js";
 import { createPostgresMaintenanceProgressRepository } from "./infrastructure/postgres/maintenance-progress-repository.js";
-import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
+import {
+  createRuntimeMeilisearchTransport
+} from "./infrastructure/meilisearch/runtime-meilisearch-transport.js";
 import {
   createPostgresSearchProjectionDocumentRepository
 } from "./infrastructure/postgres/search-projection-document-repository.js";
@@ -139,9 +141,7 @@ async function runMaintenanceWorker(): Promise<void> {
       throw new Error("Search service configuration is unavailable");
     }
     const searchConfig = config.search;
-    const searchTransport = createMeilisearchTransport({
-      endpoint: searchConfig.endpoint,
-      apiKey: searchConfig.apiKey,
+    const searchTransport = createRuntimeMeilisearchTransport(searchConfig, {
       timeoutMs: 30_000,
       maxAttempts: 2,
       retryDelayMs: 250
@@ -634,9 +634,7 @@ async function runHealthcheck(): Promise<void> {
     if (!config.search) {
       throw new Error("Search service configuration is unavailable");
     }
-    const search = createMeilisearchTransport({
-      endpoint: config.search.endpoint,
-      apiKey: config.search.apiKey,
+    const search = createRuntimeMeilisearchTransport(config.search, {
       timeoutMs: 5_000,
       maxAttempts: 1,
       retryDelayMs: 0
