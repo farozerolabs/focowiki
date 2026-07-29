@@ -5,6 +5,9 @@ import type {
 } from "../application/ports/generation-cleanup-repository.js";
 import { RoleJobFailure, RoleJobReschedule, type RoleJobRecord } from "../domain/role-job.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type {
+  SearchProjectionCleanup
+} from "../search/search-projection-cleanup.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { deleteStorageObjectBatch } from "./storage-object-deletion.js";
 
@@ -19,6 +22,7 @@ export function createHardDeleteJobProcessor(input: {
   cleanup: GenerationCleanupRepository;
   storage: StorageAdapter;
   redis: Pick<RedisCoordinator, "clearKnowledgeBaseRuntimeKeys" | "clearSourceFileRuntimeKeys">;
+  search?: SearchProjectionCleanup;
   settings: HardDeleteJobSettings;
   now?: () => Date;
 }) {
@@ -86,6 +90,13 @@ export function createHardDeleteJobProcessor(input: {
       if (remainingObjectKeys.length > 0) {
         throw continuation(now(), input.settings.continuationDelayMs);
       }
+    }
+
+    if (target.kind === "knowledge_base") {
+      await input.search?.deleteKnowledgeBase({
+        knowledgeBaseId: target.knowledgeBaseId,
+        correlation: job.id
+      });
     }
 
     const purge = await input.cleanup.purgeTargetBatch({

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { RuntimeConfig } from "../config.js";
 import type {
   AdminRepositories,
@@ -63,7 +63,6 @@ import type {
 } from "../application/ports/active-generation-read-repository.js";
 import {
   createActiveReadCacheScope,
-  createActiveReadPageCacheId
 } from "../active-read-cache-scope.js";
 import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
 import {
@@ -72,7 +71,20 @@ import {
   toDeveloperActiveSearchResult,
   toDeveloperActiveTreeEntry
 } from "./active-generation-serializers.js";
-import { loadGenerationScopedPage } from "./generation-scoped-page-cache.js";
+import {
+  SearchCursorIdentityError,
+  createSearchCursorScope,
+  createSearchRequestIdentity,
+  createStoredSearchCursor,
+  validateStoredSearchCursor,
+  type SearchRankCursor,
+  type StoredSearchCursor
+} from "./search-pagination.js";
+import { loadSearchPage } from "../redis/search-page-cache.js";
+import { presentDeveloperSearchItems } from "./search-presentation.js";
+import { SEARCH_RETRIEVAL_VERSION } from "../search/search-retrieval.js";
+import { SEARCH_FUSION_VERSION } from "../search/rank-fusion.js";
+import { executeDeveloperSearch } from "./search-errors.js";
 
 const ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS = 30;
 
@@ -414,55 +426,80 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         : normalizeGraphSearchQuery(input.query);
       const queryContext = createFileSearchQueryContext(input, normalizedQuery);
       const nextRequestTemplates = createFileSearchNextRequestTemplates(input.knowledgeBaseId);
-      const cursorScope = [
-        "developer-openapi:generation-search",
-        input.knowledgeBaseId,
-        normalizedQuery,
-        input.scope,
-        input.fileKind ?? "all",
-        input.mode,
-        input.graphDepth,
-        input.graphFanout
-      ].join(":");
-      const storedCursor = await readCursor<GenerationCursorEnvelope<{
-        score: number;
-        recordId: string;
-      }>>(redis, cursorScope, input.cursor);
-      const result = await requireActiveGenerationReads().withActiveGeneration(
-        input.knowledgeBaseId,
-        async (scope) => {
-          assertCursorGeneration(storedCursor, scope.generationId);
-          const cacheScope = createActiveReadCacheScope({
-            authorizationScope: "developer-openapi",
-            operation: "file-search",
+      const searchSettings = (await services.runtimeSettings?.getSnapshot())?.search;
+      const settingsRevision = createSearchSettingsRevision(searchSettings ?? {});
+      const result = await executeDeveloperSearch(() =>
+        requireActiveGenerationReads().withActiveGeneration(
+          input.knowledgeBaseId,
+          async (scope) => {
+          const identity = createSearchRequestIdentity({
             knowledgeBaseId: input.knowledgeBaseId,
             generationId: scope.generationId,
-            filters: {
-              query: normalizedQuery,
-              scope: input.scope,
-              fileKind: input.fileKind,
-              mode: input.mode,
-              graphDepth: input.graphDepth,
-              graphFanout: input.graphFanout
+            normalizedQuery,
+            mode: input.mode,
+            scope: input.scope,
+            fileKind: input.fileKind,
+            graphDepth: input.graphDepth,
+            graphFanout: input.graphFanout,
+            activeSearchEpoch: scope.searchIdentity.activeEpoch,
+            contentSchemaVersion: scope.searchIdentity.contentSchemaVersion,
+            graphSchemaVersion: scope.searchIdentity.graphSchemaVersion,
+            contentSettingsChecksum: scope.searchIdentity.contentSettingsChecksum,
+            graphSettingsChecksum: scope.searchIdentity.graphSettingsChecksum,
+            retrievalVersion: SEARCH_RETRIEVAL_VERSION,
+            fusionVersion: SEARCH_FUSION_VERSION,
+            settingsRevision
+          });
+          const cursorScope = createSearchCursorScope(identity);
+          let storedCursor: StoredSearchCursor | null;
+          try {
+            storedCursor = await readCursor<StoredSearchCursor>(
+              redis,
+              cursorScope,
+              input.cursor
+            );
+          } catch (error) {
+            if (input.cursor) {
+              throw validationError(
+                "Search cursor is invalid or stale. Restart the search without a cursor.",
+                { field: "cursor" }
+              );
             }
-          });
-          const pageId = createActiveReadPageCacheId({
-            cursorToken: storedCursor?.value
-              ? JSON.stringify(storedCursor.value)
-              : null,
-            limit: input.limit
-          });
-          const cachedPage = await loadGenerationScopedPage({
+            throw error;
+          }
+          let rankedCursor: SearchRankCursor | null = null;
+          if (storedCursor) {
+            try {
+              rankedCursor = validateStoredSearchCursor({
+                stored: storedCursor,
+                expectedIdentity: identity
+              });
+            } catch (error) {
+              if (error instanceof SearchCursorIdentityError) {
+                throw validationError(
+                  "Search cursor is invalid or stale. Restart the search without a cursor.",
+                  { field: "cursor" }
+                );
+              }
+              throw error;
+            }
+          }
+          const cachedPage = await loadSearchPage({
             redis,
-            scope: cacheScope,
-            pageId,
-            ttlSeconds: ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS,
+            identity,
+            cursor: rankedCursor,
+            limit: input.limit,
+            ttlSeconds: searchSettings?.cacheTtlSeconds
+              ?? ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS,
             load: async () => {
               const page = await scope.search({
                 query: normalizedQuery,
                 mode: input.mode,
+                scope: input.scope,
+                fileKind: input.fileKind,
+                graphDepth: input.graphDepth,
                 limit: input.limit,
-                cursor: storedCursor?.value ?? null
+                cursor: rankedCursor
               });
               const relatedBySource = input.mode === "file"
                 ? new Map<string, ActiveGenerationProjection[]>()
@@ -473,37 +510,70 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
                     limitPerSource: input.graphFanout
                   });
               return {
-                page,
+                items: page.items,
+                nextCursor: page.nextCursor,
                 relatedBySource: [...relatedBySource.entries()]
               };
-            }
+            },
+            isSuccessful: (page) => page.items.length > 0,
+            revalidate: (page) => scope.revalidateSearchPage(page.items)
           });
-          const page = cachedPage.page;
+          const page = {
+            items: cachedPage.items,
+            nextCursor: cachedPage.nextCursor
+          };
           const relatedBySource = new Map(cachedPage.relatedBySource);
-          return { generationId: scope.generationId, page, relatedBySource };
-        }
+          return {
+            generationId: scope.generationId,
+            page,
+            relatedBySource,
+            cursorScope,
+            identity
+          };
+          }
+        )
       );
       if (!result) {
         return createUnavailableSearchResponse(queryContext, nextRequestTemplates, input);
       }
       const nextCursor = await writeCursor(
         redis,
-        cursorScope,
+        result.cursorScope,
         result.page.nextCursor
-          ? { generationId: result.generationId, value: result.page.nextCursor }
+          ? createStoredSearchCursor({
+              identity: result.identity,
+              cursor: {
+                ...result.page.nextCursor,
+                queryHash: result.identity.queryHash,
+                activeSearchEpoch: result.identity.activeSearchEpoch,
+                contentSchemaVersion: result.identity.contentSchemaVersion,
+                graphSchemaVersion: result.identity.graphSchemaVersion,
+                retrievalVersion: result.identity.retrievalVersion,
+                fusionVersion: result.identity.fusionVersion,
+                settingsRevision: result.identity.settingsRevision
+              },
+              expiresAt: new Date(
+                Date.now() + config.pagination.cursorTtlSeconds * 1_000
+              ).toISOString()
+            })
           : null,
         config.pagination.cursorTtlSeconds
       );
-      const items = result.page.items.map((item) =>
-        toDeveloperActiveSearchResult(input.knowledgeBaseId, item, {
-          mode: input.mode,
-          depth: input.graphDepth,
-          relationships: item.sourceFileId
-            ? result.relatedBySource.get(item.sourceFileId) ?? []
-            : []
-        })
+      const items = presentDeveloperSearchItems(
+        result.page.items.map((item) =>
+          toDeveloperActiveSearchResult(input.knowledgeBaseId, item, {
+            mode: input.mode,
+            depth: input.graphDepth,
+            relationships: item.sourceFileId
+              ? result.relatedBySource.get(item.sourceFileId) ?? []
+              : []
+          })
+        )
       );
       const status = items.length > 0 ? "ok" : "no_candidates";
+      const indexedRelationshipCount = input.mode === "file"
+        ? 0
+        : countDistinctRelatedRecords(result.relatedBySource);
       return {
         generationId: result.generationId,
         query: queryContext,
@@ -515,7 +585,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         graphSummary: {
           available: input.mode !== "file",
           indexedDocumentCount: items.length,
-          indexedRelationshipCount: 0,
+          indexedRelationshipCount,
           depth: input.graphDepth,
           fanout: input.graphFanout
         },
@@ -1027,6 +1097,16 @@ function noCandidateSearchHints(): Pick<DeveloperFileSearchResponse, "message" |
   };
 }
 
+function countDistinctRelatedRecords(
+  relatedBySource: Map<string, ActiveGenerationProjection[]>
+): number {
+  return new Set(
+    [...relatedBySource.values()].flatMap((records) =>
+      records.map((record) => record.recordId)
+    )
+  ).size;
+}
+
 function createFileSearchQueryContext(
   input: {
     query: string;
@@ -1070,6 +1150,25 @@ function createFileSearchNextRequestTemplates(
     sourceFileStatusById: `${base}/source-files/{sourceFileId}`,
     sourceFileEventsById: `${base}/source-files/{sourceFileId}/events`
   };
+}
+
+function createSearchSettingsRevision(settings: object): string {
+  return createHash("sha256")
+    .update(canonicalJson(settings))
+    .digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function createFileSearchResultSummary(

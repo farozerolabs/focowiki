@@ -161,6 +161,87 @@ describeDatabase("publication validation repository integration", () => {
     })).resolves.toEqual([]);
   });
 
+  it("validates projection deltas against the candidate predecessor after active generation drift", async () => {
+    const predecessorGenerationId = "generation-publication-validation-predecessor";
+    const driftedActiveGenerationId = "generation-publication-validation-drifted-active";
+    await completeNavigationAndGraphSummary(sql, {
+      knowledgeBaseId,
+      generationId
+    });
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, activated_at
+      ) VALUES
+        (
+          ${predecessorGenerationId}, ${knowledgeBaseId}, NULL,
+          'superseded', 2, now()
+        ),
+        (
+          ${driftedActiveGenerationId}, ${knowledgeBaseId},
+          ${predecessorGenerationId}, 'active', 2, now()
+        )
+    `;
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET predecessor_generation_id = ${predecessorGenerationId}
+      WHERE id = ${generationId}
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${driftedActiveGenerationId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_projection_records (
+        generation_id, knowledge_base_id, projection_kind, record_id,
+        action, shard_key, logical_path, parent_path, sort_key, payload_json
+      )
+      SELECT ${predecessorGenerationId}, knowledge_base_id, projection_kind,
+             record_id, action, shard_key, logical_path, parent_path,
+             sort_key, payload_json
+      FROM focowiki.generation_projection_records
+      WHERE generation_id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_tree_directory_stats (
+        knowledge_base_id, generation_id, path, parent_path,
+        direct_entry_count, direct_directory_count, direct_file_count,
+        descendant_file_count
+      )
+      SELECT knowledge_base_id, ${predecessorGenerationId}, path, parent_path,
+             direct_entry_count, direct_directory_count, direct_file_count,
+             descendant_file_count
+      FROM focowiki.generation_tree_directory_stats
+      WHERE generation_id = ${generationId}
+    `;
+    await sql`
+      INSERT INTO focowiki.generation_graph_summaries (
+        knowledge_base_id, generation_id, node_count, edge_count,
+        graph_index_available
+      ) VALUES (
+        ${knowledgeBaseId}, ${predecessorGenerationId}, 1, 1, true
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.active_projection_records (
+        knowledge_base_id, projection_kind, record_id,
+        last_changed_generation_id, shard_key, logical_path,
+        parent_path, sort_key, payload_json
+      ) VALUES (
+        ${knowledgeBaseId}, 'tree', 'directory:',
+        ${driftedActiveGenerationId}, 'tree/v1/root', 'pages',
+        '', 'pages', '{"kind":"directory"}'::jsonb
+      )
+    `;
+
+    await expect(repository.validateChangedClosure({
+      knowledgeBaseId,
+      generationId,
+      issueLimit: 50
+    })).resolves.toEqual([]);
+  });
+
   it("validates rebuilt projection repair graph summaries from staged graph records", async () => {
     const baseGenerationId = "generation-publication-validation-base";
     await completeNavigationAndGraphSummary(sql, {

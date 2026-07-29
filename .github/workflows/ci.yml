@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+      FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
+      FOCOWIKI_TEST_MEILISEARCH_API_KEY: focowiki-development-master-key
       REDIS_URL: redis://127.0.0.1:56379/0
 
     services:
@@ -45,6 +47,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      meilisearch:
+        image: getmeili/meilisearch:v1.51.0
+        env:
+          MEILI_ENV: production
+          MEILI_MASTER_KEY: focowiki-development-master-key
+          MEILI_NO_ANALYTICS: "true"
+          MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
+        ports:
+          - 57700:7700
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:7700/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     steps:
       - name: Checkout

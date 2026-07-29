@@ -42,6 +42,11 @@ describe("Developer OpenAPI active generation reads", () => {
     expect(search.body).toMatchObject({
       generationId: "generation-a",
       searchStatus: "ok",
+      graphSummary: {
+        available: true,
+        indexedDocumentCount: 1,
+        indexedRelationshipCount: 1
+      },
       items: [{
         fileId: "source-a",
         path: "pages/a.md",
@@ -57,6 +62,11 @@ describe("Developer OpenAPI active generation reads", () => {
           ]
         }
       }]
+    });
+    expect(fixture.getLastSearchInput()).toMatchObject({
+      scope: "all",
+      fileKind: "page",
+      graphDepth: 1
     });
 
     const file = await getJson(
@@ -185,6 +195,29 @@ describe("Developer OpenAPI active generation reads", () => {
     expect(stale.status).toBe(422);
     expect(stale.body).toMatchObject({
       error: { code: "VALIDATION_ERROR" }
+    });
+  });
+
+  it("rejects a search cursor after the active search epoch changes", async () => {
+    const fixture = createFixture();
+    const path =
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=hybrid&limit=1`;
+    const first = await getJson(fixture.app, path);
+    expect(first.status).toBe(200);
+    const cursor = readString(first.body, "nextCursor");
+    expect(cursor).toBeTruthy();
+
+    fixture.setSearchEpoch(2);
+    const stale = await getJson(
+      fixture.app,
+      `${path}&cursor=${encodeURIComponent(cursor!)}`
+    );
+    expect(stale.status).toBe(422);
+    expect(stale.body).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: expect.stringContaining("Restart the search")
+      }
     });
   });
 
@@ -373,9 +406,11 @@ function createFixture(options: {
 } = {}) {
   const graphState = options.graphState ?? "available";
   let generationId = "generation-a";
+  let searchEpoch = 1;
   const treeParentPaths: string[] = [];
   let searchReadCount = 0;
   let relatedBatchReadCount = 0;
+  let lastSearchInput: Parameters<ActiveGenerationReadScope["search"]>[0] | null = null;
   const files = new Map([
     ["source-a", file("source-a", "pages/a.md", "generated/a")],
     ["source-b", file("source-b", "pages/b.md", "generated/b")],
@@ -401,9 +436,13 @@ function createFixture(options: {
         files,
         (parentPath) => treeParentPaths.push(parentPath),
         graphState,
-        () => { searchReadCount += 1; },
+        (searchInput) => {
+          searchReadCount += 1;
+          lastSearchInput = searchInput;
+        },
         () => { relatedBatchReadCount += 1; },
-        options.treeStatisticsUnavailable ?? false
+        options.treeStatisticsUnavailable ?? false,
+        searchEpoch
       ));
     }
   };
@@ -443,8 +482,12 @@ function createFixture(options: {
     treeParentPaths,
     getSearchReadCount: () => searchReadCount,
     getRelatedBatchReadCount: () => relatedBatchReadCount,
+    getLastSearchInput: () => lastSearchInput,
     setGeneration(value: string) {
       generationId = value;
+    },
+    setSearchEpoch(value: number) {
+      searchEpoch = value;
     }
   };
 }
@@ -454,9 +497,12 @@ function createScope(
   files: Map<string, ActiveGenerationFile>,
   recordTreeParentPath: (parentPath: string) => void = () => undefined,
   graphState: "available" | "empty" | "unavailable" = "available",
-  recordSearchRead: () => void = () => undefined,
+  recordSearchRead: (
+    input: Parameters<ActiveGenerationReadScope["search"]>[0]
+  ) => void = () => undefined,
   recordRelatedBatchRead: () => void = () => undefined,
-  treeStatisticsUnavailable = false
+  treeStatisticsUnavailable = false,
+  searchEpoch = 1
 ): ActiveGenerationReadScope {
   const tree = [
     projection(generationId, "source-a", "pages/a.md", "A"),
@@ -466,6 +512,13 @@ function createScope(
   return {
     knowledgeBaseId,
     generationId,
+    searchIdentity: {
+      activeEpoch: searchEpoch,
+      contentSchemaVersion: "content-v1",
+      graphSchemaVersion: "graph-v1",
+      contentSettingsChecksum: "a".repeat(64),
+      graphSettingsChecksum: "b".repeat(64)
+    },
     async findFileById(fileId) {
       const value = files.get(fileId);
       return value ? { ...value, generationId } : null;
@@ -511,13 +564,18 @@ function createScope(
       return new Map(paths.map((path) => [path, []]));
     },
     async search(input) {
-      recordSearchRead();
+      recordSearchRead(input);
       return {
         items: [input.mode === "graph"
           ? { ...tree[0]!, projectionKind: "graph_node" }
           : tree[0]!],
-        nextCursor: null
+        nextCursor: input.cursor
+          ? null
+          : { score: 1, exactPriority: 0, recordId: "source-a" }
       };
+    },
+    async revalidateSearchPage() {
+      return true;
     },
     async listRelated(input) {
       if (input.sourceFileId === "source-a") return { items: [relation], nextCursor: null };

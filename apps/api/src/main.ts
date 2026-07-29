@@ -26,6 +26,10 @@ import {
   createNodeJiebaTokenizer,
   getNodeJiebaRuntimeEvidence
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
+import { createMeilisearchTransport } from "./infrastructure/meilisearch/meilisearch-transport.js";
+import { createSearchRetrieval } from "./search/search-retrieval.js";
+import { createActiveSearch } from "./search/active-search.js";
+import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 
 loadLocalEnvFile();
 
@@ -37,7 +41,52 @@ await assertRuntimeSchemaGeneration(sql);
 const tokenizer = createNodeJiebaTokenizer();
 logger.info("Lexical tokenizer initialized", getNodeJiebaRuntimeEvidence());
 const repositories = createPostgresAdminRepositories(sql, { tokenizer });
-const activeGenerationReads = createPostgresActiveGenerationReadRepository(sql, tokenizer);
+const redis = await connectApiRedis({ config, logger });
+if (!repositories.runtimeSettings) {
+  throw new Error("Runtime settings repository is unavailable");
+}
+const runtimeSettings = createRuntimeSettingsService({
+  config,
+  repository: repositories.runtimeSettings,
+  redis
+});
+await runtimeSettings.ensureBootstrapped();
+const activeSearch = config.search
+  ? createActiveSearch({
+      retrieval: createSearchRetrieval({
+        transport: createMeilisearchTransport({
+          endpoint: config.search.endpoint,
+          apiKey: config.search.apiKey,
+          timeoutMs: 3_000,
+          maxAttempts: 2,
+          retryDelayMs: 250
+        }),
+        indexPrefix: config.search.indexPrefix,
+        getSettings: async () => {
+          const settings = (await runtimeSettings.getSnapshot()).search;
+          return {
+            branchCandidateLimit: settings.branchCandidateLimit,
+            fusedCandidateLimit: settings.fusedCandidateLimit,
+            cropLength: settings.cropLength
+          };
+        }
+      }),
+      getSettings: async () => {
+        const settings = (await runtimeSettings.getSnapshot()).search;
+        return {
+          overfetchFactor: settings.overfetchFactor,
+          fusedCandidateLimit: settings.fusedCandidateLimit,
+          graphNeighborLimit: settings.graphNeighborLimit,
+          requestTimeoutMs: settings.requestTimeoutMs
+        };
+      }
+    })
+  : undefined;
+const activeGenerationReads = createPostgresActiveGenerationReadRepository(
+  sql,
+  tokenizer,
+  activeSearch
+);
 const roleJobs = createPostgresRoleJobRepository(sql);
 const publicationGenerations = createPostgresPublicationGenerationRepository(sql);
 const sourceDispatch = createPostgresSourceDispatchRepository(sql);
@@ -48,7 +97,6 @@ const objectProtection = createPostgresObjectProtectionRepository(sql);
 const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
 const knowledgeBaseIndexMaintenance =
   createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
-const redis = await connectApiRedis({ config, logger });
 const sharedServices = {
   config,
   storage,
@@ -63,6 +111,7 @@ const sharedServices = {
   objectProtection,
   maintenanceProgress,
   knowledgeBaseIndexMaintenance,
+  runtimeSettings,
   logger,
   ...(redis ? { redis } : {})
 };

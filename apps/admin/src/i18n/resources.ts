@@ -103,6 +103,7 @@ export const resources = {
           publication: "Publication",
           graph: "Graph",
           maintenance: "Maintenance",
+          search: "Search",
           models: "Models"
         },
         rateLimits: {
@@ -189,6 +190,10 @@ export const resources = {
               ready: "Ready"
             }
           }
+        },
+        search: {
+          title: "Search",
+          description: "Set bounded search requests, result candidates, indexing batches, retries, and cleanup."
         },
         maintenanceModes: {
           manual: "Manual",
@@ -332,6 +337,30 @@ export const resources = {
             lexicalRebuildDatabaseBatchSize: "Source files committed in one atomic lexical database batch. For an 8-core, 32-GiB server, recommended: 50. Range: 1 to 250 and no higher than claim batch size.",
             lexicalRebuildMaxInFlightSourceBytes: "Maximum source Markdown bytes held by active lexical reads. For an 8-core, 32-GiB server, recommended: 67108864 bytes (64 MiB). Range: 1048576 to 536870912."
           },
+          search: {
+            requestTimeoutMs: "Maximum end-to-end time for one search request. Recommended: 3000 ms.",
+            engineSearchCutoffMs: "Maximum time allocated to each bounded search-engine request. Keep it below the request timeout. Recommended: 1000 ms.",
+            branchCandidateLimit: "Maximum candidates collected by one exact, strict, regular, or relaxed retrieval branch. Recommended: 100 to 200.",
+            fusedCandidateLimit: "Maximum files retained after deterministic branch fusion. Keep it at or below the branch candidate limit. Recommended: 50 to 100.",
+            overfetchFactor: "Candidate multiplier used to refill a page after PostgreSQL removes stale or invisible results. Recommended: 2 to 3.",
+            graphSeedLimit: "Maximum graph seed files retrieved before relationship traversal. Recommended: 50 to 100.",
+            graphNeighborLimit: "Maximum accepted neighbors expanded from each graph seed. Recommended: 10 to 20.",
+            cacheTtlSeconds: "Time to keep successful bounded search pages in Redis. Recommended: 10 to 30 seconds.",
+            indexBatchDocumentCount: "Maximum search documents submitted in one indexing batch. Recommended: 500.",
+            indexBatchCompressedBytes: "Maximum gzip-compressed bytes submitted in one indexing batch. Recommended: 8388608 bytes (8 MiB).",
+            maxInFlightTasks: "Maximum indexing tasks waiting for completion at the same time. Recommended: 4 to 8.",
+            engineQueueLatencyLimitMs: "Pause new indexing submissions when the search task queue latency exceeds this value. Accepted tasks continue to be checked. Recommended: 30000 ms.",
+            engineResidentMemoryLimitBytes: "Pause new indexing submissions when search service resident memory exceeds this value. Recommended: 3221225472 bytes (3 GiB) for the default 2 GiB indexing-memory limit.",
+            engineDatabaseSizeLimitBytes: "Pause new indexing submissions when the search database exceeds this disk budget. Set it below the storage capacity reserved for search data. Recommended: 107374182400 bytes (100 GiB).",
+            engineTaskQueueSizeLimitBytes: "Pause new indexing submissions when the durable search task queue exceeds this byte budget. Recommended: 536870912 bytes (512 MiB).",
+            taskPollIntervalMs: "Interval between checks for an accepted indexing task. Recommended: 500 to 1000 ms.",
+            taskTimeoutMs: "Maximum time allowed for one indexing task before it is retried safely. Recommended: 600000 ms.",
+            maxAttempts: "Maximum attempts for a search indexing or cleanup work item. Recommended: 5.",
+            retryDelayMs: "Delay before retrying transient search indexing or cleanup failures. Recommended: 2000 to 10000 ms.",
+            cleanupBatchSize: "Maximum stale search documents removed in one cleanup batch. Recommended: 500 to 1000.",
+            stagingRetentionHours: "Hours to retain failed or superseded staging indexes for bounded diagnosis. Recommended: 24 hours.",
+            cropLength: "Maximum evidence excerpt length requested for each search hit before public response limits are applied. Recommended: 800 to 1200 characters."
+          },
           models: {
             displayName: "Admin-facing model name. Recommended: include provider and usage.",
             apiMode: "Provider protocol used for model requests. Use Responses API for OpenAI Structured Outputs providers; use Chat Completions API for providers that expose /chat/completions JSON output.",
@@ -436,6 +465,25 @@ export const resources = {
           lexicalRebuildClaimBatchSize: "Lexical claim batch size",
           lexicalRebuildDatabaseBatchSize: "Lexical database batch size",
           lexicalRebuildMaxInFlightSourceBytes: "Lexical in-flight source bytes",
+          requestTimeoutMs: "Search request timeout ms",
+          engineSearchCutoffMs: "Engine search cutoff ms",
+          branchCandidateLimit: "Branch candidate limit",
+          fusedCandidateLimit: "Fused candidate limit",
+          overfetchFactor: "Visibility refill factor",
+          graphSeedLimit: "Graph seed limit",
+          graphNeighborLimit: "Graph neighbor limit",
+          indexBatchDocumentCount: "Index batch document count",
+          indexBatchCompressedBytes: "Index batch compressed bytes",
+          maxInFlightTasks: "In-flight indexing tasks",
+          engineQueueLatencyLimitMs: "Queue latency limit ms",
+          engineResidentMemoryLimitBytes: "Resident memory limit bytes",
+          engineDatabaseSizeLimitBytes: "Search database limit bytes",
+          engineTaskQueueSizeLimitBytes: "Task queue limit bytes",
+          taskPollIntervalMs: "Task poll interval ms",
+          taskTimeoutMs: "Task timeout ms",
+          cleanupBatchSize: "Search cleanup batch size",
+          stagingRetentionHours: "Staging retention hours",
+          cropLength: "Search evidence crop length",
           rootSummaryLimit: "Root summary limit",
           directoryIndexMaxEntries: "Directory index entries per page",
           directoryIndexMaxBytes: "Directory index bytes per page",
@@ -993,6 +1041,7 @@ export const resources = {
           publication: "发布",
           graph: "图关系",
           maintenance: "维护",
+          search: "搜索",
           models: "模型"
         },
         rateLimits: {
@@ -1079,6 +1128,10 @@ export const resources = {
               ready: "已就绪"
             }
           }
+        },
+        search: {
+          title: "搜索",
+          description: "设置有界搜索请求、结果候选、索引批次、重试和清理参数。"
         },
         maintenanceModes: {
           manual: "手动维护",
@@ -1222,6 +1275,30 @@ export const resources = {
             lexicalRebuildDatabaseBatchSize: "单次原子数据库批次提交的来源文件数量。8 核 32 GiB 服务器推荐 50，允许范围 1 到 250，并且不能高于领取批次大小。",
             lexicalRebuildMaxInFlightSourceBytes: "词法重建读取期间允许驻留的 Markdown 正文字节总量。8 核 32 GiB 服务器推荐 67108864 字节，也就是 64 MiB，允许范围 1048576 到 536870912。"
           },
+          search: {
+            requestTimeoutMs: "单次搜索请求允许的端到端最长时间。推荐 3000 毫秒。",
+            engineSearchCutoffMs: "单个有界搜索引擎请求可使用的最长时间。该值应低于请求超时，推荐 1000 毫秒。",
+            branchCandidateLimit: "精确、严格、常规或宽松检索分支各自最多收集的候选数。推荐 100 到 200。",
+            fusedCandidateLimit: "确定性融合后最多保留的文件数。该值不得高于分支候选上限，推荐 50 到 100。",
+            overfetchFactor: "PostgreSQL 过滤过期或不可见结果后，用于补足页面的候选倍数。推荐 2 到 3。",
+            graphSeedLimit: "关系遍历前最多检索的图种子文件数。推荐 50 到 100。",
+            graphNeighborLimit: "从每个图种子扩展的已接受邻居上限。推荐 10 到 20。",
+            cacheTtlSeconds: "成功且有界的搜索页面在 Redis 中保留的时间。推荐 10 到 30 秒。",
+            indexBatchDocumentCount: "单个索引批次最多提交的搜索文档数。推荐 500。",
+            indexBatchCompressedBytes: "单个索引批次最多提交的 gzip 压缩字节数。推荐 8388608 字节，也就是 8 MiB。",
+            maxInFlightTasks: "同时等待完成的索引任务上限。推荐 4 到 8。",
+            engineQueueLatencyLimitMs: "搜索任务队列延迟超过该值时暂停提交新的索引任务，已提交任务仍会继续检查。推荐 30000 毫秒。",
+            engineResidentMemoryLimitBytes: "搜索服务驻留内存超过该值时暂停提交新的索引任务。默认索引内存上限为 2 GiB 时，推荐 3221225472 字节，也就是 3 GiB。",
+            engineDatabaseSizeLimitBytes: "搜索数据库超过该磁盘预算时暂停提交新的索引任务。该值应低于为搜索数据预留的存储容量，推荐 107374182400 字节，也就是 100 GiB。",
+            engineTaskQueueSizeLimitBytes: "搜索任务持久化队列超过该字节预算时暂停提交新的索引任务。推荐 536870912 字节，也就是 512 MiB。",
+            taskPollIntervalMs: "检查已接受索引任务状态的间隔。推荐 500 到 1000 毫秒。",
+            taskTimeoutMs: "单个索引任务允许的最长时间，超过后进入安全重试。推荐 600000 毫秒。",
+            maxAttempts: "搜索索引或清理工作项的最大尝试次数。推荐 5。",
+            retryDelayMs: "搜索索引或清理发生临时失败后的重试等待时间。推荐 2000 到 10000 毫秒。",
+            cleanupBatchSize: "单个清理批次最多删除的过期搜索文档数。推荐 500 到 1000。",
+            stagingRetentionHours: "失败或被替代的暂存索引保留时间，用于有界排查。推荐 24 小时。",
+            cropLength: "公共响应限制生效前，每个搜索命中请求的证据片段长度上限。推荐 800 到 1200 个字符。"
+          },
           models: {
             displayName: "管理后台展示的模型名称。推荐写清提供商和用途。",
             apiMode: "模型请求使用的接口协议。支持 OpenAI Structured Outputs 的服务商使用 Responses API；只提供 /chat/completions JSON 输出的服务商使用 Chat Completions API。",
@@ -1326,6 +1403,25 @@ export const resources = {
           lexicalRebuildClaimBatchSize: "词法领取批次大小",
           lexicalRebuildDatabaseBatchSize: "词法数据库批次大小",
           lexicalRebuildMaxInFlightSourceBytes: "词法在途正文字节数",
+          requestTimeoutMs: "搜索请求超时毫秒",
+          engineSearchCutoffMs: "引擎搜索截止毫秒",
+          branchCandidateLimit: "分支候选上限",
+          fusedCandidateLimit: "融合候选上限",
+          overfetchFactor: "可见性补足倍数",
+          graphSeedLimit: "图种子上限",
+          graphNeighborLimit: "图邻居上限",
+          indexBatchDocumentCount: "索引批次文档数",
+          indexBatchCompressedBytes: "索引批次压缩字节数",
+          maxInFlightTasks: "在途索引任务数",
+          engineQueueLatencyLimitMs: "队列延迟上限毫秒",
+          engineResidentMemoryLimitBytes: "驻留内存上限字节",
+          engineDatabaseSizeLimitBytes: "搜索数据库上限字节",
+          engineTaskQueueSizeLimitBytes: "任务队列上限字节",
+          taskPollIntervalMs: "任务轮询间隔毫秒",
+          taskTimeoutMs: "任务超时毫秒",
+          cleanupBatchSize: "搜索清理批次大小",
+          stagingRetentionHours: "暂存保留小时数",
+          cropLength: "搜索证据截取长度",
           rootSummaryLimit: "根摘要上限",
           directoryIndexMaxEntries: "目录索引单页条目数",
           directoryIndexMaxBytes: "目录索引单页字节数",

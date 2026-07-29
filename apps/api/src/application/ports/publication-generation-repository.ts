@@ -116,6 +116,7 @@ export type PublicationGenerationRepository = {
     rootManifestChecksumSha256: string;
     rootManifestObjectKey: string;
     activatedAt: string;
+    searchActivationRequired?: boolean;
   }) => Promise<boolean>;
   failGeneration: (input: {
     knowledgeBaseId: string;

@@ -19,6 +19,12 @@ import { createPostgresPublicationSubtaskRepository } from "./infrastructure/pos
 import { createPostgresPublicationActivationStateRepository } from "./infrastructure/postgres/publication-activation-state-repository.js";
 import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
+import {
+  createPostgresSearchProjectionDocumentRepository
+} from "./infrastructure/postgres/search-projection-document-repository.js";
+import {
+  createPostgresSearchProjectionStateRepository
+} from "./infrastructure/postgres/search-projection-state-repository.js";
 import { createRuntimeLogger } from "./logger.js";
 import { createBoundedRootWriter } from "./publication/bounded-root-writer.js";
 import { createDirectoryNavigationWriter } from "./publication/directory-navigation-writer.js";
@@ -43,6 +49,11 @@ import { createPublicationSubtaskRuntime } from "./worker/publication-subtask-ru
 import { resolvePublicationSubtaskWorkerSettings } from "./worker/publication-subtask-settings.js";
 import { createPublicationTerminalPhaseHandlers } from "./worker/publication-terminal-phase-handler.js";
 import { RoleJobReschedule } from "./domain/role-job.js";
+import {
+  ensureSearchProjectionWork,
+  readSearchProjectionCoordinationStatus
+} from "./search/search-indexing-coordinator.js";
+import { createSearchProjectionContract } from "./search/index-definitions.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -167,6 +178,51 @@ async function runPublicationWorker(): Promise<void> {
     const impacts = createPostgresPublicationImpactRepository(sql);
     const subtasks = createPostgresPublicationSubtaskRepository(sql);
     const validation = createPostgresPublicationValidationRepository(sql);
+    const searchStates = createPostgresSearchProjectionStateRepository(sql);
+    const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
+    const searchProjection = {
+      async prepare(input: {
+        knowledgeBaseId: string;
+        generationId: string;
+      }) {
+        if (!await isNormalGeneration(sql, input)) {
+          return { status: "compatibility" as const };
+        }
+        const snapshot = await runtimeSettings.getSnapshot();
+        return ensureSearchProjectionWork({
+          states: searchStates,
+          documents: searchDocuments,
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: input.generationId,
+          maintenanceRequestId: null,
+          forceCompatibilityCutover: false,
+          scanBatchSize: Math.min(
+            2_000,
+            Math.max(100, snapshot.search.indexBatchDocumentCount * 2)
+          ),
+          indexBatchDocumentCount: snapshot.search.indexBatchDocumentCount,
+          indexBatchCompressedBytes: snapshot.search.indexBatchCompressedBytes,
+          maxAttempts: snapshot.search.maxAttempts,
+          contract: createSearchProjectionContract({
+            searchCutoffMs: snapshot.search.engineSearchCutoffMs
+          }),
+          now: new Date().toISOString()
+        });
+      },
+      async status(input: {
+        knowledgeBaseId: string;
+        generationId: string;
+      }) {
+        if (!await isNormalGeneration(sql, input)) {
+          return { status: "compatibility" as const };
+        }
+        return readSearchProjectionCoordinationStatus({
+          states: searchStates,
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: input.generationId
+        });
+      }
+    };
     const publicationProcessor = createPublicationRoleProcessor({
       generations,
       impacts,
@@ -241,6 +297,7 @@ async function runPublicationWorker(): Promise<void> {
         references,
         immutableObjects,
         finalizers: [graphSummaryFinalizer, catalogWriter],
+        searchProjection,
         validationIssueLimit: 50
       }),
       resourceBudgets: {
@@ -271,6 +328,20 @@ async function runPublicationWorker(): Promise<void> {
     if (redisConnected) await redisClient.close();
     await closeDatabaseClient(sql);
   }
+}
+
+async function isNormalGeneration(
+  sql: ReturnType<typeof createDatabaseClient>,
+  input: { knowledgeBaseId: string; generationId: string }
+): Promise<boolean> {
+  const rows = await sql<Array<{ generation_kind: string }>>`
+    SELECT generation_kind
+    FROM focowiki.publication_generations
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND id = ${input.generationId}
+    LIMIT 1
+  `;
+  return rows[0]?.generation_kind === "normal";
 }
 
 async function runHealthcheck(): Promise<void> {

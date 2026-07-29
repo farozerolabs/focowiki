@@ -62,6 +62,199 @@ describeDatabase("publication generation repository integration", () => {
     await admin.end({ timeout: 5 });
   });
 
+  it("activates a required search epoch in the generation transaction", async () => {
+    const generationId = "generation-search-atomic";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind
+      ) VALUES (
+        ${generationId}, ${knowledgeBaseId}, NULL, 'validating',
+        2, 'normal'
+      )
+    `;
+
+    await expect(generations.activateGeneration({
+      knowledgeBaseId,
+      generationId,
+      expectedPredecessorGenerationId: null,
+      rootManifestChecksumSha256: "ab".repeat(32),
+      rootManifestObjectKey: "generated/search-atomic",
+      activatedAt: "2026-07-29T00:00:00.000Z",
+      searchActivationRequired: true
+    })).resolves.toBe(false);
+
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET pending_epoch = 1,
+          pending_activation_state = 'swapping',
+          pending_generation_id = ${generationId},
+          pending_content_schema_version = 'content-v1',
+          pending_graph_schema_version = 'graph-v1',
+          pending_content_settings_checksum = ${"a".repeat(64)},
+          pending_graph_settings_checksum = ${"b".repeat(64)}
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.search_projection_work (
+        id, knowledge_base_id, epoch, generation_id,
+        index_kind, work_kind, batch_ordinal, payload_checksum,
+        task_correlation, state, completed_at
+      ) VALUES
+        ('search-work-prepare-content', ${knowledgeBaseId}, 1, ${generationId},
+         'content', 'prepare_index', 0, ${"1".repeat(64)},
+         'search-work-prepare-content', 'succeeded', now()),
+        ('search-work-prepare-graph', ${knowledgeBaseId}, 1, ${generationId},
+         'graph', 'prepare_index', 0, ${"2".repeat(64)},
+         'search-work-prepare-graph', 'succeeded', now()),
+        ('search-work-validate-content', ${knowledgeBaseId}, 1, ${generationId},
+         'content', 'validate', 0, ${"3".repeat(64)},
+         'search-work-validate-content', 'succeeded', now()),
+        ('search-work-validate-graph', ${knowledgeBaseId}, 1, ${generationId},
+         'graph', 'validate', 0, ${"4".repeat(64)},
+         'search-work-validate-graph', 'succeeded', now()),
+        ('search-work-activate', ${knowledgeBaseId}, 1, ${generationId},
+         'content', 'activate', 0, ${"5".repeat(64)},
+         'search-work-activate', 'succeeded', now())
+    `;
+
+    await expect(generations.activateGeneration({
+      knowledgeBaseId,
+      generationId,
+      expectedPredecessorGenerationId: null,
+      rootManifestChecksumSha256: "ab".repeat(32),
+      rootManifestObjectKey: "generated/search-atomic",
+      activatedAt: "2026-07-29T00:00:01.000Z",
+      searchActivationRequired: true
+    })).resolves.toBe(true);
+
+    const rows = await sql<Array<{
+      active_generation_id: string;
+      route_state: string;
+      active_epoch: number;
+      pending_epoch: number | null;
+    }>>`
+      SELECT knowledge_base.active_generation_id,
+             search.route_state,
+             search.active_epoch::int AS active_epoch,
+             search.pending_epoch::int AS pending_epoch
+      FROM focowiki.knowledge_bases knowledge_base
+      JOIN focowiki.knowledge_base_search_states search
+        ON search.knowledge_base_id = knowledge_base.id
+      WHERE knowledge_base.id = ${knowledgeBaseId}
+    `;
+    expect(rows[0]).toEqual({
+      active_generation_id: generationId,
+      route_state: "meilisearch",
+      active_epoch: 1,
+      pending_epoch: null
+    });
+  });
+
+  it("keeps a superseded compatibility candidate available for durable cleanup", async () => {
+    const predecessorId = "generation-search-predecessor";
+    const nextGenerationId = "generation-search-next";
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, activated_at
+      ) VALUES (
+        ${predecessorId}, ${knowledgeBaseId}, NULL, 'active',
+        2, 'normal', now()
+      )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_bases
+      SET active_generation_id = ${predecessorId}
+      WHERE id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.publication_generations (
+        id, knowledge_base_id, predecessor_generation_id, state,
+        format_version, generation_kind, frozen_at
+      ) VALUES
+        (
+          ${nextGenerationId}, ${knowledgeBaseId}, ${predecessorId},
+          'validating', 2, 'normal', now()
+        )
+    `;
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET active_generation_id = ${predecessorId},
+          pending_epoch = 1,
+          pending_generation_id = ${predecessorId},
+          pending_content_schema_version = 'content-v1',
+          pending_graph_schema_version = 'graph-v1',
+          pending_content_settings_checksum = ${"a".repeat(64)},
+          pending_graph_settings_checksum = ${"b".repeat(64)}
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    await sql`
+      INSERT INTO focowiki.search_projection_work (
+        id, knowledge_base_id, epoch, generation_id,
+        index_kind, work_kind, batch_ordinal, payload_checksum,
+        task_correlation, state
+      ) VALUES
+        (
+          'search-work-superseded-documents', ${knowledgeBaseId}, 1,
+          ${predecessorId}, 'content', 'documents', 0,
+          ${"1".repeat(64)}, 'search-work-superseded-documents', 'queued'
+        ),
+        (
+          'search-work-superseded-cleanup', ${knowledgeBaseId}, 1,
+          ${predecessorId}, 'content', 'cleanup', 0,
+          ${"2".repeat(64)}, 'search-work-superseded-cleanup', 'queued'
+        )
+    `;
+
+    await expect(generations.activateGeneration({
+      knowledgeBaseId,
+      generationId: nextGenerationId,
+      expectedPredecessorGenerationId: predecessorId,
+      rootManifestChecksumSha256: "cd".repeat(32),
+      rootManifestObjectKey: "generated/search-next",
+      activatedAt: "2026-07-29T00:10:00.000Z"
+    })).resolves.toBe(true);
+
+    const states = await sql<Array<{
+      active_generation_id: string;
+      pending_generation_id: string | null;
+      pending_epoch: number | null;
+    }>>`
+      SELECT active_generation_id, pending_generation_id,
+             pending_epoch::int AS pending_epoch
+      FROM focowiki.knowledge_base_search_states
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    expect(states[0]).toEqual({
+      active_generation_id: nextGenerationId,
+      pending_generation_id: predecessorId,
+      pending_epoch: 1
+    });
+    const work = await sql<Array<{
+      id: string;
+      state: string;
+      safe_error_code: string | null;
+    }>>`
+      SELECT id, state, safe_error_code
+      FROM focowiki.search_projection_work
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY id
+    `;
+    expect(work).toEqual([
+      {
+        id: "search-work-superseded-cleanup",
+        state: "queued",
+        safe_error_code: null
+      },
+      {
+        id: "search-work-superseded-documents",
+        state: "canceled",
+        safe_error_code: "SEARCH_INDEX_GENERATION_SUPERSEDED"
+      }
+    ]);
+  });
+
   it("atomically commits source facts and coalesces one open generation", async () => {
     const first = await registerSource(1);
     const second = await registerSource(2);
@@ -751,6 +944,64 @@ describeDatabase("publication generation repository integration", () => {
         payload_json: expect.objectContaining({
           kind: "knowledge_base",
           descriptor: expect.objectContaining({ sourceFileCount: 2 })
+        })
+      }
+    ]);
+  });
+
+  it("keeps requeued publication facts visible when rebuilding a generation", async () => {
+    const source = await registerSource(118, "requeued/source.md");
+    await commit(source, { assemble: false });
+    await sql`
+      UPDATE focowiki.source_files
+      SET processing_status = 'queued',
+          processing_stage = 'projection_generation'
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND id = ${source.sourceFileId}
+    `;
+
+    const assembled = await assemble("2026-07-17T02:19:00.000Z");
+    expect(assembled.generationId).not.toBeNull();
+    const inputs = await sql<Array<{
+      payload_json: {
+        kind: string;
+        directory?: {
+          relativePath: string;
+          directFileCount: number;
+          descendantFileCount: number;
+        };
+        descriptor?: { sourceFileCount: number };
+      };
+    }>>`
+      SELECT payload_json
+      FROM focowiki.publication_projection_inputs
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND generation_id = ${assembled.generationId}
+        AND (
+          payload_json->>'kind' = 'knowledge_base'
+          OR (
+            payload_json->>'kind' = 'directory'
+            AND payload_json->'directory'->>'relativePath' = 'requeued'
+          )
+        )
+      ORDER BY payload_json->>'kind'
+    `;
+
+    expect(inputs).toEqual([
+      {
+        payload_json: expect.objectContaining({
+          kind: "directory",
+          directory: expect.objectContaining({
+            relativePath: "requeued",
+            directFileCount: 1,
+            descendantFileCount: 1
+          })
+        })
+      },
+      {
+        payload_json: expect.objectContaining({
+          kind: "knowledge_base",
+          descriptor: expect.objectContaining({ sourceFileCount: 1 })
         })
       }
     ]);
@@ -2270,6 +2521,7 @@ describeDatabase("publication generation repository integration", () => {
       `;
       await transaction`DELETE FROM focowiki.publication_impacts WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.publication_change_facts WHERE knowledge_base_id = ${knowledgeBaseId}`;
+      await transaction`DELETE FROM focowiki.knowledge_base_search_states WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.publication_generations WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.source_dispatch_markers WHERE knowledge_base_id = ${knowledgeBaseId}`;
       await transaction`DELETE FROM focowiki.upload_sessions WHERE knowledge_base_id = ${knowledgeBaseId}`;

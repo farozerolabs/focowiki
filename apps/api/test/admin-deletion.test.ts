@@ -178,6 +178,13 @@ function createFixture(options: { file?: ActiveGenerationFile | null } = {}) {
       return reader({
         knowledgeBaseId: "kb-001",
         generationId: "generation-active",
+        searchIdentity: {
+          activeEpoch: 0,
+          contentSchemaVersion: "postgres-search-v1",
+          graphSchemaVersion: "postgres-graph-v1",
+          contentSettingsChecksum: "postgres-compatibility",
+          graphSettingsChecksum: "postgres-compatibility"
+        },
         async findFileById() { return file; },
         async findFileByPath(path) { return file?.path === path ? file : null; },
         async findFilesBySourceIds() { return file ? [file] : []; },
@@ -188,6 +195,7 @@ function createFixture(options: { file?: ActiveGenerationFile | null } = {}) {
         async listTree() { return { items: [], nextCursor: null }; },
         async listTreeAncestors() { return new Map(); },
         async search() { return { items: [], nextCursor: null }; },
+        async revalidateSearchPage() { return true; },
         async listRelated() { return { items: [], nextCursor: null }; },
         async listRelatedForSources(input) {
           return new Map(input.sourceFileIds.map((sourceFileId) => [sourceFileId, []]));

@@ -762,14 +762,15 @@ async function persistGenerationReferences(
     INSERT INTO focowiki.generation_search_projection_refs (
       knowledge_base_id, generation_id, source_file_id, source_revision_id,
       search_document_id, search_schema_version, tokenizer_contract_version,
-      segmentation_version, logical_path, title, summary, source_url,
+      segmentation_version, path_revision, logical_path, title, summary, source_url,
       metadata_json, updated_at
     )
     SELECT reference.knowledge_base_id, reference.generation_id,
            reference.source_file_id, reference.source_revision_id,
            reference.search_document_id, reference.search_schema_version,
            reference.tokenizer_contract_version,
-           reference.segmentation_version, reference.logical_path,
+           reference.segmentation_version, source.resource_revision,
+           reference.logical_path,
            reference.title, reference.summary, reference.source_url,
            reference.metadata_json, ${completedAt}
     FROM jsonb_to_recordset(${transaction.json(rows as never)}) AS reference(
@@ -779,12 +780,16 @@ async function persistGenerationReferences(
       segmentation_version text, logical_path text, title text,
       summary text, source_url text, metadata_json jsonb
     )
+    JOIN focowiki.source_files source
+      ON source.knowledge_base_id = reference.knowledge_base_id
+     AND source.id = reference.source_file_id
     ON CONFLICT (generation_id, source_file_id) DO UPDATE
     SET source_revision_id = EXCLUDED.source_revision_id,
         search_document_id = EXCLUDED.search_document_id,
         search_schema_version = EXCLUDED.search_schema_version,
         tokenizer_contract_version = EXCLUDED.tokenizer_contract_version,
         segmentation_version = EXCLUDED.segmentation_version,
+        path_revision = EXCLUDED.path_revision,
         logical_path = EXCLUDED.logical_path,
         title = EXCLUDED.title,
         summary = EXCLUDED.summary,

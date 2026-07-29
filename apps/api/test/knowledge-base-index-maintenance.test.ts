@@ -185,6 +185,48 @@ describe("knowledge-base index maintenance", () => {
     expect(fixture.complete).not.toHaveBeenCalled();
   });
 
+  it("keeps maintenance active while the external search projection is indexing", async () => {
+    const fixture = createRepository({
+      claims: [claim({ state: "running", plannedScopes: ["search"] })]
+    });
+
+    await runKnowledgeBaseIndexMaintenanceSlice({
+      requests: fixture.repository,
+      progress: progressRepository({
+        ...healthyProgress(),
+        searchProjection: {
+          routeState: "postgres_compatibility",
+          maintenanceRequired: true,
+          activeEpoch: 0,
+          pendingEpoch: 1,
+          generationId: "generation-1",
+          queuedCount: 6,
+          submittedCount: 2,
+          retryCount: 0,
+          succeededCount: 4,
+          failedCount: 0,
+          canceledCount: 0,
+          totalCount: 12,
+          updatedAt: NOW,
+          safeErrorCode: null,
+          safeErrorMessage: null
+        }
+      }),
+      runtimeSettings: runtimeSettings("manual"),
+      workerId: "worker-1",
+      leaseTtlSeconds: 60,
+      schedule: vi.fn(async () => undefined),
+      now: () => new Date(NOW)
+    });
+
+    expect(fixture.heartbeat).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "search:indexing",
+      completedCount: 4,
+      expectedCount: 12
+    }));
+    expect(fixture.complete).not.toHaveBeenCalled();
+  });
+
   it("ignores terminal child failures that predate the current request", async () => {
     const fixture = createRepository({
       claims: [claim({
@@ -577,6 +619,7 @@ function healthyProgress(): MaintenanceProgressSummary {
   return {
     migration: null,
     lexicalRebuild: null,
+    searchProjection: null,
     projectionRepair: null,
     compaction: {
       active: null,

@@ -463,6 +463,13 @@ function createActiveGenerationReads(input: {
       return reader({
         knowledgeBaseId,
         generationId: "generation-001",
+        searchIdentity: {
+          activeEpoch: 0,
+          contentSchemaVersion: "postgres-search-v1",
+          graphSchemaVersion: "postgres-graph-v1",
+          contentSettingsChecksum: "postgres-compatibility",
+          graphSettingsChecksum: "postgres-compatibility"
+        },
         async findFileById(fileId) {
           return fileId === activeFile.fileId ? activeFile : null;
         },
@@ -517,6 +524,9 @@ function createActiveGenerationReads(input: {
         },
         async search() {
           return { items: [], nextCursor: null };
+        },
+        async revalidateSearchPage() {
+          return true;
         },
         async listRelated() {
           return { items: [], nextCursor: null };

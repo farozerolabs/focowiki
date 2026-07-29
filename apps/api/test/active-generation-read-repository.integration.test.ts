@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import postgres from "postgres";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { expandActiveGenerationGraph } from "../src/developer-openapi/active-generation-graph-expansion.js";
 import { createPostgresActiveGenerationReadRepository } from "../src/infrastructure/postgres/active-generation-read-repository.js";
 
@@ -200,6 +200,97 @@ describeDatabase("active generation read repository integration", () => {
         })]]
       ])
     });
+  });
+
+  it("routes only pre-cutover search to PostgreSQL and never falls back after cutover", async () => {
+    await seedActiveGeneration(
+      "generation-active-a",
+      "source-file-a",
+      "pages/alpha.md",
+      "Alpha"
+    );
+
+    await expect(repository.withActiveGeneration(
+      knowledgeBaseId,
+      async (scope) => scope.search({
+        query: "alpha",
+        mode: "file",
+        limit: 10,
+        cursor: null
+      })
+    )).resolves.toMatchObject({
+      items: [{ recordId: "source-file-a" }]
+    });
+
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET route_state = 'meilisearch',
+          active_epoch = 1,
+          active_generation_id = 'generation-active-a',
+          content_schema_version = 'content-segment-v1',
+          graph_schema_version = 'graph-seed-v1',
+          content_settings_checksum = ${"a".repeat(64)},
+          graph_settings_checksum = ${"b".repeat(64)},
+          maintenance_required = false,
+          activated_at = now(),
+          updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    const search = vi.fn(async () => ({ items: [], nextCursor: null }));
+    const cutoverRepository = createPostgresActiveGenerationReadRepository(
+      sql,
+      undefined,
+      { search }
+    );
+
+    await expect(cutoverRepository.withActiveGeneration(
+      knowledgeBaseId,
+      async (scope) => scope.search({
+        query: "alpha",
+        mode: "file",
+        limit: 10,
+        cursor: null
+      })
+    )).resolves.toEqual({ items: [], nextCursor: null });
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({
+      knowledgeBaseId,
+      generationId: "generation-active-a",
+      activeEpoch: 1,
+      query: "alpha"
+    }));
+
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET pending_epoch = 2,
+          pending_activation_state = 'swapping',
+          pending_generation_id = 'generation-active-a',
+          pending_content_schema_version = 'content-segment-v1',
+          pending_graph_schema_version = 'graph-seed-v1',
+          pending_content_settings_checksum = ${"c".repeat(64)},
+          pending_graph_settings_checksum = ${"d".repeat(64)},
+          updated_at = now()
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    await expect(cutoverRepository.withActiveGeneration(
+      knowledgeBaseId,
+      async (scope) => scope.search({
+        query: "alpha",
+        mode: "file",
+        limit: 10,
+        cursor: null
+      })
+    )).resolves.toEqual({ items: [], nextCursor: null });
+
+    const unavailable = createPostgresActiveGenerationReadRepository(sql);
+    await expect(unavailable.withActiveGeneration(
+      knowledgeBaseId,
+      async (scope) => scope.search({
+        query: "alpha",
+        mode: "file",
+        limit: 10,
+        cursor: null
+      })
+    )).rejects.toThrow("Active search projection is unavailable");
   });
 
   it("keeps fuzzy tree queries inside the selected parent subtree", async () => {
@@ -894,6 +985,7 @@ describeDatabase("active generation read repository integration", () => {
     await sql`DELETE FROM focowiki.generation_object_refs WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.lexical_rebuild_work_items WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.knowledge_base_lexical_rebuilds WHERE knowledge_base_id = ${knowledgeBaseId}`;
+    await sql`DELETE FROM focowiki.knowledge_base_search_states WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.publication_generations WHERE knowledge_base_id = ${knowledgeBaseId}`;
     await sql`DELETE FROM focowiki.knowledge_bases WHERE id = ${knowledgeBaseId}`;

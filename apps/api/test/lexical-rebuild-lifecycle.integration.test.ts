@@ -296,6 +296,65 @@ describeDatabase("lexical rebuild inverse lifecycle integration", () => {
     });
   });
 
+  it("advances active Meilisearch ownership with lexical generation activation", async () => {
+    const knowledgeBaseId = "kb-lifecycle-search-ownership";
+    const baseGenerationId = `generation-${knowledgeBaseId}-base`;
+    const targetGenerationId = `generation-${knowledgeBaseId}-target`;
+    await seedLifecycle(knowledgeBaseId, 1);
+    await sql.begin(async (transaction) => {
+      await transaction`
+        UPDATE focowiki.knowledge_base_search_states
+        SET route_state = 'meilisearch',
+            active_epoch = 3,
+            active_generation_id = ${baseGenerationId},
+            content_schema_version = 'content-segment-v1',
+            graph_schema_version = 'graph-seed-v1',
+            content_settings_checksum = ${"a".repeat(64)},
+            graph_settings_checksum = ${"b".repeat(64)},
+            maintenance_required = false,
+            activated_at = '2026-07-25T03:00:00.000Z',
+            updated_at = '2026-07-25T03:00:00.000Z'
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+      `;
+      await transaction`
+        UPDATE focowiki.knowledge_base_lexical_rebuilds
+        SET state = 'activating',
+            phase = 'activate',
+            lease_owner = 'lexical-search-worker',
+            lease_token = 'lexical-search-lease',
+            lease_expires_at = '2026-07-25T03:05:00.000Z',
+            heartbeat_at = '2026-07-25T03:00:00.000Z'
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+      `;
+    });
+
+    await expect(activationRepository.activate({
+      knowledgeBaseId,
+      workerId: "lexical-search-worker",
+      leaseToken: "lexical-search-lease",
+      activatedAt: "2026-07-25T03:00:01.000Z",
+      retryDelayMs: 1_000
+    })).resolves.toBe("activated");
+
+    expect((await sql<Array<{
+      knowledge_base_generation_id: string;
+      search_generation_id: string;
+      active_epoch: number;
+    }>>`
+      SELECT knowledge_base.active_generation_id AS knowledge_base_generation_id,
+             search_state.active_generation_id AS search_generation_id,
+             search_state.active_epoch::int AS active_epoch
+      FROM focowiki.knowledge_bases knowledge_base
+      JOIN focowiki.knowledge_base_search_states search_state
+        ON search_state.knowledge_base_id = knowledge_base.id
+      WHERE knowledge_base.id = ${knowledgeBaseId}
+    `)[0]).toEqual({
+      knowledge_base_generation_id: targetGenerationId,
+      search_generation_id: targetGenerationId,
+      active_epoch: 3
+    });
+  });
+
   async function seedLifecycle(knowledgeBaseId: string, sourceCount: number): Promise<void> {
     const baseGenerationId = `generation-${knowledgeBaseId}-base`;
     const targetGenerationId = `generation-${knowledgeBaseId}-target`;
@@ -413,12 +472,12 @@ describeDatabase("lexical rebuild inverse lifecycle integration", () => {
             knowledge_base_id, generation_id, source_file_id,
             source_revision_id, search_document_id, search_schema_version,
             tokenizer_contract_version, segmentation_version,
-            logical_path, title
+            logical_path, path_revision, title
           ) VALUES (
             ${knowledgeBaseId}, ${targetGenerationId}, ${sourceFileId},
             ${revisionId}, ${`search-${sourceFileId}`}, 'body-search-v1',
             'tokenizer-v1', 'segmentation-v1',
-            ${`pages/source-${index}.md`}, ${sourceFileId}
+            ${`pages/source-${index}.md`}, 1, ${sourceFileId}
           )
         `;
       }

@@ -9,6 +9,7 @@ import {
   updateMaintenanceSettings,
   updatePublicationSettings,
   updateRateLimitSettings,
+  updateSearchSettings,
   updateWorkerSettings
 } from "@/lib/admin-api";
 
@@ -147,6 +148,30 @@ vi.mock("@/lib/admin-api", () => ({
         lexicalRebuildDatabaseBatchSize: 50,
         lexicalRebuildMaxInFlightSourceBytes: 67_108_864
       },
+      search: {
+        requestTimeoutMs: 3000,
+        engineSearchCutoffMs: 1000,
+        branchCandidateLimit: 200,
+        fusedCandidateLimit: 100,
+        overfetchFactor: 3,
+        graphSeedLimit: 100,
+        graphNeighborLimit: 20,
+        cacheTtlSeconds: 15,
+        indexBatchDocumentCount: 500,
+        indexBatchCompressedBytes: 8_388_608,
+        maxInFlightTasks: 8,
+        engineQueueLatencyLimitMs: 30000,
+        engineResidentMemoryLimitBytes: 3221225472,
+        engineDatabaseSizeLimitBytes: 107374182400,
+        engineTaskQueueSizeLimitBytes: 536870912,
+        taskPollIntervalMs: 500,
+        taskTimeoutMs: 600_000,
+        maxAttempts: 5,
+        retryDelayMs: 2000,
+        cleanupBatchSize: 1000,
+        stagingRetentionHours: 24,
+        cropLength: 1200
+      },
       activeModel: {
         id: "model-001"
       }
@@ -219,6 +244,10 @@ vi.mock("@/lib/admin-api", () => ({
   updateMaintenanceSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
     maintenance: value
+  } })),
+  updateSearchSettings: vi.fn(async (value) => ({ settings: {
+    ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
+    search: value
   } })),
   updateWorkerSettings: vi.fn(async (value) => ({ settings: {
     ...(await (fetchRuntimeSettings as unknown as () => Promise<any>)()).settings,
@@ -405,6 +434,52 @@ describe("SettingsPanel", () => {
       await screen.findByText("Model fields are required when creating a model.")
     ).toBeTruthy();
     expect(createRuntimeModel).not.toHaveBeenCalled();
+  });
+
+  it("shows and saves bounded search settings", async () => {
+    render(<SettingsPanel />);
+
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    activateTab(screen.getByRole("tab", { name: "Search" }));
+
+    const requestTimeout = await waitFor(() => {
+      const input = document.getElementById("search-requestTimeoutMs") as HTMLInputElement | null;
+      if (!input) {
+        throw new Error("Expected search request timeout input.");
+      }
+      return input;
+    });
+    const engineCutoff = document.getElementById(
+      "search-engineSearchCutoffMs"
+    ) as HTMLInputElement;
+    const inFlightTasks = document.getElementById(
+      "search-maxInFlightTasks"
+    ) as HTMLInputElement;
+    const queueLatencyLimit = document.getElementById(
+      "search-engineQueueLatencyLimitMs"
+    ) as HTMLInputElement;
+    expect(requestTimeout.value).toBe("3000");
+    expect(engineCutoff.value).toBe("1000");
+    expect(inFlightTasks.value).toBe("8");
+    expect(queueLatencyLimit.value).toBe("30000");
+    expect(screen.getByText(/Maximum end-to-end time for one search request/)).toBeTruthy();
+
+    fireEvent.change(requestTimeout, { target: { value: "4000" } });
+    fireEvent.change(engineCutoff, { target: { value: "1200" } });
+    fireEvent.change(inFlightTasks, { target: { value: "6" } });
+    fireEvent.change(queueLatencyLimit, { target: { value: "45000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateSearchSettings).toHaveBeenCalledWith(expect.objectContaining({
+        requestTimeoutMs: 4000,
+        engineSearchCutoffMs: 1200,
+        maxInFlightTasks: 6,
+        engineQueueLatencyLimitMs: 45000,
+        indexBatchDocumentCount: 500,
+        indexBatchCompressedBytes: 8_388_608
+      }));
+    });
   });
 
   it("removes upload admission controls from the settings surface", async () => {

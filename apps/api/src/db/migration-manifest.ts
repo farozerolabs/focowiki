@@ -114,6 +114,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "knowledge-base-index-maintenance-v16",
     targetGeneration: "indexed-storage-object-protection-v17",
     safety: "compatible_with_persisted_work"
+  },
+  {
+    fileName: "018_meilisearch_search_projection.sql",
+    sourceGeneration: "indexed-storage-object-protection-v17",
+    targetGeneration: "meilisearch-search-projection-v18",
+    safety: "compatible_with_persisted_work"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 

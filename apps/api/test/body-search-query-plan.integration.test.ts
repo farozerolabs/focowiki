@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
+import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -18,6 +21,7 @@ describeDatabase("body search query plan integration", () => {
   let sql: Awaited<ReturnType<typeof pool.reserve>>;
   const knowledgeBaseId = "kb-body-search-plan-scale";
   const generationId = "generation-body-search-plan-scale";
+  const evidence: Array<Record<string, unknown>> = [];
 
   beforeAll(async () => {
     sql = await pool.reserve();
@@ -36,6 +40,7 @@ describeDatabase("body search query plan integration", () => {
 
   afterAll(async () => {
     try {
+      await writeBaselineReport(evidence);
       await sql`ROLLBACK`;
     } finally {
       sql.release();
@@ -46,7 +51,9 @@ describeDatabase("body search query plan integration", () => {
   it.each([20_000, 100_000])(
     "uses exact, token, trigram, and generation-reference indexes with %i files",
     async (fileCount) => {
+      const seedStartedAt = performance.now();
       await seedTo(fileCount);
+      const seedDurationMs = performance.now() - seedStartedAt;
       await sql`ANALYZE focowiki.generation_search_projection_refs`;
       await sql`ANALYZE focowiki.search_projection_segments`;
       await sql`ANALYZE focowiki.source_file_graph_term_documents`;
@@ -68,6 +75,7 @@ describeDatabase("body search query plan integration", () => {
           limit: 50
         })
       ];
+      const queryPlans: Array<Record<string, unknown>> = [];
 
       await sql`SET LOCAL enable_seqscan = off`;
       for (const target of targets) {
@@ -75,6 +83,14 @@ describeDatabase("body search query plan integration", () => {
           buildExplainAnalyzeSql(target.sql)
         );
         const summary = summarizeQueryPlan(rows[0]?.["QUERY PLAN"]);
+        queryPlans.push({
+          name: target.name,
+          executionTimeMs: summary.executionTimeMs,
+          planningTimeMs: summary.planningTimeMs,
+          sharedHitBlocks: summary.sharedHitBlocks,
+          sharedReadBlocks: summary.sharedReadBlocks,
+          indexNames: summary.indexNames
+        });
         expect(summary.sequentialScanRelations).not.toContain(
           "search_projection_segments"
         );
@@ -108,6 +124,12 @@ describeDatabase("body search query plan integration", () => {
         }
       }
       await sql`SET LOCAL enable_seqscan = on`;
+      evidence.push({
+        fileCount,
+        seedDurationMs,
+        processResidentMemoryBytes: process.memoryUsage().rss,
+        queryPlans
+      });
     },
     180_000
   );
@@ -198,7 +220,7 @@ describeDatabase("body search query plan integration", () => {
       INSERT INTO focowiki.generation_search_projection_refs (
         knowledge_base_id, generation_id, source_file_id, source_revision_id,
         search_document_id, search_schema_version, tokenizer_contract_version,
-        segmentation_version, logical_path, title, metadata_json
+        segmentation_version, logical_path, path_revision, title, metadata_json
       )
       SELECT
         ${knowledgeBaseId},
@@ -210,6 +232,7 @@ describeDatabase("body search query plan integration", () => {
         'lexical-tokenizer-plan-v1',
         'body-segmentation-v1',
         'pages/scale/file-' || value || '.md',
+        1,
         'Scale file needle' || value,
         '{}'::jsonb
       FROM generate_series(0, ${fileCount - 1}) value
@@ -238,3 +261,21 @@ describeDatabase("body search query plan integration", () => {
     `;
   }
 });
+
+async function writeBaselineReport(
+  evidence: Array<Record<string, unknown>>
+): Promise<void> {
+  const directory = resolve(
+    process.cwd(),
+    "ReferenceDocs/validate-meilisearch-search"
+  );
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    resolve(directory, "postgres-compatibility-baseline.json"),
+    `${JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      evidence
+    }, null, 2)}\n`,
+    "utf8"
+  );
+}

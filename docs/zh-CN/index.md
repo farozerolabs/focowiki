@@ -19,7 +19,7 @@ Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 
 - **查找相关文档。** 搜索文件内容、浏览目录索引、查看相关文档，并通过知识图谱继续探索关联内容。
 - **接入应用和 AI Agent。** 使用 Developer OpenAPI 上传内容、浏览文件树、读取完整 Markdown 文件、执行搜索、探索图关系并管理文档变更。
 - **通过 Admin UI 管理系统。** 创建知识库、查看文件处理进度、配置模型和运行参数，并管理 API key。
-- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis 和 S3 兼容存储运行 Focowiki。
+- **部署到自己的基础设施。** 使用 Docker Compose、PostgreSQL、Redis、Meilisearch 和 S3 兼容存储运行 Focowiki。
 
 ## Admin UI 预览
 
@@ -80,7 +80,7 @@ Markdown links 是主要关系机制。正文中的链接帮助读者和 Agent �
 
 ## 产品流程
 
-1. 配置 PostgreSQL、Redis、S3 兼容存储、Admin credentials、启动种子设置和服务端口。
+1. 配置 PostgreSQL、Redis、Meilisearch、S3 兼容存储、Admin credentials、启动种子设置和服务端口。
 2. 使用 Docker Compose 或本地开发命令启动 Focowiki。
 3. 打开 Admin UI，检查运行时设置，并创建知识库。
 4. 上传一个或多个清洗后的 Markdown 文件。

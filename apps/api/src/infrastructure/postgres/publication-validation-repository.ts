@@ -33,19 +33,87 @@ export function createPostgresPublicationValidationRepository(
           )
           SELECT generation_id, depth FROM lineage
         ),
+        candidate_projection_targets AS MATERIALIZED (
+          SELECT DISTINCT projection_kind, record_id
+          FROM focowiki.generation_projection_records
+          WHERE generation_id = ${input.generationId}
+            AND knowledge_base_id = ${input.knowledgeBaseId}
+            AND projection_kind IN ('tree', 'graph_node', 'graph_edge')
+        ),
+        predecessor_projection_candidates AS MATERIALIZED (
+          SELECT record.projection_kind, record.record_id, record.action,
+                 record.logical_path, record.parent_path, record.payload_json,
+                 lineage.depth, 0 AS source_priority
+          FROM generation_lineage lineage
+          JOIN focowiki.generation_projection_records record
+            ON record.generation_id = lineage.generation_id
+           AND record.knowledge_base_id = ${input.knowledgeBaseId}
+          JOIN candidate_projection_targets target
+            ON target.projection_kind = record.projection_kind
+           AND target.record_id = record.record_id
+          WHERE lineage.depth > 0
+          UNION ALL
+          SELECT active.projection_kind, active.record_id, 'upsert',
+                 active.logical_path, active.parent_path, active.payload_json,
+                 lineage.depth, 1
+          FROM generation_lineage lineage
+          JOIN focowiki.active_projection_records active
+            ON active.last_changed_generation_id = lineage.generation_id
+           AND active.knowledge_base_id = ${input.knowledgeBaseId}
+          JOIN candidate_projection_targets target
+            ON target.projection_kind = active.projection_kind
+           AND target.record_id = active.record_id
+          WHERE lineage.depth > 0
+        ),
+        predecessor_projection_records AS MATERIALIZED (
+          SELECT DISTINCT ON (projection_kind, record_id)
+                 projection_kind, record_id, action,
+                 logical_path, parent_path, payload_json
+          FROM predecessor_projection_candidates
+          ORDER BY projection_kind, record_id, depth, source_priority
+        ),
+        predecessor_object_ref_candidates AS MATERIALIZED (
+          SELECT reference.ref_kind, reference.ref_key, reference.action,
+                 reference.logical_path, lineage.depth, 0 AS source_priority
+          FROM generation_lineage lineage
+          JOIN focowiki.generation_object_refs reference
+            ON reference.generation_id = lineage.generation_id
+           AND reference.knowledge_base_id = ${input.knowledgeBaseId}
+          WHERE lineage.depth > 0
+            AND reference.logical_path = ANY(
+              ${REQUIRED_GENERATED_NAVIGATION_RESOURCES.map((resource) => resource.path)}::text[]
+            )
+          UNION ALL
+          SELECT active.ref_kind, active.ref_key, 'upsert', active.logical_path,
+                 lineage.depth, 1
+          FROM generation_lineage lineage
+          JOIN focowiki.active_object_refs active
+            ON active.last_changed_generation_id = lineage.generation_id
+           AND active.knowledge_base_id = ${input.knowledgeBaseId}
+          WHERE lineage.depth > 0
+            AND active.logical_path = ANY(
+              ${REQUIRED_GENERATED_NAVIGATION_RESOURCES.map((resource) => resource.path)}::text[]
+            )
+        ),
+        predecessor_object_refs AS MATERIALIZED (
+          SELECT DISTINCT ON (ref_kind, ref_key)
+                 ref_kind, ref_key, action, logical_path
+          FROM predecessor_object_ref_candidates
+          ORDER BY ref_kind, ref_key, depth, source_priority
+        ),
         changed_tree AS MATERIALIZED (
           SELECT candidate.record_id, candidate.action,
                  candidate.logical_path AS next_path,
                  candidate.parent_path AS next_parent_path,
                  candidate.payload_json->>'kind' AS next_kind,
-                 active.logical_path AS previous_path,
-                 active.parent_path AS previous_parent_path,
-                 active.payload_json->>'kind' AS previous_kind
+                 previous.logical_path AS previous_path,
+                 previous.parent_path AS previous_parent_path,
+                 previous.payload_json->>'kind' AS previous_kind
           FROM focowiki.generation_projection_records candidate
-          LEFT JOIN focowiki.active_projection_records active
-            ON active.knowledge_base_id = candidate.knowledge_base_id
-           AND active.projection_kind = candidate.projection_kind
-           AND active.record_id = candidate.record_id
+          LEFT JOIN predecessor_projection_records previous
+            ON previous.projection_kind = candidate.projection_kind
+           AND previous.record_id = candidate.record_id
+           AND previous.action = 'upsert'
           WHERE candidate.generation_id = ${input.generationId}
             AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
             AND candidate.projection_kind = 'tree'
@@ -70,6 +138,47 @@ export function createPostgresPublicationValidationRepository(
           WHERE generation_id = ${input.generationId}
             AND knowledge_base_id = ${input.knowledgeBaseId}
         ),
+        predecessor_directory_candidates AS MATERIALIZED (
+          SELECT changed.path, record.record_id, record.action,
+                 record.logical_path, record.payload_json,
+                 lineage.depth, 0 AS source_priority
+          FROM changed_directory_paths changed
+          JOIN generation_lineage lineage
+            ON lineage.depth > 0
+          JOIN focowiki.generation_projection_records record
+            ON record.generation_id = lineage.generation_id
+           AND record.knowledge_base_id = ${input.knowledgeBaseId}
+           AND record.projection_kind = 'tree'
+           AND record.record_id = CASE
+             WHEN changed.path = 'pages' THEN 'directory:'
+             ELSE 'directory:' || substring(
+               changed.path FROM length('pages/') + 1
+             )
+           END
+          UNION ALL
+          SELECT changed.path, active.record_id, 'upsert',
+                 active.logical_path, active.payload_json,
+                 lineage.depth, 1
+          FROM changed_directory_paths changed
+          JOIN generation_lineage lineage
+            ON lineage.depth > 0
+          JOIN focowiki.active_projection_records active
+            ON active.last_changed_generation_id = lineage.generation_id
+           AND active.knowledge_base_id = ${input.knowledgeBaseId}
+           AND active.projection_kind = 'tree'
+           AND active.record_id = CASE
+             WHEN changed.path = 'pages' THEN 'directory:'
+             ELSE 'directory:' || substring(
+               changed.path FROM length('pages/') + 1
+             )
+           END
+        ),
+        predecessor_directory_records AS MATERIALIZED (
+          SELECT DISTINCT ON (path)
+                 path, record_id, action, logical_path, payload_json
+          FROM predecessor_directory_candidates
+          ORDER BY path, depth, source_priority
+        ),
         visible_changed_directories AS MATERIALIZED (
           SELECT changed.path
           FROM changed_directory_paths changed
@@ -82,18 +191,18 @@ export function createPostgresPublicationValidationRepository(
              )
              OR EXISTS (
                SELECT 1
-               FROM focowiki.active_projection_records active
-               WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
-                 AND active.projection_kind = 'tree'
-                 AND active.logical_path = changed.path
-                 AND active.payload_json->>'kind' = 'directory'
+               FROM predecessor_directory_records previous
+               WHERE previous.path = changed.path
+                 AND previous.action = 'upsert'
+                 AND previous.logical_path = changed.path
+                 AND previous.payload_json->>'kind' = 'directory'
                  AND NOT EXISTS (
                    SELECT 1 FROM changed_tree candidate
-                   WHERE candidate.record_id = active.record_id
+                   WHERE candidate.record_id = previous.record_id
                      AND (
                        candidate.action = 'delete'
                        OR candidate.next_kind <> 'directory'
-                       OR candidate.next_path IS DISTINCT FROM active.logical_path
+                       OR candidate.next_path IS DISTINCT FROM previous.logical_path
                      )
                  )
              )
@@ -203,15 +312,15 @@ export function createPostgresPublicationValidationRepository(
         graph_delta AS MATERIALIZED (
           SELECT candidate.projection_kind,
                  coalesce(sum(CASE
-                   WHEN candidate.action = 'upsert' AND active.record_id IS NULL THEN 1
-                   WHEN candidate.action = 'delete' AND active.record_id IS NOT NULL THEN -1
+                   WHEN candidate.action = 'upsert' AND previous.record_id IS NULL THEN 1
+                   WHEN candidate.action = 'delete' AND previous.record_id IS NOT NULL THEN -1
                    ELSE 0
                  END), 0) AS count_delta
           FROM focowiki.generation_projection_records candidate
-          LEFT JOIN focowiki.active_projection_records active
-            ON active.knowledge_base_id = candidate.knowledge_base_id
-           AND active.projection_kind = candidate.projection_kind
-           AND active.record_id = candidate.record_id
+          LEFT JOIN predecessor_projection_records previous
+            ON previous.projection_kind = candidate.projection_kind
+           AND previous.record_id = candidate.record_id
+           AND previous.action = 'upsert'
           WHERE candidate.generation_id = ${input.generationId}
             AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
             AND candidate.projection_kind IN ('graph_node', 'graph_edge')
@@ -360,17 +469,17 @@ export function createPostgresPublicationValidationRepository(
           )
           AND NOT EXISTS (
             SELECT 1
-            FROM focowiki.active_object_refs active
-            WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
-              AND active.ref_kind = required.ref_kind
-              AND active.logical_path = required.path
+            FROM predecessor_object_refs previous
+            WHERE previous.ref_kind = required.ref_kind
+              AND previous.logical_path = required.path
+              AND previous.action = 'upsert'
               AND NOT EXISTS (
                 SELECT 1
                 FROM focowiki.generation_object_refs candidate_delete
                 WHERE candidate_delete.knowledge_base_id = ${input.knowledgeBaseId}
                   AND candidate_delete.generation_id = ${input.generationId}
-                  AND candidate_delete.ref_kind = active.ref_kind
-                  AND candidate_delete.ref_key = active.ref_key
+                  AND candidate_delete.ref_kind = previous.ref_kind
+                  AND candidate_delete.ref_key = previous.ref_key
                   AND candidate_delete.action = 'delete'
               )
           )

@@ -168,18 +168,31 @@ async function writeMachineProjectionBatch(
   )) {
     throw new Error("Machine projection batch must target one shard");
   }
-  const changes: Array<{ recordId: string; record: JsonProjectionRecord | null }> = [];
+  const changesByRecordId = new Map<string, {
+    impact: ClaimedPublicationImpact;
+    descriptor: Awaited<ReturnType<typeof buildMachineRecord>>;
+    record: JsonProjectionRecord | null;
+  }>();
   for (const impact of impacts) {
     const descriptor = impact.action === "delete"
       ? null
       : await buildMachineRecord(impact, input.relatedFileLimit);
     const record = impact.action === "delete" ? null : descriptor?.record ?? null;
-    changes.push({ recordId: impact.recordIdentity, record });
-    await stageMachineRecord(input.records, impact, {
+    const existing = changesByRecordId.get(impact.recordIdentity);
+    if (existing) {
+      if (JSON.stringify(existing.record) !== JSON.stringify(record)) {
+        throw new Error("Machine projection batch contains conflicting record changes");
+      }
+      continue;
+    }
+    changesByRecordId.set(impact.recordIdentity, { impact, descriptor, record });
+  }
+  for (const change of changesByRecordId.values()) {
+    await stageMachineRecord(input.records, change.impact, {
       projectionKind,
       shardKey,
-      descriptor,
-      record
+      descriptor: change.descriptor,
+      record: change.record
     });
   }
   await input.shards.applyBatch({
@@ -187,7 +200,10 @@ async function writeMachineProjectionBatch(
     generationId: first.generationId,
     projectionKind,
     shardKey,
-    changes,
+    changes: [...changesByRecordId].map(([recordId, change]) => ({
+      recordId,
+      record: change.record
+    })),
     logicalPath: machineShardPath(projectionKind, shardKey)
   });
 }

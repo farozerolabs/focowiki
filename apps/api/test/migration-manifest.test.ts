@@ -111,6 +111,12 @@ const EXPECTED_MIGRATIONS = [
     "knowledge-base-index-maintenance-v16",
     "indexed-storage-object-protection-v17",
     "compatible_with_persisted_work"
+  ],
+  [
+    "018_meilisearch_search_projection.sql",
+    "indexed-storage-object-protection-v17",
+    "meilisearch-search-projection-v18",
+    "compatible_with_persisted_work"
   ]
 ] as const;
 

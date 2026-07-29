@@ -78,9 +78,28 @@ export type MaintenanceLexicalRebuildProgress = {
   safeErrorMessage: string | null;
 };
 
+export type MaintenanceSearchProjectionProgress = {
+  routeState: "postgres_compatibility" | "meilisearch";
+  maintenanceRequired: boolean;
+  activeEpoch: number;
+  pendingEpoch: number | null;
+  generationId: string | null;
+  queuedCount: number;
+  submittedCount: number;
+  retryCount: number;
+  succeededCount: number;
+  failedCount: number;
+  canceledCount: number;
+  totalCount: number;
+  updatedAt: string;
+  safeErrorCode: string | null;
+  safeErrorMessage: string | null;
+};
+
 export type MaintenanceProgressSummary = {
   migration: MaintenanceMigrationProgress | null;
   lexicalRebuild: MaintenanceLexicalRebuildProgress | null;
+  searchProjection: MaintenanceSearchProjectionProgress | null;
   projectionRepair: MaintenanceProjectionRepairProgress | null;
   compaction: {
     active: MaintenanceCompactionProgress | null;

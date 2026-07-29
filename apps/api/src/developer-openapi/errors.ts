@@ -11,7 +11,10 @@ export type DeveloperOpenApiErrorCode =
   | "RATE_LIMITED"
   | "UNSUPPORTED_ROUTE"
   | "INTERNAL_ERROR"
-  | "DATABASE_REPOSITORY_UNAVAILABLE";
+  | "DATABASE_REPOSITORY_UNAVAILABLE"
+  | "SEARCH_UNAVAILABLE"
+  | "SEARCH_TIMEOUT"
+  | "SEARCH_OVERLOADED";
 
 export class DeveloperOpenApiError extends Error {
   public readonly code: DeveloperOpenApiErrorCode;

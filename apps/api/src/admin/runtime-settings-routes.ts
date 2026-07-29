@@ -7,6 +7,7 @@ import {
   type RuntimeModelConfigDraft,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSearchSettings,
   type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
@@ -107,6 +108,19 @@ export function registerAdminRuntimeSettingsRoutes(
       writeSettingsResponse(context, async (service, body) =>
         service.updateMaintenance({
           value: body as RuntimeMaintenanceSettings,
+          actor: "admin"
+        })
+      )
+  );
+
+  app.put(
+    "/admin/api/settings/search",
+    middlewares.requireAuth,
+    middlewares.requireWriteProtection,
+    async (context) =>
+      writeSettingsResponse(context, async (service, body) =>
+        service.updateSearch({
+          value: body as RuntimeSearchSettings,
           actor: "admin"
         })
       )
@@ -221,6 +235,7 @@ export function registerAdminRuntimeSettingsRoutes(
           publication: snapshot.publication,
           graph: snapshot.graph,
           maintenance: snapshot.maintenance,
+          search: snapshot.search,
           activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
         }
       });

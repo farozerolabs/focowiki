@@ -19,6 +19,8 @@ import { searchGraphProjection } from "./graph-search-query.js";
 import type { LexicalTokenizer } from "../../application/ports/lexical-tokenizer.js";
 import { BODY_SEARCH_SCHEMA_VERSION } from "../../search/body-search-document.js";
 import { BODY_SEGMENTATION_VERSION } from "../../search/body-segmentation.js";
+import type { ActiveSearch } from "../../search/active-search.js";
+import { loadActiveSearchHydrationRecords } from "./search-hydration-repository.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -29,6 +31,13 @@ type ActiveGenerationRow = {
   search_schema_version: string | null;
   tokenizer_contract_version: string | null;
   search_segmentation_version: string | null;
+  search_route_state: "postgres_compatibility" | "meilisearch";
+  active_search_epoch: number;
+  search_active_generation_id: string | null;
+  content_schema_version: string | null;
+  graph_schema_version: string | null;
+  content_settings_checksum: string | null;
+  graph_settings_checksum: string | null;
 };
 
 type ActiveReadVersion = {
@@ -37,6 +46,13 @@ type ActiveReadVersion = {
   searchSchemaVersion: string | null;
   tokenizerContractVersion: string | null;
   searchSegmentationVersion: string | null;
+  searchRouteState: ActiveGenerationRow["search_route_state"];
+  activeSearchEpoch: number;
+  searchActiveGenerationId: string | null;
+  contentSchemaVersion: string | null;
+  graphSchemaVersion: string | null;
+  contentSettingsChecksum: string | null;
+  graphSettingsChecksum: string | null;
 };
 
 type FileRow = {
@@ -77,7 +93,8 @@ const SEARCH_STATEMENT_TIMEOUT_MS = 10_000;
 
 export function createPostgresActiveGenerationReadRepository(
   sql: DatabaseClient,
-  tokenizer?: LexicalTokenizer
+  tokenizer?: LexicalTokenizer,
+  activeSearch?: ActiveSearch
 ): ActiveGenerationReadRepository {
   async function withActiveGeneration<T>(
     knowledgeBaseId: string,
@@ -90,6 +107,16 @@ export function createPostgresActiveGenerationReadRepository(
                generation.search_schema_version,
                generation.tokenizer_contract_version,
                generation.search_segmentation_version,
+               coalesce(search_state.route_state, 'postgres_compatibility')
+                 AS search_route_state,
+               coalesce(search_state.active_epoch, 0)::int
+                 AS active_search_epoch,
+               search_state.active_generation_id
+                 AS search_active_generation_id,
+               search_state.content_schema_version,
+               search_state.graph_schema_version,
+               search_state.content_settings_checksum,
+               search_state.graph_settings_checksum,
                coalesce(migration.state, 'legacy_readable') AS optimization_state
         FROM focowiki.knowledge_bases knowledge_base
         JOIN focowiki.publication_generations generation
@@ -98,6 +125,8 @@ export function createPostgresActiveGenerationReadRepository(
          AND generation.state = 'active'
         LEFT JOIN focowiki.knowledge_base_optimization_migrations migration
           ON migration.knowledge_base_id = knowledge_base.id
+        LEFT JOIN focowiki.knowledge_base_search_states search_state
+          ON search_state.knowledge_base_id = knowledge_base.id
         WHERE knowledge_base.id = ${knowledgeBaseId}
           AND knowledge_base.deleted_at IS NULL
         LIMIT 1
@@ -109,8 +138,15 @@ export function createPostgresActiveGenerationReadRepository(
         optimizationState: active.optimization_state,
         searchSchemaVersion: active.search_schema_version,
         tokenizerContractVersion: active.tokenizer_contract_version,
-        searchSegmentationVersion: active.search_segmentation_version
-      }, tokenizer));
+        searchSegmentationVersion: active.search_segmentation_version,
+        searchRouteState: active.search_route_state,
+        activeSearchEpoch: Number(active.active_search_epoch),
+        searchActiveGenerationId: active.search_active_generation_id,
+        contentSchemaVersion: active.content_schema_version,
+        graphSchemaVersion: active.graph_schema_version,
+        contentSettingsChecksum: active.content_settings_checksum,
+        graphSettingsChecksum: active.graph_settings_checksum
+      }, tokenizer, activeSearch));
     });
     return result as T | null;
   }
@@ -124,11 +160,13 @@ function createScope(
   knowledgeBaseId: string,
   generationId: string,
   version: ActiveReadVersion,
-  tokenizer?: LexicalTokenizer
+  tokenizer?: LexicalTokenizer,
+  activeSearch?: ActiveSearch
 ): ActiveGenerationReadScope {
   return {
     knowledgeBaseId,
     generationId,
+    searchIdentity: createActiveSearchIdentity(version),
 
     async findFileById(fileId) {
       const rows = await selectFile(sql, knowledgeBaseId, { fileId, path: null });
@@ -248,6 +286,22 @@ function createScope(
 
     async search(input) {
       assertLimit(input.limit);
+      if (version.searchRouteState === "meilisearch") {
+        if (
+          !activeSearch
+          || version.activeSearchEpoch < 1
+          || version.searchActiveGenerationId !== generationId
+        ) {
+          throw new Error("Active search projection is unavailable");
+        }
+        return activeSearch.search({
+          sql,
+          knowledgeBaseId,
+          generationId,
+          activeEpoch: version.activeSearchEpoch,
+          ...input
+        });
+      }
       await sql`
         SELECT set_config(
           'statement_timeout',
@@ -294,6 +348,32 @@ function createScope(
         knowledgeBaseId,
         generationId,
         ...input
+      });
+    },
+
+    async revalidateSearchPage(items) {
+      const sourceFileIds = items
+        .map((item) => item.sourceFileId)
+        .filter((sourceFileId): sourceFileId is string => Boolean(sourceFileId));
+      if (sourceFileIds.length !== items.length || new Set(sourceFileIds).size !== items.length) {
+        return false;
+      }
+      const records = await loadActiveSearchHydrationRecords({
+        sql,
+        knowledgeBaseId,
+        sourceFileIds,
+        projection: "search"
+      });
+      const bySourceFile = new Map(records.map((record) => [record.sourceFileId, record]));
+      return items.every((item) => {
+        const record = item.sourceFileId ? bySourceFile.get(item.sourceFileId) : null;
+        const revision = readPayloadString(item.payload, "sourceRevisionId");
+        return Boolean(
+          record
+          && record.visible
+          && record.logicalPath === item.path
+          && (!revision || revision === record.sourceRevisionId)
+        );
       });
     },
 
@@ -605,6 +685,38 @@ function mapProjection(generationId: string, row: ProjectionRow): ActiveGenerati
     score: row.score === null ? null : Number(row.score),
     payload: row.payload_json
   };
+}
+
+function createActiveSearchIdentity(version: ActiveReadVersion) {
+  if (version.searchRouteState === "meilisearch") {
+    if (
+      version.activeSearchEpoch < 1
+      || !version.contentSchemaVersion
+      || !version.graphSchemaVersion
+      || !version.contentSettingsChecksum
+      || !version.graphSettingsChecksum
+    ) {
+      throw new Error("Active search projection contract is unavailable");
+    }
+    return {
+      activeEpoch: version.activeSearchEpoch,
+      contentSchemaVersion: version.contentSchemaVersion,
+      graphSchemaVersion: version.graphSchemaVersion,
+      contentSettingsChecksum: version.contentSettingsChecksum,
+      graphSettingsChecksum: version.graphSettingsChecksum
+    };
+  }
+  return {
+    activeEpoch: 0,
+    contentSchemaVersion: version.searchSchemaVersion ?? "postgres-search-v1",
+    graphSchemaVersion: version.tokenizerContractVersion ?? "postgres-graph-v1",
+    contentSettingsChecksum: "postgres-compatibility",
+    graphSettingsChecksum: "postgres-compatibility"
+  };
+}
+
+function readPayloadString(value: SerializableJson, key: string): string | null {
+  return readJsonString(value, key);
 }
 
 function readJsonString(value: SerializableJson, key: string): string | null {

@@ -142,6 +142,9 @@ importers:
       hono:
         specifier: ^4.12.25
         version: 4.12.27
+      meilisearch:
+        specifier: 0.60.0
+        version: 0.60.0
       nodejieba:
         specifier: 3.5.8
         version: 3.5.8(patch_hash=80e1db615cecc862ce51ab0cf30eff062500aba7055d59487b089dc8137c63cd)
@@ -3616,6 +3619,10 @@ packages:
   media-typer@1.1.0:
     resolution: {integrity: sha512-aisnrDP4GNe06UcKFnV5bfMNPBUw4jsLGaWwWfnH3v02GnBuXX2MCVn5RbrWo0j3pczUilYblq7fQ7Nw2t5XKw==}
     engines: {node: '>= 0.8'}
+
+  meilisearch@0.60.0:
+    resolution: {integrity: sha512-z32KgxE6/7hRzbVfzUgzlmNl2OS7TwGE6wSWs2tVEuAY9DWrX6zAmt0s7wTyelH36orIaZ3/t1mQsCsExGtVDQ==}
+    engines: {node: ^20.19.0 || >=22.12.0}
 
   merge-descriptors@2.0.0:
     resolution: {integrity: sha512-Snk314V5ayFLhp3fkUREub6WtjBfPdCPY1Ln8/8munuLuiYhsABgBVWsozAG+MWMbVEvcdcpbi9R7ww22l9Q3g==}
@@ -8297,6 +8304,8 @@ snapshots:
   mdurl@2.0.0: {}
 
   media-typer@1.1.0: {}
+
+  meilisearch@0.60.0: {}
 
   merge-descriptors@2.0.0: {}
 

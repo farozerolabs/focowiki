@@ -25,7 +25,7 @@ export async function updateGenerationSearchReferences(
       INSERT INTO focowiki.generation_search_projection_refs (
         knowledge_base_id, generation_id, source_file_id, source_revision_id,
         search_document_id, search_schema_version, tokenizer_contract_version,
-        segmentation_version,
+        segmentation_version, path_revision,
         logical_path, title, summary, source_url, metadata_json, created_at, updated_at
       )
       SELECT
@@ -33,6 +33,7 @@ export async function updateGenerationSearchReferences(
         reference.source_file_id, reference.source_revision_id,
         reference.search_document_id, reference.search_schema_version,
         reference.tokenizer_contract_version, reference.segmentation_version,
+        reference.path_revision,
         reference.logical_path,
         reference.title, reference.summary, reference.source_url,
         reference.metadata_json, ${input.now}, ${input.now}
@@ -76,6 +77,7 @@ export async function updateGenerationSearchReferences(
              document.search_schema_version,
              document.tokenizer_contract_version,
              document.segmentation_version,
+             source.resource_revision AS path_revision,
              'pages/' || request."path" AS logical_path,
              coalesce(
                nullif(node.title, ''),
@@ -125,14 +127,14 @@ export async function updateGenerationSearchReferences(
     INSERT INTO focowiki.generation_search_projection_refs (
       knowledge_base_id, generation_id, source_file_id, source_revision_id,
       search_document_id, search_schema_version, tokenizer_contract_version,
-      segmentation_version,
+      segmentation_version, path_revision,
       logical_path, title, summary, source_url, metadata_json, created_at, updated_at
     )
     SELECT
       ${input.knowledgeBaseId}, ${input.generationId}, selected.source_file_id,
       selected.source_revision_id, selected.search_document_id,
       selected.search_schema_version, selected.tokenizer_contract_version,
-      selected.segmentation_version,
+      selected.segmentation_version, selected.path_revision,
       selected.logical_path, selected.title, selected.summary,
       selected.source_url, selected.metadata_json, ${input.now}, ${input.now}
     FROM selected
@@ -142,6 +144,7 @@ export async function updateGenerationSearchReferences(
         search_schema_version = EXCLUDED.search_schema_version,
         tokenizer_contract_version = EXCLUDED.tokenizer_contract_version,
         segmentation_version = EXCLUDED.segmentation_version,
+        path_revision = EXCLUDED.path_revision,
         logical_path = EXCLUDED.logical_path,
         title = EXCLUDED.title,
         summary = EXCLUDED.summary,

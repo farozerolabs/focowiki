@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GenerationCleanupRepository } from "../src/application/ports/generation-cleanup-repository.js";
 import type { RoleJobRecord } from "../src/domain/role-job.js";
+import type {
+  SearchProjectionCleanup
+} from "../src/search/search-projection-cleanup.js";
 import type { StorageAdapter } from "../src/storage/s3.js";
 import { createHardDeleteJobProcessor } from "../src/worker/hard-delete-jobs.js";
 
@@ -125,6 +128,39 @@ describe("maintenance hard delete processor", () => {
     expect(cleanup.complete).not.toHaveBeenCalled();
   });
 
+  it("deletes external search documents before purging a knowledge base", async () => {
+    const cleanup = createCleanup({
+      getCheckpoint: vi.fn().mockResolvedValue({
+        phase: "database_cleanup",
+        discoveryCursor: null,
+        discoveryCompleted: true
+      })
+    });
+    const search: SearchProjectionCleanup = {
+      deleteKnowledgeBase: vi.fn(async () => undefined)
+    };
+    const process = createProcessor(
+      cleanup,
+      createStorage(),
+      undefined,
+      search
+    );
+
+    await process(createJob({
+      sourceFileId: null,
+      payload: { targetKind: "knowledge_base", deletionIntentId: "deletion-1" }
+    }));
+
+    expect(search.deleteKnowledgeBase).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-1",
+      correlation: "job-1"
+    });
+    expect(vi.mocked(search.deleteKnowledgeBase).mock.invocationCallOrder[0])
+      .toBeLessThan(
+        vi.mocked(cleanup.purgeTargetBatch).mock.invocationCallOrder[0]!
+      );
+  });
+
   it("discovers a knowledge base prefix without per-file fan-out", async () => {
     const cleanup = createCleanup();
     const storage = createStorage();
@@ -150,12 +186,14 @@ function createProcessor(
   redis = {
     clearKnowledgeBaseRuntimeKeys: vi.fn(),
     clearSourceFileRuntimeKeys: vi.fn()
-  }
+  },
+  search?: SearchProjectionCleanup
 ) {
   return createHardDeleteJobProcessor({
     cleanup,
     storage,
     redis,
+    ...(search ? { search } : {}),
     settings: {
       databaseBatchSize: 50,
       objectBatchSize: 2,

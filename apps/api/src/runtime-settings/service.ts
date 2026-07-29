@@ -20,6 +20,7 @@ import {
   type RuntimeModelConfigPublic,
   type RuntimePublicationSettings,
   type RuntimeRateLimitSettings,
+  type RuntimeSearchSettings,
   type RuntimeSettingKey,
   type RuntimeSettingsSnapshot
 } from "./types.js";
@@ -29,12 +30,14 @@ import {
   sanitizeMaintenanceSettings,
   sanitizePublicationSettings,
   sanitizeRateLimitSettings,
+  sanitizeSearchSettings,
   sanitizeWorkerSettings,
   validateGraphSettings,
   validateMaintenanceSettings,
   validateModelDraft,
   validatePublicationSettings,
   validateRateLimitSettings,
+  validateSearchSettings,
   validateWorkerSettings
 } from "./validation.js";
 
@@ -56,6 +59,7 @@ export type RuntimeSettingsService = {
     publication: RuntimePublicationSettings;
     graph: RuntimeGraphSettings;
     maintenance: RuntimeMaintenanceSettings;
+    search: RuntimeSearchSettings;
     activeModel: RuntimeModelConfigPublic | null;
   }>;
   updateRateLimits: (input: {
@@ -76,6 +80,10 @@ export type RuntimeSettingsService = {
   }) => Promise<RuntimeSettingsSnapshot>;
   updateMaintenance: (input: {
     value: RuntimeMaintenanceSettings;
+    actor?: string | null | undefined;
+  }) => Promise<RuntimeSettingsSnapshot>;
+  updateSearch: (input: {
+    value: RuntimeSearchSettings;
     actor?: string | null | undefined;
   }) => Promise<RuntimeSettingsSnapshot>;
   listModels: () => Promise<RuntimeModelConfigPublic[]>;
@@ -143,6 +151,13 @@ export function createRuntimeSettingsService(input: {
         source: "bootstrap"
       });
     }
+    if (!existingKeys.has("search")) {
+      await input.repository.upsertSetting({
+        key: "search",
+        value: defaults.search,
+        source: "bootstrap"
+      });
+    }
 
     const models = await input.repository.listModels();
     if (models.length === 0 && defaults.model) {
@@ -167,6 +182,7 @@ export function createRuntimeSettingsService(input: {
       publicationRecord,
       graphRecord,
       maintenanceRecord,
+      searchRecord,
       model
     ] = await Promise.all([
       input.repository.getSetting("rate_limits"),
@@ -174,6 +190,7 @@ export function createRuntimeSettingsService(input: {
       input.repository.getSetting("publication"),
       input.repository.getSetting("graph"),
       input.repository.getSetting("maintenance"),
+      input.repository.getSetting("search"),
       input.repository.getActiveModel()
     ]);
     const snapshot: RuntimeSettingsSnapshot = {
@@ -203,6 +220,12 @@ export function createRuntimeSettingsService(input: {
           ...defaults.maintenance,
           ...(maintenanceRecord?.value ?? {})
         } as RuntimeMaintenanceSettings
+      ),
+      search: sanitizeSearchSettings(
+        {
+          ...defaults.search,
+          ...(searchRecord?.value ?? {})
+        } as RuntimeSearchSettings
       ),
       activeModel: model ? tryDecryptModel(model) : null
     };
@@ -329,6 +352,7 @@ export function createRuntimeSettingsService(input: {
         publication: snapshot.publication,
         graph: snapshot.graph,
         maintenance: snapshot.maintenance,
+        search: snapshot.search,
         activeModel: snapshot.activeModel ? serializePublicModel(snapshot.activeModel) : null
       };
     },
@@ -366,6 +390,13 @@ export function createRuntimeSettingsService(input: {
         throw new RuntimeSettingsValidationError(issues);
       }
       return updateSetting("maintenance", sanitizeMaintenanceSettings(value), actor);
+    },
+    async updateSearch({ value, actor }) {
+      const issues = validateSearchSettings(value);
+      if (issues.length > 0) {
+        throw new RuntimeSettingsValidationError(issues);
+      }
+      return updateSetting("search", sanitizeSearchSettings(value), actor);
     },
     async listModels() {
       await ensureBootstrapped();
