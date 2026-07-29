@@ -6,6 +6,10 @@ const migrationPath = resolve(
   import.meta.dirname,
   "../migrations/018_meilisearch_search_projection.sql"
 );
+const maintenanceRepositoryPath = resolve(
+  import.meta.dirname,
+  "../src/infrastructure/postgres/knowledge-base-index-maintenance-repository.ts"
+);
 
 describe("Meilisearch search projection migration", () => {
   it("adds compatible search state and durable work", () => {
@@ -33,6 +37,7 @@ describe("Meilisearch search projection migration", () => {
 
   it("keeps released knowledge bases on compatibility search until maintenance cutover", () => {
     const migration = readFileSync(migrationPath, "utf8");
+    const maintenanceRepository = readFileSync(maintenanceRepositoryPath, "utf8");
 
     expect(migration).toContain("'postgres_compatibility'");
     expect(migration).toContain("maintenance_required");
@@ -42,5 +47,8 @@ describe("Meilisearch search projection migration", () => {
       "UPDATE focowiki.runtime_generation\nSET generation = 'meilisearch-search-projection-v18'"
     );
     expect(migration).not.toContain("DROP TABLE focowiki.search_projection_documents");
+    expect(maintenanceRepository).toContain(
+      "search_state.maintenance_required"
+    );
   });
 });

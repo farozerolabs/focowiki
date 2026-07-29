@@ -5,6 +5,9 @@ import { applyMigrations } from "../src/db/migrations.js";
 import {
   createPostgresKnowledgeBaseIndexMaintenanceRepository
 } from "../src/infrastructure/postgres/knowledge-base-index-maintenance-repository.js";
+import {
+  REQUIRED_PROJECTION_REPAIR_VERSIONS
+} from "../src/maintenance/projection-repair-plan.js";
 
 const databaseUrl = process.env.FOCOWIKI_TEST_DATABASE_URL;
 const describeDatabase = databaseUrl ? describe : describe.skip;
@@ -195,6 +198,48 @@ describeDatabase("knowledge-base index maintenance repository integration", () =
       limit: 10,
       now: "2026-07-27T06:00:00.000Z"
     })).resolves.toBe(1);
+  });
+
+  it("includes pending search projection maintenance in the summary", async () => {
+    await sql`
+      UPDATE focowiki.publication_generations
+      SET search_schema_version = 'search-current',
+          tokenizer_contract_version = 'tokenizer-current',
+          search_segmentation_version = 'segmentation-current'
+      WHERE id = 'generation-1'
+    `;
+    for (const [kind, version] of Object.entries(
+      REQUIRED_PROJECTION_REPAIR_VERSIONS
+    )) {
+      await sql`
+        INSERT INTO focowiki.knowledge_base_projection_versions (
+          knowledge_base_id, projection_kind, format_version,
+          input_version, active_generation_id
+        ) VALUES (
+          'kb-1', ${kind}, ${version}, ${version}, 'generation-1'
+        )
+      `;
+    }
+
+    await expect(repository.getSummary({
+      knowledgeBaseId: "kb-1"
+    })).resolves.toMatchObject({
+      state: "idle",
+      maintenanceRequired: true
+    });
+
+    await sql`
+      UPDATE focowiki.knowledge_base_search_states
+      SET maintenance_required = false
+      WHERE knowledge_base_id = 'kb-1'
+    `;
+
+    await expect(repository.getSummary({
+      knowledgeBaseId: "kb-1"
+    })).resolves.toMatchObject({
+      state: "idle",
+      maintenanceRequired: false
+    });
   });
 
   it("recovers expired leases and releases the active slot after retry exhaustion", async () => {
