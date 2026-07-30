@@ -90,6 +90,7 @@ export type MaintenanceSearchProjectionProgress = {
   succeededCount: number;
   failedCount: number;
   canceledCount: number;
+  recoveryActive: boolean;
   totalCount: number;
   updatedAt: string;
   safeErrorCode: string | null;

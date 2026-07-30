@@ -510,35 +510,11 @@ export function createPostgresSearchProjectionStateRepository(
         ) {
           return false;
         }
-        const readiness = await transaction<Array<{
-          terminal_count: number;
-          cleanup_count: number;
-          incomplete_cleanup_count: number;
-        }>>`
-          SELECT
-            count(*) FILTER (
-              WHERE work_kind <> 'cleanup'
-                AND state IN ('failed', 'canceled', 'superseded')
-            )::int AS terminal_count,
-            count(*) FILTER (
-              WHERE work_kind = 'cleanup'
-            )::int AS cleanup_count,
-            count(*) FILTER (
-              WHERE work_kind = 'cleanup'
-                AND state <> 'succeeded'
-            )::int AS incomplete_cleanup_count
-          FROM focowiki.search_projection_work
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND epoch = ${input.epoch}
-            AND generation_id = ${input.generationId}
-        `;
-        const ready = readiness[0];
-        if (
-          !ready
-          || ready.terminal_count === 0
-          || ready.cleanup_count === 0
-          || ready.incomplete_cleanup_count > 0
-        ) {
+        if (!await isFailedEpochReadyForRestart(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: input.generationId,
+          epoch: input.epoch
+        })) {
           return false;
         }
 
@@ -614,35 +590,11 @@ export function createPostgresSearchProjectionStateRepository(
         ) {
           return null;
         }
-        const readiness = await transaction<Array<{
-          terminal_count: number;
-          cleanup_count: number;
-          incomplete_cleanup_count: number;
-        }>>`
-          SELECT
-            count(*) FILTER (
-              WHERE work_kind <> 'cleanup'
-                AND state IN ('failed', 'canceled', 'superseded')
-            )::int AS terminal_count,
-            count(*) FILTER (
-              WHERE work_kind = 'cleanup'
-            )::int AS cleanup_count,
-            count(*) FILTER (
-              WHERE work_kind = 'cleanup'
-                AND state <> 'succeeded'
-            )::int AS incomplete_cleanup_count
-          FROM focowiki.search_projection_work
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND epoch = ${input.epoch}
-            AND generation_id = ${current.pendingGenerationId}
-        `;
-        const ready = readiness[0];
-        if (
-          !ready
-          || ready.terminal_count === 0
-          || ready.cleanup_count === 0
-          || ready.incomplete_cleanup_count > 0
-        ) {
+        if (!await isFailedEpochReadyForRestart(transaction, {
+          knowledgeBaseId: input.knowledgeBaseId,
+          generationId: current.pendingGenerationId,
+          epoch: input.epoch
+        })) {
           return null;
         }
 
@@ -683,6 +635,45 @@ export function createPostgresSearchProjectionStateRepository(
         `;
         return rows[0] ? mapState(rows[0]) : null;
       });
+    },
+
+    async retryFailedCleanup(input) {
+      const rows = await sql<Array<{ id: string }>>`
+        UPDATE focowiki.search_projection_work
+        SET state = 'queued',
+            maintenance_request_id = ${input.maintenanceRequestId},
+            task_uid = NULL,
+            submitted_at = NULL,
+            lease_owner = NULL,
+            lease_token = NULL,
+            lease_expires_at = NULL,
+            heartbeat_at = NULL,
+            attempt_count = 0,
+            max_attempts = ${input.maxAttempts},
+            run_after = ${input.retriedAt},
+            completed_at = NULL,
+            safe_error_code = NULL,
+            safe_error_message = NULL,
+            updated_at = ${input.retriedAt}
+        WHERE knowledge_base_id = ${input.knowledgeBaseId}
+          AND epoch = ${input.epoch}
+          AND generation_id = ${input.generationId}
+          AND work_kind = 'cleanup'
+          AND state IN ('failed', 'canceled', 'superseded')
+          AND maintenance_request_id IS DISTINCT FROM
+            ${input.maintenanceRequestId}
+          AND EXISTS (
+            SELECT 1
+            FROM focowiki.search_projection_work terminal
+            WHERE terminal.knowledge_base_id = ${input.knowledgeBaseId}
+              AND terminal.epoch = ${input.epoch}
+              AND terminal.generation_id = ${input.generationId}
+              AND terminal.work_kind <> 'cleanup'
+              AND terminal.state IN ('failed', 'canceled', 'superseded')
+          )
+        RETURNING id
+      `;
+      return rows.length;
     },
 
     async beginActivation(input) {
@@ -800,6 +791,58 @@ function selectSearchState(
         FROM focowiki.knowledge_base_search_states
         WHERE knowledge_base_id = ${knowledgeBaseId}
       `;
+}
+
+async function isFailedEpochReadyForRestart(
+  sql: TransactionSql,
+  input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    epoch: number;
+  }
+): Promise<boolean> {
+  const rows = await sql<Array<{
+    terminal_count: number;
+    cleanup_count: number;
+    incomplete_cleanup_count: number;
+    executed_non_prepare_count: number;
+  }>>`
+    SELECT
+      count(*) FILTER (
+        WHERE work_kind <> 'cleanup'
+          AND state IN ('failed', 'canceled', 'superseded')
+      )::int AS terminal_count,
+      count(*) FILTER (
+        WHERE work_kind = 'cleanup'
+      )::int AS cleanup_count,
+      count(*) FILTER (
+        WHERE work_kind = 'cleanup'
+          AND state <> 'succeeded'
+      )::int AS incomplete_cleanup_count,
+      count(*) FILTER (
+        WHERE work_kind NOT IN ('prepare_index', 'cleanup')
+          AND (
+            attempt_count > 0
+            OR task_uid IS NOT NULL
+            OR submitted_at IS NOT NULL
+            OR heartbeat_at IS NOT NULL
+            OR state = 'succeeded'
+          )
+      )::int AS executed_non_prepare_count
+    FROM focowiki.search_projection_work
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND epoch = ${input.epoch}
+      AND generation_id = ${input.generationId}
+  `;
+  const readiness = rows[0];
+  if (!readiness || readiness.terminal_count === 0) return false;
+  const safelyPreparationOnly =
+    readiness.cleanup_count === 0
+    && readiness.executed_non_prepare_count === 0;
+  const cleanupCompleted =
+    readiness.cleanup_count > 0
+    && readiness.incomplete_cleanup_count === 0;
+  return safelyPreparationOnly || cleanupCompleted;
 }
 
 function mapState(row: SearchStateRow): KnowledgeBaseSearchState {

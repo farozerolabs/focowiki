@@ -144,6 +144,46 @@ describe("search indexing worker", () => {
     );
   });
 
+  it("reports bounded failure context without changing persistence behavior", async () => {
+    const repository = fakeRepository({
+      retryOrFail: vi.fn(async () => "failed" as const)
+    });
+    const onFailure = vi.fn();
+    const error = Object.assign(new Error("temporary directory unavailable"), {
+      code: "ENOENT"
+    });
+    const transport = fakeTransport({
+      addDocuments: vi.fn(async () => {
+        throw error;
+      })
+    });
+
+    await expect(processSearchIndexingWork({
+      work: createWork({ state: "queued", taskUid: null }),
+      repository,
+      transport,
+      resolveIndexUid: () => "content-index",
+      loadDocuments: async () => [{ id: "segment-one", body: "body" }],
+      leaseDurationMs: 30_000,
+      retryDelayMs: 2_000,
+      onFailure
+    })).resolves.toBe("failed");
+
+    expect(onFailure).toHaveBeenCalledWith({
+      workId: "search-work-one",
+      knowledgeBaseId: "kb-one",
+      generationId: "generation-one",
+      epoch: 1,
+      indexKind: "content",
+      workKind: "documents",
+      attemptNumber: 1,
+      maxAttempts: 5,
+      code: "ENOENT",
+      message: "Search indexing is temporarily unavailable",
+      outcome: "failed"
+    }, error);
+  });
+
   it("treats unknown and canceled tasks as durable failures", async () => {
     for (const status of ["unknown", "canceled"] as const) {
       const work = createWork({ state: "submitted", taskUid: 43 });
@@ -327,6 +367,7 @@ function fakeRepository(
     retryOrFail: vi.fn(async () => "retry" as const),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),
+    retryFailedCleanup: vi.fn(),
     beginActivation: vi.fn(),
     activateEpoch: vi.fn(),
     cancelForKnowledgeBase: vi.fn(),

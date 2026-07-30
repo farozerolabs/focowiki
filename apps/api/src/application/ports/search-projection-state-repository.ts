@@ -173,6 +173,14 @@ export interface SearchProjectionStateRepository {
     };
     rebasedAt: string;
   }): Promise<KnowledgeBaseSearchState | null>;
+  retryFailedCleanup(input: {
+    knowledgeBaseId: string;
+    generationId: string;
+    maintenanceRequestId: string | null;
+    epoch: number;
+    maxAttempts: number;
+    retriedAt: string;
+  }): Promise<number>;
   beginActivation(input: {
     knowledgeBaseId: string;
     generationId: string;

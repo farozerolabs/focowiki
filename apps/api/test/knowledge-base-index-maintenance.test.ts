@@ -206,6 +206,7 @@ describe("knowledge-base index maintenance", () => {
           succeededCount: 4,
           failedCount: 0,
           canceledCount: 0,
+          recoveryActive: false,
           totalCount: 12,
           updatedAt: NOW,
           safeErrorCode: null,
@@ -224,6 +225,50 @@ describe("knowledge-base index maintenance", () => {
       completedCount: 4,
       expectedCount: 12
     }));
+    expect(fixture.complete).not.toHaveBeenCalled();
+  });
+
+  it("keeps maintenance active while failed search work is being cleaned", async () => {
+    const fixture = createRepository({
+      claims: [claim({ state: "running", plannedScopes: ["search"] })]
+    });
+
+    await runKnowledgeBaseIndexMaintenanceSlice({
+      requests: fixture.repository,
+      progress: progressRepository({
+        ...healthyProgress(),
+        searchProjection: {
+          routeState: "postgres_compatibility",
+          maintenanceRequired: true,
+          activeEpoch: 0,
+          pendingEpoch: 1,
+          generationId: "generation-1",
+          queuedCount: 0,
+          submittedCount: 0,
+          retryCount: 0,
+          succeededCount: 0,
+          failedCount: 1,
+          canceledCount: 91,
+          recoveryActive: true,
+          totalCount: 92,
+          updatedAt: NOW,
+          safeErrorCode: "SEARCH_ENGINE_UNAVAILABLE",
+          safeErrorMessage: "Search indexing is temporarily unavailable"
+        }
+      }),
+      runtimeSettings: runtimeSettings("manual"),
+      workerId: "worker-1",
+      leaseTtlSeconds: 60,
+      schedule: vi.fn(async () => undefined),
+      now: () => new Date(NOW)
+    });
+
+    expect(fixture.heartbeat).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "search:indexing",
+      completedCount: 0,
+      expectedCount: 92
+    }));
+    expect(fixture.retryOrFail).not.toHaveBeenCalled();
     expect(fixture.complete).not.toHaveBeenCalled();
   });
 

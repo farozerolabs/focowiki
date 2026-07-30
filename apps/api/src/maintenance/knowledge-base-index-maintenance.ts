@@ -207,8 +207,13 @@ function aggregateProgress(
   const searchActive = Boolean(
     search
       && search.pendingEpoch !== null
-      && search.failedCount === 0
-      && search.canceledCount === 0
+      && (
+        (
+          search.failedCount === 0
+          && search.canceledCount === 0
+        )
+        || search.recoveryActive
+      )
   );
   const failures = [
     projection?.state === "failed" && isCurrentProgress(projection.updatedAt, startedAtMs)
@@ -222,6 +227,7 @@ function aggregateProgress(
     search
       && search.pendingEpoch !== null
       && (search.failedCount > 0 || search.canceledCount > 0)
+      && !search.recoveryActive
       && isCurrentProgress(search.updatedAt, startedAtMs)
       ? safeFailure(search.safeErrorCode, search.safeErrorMessage)
       : null,

@@ -367,6 +367,84 @@ describe("search indexing coordinator", () => {
     }));
   });
 
+  it("schedules missing cleanup work before retrying an unsafe partial epoch", async () => {
+    const created: Array<{ workKind: string; indexKind: string }> = [];
+    const states = fakeStates({
+      getState: vi.fn(async () => searchState({
+        routeState: "postgres_compatibility",
+        activeGenerationId: "generation-active",
+        pendingEpoch: 1,
+        pendingGenerationId: "generation-active",
+        pendingFullRebuild: true,
+        pendingContentSchemaVersion: "content-v1",
+        pendingGraphSchemaVersion: "graph-v1",
+        pendingContentSettingsChecksum: "a".repeat(64),
+        pendingGraphSettingsChecksum: "b".repeat(64)
+      })),
+      reservePendingEpoch: vi.fn(async () => ({
+        outcome: "existing" as const,
+        state: searchState({
+          routeState: "postgres_compatibility",
+          activeGenerationId: "generation-active",
+          pendingEpoch: 1,
+          pendingGenerationId: "generation-active",
+          pendingFullRebuild: true,
+          pendingContentSchemaVersion: "content-v1",
+          pendingGraphSchemaVersion: "graph-v1",
+          pendingContentSettingsChecksum: "a".repeat(64),
+          pendingGraphSettingsChecksum: "b".repeat(64)
+        })
+      })),
+      getEpochProgress: vi.fn(async () => ({
+        total: 92,
+        queued: 0,
+        submitted: 0,
+        retry: 0,
+        succeeded: 0,
+        failed: 1,
+        canceled: 91,
+        superseded: 0,
+        activationReady: false
+      })),
+      restartFailedEpoch: vi.fn(async () => false),
+      retryFailedCleanup: vi.fn(async () => 0),
+      createWork: vi.fn(async (work) => {
+        created.push(...work);
+        return work.length;
+      })
+    });
+    const documents = fakeDocuments();
+
+    await expect(ensureSearchProjectionWork({
+      states,
+      documents,
+      knowledgeBaseId: "kb-one",
+      generationId: "generation-active",
+      maintenanceRequestId: "maintenance-recovery",
+      forceCompatibilityCutover: true,
+      scanBatchSize: 100,
+      indexBatchDocumentCount: 50,
+      indexBatchCompressedBytes: 4_096,
+      maxAttempts: 5,
+      contract: searchContract(),
+      now: "2026-07-29T00:05:00.000Z"
+    })).resolves.toEqual({ status: "pending", epoch: 1 });
+
+    expect(created.map((work) => `${work.indexKind}:${work.workKind}`)).toEqual([
+      "content:cleanup",
+      "graph:cleanup"
+    ]);
+    expect(states.retryFailedCleanup).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-one",
+      generationId: "generation-active",
+      maintenanceRequestId: "maintenance-recovery",
+      epoch: 1,
+      maxAttempts: 5,
+      retriedAt: "2026-07-29T00:05:00.000Z"
+    });
+    expect(documents.listRecords).not.toHaveBeenCalled();
+  });
+
   it("rebases a cleaned failed epoch onto a newer generation with a full rebuild", async () => {
     const created: Array<{ generationId: string | null }> = [];
     const failedState = searchState({
@@ -499,6 +577,7 @@ function fakeStates(
     retryOrFail: vi.fn(),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),
+    retryFailedCleanup: vi.fn(),
     beginActivation: vi.fn(),
     activateEpoch: vi.fn(),
     cancelForKnowledgeBase: vi.fn(),

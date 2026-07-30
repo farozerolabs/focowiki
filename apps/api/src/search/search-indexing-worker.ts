@@ -16,6 +16,20 @@ export type SearchIndexingWorkOutcome =
   | "failed"
   | "lost";
 
+export type SearchIndexingFailureEvent = {
+  workId: string;
+  knowledgeBaseId: string;
+  generationId: string | null;
+  epoch: number;
+  indexKind: SearchProjectionWork["indexKind"];
+  workKind: SearchProjectionWork["workKind"];
+  attemptNumber: number;
+  maxAttempts: number;
+  code: string;
+  message: string;
+  outcome: "retry" | "failed" | "lost";
+};
+
 export type SearchIndexingLifecycle = {
   prepareIndex?: (work: SearchProjectionWork) => Promise<void>;
   deleteDocuments?: (work: SearchProjectionWork) => Promise<void>;
@@ -41,6 +55,10 @@ export async function processSearchIndexingWork(input: {
   retryDelayMs: number;
   maxDocumentCount?: number;
   maxCompressedBytes?: number;
+  onFailure?: (
+    event: SearchIndexingFailureEvent,
+    error?: unknown
+  ) => void;
 }): Promise<SearchIndexingWorkOutcome> {
   if (input.work.state === "submitted") {
     return pollSubmittedWork(input);
@@ -81,7 +99,7 @@ export async function processSearchIndexingWork(input: {
     });
     return persistSubmitted(input, task.taskUid);
   } catch (error) {
-    return persistRetry(input, classifyFailure(error));
+    return persistRetry(input, classifyFailure(error), error);
   }
 }
 
@@ -150,7 +168,7 @@ async function processLifecycleWork(input: {
     });
     return persisted ? "succeeded" : "lost";
   } catch (error) {
-    return persistRetry(input, classifyFailure(error));
+    return persistRetry(input, classifyFailure(error), error);
   }
 }
 
@@ -191,7 +209,7 @@ async function pollSubmittedWork(input: {
       message: "Search indexing task did not complete"
     });
   } catch (error) {
-    return persistRetry(input, classifyFailure(error));
+    return persistRetry(input, classifyFailure(error), error);
   }
 }
 
@@ -201,11 +219,16 @@ async function persistRetry(
     repository: SearchProjectionStateRepository;
     now?: () => Date;
     retryDelayMs: number;
+    onFailure?: (
+      event: SearchIndexingFailureEvent,
+      error?: unknown
+    ) => void;
   },
-  failure: { code: string; message: string }
+  failure: { code: string; message: string },
+  error?: unknown
 ): Promise<"retry" | "failed" | "lost"> {
   const failedAt = now(input.now);
-  return input.repository.retryOrFail({
+  const outcome = await input.repository.retryOrFail({
     work: input.work,
     code: failure.code,
     message: failure.message,
@@ -214,6 +237,20 @@ async function persistRetry(
     ).toISOString(),
     failedAt
   });
+  input.onFailure?.({
+    workId: input.work.id,
+    knowledgeBaseId: input.work.knowledgeBaseId,
+    generationId: input.work.generationId,
+    epoch: input.work.epoch,
+    indexKind: input.work.indexKind,
+    workKind: input.work.workKind,
+    attemptNumber: input.work.attemptCount + 1,
+    maxAttempts: input.work.maxAttempts,
+    code: failure.code,
+    message: failure.message,
+    outcome
+  }, error);
+  return outcome;
 }
 
 function assertBoundedDocuments(input: {
