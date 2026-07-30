@@ -19,9 +19,9 @@ const knowledgeBase = {
 };
 
 const uploadSessionCounts = {
-  selected: 2,
+  selected: 1,
   uploadRequired: 1,
-  skippedExisting: 1,
+  skippedExisting: 0,
   waitingReservation: 0,
   rejectedDeleting: 0,
   uploaded: 1,
@@ -29,12 +29,34 @@ const uploadSessionCounts = {
   finalized: 1
 };
 
+const emptyUploadSessionCounts = {
+  selected: 0,
+  uploadRequired: 0,
+  skippedExisting: 0,
+  waitingReservation: 0,
+  rejectedDeleting: 0,
+  uploaded: 0,
+  failed: 0,
+  finalized: 0
+};
+
+const sealedUploadSessionCounts = {
+  selected: 1,
+  uploadRequired: 1,
+  skippedExisting: 0,
+  waitingReservation: 0,
+  rejectedDeleting: 0,
+  uploaded: 0,
+  failed: 0,
+  finalized: 0
+};
+
 const uploadSession = {
   id: "upload-session-11111111-1111-4111-8111-111111111111",
   knowledgeBaseId,
   state: "completed",
-  declaredFileCount: 2,
-  declaredByteCount: 4096,
+  declaredFileCount: 1,
+  declaredByteCount: 37,
   counts: uploadSessionCounts,
   errorCode: null,
   expiresAt: "2026-06-18T00:00:00.000Z",
@@ -50,8 +72,8 @@ const uploadSessionEntry = {
   relativePath: "handbook/onboarding/guide.md",
   directoryPath: "handbook/onboarding",
   name: "guide.md",
-  declaredSize: 2048,
-  receivedSize: 2048,
+  declaredSize: 37,
+  receivedSize: 37,
   disposition: "upload_required",
   transferState: "uploaded",
   sourceDirectoryId: "source-directory-11111111-1111-4111-8111-111111111111",
@@ -93,16 +115,34 @@ const sourceMoveOperation = {
   expectedResourceRevision: 1,
   targetKind: "source_file",
   targetId: sourceFileId,
-  candidateRelativePath: "handbook/getting-started.md",
+  candidateRelativePath: "handbook/setup/install.md",
   result: null,
   errorCode: null,
-  retryGuidance: "Read the operation again after a short delay.",
+  retryGuidance: "Check this change again after a short delay.",
   actions: {
     self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/resource-operation-11111111-1111-4111-8111-111111111111`
   },
   createdAt: exampleTimestamp,
   updatedAt: exampleTimestamp,
   completedAt: null
+};
+
+function resourceOperationActions(operationId: string) {
+  return {
+    self: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/operations/${operationId}`
+  };
+}
+
+const sourceDirectoryMoveOperationId =
+  "resource-operation-22222222-2222-4222-8222-222222222222";
+const sourceDirectoryMoveOperation = {
+  ...sourceMoveOperation,
+  operationId: sourceDirectoryMoveOperationId,
+  kind: "source_directory_move",
+  targetKind: "source_directory",
+  targetId: sourceDirectory.directoryId,
+  candidateRelativePath: "handbook/archive",
+  actions: resourceOperationActions(sourceDirectoryMoveOperationId)
 };
 
 const sourceResourceFile = {
@@ -183,7 +223,7 @@ const generatedFile = {
   }
 };
 
-const fileSearchResult = {
+const fileSearchResultBase = {
   generationId,
   nodeId: sourceFileId,
   edgeId: null,
@@ -204,6 +244,7 @@ const fileSearchResult = {
   matchedFields: ["path", "title"],
   score: 9,
   contentAvailable: true,
+  matchType: "hybrid",
   readActions: {
     fileDetailById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}`,
     fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/${fileId}/content`,
@@ -239,7 +280,7 @@ const fileSearchResultSummary = {
   resultCount: 1,
   hasMore: false,
   sort: ["score desc", "path asc", "fileId asc"],
-  meaning: "Candidates matched the query. Read candidate content and related files before answering."
+  meaning: "The query matched published files. Read the returned files and related files before using their content."
 };
 
 const fileSearchNextRequestTemplates = {
@@ -282,6 +323,22 @@ const relatedFile = {
   }
 };
 
+const fileSearchResult = {
+  ...fileSearchResultBase,
+  graphContext: {
+    graphRef: `_graph/by-file/${sourceFileId}.json`,
+    depth: 1,
+    seedSourceFileId: sourceFileId,
+    matchedNodeFields: [],
+    matchedRelationshipFields: [],
+    relationships: [relatedFile],
+    graphPaths: [
+      `_graph/by-file/${sourceFileId}.json`,
+      "_graph/by-file/source-file-22222222-2222-4222-8222-222222222222.json"
+    ]
+  }
+};
+
 const graphExpansion = {
   generationId,
   query: {
@@ -309,13 +366,8 @@ const graphExpansion = {
     hasMore: false,
     depth: 1,
     fanout: 10,
-    meaning: "Graph expansion returned related files. Read file content before answering."
+    meaning: "Related files were found. Read the returned files before using their content."
   },
-  nextActions: [
-    "Read candidate file content before answering.",
-    "Continue with related-file reads when more evidence is needed.",
-    "Use graph search when this expansion does not provide enough evidence."
-  ]
 };
 
 const graphOverview = {
@@ -345,11 +397,11 @@ const graphOverview = {
     fileContentByPath: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path={path}`,
     relatedFilesById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/related`
   },
-  message: "Graph projections are available. Continue to source-backed files before answering.",
+  message: "File relationships are available. Read the related Markdown files before using their content.",
   nextActions: [
-    "Read the graph index or list graph directories to discover relationships.",
-    "Use graph search, related files, or graph expansion to identify candidate files.",
-    "Read candidate file content before answering."
+    "Read `_graph/index.md` or browse the `_graph/` directory to inspect file relationships.",
+    "Search relationships, list related files, or explore from a file to find matching files.",
+    "Read the returned Markdown files before using their content."
   ]
 };
 
@@ -380,7 +432,8 @@ const treeEntry = {
     graphExpansionByFileId: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=${fileId}`,
     sourceFileStatusById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}`,
     sourceFileEventsById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/source-files/${sourceFileId}/events`
-  }
+  },
+  ancestors: []
 };
 
 const webhook = {
@@ -432,12 +485,16 @@ export const requestExamples = {
   },
   createUploadSession: {
     path: { knowledgeBaseId },
-    body: { declaredFileCount: 2, declaredByteCount: 4096 }
+    body: { declaredFileCount: 1, declaredByteCount: 37 }
   },
   addUploadManifestEntries: {
     path: { knowledgeBaseId, uploadSessionId: uploadSession.id },
     body: {
-      entries: [{ relativePath: uploadSessionEntry.relativePath, declaredSize: 2048, checksumSha256: "0".repeat(64) }]
+      entries: [{
+        relativePath: uploadSessionEntry.relativePath,
+        declaredSize: 37,
+        checksumSha256: "67c26271e50e79cadc720ca4eb964ee65fa4be663c87e0314b486b1109a0990c"
+      }]
     }
   },
   sealUploadManifest: { path: { knowledgeBaseId, uploadSessionId: uploadSession.id } },
@@ -552,6 +609,9 @@ export function createDeveloperOpenApiResponseExamples() {
         title: "Focowiki Developer OpenAPI",
         version: productVersion
       },
+      servers: [{ url: "https://openapi.example.com" }],
+      security: [{ bearerAuth: [] }],
+      tags: [{ name: "Knowledge Bases" }],
       paths: {
         "/openapi/v2/knowledge-bases": {
           get: {
@@ -563,6 +623,15 @@ export function createDeveloperOpenApiResponseExamples() {
             summary: "Create a knowledge base"
           }
         }
+      },
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: "http",
+            scheme: "bearer"
+          }
+        },
+        schemas: {}
       }
     },
     listKnowledgeBases: {
@@ -570,7 +639,11 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null
     },
     createKnowledgeBase: {
-      knowledgeBase
+      knowledgeBase: {
+        ...knowledgeBase,
+        activeGenerationId: null,
+        catalogGeneration: 0
+      }
     },
     getKnowledgeBase: {
       knowledgeBase
@@ -592,16 +665,29 @@ export function createDeveloperOpenApiResponseExamples() {
       }
     },
     createUploadSession: {
-      session: { ...uploadSession, state: "draft", completedAt: null },
+      session: {
+        ...uploadSession,
+        state: "draft",
+        counts: emptyUploadSessionCounts,
+        completedAt: null
+      },
       transport: uploadSessionTransport
     },
     addUploadManifestEntries: {
-      session: { ...uploadSession, state: "manifest_building", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_building",
+        counts: { ...emptyUploadSessionCounts, selected: 1 },
+        completedAt: null
+      }
     },
     sealUploadManifest: {
-      session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_sealed",
+        counts: sealedUploadSessionCounts,
+        completedAt: null
+      }
     },
     uploadSessionEntryContent: { entry: uploadSessionEntry },
     getUploadSession: {
@@ -609,8 +695,12 @@ export function createDeveloperOpenApiResponseExamples() {
       entries: { items: [uploadSessionEntry], nextCursor: null }
     },
     reconcileUploadSession: {
-      session: { ...uploadSession, state: "manifest_sealed", completedAt: null },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "manifest_sealed",
+        counts: sealedUploadSessionCounts,
+        completedAt: null
+      }
     },
     finalizeUploadSession: {
       session: {
@@ -619,25 +709,53 @@ export function createDeveloperOpenApiResponseExamples() {
       }
     },
     cancelUploadSession: {
-      session: { ...uploadSession, state: "cancelled", completedAt: exampleTimestamp },
-      transport: uploadSessionTransport
+      session: {
+        ...uploadSession,
+        state: "cancelled",
+        counts: sealedUploadSessionCounts,
+        completedAt: exampleTimestamp
+      }
     },
     moveSourceFile: { operation: sourceMoveOperation },
     deleteSourceFile: {
-      operation: { ...sourceMoveOperation, kind: "source_file_delete" },
+      operation: {
+        ...sourceMoveOperation,
+        operationId: "resource-operation-33333333-3333-4333-8333-333333333333",
+        kind: "source_file_delete",
+        candidateRelativePath: "handbook/guide.md",
+        actions: resourceOperationActions(
+          "resource-operation-33333333-3333-4333-8333-333333333333"
+        )
+      },
       deletion: { sourceFileId }
     },
     getSourceFileContent: "---\ntype: guide\ntitle: Guide\n---\n# Guide",
     replaceSourceFileContent: {
-      operation: { ...sourceMoveOperation, kind: "source_file_replace" }
+      operation: {
+        ...sourceMoveOperation,
+        operationId: "resource-operation-44444444-4444-4444-8444-444444444444",
+        kind: "source_file_replace",
+        candidateRelativePath: "handbook/setup/install.md",
+        actions: resourceOperationActions(
+          "resource-operation-44444444-4444-4444-8444-444444444444"
+        )
+      }
     },
     listSourceDirectories: { items: [sourceDirectory], nextCursor: null },
     getSourceDirectory: { directory: sourceDirectory },
     moveSourceDirectory: {
-      operation: { ...sourceMoveOperation, kind: "source_directory_move" }
+      operation: sourceDirectoryMoveOperation
     },
     deleteSourceDirectory: {
-      operation: { ...sourceMoveOperation, kind: "source_directory_delete" },
+      operation: {
+        ...sourceDirectoryMoveOperation,
+        operationId: "resource-operation-55555555-5555-4555-8555-555555555555",
+        kind: "source_directory_delete",
+        candidateRelativePath: sourceDirectory.relativePath,
+        actions: resourceOperationActions(
+          "resource-operation-55555555-5555-4555-8555-555555555555"
+        )
+      },
       deletion: {
         directoryId: sourceDirectory.directoryId,
         affectedDirectoryCount: 1,
@@ -666,6 +784,11 @@ export function createDeveloperOpenApiResponseExamples() {
         failure: null,
         generatedOutputStatus: "pending",
         actions: []
+      },
+      retry: {
+        kind: "source_processing",
+        scope: "source_file",
+        coalesced: false
       }
     },
     listKnowledgeBaseTree: {
@@ -722,7 +845,14 @@ export function createDeveloperOpenApiResponseExamples() {
       nextCursor: null
     },
     redeliverWebhook: {
-      delivery
+      delivery: {
+        ...delivery,
+        deliveryId: "delivery-22222222-2222-4222-8222-222222222222",
+        status: "pending",
+        attemptCount: 0,
+        httpStatus: null,
+        errorCode: null
+      }
     }
   } as const;
 }

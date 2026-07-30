@@ -51,6 +51,7 @@ import {
   readSearchProjectionCoordinationStatus
 } from "./search/search-indexing-coordinator.js";
 import { createSearchProjectionContract } from "./search/index-definitions.js";
+import { createWebhookDispatcher } from "./webhooks/dispatcher.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -82,6 +83,7 @@ async function runPublicationWorker(): Promise<void> {
       sessionWrites: "best_effort"
     });
     const adminRepositories = createPostgresAdminRepositories(sql);
+    const webhooks = createWebhookDispatcher({ repositories: adminRepositories, redis });
     if (!adminRepositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
@@ -287,6 +289,16 @@ async function runPublicationWorker(): Promise<void> {
         immutableObjects,
         finalizers: [graphSummaryFinalizer, catalogWriter],
         searchProjection,
+        ...(webhooks
+          ? {
+              webhooks,
+              onWebhookError(error: unknown) {
+                logger.warn("Generation lifecycle webhook dispatch failed", {
+                  errorClass: error instanceof Error ? error.name : "Unknown"
+                });
+              }
+            }
+          : {}),
         validationIssueLimit: 50
       }),
       resourceBudgets: {

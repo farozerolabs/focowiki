@@ -205,6 +205,19 @@ jobs:
           FOCOWIKI_RELEASE_VERSION: 0.0.0-ci
         run: pnpm docs:validate
 
+      - name: Install documentation browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Validate documentation browser
+        run: pnpm docs:validate:browser
+
+      - name: Upload documentation preview
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: documentation-preview-${{ github.run_id }}
+          path: docs/.vitepress/dist
+          retention-days: 7
+
       - name: Validate local path leaks
         run: pnpm validate:no-local-paths
 

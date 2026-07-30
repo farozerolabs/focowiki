@@ -8,6 +8,100 @@ type AdditionalErrorStatus = 404 | 409 | 413 | 422;
 export const bearerSecurity = [{ bearerAuth: [] }];
 export const jsonContentType = "application/json";
 
+const OPERATION_DESCRIPTIONS: Record<string, string> = {
+  getDeveloperOpenApiHealth: "Check whether the Developer OpenAPI is available. The response only returns the health state.",
+  getDeveloperOpenApiVersion: "Read the product version and Developer OpenAPI version for client compatibility checks.",
+  getDeveloperOpenApiContract: "Read the machine-readable OpenAPI contract that describes the Developer OpenAPI.",
+  listKnowledgeBases: "Read a paginated list of knowledge bases available to the current OpenAPI key.",
+  createKnowledgeBase: "Create a new knowledge base and receive the `knowledgeBaseId` required by its upload, processing-status, published-file, and deletion APIs.",
+  getKnowledgeBase: "Read one knowledge base by `knowledgeBaseId`.",
+  updateKnowledgeBase: "Update the name or description of one knowledge base. Send its current `resourceRevision` in `If-Match` so a concurrent change is not overwritten.",
+  deleteKnowledgeBase: "Start deleting one knowledge base. A successful response confirms that deletion has started and the knowledge base will become unavailable.",
+  createUploadSession: "Start a resumable upload and receive the session identifier, the maximum number of files per list request, and the recommended upload concurrency.",
+  addUploadManifestEntries: "Add a batch of Markdown files to an upload session by registering each relative path, size, and optional checksum.",
+  sealUploadManifest: "Confirm that the upload file list is complete, then read the session to find the files whose Markdown content must be uploaded.",
+  uploadSessionEntryContent: "Upload the complete Markdown content for one file marked `upload_required`.",
+  getUploadSession: "Read upload progress and the next page of entries needed to resume a session.",
+  cancelUploadSession: "Cancel an upload session that has not completed.",
+  reconcileUploadSession: "Refresh entries that were temporarily blocked by another change to the same path.",
+  finalizeUploadSession: "Submit the uploaded files for background processing. The response confirms submission while individual files can still be processing.",
+  listKnowledgeBaseSourceFiles: "Read a paginated list of uploaded Markdown files and their processing status.",
+  getKnowledgeBaseSourceFile: "Read the processing status and available actions for one uploaded Markdown file by `sourceFileId`.",
+  moveSourceFile: "Rename an uploaded Markdown file or move it to an existing uploaded directory.",
+  deleteSourceFile: "Delete one uploaded Markdown file and remove its published page from the readable knowledge base.",
+  getSourceFileContent: "Read the complete Markdown content currently stored for one uploaded file.",
+  replaceSourceFileContent: "Replace the complete Markdown content of one uploaded file and optionally move it.",
+  listSourceDirectories: "Read the direct child directories under an uploaded directory.",
+  getSourceDirectory: "Read one uploaded directory and its file counts.",
+  moveSourceDirectory: "Rename or move one uploaded directory with all files and subdirectories below it.",
+  deleteSourceDirectory: "Delete one uploaded directory and all files and subdirectories below it.",
+  listResourceOperations:
+    "List file and directory changes for a knowledge base, including moves, renames, content replacements, and deletions. Results can be filtered by processing status.",
+  getResourceOperation:
+    "Use the `operationId` returned by a change request to read its processing state, final result, and error details.",
+  listKnowledgeBaseSourceFileEvents: "Read the processing history for one uploaded Markdown file, including each step, message level, and time.",
+  retryKnowledgeBaseSourceFile: "Manually retry one uploaded Markdown file that failed processing.",
+  listKnowledgeBaseTree: "Browse the currently published knowledge-base files and directories.",
+  getFileContentByPath: "Read a published knowledge-base file by its `path`, such as `index.md` or `pages/example.md`.",
+  getFileById: "Read the metadata and available read links for one published file by `fileId`.",
+  getFileContentById: "Read a published knowledge-base file by `fileId`.",
+  listRelatedFiles: "Read a paginated list of files related to the selected file, with paths for opening their content.",
+  searchGeneratedFiles: "Find published files by path, title, heading, Markdown content, metadata, and optional file relationships. Read a returned file before using its content.",
+  expandGraph: "Provide exactly one starting point: a file, relationship node, relationship edge, or short query. The response returns related files up to the requested depth and result limits.",
+  getGraphOverview: "Read a compact overview of available file relationships.",
+  createWebhook: "Create a webhook subscription and receive the signing secret once.",
+  listWebhooks: "Read a paginated list of webhook subscriptions.",
+  deleteWebhook: "Delete one webhook subscription by `webhookId`.",
+  listWebhookDeliveries: "Read a paginated list of webhook delivery records.",
+  redeliverWebhook: "Request redelivery for one webhook delivery record by `deliveryId`."
+};
+
+const OPERATION_SUCCESS_DESCRIPTIONS: Record<string, string> = {
+  getDeveloperOpenApiHealth: "Current Developer OpenAPI health state.",
+  getDeveloperOpenApiVersion: "Current product and Developer OpenAPI versions.",
+  getDeveloperOpenApiContract: "Complete OpenAPI 3.1 contract for the Developer OpenAPI.",
+  listKnowledgeBases: "Requested page of knowledge bases and the token for reading the next page.",
+  createKnowledgeBase: "Newly created knowledge base.",
+  getKnowledgeBase: "Requested knowledge base.",
+  updateKnowledgeBase: "Knowledge base after the metadata update.",
+  deleteKnowledgeBase: "Knowledge-base deletion request and the number of affected files and directories.",
+  createUploadSession: "New upload session and its file-list and content-upload settings.",
+  addUploadManifestEntries: "Upload session after accepting this batch of file records.",
+  sealUploadManifest: "Upload session after confirming the complete file list.",
+  uploadSessionEntryContent: "Upload entry after receiving its Markdown content.",
+  getUploadSession: "Current upload session and the requested page of file records.",
+  cancelUploadSession: "Upload session after cancellation.",
+  reconcileUploadSession: "Upload session after rechecking blocked entries.",
+  finalizeUploadSession: "Upload session after submitting uploaded files for background processing.",
+  listKnowledgeBaseSourceFiles: "Requested page of uploaded Markdown files and the token for reading the next page.",
+  getKnowledgeBaseSourceFile: "Requested uploaded Markdown file and its current processing status.",
+  moveSourceFile: "File move or rename request accepted for background processing.",
+  getSourceFileContent: "Complete current Markdown content of the uploaded file.",
+  replaceSourceFileContent: "File content replacement accepted for background processing.",
+  deleteSourceFile: "File deletion accepted for background processing.",
+  listSourceDirectories: "Requested page of direct child directories from the uploaded folder structure.",
+  getSourceDirectory: "Requested directory from the uploaded folder structure.",
+  moveSourceDirectory: "Directory move or rename request accepted for background processing.",
+  deleteSourceDirectory: "Directory deletion accepted for background processing, with the number of affected files and directories.",
+  listResourceOperations: "Requested page of file and directory changes.",
+  getResourceOperation: "Requested file or directory change.",
+  listKnowledgeBaseSourceFileEvents: "Requested page of processing history for the uploaded Markdown file.",
+  retryKnowledgeBaseSourceFile: "Uploaded file and accepted retry details.",
+  listKnowledgeBaseTree: "Requested page of published files and directories, including parent directories for search results.",
+  getFileContentByPath: "Complete content of the published file at the requested path.",
+  searchGeneratedFiles: "Published files ranked by relevance to the supplied query.",
+  expandGraph: "Related files and relationship details for the selected starting point.",
+  getGraphOverview: "Relationship counts and links for exploring the currently published knowledge-base version.",
+  getFileById: "Requested published file metadata and links for reading or exploring it.",
+  getFileContentById: "Complete content of the published file with the requested identifier.",
+  listRelatedFiles: "Requested page of files related to the selected published file.",
+  createWebhook: "New webhook subscription and its signing secret.",
+  listWebhooks: "Requested page of webhook subscriptions.",
+  deleteWebhook: "Confirmation that the webhook subscription was deleted.",
+  listWebhookDeliveries: "Requested page of webhook delivery attempts.",
+  redeliverWebhook: "New delivery attempt created from the selected webhook delivery."
+};
+
 export function operation(input: {
   tag: string;
   operationId: string;
@@ -28,7 +122,7 @@ export function operation(input: {
     tags: [input.tag],
     operationId: input.operationId,
     summary: input.summary,
-    ...(input.description ? { description: input.description } : {}),
+    description: input.description ?? operationDescription(input.operationId),
     security: bearerSecurity,
     "x-request-example": input.requestExample ?? {},
     ...(input.parameters ? { parameters: input.parameters } : {}),
@@ -51,16 +145,36 @@ export function operation(input: {
     responses: {
       [String(input.successStatus)]: input.successContentType
         ? contentResponse(
-            "Successful response.",
+            successDescription(input.operationId),
             input.successContentType,
             input.successSchema,
             input.successExample
           )
-        : jsonResponse("Successful response.", input.successSchema, input.successExample),
+        : jsonResponse(
+            successDescription(input.operationId),
+            input.successSchema,
+            input.successExample
+          ),
       ...standardErrorResponses(input.additionalErrorStatuses),
       ...input.extraResponses
     }
   };
+}
+
+function operationDescription(operationId: string): string {
+  const description = OPERATION_DESCRIPTIONS[operationId];
+  if (!description) {
+    throw new Error(`Missing Developer OpenAPI operation description for ${operationId}.`);
+  }
+  return description;
+}
+
+function successDescription(operationId: string): string {
+  const description = OPERATION_SUCCESS_DESCRIPTIONS[operationId];
+  if (!description) {
+    throw new Error(`Missing Developer OpenAPI success description for ${operationId}.`);
+  }
+  return description;
 }
 
 function contentResponse(
@@ -99,7 +213,7 @@ export function pageSchema(itemSchema: SchemaObject): SchemaObject {
       {
         items: { type: "array", items: itemSchema },
         nextCursor: nullableString(
-          "Opaque cursor accepted only by the same list family and unchanged query. Restart without a cursor when it is rejected."
+          "Pagination token returned by this endpoint. Reuse it only with the same endpoint and unchanged filters. If it is rejected, restart without a cursor."
         )
       },
       ["items", "nextCursor"]
@@ -137,7 +251,7 @@ export function paginationParameters(): ParameterObject[] {
       name: "cursor",
       in: "query",
       required: false,
-      description: "Opaque cursor returned by the same list endpoint family.",
+      description: "Pagination token returned by the same endpoint for reading the next page.",
       schema: { type: "string" }
     }
   ];
@@ -145,30 +259,30 @@ export function paginationParameters(): ParameterObject[] {
 
 export function sourceFileListFilterParameters(): ParameterObject[] {
   return [
-    queryParameter("directoryId", "Parent source-directory identifier. Use `root` for root files.", {
+    queryParameter("directoryId", "Parent uploaded-directory identifier. Use `root` for files at the knowledge-base root.", {
       type: "string",
       minLength: 1,
       maxLength: 200,
       example: "source-directory-handbook"
     }),
-    queryParameter("pathQuery", "Case-insensitive source-relative path substring filter.", {
+    queryParameter("pathQuery", "Case-insensitive partial match against uploaded file paths.", {
       type: "string",
       minLength: 1,
       maxLength: 160,
       example: "handbook/guide"
     }),
-    queryParameter("sourceFileIdPrefix", "Source file ID prefix filter.", {
+    queryParameter("sourceFileIdPrefix", "Uploaded-file ID prefix used to filter results.", {
       type: "string",
       minLength: 8,
       maxLength: 160,
       example: "source-file-11111111"
     }),
-    queryParameter("state", "Backend-derived source-file lifecycle state filter.", {
+    queryParameter("state", "Filter by the uploaded file's current processing status.", {
       type: "string",
       enum: ["queued", "running", "pending_publication", "visible", "failed"],
       example: "visible"
     }),
-    queryParameter("currentStage", "Current source-file stage filter.", {
+    queryParameter("currentStage", "Filter by the current file-processing step.", {
       type: "string",
       enum: [
         "upload_storage",
@@ -181,7 +295,7 @@ export function sourceFileListFilterParameters(): ParameterObject[] {
       ],
       example: "generation_activation"
     }),
-    queryParameter("generatedOutputStatus", "Generated output state filter.", {
+    queryParameter("generatedOutputStatus", "Filter by whether the published file is ready to read.", {
       type: "string",
       enum: ["pending", "visible", "unavailable"],
       example: "visible"
@@ -194,11 +308,11 @@ export function knowledgeBaseIdParameter(): ParameterObject {
 }
 
 export function sourceFileIdParameter(): ParameterObject {
-  return pathParameter("sourceFileId", "Source file identifier returned by upload or source-file list APIs.");
+  return pathParameter("sourceFileId", "Uploaded-file identifier returned by upload or uploaded-file list APIs.");
 }
 
 export function fileIdParameter(): ParameterObject {
-  return pathParameter("fileId", "Generated file identifier returned by tree, search, related-file, or file APIs.");
+  return pathParameter("fileId", "Published file identifier returned by tree, search, related-file, or file APIs.");
 }
 
 export function webhookIdParameter(): ParameterObject {
@@ -214,24 +328,27 @@ export function filePathQueryParameter(required: boolean): ParameterObject {
     name: "path",
     in: "query",
     required,
-    description: "Logical generated file path. Traversal, backslashes, and storage paths are rejected.",
+    description: "Published knowledge-base file path returned by tree, search, or file APIs. Parent traversal, backslashes, and storage paths are rejected.",
     schema: { type: "string", minLength: 1 }
   };
 }
 
 export function fileSearchParameters(): ParameterObject[] {
   return [
-    queryParameter("query", "Language-neutral search phrase. Exact titles, partial terms, punctuation variants, and multi-term CJK, Latin, or mixed-script queries are accepted.", {
-      type: "string",
-      minLength: 2,
-      maxLength: 160
-    }),
-    queryParameter("scope", "Search field scope. The default searches path and metadata.", {
+    {
+      ...queryParameter("query", "Search text. Titles, headings, file paths, Markdown content, metadata, punctuation variants, and multi-term CJK, Latin, or mixed-script queries are supported.", {
+        type: "string",
+        minLength: 2,
+        maxLength: 160
+      }),
+      required: true
+    },
+    queryParameter("scope", "Fields to search. The default searches file paths, titles, headings, Markdown content, and metadata.", {
       type: "string",
       enum: ["all", "path", "metadata"],
       default: "all"
     }),
-    queryParameter("fileKind", "Generated file kind filter. The default searches page files.", {
+    queryParameter("fileKind", "Published file type filter. The default searches page files.", {
       type: "string",
       enum: [
         "all",
@@ -250,25 +367,23 @@ export function fileSearchParameters(): ParameterObject[] {
         "graph_index",
         "graph_node_index",
         "graph_edge_shard",
-        "graph_file"
+        "graph_file",
+        "history_page"
       ],
       default: "page"
     }),
-    queryParameter("mode", "Search mode. `file` searches file evidence, `graph` searches relationship evidence, and `hybrid` merges both candidate families. Every result retains a file ID and logical path for subsequent file reads.", {
+    queryParameter("mode", "Search mode. `file` searches file content and metadata, `graph` searches file relationships, and `hybrid` combines both. Every result includes a file ID and path that can be read with the file APIs.", {
       type: "string",
       enum: ["file", "graph", "hybrid"],
       default: "file"
     }),
     queryParameter("graphDepth", "Number of relationship levels included by graph and hybrid search.", {
       type: "integer",
-      enum: [0, 1, 2],
-      default: 1
+      enum: [0, 1, 2]
     }),
-    queryParameter("graphFanout", "Maximum relationship records returned per graph search item.", {
+    queryParameter("graphFanout", "Maximum relationship records returned per graph search item. When omitted, the deployment setting is used.", {
       type: "integer",
-      minimum: 0,
-      maximum: 25,
-      default: 10
+      minimum: 0
     }),
     ...paginationParameters()
   ];
@@ -284,7 +399,7 @@ function standardErrorResponses(additionalStatuses: AdditionalErrorStatus[] = []
     "429": errorResponse("The request exceeded configured rate limits.", "RATE_LIMITED", 429),
     "500": errorResponse("The API encountered an internal error.", "INTERNAL_ERROR", 500),
     "503": errorResponse(
-      "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation.",
+      "The data required by this operation is temporarily unavailable. Retry later and keep the request ID if support assistance is needed.",
       "DATABASE_REPOSITORY_UNAVAILABLE",
       503
     )

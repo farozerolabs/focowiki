@@ -73,6 +73,12 @@ jobs:
           FOCOWIKI_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: pnpm docs:validate
 
+      - name: Install documentation browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Validate documentation browser
+        run: pnpm docs:validate:browser
+
       - name: Configure Pages
         uses: actions/configure-pages@v6.0.0
 

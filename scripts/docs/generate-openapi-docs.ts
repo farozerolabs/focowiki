@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createDeveloperOpenApiDocument } from "../../apps/api/src/developer-openapi/openapi-document.js";
 
@@ -37,13 +37,16 @@ type LocaleCopy = {
   requestExampleHeading: string;
   successExampleHeading: string;
   successfulResponsesHeading: string;
+  responseHeadersHeading: string;
+  schemaTypeLabel: string;
   noSuccessResponse: string;
   errorCodesHeading: string;
   httpStatusColumn: string;
   stableErrorCodeColumn: string;
   explanationColumn: string;
   noErrorResponse: string;
-  commonErrorsNote: string;
+  errorCodesIntro: string;
+  errorCodeDescriptions: Record<string, string>;
   nextStepsHeading: string;
   yes: string;
   no: string;
@@ -52,7 +55,9 @@ type LocaleCopy = {
   operationDescriptions: Record<string, string>;
   tagLabels: Record<string, string>;
   fieldDescriptions: Record<string, string>;
+  successResponseDescriptions: Record<string, string>;
   descriptions: Record<string, string>;
+  preferContractDescriptions: boolean;
 };
 
 type LocaleConfig = {
@@ -79,15 +84,22 @@ const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
 const generatedDir = path.join(docsRoot, ".vitepress", "generated");
 const localeCopyPath = path.join(docsRoot, ".vitepress", "openapi-locales.json");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
+const swaggerUiPublicDir = path.join(docsRoot, "public", "vendor", "swagger-ui");
+const swaggerUiSourcePath = path.join(
+  repoRoot,
+  "node_modules",
+  "swagger-ui-dist",
+  "swagger-ui.css"
+);
 const methods = new Set(["get", "post", "put", "patch", "delete"]);
 const tagOrder = new Map(
   [
     "Metadata",
     "Knowledge Bases",
     "Upload Sessions",
-    "Source Directories",
-    "Source Files",
-    "Resource Operations",
+    "Uploaded Directories",
+    "Uploaded Files",
+    "File and Directory Changes",
     "Files",
     "Webhooks"
   ].map((tag, index) => [tag, index])
@@ -122,6 +134,8 @@ async function main() {
 
   await mkdir(publicOpenApiDir, { recursive: true });
   await mkdir(generatedDir, { recursive: true });
+  await mkdir(swaggerUiPublicDir, { recursive: true });
+  await copyFile(swaggerUiSourcePath, path.join(swaggerUiPublicDir, "swagger-ui.css"));
   await writeFile(contractPath, `${JSON.stringify(document, null, 2)}\n`);
 
   for (const locale of locales) {
@@ -256,7 +270,7 @@ function renderOperationPage(
     "",
     `## ${copy.successfulResponsesHeading}`,
     "",
-    renderSuccessResponses(document, copy, successResponses),
+    renderSuccessResponses(document, copy, entry.operationId, successResponses),
     "",
     `## ${copy.successExampleHeading}`,
     "",
@@ -358,12 +372,12 @@ function parameterExample(entry: OperationEntry, parameter: SchemaObject, schema
   if (schema.example !== undefined && schema.example !== null) {
     return formatInlineExample(schema.example);
   }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return formatInlineExample(schema.enum[0]);
+  }
   const namedExample = parameterExampleByName(name);
   if (namedExample) {
     return namedExample;
-  }
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    return formatInlineExample(schema.enum[0]);
   }
   if (schema.format === "date-time") {
     return "2026-06-17T00:00:00.000Z";
@@ -382,12 +396,15 @@ function parameterExampleByName(name: string): string | undefined {
     knowledgeBaseId: "kb_123",
     sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
     fileId: "bundle-file-11111111-1111-4111-8111-111111111111",
+    nodeId: "graph-node-11111111-1111-4111-8111-111111111111",
+    edgeId: "graph-edge-11111111-1111-4111-8111-111111111111",
     webhookId: "webhook_123",
     deliveryId: "delivery_123",
     cursor: "cursor_123",
     limit: "50",
     path: "pages/guide.md",
     parentPath: "pages",
+    query: "guide",
     pathQuery: "handbook/guide",
     sourceFileIdPrefix: "source-file-11111111",
     state: "visible",
@@ -427,7 +444,12 @@ function renderRequestBody(document: OpenApiDocument, copy: LocaleCopy, requestB
     .join("\n\n");
 }
 
-function renderSuccessResponses(document: OpenApiDocument, copy: LocaleCopy, responses: [string, unknown][]): string {
+function renderSuccessResponses(
+  document: OpenApiDocument,
+  copy: LocaleCopy,
+  operationId: string,
+  responses: [string, unknown][]
+): string {
   if (responses.length === 0) {
     return copy.noSuccessResponse;
   }
@@ -435,31 +457,61 @@ function renderSuccessResponses(document: OpenApiDocument, copy: LocaleCopy, res
     .map(([status, response]) => {
       const responseObject = readRecord(response);
       const schema = responseSchema(responseObject);
+      const headers = readRecord(responseObject.headers);
       return [
         `### ${status}`,
         "",
-        translateDescription(copy, String(responseObject.description ?? "Successful response.")),
+        copy.successResponseDescriptions[operationId]
+          ?? translateDescription(copy, String(responseObject.description ?? "")),
         "",
-        renderSchemaFields(document, copy, resolveSchema(document, schema))
+        renderSchemaFields(document, copy, resolveSchema(document, schema)),
+        ...(Object.keys(headers).length > 0
+          ? [
+              "",
+              `#### ${copy.responseHeadersHeading}`,
+              "",
+              renderResponseHeaders(copy, headers)
+            ]
+          : [])
       ].join("\n");
     })
     .join("\n\n");
 }
 
 function renderErrorResponses(copy: LocaleCopy, responses: [string, unknown][]): string {
-  const operationSpecific = responses.filter(
-    ([status]) => !["401", "429", "500", "503"].includes(status)
-  );
-  if (operationSpecific.length === 0) return copy.commonErrorsNote;
+  if (responses.length === 0) return copy.noErrorResponse;
   return [
-    copy.commonErrorsNote,
+    copy.errorCodesIntro,
     "",
     `| ${copy.httpStatusColumn} | ${copy.stableErrorCodeColumn} | ${copy.explanationColumn} |`,
     "| --- | --- | --- |",
-    ...operationSpecific.map(([status, response]) => {
+    ...responses.flatMap(([status, response]) => {
       const responseObject = readRecord(response);
-      return `| ${status} | \`${errorCodeForStatus(status)}\` | ${escapeTable(
-        translateDescription(copy, String(responseObject.description ?? ""))
+      const declaredCodes = readArray(responseObject["x-error-codes"]).map(String);
+      const codes = declaredCodes.length > 0
+        ? [...new Set(declaredCodes)]
+        : [errorCodeForStatus(status)];
+      return codes.map((code) =>
+        `| ${status} | \`${code}\` | ${escapeTable(
+          copy.errorCodeDescriptions[code]
+            ?? translateDescription(copy, String(responseObject.description ?? ""))
+        )} |`
+      );
+    })
+  ].join("\n");
+}
+
+function renderResponseHeaders(
+  copy: LocaleCopy,
+  headers: Record<string, unknown>
+): string {
+  return [
+    `| ${copy.nameColumn} | ${copy.typeColumn} | ${copy.descriptionColumn} |`,
+    "| --- | --- | --- |",
+    ...Object.entries(headers).map(([name, value]) => {
+      const header = readRecord(value);
+      return `| \`${name}\` | ${escapeTable(schemaType(readRecord(header.schema)))} | ${escapeTable(
+        fieldDescription(copy, name, header.description)
       )} |`;
     })
   ].join("\n");
@@ -482,7 +534,14 @@ function renderSchemaFields(
 ): string {
   const properties = schemaProperties(document, schema);
   if (properties.length === 0) {
-    return `Schema type: \`${schemaType(schema)}\`.`;
+    const description =
+      typeof schema.description === "string"
+        ? translateDescription(copy, schema.description)
+        : "";
+    return [
+      `${copy.schemaTypeLabel}: \`${schemaType(schema)}\``,
+      ...(description ? ["", description] : [])
+    ].join("\n");
   }
   if (options.example) {
     return [
@@ -512,12 +571,12 @@ function schemaFieldExample(name: string, schema: SchemaObject, explicitExample:
   if (explicitExample !== undefined && explicitExample !== null) {
     return formatInlineExample(explicitExample);
   }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return formatInlineExample(schema.enum[0]);
+  }
   const namedExample = requestBodyFieldExampleByName(name);
   if (namedExample) {
     return namedExample;
-  }
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    return formatInlineExample(schema.enum[0]);
   }
   if (schema.format === "date-time") {
     return "2026-06-17T00:00:00.000Z";
@@ -557,10 +616,17 @@ function schemaProperties(document: OpenApiDocument, schema: SchemaObject) {
   }
   const required = new Set(readArray(resolved.required).map(String));
   for (const [name, propertySchema] of Object.entries(ownProperties)) {
+    const rawPropertySchema = readRecord(propertySchema);
+    const resolvedPropertySchema = resolveSchema(document, rawPropertySchema);
     merged.set(name, {
       name,
       required: required.has(name),
-      schema: resolveSchema(document, readRecord(propertySchema))
+      schema: {
+        ...resolvedPropertySchema,
+        ...(typeof rawPropertySchema.description === "string"
+          ? { description: rawPropertySchema.description }
+          : {})
+      }
     });
   }
   return [...merged.values()];
@@ -568,8 +634,11 @@ function schemaProperties(document: OpenApiDocument, schema: SchemaObject) {
 
 function responseSchema(response: SchemaObject): SchemaObject {
   const content = readRecord(response.content);
-  const json = readRecord(content["application/json"]);
-  return readRecord(json.schema);
+  for (const media of Object.values(content)) {
+    const schema = readRecord(readRecord(media).schema);
+    if (Object.keys(schema).length > 0) return schema;
+  }
+  return {};
 }
 
 function resolveSchema(document: OpenApiDocument, schema: SchemaObject): SchemaObject {
@@ -646,7 +715,8 @@ function errorCodeForStatus(status: string): string {
     "422": "VALIDATION_ERROR",
     "429": "RATE_LIMITED",
     "500": "INTERNAL_ERROR",
-    "503": "DATABASE_REPOSITORY_UNAVAILABLE"
+    "503": "DATABASE_REPOSITORY_UNAVAILABLE",
+    "504": "SEARCH_TIMEOUT"
   };
   return map[status] ?? "ERROR";
 }
@@ -656,7 +726,9 @@ function operationSummary(copy: LocaleCopy, entry: OperationEntry): string {
 }
 
 function operationDescription(copy: LocaleCopy, entry: OperationEntry): string {
-  return copy.operationDescriptions[entry.operationId] ?? entry.summary;
+  const contractDescription = String(entry.operation.description ?? "").trim();
+  if (copy.preferContractDescriptions && contractDescription) return contractDescription;
+  return copy.operationDescriptions[entry.operationId] ?? contractDescription ?? entry.summary;
 }
 
 function tagLabel(copy: LocaleCopy, tag: string): string {
@@ -668,8 +740,11 @@ function translateDescription(copy: LocaleCopy, value: string): string {
 }
 
 function fieldDescription(copy: LocaleCopy, name: string, description: unknown): string {
-  const translated = translateDescription(copy, String(description ?? "")).trim();
-  return translated || copy.fieldDescriptions[name] || copy.fieldDescriptions.value;
+  const raw = String(description ?? "").trim();
+  const translated = raw ? copy.descriptions[raw]?.trim() : "";
+  if (translated) return translated;
+  if (copy.preferContractDescriptions && raw) return raw;
+  return copy.fieldDescriptions[name] || copy.fieldDescriptions.value;
 }
 
 function slugifyOperationId(operationId: string): string {

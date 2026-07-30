@@ -76,7 +76,11 @@ function englishThemeConfig(): DefaultTheme.Config {
       },
       {
         text: "Developer OpenAPI",
-        items: [{ text: "Overview", link: "/openapi/" }, ...readOpenApiSidebar("root")]
+        items: [
+          { text: "Overview", link: "/openapi/" },
+          { text: "API Explorer", link: "/openapi/explorer" },
+          ...readOpenApiSidebar("root")
+        ]
       },
       {
         text: "Agent Integration",
@@ -136,7 +140,11 @@ function chineseThemeConfig(): DefaultTheme.Config {
       },
       {
         text: "Developer OpenAPI",
-        items: [{ text: "概览", link: "/zh-CN/openapi/" }, ...readOpenApiSidebar("zh-CN")]
+        items: [
+          { text: "概览", link: "/zh-CN/openapi/" },
+          { text: "API 交互文档", link: "/zh-CN/openapi/explorer" },
+          ...readOpenApiSidebar("zh-CN")
+        ]
       },
       {
         text: "Agent 接入",
@@ -168,6 +176,7 @@ function chineseThemeConfig(): DefaultTheme.Config {
 export default defineConfig({
   title: "Focowiki",
   description: "Markdown knowledge-base system with OKF-style bundles and Developer OpenAPI.",
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/logo.svg" }]],
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: englishThemeConfig(),

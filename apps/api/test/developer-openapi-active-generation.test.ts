@@ -15,6 +15,7 @@ import {
   toDeveloperActiveFile,
   toDeveloperActiveTreeEntry
 } from "../src/developer-openapi/active-generation-serializers.js";
+import { createDeveloperOpenApiDocument } from "../src/developer-openapi/openapi-document.js";
 import { ActiveTreeStatisticsUnavailableError } from "../src/infrastructure/postgres/active-tree-statistics.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
@@ -22,6 +23,31 @@ const rawKey = "fwok_active-generation-http-test-key";
 const knowledgeBaseId = "kb-active-http";
 
 describe("Developer OpenAPI active generation reads", () => {
+  it("registers every documented operation and documents every runtime operation", () => {
+    const fixture = createFixture();
+    const supportedMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+    const runtimeOperations = new Set(
+      fixture.app.routes
+        .filter((route) =>
+          supportedMethods.has(route.method)
+          && route.path.startsWith("/openapi/v2/")
+          && !route.path.includes("*")
+        )
+        .map((route) => `${route.method} ${route.path}`)
+    );
+    const documentedOperations = new Set(
+      Object.entries(createDeveloperOpenApiDocument().paths).flatMap(([path, pathItem]) =>
+        Object.entries(pathItem)
+          .filter(([method]) => supportedMethods.has(method.toUpperCase()))
+          .map(([method]) =>
+            `${method.toUpperCase()} ${path.replace(/\{([^}]+)\}/gu, ":$1")}`
+          )
+      )
+    );
+
+    expect([...runtimeOperations].sort()).toEqual([...documentedOperations].sort());
+  });
+
   it("keeps the file-first read chain inside one active generation contract", async () => {
     const fixture = createFixture();
 
@@ -115,6 +141,35 @@ describe("Developer OpenAPI active generation reads", () => {
       seedFile: { fileId: "source-a", path: "pages/a.md" },
       relationships: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }]
     });
+  });
+
+  it("returns ancestor chains for tree searches", async () => {
+    const fixture = createFixture();
+    const tree = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?query=shared`
+    );
+
+    expect(tree.status).toBe(200);
+    expect(readItems(tree.body)[0]).toMatchObject({
+      path: "pages/a.md",
+      ancestors: [{ path: "pages", entryType: "directory" }]
+    });
+  });
+
+  it("returns not found for tree and search reads outside an existing knowledge base", async () => {
+    const fixture = createFixture({ knowledgeBaseExists: false });
+    const tree = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/missing/tree`
+    );
+    const search = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/missing/files/search?query=shared`
+    );
+
+    expect(tree.status).toBe(404);
+    expect(search.status).toBe(404);
   });
 
   it("caches search pages within one active generation and misses after activation", async () => {
@@ -234,7 +289,7 @@ describe("Developer OpenAPI active generation reads", () => {
       body: {
         error: {
           code: "DATABASE_REPOSITORY_UNAVAILABLE",
-          message: "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation.",
+          message: "The requested data is temporarily unavailable. Retry later and keep the request ID if support assistance is needed.",
           httpStatus: 503
         },
         requestId: "request-tree-statistics-1"
@@ -403,6 +458,7 @@ describe("Developer OpenAPI active generation reads", () => {
 function createFixture(options: {
   graphState?: "available" | "empty" | "unavailable";
   treeStatisticsUnavailable?: boolean;
+  knowledgeBaseExists?: boolean;
 } = {}) {
   const graphState = options.graphState ?? "available";
   let generationId = "generation-a";
@@ -447,6 +503,24 @@ function createFixture(options: {
     }
   };
   const repositories = {
+    knowledgeBases: {
+      async listKnowledgeBases() { return { items: [], nextCursor: null }; },
+      async createKnowledgeBase() { throw new Error("Unexpected knowledge-base creation"); },
+      async getKnowledgeBase(id: string) {
+        return options.knowledgeBaseExists === false || id === "missing"
+          ? null
+          : {
+              id,
+              name: "Active knowledge base",
+              description: null,
+              activeGenerationId: generationId,
+              resourceRevision: 1,
+              catalogGeneration: 1,
+              createdAt: "2026-07-17T00:00:00.000Z",
+              updatedAt: "2026-07-17T00:00:00.000Z"
+            };
+      }
+    },
     publicApiKeys: {
       async countActivePublicOpenApiKeys() { return 1; },
       async listPublicOpenApiKeys() { return { items: [], nextCursor: null }; },
@@ -561,7 +635,20 @@ function createScope(
       };
     },
     async listTreeAncestors(paths) {
-      return new Map(paths.map((path) => [path, []]));
+      const ancestor = {
+        ...projection(generationId, "pages", "pages", "Documents"),
+        sourceFileId: null,
+        parentPath: "",
+        payload: {
+          kind: "directory",
+          name: "pages",
+          directEntryCount: 2,
+          directDirectoryCount: 0,
+          directFileCount: 2,
+          descendantFileCount: 2
+        }
+      };
+      return new Map(paths.map((path) => [path, [ancestor]]));
     },
     async search(input) {
       recordSearchRead(input);

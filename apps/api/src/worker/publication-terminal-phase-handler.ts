@@ -6,6 +6,8 @@ import type { PublicationValidationRepository } from "../application/ports/publi
 import { RoleJobFailure } from "../domain/role-job.js";
 import { GENERATED_ROOT_MANIFEST_PATHS } from "../okf/generated-graph-resources.js";
 import type { ImmutableObjectWriteResult } from "../publication/immutable-object-writer.js";
+import type { WebhookDispatcher } from "../webhooks/dispatcher.js";
+import { dispatchWebhookSafely } from "../webhooks/safe-dispatch.js";
 
 type PublicationFinalizer = {
   finalize(input: { knowledgeBaseId: string; generationId: string }): Promise<void>;
@@ -45,6 +47,8 @@ export function createPublicationTerminalPhaseHandlers(input: {
   };
   finalizers: PublicationFinalizer[];
   searchProjection?: SearchProjectionCoordinator;
+  webhooks?: Pick<WebhookDispatcher, "dispatch">;
+  onWebhookError?: (error: unknown) => void;
   validationIssueLimit: number;
   now?: () => Date;
 }): PublicationTerminalPhaseHandlers {
@@ -165,6 +169,19 @@ export function createPublicationTerminalPhaseHandlers(input: {
         searchActivationRequired: Boolean(input.searchProjection)
       });
       if (!activated) throw retryablePhaseError("Generation activation is busy");
+      await dispatchWebhookSafely({
+        webhooks: input.webhooks,
+        event: {
+          eventId: `event-generation-activated-${task.generationId}`,
+          eventType: "generation.activated",
+          payload: {
+            knowledgeBaseId: task.knowledgeBaseId,
+            generationId: task.generationId
+          },
+          createdAt: now().toISOString()
+        },
+        onError: input.onWebhookError
+      });
     }
   };
 }

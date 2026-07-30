@@ -4,7 +4,7 @@ title: Webhook Delivery
 
 # Webhook Delivery
 
-Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v2/webhooks`. Use webhooks when another system needs source-file progress, content updates, file deletion, or knowledge-base deletion events.
+Focowiki sends webhook events to the HTTPS URL registered through `POST /openapi/v2/webhooks`. Use webhooks when another system needs uploaded-file progress, content updates, file deletion, or knowledge-base deletion events.
 
 ## Register A Webhook
 
@@ -21,7 +21,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
 }'
 ```
 
-The `url` must use HTTPS. The response returns `signingSecret` once. Store it in your backend secret manager and use it to verify delivery signatures.
+The `url` must use HTTPS. `events` must contain one or more supported event types and cannot contain duplicates. The response returns `signingSecret` once. Store it in your backend secret manager and use it to verify delivery signatures.
 
 ## Delivery Request
 
@@ -98,12 +98,12 @@ Use the raw request body bytes or exact raw body string received by the server. 
 
 | Event type | When it is sent | Payload fields |
 | --- | --- | --- |
-| `source_file.accepted` | A Markdown file is accepted and persisted. | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.progress` | A source file starts or continues processing. | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.completed` | A source file completes processing. | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.failed` | A source file fails processing. | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `generation.activated` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `sourceFileId`, `generationId` when available |
-| `file.deleted` | A source file and its readable page are deleted. | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `generationId` |
+| `source_file.accepted` | A new version of an uploaded Markdown file enters processing. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
+| `source_file.progress` | An uploaded file enters a processing step. | `knowledgeBaseId`, `sourceFileId`, `stage`, `status` |
+| `source_file.completed` | An uploaded file completes processing. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
+| `source_file.failed` | Processing stops because the uploaded Markdown file failed. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `errorCode` |
+| `generation.activated` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `generationId` |
+| `file.deleted` | An uploaded file or directory finishes deletion. | `knowledgeBaseId` and either `sourceFileId` or `sourceDirectoryId` |
 | `knowledge_base.deleted` | A knowledge base is deleted. | `knowledgeBaseId` |
 
 ## Delivery Records And Redelivery
@@ -122,7 +122,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redel
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-Redelivery creates a new delivery record with the original `eventId`, `eventType`, and `payload`.
+Redelivery creates a new delivery record with the original `eventId`, `eventType`, and `payload`. If the webhook subscription has been deleted, the API returns a conflict response and does not create a delivery record.
 
 ## Receiver Checklist
 

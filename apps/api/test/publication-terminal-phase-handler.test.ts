@@ -9,6 +9,7 @@ describe("publication terminal phase handlers", () => {
     const validateChangedClosure = vi.fn().mockResolvedValue([]);
     const activateGeneration = vi.fn().mockResolvedValue(true);
     const stageUpsert = vi.fn().mockResolvedValue(undefined);
+    const dispatch = vi.fn().mockResolvedValue(undefined);
     const state = vi.fn()
       .mockResolvedValueOnce({ state: "building", predecessorGenerationId: null })
       .mockResolvedValueOnce({ state: "validating", predecessorGenerationId: null });
@@ -37,6 +38,7 @@ describe("publication terminal phase handlers", () => {
         })
       },
       finalizers: [{ finalize }],
+      webhooks: { dispatch },
       validationIssueLimit: 20,
       now: () => new Date("2026-07-20T00:00:00.000Z")
     });
@@ -57,6 +59,13 @@ describe("publication terminal phase handlers", () => {
     }));
     expect(stageUpsert).toHaveBeenCalledWith(expect.objectContaining({
       refKind: "generation_manifest"
+    }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "generation.activated",
+      payload: {
+        knowledgeBaseId: "kb-1",
+        generationId: "generation-1"
+      }
     }));
   });
 

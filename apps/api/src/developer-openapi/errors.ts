@@ -54,7 +54,7 @@ export function repositoryUnavailable(): DeveloperOpenApiError {
   return createDeveloperOpenApiError(
     "DATABASE_REPOSITORY_UNAVAILABLE",
     503,
-    "The database-backed read model is temporarily unavailable. Retry later with the same request ID for support correlation."
+    "The requested data is temporarily unavailable. Retry later and keep the request ID if support assistance is needed."
   );
 }
 

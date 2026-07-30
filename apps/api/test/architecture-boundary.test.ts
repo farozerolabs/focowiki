@@ -523,7 +523,7 @@ describe("lightweight architecture boundaries", () => {
     );
     const contentByPathBlock = developerServices.slice(
       developerServices.indexOf("async getFileContentByPath"),
-      developerServices.indexOf("async deleteFileById")
+      developerServices.indexOf("async createWebhook")
     );
 
     expect(treeBlock).not.toContain("workerJobs");

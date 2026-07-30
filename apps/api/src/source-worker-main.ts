@@ -31,6 +31,7 @@ import {
   createNodeJiebaTokenizer,
   getNodeJiebaRuntimeEvidence
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
+import { createWebhookDispatcher } from "./webhooks/dispatcher.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -64,6 +65,7 @@ async function runSourceWorker(): Promise<void> {
       sessionWrites: "best_effort"
     });
     const repositories = createPostgresAdminRepositories(sql, { tokenizer });
+    const webhooks = createWebhookDispatcher({ repositories, redis });
     if (!repositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
@@ -104,7 +106,17 @@ async function runSourceWorker(): Promise<void> {
       {
         tokenizer,
         repository: createPostgresSearchProjectionRepository(sql)
-      }
+      },
+      ...(webhooks
+        ? [{
+            dispatcher: webhooks,
+            onError(error: unknown) {
+              logger.warn("Source lifecycle webhook dispatch failed", {
+                errorClass: error instanceof Error ? error.name : "Unknown"
+              });
+            }
+          }]
+        : [])
     );
     if (!sourceProcessor) {
       throw new Error("Source processor is unavailable");

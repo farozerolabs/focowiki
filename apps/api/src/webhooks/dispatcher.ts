@@ -5,15 +5,9 @@ import type {
   WebhookSubscriptionRecord
 } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
+import type { WebhookEventType } from "./events.js";
 
-export type WebhookEventType =
-  | "source_file.accepted"
-  | "source_file.progress"
-  | "source_file.completed"
-  | "source_file.failed"
-  | "generation.activated"
-  | "file.deleted"
-  | "knowledge_base.deleted";
+export type { WebhookEventType } from "./events.js";
 
 export type WebhookEvent = {
   eventId?: string;
@@ -24,7 +18,7 @@ export type WebhookEvent = {
 
 export type WebhookDispatcher = {
   dispatch: (event: WebhookEvent) => Promise<void>;
-  redeliver: (delivery: WebhookDeliveryRecord) => Promise<WebhookDeliveryRecord>;
+  redeliver: (delivery: WebhookDeliveryRecord) => Promise<WebhookDeliveryRecord | null>;
 };
 
 type DispatchWebhookRepository = NonNullable<AdminRepositories["webhooks"]> &
@@ -87,7 +81,7 @@ export function createWebhookDispatcher(input: {
       const webhook = await repo.getWebhookSubscription(delivery.webhookId);
 
       if (!webhook) {
-        return delivery;
+        return null;
       }
 
       const next = await repo.createWebhookDelivery({

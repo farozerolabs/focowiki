@@ -29,6 +29,8 @@ import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js
 import type { SearchProjectionRepository } from "../application/ports/search-projection-repository.js";
 import { persistBodySearchProjection } from "../application/body-search-projection.js";
 import { createSourceFileStageRecorder } from "./source-file-stage-recorder.js";
+import type { WebhookDispatcher } from "../webhooks/dispatcher.js";
+import { dispatchWebhookSafely } from "../webhooks/safe-dispatch.js";
 
 export type SourceFileQueueProcessor = {
   processFile: (input: SourceFileProcessInput) => Promise<SourceFileRecord>;
@@ -70,6 +72,10 @@ export function createSourceFileQueueProcessor(
   lexicalProjection?: {
     tokenizer: LexicalTokenizer;
     repository: SearchProjectionRepository;
+  },
+  webhooks?: {
+    dispatcher: Pick<WebhookDispatcher, "dispatch">;
+    onError?: (error: unknown) => void;
   }
 ): SourceFileQueueProcessor | null {
   const files = repositories.files;
@@ -116,6 +122,22 @@ export function createSourceFileQueueProcessor(
           endedAt: update.endedAt ?? null,
           terminalFailure: update.terminalFailure ?? null
         });
+        if (update.status === "running") {
+          await dispatchWebhookSafely({
+            webhooks: webhooks?.dispatcher,
+            event: {
+              eventType: "source_file.progress",
+              payload: {
+                knowledgeBaseId: input.knowledgeBaseId,
+                sourceFileId: input.sourceFileId,
+                stage: update.stage,
+                status: update.status
+              },
+              createdAt: update.startedAt ?? update.endedAt ?? progressClock()
+            },
+            onError: webhooks?.onError
+          });
+        }
       };
 
       const recordStage = createSourceFileStageRecorder({
@@ -156,6 +178,23 @@ export function createSourceFileQueueProcessor(
         if (source.processingStatus === "completed") {
           return source;
         }
+
+        await dispatchWebhookSafely({
+          webhooks: webhooks?.dispatcher,
+          event: {
+            ...(input.sourceRevisionId
+              ? { eventId: `event-source-accepted-${input.sourceRevisionId}` }
+              : {}),
+            eventType: "source_file.accepted",
+            payload: {
+              knowledgeBaseId: input.knowledgeBaseId,
+              sourceFileId: input.sourceFileId,
+              sourceRevisionId: input.sourceRevisionId ?? null
+            },
+            createdAt: input.generatedAt
+          },
+          onError: webhooks?.onError
+        });
 
         currentStage = "upload_storage";
         await assertSourceFileProcessingEligible();
@@ -329,6 +368,23 @@ export function createSourceFileQueueProcessor(
           throw new Error("Completed source file was not found");
         }
 
+        await dispatchWebhookSafely({
+          webhooks: webhooks?.dispatcher,
+          event: {
+            ...(input.sourceRevisionId
+              ? { eventId: `event-source-completed-${input.sourceRevisionId}` }
+              : {}),
+            eventType: "source_file.completed",
+            payload: {
+              knowledgeBaseId: input.knowledgeBaseId,
+              sourceFileId: input.sourceFileId,
+              sourceRevisionId: input.sourceRevisionId ?? null
+            },
+            createdAt: completedAt
+          },
+          onError: webhooks?.onError
+        });
+
         return completedSource;
       } catch (error) {
         if (error instanceof SourceFileProcessingCancelledError) {
@@ -356,6 +412,26 @@ export function createSourceFileQueueProcessor(
           endedAt: failedAt,
           severity: terminal ? "error" : "warning"
         }).catch(() => undefined);
+        if (terminal) {
+          await dispatchWebhookSafely({
+            webhooks: webhooks?.dispatcher,
+            event: {
+              ...(input.sourceRevisionId
+                ? { eventId: `event-source-failed-${input.sourceRevisionId}` }
+                : {}),
+              eventType: "source_file.failed",
+              payload: {
+                knowledgeBaseId: input.knowledgeBaseId,
+                sourceFileId: input.sourceFileId,
+                sourceRevisionId: input.sourceRevisionId ?? null,
+                stage: currentStage,
+                errorCode: terminalFailure.code
+              },
+              createdAt: failedAt
+            },
+            onError: webhooks?.onError
+          });
+        }
         throw new SourceFileAttemptError(terminalFailure, automaticRetryAllowed, {
           cause: error
         });

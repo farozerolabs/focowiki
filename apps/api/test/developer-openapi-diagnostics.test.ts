@@ -37,6 +37,29 @@ describe("Developer OpenAPI diagnostics", () => {
     });
   });
 
+  it("rejects JSON fields that are not part of the documented request schema", async () => {
+    const app = new Hono();
+    app.post("/openapi/v2/knowledge-bases", (context) =>
+      safe(context, async () => ({
+        body: await readDeveloperJsonObjectBody(context.req.raw, ["name", "description"])
+      }))
+    );
+
+    const response = await app.request("/openapi/v2/knowledge-bases", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Handbook", internalFlag: true })
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        details: { fields: ["internalFlag"] }
+      }
+    });
+  });
+
   it("correlates unexpected failures without logging request secrets", async () => {
     const logger = createLogger();
     const app = new Hono();

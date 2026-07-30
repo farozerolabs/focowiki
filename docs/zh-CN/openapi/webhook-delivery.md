@@ -4,7 +4,7 @@ title: Webhook 推送
 
 # Webhook 推送
 
-Focowiki 会把 webhook 事件主动推送到 `POST /openapi/v2/webhooks` 注册的 HTTPS URL。外部系统需要来源文件进度、内容更新、文件删除或知识库删除事件时，可以使用 webhook。
+Focowiki 会把 Webhook 事件主动推送到 `POST /openapi/v2/webhooks` 注册的 HTTPS URL。外部系统需要已上传文件的处理进度、内容更新、文件删除或知识库删除事件时，可以使用 Webhook。
 
 ## 注册 Webhook
 
@@ -21,7 +21,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhooks" \
 }'
 ```
 
-`url` 必须使用 HTTPS。创建响应只返回一次 `signingSecret`。开发者需要把它保存到后端密钥管理或运行时密钥配置中，用于校验推送签名。
+`url` 必须使用 HTTPS。`events` 必须包含至少一个受支持且不重复的事件类型。创建响应只返回一次 `signingSecret`。开发者需要把它保存在应用后端的密钥管理服务中，用于校验推送签名。
 
 ## 推送请求
 
@@ -46,7 +46,7 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 
 ## 请求体
 
-每次 webhook 投递都使用下面的 JSON envelope：
+每次 Webhook 投递都使用下面的 JSON 结构：
 
 ```json
 {
@@ -96,14 +96,14 @@ export function verifyFocowikiWebhook({ rawBody, timestamp, signatureHeader, sig
 
 ## 事件类型
 
-| 事件类型 | 触发时机 | Payload 字段 |
+| 事件类型 | 触发时机 | 数据字段 |
 | --- | --- | --- |
-| `source_file.accepted` | Markdown 文件已接收并持久化。 | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.progress` | 来源文件开始处理或继续处理。 | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.completed` | 来源文件处理完成。 | `knowledgeBaseId`, `sourceFileId` |
-| `source_file.failed` | 来源文件处理失败。 | `knowledgeBaseId`, `sourceFileId`, `errorCode` |
-| `generation.activated` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `sourceFileId`, 可用时包含 `generationId` |
-| `file.deleted` | 来源文件及其可读取页面已经删除。 | `knowledgeBaseId`, `fileId`, `sourceFileId`, `path`, `generationId` |
+| `source_file.accepted` | 上传的 Markdown 文件有新版本进入处理流程。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
+| `source_file.progress` | 已上传文件进入一个处理步骤。 | `knowledgeBaseId`, `sourceFileId`, `stage`, `status` |
+| `source_file.completed` | 已上传文件处理完成。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
+| `source_file.failed` | 上传的 Markdown 文件处理失败并停止。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `errorCode` |
+| `generation.activated` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `generationId` |
+| `file.deleted` | 已上传文件或上传目录完成删除。 | `knowledgeBaseId`，以及 `sourceFileId` 或 `sourceDirectoryId` |
 | `knowledge_base.deleted` | 知识库被删除。 | `knowledgeBaseId` |
 
 ## 投递记录和重投递
@@ -122,7 +122,7 @@ curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redel
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-重投递会使用原始 `eventId`、`eventType` 和 `payload` 创建新的投递记录。
+重投递会使用原始 `eventId`、`eventType` 和 `payload` 创建新的投递记录。如果对应的 Webhook 订阅已经删除，接口会返回冲突错误，不会创建投递记录。
 
 ## 接收端检查清单
 

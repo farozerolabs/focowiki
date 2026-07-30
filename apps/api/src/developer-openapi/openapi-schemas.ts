@@ -8,18 +8,171 @@ import {
   timestampSchema,
   type SchemaObject
 } from "./openapi-shared.js";
+import { WEBHOOK_EVENT_TYPES } from "../webhooks/events.js";
 
 const SOURCE_FILE_PROCESSING_STATE_DESCRIPTION =
-  "Backend-derived lifecycle state. `pending_publication` has completed source processing and is waiting for activation. `visible` has readable generated content. `failed` includes a canonical failure and server-authorized actions.";
+  "Current processing status. `pending_publication` means file processing is complete and the result is waiting to become readable. `visible` means the published file can be read. `failed` includes error details and available recovery actions.";
 
 const SOURCE_FILE_CURRENT_STAGE_DESCRIPTION =
-  "Current source-file stage. Values include `upload_storage`, `metadata_resolution`, `llm_suggestion`, `graph_generation`, `projection_generation`, `generation_validation`, and `generation_activation`.";
+  "Current processing step. The value identifies whether the file is being stored, analyzed, connected to related files, prepared for reading, checked, or published.";
 
 const GENERATED_OUTPUT_STATUS_DESCRIPTION =
-  "`pending` means generated output is not readable yet. `visible` means the generated page can be read through file APIs. `unavailable` means no generated output is currently available. A file is ready when `state` is `visible`.";
+  "`pending` means the published file is not readable yet. `visible` means it can be read through the file APIs. `unavailable` means no published file is currently available. A file is ready when `state` is `visible`.";
+
+const SCHEMA_FIELD_DESCRIPTIONS: Record<string, string> = {
+  actions: "Actions currently available for this resource.",
+  affectedDirectoryCount: "Number of uploaded directories covered by the deletion request.",
+  affectedFileCount: "Number of uploaded Markdown files covered by the deletion request.",
+  apiVersion: "Developer OpenAPI contract version.",
+  attemptCount: "Number of delivery attempts made so far.",
+  available: "Whether relationship data is available for this response.",
+  catalogGeneration: "Knowledge-base file catalog version. It increases when the catalog changes.",
+  coalesced: "Whether the retry joined an equivalent retry already in progress.",
+  code: "Error or failure code that clients can handle programmatically.",
+  completedAt: "Time when processing or deletion finished.",
+  content: "Complete published file content.",
+  contentAvailable: "Whether the published file content can currently be read.",
+  contentRevision: "File-content version number. It increases after each successful replacement.",
+  contentType: "Media type of the stored or generated content.",
+  contentUploadConcurrency: "Recommended maximum number of concurrent content uploads for this session.",
+  correlationId: "Identifier that support staff can use to trace the failed background request.",
+  counts: "Current upload-session counters.",
+  createdAt: "Time when the resource was created.",
+  cursorProvided: "Whether this request used a pagination token from an earlier response.",
+  declaredByteCount: "Total number of Markdown file bytes declared for the upload session.",
+  declaredFileCount: "Total number of Markdown files declared for the upload session.",
+  declaredSize: "Declared file size in bytes.",
+  deletable: "Whether deletion can currently be requested.",
+  deleted: "Whether the webhook subscription was deleted.",
+  deleting: "Whether deletion is currently in progress.",
+  deletion: "Accepted deletion details.",
+  delivery: "Webhook delivery created by the redelivery request.",
+  depth: "Directory depth or number of relationship levels to explore.",
+  descendantFileCount: "Number of uploaded Markdown files below this directory or tree entry.",
+  directDirectoryCount: "Number of direct child directories.",
+  directFileCount: "Number of uploaded Markdown files directly inside this directory.",
+  direction: "Relationship direction relative to the requested file.",
+  directory: "Uploaded directory returned by the request.",
+  directoryPath: "Parent directory path within the uploaded folder structure.",
+  disposition: "Server decision describing whether this entry must upload content.",
+  edgeCount: "Number of published file relationships.",
+  enabled: "Whether the webhook subscription receives matching events.",
+  endedAt: "Time when this file-processing step ended.",
+  endpointHost: "Public hostname of the webhook endpoint; the full URL is not returned.",
+  entries: "File records registered in the upload session.",
+  entry: "Upload entry returned by the request.",
+  entryType: "Tree entry type.",
+  error: "Structured Developer OpenAPI error.",
+  eventType: "Webhook event type delivered to the subscription.",
+  events: "Webhook event types included in this subscription.",
+  evidence: "Structured evidence supporting this relationship.",
+  existingResourceRevision: "Current file version when an upload is skipped because the same content already exists.",
+  expandGraphByFileId: "Request template for exploring relationships from a published file ID.",
+  expectedResourceRevision: "Resource revision required when the operation was accepted.",
+  expiresAt: "Time when an unfinished upload session expires.",
+  failed: "Number of upload entries that failed.",
+  fanout: "Maximum related records returned for each explored item.",
+  file: "Published file metadata returned by the request.",
+  fileContentById: "Request template for reading published file content by file ID.",
+  fileContentByPath: "Request template for reading published file content by knowledge-base path.",
+  fileDetailById: "Request template for reading published file details.",
+  fileKind: "Published file type.",
+  finalized: "Number of uploaded files submitted for background processing.",
+  frontmatter: "Metadata parsed from the YAML front matter at the beginning of the Markdown file.",
+  generatedPath: "Published knowledge-base path associated with this uploaded file.",
+  graphContext: "Relationship details and follow-up links for this search result.",
+  graphExpansionByFileId: "Request template for exploring relationships from this published file.",
+  graphSummary: "File relationship availability and counts for this response.",
+  hasMore: "Whether another result page is available.",
+  href: "Relative Developer OpenAPI path for this action.",
+  httpStatus: "HTTP status returned by the API or webhook endpoint.",
+  indexedDocumentCount: "Number of published files available to relationship search.",
+  indexedRelationshipCount: "Number of file relationships available to relationship search.",
+  items: "Records returned on this page.",
+  kind: "Type of file change, retry, or available action.",
+  knowledgeBase: "Knowledge base returned by the request.",
+  lastDeliveryAt: "Time of the most recent webhook delivery.",
+  limit: "Maximum number of records applied to this request.",
+  links: "Developer OpenAPI links for reading or managing this uploaded file.",
+  listGraphRoot: "File-tree request for the relationship-data root.",
+  listTree: "File-tree request template.",
+  manifestPageSize: "Maximum number of file records accepted in one request.",
+  matchedFields: "Fields that caused this search result to match.",
+  matchedNodeFields: "Relationship-node fields that caused this search result to match.",
+  matchedRelationshipFields: "Relationship fields that caused this search result to match.",
+  meaning: "Human-readable interpretation of the result.",
+  message: "Human-readable error, failure, or availability message.",
+  messageKey: "Code that identifies the processing message.",
+  method: "HTTP method used by this action.",
+  mutable: "Whether this uploaded Markdown file can currently be changed.",
+  name: "Human-readable resource name.",
+  nextActions: "Suggested follow-up reads for continued file exploration.",
+  nextRequestTemplates: "Request templates for continuing file exploration.",
+  nodeCount: "Number of published relationship nodes.",
+  occurredAt: "Time when file processing stopped with an error.",
+  operation: "File or directory change record returned by the request.",
+  parentPath: "Parent directory path of this tree entry.",
+  path: "Published knowledge-base path of the related file.",
+  product: "Product identifier.",
+  query: "Search text and options used for this result.",
+  readActions: "Developer OpenAPI links for reading this file or exploring its relationships.",
+  readIndex: "Request template for reading the root index.",
+  readIndexContent: "Request for reading the root index content.",
+  reason: "Human-readable reason for the relationship.",
+  receivedSize: "Number of content bytes received for this upload entry.",
+  rejectedDeleting: "Number of upload entries rejected because deletion is in progress.",
+  relatedFilesById: "Request template for reading related files by published file ID.",
+  relationType: "Relationship type.",
+  relationshipCount: "Number of relationships returned by graph expansion.",
+  relationships: "Related published files found for this search result.",
+  relativePath: "Path within the uploaded folder structure.",
+  requestId: "Request identifier used for support correlation.",
+  resourceRevision: "Current resource version used with `If-Match` to prevent overwriting a concurrent change.",
+  resources: "Relationship files and API links available for further exploration.",
+  result: "Final result of the file or directory change.",
+  resultCount: "Number of results returned on this page.",
+  resultSummary: "Summary of the current result page.",
+  retry: "Retry request accepted by the server.",
+  retryAfterSeconds: "Minimum number of seconds to wait before retrying.",
+  retryGuidance: "Instructions for retrying or checking the request again.",
+  retryHint: "Recommended way to retry the request.",
+  retryKind: "Type of retry that can be requested.",
+  scope: "File, directory, or knowledge base affected by this action or retry.",
+  searchAgain: "Search request template.",
+  searchGraph: "Relationship-search request template.",
+  seedCount: "Number of starting files used for relationship exploration.",
+  selected: "Number of file records accepted into the upload session.",
+  self: "Developer OpenAPI path for checking this file or directory change.",
+  session: "Upload session returned by the request.",
+  severity: "Message level for this processing record.",
+  sizeBytes: "Content size in bytes.",
+  skippedExisting: "Number of upload entries already present with matching content.",
+  source: "How this file relationship was created.",
+  sourceFile: "Uploaded Markdown file returned by the request.",
+  sourceFileEventsById: "Request template for reading file-processing history.",
+  sourceFileStatusById: "Request template for reading uploaded-file processing status.",
+  stage: "File-processing step where processing stopped.",
+  stageKey: "Code that identifies the file-processing step.",
+  startedAt: "Time when this file-processing step started.",
+  state: "Current processing status.",
+  status: "Current health or delivery status.",
+  summary: "File relationship counts.",
+  tags: "Tags parsed from the published Markdown file.",
+  title: "Resolved related-file title.",
+  transferState: "Current content transfer state for this upload entry.",
+  transport: "File-list request size and recommended upload concurrency for the new session.",
+  updatedAt: "Time when the resource was last updated.",
+  uploadRequired: "Number of registered files whose Markdown content must be uploaded.",
+  uploaded: "Number of entries whose content upload completed.",
+  url: "HTTPS webhook endpoint.",
+  version: "Current product release version.",
+  waitingReservation: "Number of entries waiting for another upload of the same content to finish.",
+  webhook: "Webhook subscription returned by the request.",
+  weight: "Relationship confidence from 0 to 1. Higher values indicate a stronger relationship."
+};
 
 export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
-  return {
+  const schemas = {
     Error: objectSchema(
       {
         error: objectSchema(
@@ -36,7 +189,10 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
                 "RATE_LIMITED",
                 "UNSUPPORTED_ROUTE",
                 "INTERNAL_ERROR",
-                "DATABASE_REPOSITORY_UNAVAILABLE"
+                "DATABASE_REPOSITORY_UNAVAILABLE",
+                "SEARCH_TIMEOUT",
+                "SEARCH_UNAVAILABLE",
+                "SEARCH_OVERLOADED"
               ]
             },
             message: { type: "string" },
@@ -45,7 +201,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
               type: "object",
               additionalProperties: true,
               description:
-                "Optional safe details. `RATE_LIMITED` responses can include coarse `retryHint`, `retryAfterSeconds`, and `retryGuidance` values for Agent retry planning.",
+                "Additional error information. `RATE_LIMITED` responses can include how long to wait and how to retry.",
               properties: {
                 retryHint: { type: "string" },
                 retryAfterSeconds: { type: "integer", minimum: 1 },
@@ -59,7 +215,16 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       },
       ["error", "requestId"]
     ),
-    HealthResponse: objectSchema({ status: { type: "string", const: "ok" } }, ["status"]),
+    HealthResponse: objectSchema(
+      {
+        status: {
+          type: "string",
+          const: "ok",
+          description: "Current Developer OpenAPI health state."
+        }
+      },
+      ["status"]
+    ),
     VersionResponse: objectSchema(
       {
         product: { type: "string", const: "focowiki" },
@@ -72,17 +237,17 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       {
         items: { type: "array", items: {} },
         nextCursor: nullableString(
-          "Opaque cursor accepted only by the same list family and unchanged query. Restart without a cursor when it is rejected."
+          "Pagination token returned by this endpoint. Reuse it only with the same endpoint and unchanged filters. If it is rejected, restart without a cursor."
         )
       },
       ["items", "nextCursor"]
     ),
     KnowledgeBase: objectSchema(
       {
-        knowledgeBaseId: idSchema("Knowledge-base identifier used by scoped routes."),
+        knowledgeBaseId: idSchema("Knowledge-base identifier used by every path that operates on this knowledge base."),
         name: { type: "string" },
         description: nullableString("Optional knowledge-base description."),
-        activeGenerationId: nullableString("Identifier of the currently active knowledge-base generation."),
+        activeGenerationId: nullableString("Identifier of the knowledge-base version currently available to readers."),
         resourceRevision: { type: "integer", minimum: 1 },
         catalogGeneration: { type: "integer", minimum: 0 },
         createdAt: timestampSchema(),
@@ -99,10 +264,13 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       },
       ["name"]
     ),
-    UpdateKnowledgeBaseRequest: objectSchema({
-      name: { type: "string", minLength: 1 },
-      description: nullableString("Updated description or null to clear it.")
-    }),
+    UpdateKnowledgeBaseRequest: {
+      ...objectSchema({
+        name: { type: "string", minLength: 1 },
+        description: nullableString("Updated description or null to clear it.")
+      }),
+      minProperties: 1
+    },
     CreateUploadSessionRequest: objectSchema(
       {
         declaredFileCount: { type: "integer", minimum: 0, example: 2 },
@@ -113,7 +281,12 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     UploadManifestEntryRequest: uploadManifestEntryRequestSchema(),
     UploadManifestPageRequest: objectSchema(
       {
-        entries: { type: "array", minItems: 1, items: ref("UploadManifestEntryRequest") }
+        entries: {
+          type: "array",
+          minItems: 1,
+          items: ref("UploadManifestEntryRequest"),
+          description: "One or more Markdown file records added in this request."
+        }
       },
       ["entries"]
     ),
@@ -127,17 +300,26 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       },
       ["manifestPageSize", "contentUploadConcurrency"]
     ),
-    UploadSessionResponse: objectSchema(
+    CreateUploadSessionResponse: objectSchema(
       {
         session: ref("UploadSession"),
         transport: ref("UploadSessionTransport")
+      },
+      ["session", "transport"]
+    ),
+    UploadSessionResponse: objectSchema(
+      {
+        session: ref("UploadSession")
       },
       ["session"]
     ),
     UploadSessionStatusResponse: objectSchema(
       {
         session: ref("UploadSession"),
-        entries: pageSchema(ref("UploadSessionEntry"))
+        entries: {
+          ...pageSchema(ref("UploadSessionEntry")),
+          description: "Requested page of upload file records and the token for reading the next page."
+        }
       },
       ["session", "entries"]
     ),
@@ -158,6 +340,20 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       { sourceFile: ref("SourceResourceFile") },
       ["sourceFile"]
     ),
+    SourceFileRetryResponse: objectSchema(
+      {
+        sourceFile: ref("SourceResourceFile"),
+        retry: objectSchema(
+          {
+            kind: { type: "string" },
+            scope: { type: "string" },
+            coalesced: { type: "boolean" }
+          },
+          ["kind", "scope", "coalesced"]
+        )
+      },
+      ["sourceFile", "retry"]
+    ),
     SourceResourceFileListResponse: pageSchema(ref("SourceResourceFile")),
     MoveSourceResourceRequest: objectSchema(
       {
@@ -165,7 +361,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
           type: "string",
           minLength: 1,
           description:
-            "Safe normalized knowledge-base-relative target path. The target parent directory must already exist and be active; a root-level target has no parent requirement."
+            "Target path inside the knowledge base. Its parent directory must already exist, except when moving the item to the root directory."
         }
       },
       ["relativePath"]
@@ -194,11 +390,11 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
       {
         operation: ref("ResourceOperation"),
         deletion: objectSchema({
-          sourceFileId: nullableString("Deleted source-file identifier."),
-          directoryId: nullableString("Deleted source-directory identifier."),
+          sourceFileId: nullableString("Identifier of the deleted uploaded file."),
+          directoryId: nullableString("Identifier of the deleted uploaded directory."),
           affectedDirectoryCount: { type: "integer", minimum: 0 },
           affectedFileCount: { type: "integer", minimum: 0 },
-          visibility: nullableString("Current public visibility of the deleted resource.")
+          visibility: nullableString("Current visibility of the deleted file or directory.")
         })
       },
       ["operation", "deletion"]
@@ -229,12 +425,12 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     RelatedFile: relatedFileSchema(),
     RelatedFileListResponse: objectSchema(
       {
-        generationId: idSchema("Active generation used for every item in this response."),
+        generationId: idSchema("Identifier of the published knowledge-base version used for every item in this response."),
         fileId: idSchema("Requested file identifier."),
-        sourceFileId: idSchema("Source file identifier used for graph lookup."),
+        sourceFileId: idSchema("Uploaded-file identifier associated with the requested published file."),
         items: { type: "array", items: ref("RelatedFile") },
-        nextCursor: nullableString("Opaque cursor accepted by this related-file endpoint."),
-        message: nullableString("Safe guidance when no relationship matches are available."),
+        nextCursor: nullableString("Pagination token returned by this endpoint for reading the next page with the same file and filters."),
+        message: nullableString("Status and suggested next step when no related files are available."),
         nextActions: { type: "array", items: { type: "string" } }
       },
       ["generationId", "fileId", "sourceFileId", "items", "nextCursor"]
@@ -246,14 +442,19 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
         deleted: { type: "boolean" },
         webhookId: idSchema("Deleted webhook identifier.")
       },
-      ["deleted"]
+      ["deleted", "webhookId"]
     ),
     Webhook: objectSchema(
       {
         webhookId: idSchema("Webhook identifier."),
         name: { type: "string" },
         endpointHost: { type: "string" },
-        events: { type: "array", items: { type: "string" } },
+        events: {
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "string", enum: [...WEBHOOK_EVENT_TYPES] }
+        },
         enabled: { type: "boolean" },
         createdAt: timestampSchema(),
         updatedAt: timestampSchema(),
@@ -264,8 +465,13 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     WebhookCreateRequest: objectSchema(
       {
         name: nullableString("Optional webhook name."),
-        url: { type: "string", format: "uri" },
-        events: { type: "array", items: { type: "string" } }
+        url: { type: "string", format: "uri", pattern: "^[Hh][Tt][Tt][Pp][Ss]://" },
+        events: {
+          type: "array",
+          minItems: 1,
+          uniqueItems: true,
+          items: { type: "string", enum: [...WEBHOOK_EVENT_TYPES] }
+        }
       },
       ["url", "events"]
     ),
@@ -289,7 +495,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
         status: { type: "string", enum: ["pending", "success", "failed"] },
         attemptCount: { type: "integer", minimum: 0 },
         httpStatus: { anyOf: [{ type: "integer" }, { type: "null" }] },
-        errorCode: nullableString("Stable delivery error code when delivery fails."),
+        errorCode: nullableString("Delivery error code when delivery fails."),
         createdAt: timestampSchema(),
         updatedAt: timestampSchema()
       },
@@ -309,16 +515,62 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     WebhookDeliveryListResponse: pageSchema(ref("WebhookDelivery")),
     WebhookRedeliveryResponse: objectSchema({ delivery: ref("WebhookDelivery") }, ["delivery"])
   };
+  return Object.fromEntries(
+    Object.entries(schemas).map(([name, schema]) => [
+      name,
+      addMissingFieldDescriptions(schema)
+    ])
+  );
+}
+
+function addMissingFieldDescriptions(schema: SchemaObject): SchemaObject {
+  const output = { ...schema };
+  const properties = schema.properties;
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    output.properties = Object.fromEntries(
+      Object.entries(properties as Record<string, unknown>).map(([name, value]) => {
+        const property = value && typeof value === "object" && !Array.isArray(value)
+          ? addMissingFieldDescriptions(value as SchemaObject)
+          : value;
+        const propertySchema = property as SchemaObject | undefined;
+        if (
+          propertySchema
+          && typeof propertySchema === "object"
+          && propertySchema.description === undefined
+          && SCHEMA_FIELD_DESCRIPTIONS[name]
+        ) {
+          return [name, {
+            ...propertySchema,
+            description: SCHEMA_FIELD_DESCRIPTIONS[name]
+          }];
+        }
+        return [name, property];
+      })
+    );
+  }
+  for (const keyword of ["items", "anyOf", "oneOf", "allOf"] as const) {
+    const value = schema[keyword];
+    if (Array.isArray(value)) {
+      output[keyword] = value.map((item) =>
+        item && typeof item === "object" && !Array.isArray(item)
+          ? addMissingFieldDescriptions(item as SchemaObject)
+          : item
+      );
+    } else if (value && typeof value === "object") {
+      output[keyword] = addMissingFieldDescriptions(value as SchemaObject);
+    }
+  }
+  return output;
 }
 
 function graphOverviewResponseSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation used for this graph overview."),
+      generationId: idSchema("Identifier of the published knowledge-base version used for this relationship overview."),
       availability: {
         type: "string",
         enum: ["available", "empty", "unavailable"],
-        description: "Availability of active graph projections. Empty graph results do not imply an empty knowledge base."
+        description: "Whether the published knowledge-base version contains readable relationship data. An empty result does not mean the knowledge base is empty."
       },
       summary: objectSchema(
         {
@@ -329,20 +581,20 @@ function graphOverviewResponseSchema(): SchemaObject {
       ),
       resources: objectSchema(
         {
-          graphIndexPath: nullableString("Generated graph index path when available."),
-          nodeDirectoryPath: nullableString("Generated graph-node directory when nodes are available."),
-          edgeDirectoryPath: nullableString("Generated graph-edge directory when edges are available."),
-          byFileDirectoryPath: nullableString("Generated per-file graph directory when nodes are available.")
+          graphIndexPath: nullableString("Published relationship index path when available."),
+          nodeDirectoryPath: nullableString("Published relationship-node directory when nodes are available."),
+          edgeDirectoryPath: nullableString("Published relationship-edge directory when edges are available."),
+          byFileDirectoryPath: nullableString("Published per-file relationship directory when nodes are available.")
         },
         ["graphIndexPath", "nodeDirectoryPath", "edgeDirectoryPath", "byFileDirectoryPath"]
       ),
       readActions: objectSchema(
         {
           readIndexContent: { type: "string" },
-          graphIndexContent: nullableString("Read the real graph index file when available."),
+          graphIndexContent: nullableString("Read the published relationship index file when available."),
           listGraphRoot: { type: "string" },
-          listGraphNodes: nullableString("List generated graph-node files when available."),
-          listGraphEdges: nullableString("List generated graph-edge files when available."),
+          listGraphNodes: nullableString("List published relationship-node files when available."),
+          listGraphEdges: nullableString("List published relationship-edge files when available."),
           listByFileGraph: nullableString("List per-file graph records when available."),
           searchGraph: { type: "string" },
           expandGraphByFileId: { type: "string" },
@@ -357,7 +609,10 @@ function graphOverviewResponseSchema(): SchemaObject {
           "fileDetailById", "fileContentById", "fileContentByPath", "relatedFilesById"
         ]
       ),
-      message: { type: "string" },
+      message: {
+        type: "string",
+        description: "Relationship availability and suggested next action."
+      },
       nextActions: {
         type: "array",
         items: { type: "string" }
@@ -370,14 +625,14 @@ function graphOverviewResponseSchema(): SchemaObject {
 function graphExpansionResponseSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation used for graph expansion."),
+      generationId: idSchema("Identifier of the published knowledge-base version used for this relationship query."),
       query: objectSchema(
         {
-          fileId: nullableString("Seed file identifier when expansion starts from a known file."),
-          nodeId: nullableString("Seed graph node identifier when expansion starts from a graph node."),
-          edgeId: nullableString("Seed graph edge identifier when expansion starts from a graph edge."),
-          query: nullableString("Seed query when expansion starts from graph search."),
-          normalizedQuery: nullableString("Normalized query when `query` is provided."),
+          fileId: nullableString("Starting file identifier when exploration begins from a known file."),
+          nodeId: nullableString("Starting relationship-node identifier when exploration begins from a node."),
+          edgeId: nullableString("Starting relationship-edge identifier when exploration begins from an edge."),
+          query: nullableString("Search phrase used to find a starting file."),
+          normalizedQuery: nullableString("Search phrase after standard character and spacing cleanup."),
           depth: { type: "integer", enum: [0, 1, 2] },
           fanout: { type: "integer", minimum: 0 },
           limit: { type: "integer", minimum: 1 },
@@ -387,25 +642,25 @@ function graphExpansionResponseSchema(): SchemaObject {
       ),
       seedFile: {
         oneOf: [ref("GeneratedFile"), { type: "null" }],
-        description: "Resolved seed file when expansion starts from `fileId`."
+        description: "Starting file used when `fileId` is provided."
       },
       seedResults: {
         type: "array",
         items: ref("FileSearchResult"),
-        description: "Graph search seed candidates when expansion starts from `query`."
+        description: "Possible starting files found when `query` is provided."
       },
       relationships: {
         type: "array",
         items: ref("RelatedFile"),
-        description: "Bounded related files discovered from graph expansion."
+        description: "Related files found up to the requested depth and result limits."
       },
       graphPaths: {
         type: "array",
         items: { type: "string" },
-        description: "Logical `_graph/*` files that can be read through the path content endpoint."
+        description: "Published relationship-data files under `_graph/` that can be read with the path-based file content endpoint."
       },
       nextCursor: nullableString(
-        "Opaque cursor accepted by this graph expansion endpoint with the same seed and active generation. Restart without a cursor when it is rejected."
+        "Pagination token returned by this endpoint. Reuse it only with the same starting point and published knowledge-base version. If it is rejected, restart without a cursor."
       ),
       resultSummary: objectSchema(
         {
@@ -418,11 +673,11 @@ function graphExpansionResponseSchema(): SchemaObject {
         },
         ["seedCount", "relationshipCount", "hasMore", "depth", "fanout", "meaning"]
       ),
-      message: nullableString("Safe guidance when graph expansion returns no candidates."),
+      message: nullableString("Status and suggested next step when no starting or related files are found."),
       nextActions: {
         type: "array",
         items: { type: "string" },
-        description: "Suggested OpenAPI reads that keep Agent exploration moving."
+        description: "Suggested file reads or relationship queries for continuing exploration."
       }
     },
     [
@@ -441,12 +696,12 @@ function graphExpansionResponseSchema(): SchemaObject {
 function relatedFileSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation containing this relationship."),
-      edgeId: idSchema("Stable graph edge identifier accepted by graph expansion."),
+      generationId: idSchema("Identifier of the published knowledge-base version containing this relationship."),
+      edgeId: idSchema("Relationship-edge identifier accepted by relationship exploration."),
       fileId: idSchema(
-        "Related generated file identifier accepted by file detail, content, related-file, and graph-expansion operations."
+        "Related published file identifier accepted by file detail, content, related-file, and relationship-exploration operations."
       ),
-      sourceFileId: idSchema("Related source file identifier."),
+      sourceFileId: idSchema("Uploaded-file identifier associated with the related published file."),
       path: { type: "string" },
       title: { type: "string" },
       relationType: { type: "string" },
@@ -480,9 +735,9 @@ function relatedFileSchema(): SchemaObject {
 function sourceDirectorySchema(): SchemaObject {
   return objectSchema(
     {
-      directoryId: idSchema("Stable source-directory identifier."),
+      directoryId: idSchema("Uploaded-directory identifier."),
       knowledgeBaseId: idSchema("Owning knowledge-base identifier."),
-      parentDirectoryId: nullableString("Stable parent directory identifier."),
+      parentDirectoryId: nullableString("Parent uploaded-directory identifier."),
       name: { type: "string" },
       relativePath: { type: "string" },
       generatedPath: { type: "string" },
@@ -521,12 +776,12 @@ function sourceDirectorySchema(): SchemaObject {
 function sourceResourceFileSchema(): SchemaObject {
   return objectSchema(
     {
-      sourceFileId: idSchema("Stable source-file identifier."),
+      sourceFileId: idSchema("Uploaded-file identifier."),
       knowledgeBaseId: idSchema("Owning knowledge-base identifier."),
-      directoryId: nullableString("Stable parent source-directory identifier."),
+      directoryId: nullableString("Parent uploaded-directory identifier."),
       name: { type: "string" },
       relativePath: { type: "string" },
-      generatedPath: nullableString("Canonical generated Markdown path when published."),
+      generatedPath: nullableString("Published knowledge-base path when the file is ready to read."),
       contentType: { type: "string" },
       sizeBytes: { type: "integer", minimum: 0 },
       resourceRevision: { type: "integer", minimum: 1 },
@@ -541,7 +796,7 @@ function sourceResourceFileSchema(): SchemaObject {
       failure: {
         ...sourceFileFailureSchema(),
         type: ["object", "null"],
-        description: "Canonical terminal failure when lifecycle progress stopped."
+        description: "Error details when file processing stopped."
       },
       generatedOutputStatus: {
         type: "string",
@@ -554,7 +809,7 @@ function sourceResourceFileSchema(): SchemaObject {
       actions: {
         type: "array",
         items: sourceFileLifecycleActionSchema(),
-        description: "Server-authorized lifecycle actions for the current state."
+        description: "Actions currently available for this uploaded Markdown file."
       },
       links: { type: "object", additionalProperties: { type: ["string", "null"] } },
       createdAt: timestampSchema()
@@ -639,7 +894,7 @@ function sourceFileLifecycleActionSchema(): SchemaObject {
 function resourceOperationSchema(): SchemaObject {
   return objectSchema(
     {
-      operationId: idSchema("Stable asynchronous resource-operation identifier."),
+      operationId: idSchema("Identifier used to check the status and result of this file or directory change."),
       knowledgeBaseId: idSchema("Owning knowledge-base identifier."),
       kind: {
         type: "string",
@@ -660,13 +915,13 @@ function resourceOperationSchema(): SchemaObject {
       targetKind: {
         type: ["string", "null"],
         enum: ["source_file", "source_directory", "knowledge_base", null],
-        description: "Stable resource kind affected by the operation."
+        description: "Type of item changed by this request."
       },
-      targetId: nullableString("Stable source file, source directory, or knowledge-base ID."),
-      candidateRelativePath: nullableString("Safe candidate source path for a pending move or replacement."),
+      targetId: nullableString("Identifier of the file, directory, or knowledge base changed by this request."),
+      candidateRelativePath: nullableString("Requested destination path for a move or replacement that is still processing."),
       result: { type: ["object", "null"], additionalProperties: true },
-      errorCode: nullableString("Safe terminal operation error code."),
-      retryGuidance: nullableString("Safe polling guidance for non-terminal operations."),
+      errorCode: nullableString("Final operation error code."),
+      retryGuidance: nullableString("Instructions for checking the change again while it is still processing."),
       actions: objectSchema({ self: { type: "string" } }, ["self"]),
       createdAt: timestampSchema(),
       updatedAt: timestampSchema(),
@@ -695,9 +950,9 @@ function resourceOperationSchema(): SchemaObject {
 function sourceFileEventSchema(): SchemaObject {
   return objectSchema(
     {
-      eventId: idSchema("Source-file event identifier."),
+      eventId: idSchema("File-processing record identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      sourceFileId: idSchema("Source file identifier accepted by source-file status, events, and retry APIs."),
+      sourceFileId: idSchema("Uploaded-file identifier accepted by file status, processing-history, and retry APIs."),
       stageKey: { type: "string" },
       messageKey: { type: "string" },
       startedAt: nullableTimestampSchema(),
@@ -722,23 +977,23 @@ function sourceFileEventSchema(): SchemaObject {
 function generatedTreeEntrySchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation containing this tree entry."),
+      generationId: idSchema("Identifier of the published knowledge-base version containing this tree entry."),
       id: idSchema("Tree entry identifier."),
-      fileId: nullableString("Generated file identifier when this entry is a persisted file."),
-      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
-      directoryId: nullableString("Stable source-directory identifier for directory entries."),
+      fileId: nullableString("Published file identifier when this entry is a file."),
+      sourceFileId: nullableString("Uploaded Markdown file identifier when this published file was generated from one."),
+      directoryId: nullableString("Uploaded-directory identifier for directory entries."),
       parentPath: { type: "string" },
       name: { type: "string" },
       path: {
         type: "string",
-        description: "Logical generated file path. It is not a storage path."
+        description: "Published knowledge-base file path. It is not an S3 or local filesystem path."
       },
       sortKey: {
         type: "string",
-        description: "Stable tree ordering key for cursor pagination."
+        description: "Value that keeps tree entries in a consistent order across pages."
       },
       entryType: { type: "string", enum: ["file", "directory"] },
-      fileKind: nullableString("Generated file classification."),
+      fileKind: nullableString("Published file type."),
       directEntryCount: {
         type: "integer",
         minimum: 0,
@@ -749,16 +1004,16 @@ function generatedTreeEntrySchema(): SchemaObject {
       descendantFileCount: { type: "integer", minimum: 0 },
       resourceRevision: {
         anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
-        description: "Source resource revision when available."
+        description: "Uploaded-file version when available."
       },
       deletable: { type: "boolean" },
       contentAvailable: {
         type: "boolean",
-        description: "Whether this tree entry can be read through generated file content APIs."
+        description: "Whether this tree entry can be read through the published-file content APIs."
       },
       readActions: {
         oneOf: [fileReadActionsSchema(), { type: "null" }],
-        description: "Concrete read actions for file entries. Directory entries return null."
+        description: "Links for reading file entries. Directory entries return null."
       },
       ancestors: {
         type: "array",
@@ -785,7 +1040,8 @@ function generatedTreeEntrySchema(): SchemaObject {
       "resourceRevision",
       "deletable",
       "contentAvailable",
-      "readActions"
+      "readActions",
+      "ancestors"
     ]
   );
 }
@@ -793,13 +1049,13 @@ function generatedTreeEntrySchema(): SchemaObject {
 function generatedFileSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation containing this file."),
-      fileId: idSchema("Generated file identifier."),
+      generationId: idSchema("Identifier of the published knowledge-base version containing this file."),
+      fileId: idSchema("Published file identifier."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      sourceFileId: nullableString("Uploaded Markdown file identifier when this published file was generated from one."),
       path: {
         type: "string",
-        description: "Logical generated file path accepted by path-based reads."
+        description: "Published knowledge-base file path accepted by the path-based file read API."
       },
       fileKind: { type: "string" },
       contentType: { type: "string" },
@@ -837,22 +1093,20 @@ function generatedFileSchema(): SchemaObject {
 function fileSearchResultSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: idSchema("Active generation searched for this result."),
-      nodeId: nullableString("Stable graph node identifier when this result matched a graph node."),
-      edgeId: nullableString("Stable graph edge identifier when this result matched a graph edge."),
-      fileId: idSchema("Generated file identifier accepted by file detail, content, and related-file APIs."),
-      generatedFileId: idSchema(
-        "Generated file identifier. Same value as `fileId`; included to align with source-file list responses."
-      ),
+      generationId: idSchema("Identifier of the published knowledge-base version searched for this result."),
+      nodeId: nullableString("Relationship-node identifier when this result matched a node."),
+      edgeId: nullableString("Relationship-edge identifier when this result matched an edge."),
+      fileId: idSchema("Published file identifier accepted by file detail, content, and related-file APIs."),
+      generatedFileId: idSchema("Published file identifier. It has the same value as `fileId`."),
       knowledgeBaseId: idSchema("Knowledge-base identifier."),
-      sourceFileId: nullableString("Source file identifier when this generated file is source-backed."),
+      sourceFileId: nullableString("Uploaded Markdown file identifier when this published file was generated from one."),
       path: {
         type: "string",
-        description: "Logical generated file path accepted by path-based content reads."
+        description: "Published knowledge-base file path accepted by the path-based file read API."
       },
       generatedFilePath: {
         type: "string",
-        description: "Logical generated file path. Same value as `path`; included to align with source-file list responses."
+        description: "Published knowledge-base file path. It has the same value as `path`."
       },
       fileKind: { type: "string" },
       title: nullableString("Resolved title when available."),
@@ -864,16 +1118,16 @@ function fileSearchResultSchema(): SchemaObject {
         items: { type: "string", enum: ["path", "title", "description", "metadata"] }
       },
       score: {
-        type: "integer",
+        type: "number",
         minimum: 0,
-        description: "Small relative score for ordering candidates within the same query."
+        description: "Relative relevance score used to order results for this query. Higher values rank first."
       },
       contentAvailable: { type: "boolean" },
       readActions: fileReadActionsSchema(),
       matchType: {
         type: "string",
         enum: ["file_direct", "graph_node", "graph_edge", "graph_neighbor", "hybrid"],
-        description: "Match source used to rank and explain this search result."
+        description: "Reason this result matched, such as file content, a relationship node, or a related file."
       },
       graphContext: graphSearchContextSchema()
     },
@@ -895,6 +1149,7 @@ function fileSearchResultSchema(): SchemaObject {
       "matchedFields",
       "score",
       "contentAvailable",
+      "matchType",
       "readActions"
     ]
   );
@@ -903,16 +1158,16 @@ function fileSearchResultSchema(): SchemaObject {
 function fileReadActionsSchema(): SchemaObject {
   return objectSchema(
     {
-      fileDetailById: nullableString("Concrete generated-file detail request path when a generated file identifier is available."),
-      fileContentById: nullableString("Concrete generated-file content request path using `fileId` when available."),
+      fileDetailById: nullableString("Request path for published file details when a file ID is available."),
+      fileContentById: nullableString("Request path for published file content when a file ID is available."),
       fileContentByPath: {
         type: "string",
-        description: "Concrete generated-file content request path using the encoded logical file path."
+        description: "Request path for published file content using its URL-encoded knowledge-base path."
       },
-      relatedFilesById: nullableString("Concrete related-file request path when a generated file identifier is available."),
-      graphExpansionByFileId: nullableString("Concrete graph expansion request path when a generated file identifier is available."),
-      sourceFileStatusById: nullableString("Concrete source-file status request path when this result is source-backed."),
-      sourceFileEventsById: nullableString("Concrete source-file event request path when this result is source-backed.")
+      relatedFilesById: nullableString("Request path for related files when a file ID is available."),
+      graphExpansionByFileId: nullableString("Request path for exploring relationships when a file ID is available."),
+      sourceFileStatusById: nullableString("File-processing status request path when this result came from an uploaded Markdown file."),
+      sourceFileEventsById: nullableString("File-processing history request path when this result came from an uploaded Markdown file.")
     },
     [
       "fileDetailById",
@@ -929,17 +1184,17 @@ function fileReadActionsSchema(): SchemaObject {
 function fileSearchResponseSchema(): SchemaObject {
   return objectSchema(
     {
-      generationId: nullableString("Active generation searched by this response. It is null before the first activation."),
+      generationId: nullableString("Identifier of the published knowledge-base version searched by this response. It is null until content is first published."),
       query: ref("FileSearchQueryContext"),
       items: { type: "array", items: ref("FileSearchResult") },
       nextCursor: nullableString(
-        "Opaque cursor accepted by this search endpoint with the same query, filters, and active generation. Restart without a cursor when it is rejected."
+        "Pagination token returned by this endpoint. Reuse it only with the same query, filters, and published knowledge-base version. If it is rejected, restart without a cursor."
       ),
       searchStatus: {
         type: "string",
         enum: ["ok", "no_candidates", "index_unavailable"],
         description:
-          "`ok` means candidates are returned. `no_candidates` means the current query matched no files. `index_unavailable` means file search is not available for this knowledge base yet."
+          "`ok` means results are returned. `no_candidates` means the current query matched no files. `index_unavailable` means file search is not available for this knowledge base yet."
       },
       searchMode: {
         type: "string",
@@ -954,11 +1209,11 @@ function fileSearchResponseSchema(): SchemaObject {
       graphSummary: graphSearchSummarySchema(),
       resultSummary: ref("FileSearchResultSummary"),
       nextRequestTemplates: ref("FileSearchNextRequestTemplates"),
-      message: nullableString("Safe status message when no candidates or no index is available."),
+      message: nullableString("Status message when no files matched or search is not available."),
       nextActions: {
         type: "array",
         items: { type: "string" },
-        description: "Suggested OpenAPI reads that keep Agent exploration moving."
+        description: "Suggested file reads or relationship queries for continuing exploration."
       }
     },
     [
@@ -982,7 +1237,7 @@ function fileSearchQueryContextSchema(): SchemaObject {
       query: { type: "string", description: "Original search phrase received by the endpoint." },
       normalizedQuery: {
         type: "string",
-        description: "Normalized phrase used by the generated-file search index."
+        description: "Search text after standard character and spacing normalization."
       },
       scope: {
         type: "string",
@@ -991,7 +1246,7 @@ function fileSearchQueryContextSchema(): SchemaObject {
       },
       fileKind: {
         type: "string",
-        description: "Generated file kind filter applied to this response. `all` means no kind filter."
+        description: "Published file type filter applied to this response. `all` means no type filter."
       },
       mode: {
         type: "string",
@@ -1001,17 +1256,17 @@ function fileSearchQueryContextSchema(): SchemaObject {
       graphDepth: {
         type: "integer",
         enum: [0, 1, 2],
-        description: "Bounded graph context depth."
+        description: "Number of relationship levels included in this search."
       },
       graphFanout: {
         type: "integer",
         minimum: 0,
         description: "Maximum relationship records returned per graph item."
       },
-      limit: { type: "integer", minimum: 1, description: "Requested page size after validation." },
+      limit: { type: "integer", minimum: 1, description: "Maximum number of results applied to this request." },
       cursorProvided: {
         type: "boolean",
-        description: "Whether the request used a cursor returned by the same search family."
+        description: "Whether this request used a pagination token returned by an earlier search with the same query and filters."
       }
     },
     [
@@ -1046,17 +1301,17 @@ function graphSearchContextSchema(): SchemaObject {
     {
       graphRef: {
         type: "string",
-        description: "Logical `_graph/by-file/{sourceFileId}.json` path for this candidate."
+        description: "Published relationship-data path under `_graph/by-file/` for this result."
       },
       depth: { type: "integer", enum: [0, 1, 2] },
-      seedSourceFileId: idSchema("Source file identifier used as the graph search seed."),
+      seedSourceFileId: idSchema("Uploaded-file identifier used as the starting point for relationship search."),
       matchedNodeFields: { type: "array", items: { type: "string" } },
       matchedRelationshipFields: { type: "array", items: { type: "string" } },
       relationships: { type: "array", items: ref("RelatedFile") },
       graphPaths: {
         type: "array",
         items: { type: "string" },
-        description: "Logical graph files that can be read through the path content endpoint."
+        description: "Published relationship-data files that can be read with the path-based file content endpoint."
       }
     },
     [
@@ -1086,7 +1341,7 @@ function fileSearchResultSummarySchema(): SchemaObject {
       },
       meaning: {
         type: "string",
-        description: "Human-readable interpretation for Agent planning."
+        description: "Plain-language explanation of what the current result page means."
       }
     },
     ["resultCount", "hasMore", "sort", "meaning"]
@@ -1125,10 +1380,10 @@ function fileSearchNextRequestTemplatesSchema(): SchemaObject {
 function generationPageSchema(itemSchema: SchemaObject): SchemaObject {
   return objectSchema(
     {
-      generationId: nullableString("Active generation used for this page. It is null before the first activation."),
+      generationId: nullableString("Identifier of the published knowledge-base version used for this page. It is null until content is first published."),
       items: { type: "array", items: itemSchema },
       nextCursor: nullableString(
-        "Opaque cursor accepted only by the same list family and active generation. Restart without a cursor when it is rejected."
+        "Pagination token returned by this endpoint. Reuse it only with the same endpoint and published knowledge-base version. If it is rejected, restart without a cursor."
       )
     },
     ["generationId", "items", "nextCursor"]
@@ -1140,17 +1395,23 @@ function uploadManifestEntryRequestSchema(): SchemaObject {
     {
       relativePath: {
         type: "string",
-        description: "NFC Markdown path relative to the selected loose-file or folder root.",
+        description: "Markdown path relative to the selected upload root. The server stores the path in Unicode NFC form.",
         example: "handbook/onboarding/guide.md"
       },
       declaredSize: { type: "integer", minimum: 0, example: 2048 },
       checksumSha256: {
-        type: "string",
-        pattern: "^[a-f0-9]{64}$",
-        example: "0".repeat(64)
+        anyOf: [
+          {
+            type: "string",
+            pattern: "^[a-f0-9]{64}$",
+            example: "0".repeat(64)
+          },
+          { type: "null" }
+        ],
+        description: "Optional lowercase SHA-256 checksum used to detect unchanged content."
       }
     },
-    ["relativePath", "declaredSize", "checksumSha256"]
+    ["relativePath", "declaredSize"]
   );
 }
 
@@ -1197,12 +1458,13 @@ function uploadSessionSchema(): SchemaObject {
           "failed",
           "cancelled",
           "expired"
-        ]
+        ],
+        description: "Current upload-session state, from file-list creation through upload completion, failure, cancellation, or expiration."
       },
       declaredFileCount: { type: "integer", minimum: 0 },
       declaredByteCount: { type: "integer", minimum: 0 },
       counts: ref("UploadSessionCounts"),
-      errorCode: nullableString("Safe terminal upload-session error code."),
+      errorCode: nullableString("Final upload-session error code."),
       expiresAt: timestampSchema(),
       completedAt: nullableTimestampSchema(),
       createdAt: timestampSchema(),
@@ -1215,7 +1477,11 @@ function uploadSessionSchema(): SchemaObject {
       "declaredFileCount",
       "declaredByteCount",
       "counts",
-      "expiresAt"
+      "errorCode",
+      "expiresAt",
+      "completedAt",
+      "createdAt",
+      "updatedAt"
     ]
   );
 }
@@ -1223,7 +1489,7 @@ function uploadSessionSchema(): SchemaObject {
 function uploadSessionEntrySchema(): SchemaObject {
   return objectSchema(
     {
-      id: idSchema("Upload entry identifier used as the multipart content field name."),
+      id: idSchema("Upload entry identifier used by the Markdown content upload endpoint."),
       relativePath: { type: "string", example: "handbook/onboarding/guide.md" },
       directoryPath: { type: "string", example: "handbook/onboarding" },
       name: { type: "string", example: "guide.md" },
@@ -1243,11 +1509,11 @@ function uploadSessionEntrySchema(): SchemaObject {
         type: "string",
         enum: ["pending", "missing", "uploading", "uploaded", "failed", "skipped"]
       },
-      sourceDirectoryId: nullableString("Stable parent source-directory identifier."),
-      sourceFileId: nullableString("New or existing stable source-file identifier."),
+      sourceDirectoryId: nullableString("Parent directory identifier in the uploaded folder structure."),
+      sourceFileId: nullableString("Identifier of the new or existing uploaded Markdown file."),
       existingResourceRevision: { type: ["integer", "null"], minimum: 1 },
       generatedPath: { type: "string", example: "pages/handbook/onboarding/guide.md" },
-      errorCode: nullableString("Safe entry error code.")
+      errorCode: nullableString("Upload-entry error code.")
     },
     [
       "id",

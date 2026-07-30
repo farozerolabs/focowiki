@@ -10,6 +10,8 @@ import type {
 } from "../search/search-projection-cleanup.js";
 import type { StorageAdapter } from "../storage/s3.js";
 import { deleteStorageObjectBatch } from "./storage-object-deletion.js";
+import type { WebhookDispatcher } from "../webhooks/dispatcher.js";
+import { dispatchWebhookSafely } from "../webhooks/safe-dispatch.js";
 
 export type HardDeleteJobSettings = {
   databaseBatchSize: number;
@@ -23,6 +25,8 @@ export function createHardDeleteJobProcessor(input: {
   storage: StorageAdapter;
   redis: Pick<RedisCoordinator, "clearKnowledgeBaseRuntimeKeys" | "clearSourceFileRuntimeKeys">;
   search?: SearchProjectionCleanup;
+  webhooks?: Pick<WebhookDispatcher, "dispatch">;
+  onWebhookError?: (error: unknown) => void;
   settings: HardDeleteJobSettings;
   now?: () => Date;
 }) {
@@ -129,6 +133,27 @@ export function createHardDeleteJobProcessor(input: {
       jobId: job.id,
       target,
       completedAt: now().toISOString()
+    });
+    const eventType = target.kind === "knowledge_base"
+      ? "knowledge_base.deleted"
+      : "file.deleted";
+    await dispatchWebhookSafely({
+      webhooks: input.webhooks,
+      event: {
+        eventId: `event-hard-delete-${target.deletionIntentId}`,
+        eventType,
+        payload: {
+          knowledgeBaseId: target.knowledgeBaseId,
+          ...(target.kind === "source_file"
+            ? { sourceFileId: target.sourceFileId }
+            : {}),
+          ...(target.kind === "source_directory"
+            ? { sourceDirectoryId: target.sourceDirectoryId }
+            : {})
+        },
+        createdAt: now().toISOString()
+      },
+      onError: input.onWebhookError
     });
   };
 }

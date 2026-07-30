@@ -1,0 +1,171 @@
+.api-explorer-page .VPDoc .container,
+.api-explorer-page .VPDoc .content,
+.api-explorer-page .VPDoc .content-container {
+  max-width: none;
+}
+
+.api-explorer-page .VPDoc {
+  padding-right: 40px;
+}
+
+.swagger-explorer-shell .swagger-ui {
+  color: var(--vp-c-text-1);
+  font-family: var(--vp-font-family-base);
+}
+
+.swagger-explorer-shell .swagger-ui .topbar,
+.swagger-explorer-shell .swagger-ui .auth-wrapper,
+.swagger-explorer-shell .swagger-ui .authorize,
+.swagger-explorer-shell .swagger-ui .authorization__btn,
+.swagger-explorer-shell .swagger-ui .try-out,
+.swagger-explorer-shell .swagger-ui .execute-wrapper {
+  display: none !important;
+}
+
+.swagger-explorer-shell .swagger-ui .wrapper {
+  max-width: none;
+  padding: 0;
+}
+
+.swagger-explorer-shell .swagger-ui .info {
+  display: none;
+}
+
+.swagger-explorer-shell .swagger-ui .scheme-container {
+  display: none;
+}
+
+.swagger-explorer-shell .swagger-ui .info .title,
+.swagger-explorer-shell .swagger-ui .info p,
+.swagger-explorer-shell .swagger-ui .info li,
+.swagger-explorer-shell .swagger-ui .opblock-tag,
+.swagger-explorer-shell .swagger-ui .opblock-description-wrapper p,
+.swagger-explorer-shell .swagger-ui .opblock-external-docs-wrapper p,
+.swagger-explorer-shell .swagger-ui .opblock-title_normal p,
+.swagger-explorer-shell .swagger-ui .response-col_status,
+.swagger-explorer-shell .swagger-ui table thead tr td,
+.swagger-explorer-shell .swagger-ui table thead tr th {
+  color: var(--vp-c-text-1);
+}
+
+.swagger-explorer-shell .swagger-ui .info a,
+.swagger-explorer-shell .swagger-ui .link,
+.swagger-explorer-shell .swagger-ui .opblock-external-docs-wrapper a {
+  color: var(--vp-c-brand-1);
+}
+
+.swagger-explorer-shell .swagger-ui input[type="text"],
+.swagger-explorer-shell .swagger-ui input[type="search"],
+.swagger-explorer-shell .swagger-ui textarea,
+.swagger-explorer-shell .swagger-ui select {
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-bg);
+  border-color: var(--vp-c-divider);
+}
+
+.swagger-explorer-shell .swagger-ui .scheme-container,
+.swagger-explorer-shell .swagger-ui section.models,
+.swagger-explorer-shell .swagger-ui section.models.is-open h4,
+.swagger-explorer-shell .swagger-ui .model-box {
+  background: var(--vp-c-bg-soft);
+  box-shadow: none;
+}
+
+.swagger-explorer-shell .swagger-ui .opblock-tag {
+  border-bottom-color: var(--vp-c-divider);
+}
+
+.swagger-explorer-shell .swagger-ui .opblock-summary-path,
+.swagger-explorer-shell .swagger-ui .opblock-summary-description {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.swagger-explorer-shell .swagger-ui .highlight-code,
+.swagger-explorer-shell .swagger-ui .microlight,
+.swagger-explorer-shell .swagger-ui .model-example,
+.swagger-explorer-shell .swagger-ui .responses-table {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.swagger-explorer-shell .swagger-ui button:focus-visible,
+.swagger-explorer-shell .swagger-ui input:focus-visible,
+.swagger-explorer-shell .swagger-ui select:focus-visible,
+.swagger-explorer-shell .swagger-ui a:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+.dark .swagger-explorer-shell .swagger-ui svg {
+  fill: var(--vp-c-text-2);
+}
+
+.dark .swagger-explorer-shell .swagger-ui .model,
+.dark .swagger-explorer-shell .swagger-ui .model-title,
+.dark .swagger-explorer-shell .swagger-ui .opblock-tag small,
+.dark .swagger-explorer-shell .swagger-ui .opblock-tag small p,
+.dark .swagger-explorer-shell .swagger-ui .parameter__name,
+.dark .swagger-explorer-shell .swagger-ui .parameter__type,
+.dark .swagger-explorer-shell .swagger-ui .prop-name,
+.dark .swagger-explorer-shell .swagger-ui .prop-type,
+.dark .swagger-explorer-shell .swagger-ui .response-col_links {
+  color: var(--vp-c-text-1);
+}
+
+@media (max-width: 959px) {
+  .api-explorer-page .VPDoc {
+    padding-right: 24px;
+  }
+}
+
+@media (max-width: 639px) {
+  .api-explorer-page .VPDoc {
+    padding-right: 16px;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-tag {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    gap: 8px;
+    padding: 16px 8px;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-tag > a {
+    min-width: 0;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-tag > small {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin: 0;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-tag > small p {
+    margin: 0;
+    line-height: 1.6;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-tag > button {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock .opblock-summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .swagger-explorer-shell .swagger-ui .opblock-summary-path,
+  .swagger-explorer-shell .swagger-ui .opblock-summary-description {
+    flex-basis: calc(100% - 70px);
+  }
+
+  .swagger-explorer-shell .swagger-ui .responses-inner,
+  .swagger-explorer-shell .swagger-ui .opblock-body {
+    padding: 12px;
+  }
+}
