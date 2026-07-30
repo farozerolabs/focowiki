@@ -1,13 +1,7 @@
 import type {
-  SearchProjectionDocumentRepository
-} from "../application/ports/search-projection-document-repository.js";
-import type {
-  SearchIndexKind,
   SearchProjectionStateRepository
 } from "../application/ports/search-projection-state-repository.js";
-import { partitionSearchDocuments } from "./indexing-batch.js";
 import {
-  createSearchDocumentWork,
   createSearchLifecycleWork
 } from "./search-indexing-plan.js";
 
@@ -18,15 +12,11 @@ export type SearchProjectionCoordinationResult = {
 
 export async function ensureSearchProjectionWork(input: {
   states: SearchProjectionStateRepository;
-  documents: SearchProjectionDocumentRepository;
   knowledgeBaseId: string;
   generationId: string;
   maintenanceRequestId: string | null;
   forceCompatibilityCutover: boolean;
   forceFullRebuild?: boolean;
-  scanBatchSize: number;
-  indexBatchDocumentCount: number;
-  indexBatchCompressedBytes: number;
   maxAttempts: number;
   contract: {
     contentSchemaVersion: string;
@@ -36,7 +26,6 @@ export async function ensureSearchProjectionWork(input: {
   };
   now: string;
 }): Promise<SearchProjectionCoordinationResult> {
-  assertPositiveInteger(input.scanBatchSize, "Search projection scan batch size");
   const current = await input.states.getState(input.knowledgeBaseId);
   if (!current) return { status: "failed", epoch: null };
   if (
@@ -145,21 +134,9 @@ export async function ensureSearchProjectionWork(input: {
 
   for (const indexKind of ["content", "graph"] as const) {
     await input.states.createWork([
-      createSearchLifecycleWork({
-        ...input,
-        epoch
-      }, indexKind, "prepare_index")
+      createSearchLifecycleWork({ ...input, epoch }, indexKind, "prepare_index"),
+      createSearchLifecycleWork({ ...input, epoch }, indexKind, "plan_documents")
     ]);
-    await planDocumentWork({
-      ...input,
-      state: {
-        activeGenerationId: state.activeGenerationId,
-        activeEpoch: state.activeEpoch,
-        pendingEpoch: epoch,
-        fullRebuild: requiresPhysicalReplacement(state, indexKind)
-      },
-      indexKind
-    });
   }
   await input.states.createWork([
     createSearchLifecycleWork({ ...input, epoch }, "content", "validate"),
@@ -245,96 +222,6 @@ export async function readSearchProjectionCoordinationStatus(input: {
   };
 }
 
-async function planDocumentWork(input: {
-  states: SearchProjectionStateRepository;
-  documents: SearchProjectionDocumentRepository;
-  knowledgeBaseId: string;
-  generationId: string;
-  maintenanceRequestId: string | null;
-  scanBatchSize: number;
-  indexBatchDocumentCount: number;
-  indexBatchCompressedBytes: number;
-  maxAttempts: number;
-  state: {
-    activeGenerationId: string | null;
-    activeEpoch: number;
-    pendingEpoch: number;
-    fullRebuild: boolean;
-  };
-  indexKind: SearchIndexKind;
-}): Promise<void> {
-  let cursor: string | null = null;
-  let batchOrdinal = 0;
-  do {
-    const page = await input.documents.listRecords({
-      knowledgeBaseId: input.knowledgeBaseId,
-      generationId: input.generationId,
-      activeGenerationId: input.state.activeGenerationId,
-      activeEpoch: input.state.fullRebuild ? 0 : input.state.activeEpoch,
-      pendingEpoch: input.state.pendingEpoch,
-      indexKind: input.indexKind,
-      cursor,
-      limit: input.scanBatchSize
-    });
-    const recordByDocumentId = new Map(
-      page.records.map((record) => [record.document.id, record])
-    );
-    const batches = partitionSearchDocuments({
-      documents: page.records.map((record) => record.document),
-      maxDocuments: input.indexBatchDocumentCount,
-      maxCompressedBytes: input.indexBatchCompressedBytes
-    });
-    for (const batch of batches) {
-      const recordKeys = batch.documents.map((document) => {
-        const record = recordByDocumentId.get(document.id);
-        if (!record) throw new Error("Search projection record is unavailable");
-        return record.key;
-      });
-      await input.states.createWork([
-        createSearchDocumentWork({
-          knowledgeBaseId: input.knowledgeBaseId,
-          generationId: input.generationId,
-          maintenanceRequestId: input.maintenanceRequestId,
-          epoch: input.state.pendingEpoch,
-          maxAttempts: input.maxAttempts,
-          indexKind: input.indexKind,
-          batchOrdinal,
-          recordKeys,
-          documents: batch.documents
-        })
-      ]);
-      batchOrdinal += 1;
-    }
-    if (page.nextCursor !== null && page.nextCursor === cursor) {
-      throw new Error("Search projection scan cursor did not advance");
-    }
-    cursor = page.nextCursor;
-  } while (cursor !== null);
-}
-
-function requiresPhysicalReplacement(
-  state: {
-    activeEpoch: number;
-    pendingFullRebuild: boolean;
-    contentSchemaVersion: string | null;
-    graphSchemaVersion: string | null;
-    contentSettingsChecksum: string | null;
-    graphSettingsChecksum: string | null;
-    pendingContentSchemaVersion: string | null;
-    pendingGraphSchemaVersion: string | null;
-    pendingContentSettingsChecksum: string | null;
-    pendingGraphSettingsChecksum: string | null;
-  },
-  indexKind: SearchIndexKind
-): boolean {
-  if (state.activeEpoch === 0 || state.pendingFullRebuild) return true;
-  return indexKind === "content"
-    ? state.contentSchemaVersion !== state.pendingContentSchemaVersion
-      || state.contentSettingsChecksum !== state.pendingContentSettingsChecksum
-    : state.graphSchemaVersion !== state.pendingGraphSchemaVersion
-      || state.graphSettingsChecksum !== state.pendingGraphSettingsChecksum;
-}
-
 function requiresAnyPhysicalReplacement(
   state: {
     activeEpoch: number;
@@ -367,10 +254,4 @@ function hasTerminalWork(progress: {
   return progress.failed > 0
     || progress.canceled > 0
     || progress.superseded > 0;
-}
-
-function assertPositiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive integer`);
-  }
 }

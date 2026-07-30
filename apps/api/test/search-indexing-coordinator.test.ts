@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  SearchProjectionDocumentRepository
-} from "../src/application/ports/search-projection-document-repository.js";
-import type {
   SearchProjectionStateRepository
 } from "../src/application/ports/search-projection-state-repository.js";
 import {
@@ -11,6 +8,61 @@ import {
 } from "../src/search/search-indexing-coordinator.js";
 
 describe("search indexing coordinator", () => {
+  it("delegates projection scanning to durable planning work", async () => {
+    const created: Array<{ workKind: string; indexKind: string }> = [];
+    const states = fakeStates({
+      getState: vi.fn(async () => searchState({
+        activeGenerationId: null,
+        routeState: "postgres_compatibility"
+      })),
+      reservePendingEpoch: vi.fn(async () => ({
+        outcome: "reserved" as const,
+        state: searchState({
+          activeGenerationId: null,
+          pendingEpoch: 1,
+          pendingGenerationId: "generation-one"
+        })
+      })),
+      createWork: vi.fn(async (work) => {
+        created.push(...work);
+        return work.length;
+      }),
+      getEpochProgress: vi.fn(async () => ({
+        total: created.length,
+        queued: created.length,
+        submitted: 0,
+        retry: 0,
+        succeeded: 0,
+        failed: 0,
+        canceled: 0,
+        superseded: 0,
+        activationReady: false
+      }))
+    });
+    await ensureSearchProjectionWork({
+      states,
+      knowledgeBaseId: "kb-one",
+      generationId: "generation-one",
+      maintenanceRequestId: "maintenance-one",
+      forceCompatibilityCutover: true,
+      maxAttempts: 5,
+      contract: searchContract(),
+      now: "2026-07-29T00:00:00.000Z"
+    });
+
+    expect(created.map((work) => `${work.indexKind}:${work.workKind}`)).toEqual([
+      "content:prepare_index",
+      "content:plan_documents",
+      "graph:prepare_index",
+      "graph:plan_documents",
+      "content:validate",
+      "graph:validate",
+      "content:activate",
+      "content:cleanup",
+      "graph:cleanup"
+    ]);
+  });
+
   it("streams deterministic work for a new knowledge base", async () => {
     const created: Array<{ workKind: string; indexKind: string }> = [];
     const states = fakeStates({
@@ -42,18 +94,12 @@ describe("search indexing coordinator", () => {
         activationReady: false
       }))
     });
-    const documents = fakeDocuments();
-
     const result = await ensureSearchProjectionWork({
       states,
-      documents,
       knowledgeBaseId: "kb-one",
       generationId: "generation-one",
       maintenanceRequestId: null,
       forceCompatibilityCutover: false,
-      scanBatchSize: 2,
-      indexBatchDocumentCount: 2,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:00:00.000Z"
@@ -62,20 +108,18 @@ describe("search indexing coordinator", () => {
     expect(result.status).toBe("pending");
     expect(created.map((work) => `${work.indexKind}:${work.workKind}`)).toEqual([
       "content:prepare_index",
-      "content:documents",
-      "content:documents",
+      "content:plan_documents",
       "graph:prepare_index",
-      "graph:documents",
+      "graph:plan_documents",
       "content:validate",
       "graph:validate",
       "content:activate",
       "content:cleanup",
       "graph:cleanup"
     ]);
-    expect(documents.listRecords).toHaveBeenCalledTimes(4);
   });
 
-  it("accepts a final projection page whose next cursor is null", async () => {
+  it("creates planning work independently from projection page size", async () => {
     const states = fakeStates({
       getState: vi.fn(async () => searchState({
         activeGenerationId: null,
@@ -102,35 +146,18 @@ describe("search indexing coordinator", () => {
         activationReady: false
       }))
     });
-    const documents = fakeDocuments({
-      listRecords: vi.fn(async (input) => ({
-        records: [{
-          key: `${input.indexKind}:record-1`,
-          document: {
-            id: `${input.indexKind}-document-1`,
-            body: "body"
-          }
-        }],
-        nextCursor: null
-      }))
-    });
-
     await expect(ensureSearchProjectionWork({
       states,
-      documents,
       knowledgeBaseId: "kb-one",
       generationId: "generation-one",
       maintenanceRequestId: null,
       forceCompatibilityCutover: false,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:00:00.000Z"
     })).resolves.toEqual({ status: "pending", epoch: 1 });
 
-    expect(documents.listRecords).toHaveBeenCalledTimes(2);
+    expect(states.createWork).toHaveBeenCalledTimes(3);
   });
 
   it("keeps released PostgreSQL search until explicit maintenance", async () => {
@@ -143,14 +170,10 @@ describe("search indexing coordinator", () => {
 
     const result = await ensureSearchProjectionWork({
       states,
-      documents: fakeDocuments(),
       knowledgeBaseId: "kb-one",
       generationId: "generation-next",
       maintenanceRequestId: null,
       forceCompatibilityCutover: false,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:00:00.000Z"
@@ -177,14 +200,10 @@ describe("search indexing coordinator", () => {
 
     await expect(ensureSearchProjectionWork({
       states,
-      documents: fakeDocuments(),
       knowledgeBaseId: "kb-one",
       generationId: "generation-active",
       maintenanceRequestId: "maintenance-one",
       forceCompatibilityCutover: true,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract,
       now: "2026-07-29T00:00:00.000Z"
@@ -238,19 +257,13 @@ describe("search indexing coordinator", () => {
         activationReady: false
       }))
     });
-    const documents = fakeDocuments();
-
     await expect(ensureSearchProjectionWork({
       states,
-      documents,
       knowledgeBaseId: "kb-one",
       generationId: "generation-active",
       maintenanceRequestId: "maintenance-data-loss",
       forceCompatibilityCutover: true,
       forceFullRebuild: true,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract,
       now: "2026-07-29T00:01:00.000Z"
@@ -259,9 +272,7 @@ describe("search indexing coordinator", () => {
     expect(states.reservePendingEpoch).toHaveBeenCalledWith(
       expect.objectContaining({ forceFullRebuild: true })
     );
-    expect(documents.listRecords).toHaveBeenCalledWith(
-      expect.objectContaining({ activeEpoch: 0 })
-    );
+    expect(created.map((work) => work.workKind)).toContain("plan_documents");
   });
 
   it("reports a pending publication without rescanning projection records", async () => {
@@ -346,14 +357,10 @@ describe("search indexing coordinator", () => {
 
     await expect(ensureSearchProjectionWork({
       states,
-      documents: fakeDocuments(),
       knowledgeBaseId: "kb-one",
       generationId: "generation-active",
       maintenanceRequestId: "maintenance-retry",
       forceCompatibilityCutover: true,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:05:00.000Z"
@@ -413,18 +420,12 @@ describe("search indexing coordinator", () => {
         return work.length;
       })
     });
-    const documents = fakeDocuments();
-
     await expect(ensureSearchProjectionWork({
       states,
-      documents,
       knowledgeBaseId: "kb-one",
       generationId: "generation-active",
       maintenanceRequestId: "maintenance-recovery",
       forceCompatibilityCutover: true,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:05:00.000Z"
@@ -442,7 +443,6 @@ describe("search indexing coordinator", () => {
       maxAttempts: 5,
       retriedAt: "2026-07-29T00:05:00.000Z"
     });
-    expect(documents.listRecords).not.toHaveBeenCalled();
   });
 
   it("rebases a cleaned failed epoch onto a newer generation with a full rebuild", async () => {
@@ -501,18 +501,12 @@ describe("search indexing coordinator", () => {
         return work.length;
       })
     });
-    const documents = fakeDocuments();
-
     await expect(ensureSearchProjectionWork({
       states,
-      documents,
       knowledgeBaseId: "kb-one",
       generationId: "generation-next",
       maintenanceRequestId: null,
       forceCompatibilityCutover: true,
-      scanBatchSize: 100,
-      indexBatchDocumentCount: 50,
-      indexBatchCompressedBytes: 4_096,
       maxAttempts: 5,
       contract: searchContract(),
       now: "2026-07-29T00:06:00.000Z"
@@ -524,35 +518,8 @@ describe("search indexing coordinator", () => {
       epoch: 2
     }));
     expect(created.every((work) => work.generationId === "generation-next")).toBe(true);
-    expect(documents.listRecords).toHaveBeenCalledWith(expect.objectContaining({
-      generationId: "generation-next",
-      activeEpoch: 0
-    }));
   });
 });
-
-function fakeDocuments(
-  overrides: Partial<SearchProjectionDocumentRepository> = {}
-): SearchProjectionDocumentRepository {
-  return {
-    listRecords: vi.fn(async (input) => {
-      if (input.cursor) return { records: [], nextCursor: null };
-      const count = input.indexKind === "content" ? 3 : 1;
-      return {
-        records: Array.from({ length: count }, (_, index) => ({
-          key: `${input.indexKind}:record-${index}`,
-          document: {
-            id: `${input.indexKind}-document-${index}`,
-            body: `body ${index}`
-          }
-        })),
-        nextCursor: `${input.indexKind}:record-${count - 1}`
-      };
-    }),
-    loadRecords: vi.fn(),
-    ...overrides
-  };
-}
 
 function searchContract() {
   return {
@@ -574,6 +541,7 @@ function fakeStates(
     claimWork: vi.fn(),
     markSubmitted: vi.fn(),
     markSucceeded: vi.fn(),
+    continuePlanning: vi.fn(),
     retryOrFail: vi.fn(),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),

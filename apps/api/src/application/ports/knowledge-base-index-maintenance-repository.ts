@@ -111,6 +111,11 @@ export type KnowledgeBaseIndexMaintenanceRepository = {
     heartbeatAt: string;
     leaseExpiresAt: string;
   }) => Promise<boolean>;
+  renewLease: (input: {
+    request: KnowledgeBaseIndexMaintenanceClaim;
+    heartbeatAt: string;
+    leaseExpiresAt: string;
+  }) => Promise<boolean>;
   complete: (input: {
     request: KnowledgeBaseIndexMaintenanceClaim;
     completedScopes: string[];

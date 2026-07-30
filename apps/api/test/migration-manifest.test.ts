@@ -117,6 +117,12 @@ const EXPECTED_MIGRATIONS = [
     "indexed-storage-object-protection-v17",
     "meilisearch-search-projection-v18",
     "compatible_with_persisted_work"
+  ],
+  [
+    "019_durable_search_projection_planning.sql",
+    "meilisearch-search-projection-v18",
+    "durable-search-projection-planning-v19",
+    "compatible_with_persisted_work"
   ]
 ] as const;
 

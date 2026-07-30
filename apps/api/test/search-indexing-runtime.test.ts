@@ -106,6 +106,101 @@ describe("search indexing runtime", () => {
     }));
   });
 
+  it("plans one durable document page and persists its continuation cursor", async () => {
+    const states = fakeStates({
+      createWork: vi.fn(async (work) => work.length),
+      continuePlanning: vi.fn(async () => true)
+    });
+    const documents = fakeDocuments({
+      listRecords: vi.fn(async () => ({
+        records: [
+          {
+            key: "content:record-one",
+            document: { id: "segment-one", body: "body one" }
+          },
+          {
+            key: "content:record-two",
+            document: { id: "segment-two", body: "body two" }
+          }
+        ],
+        nextCursor: "cursor-two"
+      }))
+    });
+    const work = {
+      ...searchWork(),
+      workKind: "plan_documents" as const,
+      documentCount: 0,
+      checkpoint: {}
+    };
+
+    await expect(processClaimedSearchWork({
+      work,
+      states,
+      documents,
+      transport: fakeTransport(),
+      indexPrefix: "focowiki",
+      settings: {
+        ...runtimeSettings(),
+        maxDocumentCount: 2
+      },
+      leaseDurationMs: 30_000,
+      now: () => new Date("2026-07-29T00:00:01.000Z")
+    })).resolves.toBe("processing");
+
+    expect(states.createWork).toHaveBeenCalledWith([
+      expect.objectContaining({
+        workKind: "documents",
+        batchOrdinal: 0,
+        documentCount: 2
+      })
+    ]);
+    expect(states.continuePlanning).toHaveBeenCalledWith({
+      work,
+      checkpoint: {
+        cursor: "cursor-two",
+        batchOrdinal: 1
+      },
+      continuedAt: "2026-07-29T00:00:01.000Z"
+    });
+    expect(states.markSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("completes durable planning after the final projection page", async () => {
+    const states = fakeStates();
+    const documents = fakeDocuments({
+      listRecords: vi.fn(async () => ({
+        records: [],
+        nextCursor: null
+      }))
+    });
+    const work = {
+      ...searchWork(),
+      workKind: "plan_documents" as const,
+      documentCount: 0,
+      checkpoint: {
+        cursor: "cursor-two",
+        batchOrdinal: 1
+      }
+    };
+
+    await expect(processClaimedSearchWork({
+      work,
+      states,
+      documents,
+      transport: fakeTransport(),
+      indexPrefix: "focowiki",
+      settings: runtimeSettings(),
+      leaseDurationMs: 30_000,
+      now: () => new Date("2026-07-29T00:00:02.000Z")
+    })).resolves.toBe("succeeded");
+
+    expect(states.markSucceeded).toHaveBeenCalledWith({
+      work,
+      completedAt: "2026-07-29T00:00:02.000Z"
+    });
+    expect(states.continuePlanning).not.toHaveBeenCalled();
+  });
+
   it("activates a maintenance epoch only after validation work succeeds", async () => {
     const states = fakeStates({
       activateEpoch: vi.fn(async () => true)
@@ -491,6 +586,7 @@ function fakeStates(
     claimWork: vi.fn(),
     markSubmitted: vi.fn(async () => true),
     markSucceeded: vi.fn(async () => true),
+    continuePlanning: vi.fn(async () => true),
     retryOrFail: vi.fn(async () => "retry" as const),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),
@@ -530,13 +626,16 @@ function searchState(
   };
 }
 
-function fakeDocuments(): SearchProjectionDocumentRepository {
+function fakeDocuments(
+  overrides: Partial<SearchProjectionDocumentRepository> = {}
+): SearchProjectionDocumentRepository {
   return {
     listRecords: vi.fn(),
     loadRecords: vi.fn(async () => [{
       key: "content:record-one",
       document: { id: "segment-one", body: "body" }
-    }])
+    }]),
+    ...overrides
   };
 }
 

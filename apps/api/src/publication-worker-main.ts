@@ -20,9 +20,6 @@ import { createPostgresPublicationActivationStateRepository } from "./infrastruc
 import { createPostgresPublicationValidationRepository } from "./infrastructure/postgres/publication-validation-repository.js";
 import { createPostgresRoleJobRepository } from "./infrastructure/postgres/role-job-repository.js";
 import {
-  createPostgresSearchProjectionDocumentRepository
-} from "./infrastructure/postgres/search-projection-document-repository.js";
-import {
   createPostgresSearchProjectionStateRepository
 } from "./infrastructure/postgres/search-projection-state-repository.js";
 import { createRuntimeLogger } from "./logger.js";
@@ -179,7 +176,6 @@ async function runPublicationWorker(): Promise<void> {
     const subtasks = createPostgresPublicationSubtaskRepository(sql);
     const validation = createPostgresPublicationValidationRepository(sql);
     const searchStates = createPostgresSearchProjectionStateRepository(sql);
-    const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
     const searchProjection = {
       async prepare(input: {
         knowledgeBaseId: string;
@@ -191,17 +187,10 @@ async function runPublicationWorker(): Promise<void> {
         const snapshot = await runtimeSettings.getSnapshot();
         return ensureSearchProjectionWork({
           states: searchStates,
-          documents: searchDocuments,
           knowledgeBaseId: input.knowledgeBaseId,
           generationId: input.generationId,
           maintenanceRequestId: null,
           forceCompatibilityCutover: false,
-          scanBatchSize: Math.min(
-            2_000,
-            Math.max(100, snapshot.search.indexBatchDocumentCount * 2)
-          ),
-          indexBatchDocumentCount: snapshot.search.indexBatchDocumentCount,
-          indexBatchCompressedBytes: snapshot.search.indexBatchCompressedBytes,
           maxAttempts: snapshot.search.maxAttempts,
           contract: createSearchProjectionContract({
             searchCutoffMs: snapshot.search.engineSearchCutoffMs

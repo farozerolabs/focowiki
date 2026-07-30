@@ -71,6 +71,7 @@ function fakeStates(): SearchProjectionStateRepository {
     claimWork: vi.fn(),
     markSubmitted: vi.fn(),
     markSucceeded: vi.fn(),
+    continuePlanning: vi.fn(),
     retryOrFail: vi.fn(),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),

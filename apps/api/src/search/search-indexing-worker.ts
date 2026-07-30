@@ -66,6 +66,12 @@ export async function processSearchIndexingWork(input: {
   if (input.work.state !== "queued" && input.work.state !== "retry") {
     return "lost";
   }
+  if (input.work.workKind === "plan_documents") {
+    return persistRetry(input, {
+      code: "SEARCH_INDEX_WORK_UNSUPPORTED",
+      message: "Search indexing work cannot be processed"
+    });
+  }
   if (input.work.workKind !== "documents") {
     return processLifecycleWork(input);
   }

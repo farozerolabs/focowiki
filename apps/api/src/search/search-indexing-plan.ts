@@ -11,72 +11,20 @@ import { partitionSearchDocuments } from "./indexing-batch.js";
 
 const CHECKPOINT_BYTE_LIMIT = 65_536;
 
-export type SearchProjectionRecord = {
-  key: string;
-  document: SearchEngineDocument;
-};
-
-export function createSearchProjectionWorkPlan(input: {
+type SearchWorkIdentityInput = {
   knowledgeBaseId: string;
   generationId: string;
   maintenanceRequestId: string | null;
   epoch: number;
-  content: SearchProjectionRecord[];
-  graph: SearchProjectionRecord[];
-  maxDocuments: number;
-  maxCompressedBytes: number;
   maxAttempts: number;
-}): SearchProjectionWorkDraft[] {
-  assertPositiveInteger(input.epoch, "Search epoch");
-  assertPositiveInteger(input.maxAttempts, "Search work retry limit");
-
-  const work: SearchProjectionWorkDraft[] = [];
-  for (const indexKind of ["content", "graph"] as const) {
-    work.push(createSearchLifecycleWork(input, indexKind, "prepare_index"));
-    const records = indexKind === "content" ? input.content : input.graph;
-    const recordByDocumentId = new Map(
-      records.map((record) => [record.document.id, record])
-    );
-    const batches = partitionSearchDocuments({
-      documents: records.map((record) => record.document),
-      maxDocuments: input.maxDocuments,
-      maxCompressedBytes: input.maxCompressedBytes
-    });
-    for (const batch of batches) {
-      const recordKeys = batch.documents.map((document) => {
-        const record = recordByDocumentId.get(document.id);
-        if (!record) throw new Error("Search work record identity is inconsistent");
-        return record.key;
-      });
-      work.push(createSearchDocumentWork({
-        ...input,
-        indexKind,
-        recordKeys,
-        documents: batch.documents,
-        batchOrdinal: batch.sequence
-      }));
-    }
-    work.push(createSearchLifecycleWork(input, indexKind, "validate"));
-  }
-  work.push(createSearchLifecycleWork(input, "content", "activate"));
-  for (const indexKind of ["content", "graph"] as const) {
-    work.push(createSearchLifecycleWork(input, indexKind, "cleanup"));
-  }
-  return work;
-}
+};
 
 export function createSearchLifecycleWork(
-  input: Pick<
-    Parameters<typeof createSearchProjectionWorkPlan>[0],
-    | "knowledgeBaseId"
-    | "generationId"
-    | "maintenanceRequestId"
-    | "epoch"
-    | "maxAttempts"
-  >,
+  input: SearchWorkIdentityInput,
   indexKind: SearchIndexKind,
   workKind: Exclude<SearchWorkKind, "documents" | "delete_documents">
 ): SearchProjectionWorkDraft {
+  assertWorkIdentity(input);
   const payloadChecksum = hash(stableJson({
     knowledgeBaseId: input.knowledgeBaseId,
     generationId: input.generationId,
@@ -95,19 +43,13 @@ export function createSearchLifecycleWork(
   });
 }
 
-export function createSearchDocumentWork(input: Pick<
-  Parameters<typeof createSearchProjectionWorkPlan>[0],
-  | "knowledgeBaseId"
-  | "generationId"
-  | "maintenanceRequestId"
-  | "epoch"
-  | "maxAttempts"
-> & {
+export function createSearchDocumentWork(input: SearchWorkIdentityInput & {
   indexKind: SearchIndexKind;
   batchOrdinal: number;
   recordKeys: string[];
   documents: SearchEngineDocument[];
 }): SearchProjectionWorkDraft {
+  assertWorkIdentity(input);
   const checkpoint = { recordKeys: input.recordKeys };
   assertCheckpointBound(checkpoint);
   const [batch] = partitionSearchDocuments({
@@ -130,14 +72,7 @@ export function createSearchDocumentWork(input: Pick<
 }
 
 function createWork(
-  input: Pick<
-    Parameters<typeof createSearchProjectionWorkPlan>[0],
-    | "knowledgeBaseId"
-    | "generationId"
-    | "maintenanceRequestId"
-    | "epoch"
-    | "maxAttempts"
-  >,
+  input: SearchWorkIdentityInput,
   work: Pick<
     SearchProjectionWorkDraft,
     | "indexKind"
@@ -203,4 +138,9 @@ function assertPositiveInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer`);
   }
+}
+
+function assertWorkIdentity(input: SearchWorkIdentityInput): void {
+  assertPositiveInteger(input.epoch, "Search epoch");
+  assertPositiveInteger(input.maxAttempts, "Search work retry limit");
 }
