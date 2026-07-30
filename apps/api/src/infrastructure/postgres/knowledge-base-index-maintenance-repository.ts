@@ -253,6 +253,21 @@ export function createPostgresKnowledgeBaseIndexMaintenanceRepository(
       return rows.length === 1;
     },
 
+    async renewLease(input) {
+      const rows = await sql<Array<{ id: string }>>`
+        UPDATE focowiki.knowledge_base_index_maintenance_requests
+        SET heartbeat_at = ${input.heartbeatAt},
+            lease_expires_at = ${input.leaseExpiresAt},
+            updated_at = ${input.heartbeatAt}
+        WHERE id = ${input.request.id}
+          AND lease_owner = ${input.request.leaseOwner}
+          AND lease_token = ${input.request.leaseToken}
+          AND state IN ('planning', 'running', 'validating')
+        RETURNING id
+      `;
+      return rows.length === 1;
+    },
+
     async complete(input) {
       const rows = await sql<Array<{ id: string }>>`
         UPDATE focowiki.knowledge_base_index_maintenance_requests

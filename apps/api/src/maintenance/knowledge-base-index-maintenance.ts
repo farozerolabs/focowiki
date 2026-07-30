@@ -114,6 +114,12 @@ export async function runKnowledgeBaseIndexMaintenanceSlice(input: {
   };
 
   await Promise.all(claimed.map(async (request) => {
+    const lease = keepMaintenanceLease({
+      requests: input.requests,
+      request,
+      leaseTtlSeconds: input.leaseTtlSeconds,
+      now
+    });
     try {
       if (request.state === "planning" || request.plannedScopes.length === 0) {
         const started = await input.requests.start({
@@ -124,6 +130,7 @@ export async function runKnowledgeBaseIndexMaintenanceSlice(input: {
         if (!started) return;
       }
       await input.schedule({ request, now: startedAt.toISOString() });
+      if (!await lease.stop()) return;
       const progress = await input.progress.getSummary({
         knowledgeBaseId: request.knowledgeBaseId
       });
@@ -161,6 +168,7 @@ export async function runKnowledgeBaseIndexMaintenanceSlice(input: {
         ).toISOString()
       });
     } catch (error) {
+      if (!await lease.stop()) return;
       const failure = safeExecutionFailure(error);
       await input.requests.retryOrFail({
         request,
@@ -170,9 +178,55 @@ export async function runKnowledgeBaseIndexMaintenanceSlice(input: {
         failedAt: startedAt.toISOString()
       });
       result.failed += 1;
+    } finally {
+      await lease.stop();
     }
   }));
   return result;
+}
+
+function keepMaintenanceLease(input: {
+  requests: KnowledgeBaseIndexMaintenanceRepository;
+  request: KnowledgeBaseIndexMaintenanceClaim;
+  leaseTtlSeconds: number;
+  now: () => Date;
+}): {
+  stop: () => Promise<boolean>;
+} {
+  let stopped = false;
+  let owned = true;
+  let pending = Promise.resolve();
+  const intervalMs = Math.max(
+    10,
+    Math.min(30_000, input.leaseTtlSeconds * 1_000 / 3)
+  );
+  const timer = setInterval(() => {
+    pending = pending.then(async () => {
+      if (stopped || !owned) return;
+      const heartbeatAt = input.now();
+      owned = await input.requests.renewLease({
+        request: input.request,
+        heartbeatAt: heartbeatAt.toISOString(),
+        leaseExpiresAt: new Date(
+          heartbeatAt.getTime() + input.leaseTtlSeconds * 1_000
+        ).toISOString()
+      });
+    }).catch(() => {
+      owned = false;
+    });
+  }, intervalMs);
+  timer.unref();
+
+  return {
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+      }
+      await pending;
+      return owned;
+    }
+  };
 }
 
 function aggregateProgress(

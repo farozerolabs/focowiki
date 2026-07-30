@@ -19,9 +19,6 @@ import {
   createRuntimeMeilisearchTransport
 } from "./infrastructure/meilisearch/runtime-meilisearch-transport.js";
 import {
-  createPostgresSearchProjectionDocumentRepository
-} from "./infrastructure/postgres/search-projection-document-repository.js";
-import {
   createPostgresSearchProjectionStateRepository
 } from "./infrastructure/postgres/search-projection-state-repository.js";
 import { createPostgresOptimizationMigrationRepository } from "./infrastructure/postgres/optimization-migration-repository.js";
@@ -176,7 +173,6 @@ async function runMaintenanceWorker(): Promise<void> {
       createPostgresKnowledgeBaseIndexMaintenanceRepository(sql);
     const maintenanceProgress = createPostgresMaintenanceProgressRepository(sql);
     const searchStates = createPostgresSearchProjectionStateRepository(sql);
-    const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
     const projectionRepairs = createPostgresProjectionRepairWorkRepository(sql);
     const runtimePressure = createPostgresRuntimePressureRepository(sql);
     const runtime = createRoleWorkerRuntime({
@@ -424,18 +420,11 @@ async function runMaintenanceWorker(): Promise<void> {
                     });
                   const searchResult = await ensureSearchProjectionWork({
                     states: searchStates,
-                    documents: searchDocuments,
                     knowledgeBaseId: request.knowledgeBaseId,
                     generationId: searchState.activeGenerationId,
                     maintenanceRequestId: request.id,
                     forceCompatibilityCutover: true,
                     forceFullRebuild,
-                    scanBatchSize:
-                      requestSnapshot.search.indexBatchDocumentCount,
-                    indexBatchDocumentCount:
-                      requestSnapshot.search.indexBatchDocumentCount,
-                    indexBatchCompressedBytes:
-                      requestSnapshot.search.indexBatchCompressedBytes,
                     maxAttempts: requestSnapshot.search.maxAttempts,
                     contract: createSearchProjectionContract({
                       searchCutoffMs:

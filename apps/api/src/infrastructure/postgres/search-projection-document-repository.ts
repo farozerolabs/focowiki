@@ -53,17 +53,44 @@ export function createPostgresSearchProjectionDocumentRepository(
   return {
     async listRecords(input) {
       const limit = boundedLimit(input.limit);
+      if (input.activeEpoch === 0) {
+        if (input.indexKind === "content") {
+          const rows = await selectFullContentPage(sql, input, {
+            cursor: decodeContentCursor(input.cursor),
+            limit
+          });
+          return {
+            records: rows.map((row) => mapContentRow(row, input)),
+            nextCursor: rows.length === limit
+              ? encodeContentCursor(rows.at(-1)!)
+              : null
+          };
+        }
+        const rows = await selectFullGraphPage(sql, input, {
+          cursor: decodeGraphCursor(input.cursor),
+          limit
+        });
+        return {
+          records: rows.map((row) => mapGraphRow(row, input)),
+          nextCursor: rows.length === limit
+            ? encodeGraphCursor(rows.at(-1)!)
+            : null
+        };
+      }
+      const rows = input.indexKind === "content"
+        ? await selectContentRecords(sql, input, {
+            cursor: input.cursor,
+            limit,
+            recordKeys: null
+          })
+        : await selectGraphRecords(sql, input, {
+            cursor: input.cursor,
+            limit,
+            recordKeys: null
+          });
       const records = input.indexKind === "content"
-        ? (await selectContentRecords(sql, input, {
-            cursor: input.cursor,
-            limit,
-            recordKeys: null
-          })).map((row) => mapContentRow(row, input))
-        : (await selectGraphRecords(sql, input, {
-            cursor: input.cursor,
-            limit,
-            recordKeys: null
-          })).map((row) => mapGraphRow(row, input));
+        ? (rows as ContentRecordRow[]).map((row) => mapContentRow(row, input))
+        : (rows as GraphRecordRow[]).map((row) => mapGraphRow(row, input));
       return {
         records,
         nextCursor: records.length === limit ? records.at(-1)!.key : null
@@ -73,7 +100,13 @@ export function createPostgresSearchProjectionDocumentRepository(
     async loadRecords(input) {
       if (input.recordKeys.length === 0) return [];
       const uniqueKeys = [...new Set(input.recordKeys)];
-      const records = input.indexKind === "content"
+      const records = input.activeEpoch === 0
+        ? input.indexKind === "content"
+          ? (await selectFullContentRecords(sql, input, uniqueKeys))
+            .map((row) => mapContentRow(row, input))
+          : (await selectFullGraphRecords(sql, input, uniqueKeys))
+            .map((row) => mapGraphRow(row, input))
+        : input.indexKind === "content"
         ? (await selectContentRecords(sql, input, {
             cursor: null,
             limit: null,
@@ -91,6 +124,187 @@ export function createPostgresSearchProjectionDocumentRepository(
       });
     }
   };
+}
+
+async function selectFullContentPage(
+  sql: DatabaseClient,
+  scope: SearchProjectionDocumentScope,
+  page: {
+    cursor: ContentPageCursor | null;
+    limit: number;
+  }
+): Promise<ContentRecordRow[]> {
+  return sql<ContentRecordRow[]>`
+    SELECT
+      'content:upsert:' || reference.source_revision_id
+        || ':' || reference.path_revision::text
+        || ':' || segment.ordinal::text AS record_key,
+      'upsert'::text AS action,
+      reference.knowledge_base_id,
+      reference.source_file_id,
+      reference.source_revision_id,
+      reference.path_revision,
+      reference.logical_path,
+      'page'::text AS file_kind,
+      nullif(reference.title, '') AS title,
+      nullif(segment.heading, '') AS heading,
+      segment.normalized_text AS body,
+      reference.metadata_json,
+      nullif(reference.source_url, '') AS source_url,
+      document.source_body_checksum_sha256 AS checksum_sha256,
+      segment.ordinal AS segment_ordinal,
+      document.segment_count AS segment_total
+    FROM focowiki.generation_search_projection_refs reference
+    JOIN focowiki.search_projection_documents document
+      ON document.knowledge_base_id = reference.knowledge_base_id
+     AND document.id = reference.search_document_id
+     AND document.lifecycle_state = 'ready'
+    JOIN focowiki.search_projection_segments segment
+      ON segment.knowledge_base_id = document.knowledge_base_id
+     AND segment.document_id = document.id
+    WHERE reference.knowledge_base_id = ${scope.knowledgeBaseId}
+      AND reference.generation_id = ${scope.generationId}
+      AND (
+        ${page.cursor === null}
+        OR (
+          reference.source_revision_id,
+          reference.source_file_id,
+          reference.path_revision,
+          segment.ordinal
+        ) > (
+          ${page.cursor?.sourceRevisionId ?? ""},
+          ${page.cursor?.sourceFileId ?? ""},
+          ${page.cursor?.pathRevision ?? 0}::bigint,
+          ${page.cursor?.segmentOrdinal ?? 0}::integer
+        )
+      )
+    ORDER BY
+      reference.source_revision_id,
+      reference.source_file_id,
+      reference.path_revision,
+      segment.ordinal
+    LIMIT ${page.limit}
+  `;
+}
+
+async function selectFullGraphPage(
+  sql: DatabaseClient,
+  scope: SearchProjectionDocumentScope,
+  page: {
+    cursor: GraphPageCursor | null;
+    limit: number;
+  }
+): Promise<GraphRecordRow[]> {
+  return sql<GraphRecordRow[]>`
+    SELECT
+      'graph:upsert:' || reference.source_file_id AS record_key,
+      'upsert'::text AS action,
+      reference.knowledge_base_id,
+      reference.source_file_id,
+      reference.source_revision_id,
+      reference.logical_path,
+      reference.title,
+      nullif(reference.source_url, '') AS source_url,
+      term.lexical_text,
+      term.exact_terms,
+      term.phrase_terms,
+      term.explicit_references,
+      term.term_fingerprint AS fingerprint
+    FROM focowiki.generation_search_projection_refs reference
+    JOIN focowiki.source_file_graph_term_documents term
+      ON term.knowledge_base_id = reference.knowledge_base_id
+     AND term.source_file_id = reference.source_file_id
+     AND term.source_revision_id = reference.source_revision_id
+    WHERE reference.knowledge_base_id = ${scope.knowledgeBaseId}
+      AND reference.generation_id = ${scope.generationId}
+      AND (
+        ${page.cursor === null}
+        OR reference.source_file_id > ${page.cursor?.sourceFileId ?? ""}
+      )
+    ORDER BY reference.source_file_id
+    LIMIT ${page.limit}
+  `;
+}
+
+async function selectFullContentRecords(
+  sql: DatabaseClient,
+  scope: SearchProjectionDocumentScope,
+  recordKeys: string[]
+): Promise<ContentRecordRow[]> {
+  const sourceRevisionIds = recordKeys.map(readContentRecordKey).map(
+    (record) => record.sourceRevisionId
+  );
+  return sql<ContentRecordRow[]>`
+    SELECT *
+    FROM (
+      SELECT
+        'content:upsert:' || reference.source_revision_id
+          || ':' || reference.path_revision::text
+          || ':' || segment.ordinal::text AS record_key,
+        'upsert'::text AS action,
+        reference.knowledge_base_id,
+        reference.source_file_id,
+        reference.source_revision_id,
+        reference.path_revision,
+        reference.logical_path,
+        'page'::text AS file_kind,
+        nullif(reference.title, '') AS title,
+        nullif(segment.heading, '') AS heading,
+        segment.normalized_text AS body,
+        reference.metadata_json,
+        nullif(reference.source_url, '') AS source_url,
+        document.source_body_checksum_sha256 AS checksum_sha256,
+        segment.ordinal AS segment_ordinal,
+        document.segment_count AS segment_total
+      FROM focowiki.generation_search_projection_refs reference
+      JOIN focowiki.search_projection_documents document
+        ON document.knowledge_base_id = reference.knowledge_base_id
+       AND document.id = reference.search_document_id
+       AND document.lifecycle_state = 'ready'
+      JOIN focowiki.search_projection_segments segment
+        ON segment.knowledge_base_id = document.knowledge_base_id
+       AND segment.document_id = document.id
+      WHERE reference.knowledge_base_id = ${scope.knowledgeBaseId}
+        AND reference.generation_id = ${scope.generationId}
+        AND reference.source_revision_id = ANY(${sourceRevisionIds})
+    ) projected
+    WHERE record_key = ANY(${recordKeys})
+    ORDER BY record_key
+  `;
+}
+
+async function selectFullGraphRecords(
+  sql: DatabaseClient,
+  scope: SearchProjectionDocumentScope,
+  recordKeys: string[]
+): Promise<GraphRecordRow[]> {
+  const sourceFileIds = recordKeys.map(readGraphRecordKey);
+  return sql<GraphRecordRow[]>`
+    SELECT
+      'graph:upsert:' || reference.source_file_id AS record_key,
+      'upsert'::text AS action,
+      reference.knowledge_base_id,
+      reference.source_file_id,
+      reference.source_revision_id,
+      reference.logical_path,
+      reference.title,
+      nullif(reference.source_url, '') AS source_url,
+      term.lexical_text,
+      term.exact_terms,
+      term.phrase_terms,
+      term.explicit_references,
+      term.term_fingerprint AS fingerprint
+    FROM focowiki.generation_search_projection_refs reference
+    JOIN focowiki.source_file_graph_term_documents term
+      ON term.knowledge_base_id = reference.knowledge_base_id
+     AND term.source_file_id = reference.source_file_id
+     AND term.source_revision_id = reference.source_revision_id
+    WHERE reference.knowledge_base_id = ${scope.knowledgeBaseId}
+      AND reference.generation_id = ${scope.generationId}
+      AND reference.source_file_id = ANY(${sourceFileIds})
+      AND 'graph:upsert:' || reference.source_file_id = ANY(${recordKeys})
+    ORDER BY record_key
+  `;
 }
 
 async function selectContentRecords(
@@ -305,4 +519,99 @@ function boundedLimit(value: number): number {
     throw new Error("Search projection scan limit must be a positive integer");
   }
   return Math.min(value, 2_000);
+}
+
+type ContentPageCursor = {
+  sourceRevisionId: string;
+  sourceFileId: string;
+  pathRevision: number;
+  segmentOrdinal: number;
+};
+
+type GraphPageCursor = {
+  sourceFileId: string;
+};
+
+function encodeContentCursor(row: ContentRecordRow): string {
+  return encodeCursor({
+    kind: "content",
+    sourceRevisionId: row.source_revision_id,
+    sourceFileId: row.source_file_id,
+    pathRevision: Number(row.path_revision),
+    segmentOrdinal: Number(row.segment_ordinal)
+  });
+}
+
+function decodeContentCursor(cursor: string | null): ContentPageCursor | null {
+  if (cursor === null) return null;
+  const value = decodeCursor(cursor);
+  if (
+    value.kind !== "content"
+    || typeof value.sourceRevisionId !== "string"
+    || typeof value.sourceFileId !== "string"
+    || !Number.isSafeInteger(value.pathRevision)
+    || Number(value.pathRevision) <= 0
+    || !Number.isSafeInteger(value.segmentOrdinal)
+    || Number(value.segmentOrdinal) < 0
+  ) {
+    throw new Error("Content search projection cursor is invalid");
+  }
+  return {
+    sourceRevisionId: value.sourceRevisionId,
+    sourceFileId: value.sourceFileId,
+    pathRevision: Number(value.pathRevision),
+    segmentOrdinal: Number(value.segmentOrdinal)
+  };
+}
+
+function encodeGraphCursor(row: GraphRecordRow): string {
+  return encodeCursor({
+    kind: "graph",
+    sourceFileId: row.source_file_id
+  });
+}
+
+function decodeGraphCursor(cursor: string | null): GraphPageCursor | null {
+  if (cursor === null) return null;
+  const value = decodeCursor(cursor);
+  if (value.kind !== "graph" || typeof value.sourceFileId !== "string") {
+    throw new Error("Graph search projection cursor is invalid");
+  }
+  return { sourceFileId: value.sourceFileId };
+}
+
+function encodeCursor(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(
+      Buffer.from(cursor, "base64url").toString("utf8")
+    ) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("invalid cursor shape");
+    }
+    return value as Record<string, unknown>;
+  } catch {
+    throw new Error("Search projection cursor is invalid");
+  }
+}
+
+function readContentRecordKey(key: string): {
+  sourceRevisionId: string;
+} {
+  const match = /^content:upsert:(.+):\d+:\d+$/u.exec(key);
+  if (!match?.[1]) {
+    throw new Error("Content search projection record key is invalid");
+  }
+  return { sourceRevisionId: match[1] };
+}
+
+function readGraphRecordKey(key: string): string {
+  const match = /^graph:upsert:(.+)$/u.exec(key);
+  if (!match?.[1]) {
+    throw new Error("Graph search projection record key is invalid");
+  }
+  return match[1];
 }

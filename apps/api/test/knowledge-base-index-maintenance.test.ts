@@ -130,6 +130,26 @@ describe("knowledge-base index maintenance", () => {
     expect(fixture.complete).toHaveBeenCalledTimes(2);
   });
 
+  it("renews the request lease while a scheduling phase is still running", async () => {
+    const fixture = createRepository({
+      claims: [claim({ state: "running", plannedScopes: ["search"] })]
+    });
+
+    await runKnowledgeBaseIndexMaintenanceSlice({
+      requests: fixture.repository,
+      progress: progressRepository(healthyProgress()),
+      runtimeSettings: runtimeSettings("manual"),
+      workerId: "worker-1",
+      leaseTtlSeconds: 0.03,
+      schedule: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+      }
+    });
+
+    expect(fixture.renewLease).toHaveBeenCalled();
+    expect(fixture.complete).toHaveBeenCalledOnce();
+  });
+
   it("keeps active child work running and records bounded progress", async () => {
     const fixture = createRepository({
       claims: [claim({ state: "running", plannedScopes: ["search"] })]
@@ -582,6 +602,7 @@ function createRepository(options?: {
   const claimBatch = vi.fn(async () => options?.claims ?? []);
   const start = vi.fn(async () => true);
   const heartbeat = vi.fn(async () => true);
+  const renewLease = vi.fn(async () => true);
   const complete = vi.fn(async () => true);
   const retryOrFail = vi.fn(async () => "retry" as const);
   const repository = {
@@ -591,6 +612,7 @@ function createRepository(options?: {
     claimBatch,
     start,
     heartbeat,
+    renewLease,
     complete,
     retryOrFail,
     cancelForKnowledgeBase: vi.fn(async () => 0),
@@ -605,6 +627,7 @@ function createRepository(options?: {
     claimBatch,
     start,
     heartbeat,
+    renewLease,
     complete,
     retryOrFail
   };

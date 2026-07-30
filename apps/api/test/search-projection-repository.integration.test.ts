@@ -164,7 +164,27 @@ describeDatabase("search projection repository integration", () => {
   });
 
   it("replays planned records after the mutable source revision advances", async () => {
-    const document = testDocument();
+    const replayBody = [
+      "# Cache consistency",
+      "Lease recovery validates the version token.",
+      "## Retry ownership",
+      "A durable checkpoint preserves the next record.",
+      "## Activation",
+      "Validation completes before index activation."
+    ].join("\n\n");
+    const document = buildBodySearchDocument({
+      knowledgeBaseId,
+      sourceFileId,
+      sourceRevisionId,
+      sourceBodyChecksumSha256:
+        createHash("sha256").update(replayBody).digest("hex"),
+      title: "Cache consistency",
+      logicalPath: "pages/guides/cache.md",
+      summary: "Lease recovery",
+      body: replayBody,
+      tokenizer
+    });
+    expect(document.segments.length).toBeGreaterThan(1);
     await repository.persistDocument({
       document,
       completedAt: "2026-07-24T01:00:00.000Z"
@@ -192,12 +212,20 @@ describeDatabase("search projection repository integration", () => {
       pendingEpoch: 1,
       indexKind: "content" as const
     };
-    const planned = await documentRepository.listRecords({
-      ...scope,
-      cursor: null,
-      limit: 10
-    });
-    expect(planned.records.length).toBeGreaterThan(0);
+    const planned = [];
+    let cursor: string | null = null;
+    do {
+      const page = await documentRepository.listRecords({
+        ...scope,
+        cursor,
+        limit: 1
+      });
+      planned.push(...page.records);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(planned).toHaveLength(document.segments.length);
+    expect(new Set(planned.map((record) => record.key)).size)
+      .toBe(planned.length);
 
     await sql`
       UPDATE focowiki.source_files
@@ -208,8 +236,8 @@ describeDatabase("search projection repository integration", () => {
 
     await expect(documentRepository.loadRecords({
       ...scope,
-      recordKeys: planned.records.map((record) => record.key)
-    })).resolves.toEqual(planned.records);
+      recordKeys: planned.map((record) => record.key)
+    })).resolves.toEqual(planned);
   });
 
   it("cleans only documents that have no generation reference", async () => {
@@ -788,6 +816,34 @@ describeDatabase("search projection repository integration", () => {
         ${tokenizer.contractVersion}, ${GRAPH_LEXICAL_PROJECTION_VERSION}
       )
     `;
+    const graphScope = {
+      knowledgeBaseId,
+      generationId,
+      activeGenerationId: generationId,
+      activeEpoch: 0,
+      pendingEpoch: 1,
+      indexKind: "graph" as const
+    };
+    const firstGraphPage = await documentRepository.listRecords({
+      ...graphScope,
+      cursor: null,
+      limit: 1
+    });
+    const secondGraphPage = await documentRepository.listRecords({
+      ...graphScope,
+      cursor: firstGraphPage.nextCursor,
+      limit: 1
+    });
+    const graphRecords = [
+      ...firstGraphPage.records,
+      ...secondGraphPage.records
+    ];
+    expect(new Set(graphRecords.map((record) => record.key)).size).toBe(2);
+    await expect(documentRepository.loadRecords({
+      ...graphScope,
+      recordKeys: graphRecords.map((record) => record.key).reverse()
+    })).resolves.toEqual([...graphRecords].reverse());
+
     await sql`
       INSERT INTO focowiki.active_projection_records (
         knowledge_base_id, projection_kind, record_id,

@@ -3,6 +3,7 @@ export type SearchPendingActivationState = "indexing" | "swapping";
 export type SearchIndexKind = "content" | "graph";
 export type SearchWorkKind =
   | "prepare_index"
+  | "plan_documents"
   | "documents"
   | "delete_documents"
   | "validate"
@@ -136,6 +137,14 @@ export interface SearchProjectionStateRepository {
   markSucceeded(input: {
     work: SearchProjectionWork;
     completedAt: string;
+  }): Promise<boolean>;
+  continuePlanning(input: {
+    work: SearchProjectionWork;
+    checkpoint: {
+      cursor: string;
+      batchOrdinal: number;
+    };
+    continuedAt: string;
   }): Promise<boolean>;
   retryOrFail(input: {
     work: SearchProjectionWork;

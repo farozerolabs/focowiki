@@ -243,6 +243,31 @@ describe("search indexing worker", () => {
     expect(repository.markSucceeded).toHaveBeenCalledOnce();
   });
 
+  it("does not treat durable planning as cleanup lifecycle work", async () => {
+    const repository = fakeRepository();
+    const cleanupIndex = vi.fn();
+
+    await expect(processSearchIndexingWork({
+      work: {
+        ...createWork({ state: "queued", taskUid: null }),
+        workKind: "plan_documents"
+      },
+      repository,
+      transport: fakeTransport(),
+      resolveIndexUid: () => "content-index",
+      loadDocuments: async () => [],
+      lifecycle: { cleanupIndex },
+      now: () => new Date("2026-07-29T00:04:15.000Z"),
+      leaseDurationMs: 30_000,
+      retryDelayMs: 2_000
+    })).resolves.toBe("retry");
+
+    expect(cleanupIndex).not.toHaveBeenCalled();
+    expect(repository.retryOrFail).toHaveBeenCalledWith(expect.objectContaining({
+      code: "SEARCH_INDEX_WORK_UNSUPPORTED"
+    }));
+  });
+
   it("persists an asynchronous lifecycle task before polling and verifies it after success", async () => {
     const queued = {
       ...createWork({ state: "queued", taskUid: null }),
@@ -364,6 +389,7 @@ function fakeRepository(
     claimWork: vi.fn(),
     markSubmitted: vi.fn(async () => true),
     markSucceeded: vi.fn(async () => true),
+    continuePlanning: vi.fn(async () => true),
     retryOrFail: vi.fn(async () => "retry" as const),
     restartFailedEpoch: vi.fn(),
     rebaseFailedEpoch: vi.fn(),

@@ -277,6 +277,19 @@ export function createPostgresSearchProjectionStateRepository(
             AND (
               work.work_kind = 'prepare_index'
               OR (
+                work.work_kind = 'plan_documents'
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM focowiki.search_projection_work prerequisite
+                  WHERE prerequisite.knowledge_base_id = work.knowledge_base_id
+                    AND prerequisite.epoch = work.epoch
+                    AND prerequisite.generation_id = work.generation_id
+                    AND prerequisite.index_kind = work.index_kind
+                    AND prerequisite.work_kind = 'prepare_index'
+                    AND prerequisite.state <> 'succeeded'
+                )
+              )
+              OR (
                 work.work_kind IN ('documents', 'delete_documents')
                 AND NOT EXISTS (
                   SELECT 1
@@ -298,7 +311,8 @@ export function createPostgresSearchProjectionStateRepository(
                     AND prerequisite.epoch = work.epoch
                     AND prerequisite.generation_id = work.generation_id
                     AND prerequisite.work_kind IN (
-                      'prepare_index', 'documents', 'delete_documents'
+                      'prepare_index', 'plan_documents',
+                      'documents', 'delete_documents'
                     )
                     AND prerequisite.state <> 'succeeded'
                 )
@@ -423,6 +437,32 @@ export function createPostgresSearchProjectionStateRepository(
               AND ${input.work.taskUid}::bigint IS NULL
             )
           )
+        RETURNING id
+      `;
+      return rows.length === 1;
+    },
+
+    async continuePlanning(input) {
+      const rows = await sql<Array<{ id: string }>>`
+        UPDATE focowiki.search_projection_work
+        SET state = 'queued',
+            checkpoint_json = ${sql.json(input.checkpoint)},
+            attempt_count = 0,
+            task_uid = NULL,
+            submitted_at = NULL,
+            lease_owner = NULL,
+            lease_token = NULL,
+            lease_expires_at = NULL,
+            heartbeat_at = ${input.continuedAt},
+            run_after = ${input.continuedAt},
+            safe_error_code = NULL,
+            safe_error_message = NULL,
+            updated_at = ${input.continuedAt}
+        WHERE id = ${input.work.id}
+          AND lease_owner = ${input.work.leaseOwner}
+          AND lease_token = ${input.work.leaseToken}
+          AND work_kind = 'plan_documents'
+          AND state IN ('queued', 'retry')
         RETURNING id
       `;
       return rows.length === 1;

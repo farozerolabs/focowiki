@@ -15,6 +15,7 @@ import {
 import {
   createSearchIndexManager
 } from "./search-index-manager.js";
+import { planSearchDocumentPage } from "./search-document-planner.js";
 import {
   processSearchIndexingWork,
   type SearchIndexingFailureEvent,
@@ -179,6 +180,13 @@ export async function processClaimedSearchWork(input: {
     state,
     input.work.indexKind
   );
+  if (input.work.workKind === "plan_documents") {
+    return processSearchPlanningWork({
+      ...input,
+      state,
+      activeEpoch: replacementRequired ? 0 : state.activeEpoch
+    });
+  }
   const targetIndexUid = replacementRequired
     ? definition.stagingUid
     : definition.activeUid;
@@ -331,6 +339,65 @@ export async function processClaimedSearchWork(input: {
     maxCompressedBytes: input.settings.maxCompressedBytes,
     ...(input.onFailure ? { onFailure: input.onFailure } : {})
   });
+}
+
+async function processSearchPlanningWork(input: {
+  work: SearchProjectionWork;
+  states: SearchProjectionStateRepository;
+  documents: SearchProjectionDocumentRepository;
+  settings: SearchIndexingRuntimeSettings;
+  state: KnowledgeBaseSearchState;
+  activeEpoch: number;
+  now?: () => Date;
+  onFailure?: (
+    event: SearchIndexingFailureEvent,
+    error?: unknown
+  ) => void;
+}): Promise<SearchIndexingWorkOutcome> {
+  const attemptedAt = input.now?.() ?? new Date();
+  try {
+    const outcome = await planSearchDocumentPage({
+      work: input.work,
+      states: input.states,
+      documents: input.documents,
+      activeGenerationId: input.state.activeGenerationId,
+      activeEpoch: input.activeEpoch,
+      scanBatchSize: input.settings.maxDocumentCount,
+      maxDocuments: input.settings.maxDocumentCount,
+      maxCompressedBytes: input.settings.maxCompressedBytes,
+      now: attemptedAt.toISOString()
+    });
+    return outcome === "continued"
+      ? "processing"
+      : outcome === "completed"
+        ? "succeeded"
+        : "lost";
+  } catch (error) {
+    const failedAt = attemptedAt.toISOString();
+    const outcome = await input.states.retryOrFail({
+      work: input.work,
+      code: "SEARCH_INDEX_PLANNING_FAILED",
+      message: "Search indexing plan could not be completed",
+      retryAt: new Date(
+        attemptedAt.getTime() + input.settings.retryDelayMs
+      ).toISOString(),
+      failedAt
+    });
+    input.onFailure?.({
+      workId: input.work.id,
+      knowledgeBaseId: input.work.knowledgeBaseId,
+      generationId: input.work.generationId,
+      epoch: input.work.epoch,
+      indexKind: input.work.indexKind,
+      workKind: input.work.workKind,
+      attemptNumber: input.work.attemptCount + 1,
+      maxAttempts: input.work.maxAttempts,
+      code: "SEARCH_INDEX_PLANNING_FAILED",
+      message: "Search indexing plan could not be completed",
+      outcome
+    }, error);
+    return outcome;
+  }
 }
 
 function searchIndexActivations(

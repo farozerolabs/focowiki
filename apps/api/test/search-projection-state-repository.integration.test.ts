@@ -139,6 +139,91 @@ describeDatabase("search projection state repository integration", () => {
     });
   });
 
+  it("persists and resumes a bounded planning checkpoint", async () => {
+    const identity = {
+      knowledgeBaseId: "kb-search-state",
+      epoch: 1,
+      generationId: "generation-search-state",
+      maintenanceRequestId: null,
+      indexKind: "graph" as const,
+      batchOrdinal: 0,
+      documentCount: 0,
+      compressedBytes: 0,
+      maxAttempts: 3
+    };
+    await repository.createWork([
+      {
+        ...identity,
+        id: "search-work-planning-prepare",
+        workKind: "prepare_index",
+        payloadChecksum: createHash("sha256").update("planning-prepare").digest("hex"),
+        taskCorrelation: "search-work-planning-prepare"
+      },
+      {
+        ...identity,
+        id: "search-work-planning-page",
+        workKind: "plan_documents",
+        payloadChecksum: createHash("sha256").update("planning-page").digest("hex"),
+        taskCorrelation: "search-work-planning-page"
+      }
+    ]);
+
+    const [prepare] = await repository.claimWork({
+      workerId: "planning-worker",
+      leaseTokenPrefix: "planning-prepare",
+      limit: 1,
+      maxInFlightTasks: 1,
+      allowNewSubmissions: true,
+      now: "2099-07-29T00:00:00.000Z",
+      leaseExpiresAt: "2099-07-29T00:10:00.000Z"
+    });
+    expect(prepare?.workKind).toBe("prepare_index");
+    expect(await repository.markSucceeded({
+      work: prepare!,
+      completedAt: "2099-07-29T00:00:01.000Z"
+    })).toBe(true);
+
+    const [planning] = await repository.claimWork({
+      workerId: "planning-worker",
+      leaseTokenPrefix: "planning-page",
+      limit: 1,
+      maxInFlightTasks: 1,
+      allowNewSubmissions: true,
+      now: "2099-07-29T00:00:02.000Z",
+      leaseExpiresAt: "2099-07-29T00:10:02.000Z"
+    });
+    expect(planning?.workKind).toBe("plan_documents");
+    expect(await repository.continuePlanning({
+      work: planning!,
+      checkpoint: {
+        cursor: "cursor-next",
+        batchOrdinal: 4
+      },
+      continuedAt: "2099-07-29T00:00:03.000Z"
+    })).toBe(true);
+
+    const [resumed] = await repository.claimWork({
+      workerId: "planning-worker",
+      leaseTokenPrefix: "planning-resume",
+      limit: 1,
+      maxInFlightTasks: 1,
+      allowNewSubmissions: true,
+      now: "2099-07-29T00:00:04.000Z",
+      leaseExpiresAt: "2099-07-29T00:10:04.000Z"
+    });
+    expect(resumed).toMatchObject({
+      id: "search-work-planning-page",
+      checkpoint: {
+        cursor: "cursor-next",
+        batchOrdinal: 4
+      }
+    });
+    expect(await repository.markSucceeded({
+      work: resumed!,
+      completedAt: "2099-07-29T00:00:05.000Z"
+    })).toBe(true);
+  });
+
   it("persists tasks before waiting and replays deterministic work", async () => {
     const payloadChecksum = createHash("sha256").update("batch-1").digest("hex");
     const draft = {
