@@ -23,6 +23,7 @@ peerDependencyRules:
 patchedDependencies:
   nodejieba@3.5.8: patches/nodejieba@3.5.8.patch
 allowBuilds:
+  '@scarf/scarf': false
   core-js: false
   esbuild: true
   nodejieba: true

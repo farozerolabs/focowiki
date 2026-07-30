@@ -1,5 +1,6 @@
 import {
   deliveryIdParameter,
+  errorResponse,
   fileSearchParameters,
   fileIdParameter,
   filePathQueryParameter,
@@ -50,11 +51,42 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successStatus: 200,
         successSchema: objectSchema(
           {
-            openapi: { type: "string" },
-            info: { type: "object", additionalProperties: true },
-            paths: { type: "object", additionalProperties: true }
+            openapi: {
+              type: "string",
+              description: "OpenAPI Specification version used by this contract."
+            },
+            info: {
+              type: "object",
+              additionalProperties: true,
+              description: "Product, contract version, license, and purpose."
+            },
+            servers: {
+              type: "array",
+              items: { type: "object", additionalProperties: true },
+              description: "Server base URLs declared by this contract."
+            },
+            security: {
+              type: "array",
+              items: { type: "object", additionalProperties: true },
+              description: "Default authentication requirements."
+            },
+            tags: {
+              type: "array",
+              items: { type: "object", additionalProperties: true },
+              description: "Operation groups exposed by this contract."
+            },
+            paths: {
+              type: "object",
+              additionalProperties: true,
+              description: "Documented Developer OpenAPI paths and operations."
+            },
+            components: {
+              type: "object",
+              additionalProperties: true,
+              description: "Reusable schemas and security definitions."
+            }
           },
-          ["openapi", "info", "paths"]
+          ["openapi", "info", "servers", "security", "tags", "paths", "components"]
         ),
         successExample: responseExamples.getDeveloperOpenApiContract
       })
@@ -128,7 +160,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         requestSchema: ref("CreateUploadSessionRequest"),
         requestExample: requestExamples.createUploadSession,
         successStatus: 201,
-        successSchema: ref("UploadSessionResponse"),
+        successSchema: ref("CreateUploadSessionResponse"),
         successExample: responseExamples.createUploadSession,
         additionalErrorStatuses: [404, 409, 422]
       })
@@ -137,7 +169,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       post: operation({
         tag: "Upload Sessions",
         operationId: "addUploadManifestEntries",
-        summary: "Add files to an upload manifest",
+        summary: "Add files to an upload session",
         parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
         requestSchema: ref("UploadManifestPageRequest"),
         requestExample: requestExamples.addUploadManifestEntries,
@@ -151,7 +183,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
       post: operation({
         tag: "Upload Sessions",
         operationId: "sealUploadManifest",
-        summary: "Confirm an upload manifest",
+        summary: "Confirm the upload file list",
         parameters: [knowledgeBaseIdParameter(), uploadSessionIdParameter()],
         requestExample: requestExamples.sealUploadManifest,
         successStatus: 200,
@@ -174,7 +206,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
               example: requestExamples.uploadSessionEntryContent.body,
               schema: {
                 type: "string",
-                description: "The Markdown body for the server-issued upload entry."
+                description: "Complete Markdown content for the selected upload entry."
               }
             }
           }
@@ -247,9 +279,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files": {
       get: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "listKnowledgeBaseSourceFiles",
-        summary: "List source files",
+        summary: "List uploaded files",
         parameters: [
           knowledgeBaseIdParameter(),
           ...paginationParameters(),
@@ -264,9 +296,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}": {
       get: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "getKnowledgeBaseSourceFile",
-        summary: "Get source file",
+        summary: "Get uploaded file",
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
         requestExample: requestExamples.getKnowledgeBaseSourceFile,
         successStatus: 200,
@@ -275,9 +307,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404]
       }),
       patch: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "moveSourceFile",
-        summary: "Rename or move a source file",
+        summary: "Rename or move an uploaded file",
         parameters: [
           knowledgeBaseIdParameter(),
           sourceFileIdParameter(),
@@ -292,9 +324,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404, 409, 422]
       }),
       delete: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "deleteSourceFile",
-        summary: "Delete a source file",
+        summary: "Delete an uploaded file",
         parameters: [
           knowledgeBaseIdParameter(),
           sourceFileIdParameter(),
@@ -310,21 +342,42 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/content": {
       get: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "getSourceFileContent",
-        summary: "Read source Markdown content",
+        summary: "Read uploaded Markdown content",
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
         requestExample: requestExamples.getSourceFileContent,
         successStatus: 200,
         successSchema: { type: "string" },
         successExample: responseExamples.getSourceFileContent,
         successContentType: "text/markdown",
-        additionalErrorStatuses: [404]
+        additionalErrorStatuses: [404],
+        extraResponses: {
+          "200": {
+            description: "Complete content of the uploaded Markdown file.",
+            headers: {
+              ETag: {
+                description: "Current version number of the uploaded file.",
+                schema: { type: "string" }
+              },
+              "X-Content-Revision": {
+                description: "Current version number of the Markdown content.",
+                schema: { type: "integer", minimum: 1 }
+              }
+            },
+            content: {
+              "text/markdown": {
+                schema: { type: "string" },
+                example: responseExamples.getSourceFileContent
+              }
+            }
+          }
+        }
       }),
       put: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "replaceSourceFileContent",
-        summary: "Replace complete Markdown content and optionally move the source file",
+        summary: "Replace complete Markdown content and optionally move the uploaded file",
         parameters: [
           knowledgeBaseIdParameter(),
           sourceFileIdParameter(),
@@ -335,7 +388,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             in: "header",
             required: false,
             description:
-              "Optional safe target relative path for a combined replace-and-move operation. Its target parent directory must already exist and be active.",
+              "Optional new path when replacing and moving the file in one request. The destination directory must already exist.",
             schema: { type: "string", example: "handbook/setup/install.md" }
           }
         ],
@@ -343,7 +396,10 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           required: true,
           content: {
             "text/markdown": {
-              schema: { type: "string" },
+              schema: {
+                type: "string",
+                description: "Complete Markdown content that will replace the current file."
+              },
               example: requestExamples.replaceSourceFileContent.body
             }
           }
@@ -357,16 +413,16 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories": {
       get: operation({
-        tag: "Source Directories",
+        tag: "Uploaded Directories",
         operationId: "listSourceDirectories",
-        summary: "List direct source directories",
+        summary: "List uploaded directories",
         parameters: [
           knowledgeBaseIdParameter(),
           {
             name: "parentDirectoryId",
             in: "query",
             required: false,
-            description: "Stable parent directory ID. Omit or use `root` for top-level directories.",
+            description: "Parent uploaded-directory ID. Omit it or use `root` to list top-level directories.",
             schema: { type: "string" }
           },
           ...paginationParameters()
@@ -380,9 +436,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-directories/{directoryId}": {
       get: operation({
-        tag: "Source Directories",
+        tag: "Uploaded Directories",
         operationId: "getSourceDirectory",
-        summary: "Get one source directory",
+        summary: "Get an uploaded directory",
         parameters: [knowledgeBaseIdParameter(), sourceDirectoryIdParameter()],
         requestExample: requestExamples.getSourceDirectory,
         successStatus: 200,
@@ -391,9 +447,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404]
       }),
       patch: operation({
-        tag: "Source Directories",
+        tag: "Uploaded Directories",
         operationId: "moveSourceDirectory",
-        summary: "Rename or move a source directory",
+        summary: "Rename or move an uploaded directory",
         parameters: [
           knowledgeBaseIdParameter(),
           sourceDirectoryIdParameter(),
@@ -408,9 +464,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         additionalErrorStatuses: [404, 409, 422]
       }),
       delete: operation({
-        tag: "Source Directories",
+        tag: "Uploaded Directories",
         operationId: "deleteSourceDirectory",
-        summary: "Delete a source directory and its contents",
+        summary: "Delete an uploaded directory and its contents",
         parameters: [
           knowledgeBaseIdParameter(),
           sourceDirectoryIdParameter(),
@@ -426,9 +482,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations": {
       get: operation({
-        tag: "Resource Operations",
+        tag: "File and Directory Changes",
         operationId: "listResourceOperations",
-        summary: "List resource operations",
+        summary: "List file and directory changes",
         parameters: [
           knowledgeBaseIdParameter(),
           {
@@ -448,9 +504,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/operations/{operationId}": {
       get: operation({
-        tag: "Resource Operations",
+        tag: "File and Directory Changes",
         operationId: "getResourceOperation",
-        summary: "Get a resource operation",
+        summary: "Get a file or directory change",
         parameters: [knowledgeBaseIdParameter(), resourceOperationIdParameter()],
         requestExample: requestExamples.getResourceOperation,
         successStatus: 200,
@@ -461,9 +517,9 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/events": {
       get: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "listKnowledgeBaseSourceFileEvents",
-        summary: "List source file events",
+        summary: "List file processing history",
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter(), ...paginationParameters()],
         requestExample: requestExamples.listKnowledgeBaseSourceFileEvents,
         successStatus: 200,
@@ -474,29 +530,29 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/source-files/{sourceFileId}/retry": {
       post: operation({
-        tag: "Source Files",
+        tag: "Uploaded Files",
         operationId: "retryKnowledgeBaseSourceFile",
-        summary: "Retry source file",
+        summary: "Retry an uploaded file",
         parameters: [knowledgeBaseIdParameter(), sourceFileIdParameter()],
         requestExample: requestExamples.retryKnowledgeBaseSourceFile,
         successStatus: 202,
-        successSchema: ref("SourceResourceFileResponse"),
+        successSchema: ref("SourceFileRetryResponse"),
         successExample: responseExamples.retryKnowledgeBaseSourceFile,
-        additionalErrorStatuses: [404, 409, 422]
+        additionalErrorStatuses: [404, 409]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/tree": {
       get: operation({
         tag: "Files",
         operationId: "listKnowledgeBaseTree",
-        summary: "List generated file tree entries",
+        summary: "List published file tree entries",
         parameters: [
           knowledgeBaseIdParameter(),
           {
             name: "parentPath",
             in: "query",
             required: false,
-            description: "Logical parent path. Traversal and storage paths are rejected.",
+            description: "Knowledge-base directory path to browse. Parent traversal and storage paths are rejected.",
             schema: { type: "string", default: "pages" }
           },
           {
@@ -519,20 +575,23 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         successStatus: 200,
         successSchema: ref("TreeResponse"),
         successExample: responseExamples.listKnowledgeBaseTree,
-        additionalErrorStatuses: [404, 409, 422]
+        additionalErrorStatuses: [404, 422]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/content": {
       get: operation({
         tag: "Files",
         operationId: "getFileContentByPath",
-        summary: "Read generated file content by logical path",
+        summary: "Read a published file by path",
         parameters: [knowledgeBaseIdParameter(), filePathQueryParameter(true)],
         requestExample: requestExamples.getFileContentByPath,
         successStatus: 200,
         successSchema: ref("FileContentResponse"),
         successExample: responseExamples.getFileContentByPath,
-        additionalErrorStatuses: [404, 409, 422]
+        additionalErrorStatuses: [404, 422],
+        extraResponses: {
+          "413": generatedContentTooLargeResponse()
+        }
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/search": {
@@ -540,48 +599,70 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
         tag: "Files",
         operationId: "searchGeneratedFiles",
         summary: "Search knowledge-base files",
-        description: "Search source-backed Markdown files with bounded file and relationship evidence. Continue from each result with its file ID or logical path and read the file before relying on its content. An empty result means that the supplied query did not match the active search data; it does not mean that the knowledge base contains no files.",
+        description: "Search currently published Markdown files by content, metadata, and optional file relationships. Each result includes a file ID and path for reading the complete file. An empty result means the query found no matching files; it does not mean the knowledge base is empty.",
         parameters: [knowledgeBaseIdParameter(), ...fileSearchParameters()],
         requestExample: requestExamples.searchGeneratedFiles,
         successStatus: 200,
         successSchema: ref("FileSearchResponse"),
         successExample: responseExamples.searchGeneratedFiles,
-        additionalErrorStatuses: [404, 409, 422]
+        additionalErrorStatuses: [404, 422],
+        extraResponses: {
+          "503": {
+            ...errorResponse(
+              "The required data or search service is temporarily unavailable or overloaded. Retry after the service recovers.",
+              "SEARCH_UNAVAILABLE",
+              503
+            ),
+            "x-error-codes": [
+              "DATABASE_REPOSITORY_UNAVAILABLE",
+              "SEARCH_UNAVAILABLE",
+              "SEARCH_OVERLOADED"
+            ]
+          },
+          "504": errorResponse(
+            "Search exceeded the configured response deadline.",
+            "SEARCH_TIMEOUT",
+            504
+          )
+        }
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/expand": {
-      get: operation({
-        tag: "Files",
-        operationId: "expandGraph",
-        summary: "Expand file graph relationships",
-        parameters: [
+      get: {
+        ...operation({
+          tag: "Files",
+          operationId: "expandGraph",
+          summary: "Explore related files",
+          description:
+            "Start from exactly one of fileId, nodeId, edgeId, or query. The response returns related files up to the requested depth and result limits, with paths for reading the complete files.",
+          parameters: [
           knowledgeBaseIdParameter(),
           {
             name: "fileId",
             in: "query",
             required: false,
-            description: "Generated file ID or source file ID used to start exploration. Provide exactly one seed parameter.",
+            description: "Published file ID or uploaded-file ID used as the starting point. Provide only one starting-point parameter.",
             schema: { type: "string" }
           },
           {
             name: "nodeId",
             in: "query",
             required: false,
-            description: "Relationship node identifier returned by a graph response. Provide exactly one seed parameter.",
+            description: "Relationship node ID returned by a relationship response. Provide only one starting-point parameter.",
             schema: { type: "string" }
           },
           {
             name: "edgeId",
             in: "query",
             required: false,
-            description: "Relationship edge identifier returned by a graph response. Provide exactly one seed parameter.",
+            description: "Relationship edge ID returned by a relationship response. Provide only one starting-point parameter.",
             schema: { type: "string" }
           },
           {
             name: "query",
             in: "query",
             required: false,
-            description: "Short query used to find a starting file. Provide exactly one seed parameter.",
+            description: "Short query used to find a starting file. Provide only one starting-point parameter.",
             schema: { type: "string", minLength: 2, maxLength: 160 }
           },
           {
@@ -589,61 +670,66 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
             in: "query",
             required: false,
             description: "Number of relationship levels to explore.",
-            schema: { type: "integer", enum: [0, 1, 2], default: 1 }
+            schema: { type: "integer", enum: [0, 1, 2] }
           },
           {
             name: "fanout",
             in: "query",
             required: false,
-            description: "Maximum related files returned for each explored file.",
-            schema: { type: "integer", minimum: 0, maximum: 25, default: 10 }
+            description: "Maximum related files returned for each explored file. When omitted, the deployment setting is used.",
+            schema: { type: "integer", minimum: 0 }
           },
-          ...paginationParameters()
-        ],
-        requestExample: requestExamples.expandGraph,
-        successStatus: 200,
-        successSchema: ref("GraphExpansionResponse"),
-        successExample: responseExamples.expandGraph,
-        additionalErrorStatuses: [404, 409, 422]
-      })
+            ...paginationParameters()
+          ],
+          requestExample: requestExamples.expandGraph,
+          successStatus: 200,
+          successSchema: ref("GraphExpansionResponse"),
+          successExample: responseExamples.expandGraph,
+          additionalErrorStatuses: [404, 422]
+        }),
+        "x-exactly-one-query-parameter": ["fileId", "nodeId", "edgeId", "query"]
+      }
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/graph/overview": {
       get: operation({
         tag: "Files",
         operationId: "getGraphOverview",
-        summary: "Get active graph overview",
+        summary: "Get file relationship overview",
         parameters: [knowledgeBaseIdParameter()],
         requestExample: requestExamples.getGraphOverview,
         successStatus: 200,
         successSchema: ref("GraphOverviewResponse"),
         successExample: responseExamples.getGraphOverview,
-        additionalErrorStatuses: [404, 409]
+        additionalErrorStatuses: [404]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}": {
       get: operation({
         tag: "Files",
         operationId: "getFileById",
-        summary: "Get generated file metadata",
+        summary: "Get published file metadata",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.getFileById,
         successStatus: 200,
         successSchema: ref("FileDetailResponse"),
         successExample: responseExamples.getFileById,
-        additionalErrorStatuses: [404, 409]
+        additionalErrorStatuses: [404]
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}/content": {
       get: operation({
         tag: "Files",
         operationId: "getFileContentById",
-        summary: "Read generated file content by file identifier",
+        summary: "Read a published file by ID",
         parameters: [knowledgeBaseIdParameter(), fileIdParameter()],
         requestExample: requestExamples.getFileContentById,
         successStatus: 200,
         successSchema: ref("FileContentResponse"),
         successExample: responseExamples.getFileContentById,
-        additionalErrorStatuses: [404, 409]
+        additionalErrorStatuses: [404],
+        extraResponses: {
+          "413": generatedContentTooLargeResponse()
+        }
       })
     },
     "/openapi/v2/knowledge-bases/{knowledgeBaseId}/files/{fileId}/related": {
@@ -725,6 +811,14 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
   };
 }
 
+function generatedContentTooLargeResponse() {
+  return errorResponse(
+    "The published file exceeds the configured content read limit.",
+    "PAYLOAD_TOO_LARGE",
+    413
+  );
+}
+
 function uploadSessionIdParameter() {
   return {
     name: "uploadSessionId",
@@ -750,8 +844,8 @@ function idempotencyKeyHeader() {
     name: "Idempotency-Key",
     in: "header",
     required: true,
-    description: "Stable client key for replaying the same mutation safely.",
-    schema: { type: "string", example: "upload-folder-2026-07-10-001" }
+    description: "Client-generated key for safely retrying the same request. Reuse the same value for retries so duplicate work is not created.",
+    schema: { type: "string", example: "mutation-2026-07-10-001" }
   };
 }
 
@@ -760,8 +854,8 @@ function expectedResourceRevisionHeader() {
     name: "If-Match",
     in: "header",
     required: true,
-    description: "Current positive resource revision. A stale revision returns a conflict.",
-    schema: { type: "string", example: '"3"' }
+    description: "Current `resourceRevision` returned by the API. If the resource changed after it was read, the request returns a conflict instead of overwriting the newer change.",
+    schema: { type: "string", example: '"1"' }
   };
 }
 
@@ -770,7 +864,7 @@ function sourceDirectoryIdParameter() {
     name: "directoryId",
     in: "path",
     required: true,
-    description: "Stable source-directory identifier returned by source-directory or tree reads.",
+    description: "Uploaded-directory identifier returned by directory or tree APIs.",
     schema: { type: "string", example: "source-directory-123" }
   };
 }
@@ -780,7 +874,7 @@ function resourceOperationIdParameter() {
     name: "operationId",
     in: "path",
     required: true,
-    description: "Asynchronous resource-operation identifier returned by a source mutation.",
+    description: "Change identifier returned by file and directory move, replace, or delete requests.",
     schema: { type: "string", example: "resource-operation-123" }
   };
 }

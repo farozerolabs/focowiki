@@ -6,6 +6,7 @@ import type {
 } from "../src/search/search-projection-cleanup.js";
 import type { StorageAdapter } from "../src/storage/s3.js";
 import { createHardDeleteJobProcessor } from "../src/worker/hard-delete-jobs.js";
+import type { WebhookEvent } from "../src/webhooks/dispatcher.js";
 
 describe("maintenance hard delete processor", () => {
   it("waits until the deletion is absent from the active generation", async () => {
@@ -92,7 +93,8 @@ describe("maintenance hard delete processor", () => {
       clearKnowledgeBaseRuntimeKeys: vi.fn(),
       clearSourceFileRuntimeKeys: vi.fn()
     };
-    const process = createProcessor(cleanup, createStorage(), redis);
+    const dispatch = vi.fn(async (_event: WebhookEvent) => undefined);
+    const process = createProcessor(cleanup, createStorage(), redis, undefined, dispatch);
 
     await process(createJob());
 
@@ -102,6 +104,13 @@ describe("maintenance hard delete processor", () => {
       sourceFileId: "source-1"
     });
     expect(cleanup.complete).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "file.deleted",
+      payload: {
+        knowledgeBaseId: "kb-1",
+        sourceFileId: "source-1"
+      }
+    }));
   });
 
   it("continues before Redis cleanup when database cleanup exposes object deletions", async () => {
@@ -187,13 +196,15 @@ function createProcessor(
     clearKnowledgeBaseRuntimeKeys: vi.fn(),
     clearSourceFileRuntimeKeys: vi.fn()
   },
-  search?: SearchProjectionCleanup
+  search?: SearchProjectionCleanup,
+  dispatch?: (event: WebhookEvent) => Promise<void>
 ) {
   return createHardDeleteJobProcessor({
     cleanup,
     storage,
     redis,
     ...(search ? { search } : {}),
+    ...(dispatch ? { webhooks: { dispatch } } : {}),
     settings: {
       databaseBatchSize: 50,
       objectBatchSize: 2,

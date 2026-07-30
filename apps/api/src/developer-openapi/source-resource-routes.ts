@@ -48,11 +48,14 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
   app.patch("/openapi/v2/knowledge-bases/:knowledgeBaseId", async (context) =>
     safe(context, async () => {
       const expectedResourceRevision = readExpectedRevision(context.req.header("if-match"));
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["name", "description"]
+      );
       const name = body.name === undefined ? undefined : readOptionalName(body.name);
       const description = readOptionalDescription(body.description);
       if (name === undefined && description === undefined) {
-        throw validationError("At least one mutable knowledge-base field is required.");
+        throw validationError("Provide a knowledge-base name or description to update.");
       }
       const mutation = await requireMutationService(services);
       const result = await mutation.service.updateKnowledgeBase(
@@ -65,7 +68,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
         mutation.maxAttempts
       );
       const updated = result.knowledgeBase;
-      if (!updated) throw conflict("Knowledge-base revision does not match the active resource.");
+      if (!updated) throw conflict("The knowledge-base version in If-Match is no longer current.");
       return { knowledgeBase: toDeveloperKnowledgeBase(updated) };
     })
   );
@@ -133,7 +136,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           directoryId: context.req.param("directoryId")
         });
-        if (!directory) throw notFound("Source directory was not found.");
+        if (!directory) throw notFound("Uploaded directory was not found.");
         return { directory: toDirectoryResponse(directory) };
       })
   );
@@ -142,7 +145,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     async (context) =>
       safe(context, async () => {
-        const body = await readDeveloperJsonObjectBody(context.req.raw);
+        const body = await readDeveloperJsonObjectBody(context.req.raw, ["relativePath"]);
         const result = await acceptAndEnqueueOperation(services, {
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           kind: "source_directory_move",
@@ -239,7 +242,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId")
         });
-        if (!sourceFile) throw notFound("Source file was not found.");
+        if (!sourceFile) throw notFound("Uploaded file was not found.");
         return { sourceFile: toSourceFileResponse(sourceFile) };
       })
   );
@@ -252,9 +255,9 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId")
         });
-        if (!descriptor) throw notFound("Source file was not found.");
+        if (!descriptor) throw notFound("Uploaded file was not found.");
         const content = await services.storage.getObjectBody?.(descriptor.objectKey);
-        if (content == null) throw notFound("Source content was not found.");
+        if (content == null) throw notFound("Uploaded Markdown content was not found.");
         return new Response(content, {
           headers: {
             "content-type": descriptor.contentType,
@@ -272,7 +275,7 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     async (context) =>
       safe(context, async () => {
-        const body = await readDeveloperJsonObjectBody(context.req.raw);
+        const body = await readDeveloperJsonObjectBody(context.req.raw, ["relativePath"]);
         const result = await acceptAndEnqueueOperation(services, {
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           kind: "source_file_move",
@@ -290,6 +293,9 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     async (context) =>
       safe(context, async () => {
+        if (!isMarkdownContentType(context.req.header("content-type"))) {
+          throw validationError("A text/markdown request body is required.");
+        }
         const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
         if (bytes.byteLength === 0) {
           throw validationError("Markdown replacement body is required.");
@@ -374,10 +380,14 @@ export function registerDeveloperOpenApiSourceResourceRoutes(
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           operationId: context.req.param("operationId")
         });
-        if (!operation) throw notFound("Resource operation was not found.");
+        if (!operation) throw notFound("File or directory change was not found.");
         return { operation: toOperationResponse(operation) };
       })
   );
+}
+
+function isMarkdownContentType(value: string | undefined): boolean {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
 }
 
 function toDirectoryResponse(directory: Awaited<ReturnType<ReturnType<typeof createSourceResourceService>["getDirectory"]>> & {}) {
@@ -501,7 +511,7 @@ function toOperationResponse(operation: NonNullable<Awaited<ReturnType<ReturnTyp
     result: toPublicOperationResult(operation.result),
     errorCode: operation.errorCode,
     retryGuidance: operation.state === "accepted" || operation.state === "processing" || operation.state === "publishing"
-      ? "Read the operation again after a short delay."
+      ? "Check this change again after a short delay."
       : null,
     actions: { self: `${base}/operations/${operation.id}` },
     createdAt: operation.createdAt,
@@ -524,7 +534,7 @@ function readExpectedRevision(value: string | undefined): number {
   const normalized = value?.trim().replace(/^W\//u, "").replace(/^"|"$/gu, "");
   const revision = Number(normalized);
   if (!Number.isInteger(revision) || revision < 1) {
-    throw validationError("If-Match must contain the active positive resource revision.", {
+    throw validationError("If-Match must contain the current positive `resourceRevision` value.", {
       field: "If-Match"
     });
   }
@@ -580,17 +590,17 @@ function readSourceResourceFilters(query: Record<string, string>) {
     });
   }
   if (query.state && !lifecycleStates.has(query.state)) {
-    throw validationError("Source-file lifecycle state filter is invalid.", {
+    throw validationError("File processing status filter is invalid.", {
       field: "state"
     });
   }
   if (query.currentStage && !currentStages.has(query.currentStage)) {
-    throw validationError("Source-file current stage filter is invalid.", {
+    throw validationError("File processing step filter is invalid.", {
       field: "currentStage"
     });
   }
   if (query.generatedOutputStatus && !generatedOutputStatuses.has(query.generatedOutputStatus)) {
-    throw validationError("Generated output status filter is invalid.", {
+    throw validationError("Published-file availability filter is invalid.", {
       field: "generatedOutputStatus"
     });
   }
@@ -623,7 +633,7 @@ function readBoundedQueryText(
   if (value === undefined) return null;
   const normalized = value.trim();
   if (normalized.length < minLength || normalized.length > maxLength) {
-    throw validationError("Source-file text filter length is invalid.", { field });
+    throw validationError("Filter text length is invalid.", { field });
   }
   return normalized;
 }
@@ -633,7 +643,7 @@ function readOperationState(value: string | undefined) {
   const allowed = new Set([
     "accepted", "validating", "processing", "publishing", "completed", "failed", "cancelled", "superseded"
   ]);
-  if (!allowed.has(value)) throw validationError("Resource operation state is invalid.");
+  if (!allowed.has(value)) throw validationError("File or directory change status is invalid.");
   return value as "accepted" | "validating" | "processing" | "publishing" | "completed" | "failed" | "cancelled" | "superseded";
 }
 
@@ -644,7 +654,7 @@ async function runSourceResourceMutation<T>(operation: () => Promise<T>): Promis
     if (!(error instanceof SourceResourceError)) throw error;
     if (error.code === "RESOURCE_NOT_FOUND") throw notFound();
     if (error.code === "INVALID_RESOURCE_MUTATION") {
-      throw validationError("Mutation headers or payload are invalid.");
+      throw validationError("Request headers or body are invalid.");
     }
     throw conflict(error.code);
   }

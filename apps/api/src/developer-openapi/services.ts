@@ -85,6 +85,10 @@ import { presentDeveloperSearchItems } from "./search-presentation.js";
 import { SEARCH_RETRIEVAL_VERSION } from "../search/search-retrieval.js";
 import { SEARCH_FUSION_VERSION } from "../search/rank-fusion.js";
 import { executeDeveloperSearch } from "./search-errors.js";
+import {
+  isWebhookEventType,
+  type WebhookEventType
+} from "../webhooks/events.js";
 
 const ACTIVE_SEARCH_PAGE_CACHE_TTL_SECONDS = 30;
 
@@ -239,6 +243,13 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
     return services.activeGenerationReads;
   }
 
+  async function requireKnowledgeBaseExists(knowledgeBaseId: string): Promise<void> {
+    const knowledgeBase = await requireRepositories().knowledgeBases.getKnowledgeBase(
+      knowledgeBaseId
+    );
+    if (!knowledgeBase) throw notFound("Knowledge base was not found.");
+  }
+
   return {
     async createKnowledgeBase(input: { name: string; description: string | null }) {
       const repo = requireRepositories();
@@ -358,6 +369,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       limit: number;
       cursor: string | null;
     }) {
+      await requireKnowledgeBaseExists(input.knowledgeBaseId);
       assertSafeLogicalPath(input.parentPath, true);
       const cursorScope = [
         "developer-openapi:generation-tree",
@@ -383,7 +395,14 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
               limit: input.limit,
               cursor: storedCursor?.value ?? null
             });
-            return { generationId: scope.generationId, page };
+            const ancestorRecords = input.query
+              ? await scope.listTreeAncestors(
+                  page.items
+                    .map((item) => item.path)
+                    .filter((path): path is string => Boolean(path))
+                )
+              : new Map<string, ActiveGenerationProjection[]>();
+            return { generationId: scope.generationId, page, ancestorRecords };
           }
         );
       } catch (error) {
@@ -397,9 +416,17 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       }
       return {
         generationId: result.generationId,
-        items: result.page.items.map((item) =>
-          toDeveloperActiveTreeEntry(input.knowledgeBaseId, item)
-        ),
+        items: result.page.items.map((item) => ({
+          ...toDeveloperActiveTreeEntry(input.knowledgeBaseId, item),
+          ancestors: (
+            item.path ? result.ancestorRecords.get(item.path) : []
+          )?.map((ancestor) =>
+            ({
+              ...toDeveloperActiveTreeEntry(input.knowledgeBaseId, ancestor),
+              ancestors: []
+            })
+          ) ?? []
+        })),
         nextCursor: await writeCursor(
           redis,
           cursorScope,
@@ -421,6 +448,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       limit: number;
       cursor: string | null;
     }) {
+      await requireKnowledgeBaseExists(input.knowledgeBaseId);
       const normalizedQuery = input.mode === "file"
         ? normalizeGeneratedFileSearchQuery(input.query)
         : normalizeGraphSearchQuery(input.query);
@@ -625,7 +653,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           const file = await scope.findFileById(input.fileId);
           if (!file) return null;
           if (!file.sourceFileId) {
-            throw conflict("Only source-backed files can return related files.");
+            throw conflict("Only published files created from uploaded Markdown can return related files.");
           }
           const page = await scope.listRelated({
             sourceFileId: file.sourceFileId,
@@ -652,7 +680,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           config.pagination.cursorTtlSeconds
         ),
         ...(result.page.items.length > 0 ? {} : {
-          message: "No related files matched this file in the active generation. Continue with tree or search using broader terms.",
+          message: "No related files matched this file in the current published version. Browse the file tree or search with broader terms.",
           nextActions: [
             "Read the file content before changing search terms.",
             "Search for the file title, subjects, entities, or shorter concepts.",
@@ -743,7 +771,7 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           fanout: input.fanout
         }),
         ...(seedFile || seedResults.length > 0 || relationships.length > 0 ? {} : {
-          message: "No graph candidates matched in the active generation. Relevant files may still exist under different titles, paths, or shorter terms.",
+          message: "No starting or related files matched in the current published version. Relevant files may still use different titles, paths, or shorter terms.",
           nextActions: [
             "Read index.md through the file content endpoint.",
             "List the file tree and continue from visible directories.",
@@ -834,16 +862,16 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
           relatedFilesById: `${base}/files/{fileId}/related`
         },
         message: availability === "available"
-          ? "Graph projections are available. Continue to source-backed files before answering."
+          ? "File relationships are available. Read the related Markdown files before using their content."
           : availability === "empty"
-            ? "The graph is currently empty. Relevant source-backed files may still exist."
-            : "Graph projections are not available yet. Continue with index.md, the file tree, and file search.",
+            ? "No file relationships are currently available. Relevant Markdown files may still exist."
+            : "File relationships are not available yet. Continue with index.md, the file tree, and file search.",
         nextActions: [
           availability === "available"
-            ? "Read the graph index or list graph directories to discover relationships."
-            : "Read index.md and list the file tree to discover source-backed files.",
-          "Use graph search, related files, or graph expansion to identify candidate files.",
-          "Read candidate file content before answering."
+            ? "Read `_graph/index.md` or browse the `_graph/` directory to inspect file relationships."
+            : "Read index.md and browse the file tree to discover relevant Markdown files.",
+          "Search relationships, list related files, or explore from a file to find matching files.",
+          "Read the returned Markdown files before using their content."
         ]
       };
     },
@@ -900,12 +928,23 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
       const url = normalizeWebhookUrl(input.url);
       const rawSecret = `fwwh_${randomBytes(32).toString("base64url")}`;
       const createdAt = new Date().toISOString();
+      const events = input.events.map((event) => event.trim());
+      if (
+        events.length === 0
+        || events.some((event) => event.length === 0)
+        || new Set(events).size !== events.length
+        || !events.every(isWebhookEventType)
+      ) {
+        throw validationError("Webhook events are invalid.", {
+          field: "events"
+        });
+      }
       const webhook = await repo.webhooks.createWebhookSubscription({
         id: `webhook-${randomUUID()}`,
         name: input.name?.trim() || "Webhook",
         url,
         signingSecret: rawSecret,
-        events: input.events.filter((event) => typeof event === "string" && event.trim()),
+        events: events as WebhookEventType[],
         createdAt
       });
 
@@ -987,7 +1026,11 @@ export function createDeveloperOpenApiService(services: DeveloperOpenApiServices
         throw repositoryUnavailable();
       }
 
-      return { delivery: toDeveloperWebhookDelivery(await dispatcher.redeliver(delivery)) };
+      const redelivery = await dispatcher.redeliver(delivery);
+      if (!redelivery) {
+        throw conflict("The webhook subscription no longer exists.");
+      }
+      return { delivery: toDeveloperWebhookDelivery(redelivery) };
     }
   };
 
@@ -1034,8 +1077,8 @@ function createGraphExpansionSummary(input: {
     ...input,
     meaning:
       input.relationshipCount > 0
-        ? "Graph expansion returned related files. Read file content before answering."
-        : "Graph expansion returned no relationships. Continue with file tree, index, or search reads."
+        ? "Related files were found. Read the returned files before using their content."
+        : "No related files were found. Browse the file tree, read index.md, or try file search."
   };
 }
 
@@ -1184,8 +1227,8 @@ function createFileSearchResultSummary(
     meaning:
       status === "ok"
         ? mode === "file"
-          ? "Candidates matched the query. Read candidate content and related files before answering."
-          : "Graph candidates matched the query. Read candidate content, graph context, and related files before answering."
+          ? "The query matched published files. Read the returned files and related files before using their content."
+          : "The query matched file relationships. Read the returned files and relationship details before using their content."
         : status === "no_candidates"
           ? "No generated files matched this query. Relevant data may still exist under different terms or graph paths."
           : mode === "file"
@@ -1204,7 +1247,7 @@ async function readCursor<T = string>(
   }
 
   if (!redis) {
-    throw validationError("Pagination cursor is unavailable while the cache service is offline.", {
+    throw validationError("The pagination token is temporarily unavailable. Retry later or restart without a cursor.", {
       field: "cursor"
     });
   }
@@ -1242,7 +1285,7 @@ function assertCursorGeneration<T>(
   generationId: string
 ): void {
   if (cursor && cursor.generationId !== generationId) {
-    throw validationError("Pagination cursor belongs to an inactive generation.", {
+    throw validationError("The pagination token belongs to an older published version. Restart without a cursor.", {
       field: "cursor"
     });
   }
@@ -1270,7 +1313,7 @@ function assertSafeLogicalPath(path: string, allowDirectory: boolean): void {
     return;
   }
 
-  throw validationError("Logical path is not supported.", { field: "path" });
+  throw validationError("This knowledge-base file path is not supported.", { field: "path" });
 }
 
 async function readGeneratedObjectText(
@@ -1284,7 +1327,7 @@ async function readGeneratedObjectText(
     });
   } catch (error) {
     if (error instanceof StorageObjectTooLargeError) {
-      throw payloadTooLarge("Generated file content exceeds the configured read limit.");
+      throw payloadTooLarge("The requested file exceeds the configured content read limit.");
     }
 
     throw error;

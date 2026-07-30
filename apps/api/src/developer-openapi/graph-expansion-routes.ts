@@ -30,7 +30,7 @@ export function registerDeveloperOpenApiGraphExpansionRoutes(
       });
 
       if (!filters.ok) {
-        throw validationError("Graph expansion query is invalid.", {
+        throw validationError("Relationship exploration query is invalid.", {
           code: filters.code
         });
       }

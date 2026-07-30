@@ -160,7 +160,7 @@ export function toDeveloperActiveRelatedFile(
     relationType: readString(record.payload, "relationType") ?? "related",
     direction: seedIsFrom ? "outgoing" : "incoming",
     weight: readNumber(record.payload, "weight") ?? record.score ?? 0,
-    reason: readString(record.payload, "reason") ?? record.summary ?? "Related source-backed file",
+    reason: readString(record.payload, "reason") ?? record.summary ?? "Related Markdown file",
     source: readString(record.payload, "source") ?? "graph",
     evidence: readObject(record.payload, "evidence"),
     contentAvailable: true,

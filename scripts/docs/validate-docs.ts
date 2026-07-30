@@ -13,6 +13,13 @@ const docsRoot = path.join(repoRoot, "docs");
 const vitePressConfigPath = path.join(docsRoot, ".vitepress", "config.ts");
 const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
+const swaggerUiStylesheetPath = path.join(
+  docsRoot,
+  "public",
+  "vendor",
+  "swagger-ui",
+  "swagger-ui.css"
+);
 const localeCopyPath = path.join(docsRoot, ".vitepress", "openapi-locales.json");
 const httpMethods = new Set(["get", "post", "put", "patch", "delete"]);
 const locales = [
@@ -24,6 +31,9 @@ const locales = [
       path.join(docsRoot, "deployment", "agent-deployment.md")
     ],
     openApiPage: path.join(docsRoot, "openapi", "index.md"),
+    explorerPage: path.join(docsRoot, "openapi", "explorer.md"),
+    explorerRoute: "/openapi/explorer",
+    explorerLabel: "API Explorer",
     guidePages: [
       path.join(docsRoot, "guide", "open-knowledge-format.md"),
       path.join(docsRoot, "guide", "file-first-graph.md"),
@@ -46,6 +56,9 @@ const locales = [
       path.join(docsRoot, "zh-CN", "deployment", "agent-deployment.md")
     ],
     openApiPage: path.join(docsRoot, "zh-CN", "openapi", "index.md"),
+    explorerPage: path.join(docsRoot, "zh-CN", "openapi", "explorer.md"),
+    explorerRoute: "/zh-CN/openapi/explorer",
+    explorerLabel: "API 交互文档",
     guidePages: [
       path.join(docsRoot, "zh-CN", "guide", "open-knowledge-format.md"),
       path.join(docsRoot, "zh-CN", "guide", "file-first-graph.md"),
@@ -81,8 +94,10 @@ async function main() {
   const markdownFiles = await listMarkdownFiles(docsRoot);
   const openApiDocument = createDeveloperOpenApiDocument() as OpenApiDocument;
   await validateLocaleStructure();
+  await validateSwaggerUiStaticAsset();
   await validateGuideNavigation();
   await validateDeploymentNavigation();
+  await validateOpenApiExplorer();
   await validateGeneratedOpenApiContractVersion(openApiDocument);
   await validateOpenApiLocaleCopy(openApiDocument);
   await validateOperationCoverage(openApiDocument);
@@ -109,6 +124,14 @@ async function validateCurrentArchitectureLanguage(markdownFiles: string[]) {
   }
 }
 
+async function validateSwaggerUiStaticAsset() {
+  await assertFileExists(swaggerUiStylesheetPath, "Swagger UI stylesheet is missing");
+  const stylesheet = await fs.readFile(swaggerUiStylesheetPath, "utf8");
+  if (!stylesheet.includes(".swagger-ui")) {
+    throw new Error("Swagger UI stylesheet does not contain the expected scoped styles.");
+  }
+}
+
 async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
   const copies = readRecord(JSON.parse(await fs.readFile(localeCopyPath, "utf8")));
   const operationIds = collectOperationIds(document);
@@ -122,9 +145,13 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
     const copy = readRecord(copies[localeName]);
     const summaries = readRecord(copy.operationSummaries);
     const descriptions = readRecord(copy.operationDescriptions);
+    const successDescriptions = readRecord(copy.successResponseDescriptions);
     const tagLabels = readRecord(copy.tagLabels);
     const missingSummaries = [...operationIds].filter((operationId) => typeof summaries[operationId] !== "string");
     const missingDescriptions = [...operationIds].filter((operationId) => typeof descriptions[operationId] !== "string");
+    const missingSuccessDescriptions = [...operationIds].filter(
+      (operationId) => typeof successDescriptions[operationId] !== "string"
+    );
     const staleSummaries = Object.keys(summaries).filter((operationId) => !operationIds.has(operationId));
     const staleDescriptions = Object.keys(descriptions).filter((operationId) => !operationIds.has(operationId));
     const missingTags = [...tags].filter((tag) => typeof tagLabels[tag] !== "string");
@@ -132,6 +159,7 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
     if (
       missingSummaries.length > 0 ||
       missingDescriptions.length > 0 ||
+      missingSuccessDescriptions.length > 0 ||
       staleSummaries.length > 0 ||
       staleDescriptions.length > 0 ||
       missingTags.length > 0
@@ -141,6 +169,9 @@ async function validateOpenApiLocaleCopy(document: OpenApiDocument) {
           `Incomplete ${localeName} OpenAPI copy.`,
           missingSummaries.length > 0 ? `Missing summaries: ${missingSummaries.join(", ")}.` : "",
           missingDescriptions.length > 0 ? `Missing descriptions: ${missingDescriptions.join(", ")}.` : "",
+          missingSuccessDescriptions.length > 0
+            ? `Missing success descriptions: ${missingSuccessDescriptions.join(", ")}.`
+            : "",
           staleSummaries.length > 0 ? `Stale summaries: ${staleSummaries.join(", ")}.` : "",
           staleDescriptions.length > 0 ? `Stale descriptions: ${staleDescriptions.join(", ")}.` : "",
           missingTags.length > 0 ? `Missing tag labels: ${missingTags.join(", ")}.` : ""
@@ -304,6 +335,17 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
     if (Object.keys(requestBody).length > 0 && !hasAnyContentExample(requestBody)) {
       throw new Error(`Missing request body example for ${method.toUpperCase()} ${apiPath}.`);
     }
+    for (const [contentType, mediaValue] of Object.entries(readRecord(requestBody.content))) {
+      const media = readRecord(mediaValue);
+      if (media.example !== undefined) {
+        validateSchemaValue(
+          document,
+          readRecord(media.schema),
+          media.example,
+          `${method.toUpperCase()} ${apiPath} request body (${contentType})`
+        );
+      }
+    }
 
     const responses = readRecord(operation.responses);
     const successResponses = Object.entries(responses).filter(([status]) => status.startsWith("2"));
@@ -318,8 +360,18 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
         throw new Error(`Missing ${status} success example for ${method.toUpperCase()} ${apiPath}.`);
       }
       if (contentExample.contentType === "application/json") {
-        validateExampleShape(document, method, apiPath, status, responseRecord, readRecord(contentExample.example));
+        validateExampleShape(document, method, apiPath, status, responseRecord, contentExample.example);
         validateContractExampleContent(method, apiPath, contentExample.example);
+      } else {
+        const media = readRecord(
+          readRecord(responseRecord.content)[contentExample.contentType ?? ""]
+        );
+        validateSchemaValue(
+          document,
+          readRecord(media.schema),
+          contentExample.example,
+          `${method.toUpperCase()} ${apiPath} ${status}`
+        );
       }
       validateSafeContent(
         `${method.toUpperCase()} ${apiPath} ${status} example`,
@@ -327,13 +379,15 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
       );
     }
 
-    for (const status of ["401", "500"]) {
-      const response = readRecord(responses[status]);
+    for (const [status, responseValue] of Object.entries(responses).filter(
+      ([status]) => !status.startsWith("2")
+    )) {
+      const response = readRecord(responseValue);
       const example = readJsonContentExample(response);
       if (!example) {
         throw new Error(`Missing ${status} error example for ${method.toUpperCase()} ${apiPath}.`);
       }
-      validateExampleShape(document, method, apiPath, status, response, readRecord(example));
+      validateExampleShape(document, method, apiPath, status, response, example);
       validateSafeContent(`${method.toUpperCase()} ${apiPath} ${status} example`, JSON.stringify(example));
     }
   }
@@ -416,12 +470,46 @@ async function validateLocaleStructure() {
       locale.projectPage,
       ...locale.deploymentPages,
       locale.openApiPage,
+      locale.explorerPage,
       ...locale.guidePages,
       ...locale.agentIntegrationPages
     ]) {
       await assertFileExists(file, `${locale.name} documentation page is missing`);
     }
     await assertFileExists(path.join(locale.operationsDir, "index.md"), `${locale.name} operation index is missing`);
+  }
+}
+
+async function validateOpenApiExplorer() {
+  const config = await fs.readFile(vitePressConfigPath, "utf8");
+  const componentPath = path.join(
+    docsRoot,
+    ".vitepress",
+    "theme",
+    "components",
+    "SwaggerApiExplorer.vue"
+  );
+  const component = await fs.readFile(componentPath, "utf8");
+  const contractUrl = "/openapi/focowiki-openapi.json";
+
+  if (!component.includes(contractUrl)) {
+    throw new Error(`Swagger API Explorer component is missing ${contractUrl}.`);
+  }
+
+  for (const locale of locales) {
+    const page = await fs.readFile(locale.explorerPage, "utf8");
+    const overview = await fs.readFile(locale.openApiPage, "utf8");
+    for (const snippet of ["pageClass: api-explorer-page", "<SwaggerApiExplorer"]) {
+      if (!page.includes(snippet)) {
+        throw new Error(`${locale.name} API Explorer is missing ${snippet}.`);
+      }
+    }
+    if (!config.includes(`text: "${locale.explorerLabel}", link: "${locale.explorerRoute}"`)) {
+      throw new Error(`${locale.name} API Explorer sidebar entry is missing.`);
+    }
+    if (!overview.includes("./explorer.md")) {
+      throw new Error(`${locale.name} OpenAPI overview does not link to the API Explorer.`);
+    }
   }
 }
 
@@ -651,21 +739,173 @@ function validateExampleShape(
   apiPath: string,
   status: string,
   response: Record<string, unknown>,
-  example: Record<string, unknown>
+  example: unknown
 ) {
-  const schema = resolveSchema(document, readRecord(readRecord(readRecord(response.content)["application/json"]).schema));
+  const schema = readRecord(
+    readRecord(readRecord(response.content)["application/json"]).schema
+  );
+  validateSchemaValue(
+    document,
+    schema,
+    example,
+    `${method.toUpperCase()} ${apiPath} ${status}`
+  );
+}
+
+function validateSchemaValue(
+  document: OpenApiDocument,
+  schemaInput: Record<string, unknown>,
+  value: unknown,
+  label: string
+): void {
+  const schema = resolveSchema(document, schemaInput);
+  const declaredTypes = readArray(schema.type).filter(
+    (item): item is string => typeof item === "string"
+  );
+  if (declaredTypes.length > 0) {
+    const failures: string[] = [];
+    for (const declaredType of declaredTypes) {
+      try {
+        validateSchemaValue(
+          document,
+          { ...schema, type: declaredType },
+          value,
+          label
+        );
+        return;
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    throw new Error(`${label} does not match any documented type: ${failures.join(" | ")}`);
+  }
+  const variants = [
+    ...readArray(schema.anyOf),
+    ...readArray(schema.oneOf)
+  ].map((variant) => readRecord(variant));
+  if (variants.length > 0) {
+    const failures: string[] = [];
+    for (const variant of variants) {
+      try {
+        validateSchemaValue(document, variant, value, label);
+        return;
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    throw new Error(`${label} does not match any documented schema variant: ${failures.join(" | ")}`);
+  }
+
+  const type = schema.type;
+  if (type === "null") {
+    if (value !== null) throw new Error(`${label} must be null.`);
+    return;
+  }
+  if (type === "string") {
+    if (typeof value !== "string") throw new Error(`${label} must be a string.`);
+    validateEnum(schema, value, label);
+    return;
+  }
+  if (type === "integer") {
+    if (!Number.isInteger(value)) throw new Error(`${label} must be an integer.`);
+    validateEnum(schema, value, label);
+    return;
+  }
+  if (type === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`${label} must be a finite number.`);
+    }
+    validateEnum(schema, value, label);
+    return;
+  }
+  if (type === "boolean") {
+    if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
+    return;
+  }
+  if (type === "array") {
+    if (!Array.isArray(value)) throw new Error(`${label} must be an array.`);
+    const itemSchema = readRecord(schema.items);
+    value.forEach((item, index) =>
+      validateSchemaValue(document, itemSchema, item, `${label}[${index}]`)
+    );
+    return;
+  }
+
   const properties = collectSchemaProperties(document, schema);
-  const required = readArray(schema.required).map(String);
-  for (const key of Object.keys(example)) {
-    if (!properties.has(key)) {
-      throw new Error(`Unknown example field \`${key}\` for ${method.toUpperCase()} ${apiPath} ${status}.`);
+  if (type === "object" || properties.size > 0 || readArray(schema.allOf).length > 0) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${label} must be an object.`);
+    }
+    const record = value as Record<string, unknown>;
+    const required = collectSchemaRequired(document, schema);
+    for (const key of required) {
+      if (!(key in record)) {
+        throw new Error(`${label} is missing required field \`${key}\`.`);
+      }
+    }
+    if (hasClosedObjectSchema(document, schema)) {
+      for (const key of Object.keys(record)) {
+        if (!properties.has(key)) {
+          throw new Error(`${label} contains unknown field \`${key}\`.`);
+        }
+      }
+    }
+    for (const [key, propertySchema] of properties) {
+      if (key in record) {
+        validateSchemaValue(
+          document,
+          readRecord(propertySchema),
+          record[key],
+          `${label}.${key}`
+        );
+      }
+    }
+    return;
+  }
+
+  validateEnum(schema, value, label);
+}
+
+function validateEnum(
+  schema: Record<string, unknown>,
+  value: unknown,
+  label: string
+): void {
+  const allowed = readArray(schema.enum);
+  if (allowed.length > 0 && !allowed.includes(value)) {
+    throw new Error(`${label} must be one of ${allowed.map(String).join(", ")}.`);
+  }
+}
+
+function collectSchemaRequired(
+  document: OpenApiDocument,
+  schema: Record<string, unknown>,
+  seen = new Set<Record<string, unknown>>()
+): Set<string> {
+  const resolved = resolveSchema(document, schema);
+  if (seen.has(resolved)) return new Set();
+  seen.add(resolved);
+  const required = new Set(readArray(resolved.required).map(String));
+  for (const item of readArray(resolved.allOf)) {
+    for (const key of collectSchemaRequired(document, readRecord(item), seen)) {
+      required.add(key);
     }
   }
-  for (const key of required) {
-    if (!(key in example)) {
-      throw new Error(`Missing required example field \`${key}\` for ${method.toUpperCase()} ${apiPath} ${status}.`);
-    }
-  }
+  return required;
+}
+
+function hasClosedObjectSchema(
+  document: OpenApiDocument,
+  schema: Record<string, unknown>,
+  seen = new Set<Record<string, unknown>>()
+): boolean {
+  const resolved = resolveSchema(document, schema);
+  if (seen.has(resolved)) return false;
+  seen.add(resolved);
+  if (resolved.additionalProperties === false) return true;
+  return readArray(resolved.allOf).some((item) =>
+    hasClosedObjectSchema(document, readRecord(item), seen)
+  );
 }
 
 function collectSchemaProperties(

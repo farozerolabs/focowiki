@@ -100,7 +100,19 @@ export function registerDeveloperOpenApiRoutes(
 
   app.post("/openapi/v2/knowledge-bases", async (context) =>
     safe(context, async () => {
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["name", "description"]
+      );
+      if (
+        body.description !== undefined
+        && body.description !== null
+        && typeof body.description !== "string"
+      ) {
+        throw validationError("Knowledge-base description must be a string or null.", {
+          field: "description"
+        });
+      }
       return api.createKnowledgeBase({
         name: typeof body.name === "string" ? body.name : "",
         description: typeof body.description === "string" ? body.description : null
@@ -253,13 +265,28 @@ export function registerDeveloperOpenApiRoutes(
 
   app.post("/openapi/v2/webhooks", async (context) =>
     safe(context, async () => {
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["name", "url", "events"]
+      );
+      if (
+        body.name !== undefined
+        && body.name !== null
+        && typeof body.name !== "string"
+      ) {
+        throw validationError("Webhook name must be a string or null.", {
+          field: "name"
+        });
+      }
+      if (!Array.isArray(body.events) || !body.events.every((event) => typeof event === "string")) {
+        throw validationError("Webhook events must be an array of strings.", {
+          field: "events"
+        });
+      }
       return api.createWebhook({
         name: typeof body.name === "string" ? body.name : null,
         url: typeof body.url === "string" ? body.url : "",
-        events: Array.isArray(body.events)
-          ? body.events.filter((event): event is string => typeof event === "string")
-          : []
+        events: body.events
       });
     }, 201)
   );

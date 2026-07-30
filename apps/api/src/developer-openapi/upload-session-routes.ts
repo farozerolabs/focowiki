@@ -31,7 +31,10 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
   app.post(prefix, async (context) =>
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
+      const body = await readDeveloperJsonObjectBody(
+        context.req.raw,
+        ["declaredFileCount", "declaredByteCount"]
+      );
       const idempotencyKey = readIdempotencyKey(
         context.req.header("idempotency-key")
       );
@@ -65,15 +68,19 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
   app.post(`${prefix}/:uploadSessionId/entries`, async (context) =>
     safe(context, async () => {
       const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const body = await readDeveloperJsonObjectBody(context.req.raw);
-      if (!Array.isArray(body.entries) || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE) {
+      const body = await readDeveloperJsonObjectBody(context.req.raw, ["entries"]);
+      if (
+        !Array.isArray(body.entries)
+        || body.entries.length === 0
+        || body.entries.length > UPLOAD_MANIFEST_PAGE_SIZE
+      ) {
         await recordUploadSessionAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_MANIFEST_PAGE");
-        throw validationError("Manifest page is invalid.");
+        throw validationError("Upload file list is invalid.");
       }
       const entries = body.entries.map(readManifestEntry);
       if (entries.some((entry) => entry === null)) {
         await recordUploadSessionAudit(services, context, "upload_session_invalid_path", "failure", "INVALID_MANIFEST_ENTRY");
-        throw validationError("Manifest entry is invalid.");
+        throw validationError("An upload file record is invalid.");
       }
       return {
         session: toSafeSession(
@@ -135,7 +142,7 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       );
       const state = readTransferState(context.req.query("transferState"));
       if (context.req.query("transferState") && !state) {
-        throw validationError("Upload entry transferState is invalid.");
+        throw validationError("Upload file transferState is invalid.");
       }
       const page = await environment.service.listEntries({
         knowledgeBaseId: environment.knowledgeBaseId,
@@ -232,7 +239,7 @@ async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise
   } catch (error) {
     if (error instanceof SourcePathValidationError) {
       await onInvalidPath?.();
-      throw validationError("Upload manifest contains an invalid relative path.", {
+      throw validationError("The upload file list contains an invalid relative path.", {
         field: "relativePath",
         reason: error.code
       });
@@ -302,6 +309,8 @@ function toSafeSession(session: Awaited<ReturnType<ReturnType<typeof createUploa
 function readManifestEntry(value: unknown) {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
+  const allowedFields = new Set(["relativePath", "declaredSize", "checksumSha256"]);
+  if (Object.keys(record).some((field) => !allowedFields.has(field))) return null;
   return typeof record.relativePath === "string" &&
     isNonNegativeInteger(record.declaredSize) &&
     (record.checksumSha256 === undefined || record.checksumSha256 === null || typeof record.checksumSha256 === "string")

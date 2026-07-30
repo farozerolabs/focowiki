@@ -85,6 +85,7 @@ import {
 } from "./worker/garbage-collection-jobs.js";
 import { createHardDeleteJobProcessor } from "./worker/hard-delete-jobs.js";
 import { createRoleWorkerRuntime } from "./worker/role-runtime.js";
+import { createWebhookDispatcher } from "./webhooks/dispatcher.js";
 
 loadLocalEnvFile();
 const config = loadRuntimeConfig();
@@ -118,6 +119,7 @@ async function runMaintenanceWorker(): Promise<void> {
     const tokenizer = createNodeJiebaTokenizer();
     logger.info("Lexical tokenizer initialized", getNodeJiebaRuntimeEvidence());
     const repositories = createPostgresAdminRepositories(sql, { tokenizer });
+    const webhooks = createWebhookDispatcher({ repositories, redis });
     if (!repositories.runtimeSettings) {
       throw new Error("Runtime settings repository is unavailable");
     }
@@ -207,6 +209,16 @@ async function runMaintenanceWorker(): Promise<void> {
               taskPollIntervalMs: snapshot.search.taskPollIntervalMs,
               taskTimeoutMs: snapshot.search.taskTimeoutMs
             }),
+            ...(webhooks
+              ? {
+                  webhooks,
+                  onWebhookError(error: unknown) {
+                    logger.warn("Deletion lifecycle webhook dispatch failed", {
+                      errorClass: error instanceof Error ? error.name : "Unknown"
+                    });
+                  }
+                }
+              : {}),
             settings: {
               databaseBatchSize: worker.hardDeleteDatabaseBatchSize,
               objectBatchSize: worker.hardDeleteObjectBatchSize,

@@ -6,6 +6,7 @@ import type {
   WebhookSubscriptionRecord
 } from "../src/db/admin-repositories.js";
 import { createWebhookDispatcher } from "../src/webhooks/dispatcher.js";
+import { toDeveloperWebhook } from "../src/developer-openapi/serializers.js";
 
 const now = "2026-06-16T00:00:00.000Z";
 
@@ -78,10 +79,25 @@ function createRepositories() {
     }
   } satisfies AdminRepositories;
 
-  return { repositories, deliveries };
+  return { repositories, deliveries, webhooks };
 }
 
 describe("webhook dispatcher", () => {
+  it("presents legacy wildcard subscriptions as the complete supported event list", () => {
+    const { webhooks } = createRepositories();
+    const legacy = webhooks.get("webhook-001");
+    expect(legacy).toBeDefined();
+    expect(toDeveloperWebhook({ ...legacy!, events: [] }).events).toEqual([
+      "source_file.accepted",
+      "source_file.progress",
+      "source_file.completed",
+      "source_file.failed",
+      "generation.activated",
+      "file.deleted",
+      "knowledge_base.deleted"
+    ]);
+  });
+
   it("persists delivery attempts and signs webhook payloads", async () => {
     const { repositories, deliveries } = createRepositories();
     const requests: Request[] = [];
@@ -156,5 +172,32 @@ describe("webhook dispatcher", () => {
       errorCode: "WEBHOOK_HTTP_ERROR"
     });
     expect(next?.id).not.toBe("delivery-original");
+  });
+
+  it("does not report a redelivery when the subscription no longer exists", async () => {
+    const { repositories, deliveries, webhooks } = createRepositories();
+    const dispatcher = createWebhookDispatcher({
+      repositories,
+      redis: null,
+      fetchImpl: async () => new Response(null, { status: 204 })
+    });
+    const original = {
+      id: "delivery-original",
+      webhookId: "webhook-001",
+      eventId: "event-001",
+      eventType: "source_file.completed",
+      payload: { knowledgeBaseId: "kb-001", sourceFileId: "source-001" },
+      status: "failed",
+      attemptCount: 1,
+      httpStatus: 500,
+      errorCode: "WEBHOOK_HTTP_ERROR",
+      createdAt: now,
+      updatedAt: now
+    } satisfies WebhookDeliveryRecord;
+    deliveries.set(original.id, original);
+    webhooks.delete("webhook-001");
+
+    await expect(dispatcher?.redeliver(original)).resolves.toBeNull();
+    expect(deliveries.size).toBe(1);
   });
 });

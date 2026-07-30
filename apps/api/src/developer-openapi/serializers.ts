@@ -4,6 +4,7 @@ import type {
   WebhookDeliveryRecord,
   WebhookSubscriptionRecord
 } from "../db/admin-repositories.js";
+import { WEBHOOK_EVENT_TYPES } from "../webhooks/events.js";
 
 export function toDeveloperKnowledgeBase(record: KnowledgeBaseRecord) {
   return {
@@ -37,7 +38,7 @@ export function toDeveloperWebhook(record: WebhookSubscriptionRecord) {
     webhookId: record.id,
     name: record.name,
     endpointHost: safeUrlHost(record.url),
-    events: record.events,
+    events: record.events.length > 0 ? record.events : [...WEBHOOK_EVENT_TYPES],
     enabled: record.enabled,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
