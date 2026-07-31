@@ -447,7 +447,7 @@ describe("search indexing runtime", () => {
       },
       leaseDurationMs: 30_000,
       now: () => new Date("2026-07-29T00:00:00.000Z")
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       claimed: 0,
       submitted: 0,
       processing: 0,
@@ -456,13 +456,15 @@ describe("search indexing runtime", () => {
       failed: 0,
       lost: 0,
       submissionPaused: false,
+      submissionThrottled: false,
       pressureReasons: []
     });
 
     expect(states.claimWork).toHaveBeenCalledWith(expect.objectContaining({
       limit: 6,
       maxInFlightTasks: 6,
-      allowNewSubmissions: true
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true
     }));
   });
 
@@ -495,7 +497,7 @@ describe("search indexing runtime", () => {
         engineTaskQueueSizeLimitBytes: 6_000
       },
       leaseDurationMs: 30_000
-    })).resolves.toEqual({
+    })).resolves.toMatchObject({
       claimed: 0,
       submitted: 0,
       processing: 0,
@@ -508,7 +510,94 @@ describe("search indexing runtime", () => {
     });
 
     expect(states.claimWork).toHaveBeenCalledWith(expect.objectContaining({
-      allowNewSubmissions: false
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false
+    }));
+  });
+
+  it("throttles document writes while resident memory keeps lifecycle work available", async () => {
+    const states = fakeStates({
+      claimWork: vi.fn(async () => [])
+    });
+    const transport = fakeTransport({
+      getPressure: vi.fn(async () => ({
+        queueLatencyMs: 0,
+        residentMemoryBytes: 5_000,
+        databaseSizeBytes: 4_000,
+        taskQueueSizeBytes: 5_000
+      }))
+    });
+
+    const result = await runSearchIndexingCycle({
+      workerId: "worker-one",
+      leaseTokenPrefix: "lease-one",
+      states,
+      documents: fakeDocuments(),
+      transport,
+      indexPrefix: "focowiki",
+      settings: {
+        ...runtimeSettings(),
+        maxInFlightTasks: 6,
+        engineQueueLatencyLimitMs: 30_000,
+        engineResidentMemoryLimitBytes: 4_000,
+        engineDatabaseSizeLimitBytes: 5_000,
+        engineTaskQueueSizeLimitBytes: 6_000
+      },
+      leaseDurationMs: 30_000
+    });
+
+    expect(result).toMatchObject({
+      submissionPaused: false,
+      submissionThrottled: true,
+      pressureReasons: ["resident_memory"],
+      pressure: {
+        residentMemoryBytes: 5_000
+      },
+      pressureLimits: {
+        residentMemoryBytes: 4_000
+      }
+    });
+    expect(states.claimWork).toHaveBeenCalledWith(expect.objectContaining({
+      maxInFlightTasks: 1,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true
+    }));
+  });
+
+  it("defers new engine mutations while its task queue is overloaded", async () => {
+    const states = fakeStates({
+      claimWork: vi.fn(async () => [])
+    });
+    const transport = fakeTransport({
+      getPressure: vi.fn(async () => ({
+        queueLatencyMs: 31_000,
+        residentMemoryBytes: 3_000,
+        databaseSizeBytes: 4_000,
+        taskQueueSizeBytes: 7_000
+      }))
+    });
+
+    await runSearchIndexingCycle({
+      workerId: "worker-one",
+      leaseTokenPrefix: "lease-one",
+      states,
+      documents: fakeDocuments(),
+      transport,
+      indexPrefix: "focowiki",
+      settings: {
+        ...runtimeSettings(),
+        maxInFlightTasks: 6,
+        engineQueueLatencyLimitMs: 30_000,
+        engineResidentMemoryLimitBytes: 4_000,
+        engineDatabaseSizeLimitBytes: 5_000,
+        engineTaskQueueSizeLimitBytes: 6_000
+      },
+      leaseDurationMs: 30_000
+    });
+
+    expect(states.claimWork).toHaveBeenCalledWith(expect.objectContaining({
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false
     }));
   });
 
@@ -543,7 +632,8 @@ describe("search indexing runtime", () => {
     expect(result.submissionPaused).toBe(true);
     expect(result.pressureReasons).toEqual(["pressure_unavailable"]);
     expect(states.claimWork).toHaveBeenCalledWith(expect.objectContaining({
-      allowNewSubmissions: false
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false
     }));
   });
 });

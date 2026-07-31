@@ -220,7 +220,7 @@ try {
   await page.getByRole("button", { name: firstSampleName, exact: true }).waitFor({ timeout: 30_000 });
   report.checks.push(okCheck("file-delete", "Deleted a source-backed generated page and refreshed the file tree."));
 
-  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
   await page.getByRole("button", { name: knowledgeBaseName, exact: true }).waitFor();
   await page.getByRole("button", { name: `Knowledge base actions for ${knowledgeBaseName}` }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
@@ -472,8 +472,8 @@ function readSourceFileIdFromTestId(testId) {
 }
 
 async function validateRuntimeSettingsPage(page) {
-  await page.getByRole("button", { name: "Open settings" }).click();
-  await page.getByRole("heading", { name: "Settings" }).waitFor();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("tab", { name: "Worker" }).waitFor();
   await page.getByRole("tab", { name: "Worker" }).click();
   await page.locator("#worker-generationBatchSize").waitFor();
 
@@ -518,7 +518,7 @@ async function validateRuntimeSettingsPage(page) {
     }
   }
 
-  await page.locator("header button").first().click();
+  await page.getByRole("button", { name: "Knowledge bases", exact: true }).click();
   await page.getByRole("button", { name: "Create knowledge base" }).first().waitFor();
   report.checks.push(okCheck(
     "runtime-settings-page",

@@ -244,7 +244,20 @@ export function createPostgresSearchProjectionStateRepository(
                  work.state,
                  row_number() OVER (
                    PARTITION BY (work.state = 'submitted')
-                   ORDER BY work.run_after, work.created_at, work.id
+                   ORDER BY
+                     work.run_after,
+                     CASE
+                       WHEN work.state = 'submitted' THEN 0
+                       WHEN work.work_kind = 'cleanup' THEN 1
+                       WHEN work.work_kind = 'plan_documents' THEN 2
+                       WHEN work.work_kind = 'validate' THEN 3
+                       WHEN work.work_kind = 'activate' THEN 4
+                       WHEN work.work_kind = 'delete_documents' THEN 5
+                       WHEN work.work_kind = 'prepare_index' THEN 6
+                       ELSE 7
+                     END,
+                     work.created_at,
+                     work.id
                  )::int AS category_ordinal,
                  capacity.in_flight_count
           FROM focowiki.search_projection_work work
@@ -270,8 +283,22 @@ export function createPostgresSearchProjectionStateRepository(
             AND (
               work.state = 'submitted'
               OR (
-                ${input.allowNewSubmissions}
-                AND capacity.in_flight_count < ${input.maxInFlightTasks}
+                capacity.in_flight_count < ${input.maxInFlightTasks}
+                AND (
+                  work.work_kind IN (
+                    'plan_documents', 'validate', 'cleanup'
+                  )
+                  OR (
+                    work.work_kind = 'documents'
+                    AND ${input.allowIndexWrites}
+                  )
+                  OR (
+                    work.work_kind IN (
+                      'prepare_index', 'delete_documents', 'activate'
+                    )
+                    AND ${input.allowRoutineEngineTasks}
+                  )
+                )
               )
             )
             AND (
@@ -373,10 +400,7 @@ export function createPostgresSearchProjectionStateRepository(
             CASE WHEN state = 'submitted' THEN 0 ELSE 1 END,
             category_ordinal,
             id
-          LIMIT ${Math.min(
-            boundedLimit(input.limit),
-            boundedLimit(input.maxInFlightTasks)
-          )}
+          LIMIT ${boundedLimit(input.limit)}
         )
         UPDATE focowiki.search_projection_work work
         SET lease_owner = ${input.workerId},
