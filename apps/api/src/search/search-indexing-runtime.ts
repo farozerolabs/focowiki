@@ -1,4 +1,5 @@
 import type {
+  SearchEnginePressure,
   SearchEngineTransport
 } from "../application/ports/search-engine-transport.js";
 import type {
@@ -21,6 +22,12 @@ import {
   type SearchIndexingFailureEvent,
   type SearchIndexingWorkOutcome
 } from "./search-indexing-worker.js";
+import {
+  createSearchIndexingPressureController,
+  type SearchIndexingPressureController,
+  type SearchIndexingPressureLimits,
+  type SearchIndexingPressureReason
+} from "./search-indexing-pressure.js";
 
 export type SearchIndexingRuntimeSettings = {
   engineSearchCutoffMs: number;
@@ -35,13 +42,6 @@ export type SearchIndexingRuntimeSettings = {
   engineTaskQueueSizeLimitBytes: number;
 };
 
-export type SearchIndexingPressureReason =
-  | "queue_latency"
-  | "resident_memory"
-  | "database_size"
-  | "task_queue_size"
-  | "pressure_unavailable";
-
 export type SearchIndexingCycleResult = {
   claimed: number;
   submitted: number;
@@ -51,7 +51,11 @@ export type SearchIndexingCycleResult = {
   failed: number;
   lost: number;
   submissionPaused: boolean;
+  submissionThrottled: boolean;
   pressureReasons: SearchIndexingPressureReason[];
+  pressure: SearchEnginePressure | null;
+  pressureLimits: SearchIndexingPressureLimits;
+  pressureReleaseLimits: SearchIndexingPressureLimits;
 };
 
 export async function runSearchIndexingCycle(input: {
@@ -65,24 +69,36 @@ export async function runSearchIndexingCycle(input: {
     maxInFlightTasks: number;
   };
   leaseDurationMs: number;
+  pressureController?: SearchIndexingPressureController;
   now?: () => Date;
   onFailure?: (
     event: SearchIndexingFailureEvent,
     error?: unknown
   ) => void;
 }): Promise<SearchIndexingCycleResult> {
-  const pressureReasons = await readPressureReasons(
+  const pressureDecision = await readPressureDecision(
     input.transport,
-    input.settings
+    input.settings,
+    input.pressureController ?? createSearchIndexingPressureController()
   );
-  const submissionPaused = pressureReasons.length > 0;
+  const submissionPaused =
+    !pressureDecision.submissionPolicy.allowIndexWrites
+    || !pressureDecision.submissionPolicy.allowRoutineEngineTasks;
+  const submissionThrottled =
+    pressureDecision.submissionPolicy.throttleIndexWrites;
+  const maxInFlightTasks = submissionThrottled
+    ? 1
+    : input.settings.maxInFlightTasks;
   const claimedAt = input.now?.() ?? new Date();
   const work = await input.states.claimWork({
     workerId: input.workerId,
     leaseTokenPrefix: input.leaseTokenPrefix,
     limit: input.settings.maxInFlightTasks,
-    maxInFlightTasks: input.settings.maxInFlightTasks,
-    allowNewSubmissions: !submissionPaused,
+    maxInFlightTasks,
+    allowIndexWrites:
+      pressureDecision.submissionPolicy.allowIndexWrites,
+    allowRoutineEngineTasks:
+      pressureDecision.submissionPolicy.allowRoutineEngineTasks,
     now: claimedAt.toISOString(),
     leaseExpiresAt: new Date(
       claimedAt.getTime() + input.leaseDurationMs
@@ -110,32 +126,30 @@ export async function runSearchIndexingCycle(input: {
     failed: count(outcomes, "failed"),
     lost: count(outcomes, "lost"),
     submissionPaused,
-    pressureReasons
+    submissionThrottled,
+    pressureReasons: pressureDecision.reasons,
+    pressure: pressureDecision.pressure,
+    pressureLimits: pressureDecision.limits,
+    pressureReleaseLimits: pressureDecision.releaseLimits
   };
 }
 
-async function readPressureReasons(
+async function readPressureDecision(
   transport: SearchEngineTransport,
-  settings: SearchIndexingRuntimeSettings
-): Promise<SearchIndexingPressureReason[]> {
+  settings: SearchIndexingRuntimeSettings,
+  controller: SearchIndexingPressureController
+) {
+  const limits = {
+    queueLatencyMs: settings.engineQueueLatencyLimitMs,
+    residentMemoryBytes: settings.engineResidentMemoryLimitBytes,
+    databaseSizeBytes: settings.engineDatabaseSizeLimitBytes,
+    taskQueueSizeBytes: settings.engineTaskQueueSizeLimitBytes
+  };
   try {
     const pressure = await transport.getPressure();
-    const reasons: SearchIndexingPressureReason[] = [];
-    if (pressure.queueLatencyMs > settings.engineQueueLatencyLimitMs) {
-      reasons.push("queue_latency");
-    }
-    if (pressure.residentMemoryBytes > settings.engineResidentMemoryLimitBytes) {
-      reasons.push("resident_memory");
-    }
-    if (pressure.databaseSizeBytes > settings.engineDatabaseSizeLimitBytes) {
-      reasons.push("database_size");
-    }
-    if (pressure.taskQueueSizeBytes > settings.engineTaskQueueSizeLimitBytes) {
-      reasons.push("task_queue_size");
-    }
-    return reasons;
+    return controller.evaluate(pressure, limits);
   } catch {
-    return ["pressure_unavailable"];
+    return controller.unavailable(limits);
   }
 }
 

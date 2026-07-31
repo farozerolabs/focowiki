@@ -40,6 +40,9 @@ import { createRuntimeSettingsRepository } from "./runtime-settings/repository.j
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { createS3StorageAdapter } from "./storage/s3.js";
 import { runSearchIndexingCycle } from "./search/search-indexing-runtime.js";
+import {
+  createSearchIndexingPressureController
+} from "./search/search-indexing-pressure.js";
 
 const PLANNING_INTERVAL_MS = 60_000;
 const MAX_PLANNED_KNOWLEDGE_BASES_PER_INTERVAL = 100;
@@ -103,6 +106,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
     });
     const searchStates = createPostgresSearchProjectionStateRepository(sql);
     const searchDocuments = createPostgresSearchProjectionDocumentRepository(sql);
+    const searchPressureController = createSearchIndexingPressureController();
     const budgets = createProcessResourceBudgets(
       resolveResourceBudgetLimits(lastValidSnapshot)
     );
@@ -168,6 +172,7 @@ async function runLexicalRebuildWorker(): Promise<void> {
               snapshot.search.engineTaskQueueSizeLimitBytes
           },
           leaseDurationMs: snapshot.worker.lockTtlSeconds * 1_000,
+          pressureController: searchPressureController,
           onFailure(event, error) {
             if (error === undefined) {
               logger.error("Search indexing work attempt failed", event);
@@ -176,7 +181,11 @@ async function runLexicalRebuildWorker(): Promise<void> {
             logger.error("Search indexing work attempt failed", event, error);
           }
         });
-        if (searchCycle.claimed > 0 || searchCycle.submissionPaused) {
+        if (
+          searchCycle.claimed > 0
+          || searchCycle.submissionPaused
+          || searchCycle.submissionThrottled
+        ) {
           logger.info("Search indexing cycle completed", searchCycle);
         }
 

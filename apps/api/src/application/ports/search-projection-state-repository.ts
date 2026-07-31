@@ -124,7 +124,8 @@ export interface SearchProjectionStateRepository {
     leaseTokenPrefix: string;
     limit: number;
     maxInFlightTasks: number;
-    allowNewSubmissions: boolean;
+    allowIndexWrites: boolean;
+    allowRoutineEngineTasks: boolean;
     now: string;
     leaseExpiresAt: string;
   }): Promise<SearchProjectionWork[]>;

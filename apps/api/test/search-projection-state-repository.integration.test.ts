@@ -173,7 +173,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "planning-prepare",
       limit: 1,
       maxInFlightTasks: 1,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:00:00.000Z",
       leaseExpiresAt: "2099-07-29T00:10:00.000Z"
     });
@@ -188,7 +189,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "planning-page",
       limit: 1,
       maxInFlightTasks: 1,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:00:02.000Z",
       leaseExpiresAt: "2099-07-29T00:10:02.000Z"
     });
@@ -207,7 +209,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "planning-resume",
       limit: 1,
       maxInFlightTasks: 1,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:00:04.000Z",
       leaseExpiresAt: "2099-07-29T00:10:04.000Z"
     });
@@ -250,7 +253,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "pressure-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: false,
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false,
       now: "2099-07-29T00:00:30.000Z",
       leaseExpiresAt: "2099-07-29T00:10:30.000Z"
     })).resolves.toEqual([]);
@@ -260,7 +264,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:01:00.000Z",
       leaseExpiresAt: "2099-07-29T00:11:00.000Z"
     });
@@ -285,7 +290,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "pressure-poll-lease",
       limit: 2,
       maxInFlightTasks: 8,
-      allowNewSubmissions: false,
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false,
       now: "2099-07-29T00:01:01.500Z",
       leaseExpiresAt: "2099-07-29T00:11:01.500Z"
     });
@@ -302,7 +308,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "concurrent-lease",
       limit: 2,
       maxInFlightTasks: 2,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:11:02.000Z",
       leaseExpiresAt: "2099-07-29T00:21:02.000Z"
     });
@@ -348,6 +355,93 @@ describeDatabase("search projection state repository integration", () => {
       task_uid: 42,
       attempt_count: 0
     });
+  });
+
+  it("claims planning work while document writes are throttled", async () => {
+    const identity = {
+      knowledgeBaseId: "kb-search-state",
+      epoch: 1,
+      generationId: "generation-search-state",
+      maintenanceRequestId: null,
+      indexKind: "content" as const,
+      batchOrdinal: 0,
+      documentCount: 0,
+      compressedBytes: 0,
+      maxAttempts: 3
+    };
+    await repository.createWork([
+      {
+        ...identity,
+        id: "search-work-pressure-prepare",
+        workKind: "prepare_index",
+        payloadChecksum: createHash("sha256")
+          .update("pressure-prepare")
+          .digest("hex"),
+        taskCorrelation: "search-work-pressure-prepare"
+      },
+      {
+        ...identity,
+        id: "search-work-pressure-plan",
+        workKind: "plan_documents",
+        payloadChecksum: createHash("sha256")
+          .update("pressure-plan")
+          .digest("hex"),
+        taskCorrelation: "search-work-pressure-plan"
+      },
+      {
+        ...identity,
+        id: "search-work-pressure-documents",
+        workKind: "documents",
+        payloadChecksum: createHash("sha256")
+          .update("pressure-documents")
+          .digest("hex"),
+        documentCount: 1,
+        compressedBytes: 128,
+        taskCorrelation: "search-work-pressure-documents"
+      }
+    ]);
+
+    const [prepare] = await repository.claimWork({
+      workerId: "pressure-worker",
+      leaseTokenPrefix: "pressure-prepare",
+      limit: 1,
+      maxInFlightTasks: 2,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
+      now: "2099-07-29T00:20:00.000Z",
+      leaseExpiresAt: "2099-07-29T00:30:00.000Z"
+    });
+    expect(prepare?.workKind).toBe("prepare_index");
+    expect(await repository.markSucceeded({
+      work: prepare!,
+      completedAt: "2099-07-29T00:20:01.000Z"
+    })).toBe(true);
+
+    const claimed = await repository.claimWork({
+      workerId: "pressure-worker",
+      leaseTokenPrefix: "pressure-planning",
+      limit: 2,
+      maxInFlightTasks: 1,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
+      now: "2099-07-29T00:20:02.000Z",
+      leaseExpiresAt: "2099-07-29T00:30:02.000Z"
+    });
+
+    await sql`
+      DELETE FROM focowiki.search_projection_work
+      WHERE id IN (
+        'search-work-pressure-prepare',
+        'search-work-pressure-plan',
+        'search-work-pressure-documents'
+      )
+    `;
+    expect(claimed).toEqual([
+      expect.objectContaining({
+        id: "search-work-pressure-plan",
+        workKind: "plan_documents"
+      })
+    ]);
   });
 
   it("persists retry and terminal timestamps as timestamptz values", async () => {
@@ -404,7 +498,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "retry-transition-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:21:00.000Z",
       leaseExpiresAt: "2099-07-29T00:31:00.000Z"
     });
@@ -424,7 +519,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "retry-transition-terminal-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:21:03.000Z",
       leaseExpiresAt: "2099-07-29T00:31:03.000Z"
     });
@@ -514,7 +610,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "active-cleanup-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:02:30.000Z",
       leaseExpiresAt: "2099-07-29T00:12:30.000Z"
     });
@@ -598,7 +695,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "cleanup-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: false,
+      allowRoutineEngineTasks: false,
       now: "2099-07-29T00:04:00.000Z",
       leaseExpiresAt: "2099-07-29T00:14:00.000Z"
     });
@@ -966,7 +1064,8 @@ describeDatabase("search projection state repository integration", () => {
       leaseTokenPrefix: "rebased-lease",
       limit: 1,
       maxInFlightTasks: 8,
-      allowNewSubmissions: true,
+      allowIndexWrites: true,
+      allowRoutineEngineTasks: true,
       now: "2099-07-29T00:06:00.000Z",
       leaseExpiresAt: "2099-07-29T00:16:00.000Z"
     });
