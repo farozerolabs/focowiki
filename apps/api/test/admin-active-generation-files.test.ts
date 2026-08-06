@@ -1,19 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { parseRuntimeConfig } from "../src/config.js";
-import type { AdminRepositories } from "../src/db/admin-repositories.js";
-import type {
-  ActiveGenerationFile,
-  ActiveGenerationProjection,
-  ActiveGenerationReadRepository,
-  ActiveGenerationReadScope
-} from "../src/application/ports/active-generation-read-repository.js";
 import { createApiApp } from "../src/server.js";
-import { createStorageKeyspace } from "../src/storage/keys.js";
-import type { StorageAdapter } from "../src/storage/s3.js";
+import type { StorageVnextAdminReadApplication } from
+  "../src/storage-vnext/api/admin-read-application.js";
+import type { StorageVnextAdminCoreApplication } from
+  "../src/storage-vnext/api/admin-core-application.js";
 import { createTestRedisCoordinator, loginAndReadSessionCookie } from "./support/session.js";
 
-describe("Admin active generation file reads", () => {
-  it("reads tree, search ancestors, content, and relationships from one generation", async () => {
+describe("Admin released file reads", () => {
+  it("keeps tree, search ancestors, content, and relationship response shapes", async () => {
     const fixture = createFixture();
     const cookie = await loginAndReadSessionCookie(fixture.app);
 
@@ -74,7 +69,7 @@ describe("Admin active generation file reads", () => {
     expect(JSON.stringify(detailBody)).not.toContain("bundleFileId");
   });
 
-  it("rejects a tree cursor after the active generation changes", async () => {
+  it("keeps stale tree cursors invalid after the released root changes", async () => {
     const fixture = createFixture();
     const cookie = await loginAndReadSessionCookie(fixture.app);
     const first = await fixture.app.request(
@@ -82,213 +77,154 @@ describe("Admin active generation file reads", () => {
       { headers: { cookie } }
     );
     const cursor = (await first.json() as { nextCursor: string }).nextCursor;
-    fixture.setGeneration("generation-b");
+    fixture.setRoot("root-b");
+
     const stale = await fixture.app.request(
       `/admin/api/knowledge-bases/kb-admin-active/files/tree?parentPath=pages&limit=1&cursor=${encodeURIComponent(cursor)}`,
       { headers: { cookie } }
     );
+
     expect(stale.status).toBe(400);
-    await expect(stale.json()).resolves.toMatchObject({ error: { code: "INVALID_PAGINATION" } });
+    await expect(stale.json()).resolves.toMatchObject({
+      error: { code: "INVALID_PAGINATION" }
+    });
   });
 });
 
 function createFixture() {
-  let generationId = "generation-a";
-  const storage: StorageAdapter = {
-    keyspace: createStorageKeyspace("test"),
-    async putObject() {},
-    async headObjectMetadata() { return null; },
-    async getObjectText(key) {
-      return key === "generated/a" ? "# A\n\nShared subject." : null;
-    }
-  };
-  const activeGenerationReads: ActiveGenerationReadRepository = {
-    async withActiveGeneration(_knowledgeBaseId, reader) {
-      return reader(createScope(generationId));
-    }
-  };
-  const repositories = {
-    knowledgeBases: {
-      async getKnowledgeBase(id: string) {
-        return id === "kb-admin-active"
-          ? {
-              id,
-              name: "Active knowledge base",
-              description: null,
-              activeGenerationId: generationId,
-              resourceRevision: 1,
-              catalogGeneration: 1,
-              createdAt: "2026-07-17T00:00:00.000Z",
-              updatedAt: "2026-07-17T00:00:00.000Z"
-            }
-          : null;
-      }
-    }
-  } as unknown as AdminRepositories;
-  const app = createApiApp({
-    config: testConfig(),
-    storage,
-    repositories,
-    redis: createTestRedisCoordinator(),
-    activeGenerationReads
+  let rootId = "root-a";
+  const directory = treeEntry({
+    id: "directory:docs",
+    name: "docs",
+    logicalPath: "pages/docs",
+    entryType: "directory"
   });
-  return {
-    app,
-    setGeneration(value: string) {
-      generationId = value;
-    }
-  };
-}
-
-function createScope(generationId: string): ActiveGenerationReadScope {
-  const directory = projection(generationId, {
-    recordId: "directory:docs",
-    sourceFileId: null,
-    path: "pages/docs",
-    parentPath: "pages",
-    title: "docs",
-    payload: {
-      kind: "directory",
-      name: "docs",
-      sourceDirectoryId: "source-directory-docs",
-      resourceRevision: 1
-    }
-  });
-  const fileA = projection(generationId, {
-    recordId: "source-a",
+  const file = treeEntry({
+    id: "source-a",
+    name: "a.md",
+    logicalPath: "pages/a.md",
+    entryType: "file",
+    generatedFileId: "source-a",
     sourceFileId: "source-a",
-    path: "pages/a.md",
-    parentPath: "pages",
-    title: "A",
-    payload: { kind: "file", name: "a.md", fileId: "source-a" }
+    deletable: true
   });
-  const guide = projection(generationId, {
-    recordId: "source-guide",
-    sourceFileId: "source-guide",
-    path: "pages/docs/guide.md",
+  const guide = treeEntry({
+    id: "source-guide",
+    name: "guide.md",
+    logicalPath: "pages/docs/guide.md",
     parentPath: "pages/docs",
-    title: "Guide",
-    payload: { kind: "file", name: "guide.md", fileId: "source-guide" }
+    entryType: "file",
+    generatedFileId: "source-guide",
+    sourceFileId: "source-guide",
+    deletable: true
   });
-  const files = new Map([
-    ["pages/a.md", activeFile(generationId, "source-a", "pages/a.md", "generated/a")],
-    ["pages/docs/guide.md", activeFile(generationId, "source-guide", "pages/docs/guide.md", "generated/guide")]
-  ]);
+  const adminRead: StorageVnextAdminReadApplication = {
+    async listKnowledgeBases() {
+      return { ok: true, value: { items: [], nextCursor: null } };
+    },
+    async getKnowledgeBase() {
+      return { ok: false, code: "NOT_FOUND" };
+    },
+    async listTree(request) {
+      if (request.cursor && request.cursor !== `cursor:${rootId}`) {
+        return { ok: false, code: "INVALID_PAGINATION" };
+      }
+      const items = request.limit === 1 ? [directory] : [directory, file];
+      return {
+        ok: true,
+        value: {
+          items,
+          nextCursor: request.limit === 1 ? `cursor:${rootId}` : null
+        }
+      };
+    },
+    async searchFiles() {
+      return {
+        ok: true,
+        value: {
+          items: [{ entry: guide, ancestors: [directory] }],
+          nextCursor: null
+        }
+      };
+    }
+  };
+  const adminCore: StorageVnextAdminCoreApplication = {
+    ...unavailableCoreApplication(),
+    async readGeneratedContent() {
+      return {
+        ok: true,
+        value: {
+          file: {
+            id: "source-a",
+            logicalPath: "pages/a.md",
+            deletable: true
+          },
+          relationships: [{
+            fileId: "source-guide",
+            generatedFileId: "source-guide",
+            path: "pages/docs/guide.md"
+          }],
+          content: "# A\n\nShared subject."
+        }
+      };
+    }
+  };
   return {
-    knowledgeBaseId: "kb-admin-active",
-    generationId,
-    searchIdentity: {
-      activeEpoch: 0,
-      contentSchemaVersion: "postgres-search-v1",
-      graphSchemaVersion: "postgres-graph-v1",
-      contentSettingsChecksum: "postgres-compatibility",
-      graphSettingsChecksum: "postgres-compatibility"
-    },
-    async findFileById(fileId) {
-      return [...files.values()].find((file) => file.fileId === fileId) ?? null;
-    },
-    async findFileByPath(path) {
-      return files.get(path) ?? null;
-    },
-    async findFilesBySourceIds(sourceFileIds) {
-      return [...files.values()].filter(
-        (file) => file.sourceFileId && sourceFileIds.includes(file.sourceFileId)
-      );
-    },
-    async findProjection() {
-      return null;
-    },
-    async getGraphSummary() {
-      return { nodeCount: 0, edgeCount: 0, graphIndexAvailable: false, persisted: true };
-    },
-    async listTree(input) {
-      const all = input.query ? [guide] : [directory, fileA];
-      const start = input.cursor ? 1 : 0;
-      const items = all.slice(start, start + input.limit);
-      return {
-        items,
-        nextCursor: start + input.limit < all.length
-          ? { sortKey: items.at(-1)!.sortKey, recordId: items.at(-1)!.recordId }
-          : null
-      };
-    },
-    async listTreeAncestors(paths) {
-      return new Map(paths.map((path) => [path, path === guide.path ? [directory] : []]));
-    },
-    async search() {
-      return { items: [], nextCursor: null };
-    },
-    async revalidateSearchPage() {
-      return true;
-    },
-    async listRelated() {
-      return {
-        items: [projection(generationId, {
-          recordId: "edge-a-guide",
-          sourceFileId: "source-a",
-          relatedSourceFileId: "source-guide",
-          path: "pages/docs/guide.md",
-          parentPath: null,
-          title: "Guide",
-          score: 0.9,
-          payload: {
-            fromFileId: "source-a",
-            toFileId: "source-guide",
-            relationType: "related",
-            weight: 0.9,
-            reason: "Shared subject"
-          }
-        })],
-        nextCursor: null
-      };
-    },
-    async listRelatedForSources(input) {
-      return new Map(input.sourceFileIds.map((sourceFileId) => [sourceFileId, []]));
+    app: createApiApp({
+      config: testConfig(),
+      redis: createTestRedisCoordinator(),
+      storageVnextAdminRead: adminRead,
+      storageVnextAdminCore: adminCore
+    }),
+    setRoot(value: string) {
+      rootId = value;
     }
   };
 }
 
-function activeFile(
-  generationId: string,
-  fileId: string,
-  path: string,
-  objectKey: string
-): ActiveGenerationFile {
+function treeEntry(input: {
+  id: string;
+  name: string;
+  logicalPath: string;
+  parentPath?: string;
+  entryType: "file" | "directory";
+  generatedFileId?: string | null;
+  sourceFileId?: string | null;
+  deletable?: boolean;
+}) {
   return {
-    generationId,
-    fileId,
-    refKind: "page",
-    refKey: fileId,
-    lastChangedGenerationId: generationId,
-    path,
-    sourceFileId: fileId,
-    objectKey,
-    contentType: "text/markdown; charset=utf-8",
-    sizeBytes: 20,
-    checksumSha256: fileId,
-    title: fileId,
-    summary: "Shared subject",
-    payload: { metadata: { type: "page" } }
+    id: input.id,
+    parentPath: input.parentPath ?? "pages",
+    name: input.name,
+    logicalPath: input.logicalPath,
+    sortKey: input.logicalPath,
+    entryType: input.entryType,
+    generatedFileId: input.generatedFileId ?? null,
+    sourceFileId: input.sourceFileId ?? null,
+    sourceDirectoryId: input.entryType === "directory" ? input.id : null,
+    fileKind: input.entryType === "file" ? "page" : null,
+    directEntryCount: 0,
+    directDirectoryCount: 0,
+    directFileCount: 0,
+    descendantFileCount: 0,
+    resourceRevision: 1,
+    deletable: input.deletable ?? false
   };
 }
 
-function projection(
-  generationId: string,
-  input: Partial<ActiveGenerationProjection> & Pick<ActiveGenerationProjection, "recordId">
-): ActiveGenerationProjection {
+function unavailableCoreApplication(): StorageVnextAdminCoreApplication {
+  const unavailable = async () => ({
+    ok: false as const,
+    code: "DATABASE_REPOSITORY_UNAVAILABLE" as const
+  });
   return {
-    generationId,
-    projectionKind: "tree",
-    recordId: input.recordId,
-    sourceFileId: input.sourceFileId ?? null,
-    relatedSourceFileId: input.relatedSourceFileId ?? null,
-    path: input.path ?? null,
-    parentPath: input.parentPath ?? null,
-    sortKey: input.path ?? input.recordId,
-    title: input.title ?? null,
-    summary: input.summary ?? null,
-    score: input.score ?? null,
-    payload: input.payload ?? {}
+    createKnowledgeBase: unavailable,
+    getKnowledgeBase: unavailable,
+    deleteKnowledgeBase: unavailable,
+    readGeneratedContent: unavailable,
+    deleteSourceFile: unavailable,
+    listFiles: unavailable,
+    getFile: unavailable
   };
 }
 

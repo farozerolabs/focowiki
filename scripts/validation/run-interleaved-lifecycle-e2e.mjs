@@ -19,7 +19,7 @@ import {
 import {
   buildMaintenancePrecondition,
   buildModificationRequest,
-  buildProjectionAmplificationPath,
+  classifyMaintenanceRequestResponse,
   selectLifecycleCases
 } from "./lib/interleaved-lifecycle-actions.mjs";
 import {
@@ -49,13 +49,15 @@ import {
   selectInterleavedScenarios
 } from "./lib/interleaved-scenario-selection.mjs";
 import {
-  createPublicationModeOverride,
   isKnowledgeBaseWorkSettled,
   resolveInterleavedScenarioDeadlineMs
 } from "./lib/interleaved-runtime-settings.mjs";
 import {
   createEvidenceRedactor
 } from "./lib/interleaved-evidence-redaction.mjs";
+import {
+  selectClosedMarkdownSample
+} from "./lib/storage-vnext-linked-corpus-samples.mjs";
 
 loadLocalEnv();
 
@@ -78,7 +80,11 @@ assertMutationE2ESafety({
 const manifest = readJson(
   path.join(controller.state.evidenceDir, "corpus-manifest.json")
 );
+if (!Array.isArray(manifest.samples) || manifest.samples.length < 3) {
+  throw new Error("Interleaved validation requires a prepared corpus manifest.");
+}
 const sourceRoot = path.resolve(requiredEnv("FOCOWIKI_VALIDATION_MARKDOWN_DIR"));
+const linkedSamples = readClosedSamples(3);
 const adminOrigin = process.env.ADMIN_PUBLIC_ORIGIN || "http://127.0.0.1:43100";
 const admin = createLifecycleHttpClient({
   baseUrl: `http://127.0.0.1:${process.env.ADMIN_API_PORT || "43000"}`
@@ -186,7 +192,6 @@ async function executeScenario(scenario) {
   let uploadSequence = 0;
   let lastSnapshot = null;
   let baseline = null;
-  let publicationModeOverride = null;
 
   try {
     const created = await developer.json("/openapi/v2/knowledge-bases", {
@@ -207,7 +212,7 @@ async function executeScenario(scenario) {
     baseline = await seedScenarioBaseline({
       scenario,
       knowledgeBaseId,
-      samples: samples.slice(0, 2)
+      samples
     });
 
     const actions = {
@@ -221,7 +226,9 @@ async function executeScenario(scenario) {
         const relativePath = `incoming/${scenario.id}/source.md`;
         const createdSession = await upload.create([{
           relativePath,
-          bytes: sampleBytes(samples[2])
+          bytes: Buffer.from(
+            `# Interleaved upload\n\nA link-free source for interleaved upload ${scenario.id}.\n`
+          )
         }]);
         const sessionId = createdSession.session.id;
         controller.registerOwnership("uploadSessions", sessionId);
@@ -271,12 +278,9 @@ async function executeScenario(scenario) {
           knowledgeBaseRevision: current.resourceRevision,
           sourceFile,
           directory,
-          replacementBody: Buffer.concat([
-            sampleBytes(samples[0]),
-            Buffer.from(
-              `\n\n## Lifecycle validation\n\nScenario ${scenario.id}.\n`
-            )
-          ])
+          replacementBody: Buffer.from(
+            `# Primary control\n\nLifecycle replacement for ${scenario.id}.\n`
+          )
         });
         const response = await developer.request(request.pathname, {
           method: request.method,
@@ -328,40 +332,26 @@ async function executeScenario(scenario) {
             s3Prefix: requiredEnv("S3_PREFIX")
           });
           const prepared = await maintenancePreconditions.prepare(precondition);
-          if (cases.maintenanceKind === "projection-compaction") {
-            publicationModeOverride ??= createPublicationModeOverride({
-              read: readPublicationSettings,
-              write: writePublicationSettings
-            });
-            await publicationModeOverride.enable();
-            controller.recordBarrier(scenario.id, {
-              name: "publication-mode-overridden",
-              lifecycle: "maintenance",
-              state: "per_file"
-            });
-            await amplifyProjectionSegments({
-              scenario,
-              knowledgeBaseId,
-              sourceFileId: baseline.secondarySourceFileId,
-              requiredActiveSegmentCount: precondition.requiredActiveSegmentCount
-            });
-          }
-          if (cases.maintenanceKind !== "storage-reconciliation") {
-            const requested = await requestKnowledgeBaseIndexMaintenance({
-              knowledgeBaseId,
-              idempotencyKey: `${runId}-${scenario.id}-index-maintenance`
-            });
-            controller.recordBarrier(scenario.id, {
-              name: "maintenance-requested",
-              lifecycle: "maintenance",
-              state: requested.maintenance?.state ?? requested.result,
-              details: { kind: cases.maintenanceKind }
-            });
+          const requested = await requestKnowledgeBaseIndexMaintenance({
+            knowledgeBaseId,
+            idempotencyKey: `${runId}-${scenario.id}-index-maintenance`
+          });
+          const requestClassification = classifyMaintenanceRequestResponse(
+            requested
+          );
+          controller.recordBarrier(scenario.id, {
+            name: "maintenance-requested",
+            lifecycle: "maintenance",
+            state: requested.maintenance?.state ?? requested.result,
+            details: { kind: cases.maintenanceKind }
+          });
+          if (!requestClassification.shouldObserve) {
+            return { state: requestClassification.lifecycleState };
           }
           const observe = () => maintenanceObserver.observe({
             kind: cases.maintenanceKind,
             knowledgeBaseId,
-            prefix: precondition.prefix
+            knowledgeBaseId
           });
           const started = await waitForMaintenanceStart({
             kind: cases.maintenanceKind,
@@ -447,8 +437,6 @@ async function executeScenario(scenario) {
       (outcome) => outcome.state === "failed"
     ).length;
     const outcome = failedCount === 0 ? "succeeded" : "conflicted";
-    await publicationModeOverride?.restore();
-    publicationModeOverride = null;
     controller.completeScenario(scenario.id, { outcome });
     return {
       scenarioId: scenario.id,
@@ -474,16 +462,6 @@ async function executeScenario(scenario) {
       ...failure
     };
   } finally {
-    if (publicationModeOverride) {
-      await publicationModeOverride.restore().catch((error) => {
-        controller.addFinding({
-          scenarioId: scenario.id,
-          severity: "blocking",
-          code: error?.code ?? "RUNTIME_SETTING_RESTORE_FAILED",
-          summary: "Publication settings were not restored."
-        });
-      });
-    }
     if (knowledgeBaseId && !knowledgeBaseDeletionAccepted) {
       await deleteKnowledgeBaseAsAdmin(knowledgeBaseId).catch(() => undefined);
     }
@@ -535,17 +513,12 @@ function selectScenarios(limit, requestedIds) {
   });
 }
 
-function samplesForScenario(caseIndex) {
-  if (manifest.samples.length < 3) {
-    throw new Error("Interleaved validation requires at least three samples.");
-  }
-  return Array.from({ length: 3 }, (_, offset) =>
-    manifest.samples[(caseIndex * 3 + offset) % manifest.samples.length]
-  );
+function samplesForScenario(_caseIndex) {
+  return linkedSamples;
 }
 
 function sampleBytes(sample) {
-  return fs.readFileSync(path.join(sourceRoot, sample.relativePath));
+  return sample.bytes;
 }
 
 async function seedScenarioBaseline(input) {
@@ -555,13 +528,21 @@ async function seedScenarioBaseline(input) {
     idempotencyPrefix: `${runId}-${input.scenario.id}-baseline`
   });
   const files = [
+    ...input.samples.map((sample) => ({
+      relativePath: `baseline/${sample.basename}`,
+      bytes: sampleBytes(sample)
+    })),
     {
       relativePath: "baseline/nested/primary.md",
-      bytes: sampleBytes(input.samples[0])
+      bytes: Buffer.from(
+        "# Primary control\n\nA link-free source for interleaved modification.\n"
+      )
     },
     {
       relativePath: "baseline/secondary.md",
-      bytes: sampleBytes(input.samples[1])
+      bytes: Buffer.from(
+        "# Secondary control\n\nA link-free source for interleaved deletion.\n"
+      )
     }
   ];
   const created = await upload.create(files);
@@ -573,7 +554,10 @@ async function seedScenarioBaseline(input) {
   await upload.uploadMissingContent(sessionId, reconciled.entries);
   await upload.finalize(sessionId);
   await waitForUploadSession(upload, sessionId);
-  const visible = await waitForVisibleSourceFiles(input.knowledgeBaseId, 2);
+  const visible = await waitForVisibleSourceFiles(
+    input.knowledgeBaseId,
+    files.length
+  );
   const primary = visible.find(
     (item) => item.relativePath === "baseline/nested/primary.md"
   );
@@ -600,6 +584,30 @@ async function seedScenarioBaseline(input) {
     secondarySourceFileId: secondary.sourceFileId,
     nestedDirectoryId: nested.directoryId
   };
+}
+
+function readClosedSamples(count) {
+  const files = [];
+  collectMarkdownFiles(sourceRoot, files);
+  const selected = selectClosedMarkdownSample({
+    filePaths: files,
+    limit: count,
+    readText: (filePath) => fs.readFileSync(filePath, "utf8")
+  });
+  return selected.map((filePath) => ({
+    basename: path.basename(filePath),
+    bytes: fs.readFileSync(filePath)
+  }));
+}
+
+function collectMarkdownFiles(directory, files) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) collectMarkdownFiles(target, files);
+    else if (entry.isFile() && target.toLowerCase().endsWith(".md")) {
+      files.push(target);
+    }
+  }
 }
 
 async function reconcileUploadReservations(upload, sessionId) {
@@ -765,37 +773,6 @@ async function waitForOperation(
     "RESOURCE_OPERATION_TIMEOUT",
     "Resource operation did not converge."
   );
-}
-
-async function amplifyProjectionSegments(input) {
-  for (let sequence = 1; sequence <= input.requiredActiveSegmentCount; sequence += 1) {
-    const sourceFile = await readSourceFile(
-      input.knowledgeBaseId,
-      input.sourceFileId
-    );
-    const response = await developer.request(
-      `/openapi/v2/knowledge-bases/${encodeURIComponent(
-        input.knowledgeBaseId
-      )}/source-files/${encodeURIComponent(input.sourceFileId)}`,
-      {
-        method: "PATCH",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": `${runId}-${input.scenario.id}-compaction-${sequence}`,
-          "if-match": `"${sourceFile.resourceRevision}"`
-        },
-        json: {
-          relativePath: buildProjectionAmplificationPath(sequence)
-        }
-      }
-    );
-    const body = await readResponseBody(response);
-    if (!response.ok) throw responseError(response, body);
-    await waitForOperation(
-      input.knowledgeBaseId,
-      body.operation.operationId
-    );
-  }
 }
 
 async function startDeletion(input) {
@@ -968,23 +945,13 @@ async function waitForKnowledgeBaseWorkToSettle(
     const summary = await admin.json(
       `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/processing-summary`
     );
-    if (isKnowledgeBaseWorkSettled(summary, options)) return;
+    if (
+      isKnowledgeBaseWorkSettled(summary, options)
+      && !(await postgresEvidence.hasLiveWorkItems(knowledgeBaseId))
+    ) return;
     await sleep(500);
   }
   throw new Error("Knowledge-base work did not converge.");
-}
-
-async function readPublicationSettings() {
-  const response = await admin.json("/admin/api/settings/runtime");
-  return response.settings.publication;
-}
-
-async function writePublicationSettings(value) {
-  await admin.json("/admin/api/settings/publication", {
-    method: "PUT",
-    headers: { origin: adminOrigin },
-    json: value
-  });
 }
 
 async function deleteKnowledgeBaseAsAdmin(knowledgeBaseId) {

@@ -1,28 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { parseRuntimeConfig } from "../src/config.js";
-import type { AdminRepositories } from "../src/db/admin-repositories.js";
-import type {
-  ActiveGenerationFile,
-  ActiveGenerationProjection,
-  ActiveGenerationReadRepository,
-  ActiveGenerationReadScope
-} from "../src/application/ports/active-generation-read-repository.js";
-import { hashPublicOpenApiKey } from "../src/public-openapi/keys.js";
-import { createPublicOpenApiApp } from "../src/server.js";
-import { createStorageKeyspace } from "../src/storage/keys.js";
-import type { StorageAdapter } from "../src/storage/s3.js";
 import {
-  toDeveloperActiveFile,
-  toDeveloperActiveTreeEntry
-} from "../src/developer-openapi/active-generation-serializers.js";
-import { createDeveloperOpenApiDocument } from "../src/developer-openapi/openapi-document.js";
-import { ActiveTreeStatisticsUnavailableError } from "../src/infrastructure/postgres/active-tree-statistics.js";
+  notFound,
+  repositoryUnavailable,
+  validationError
+} from "../src/developer-openapi/errors.js";
+import { createDeveloperOpenApiDocument } from
+  "../src/developer-openapi/openapi-document.js";
+import {
+  hashPublicOpenApiKey,
+  type PublicOpenApiKeyRepository
+} from "../src/public-openapi/keys.js";
+import { createPublicOpenApiApp } from "../src/server.js";
+import type { DeveloperOpenApiApplication } from
+  "../src/storage-vnext/api/openapi-application.js";
 import { createTestRedisCoordinator } from "./support/session.js";
 
-const rawKey = "fwok_active-generation-http-test-key";
-const knowledgeBaseId = "kb-active-http";
+const rawKey = "fwok_vnext-http-test-key";
+const knowledgeBaseId = "kb-vnext-http";
 
-describe("Developer OpenAPI active generation reads", () => {
+describe("Developer OpenAPI released reads", () => {
   it("registers every documented operation and documents every runtime operation", () => {
     const fixture = createFixture();
     const supportedMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
@@ -48,15 +45,18 @@ describe("Developer OpenAPI active generation reads", () => {
     expect([...runtimeOperations].sort()).toEqual([...documentedOperations].sort());
   });
 
-  it("keeps the file-first read chain inside one active generation contract", async () => {
+  it("keeps the file-first read chain on one released root", async () => {
     const fixture = createFixture();
-
-    const tree = await getJson(fixture.app, `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree`);
-    expect(tree.status).toBe(200);
-    expect(tree.body).toMatchObject({ generationId: "generation-a" });
-    expect(readItems(tree.body)[0]).toMatchObject({
-      fileId: "source-a",
-      path: "pages/a.md"
+    const tree = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree`
+    );
+    expect(tree).toMatchObject({
+      status: 200,
+      body: {
+        generationId: "root-a",
+        items: [{ fileId: "source-a", path: "pages/a.md" }]
+      }
     });
     expect(fixture.treeParentPaths).toEqual(["pages"]);
 
@@ -64,32 +64,34 @@ describe("Developer OpenAPI active generation reads", () => {
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=hybrid`
     );
-    expect(search.status).toBe(200);
-    expect(search.body).toMatchObject({
-      generationId: "generation-a",
-      searchStatus: "ok",
-      graphSummary: {
-        available: true,
-        indexedDocumentCount: 1,
-        indexedRelationshipCount: 1
-      },
-      items: [{
-        fileId: "source-a",
-        path: "pages/a.md",
-        matchType: "hybrid",
-        graphContext: {
-          graphRef: "_graph/by-file/source-a.json",
-          depth: 1,
-          seedSourceFileId: "source-a",
-          relationships: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }],
-          graphPaths: [
-            "_graph/by-file/source-a.json",
-            "_graph/by-file/source-b.json"
-          ]
-        }
-      }]
+    expect(search).toMatchObject({
+      status: 200,
+      body: {
+        generationId: "root-a",
+        searchStatus: "ok",
+        graphSummary: {
+          available: true,
+          indexedDocumentCount: 1,
+          indexedRelationshipCount: 1
+        },
+        items: [{
+          fileId: "source-a",
+          path: "pages/a.md",
+          matchType: "hybrid",
+          graphContext: {
+            graphRef: "_graph/by-file/source-a.json",
+            depth: 1,
+            seedSourceFileId: "source-a",
+            relationships: [{
+              edgeId: "edge-a-b",
+              fileId: "source-b",
+              path: "pages/b.md"
+            }]
+          }
+        }]
+      }
     });
-    expect(fixture.getLastSearchInput()).toMatchObject({
+    expect(fixture.lastSearchInput).toMatchObject({
       scope: "all",
       fileKind: "page",
       graphDepth: 1
@@ -99,47 +101,63 @@ describe("Developer OpenAPI active generation reads", () => {
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a`
     );
-    expect(file.status).toBe(200);
-    expect(file.body).toMatchObject({
-      file: {
-        generationId: "generation-a",
-        fileId: "source-a",
-        path: "pages/a.md",
-        readActions: {
-          fileContentById: `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/content`
+    expect(file).toMatchObject({
+      status: 200,
+      body: {
+        file: {
+          generationId: "root-a",
+          fileId: "source-a",
+          path: "pages/a.md",
+          readActions: {
+            fileContentById:
+              `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/content`
+          }
         }
       }
     });
-    expect((file.body as { file: Record<string, unknown> }).file).not.toHaveProperty(
-      "checksumSha256"
-    );
+    expect((file.body as { file: Record<string, unknown> }).file)
+      .not.toHaveProperty("checksumSha256");
 
     const content = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/content`
     );
-    expect(content.status).toBe(200);
-    expect(content.body).toMatchObject({ content: "# A\n\nShared subject." });
+    expect(content).toMatchObject({
+      status: 200,
+      body: { content: "# A\n\nShared subject." }
+    });
 
     const related = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/related`
     );
-    expect(related.status).toBe(200);
-    expect(related.body).toMatchObject({
-      generationId: "generation-a",
-      items: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }]
+    expect(related).toMatchObject({
+      status: 200,
+      body: {
+        generationId: "root-a",
+        items: [{
+          edgeId: "edge-a-b",
+          fileId: "source-b",
+          path: "pages/b.md"
+        }]
+      }
     });
 
     const graph = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId=source-a&depth=2`
     );
-    expect(graph.status).toBe(200);
-    expect(graph.body).toMatchObject({
-      generationId: "generation-a",
-      seedFile: { fileId: "source-a", path: "pages/a.md" },
-      relationships: [{ edgeId: "edge-a-b", fileId: "source-b", path: "pages/b.md" }]
+    expect(graph).toMatchObject({
+      status: 200,
+      body: {
+        generationId: "root-a",
+        seedFile: { fileId: "source-a", path: "pages/a.md" },
+        relationships: [{
+          edgeId: "edge-a-b",
+          fileId: "source-b",
+          path: "pages/b.md"
+        }]
+      }
     });
   });
 
@@ -150,41 +168,30 @@ describe("Developer OpenAPI active generation reads", () => {
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?query=shared`
     );
 
-    expect(tree.status).toBe(200);
-    expect(readItems(tree.body)[0]).toMatchObject({
-      path: "pages/a.md",
-      ancestors: [{ path: "pages", entryType: "directory" }]
+    expect(tree).toMatchObject({
+      status: 200,
+      body: {
+        items: [{
+          path: "pages/a.md",
+          ancestors: [{ path: "pages", entryType: "directory" }]
+        }]
+      }
     });
   });
 
-  it("returns not found for tree and search reads outside an existing knowledge base", async () => {
+  it("returns not found outside an existing knowledge base", async () => {
     const fixture = createFixture({ knowledgeBaseExists: false });
     const tree = await getJson(
       fixture.app,
-      `/openapi/v2/knowledge-bases/missing/tree`
+      "/openapi/v2/knowledge-bases/missing/tree"
     );
     const search = await getJson(
       fixture.app,
-      `/openapi/v2/knowledge-bases/missing/files/search?query=shared`
+      "/openapi/v2/knowledge-bases/missing/files/search?query=shared"
     );
 
     expect(tree.status).toBe(404);
     expect(search.status).toBe(404);
-  });
-
-  it("caches search pages within one active generation and misses after activation", async () => {
-    const fixture = createFixture();
-    const path = `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=hybrid`;
-
-    expect((await getJson(fixture.app, path)).status).toBe(200);
-    expect((await getJson(fixture.app, path)).status).toBe(200);
-    expect(fixture.getSearchReadCount()).toBe(1);
-    expect(fixture.getRelatedBatchReadCount()).toBe(1);
-
-    fixture.setGeneration("generation-b");
-    expect((await getJson(fixture.app, path)).status).toBe(200);
-    expect(fixture.getSearchReadCount()).toBe(2);
-    expect(fixture.getRelatedBatchReadCount()).toBe(2);
   });
 
   it("returns reusable graph node and edge identifiers", async () => {
@@ -212,16 +219,9 @@ describe("Developer OpenAPI active generation reads", () => {
       }
     });
 
-    const related = await getJson(
-      fixture.app,
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/source-a/related`
-    );
-    const edgeId = readItems(related.body)[0]?.edgeId;
-    expect(edgeId).toBe("edge-a-b");
-
     const byEdge = await getJson(
       fixture.app,
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?edgeId=${edgeId}`
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?edgeId=edge-a-b`
     );
     expect(byEdge).toMatchObject({
       status: 200,
@@ -232,56 +232,56 @@ describe("Developer OpenAPI active generation reads", () => {
     });
   });
 
-  it("rejects a cursor after active generation changes", async () => {
+  it("rejects tree cursors after the released root changes", async () => {
     const fixture = createFixture();
     const first = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=pages&limit=1`
     );
-    expect(first.status).toBe(200);
     const cursor = readString(first.body, "nextCursor");
     expect(cursor).toBeTruthy();
+    fixture.setRoot("root-b");
 
-    fixture.setGeneration("generation-b");
     const stale = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=pages&limit=1&cursor=${encodeURIComponent(cursor!)}`
     );
-    expect(stale.status).toBe(422);
-    expect(stale.body).toMatchObject({
-      error: { code: "VALIDATION_ERROR" }
+    expect(stale).toMatchObject({
+      status: 422,
+      body: { error: { code: "VALIDATION_ERROR" } }
     });
   });
 
-  it("rejects a search cursor after the active search epoch changes", async () => {
+  it("rejects search cursors after the active search revision changes", async () => {
     const fixture = createFixture();
     const path =
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&mode=hybrid&limit=1`;
     const first = await getJson(fixture.app, path);
-    expect(first.status).toBe(200);
     const cursor = readString(first.body, "nextCursor");
     expect(cursor).toBeTruthy();
+    fixture.setSearchRevision(2);
 
-    fixture.setSearchEpoch(2);
     const stale = await getJson(
       fixture.app,
       `${path}&cursor=${encodeURIComponent(cursor!)}`
     );
-    expect(stale.status).toBe(422);
-    expect(stale.body).toMatchObject({
-      error: {
-        code: "VALIDATION_ERROR",
-        message: expect.stringContaining("Restart the search")
+    expect(stale).toMatchObject({
+      status: 422,
+      body: {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: expect.stringContaining("Restart the search")
+        }
       }
     });
   });
 
-  it("returns a request-correlated availability response for unsafe tree statistics", async () => {
-    const fixture = createFixture({ treeStatisticsUnavailable: true });
+  it("returns a request-correlated availability response", async () => {
+    const fixture = createFixture({ treeUnavailable: true });
     const response = await getJson(
       fixture.app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree`,
-      { "x-request-id": "request-tree-statistics-1" }
+      { "x-request-id": "request-tree-availability-1" }
     );
 
     expect(response).toEqual({
@@ -289,477 +289,342 @@ describe("Developer OpenAPI active generation reads", () => {
       body: {
         error: {
           code: "DATABASE_REPOSITORY_UNAVAILABLE",
-          message: "The requested data is temporarily unavailable. Retry later and keep the request ID if support assistance is needed.",
+          message:
+            "The requested data is temporarily unavailable. Retry later and keep the request ID if support assistance is needed.",
           httpStatus: 503
         },
-        requestId: "request-tree-statistics-1"
+        requestId: "request-tree-availability-1"
       }
     });
   });
 
-  it("returns the active graph overview with real continuation actions", async () => {
-    const fixture = createFixture();
-    const response = await getJson(
-      fixture.app,
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
-    );
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      generationId: "generation-a",
-      availability: "available",
-      summary: { nodeCount: 2, edgeCount: 1 },
-      resources: {
-        graphIndexPath: "_graph/index.md",
-        nodeDirectoryPath: "_graph/graph_node/v1",
-        edgeDirectoryPath: "_graph/graph_edge/v1"
-      },
-      readActions: {
-        graphIndexContent: expect.stringContaining("path=_graph%2Findex.md"),
-        listGraphNodes: expect.stringContaining("parentPath=_graph%2Fgraph_node%2Fv1"),
-        listGraphEdges: expect.stringContaining("parentPath=_graph%2Fgraph_edge%2Fv1")
+  it("returns graph overview states without internal storage data", async () => {
+    for (const state of ["available", "empty", "unavailable"] as const) {
+      const fixture = createFixture({ graphState: state });
+      const response = await getJson(
+        fixture.app,
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        generationId: "root-a",
+        availability: state,
+        summary: state === "available"
+          ? { nodeCount: 2, edgeCount: 1 }
+          : { nodeCount: 0, edgeCount: 0 }
+      });
+      expect(response.body).not.toHaveProperty("contentPath");
+      expect(response.body).not.toHaveProperty("graphManifest");
+      expect(response.body).not.toHaveProperty("graphInsightsFile");
+      expect(response.body).not.toHaveProperty("graphInsightsContent");
+      if (state === "unavailable") {
+        expect(response.body).toMatchObject({
+          resources: {
+            graphIndexPath: null,
+            nodeDirectoryPath: null,
+            edgeDirectoryPath: null,
+            byFileDirectoryPath: null
+          },
+          readActions: {
+            graphIndexContent: null,
+            listGraphNodes: null,
+            listGraphEdges: null,
+            listByFileGraph: null
+          }
+        });
       }
-    });
-
-    expect(response.body).not.toHaveProperty("contentPath");
-    expect(response.body).not.toHaveProperty("graphManifest");
-    expect(response.body).not.toHaveProperty("graphInsightsFile");
-    expect(response.body).not.toHaveProperty("graphInsightsContent");
-
-    const overview = response.body as {
-      readActions: {
-        readIndexContent: string;
-        graphIndexContent: string;
-        listGraphRoot: string;
-        searchGraph: string;
-        expandGraphByFileId: string;
-        fileDetailById: string;
-        fileContentById: string;
-        fileContentByPath: string;
-        relatedFilesById: string;
-      };
-    };
-    const graphIndex = await getJson(fixture.app, overview.readActions.graphIndexContent);
-    expect(graphIndex).toMatchObject({
-      status: 200,
-      body: { content: "# Relationship graph\n\nFollow real files." }
-    });
-    const graphRoot = await getJson(fixture.app, overview.readActions.listGraphRoot);
-    expect(graphRoot.status).toBe(200);
-
-    const concreteActions = [
-      overview.readActions.readIndexContent,
-      overview.readActions.searchGraph.replace("{query}", "shared"),
-      overview.readActions.expandGraphByFileId.replace("{fileId}", "source-a"),
-      overview.readActions.fileDetailById.replace("{fileId}", "source-a"),
-      overview.readActions.fileContentById.replace("{fileId}", "source-a"),
-      overview.readActions.fileContentByPath.replace("{path}", "pages%2Fa.md"),
-      overview.readActions.relatedFilesById.replace("{fileId}", "source-a")
-    ];
-    for (const action of concreteActions) {
-      expect((await getJson(fixture.app, action)).status, action).toBe(200);
     }
   });
 
-  it("reports an empty graph without ending file exploration", async () => {
-    const fixture = createFixture({ graphState: "empty" });
-    const response = await getJson(
-      fixture.app,
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
-    );
-    expect(response).toMatchObject({
-      status: 200,
-      body: {
-        availability: "empty",
-        summary: { nodeCount: 0, edgeCount: 0 },
-        resources: { graphIndexPath: "_graph/index.md" },
-        readActions: {
-          readIndexContent: expect.stringContaining("path=index.md"),
-          graphIndexContent: expect.stringContaining("path=_graph%2Findex.md"),
-          searchGraph: expect.stringContaining("mode=graph")
-        }
-      }
-    });
-  });
-
   it("does not expose the retired graph insights route", async () => {
-    const fixture = createFixture();
     const response = await getJson(
-      fixture.app,
+      createFixture().app,
       `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/insights`
     );
     expect(response.status).toBe(404);
-  });
-
-  it("does not advertise source-only actions for generated navigation files", () => {
-    const file = toDeveloperActiveFile(
-      knowledgeBaseId,
-      generatedFile("directory-leaf", "pages/index-directory-leaf-a.md", "generated/leaf")
-    );
-    expect(file.readActions).toMatchObject({
-      fileDetailById: expect.any(String),
-      fileContentById: expect.any(String),
-      fileContentByPath: expect.any(String),
-      relatedFilesById: null,
-      graphExpansionByFileId: null
-    });
-
-    const tree = toDeveloperActiveTreeEntry(knowledgeBaseId, {
-      ...projection(
-        "generation-a",
-        "generated-file-directory-leaf",
-        "pages/index-directory-leaf-a.md",
-        "Directory entries"
-      ),
-      sourceFileId: null,
-      payload: {
-        fileId: "generated-file-directory-leaf",
-        fileKind: "directory_index_page",
-        kind: "file",
-        name: "index-directory-leaf-a.md"
-      }
-    });
-    expect(tree).toMatchObject({
-      fileKind: "directory_index_page",
-      readActions: {
-        relatedFilesById: null,
-        graphExpansionByFileId: null
-      }
-    });
-  });
-
-  it("returns safe graph guidance when projections are unavailable", async () => {
-    const fixture = createFixture({ graphState: "unavailable" });
-    const response = await getJson(
-      fixture.app,
-      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/overview`
-    );
-    expect(response).toMatchObject({
-      status: 200,
-      body: {
-        availability: "unavailable",
-        summary: { nodeCount: 0, edgeCount: 0 },
-        resources: {
-          graphIndexPath: null,
-          nodeDirectoryPath: null,
-          edgeDirectoryPath: null,
-          byFileDirectoryPath: null
-        },
-        readActions: {
-          graphIndexContent: null,
-          listGraphNodes: null,
-          listGraphEdges: null,
-          listByFileGraph: null
-        }
-      }
-    });
   });
 });
 
 function createFixture(options: {
   graphState?: "available" | "empty" | "unavailable";
-  treeStatisticsUnavailable?: boolean;
+  treeUnavailable?: boolean;
   knowledgeBaseExists?: boolean;
 } = {}) {
-  const graphState = options.graphState ?? "available";
-  let generationId = "generation-a";
-  let searchEpoch = 1;
+  let rootId = "root-a";
+  let searchRevision = 1;
   const treeParentPaths: string[] = [];
-  let searchReadCount = 0;
-  let relatedBatchReadCount = 0;
-  let lastSearchInput: Parameters<ActiveGenerationReadScope["search"]>[0] | null = null;
-  const files = new Map([
-    ["source-a", file("source-a", "pages/a.md", "generated/a")],
-    ["source-b", file("source-b", "pages/b.md", "generated/b")],
-    ["root-index", generatedFile("root-index", "index.md", "generated/root-index")],
-    ["graph-index", generatedFile("graph-index", "_graph/index.md", "generated/graph-index")]
-  ]);
-  const storage: StorageAdapter = {
-    keyspace: createStorageKeyspace("test"),
-    async putObject() {},
-    async headObjectMetadata() { return null; },
-    async getObjectText(key) {
-      if (key === "generated/a") return "# A\n\nShared subject.";
-      if (key === "generated/b") return "# B\n\nShared subject.";
-      if (key === "generated/root-index") return "# Knowledge base\n\nBrowse documents.";
-      if (key === "generated/graph-index") return "# Relationship graph\n\nFollow real files.";
-      return null;
-    }
-  };
-  const activeGenerationReads: ActiveGenerationReadRepository = {
-    async withActiveGeneration(_knowledgeBaseId, reader) {
-      return reader(createScope(
-        generationId,
-        files,
-        (parentPath) => treeParentPaths.push(parentPath),
-        graphState,
-        (searchInput) => {
-          searchReadCount += 1;
-          lastSearchInput = searchInput;
-        },
-        () => { relatedBatchReadCount += 1; },
-        options.treeStatisticsUnavailable ?? false,
-        searchEpoch
-      ));
-    }
-  };
-  const repositories = {
-    knowledgeBases: {
-      async listKnowledgeBases() { return { items: [], nextCursor: null }; },
-      async createKnowledgeBase() { throw new Error("Unexpected knowledge-base creation"); },
-      async getKnowledgeBase(id: string) {
-        return options.knowledgeBaseExists === false || id === "missing"
-          ? null
-          : {
-              id,
-              name: "Active knowledge base",
-              description: null,
-              activeGenerationId: generationId,
-              resourceRevision: 1,
-              catalogGeneration: 1,
-              createdAt: "2026-07-17T00:00:00.000Z",
-              updatedAt: "2026-07-17T00:00:00.000Z"
-            };
-      }
+  let lastSearchInput: Record<string, unknown> | null = null;
+  const exists = (id: string) =>
+    options.knowledgeBaseExists !== false && id !== "missing";
+  const application: DeveloperOpenApiApplication = {
+    async createKnowledgeBase() {
+      throw repositoryUnavailable();
     },
-    publicApiKeys: {
-      async countActivePublicOpenApiKeys() { return 1; },
-      async listPublicOpenApiKeys() { return { items: [], nextCursor: null }; },
-      async createPublicOpenApiKey() { throw new Error("Unexpected key creation"); },
-      async findActivePublicOpenApiKeyByHash(keyHash: string) {
-        return keyHash === hashPublicOpenApiKey(rawKey)
+    async listKnowledgeBases() {
+      return { items: [], nextCursor: null };
+    },
+    async getKnowledgeBase(id) {
+      if (!exists(id)) throw notFound();
+      return { id, name: "Knowledge base" };
+    },
+    async getSourceFile() {
+      return null;
+    },
+    async readSourceContent() {
+      throw repositoryUnavailable();
+    },
+    async listSourceFileEvents() {
+      return { items: [], nextCursor: null };
+    },
+    async retrySourceFile() {
+      throw repositoryUnavailable();
+    },
+    async listTree(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      if (options.treeUnavailable) throw repositoryUnavailable();
+      if (request.cursor && request.cursor !== `tree:${rootId}`) {
+        throw validationError("The released tree changed. Restart pagination.");
+      }
+      treeParentPaths.push(request.parentPath);
+      const item = {
+        generationId: rootId,
+        fileId: "source-a",
+        path: "pages/a.md",
+        entryType: "file",
+        ...(request.query
           ? {
-              id: "key-active",
-              name: "Active key",
-              keyHash,
-              keyPrefix: "fwok_activ",
-              keySuffix: "st-key",
-              status: "active" as const,
-              createdAt: "2026-07-17T00:00:00.000Z",
-              lastUsedAt: null,
-              revokedAt: null
+              ancestors: [{
+                path: "pages",
+                entryType: "directory"
+              }]
             }
-          : null;
-      },
-      async revokePublicOpenApiKey() { return null; },
-      async updatePublicOpenApiKeyLastUsed() {}
+          : {})
+      };
+      return {
+        generationId: rootId,
+        items: [item],
+        nextCursor: request.limit === 1 ? `tree:${rootId}` : null
+      };
+    },
+    async searchFiles(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      if (request.cursor && request.cursor !== `search:${searchRevision}`) {
+        throw validationError(
+          "The active search revision changed. Restart the search."
+        );
+      }
+      lastSearchInput = request;
+      return {
+        generationId: rootId,
+        searchStatus: "ok",
+        graphSummary: {
+          available: true,
+          indexedDocumentCount: 1,
+          indexedRelationshipCount: 1
+        },
+        items: [{
+          nodeId: "source-a",
+          fileId: "source-a",
+          path: "pages/a.md",
+          matchType: request.mode,
+          graphContext: {
+            graphRef: "_graph/by-file/source-a.json",
+            depth: request.graphDepth,
+            seedSourceFileId: "source-a",
+            relationships: [relationship()],
+            graphPaths: [
+              "_graph/by-file/source-a.json",
+              "_graph/by-file/source-b.json"
+            ]
+          }
+        }],
+        nextCursor: request.limit === 1 ? `search:${searchRevision}` : null
+      };
+    },
+    async getFileById(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      return {
+        file: {
+          generationId: rootId,
+          fileId: request.fileId,
+          path: `pages/${request.fileId === "source-a" ? "a" : "b"}.md`,
+          readActions: {
+            fileContentById:
+              `/openapi/v2/knowledge-bases/${request.knowledgeBaseId}/files/${request.fileId}/content`
+          }
+        }
+      };
+    },
+    async listRelatedFiles(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      return {
+        generationId: rootId,
+        items: request.fileId === "source-a" ? [relationship()] : [],
+        nextCursor: null
+      };
+    },
+    async expandGraph(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      return {
+        generationId: rootId,
+        query: {
+          ...(request.fileId ? { fileId: request.fileId } : {}),
+          ...(request.nodeId ? { nodeId: request.nodeId } : {}),
+          ...(request.edgeId ? { edgeId: request.edgeId } : {})
+        },
+        seedFile: { fileId: "source-a", path: "pages/a.md" },
+        relationships: [relationship()]
+      };
+    },
+    async getGraphOverview(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      return graphOverview(rootId, options.graphState ?? "available");
+    },
+    async getFileContentById(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      return {
+        generationId: rootId,
+        fileId: request.fileId,
+        content: request.fileId === "source-a"
+          ? "# A\n\nShared subject."
+          : "# B\n\nShared subject."
+      };
+    },
+    async getFileContentByPath(request) {
+      if (!exists(request.knowledgeBaseId)) throw notFound();
+      const content = request.path === "_graph/index.md"
+        ? "# Relationship graph\n\nFollow real files."
+        : "# Knowledge base\n\nBrowse documents.";
+      return { generationId: rootId, path: request.path, content };
+    },
+    async createWebhook() {
+      throw repositoryUnavailable();
+    },
+    async listWebhooks() {
+      return { items: [], nextCursor: null };
+    },
+    async deleteWebhook() {
+      throw notFound();
+    },
+    async listWebhookDeliveries() {
+      return { items: [], nextCursor: null };
+    },
+    async redeliverWebhook() {
+      throw notFound();
     }
-  } as unknown as AdminRepositories;
+  };
   const app = createPublicOpenApiApp({
     config: testConfig(),
-    storage,
-    repositories,
     redis: createTestRedisCoordinator(),
-    activeGenerationReads
+    storageVnextApiKeys: createApiKeys(),
+    storageVnextOpenApi: application
   });
   return {
     app,
     treeParentPaths,
-    getSearchReadCount: () => searchReadCount,
-    getRelatedBatchReadCount: () => relatedBatchReadCount,
-    getLastSearchInput: () => lastSearchInput,
-    setGeneration(value: string) {
-      generationId = value;
+    get lastSearchInput() {
+      return lastSearchInput;
     },
-    setSearchEpoch(value: number) {
-      searchEpoch = value;
+    setRoot(value: string) {
+      rootId = value;
+    },
+    setSearchRevision(value: number) {
+      searchRevision = value;
     }
   };
 }
 
-function createScope(
-  generationId: string,
-  files: Map<string, ActiveGenerationFile>,
-  recordTreeParentPath: (parentPath: string) => void = () => undefined,
-  graphState: "available" | "empty" | "unavailable" = "available",
-  recordSearchRead: (
-    input: Parameters<ActiveGenerationReadScope["search"]>[0]
-  ) => void = () => undefined,
-  recordRelatedBatchRead: () => void = () => undefined,
-  treeStatisticsUnavailable = false,
-  searchEpoch = 1
-): ActiveGenerationReadScope {
-  const tree = [
-    projection(generationId, "source-a", "pages/a.md", "A"),
-    projection(generationId, "source-b", "pages/b.md", "B")
-  ];
-  const relation = relationship(generationId);
+function relationship() {
   return {
-    knowledgeBaseId,
-    generationId,
-    searchIdentity: {
-      activeEpoch: searchEpoch,
-      contentSchemaVersion: "content-v1",
-      graphSchemaVersion: "graph-v1",
-      contentSettingsChecksum: "a".repeat(64),
-      graphSettingsChecksum: "b".repeat(64)
+    edgeId: "edge-a-b",
+    fileId: "source-b",
+    path: "pages/b.md",
+    relationType: "related",
+    weight: 0.9,
+    reason: "Shared subject"
+  };
+}
+
+function graphOverview(
+  rootId: string,
+  state: "available" | "empty" | "unavailable"
+) {
+  const available = state !== "unavailable";
+  return {
+    generationId: rootId,
+    availability: state,
+    summary: state === "available"
+      ? { nodeCount: 2, edgeCount: 1 }
+      : { nodeCount: 0, edgeCount: 0 },
+    resources: {
+      graphIndexPath: available ? "_graph/index.md" : null,
+      nodeDirectoryPath: available ? "_graph/graph_node/v1" : null,
+      edgeDirectoryPath: available ? "_graph/graph_edge/v1" : null,
+      byFileDirectoryPath: available ? "_graph/by-file" : null
     },
-    async findFileById(fileId) {
-      const value = files.get(fileId);
-      return value ? { ...value, generationId } : null;
+    readActions: {
+      readIndexContent:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=index.md`,
+      graphIndexContent: available
+        ? `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path=_graph%2Findex.md`
+        : null,
+      listGraphRoot:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph`,
+      listGraphNodes: available
+        ? `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_node%2Fv1`
+        : null,
+      listGraphEdges: available
+        ? `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fgraph_edge%2Fv1`
+        : null,
+      listByFileGraph: available
+        ? `/openapi/v2/knowledge-bases/${knowledgeBaseId}/tree?parentPath=_graph%2Fby-file`
+        : null,
+      searchGraph:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query={query}&mode=graph`,
+      expandGraphByFileId:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/graph/expand?fileId={fileId}`,
+      fileDetailById:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}`,
+      fileContentById:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/content`,
+      fileContentByPath:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/content?path={path}`,
+      relatedFilesById:
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/{fileId}/related`
+    }
+  };
+}
+
+function createApiKeys(): PublicOpenApiKeyRepository {
+  return {
+    async countActivePublicOpenApiKeys() {
+      return 1;
     },
-    async findFileByPath(path) {
-      const value = [...files.values()].find((item) => item.path === path);
-      return value ? { ...value, generationId } : null;
-    },
-    async findFilesBySourceIds(sourceFileIds) {
-      return [...files.values()]
-        .filter((file) => file.sourceFileId && sourceFileIds.includes(file.sourceFileId))
-        .map((file) => ({ ...file, generationId }));
-    },
-    async findProjection(input) {
-      return input.projectionKind === "graph_edge" && input.recordId === "edge-a-b"
-        ? relation
-        : null;
-    },
-    async getGraphSummary() {
-      if (graphState === "available") {
-        return { nodeCount: 2, edgeCount: 1, graphIndexAvailable: true, persisted: true };
-      }
-      return {
-        nodeCount: 0,
-        edgeCount: 0,
-        graphIndexAvailable: graphState === "empty",
-        persisted: true
-      };
-    },
-    async listTree(input) {
-      if (treeStatisticsUnavailable) throw new ActiveTreeStatisticsUnavailableError();
-      recordTreeParentPath(input.parentPath);
-      const start = input.cursor ? 1 : 0;
-      const items = tree.slice(start, start + input.limit);
-      return {
-        items,
-        nextCursor: start + input.limit < tree.length
-          ? { sortKey: items.at(-1)!.sortKey, recordId: items.at(-1)!.recordId }
-          : null
-      };
-    },
-    async listTreeAncestors(paths) {
-      const ancestor = {
-        ...projection(generationId, "pages", "pages", "Documents"),
-        sourceFileId: null,
-        parentPath: "",
-        payload: {
-          kind: "directory",
-          name: "pages",
-          directEntryCount: 2,
-          directDirectoryCount: 0,
-          directFileCount: 2,
-          descendantFileCount: 2
-        }
-      };
-      return new Map(paths.map((path) => [path, [ancestor]]));
-    },
-    async search(input) {
-      recordSearchRead(input);
-      return {
-        items: [input.mode === "graph"
-          ? { ...tree[0]!, projectionKind: "graph_node" }
-          : tree[0]!],
-        nextCursor: input.cursor
-          ? null
-          : { score: 1, exactPriority: 0, recordId: "source-a" }
-      };
-    },
-    async revalidateSearchPage() {
-      return true;
-    },
-    async listRelated(input) {
-      if (input.sourceFileId === "source-a") return { items: [relation], nextCursor: null };
+    async listPublicOpenApiKeys() {
       return { items: [], nextCursor: null };
     },
-    async listRelatedForSources(input) {
-      recordRelatedBatchRead();
-      return new Map(input.sourceFileIds.map((sourceFileId) => [
-        sourceFileId,
-        sourceFileId === "source-a" ? [relation] : []
-      ]));
-    }
-  };
-}
-
-function file(fileId: string, path: string, objectKey: string): ActiveGenerationFile {
-  return {
-    generationId: "generation-a",
-    fileId,
-    refKind: "page",
-    refKey: fileId,
-    lastChangedGenerationId: "generation-a",
-    path,
-    sourceFileId: fileId,
-    objectKey,
-    contentType: "text/markdown",
-    sizeBytes: 21,
-    checksumSha256: fileId,
-    title: fileId === "source-a" ? "A" : "B",
-    summary: "Shared subject",
-    payload: { type: "page" }
-  };
-}
-
-function generatedFile(fileId: string, path: string, objectKey: string): ActiveGenerationFile {
-  return {
-    generationId: "generation-a",
-    fileId,
-    refKind: "root",
-    refKey: path,
-    lastChangedGenerationId: "generation-a",
-    path,
-    sourceFileId: null,
-    objectKey,
-    contentType: "text/markdown",
-    sizeBytes: 41,
-    checksumSha256: fileId,
-    title: "Relationship graph",
-    summary: null,
-    payload: { type: "index" }
-  };
-}
-
-function projection(
-  generationId: string,
-  sourceFileId: string,
-  path: string,
-  title: string
-): ActiveGenerationProjection {
-  return {
-    generationId,
-    projectionKind: "search",
-    recordId: sourceFileId,
-    sourceFileId,
-    relatedSourceFileId: null,
-    path,
-    parentPath: "pages",
-    sortKey: path,
-    title,
-    summary: "Shared subject",
-    score: 1,
-    payload: { fileId: sourceFileId, path, kind: "file", name: `${title}.md` }
-  };
-}
-
-function relationship(generationId: string): ActiveGenerationProjection {
-  return {
-    generationId,
-    projectionKind: "graph_edge",
-    recordId: "edge-a-b",
-    sourceFileId: "source-a",
-    relatedSourceFileId: "source-b",
-    path: "pages/b.md",
-    parentPath: null,
-    sortKey: "edge-a-b",
-    title: "B",
-    summary: "Shared subject",
-    score: 0.9,
-    payload: {
-      fromFileId: "source-a",
-      fromPath: "pages/a.md",
-      toFileId: "source-b",
-      toPath: "pages/b.md",
-      relationType: "related",
-      weight: 0.9,
-      reason: "Shared subject"
-    }
+    async createPublicOpenApiKey() {
+      throw new Error("Unexpected key creation");
+    },
+    async findActivePublicOpenApiKeyByHash(keyHash) {
+      return keyHash === hashPublicOpenApiKey(rawKey)
+        ? {
+            id: "key-vnext",
+            name: "vNext key",
+            keyHash,
+            keyPrefix: "fwok_vnex",
+            keySuffix: "est-key",
+            status: "active",
+            createdAt: "2026-07-17T00:00:00.000Z",
+            lastUsedAt: null,
+            revokedAt: null
+          }
+        : null;
+    },
+    async revokePublicOpenApiKey() {
+      return null;
+    },
+    async updatePublicOpenApiKeyLastUsed() {}
   };
 }
 
@@ -788,17 +653,12 @@ async function getJson(
   const response = await app.request(`http://localhost${path}`, {
     headers: { authorization: `Bearer ${rawKey}`, ...headers }
   });
-  return { status: response.status, body: await response.json() as Record<string, unknown> };
+  return {
+    status: response.status,
+    body: await response.json() as Record<string, unknown>
+  };
 }
 
 function readString(value: Record<string, unknown>, key: string): string | null {
   return typeof value[key] === "string" ? value[key] : null;
-}
-
-function readItems(value: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(value.items)
-    ? value.items.filter((item): item is Record<string, unknown> =>
-        Boolean(item) && typeof item === "object" && !Array.isArray(item)
-      )
-    : [];
 }

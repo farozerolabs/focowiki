@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -49,6 +49,7 @@ describe("Meilisearch key bootstrap", () => {
         "documents.*",
         "indexes.*",
         "indexes.swap",
+        "stats.get",
         "tasks.get",
         "settings.*"
       ],
@@ -58,7 +59,7 @@ describe("Meilisearch key bootstrap", () => {
     expect(posts[0]?.body).not.toHaveProperty("fileName");
     expect(posts[1]?.body).toMatchObject({
       uid: createMeilisearchKeyUid("focowiki_prod", "metrics"),
-      actions: ["metrics.get", "tasks.get", "version"],
+      actions: ["metrics.get", "stats.get", "tasks.delete", "tasks.get", "version"],
       indexes: ["*"],
       expiresAt: null
     });
@@ -84,12 +85,13 @@ describe("Meilisearch key bootstrap", () => {
         uid: url.pathname.split("/").at(-1),
         key: isMetrics ? "existing-metrics-key" : "existing-runtime-key",
         actions: isMetrics
-          ? ["metrics.get", "tasks.get", "version"]
+          ? ["metrics.get", "stats.get", "tasks.delete", "tasks.get", "version"]
           : [
               "search",
               "documents.*",
               "indexes.*",
               "indexes.swap",
+              "stats.get",
               "tasks.get",
               "settings.*"
             ],
@@ -140,7 +142,7 @@ describe("Meilisearch key bootstrap", () => {
         return Response.json({
           uid: metricsUid,
           key: "existing-metrics-key",
-          actions: ["metrics.get", "tasks.get", "version"],
+          actions: ["metrics.get", "stats.get", "tasks.delete", "tasks.get", "version"],
           indexes: ["*"],
           expiresAt: null
         });
@@ -171,11 +173,24 @@ describe("Meilisearch key bootstrap", () => {
       .toBe("replacement-runtime-key\n");
   });
 
-  it("persists administrator-provided external service keys without key API access", async () => {
+  it("validates administrator-provided external service keys before persisting them", async () => {
     const secretDirectory = mkdtempSync(
       join(tmpdir(), "focowiki-meilisearch-external-")
     );
-    const fetch = vi.fn();
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (url.pathname === "/indexes" && authorization === "Bearer external-runtime-key") {
+        return Response.json({ results: [], offset: 0, limit: 1, total: 0 });
+      }
+      if (url.pathname === "/version" && authorization === "Bearer external-metrics-key") {
+        return Response.json({ pkgVersion: "1.51.0" });
+      }
+      if (url.pathname === "/metrics" && authorization === "Bearer external-metrics-key") {
+        return new Response("meilisearch_db_size_bytes 0\n");
+      }
+      return Response.json({ message: "Unauthorized" }, { status: 401 });
+    });
 
     await bootstrapMeilisearchKeys({
       endpoint: "https://search.example.com",
@@ -187,11 +202,33 @@ describe("Meilisearch key bootstrap", () => {
       fetch: fetch as typeof globalThis.fetch
     });
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(readFileSync(join(secretDirectory, "meilisearch-api-key"), "utf8"))
       .toBe("external-runtime-key\n");
     expect(
       readFileSync(join(secretDirectory, "meilisearch-metrics-key"), "utf8")
     ).toBe("external-metrics-key\n");
+  });
+
+  it("does not persist incompatible external service keys", async () => {
+    const secretDirectory = mkdtempSync(
+      join(tmpdir(), "focowiki-meilisearch-invalid-external-")
+    );
+    const fetch = vi.fn(async () => (
+      Response.json({ message: "Unauthorized" }, { status: 401 })
+    ));
+
+    await expect(bootstrapMeilisearchKeys({
+      endpoint: "https://search.example.com",
+      masterKey: "",
+      indexPrefix: "focowiki",
+      secretDirectory,
+      providedApiKey: "invalid-runtime-key",
+      providedMetricsApiKey: "invalid-metrics-key",
+      fetch: fetch as typeof globalThis.fetch
+    })).rejects.toThrow("Meilisearch runtime key validation failed with status 401");
+
+    expect(existsSync(join(secretDirectory, "meilisearch-api-key"))).toBe(false);
+    expect(existsSync(join(secretDirectory, "meilisearch-metrics-key"))).toBe(false);
   });
 });

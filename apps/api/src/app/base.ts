@@ -3,6 +3,7 @@ import type { RuntimeConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { createRuntimeLogger } from "../logger.js";
 import { logReadLatency } from "../read-latency-logger.js";
+import { runtimeErrorFields } from "../runtime/diagnostic-fields.js";
 import { applySecurityHeaders } from "../security/headers.js";
 
 export function createBaseApp(
@@ -12,7 +13,7 @@ export function createBaseApp(
   const app = new Hono();
 
   app.onError((error, context) => {
-    logger.error("Unhandled API error", error);
+    logger.error("api.unhandled_error", runtimeErrorFields(error));
 
     if (error instanceof AppError && error.expose) {
       return context.json(

@@ -1,0 +1,402 @@
+{
+  "version": 1,
+  "baselineRef": "958515f622f4c6ee2ad9392d9ce79b0f2c9e8b88",
+  "allowedPrefixes": [
+    "apps/api/src/",
+    "apps/api/migrations/",
+    "apps/api/scripts/",
+    "apps/api/test/",
+    "scripts/deployment/",
+    "scripts/validation/",
+    "scripts/ci/",
+    "deploy/"
+  ],
+  "allowedExact": [
+    ".dockerignore",
+    ".env.dev.example",
+    ".env.example",
+    ".github/workflows/ci.yml",
+    ".github/workflows/docker-build.yml",
+    ".github/workflows/docker-prerelease.yml",
+    ".github/workflows/docker-publish.yml",
+    "Dockerfile",
+    "docker-compose.dev.yml",
+    "docker-compose.dev.yml.example",
+    "docker-compose.local.yml",
+    "docker-compose.local.yml.example",
+    "docker-compose.yml.example"
+  ],
+  "allowedPackageScripts": {
+    "compose:backup": "node scripts/deployment/storage-vnext-backup.mjs",
+    "compose:restore": "node scripts/deployment/storage-vnext-restore.mjs"
+  },
+  "deniedPrefixes": [
+    ".github/",
+    "ReferenceDocs/",
+    "apps/admin/src/",
+    "apps/api/src/developer-openapi/",
+    "apps/api/src/okf/",
+    "apps/api/src/public-openapi/",
+    "docs/",
+    "openspec/",
+    "packages/okf/",
+    "scripts/docs/",
+    "scripts/openapi/"
+  ],
+  "deniedExact": [
+    "apps/api/src/infrastructure/postgres/publication-validation-repository.ts",
+    "apps/api/src/public-generated-path.ts",
+    "apps/api/src/publication/directory-navigation-writer.ts",
+    "apps/api/src/publication/ordered-directory-leaves.ts",
+    "apps/api/src/publication/projection-catalog-writer.ts",
+    "apps/api/src/publication/projection-shard-partitioning.ts",
+    "apps/api/src/publication/required-projection-writer.ts",
+    "apps/api/src/worker/publication-role-processor.ts",
+    "apps/api/src/worker/publication-terminal-phase-handler.ts"
+  ],
+  "settingsFieldFiles": {
+    "apps/admin/src/components/settings-panel.tsx": {
+      "approvedPatchSha256": "a8aae3dc6231c5ee146719983fb6727e94516b3a0a09029245c899961dea04c4",
+      "allowedSymbols": [
+        "workerNumberFields",
+        "workerBooleanFields",
+        "publicationFields",
+        "publicationModes",
+        "graphNumberFields",
+        "graphBooleanFields",
+        "maintenanceNumberFields",
+        "searchNumberFields",
+        "toEditableWorkerSettings",
+        "toEditablePublicationSettings",
+        "toEditableGraphSettings",
+        "toEditableMaintenanceSettings",
+        "toEditableSearchSettings",
+        "buildWorkerSettings",
+        "buildPublicationSettings",
+        "buildGraphSettings",
+        "buildMaintenanceSettings",
+        "buildSearchSettings"
+      ]
+    },
+    "apps/admin/src/lib/admin-api.ts": {
+      "approvedPatchSha256": "4084108c175c33734430ff2b991d83ec2ba0c38a0ead72fdd38fb64bb72b2aa4",
+      "allowedSymbols": [
+        "WorkerSettings",
+        "PublicationSettings",
+        "GraphSettings",
+        "MaintenanceSettings",
+        "SearchSettings"
+      ]
+    }
+  },
+  "explicitExceptions": [
+    {
+      "path": "apps/api/src/infrastructure/postgres/publication-validation-repository.ts",
+      "taskId": "28.6",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 28.6 approved by the user",
+      "reason": "Delete the unreachable legacy publication validator that queries tables absent from the storage vNext bootstrap",
+      "preservedContract": "Storage vNext publication validation remains owned by the current publication pipeline; generated paths, hierarchy, order, templates, links, navigation, and public behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/worker/publication-role-processor.ts",
+      "taskId": "28.6",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 28.6 approved by the user",
+      "reason": "Delete the unreachable legacy publication processor after production startup moved to the storage vNext publication runtime",
+      "preservedContract": "The production publication worker, generated knowledge-base structure, Admin UI, copy, and public API behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/worker/publication-terminal-phase-handler.ts",
+      "taskId": "28.6",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 28.6 approved by the user",
+      "reason": "Delete the unreachable legacy terminal-phase handler and its dependency on removed Generation repositories",
+      "preservedContract": "Storage vNext terminal convergence and publication activation stay authoritative without changing generated output or compatibility surfaces"
+    },
+    {
+      "path": "apps/admin/test/settings-panel.test.tsx",
+      "taskId": "19.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 19.7 approved by the user",
+      "reason": "Add browser-level regression coverage for the exact approved settings-field removal",
+      "preservedContract": "Released settings components, hierarchy, layout, styles, icons, navigation, dialogs, polling, and English/Chinese copy remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/routes.ts",
+      "taskId": "20.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.3 approved by the user",
+      "reason": "Route released Developer OpenAPI operations through the storage vNext application boundary",
+      "preservedContract": "Released OpenAPI v2 routes, authentication, schemas, responses, errors, cursors, public identifiers, and generated logical paths remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/security.ts",
+      "taskId": "20.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.3 approved by the user",
+      "reason": "Route released Developer OpenAPI authentication and rate-limit audit writes through the storage vNext audit application boundary",
+      "preservedContract": "Released authentication, authorization, rate limits, errors, retry headers, audit outcomes, and public response behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/services.ts",
+      "taskId": "20.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.3 approved by the user",
+      "reason": "Replace the legacy handler-facing service implementation with the storage vNext application service export",
+      "preservedContract": "Released OpenAPI v2 service behavior, response hydration, public identifiers, and generated logical paths remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/source-resource-routes.ts",
+      "taskId": "20.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.3 approved by the user",
+      "reason": "Route source resource reads and mutations through storage vNext application services",
+      "preservedContract": "Released source resource routes, validation, errors, cursors, content responses, and audit behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/upload-session-routes.ts",
+      "taskId": "20.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.3 approved by the user",
+      "reason": "Route upload session operations through the shared storage vNext upload application service",
+      "preservedContract": "Released upload routes, validation, response envelopes, errors, public identifiers, and audit behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/active-generation-serializers.ts",
+      "taskId": "20.5",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.5 approved by the user",
+      "reason": "Remove storage vNext physical identities from released file, search, and relationship metadata",
+      "preservedContract": "Released routes, response fields, field meanings, public version identifiers, logical paths, and generated knowledge-base structure remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/errors.ts",
+      "taskId": "20.5",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.5 approved by the user",
+      "reason": "Sanitize arbitrary error details before writing the released Developer OpenAPI error envelope",
+      "preservedContract": "Released error codes, messages, status values, envelope shape, request IDs, and validation fields remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/index-metadata.ts",
+      "taskId": "20.5",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.5 approved by the user",
+      "reason": "Remove physical storage identities from metadata before it is emitted into generated public files",
+      "preservedContract": "Generated knowledge-base paths, file tree, names, hierarchy, order, templates, links, navigation, and user metadata fields remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/metadata.ts",
+      "taskId": "27.4",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 27.4 resource optimization authorized by the user",
+      "reason": "Disable gray-matter's process-global source-body cache so full-corpus processing does not retain every unique Markdown body",
+      "preservedContract": "Markdown parsing, frontmatter validation, metadata values, generated paths, hierarchy, order, templates, links, navigation, and generated bytes remain unchanged"
+    },
+    {
+      "path": "packages/okf/test/metadata.test.ts",
+      "taskId": "27.4",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 27.4 resource optimization authorized by the user",
+      "reason": "Prove storage-vNext source parsing does not retain unique Markdown bodies in the parser cache",
+      "preservedContract": "Existing OKF metadata behavior and generated knowledge-base logical structure remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/reserved-files.ts",
+      "taskId": "20.5",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 20.5 approved by the user",
+      "reason": "Redact storage vNext physical identities from bounded generated log messages",
+      "preservedContract": "Generated log path, heading, grouping, order, limits, templates, links, navigation, and user-facing copy remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/active-generation-graph-expansion.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the legacy Generation-scoped graph expansion implementation after storage vNext routes passed continuity tests",
+      "preservedContract": "Released graph expansion routes, response fields, errors, public identifiers, paths, and relationship semantics remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/generation-scoped-page-cache.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the legacy Generation-scoped page cache after storage vNext opaque pagination passed continuity tests",
+      "preservedContract": "Released pagination, cursor opacity, response ordering, errors, and read behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/search-errors.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the unreachable legacy search error adapter after the storage vNext OpenAPI application became the sole search boundary",
+      "preservedContract": "Released search validation, unavailable errors, status codes, envelopes, and file-first continuation remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/search-pagination.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the unreachable legacy cached search pagination implementation after storage vNext cursor tests passed",
+      "preservedContract": "Released cursor opacity, scope binding, ordering, page limits, and stale-cursor behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/search-presentation.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the unreachable legacy search presenter after storage vNext public presenters and disclosure tests passed",
+      "preservedContract": "Released search response fields, field meanings, paths, graph context, and internal-data redaction remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/serializers.ts",
+      "taskId": "22.4",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.4 approved by the user",
+      "reason": "Decouple released serializers from the removed legacy Admin repository type aggregate without changing serialization logic",
+      "preservedContract": "Released knowledge-base, source-event, webhook, and delivery response fields and values remain unchanged"
+    },
+    {
+      "path": "apps/api/src/public-openapi/keys.ts",
+      "taskId": "22.4",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.4 approved by the user",
+      "reason": "Replace a legacy Admin repository type-only import with the shared bounded cursor-page type",
+      "preservedContract": "Released API-key creation, listing, fingerprints, authentication, revocation, pagination, and Redis behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/public-openapi/security.ts",
+      "taskId": "22.3",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 22.3 approved by the user",
+      "reason": "Remove the unreachable legacy public security adapter after storage vNext route security became authoritative",
+      "preservedContract": "Released API-key authentication, authorization, rate limits, audit outcomes, and public errors remain unchanged"
+    },
+    {
+      "path": "docs/deployment/admin-settings.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Document the released storage vNext settings-field and maintenance contract for operators",
+      "preservedContract": "Documentation remains limited to developer and product-manager relevant deployment behavior"
+    },
+    {
+      "path": "docs/deployment/docker-compose.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Document storage vNext Compose bootstrap, backup, restore, and rebuild operations",
+      "preservedContract": "Documentation does not expose internal implementation detail unrelated to deployment"
+    },
+    {
+      "path": "docs/deployment/environment.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Document the supported storage vNext environment fields and removed legacy fields",
+      "preservedContract": "Documentation stays aligned with shipped environment templates and runtime validation"
+    },
+    {
+      "path": "docs/zh-CN/deployment/admin-settings.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Maintain the Chinese operator documentation for the released storage vNext settings contract",
+      "preservedContract": "Chinese and English documentation describe the same public deployment behavior"
+    },
+    {
+      "path": "docs/zh-CN/deployment/docker-compose.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Maintain the Chinese storage vNext Compose bootstrap, backup, restore, and rebuild documentation",
+      "preservedContract": "Chinese and English documentation describe the same public deployment behavior"
+    },
+    {
+      "path": "docs/zh-CN/deployment/environment.md",
+      "taskId": "21.7",
+      "approvalReference": "OpenSpec implement-breaking-storage-vnext task 21.7 approved by the user",
+      "reason": "Maintain the Chinese supported environment-field documentation for storage vNext",
+      "preservedContract": "Chinese and English documentation describe the same public deployment behavior"
+    },
+    {
+      "path": "README.md",
+      "taskId": "21.7",
+      "approvalReference": "User authorized the pre-submit scope remediation on 2026-08-06",
+      "reason": "Keep the local startup instructions aligned with the shipped MinIO and Meilisearch development stack",
+      "preservedContract": "README changes remain limited to developer startup requirements and do not expose internal storage design"
+    },
+    {
+      "path": "apps/admin/test/app-detail.test.tsx",
+      "taskId": "20.7",
+      "approvalReference": "User authorized the pre-submit scope remediation on 2026-08-06",
+      "reason": "Verify every existing processing-summary card against the storage vNext Admin response",
+      "preservedContract": "The test does not change Admin components, layout, styles, navigation, dialogs, polling, or product copy"
+    },
+    {
+      "path": "apps/api/src/okf/deleted-source-links.ts",
+      "taskId": "16.3",
+      "approvalReference": "User authorized the pre-submit deletion-link fix on 2026-08-06",
+      "reason": "Remove links to deleted source-backed pages before a replacement bundle activates",
+      "preservedContract": "Existing logical paths, hierarchy, ordering, templates, navigation, and links between current files remain unchanged"
+    },
+    {
+      "path": "apps/api/src/okf/publication-files.ts",
+      "taskId": "14.7",
+      "approvalReference": "User authorized the pre-submit deletion-link fix on 2026-08-06",
+      "reason": "Apply deletion-aware link integrity through the released source-backed page renderer",
+      "preservedContract": "Released templates, logical paths, hierarchy, ordering, metadata fields, and navigation remain unchanged"
+    },
+    {
+      "path": "docs/.vitepress/openapi-locales.json",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Keep the two documented locales aligned with the current source-event snapshot contract",
+      "preservedContract": "Descriptions document the released API without changing UI product copy or runtime response fields"
+    },
+    {
+      "path": "docs/deployment/agent-deployment.md",
+      "taskId": "21.7",
+      "approvalReference": "User authorized deployment documentation correction and pre-submit remediation",
+      "reason": "Keep the Agent deployment prompt aligned with the supported operator settings",
+      "preservedContract": "Documentation contains only developer and product-manager relevant deployment behavior"
+    },
+    {
+      "path": "docs/zh-CN/deployment/agent-deployment.md",
+      "taskId": "21.7",
+      "approvalReference": "User authorized deployment documentation correction and pre-submit remediation",
+      "reason": "Keep the Chinese Agent deployment prompt aligned with the supported operator settings",
+      "preservedContract": "Chinese and English documentation describe the same public deployment behavior"
+    },
+    {
+      "path": "docs/openapi/index.md",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Use a response example that matches the released request identifier format",
+      "preservedContract": "The public error envelope and field meanings remain unchanged"
+    },
+    {
+      "path": "docs/zh-CN/openapi/index.md",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Keep the Chinese response example aligned with the released request identifier format",
+      "preservedContract": "Chinese and English documentation describe the same public error contract"
+    },
+    {
+      "path": "docs/openapi/webhook-delivery.md",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Correct webhook retry, timeout, identifier, and progress-payload documentation against the runtime",
+      "preservedContract": "Documentation reflects the released webhook behavior without exposing internal implementation detail"
+    },
+    {
+      "path": "docs/zh-CN/openapi/webhook-delivery.md",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Keep the Chinese webhook guide aligned with the verified runtime contract",
+      "preservedContract": "Chinese and English documentation describe the same public webhook behavior"
+    },
+    {
+      "path": "scripts/docs/generate-openapi-docs.ts",
+      "taskId": "20.6",
+      "approvalReference": "User authorized the OpenAPI documentation review and pre-submit remediation",
+      "reason": "Generate examples using the public identifier formats returned by current routes",
+      "preservedContract": "Generated operation content remains derived from the released OpenAPI contract"
+    },
+    {
+      "path": "scripts/docs/validate-docs.ts",
+      "taskId": "21.7",
+      "approvalReference": "User authorized deployment and OpenAPI documentation validation remediation",
+      "reason": "Reject stale deployment fields, internal terminology, and inaccurate webhook documentation",
+      "preservedContract": "Validation enforces public documentation accuracy without changing product UI or runtime behavior"
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "taskId": "22.7",
+      "approvalReference": "User authorized the pre-submit review remediation on 2026-08-06",
+      "reason": "Pin the six vulnerable dependency resolutions to their first audited safe patch versions",
+      "preservedContract": "No application dependency API, Admin UI, generated knowledge-base structure, or public contract is changed"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "taskId": "22.7",
+      "approvalReference": "User authorized the pre-submit review remediation on 2026-08-06",
+      "reason": "Record the audited safe resolutions required for the CI vulnerability gate",
+      "preservedContract": "The lockfile changes are limited to the six security patches and their directly changed resolution metadata"
+    }
+  ]
+}

@@ -1,87 +1,40 @@
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { createSourceResourceMutationService } from "../application/source-resource-mutations.js";
-import { resolveWorkerConfig, type RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
+import type { RuntimeConfig } from "../config.js";
 import { SourceResourceError, type ResourceOperationRecord } from "../domain/source-resource.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import { INCREMENTAL_PUBLICATION_DEFAULTS } from "../publication/incremental-defaults.js";
 import { readPageLimit } from "./pagination.js";
-import { recordAdminAudit } from "./security.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
 
 export function registerAdminSourceResourceEditingRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    repositories: AdminRepositories | null;
-    redis: RedisCoordinator | null;
-    runtimeSettings: RuntimeSettingsService | null;
-    storage: StorageAdapter;
-    roleJobs: RoleJobRepository | null;
-    publicationGenerations: PublicationGenerationRepository | null;
-    applicationRuntime: ApplicationRuntime;
+    application: StorageVnextAdminMutationApplication;
+    audit: StorageVnextAdminAuditApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const requireMutationService = async () => {
-    const sourceResources = services.repositories?.sourceResources;
-    if (!sourceResources || !services.roleJobs || !services.publicationGenerations) return null;
-    const snapshot = await services.runtimeSettings?.getSnapshot();
-    const runtimeWorker = snapshot?.worker;
-    return {
-      mutations: createSourceResourceMutationService({
-        repository: sourceResources,
-        roleJobs: services.roleJobs,
-        generations: services.publicationGenerations,
-        graph: services.repositories?.graph,
-        impactPlanner: INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner,
-        publicationSettingsSnapshot: {
-          publication: snapshot?.publication ?? {},
-          graph: snapshot?.graph ?? {},
-          worker: snapshot?.worker ?? {}
-        },
-        storage: {
-          sourceRevisionKey: services.storage.keyspace.sourceRevisionKey,
-          put: (object) => services.storage.putObject(object),
-          delete: async (key) => {
-            await services.storage.deleteObject?.(key);
-          }
-        },
-        runtime: services.applicationRuntime
-      }),
-      worker: runtimeWorker ?? resolveWorkerConfig(services.config)
-    };
-  };
-
   app.patch(
     "/admin/api/knowledge-bases/:knowledgeBaseId",
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       const name = body.name === undefined ? undefined : readName(body.name);
       const description = readDescription(body.description);
       if (name === undefined && description === undefined) return invalid(context, "errors.invalidKnowledgeBase");
       try {
-        const result = await service.mutations.updateKnowledgeBase(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            ...(name === undefined ? {} : { name }),
-            ...(description === undefined ? {} : { description })
-          },
-          service.worker.jobMaxAttempts
-        );
+        const result = await services.application.updateKnowledgeBase({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          ...(name === undefined ? {} : { name }),
+          ...(description === undefined ? {} : { description })
+        });
         if (!result.knowledgeBase) return conflict(context, "RESOURCE_REVISION_CONFLICT");
         await audit(context, services, "knowledge_base_metadata_updated");
         return context.json({
@@ -98,11 +51,10 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-directories",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
       if (!limit) return invalid(context, "errors.invalidPagination");
-      const page = await service.mutations.resources.listDirectories({
+      const page = await services.application.listDirectories({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         parentDirectoryId: readNullableId(context.req.query("parentDirectoryId")),
         limit,
@@ -116,9 +68,8 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-directories/:directoryId",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const directory = await service.mutations.resources.getDirectory({
+      if (!services.application.available()) return unavailable(context);
+      const directory = await services.application.getDirectory({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         directoryId: context.req.param("directoryId")
       });
@@ -131,22 +82,16 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       try {
-        const result = await service.mutations.acceptOperation(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            kind: "source_directory_move",
-            idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            targetKind: "source_directory",
-            targetId: context.req.param("directoryId"),
-            payload: { relativePath: readRelativePath(body.relativePath) }
-          },
-          service.worker.jobMaxAttempts
-        );
+        const result = await services.application.moveSourceDirectory({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          targetId: context.req.param("directoryId"),
+          relativePath: readRelativePath(body.relativePath)
+        });
         await audit(context, services, "source_directory_move_accepted");
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
@@ -160,22 +105,18 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       const expectedResourceRevision = Number(body.expectedResourceRevision);
       if (!Number.isInteger(expectedResourceRevision) || expectedResourceRevision < 1) {
         return invalid(context, "errors.invalidResourceRevision");
       }
       try {
-        const result = await service.mutations.deleteDirectory({
+        const result = await services.application.deleteSourceDirectory({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           directoryId: context.req.param("directoryId"),
-          idempotencyKey:
-            context.req.header("idempotency-key")?.trim()
-            || services.applicationRuntime.ids.create("admin-delete"),
-          expectedResourceRevision,
-          maxAttempts: service.worker.jobMaxAttempts
+          idempotencyKey: context.req.header("idempotency-key")?.trim() || null,
+          expectedResourceRevision
         });
         await audit(context, services, "source_directory_delete_accepted");
         return context.json({
@@ -195,20 +136,17 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/content",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const descriptor = await service.mutations.resources.getSourceFileContentDescriptor({
+      if (!services.application.available()) return unavailable(context);
+      const source = await services.application.readSourceContent({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sourceFileId: context.req.param("sourceFileId")
       });
-      if (!descriptor) return notFound(context);
-      const content = await services.storage.getObjectBody?.(descriptor.objectKey);
-      if (content == null) return notFound(context);
-      return new Response(content, {
+      if (!source) return notFound(context);
+      return new Response(source.content, {
         headers: {
-          "content-type": descriptor.contentType,
-          etag: `\"${descriptor.resourceRevision}\"`,
-          "x-content-revision": String(descriptor.contentRevision)
+          "content-type": source.contentType,
+          etag: `\"${source.resourceRevision}\"`,
+          "x-content-revision": String(source.contentRevision)
         }
       });
     }
@@ -219,22 +157,16 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const body = await readJsonBody(context.req.raw);
       try {
-        const result = await service.mutations.acceptOperation(
-          {
-            knowledgeBaseId: context.req.param("knowledgeBaseId"),
-            kind: "source_file_move",
-            idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
-            expectedResourceRevision: readRevision(context.req.header("if-match")),
-            targetKind: "source_file",
-            targetId: context.req.param("sourceFileId"),
-            payload: { relativePath: readRelativePath(body.relativePath) }
-          },
-          service.worker.jobMaxAttempts
-        );
+        const result = await services.application.moveSourceFile({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
+          idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
+          expectedResourceRevision: readRevision(context.req.header("if-match")),
+          targetId: context.req.param("sourceFileId"),
+          relativePath: readRelativePath(body.relativePath)
+        });
         await audit(context, services, "source_file_move_accepted");
         return context.json({ operation: operationResponse(result.operation) }, 202);
       } catch (error) {
@@ -248,20 +180,18 @@ export function registerAdminSourceResourceEditingRoutes(
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const bytes = new Uint8Array(await context.req.raw.arrayBuffer());
       if (bytes.byteLength === 0) return invalid(context, "errors.sourceContentRequired");
       try {
         const relativePath = context.req.header("x-source-relative-path")?.trim();
-        const result = await service.mutations.replaceSourceContent({
+        const result = await services.application.replaceSourceFileContent({
           knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sourceFileId: context.req.param("sourceFileId"),
           expectedResourceRevision: readRevision(context.req.header("if-match")),
           idempotencyKey: readIdempotencyKey(context.req.header("idempotency-key")),
           bytes,
-          ...(relativePath ? { relativePath } : {}),
-          maxAttempts: service.worker.jobMaxAttempts
+          ...(relativePath ? { relativePath } : {})
         });
         await audit(context, services, "source_file_replacement_accepted");
         return context.json({ operation: operationResponse(result.operation) }, 202);
@@ -275,15 +205,14 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/operations",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
+      if (!services.application.available()) return unavailable(context);
       const limit = readPageLimit(context.req.query("limit"), services.config);
       if (!limit) return invalid(context, "errors.invalidPagination");
       const state = readOperationState(context.req.query("state"));
       const activeStates: ResourceOperationRecord["state"][] = [
         "accepted", "validating", "processing", "publishing"
       ];
-      const page = await service.mutations.resources.listOperations({
+      const page = await services.application.listOperations({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         states: state ? [state] : activeStates,
         limit,
@@ -297,9 +226,8 @@ export function registerAdminSourceResourceEditingRoutes(
     "/admin/api/knowledge-bases/:knowledgeBaseId/operations/:operationId",
     middlewares.requireAuth,
     async (context) => {
-      const service = await requireMutationService();
-      if (!service) return unavailable(context);
-      const operation = await service.mutations.resources.getOperation({
+      if (!services.application.available()) return unavailable(context);
+      const operation = await services.application.getOperation({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
         operationId: context.req.param("operationId")
       });
@@ -308,7 +236,9 @@ export function registerAdminSourceResourceEditingRoutes(
   );
 }
 
-function directoryResponse(directory: Awaited<ReturnType<ReturnType<typeof createSourceResourceMutationService>["resources"]["getDirectory"]>> & {}) {
+function directoryResponse(
+  directory: NonNullable<Awaited<ReturnType<StorageVnextAdminMutationApplication["getDirectory"]>>>
+) {
   return {
     directoryId: directory.id,
     knowledgeBaseId: directory.knowledgeBaseId,
@@ -349,9 +279,7 @@ async function audit(
   services: Parameters<typeof registerAdminSourceResourceEditingRoutes>[1],
   eventType: string
 ) {
-  await recordAdminAudit({
-    repositories: services.repositories,
-    config: services.config,
+  await services.audit.record({
     context,
     eventType,
     result: "success"

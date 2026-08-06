@@ -4,7 +4,7 @@ import {
   MAINTENANCE_CASES,
   buildMaintenancePrecondition,
   buildModificationRequest,
-  buildProjectionAmplificationPath,
+  classifyMaintenanceRequestResponse,
   selectLifecycleCases
 } from "../lib/interleaved-lifecycle-actions.mjs";
 import {
@@ -83,75 +83,61 @@ test("builds one production-contract request for every modification kind", () =>
 
 test("builds isolated maintenance preconditions and rejects unowned resources", () => {
   const ownedKnowledgeBaseIds = new Set(["kb-owned"]);
-  const projection = buildMaintenancePrecondition({
-    kind: "projection-repair",
-    knowledgeBaseId: "kb-owned",
-    runId: "validation-run-1",
-    ownedKnowledgeBaseIds,
-    s3Prefix: "test-prefix"
-  });
-  const lexical = buildMaintenancePrecondition({
-    kind: "lexical-rebuild",
-    knowledgeBaseId: "kb-owned",
-    runId: "validation-run-1",
-    ownedKnowledgeBaseIds,
-    s3Prefix: "test-prefix"
-  });
-  const compaction = buildMaintenancePrecondition({
-    kind: "projection-compaction",
-    knowledgeBaseId: "kb-owned",
-    runId: "validation-run-1",
-    ownedKnowledgeBaseIds,
-    s3Prefix: "test-prefix"
-  });
-  const reconciliation = buildMaintenancePrecondition({
-    kind: "storage-reconciliation",
+  const maintenance = buildMaintenancePrecondition({
+    kind: "index-maintenance",
     knowledgeBaseId: "kb-owned",
     runId: "validation-run-1",
     ownedKnowledgeBaseIds,
     s3Prefix: "test-prefix"
   });
 
-  assert.deepEqual(MAINTENANCE_CASES, [
-    "projection-repair",
-    "lexical-rebuild",
-    "projection-compaction",
-    "storage-reconciliation"
-  ]);
-  assert.deepEqual(projection, {
-    kind: "projection-repair",
-    strategy: "invalidate-run-owned-projection-version",
-    knowledgeBaseId: "kb-owned",
-    projectionKind: "tree"
-  });
-  assert.deepEqual(lexical, {
-    kind: "lexical-rebuild",
-    strategy: "invalidate-run-owned-lexical-version",
-    knowledgeBaseId: "kb-owned",
-    staleVersion: "validation-validation-run-1"
-  });
-  assert.deepEqual(compaction, {
-    kind: "projection-compaction",
-    strategy: "natural-segment-amplification",
-    knowledgeBaseId: "kb-owned",
-    requiredActiveSegmentCount: 9
-  });
-  assert.deepEqual(reconciliation, {
-    kind: "storage-reconciliation",
-    strategy: "advance-existing-cycle",
-    knowledgeBaseId: "kb-owned",
-    prefix: "test-prefix/generated/"
+  assert.deepEqual(MAINTENANCE_CASES, ["index-maintenance"]);
+  assert.deepEqual(maintenance, {
+    kind: "index-maintenance",
+    strategy: "request-run-owned-maintenance",
+    knowledgeBaseId: "kb-owned"
   });
 
   assert.throws(
     () => buildMaintenancePrecondition({
-      kind: "projection-repair",
+      kind: "index-maintenance",
       knowledgeBaseId: "kb-not-owned",
       runId: "validation-run-1",
       ownedKnowledgeBaseIds,
       s3Prefix: "test-prefix"
     }),
     /not owned by this validation run/u
+  );
+});
+
+test("classifies a deferred maintenance request as a controlled lifecycle conflict", () => {
+  assert.deepEqual(
+    classifyMaintenanceRequestResponse({
+      result: "already_active",
+      maintenance: {
+        requestId: null,
+        state: "idle",
+        active: false
+      }
+    }),
+    {
+      lifecycleState: "failed",
+      shouldObserve: false
+    }
+  );
+  assert.deepEqual(
+    classifyMaintenanceRequestResponse({
+      result: "accepted",
+      maintenance: {
+        requestId: "maintenance-1",
+        state: "queued",
+        active: true
+      }
+    }),
+    {
+      lifecycleState: "queued",
+      shouldObserve: true
+    }
   );
 });
 
@@ -171,12 +157,5 @@ test("distributes all modification and maintenance cases across the matrix", () 
   assert.deepEqual(
     new Set(selected.map((item) => item.deletionKind)),
     new Set(["source-file", "source-directory", "task", "knowledge-base"])
-  );
-});
-
-test("keeps projection amplification moves inside an existing directory", () => {
-  assert.equal(
-    buildProjectionAmplificationPath(3),
-    "baseline/compaction-source-3.md"
   );
 });

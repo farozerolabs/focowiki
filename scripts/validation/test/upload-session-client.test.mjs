@@ -43,10 +43,18 @@ test("validation uploads use the complete nested upload-session lifecycle", asyn
       return { entry };
     }
     if (pathname.endsWith("/finalize")) {
-      entries.forEach((entry, index) => {
-        entry.sourceFileId = `source-file-${index + 1}`;
-      });
       return { session: { ...session, state: "completed" } };
+    }
+    if (pathname.endsWith("/source-files")) {
+      return {
+        items: entries.map((entry, index) => ({
+          sourceFileId: `source-file-${index + 1}`,
+          name: entry.name,
+          relativePath: entry.relativePath,
+          generatedPath: entry.generatedPath
+        })),
+        nextCursor: null
+      };
     }
     if (options.query?.transferState === "missing") {
       return {
@@ -80,6 +88,7 @@ test("validation uploads use the complete nested upload-session lifecycle", asyn
     200
   );
   assert.equal(calls.some((call) => call.options.formData), false);
+  assert.equal(calls.some((call) => call.pathname.endsWith("/source-files")), true);
   assert.deepEqual(result.transport, { manifestPageSize: 1 });
   assert.equal("limits" in result, false);
 });

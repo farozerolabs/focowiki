@@ -10,204 +10,160 @@ function validLedger() {
   const ledger = createHandoffLedger({
     scenarioId: "upload-during-modification-visible",
     knowledgeBaseId: "kb-validation",
+    publicOutcome: "succeeded",
     expectedKinds: [
-      "request",
+      "knowledge_base",
       "operation",
-      "source",
+      "source_file",
       "source_revision",
-      "generation",
-      "activation"
+      "release_root",
+      "search_projection",
+      "active_snapshot"
     ]
   });
   addHandoffRecord(ledger, {
-    kind: "request",
-    id: "request-1",
-    knowledgeBaseId: "kb-validation"
+    kind: "knowledge_base",
+    id: "kb-validation",
+    resourceRevision: 2
   });
   addHandoffRecord(ledger, {
     kind: "operation",
     id: "operation-1",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "request",
-    ownerId: "request-1"
+    ownerKind: "knowledge_base",
+    ownerId: "kb-validation",
+    state: "completed",
+    terminal: true
   });
   addHandoffRecord(ledger, {
-    kind: "source",
+    kind: "source_file",
     id: "source-1",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "operation",
-    ownerId: "operation-1",
-    resourceRevision: 2
+    ownerKind: "knowledge_base",
+    ownerId: "kb-validation",
+    resourceRevision: 2,
+    state: "ready",
+    durable: true,
+    terminal: true,
+    metadata: { currentRevisionId: "revision-2" }
   });
   addHandoffRecord(ledger, {
     kind: "source_revision",
     id: "revision-2",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "source",
+    ownerKind: "source_file",
     ownerId: "source-1",
-    resourceRevision: 2
+    durable: true,
+    terminal: true,
+    metadata: { revisionRole: "current" }
   });
   addHandoffRecord(ledger, {
-    kind: "generation",
-    id: "generation-2",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "source_revision",
-    ownerId: "revision-2",
-    predecessorId: "generation-1"
+    kind: "release_root",
+    id: "root-2",
+    ownerKind: "knowledge_base",
+    ownerId: "kb-validation",
+    resourceRevision: 2,
+    state: "active",
+    durable: true,
+    terminal: true,
+    metadata: { rootRole: "active" }
   });
   addHandoffRecord(ledger, {
-    kind: "activation",
-    id: "generation-2",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "generation",
-    ownerId: "generation-2"
+    kind: "search_projection",
+    id: "search-1",
+    ownerKind: "knowledge_base",
+    ownerId: "kb-validation",
+    resourceRevision: 2,
+    state: "ready",
+    durable: true,
+    terminal: true,
+    metadata: { role: "active" }
   });
-  ledger.publicOutcome = "succeeded";
+  addHandoffRecord(ledger, {
+    kind: "active_snapshot",
+    id: "active-1",
+    ownerKind: "knowledge_base",
+    ownerId: "kb-validation",
+    state: "active",
+    durable: true,
+    terminal: true,
+    metadata: {
+      releaseRootId: "root-2",
+      searchProjectionId: "search-1",
+      operationId: "operation-1"
+    }
+  });
   return ledger;
 }
 
-test("accepts a complete successful internal handoff chain", () => {
+test("accepts a complete storage vNext ownership and activation chain", () => {
   assert.doesNotThrow(() => assertHandoffLedger(validLedger()));
 });
 
-test("rejects public success with a missing internal handoff", () => {
+test("rejects public success with a missing expected handoff", () => {
   const ledger = validLedger();
-  ledger.records = ledger.records.filter((record) => record.kind !== "activation");
-
+  ledger.records = ledger.records.filter((record) => record.kind !== "active_snapshot");
   assert.throws(
     () => assertHandoffLedger(ledger),
-    /missing expected handoff kind: activation/i
+    /missing expected handoff kind: active_snapshot/i
   );
 });
 
-test("rejects public failure with unowned durable residue", () => {
-  const ledger = validLedger();
-  ledger.publicOutcome = "failed";
-  addHandoffRecord(ledger, {
-    kind: "immutable_object",
-    id: "object-1",
-    knowledgeBaseId: "kb-validation",
+test("rejects unowned durable residue and cross-scope records", () => {
+  const unowned = validLedger();
+  addHandoffRecord(unowned, {
+    kind: "release_shard",
+    id: "shard-1",
     durable: true
   });
+  assert.throws(() => assertHandoffLedger(unowned), /durable handoff has no owner/i);
 
-  assert.throws(
-    () => assertHandoffLedger(ledger),
-    /durable handoff has no owner/i
-  );
+  const crossed = validLedger();
+  crossed.records.find((record) => record.kind === "source_file").knowledgeBaseId = "kb-other";
+  assert.throws(() => assertHandoffLedger(crossed), /knowledge base continuity/i);
 });
 
-test("rejects cross-knowledge-base ownership and revision regression", () => {
-  const crossKnowledgeBase = validLedger();
-  crossKnowledgeBase.records[2].knowledgeBaseId = "kb-other";
-  assert.throws(
-    () => assertHandoffLedger(crossKnowledgeBase),
-    /knowledge base continuity/
-  );
-
-  const regressed = validLedger();
-  addHandoffRecord(regressed, {
-    kind: "source_revision",
-    id: "revision-1",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "source",
-    ownerId: "source-1",
-    resourceRevision: 1
-  });
-  assert.throws(
-    () => assertHandoffLedger(regressed),
-    /resource revision regressed/i
-  );
-});
-
-test("keeps resource revisions independent across sibling sources", () => {
-  const ledger = validLedger();
-  addHandoffRecord(ledger, {
-    kind: "source",
-    id: "source-2",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: "operation",
-    ownerId: "operation-1",
-    resourceRevision: 1
-  });
-
-  assert.doesNotThrow(() => assertHandoffLedger(ledger));
-});
-
-test("rejects broken modification path and generation predecessor continuity", () => {
-  const pathMismatch = validLedger();
-  pathMismatch.records.find((record) => record.kind === "operation").metadata = {
-    mutationKind: "source_file_move",
-    priorPath: "before.md",
-    resultingPath: "after.md"
-  };
-  pathMismatch.records.find((record) => record.kind === "source").metadata = {
-    logicalPath: "unexpected.md"
-  };
-  assert.throws(
-    () => assertHandoffLedger(pathMismatch),
-    /modification path continuity/i
-  );
-
-  const predecessorMismatch = validLedger();
-  predecessorMismatch.records.push({
-    kind: "active_generation",
-    id: "generation-1",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: null,
-    ownerId: null,
-    resourceRevision: null,
-    predecessorId: null,
-    state: "active",
-    durable: false,
-    terminal: true,
-    metadata: {}
-  });
-  predecessorMismatch.records.find(
-    (record) => record.kind === "generation"
-  ).predecessorId = "generation-other";
-  assert.throws(
-    () => assertHandoffLedger(predecessorMismatch),
-    /generation predecessor continuity/i
-  );
-});
-
-test("rejects modification revision and active Generation ownership mismatches", () => {
+test("rejects broken current revision and active snapshot continuity", () => {
   const revisionMismatch = validLedger();
   revisionMismatch.records.find(
-    (record) => record.kind === "operation"
-  ).metadata = {
-    mutationKind: "source_file_move",
-    expectedResourceRevision: 1,
-    resultingResourceRevision: 3,
-    resultingPath: "after.md"
-  };
-  revisionMismatch.records.find((record) => record.kind === "source").metadata = {
-    logicalPath: "after.md"
-  };
+    (record) => record.kind === "source_revision"
+  ).metadata.revisionRole = "rollback";
   assert.throws(
     () => assertHandoffLedger(revisionMismatch),
-    /modification revision continuity/i
+    /current revision continuity/i
   );
 
-  const activationMismatch = validLedger();
-  activationMismatch.records.unshift({
-    kind: "knowledge_base",
-    id: "kb-validation",
-    knowledgeBaseId: "kb-validation",
-    ownerKind: null,
-    ownerId: null,
-    resourceRevision: 1,
-    predecessorId: null,
-    state: "active",
-    durable: false,
-    terminal: false,
-    observedAt: null,
-    metadata: {
-      activeGenerationId: "generation-other"
-    }
-  });
+  const searchMismatch = validLedger();
+  searchMismatch.records.find(
+    (record) => record.kind === "search_projection"
+  ).metadata.role = "candidate";
   assert.throws(
-    () => assertHandoffLedger(activationMismatch),
-    /active Generation ownership/i
+    () => assertHandoffLedger(searchMismatch),
+    /active snapshot search continuity/i
   );
+});
+
+test("rejects attempt overflow and live work after a terminal public outcome", () => {
+  const exceeded = validLedger();
+  addHandoffRecord(exceeded, {
+    kind: "cleanup_action",
+    id: "cleanup-1",
+    ownerKind: "operation",
+    ownerId: "operation-1",
+    metadata: { attemptCount: 4, maxAttempts: 3 }
+  });
+  assert.throws(() => assertHandoffLedger(exceeded), /attempt budget exceeded/i);
+
+  const live = validLedger();
+  addHandoffRecord(live, {
+    kind: "work_item",
+    id: "work-1",
+    ownerKind: "operation",
+    ownerId: "operation-1",
+    state: "retry"
+  });
+  assert.throws(() => assertHandoffLedger(live), /retained live work items/i);
+});
+
+test("rejects physical provider identity disclosure", () => {
+  const ledger = validLedger();
+  ledger.records[0].metadata.storageKey = "private/object.md";
+  assert.throws(() => assertHandoffLedger(ledger), /exposed physical or secret data/i);
 });

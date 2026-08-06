@@ -169,12 +169,19 @@ describe("lightweight architecture boundaries", () => {
     ).toBe(false);
   });
 
-  it("packages the native tokenizer without loading it in the publication role", () => {
+  it("packages the native tokenizer only for source-derived lexical facts", () => {
     const runtimeBuild = readWorkspaceFile("apps/api/scripts/build-runtime.mjs");
     const dockerfile = readWorkspaceFile("Dockerfile");
     const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
-    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
-    const publicationMain = readWorkspaceFile("apps/api/src/publication-worker-main.ts");
+    const sourceRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/production-runtime.ts"
+    );
+    const maintenanceRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/maintenance/production-runtime.ts"
+    );
+    const publicationRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/publication/production-runtime.ts"
+    );
 
     expect(runtimeBuild).toContain('external: ["nodejieba"]');
     expect(runtimeBuild).toContain('resolvePackageRoot("nodejieba")');
@@ -183,11 +190,11 @@ describe("lightweight architecture boundaries", () => {
     expect(dockerfile).toContain("ENV npm_config_build_from_source=true");
     expect(dockerfile).toContain("apk add --no-cache libstdc++ su-exec");
     expect(dockerfile).toContain("test ! -x /usr/bin/g++");
-    expect(sourceMain.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
-    expect(maintenanceMain.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
-    expect(sourceMain).toContain("assertNodeJiebaRuntimeAvailable()");
-    expect(maintenanceMain).toContain("assertNodeJiebaRuntimeAvailable()");
-    expect(publicationMain).not.toContain("nodejieba-tokenizer");
+    expect(sourceRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
+    expect(sourceMain).toContain("assertTokenizer: assertNodeJiebaRuntimeAvailable");
+    expect(sourceRuntime).toContain("assertNodeJiebaRuntimeAvailable()");
+    expect(maintenanceRuntime).not.toContain("nodejieba-tokenizer");
+    expect(publicationRuntime).not.toContain("nodejieba-tokenizer");
   });
 
   it("cleans package build directories before compiling", () => {
@@ -246,8 +253,9 @@ describe("lightweight architecture boundaries", () => {
   it("keeps production admin responsibilities out of single oversized files", () => {
     expect(countLines("apps/api/src/server.ts")).toBeLessThanOrEqual(150);
     expect(countLines("apps/api/src/admin/routes.ts")).toBeLessThanOrEqual(1_100);
-    expect(countLines("apps/api/src/admin/source-file-processor.ts")).toBeLessThanOrEqual(500);
-    expect(countLines("apps/api/src/graph/file-graph.ts")).toBeLessThanOrEqual(150);
+    expect(countLines(
+      "apps/api/src/storage-vnext/source-processing/graph-extractor.ts"
+    )).toBeLessThanOrEqual(500);
     expect(countLines("apps/api/src/developer-openapi/routes.ts")).toBeLessThanOrEqual(350);
     expect(countLines("apps/api/src/publication/required-projection-writer.ts")).toBeLessThanOrEqual(600);
     expect(countLines("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx")).toBeLessThanOrEqual(
@@ -256,19 +264,22 @@ describe("lightweight architecture boundaries", () => {
   });
 
   it("keeps file graph processing split into profile, candidate, scoring, and confirmation modules", () => {
-    const graphEntry = readWorkspaceFile("apps/api/src/graph/file-graph.ts");
+    const graphEntry = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/graph-extractor.ts"
+    );
     const nodeProfile = readWorkspaceFile("apps/api/src/graph/graph-node-profile.ts");
     const candidates = readWorkspaceFile("apps/api/src/graph/graph-candidates.ts");
     const scoring = readWorkspaceFile("apps/api/src/graph/graph-edge-scoring.ts");
     const confirmation = readWorkspaceFile("apps/api/src/graph/graph-edge-confirmation.ts");
 
     expect(graphEntry).toContain("createGraphNode");
-    expect(graphEntry).toContain("listCandidateNodes");
+    expect(graphEntry).toContain("candidates.findCandidates");
+    expect(graphEntry).toContain("buildCandidateTerms");
     expect(graphEntry).toContain("buildGraphEdges");
     expect(graphEntry).toContain("confirmGraphEdges");
     expect(nodeProfile).toContain("buildSourceContentProfile");
-    expect(candidates).toContain("listGraphCandidates");
-    expect(candidates).not.toContain("listGraphNodes");
+    expect(candidates).toContain("buildCandidateTerms");
+    expect(candidates).not.toContain("FileGraphRepository");
     expect(scoring).toContain("bestEdgeForCandidate");
     expect(scoring).not.toContain("requestGraphRelationshipConfirmations");
     expect(confirmation).toContain("requestGraphRelationshipConfirmations");
@@ -282,11 +293,13 @@ describe("lightweight architecture boundaries", () => {
 
   it("keeps API and Admin UI layers separated", () => {
     const apiServer = readWorkspaceFile("apps/api/src/server.ts");
-    const sourceFileProcessor = readWorkspaceFile("apps/api/src/admin/source-file-processor.ts");
+    const sourceRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/production-runtime.ts"
+    );
     const adminPage = readWorkspaceFile("apps/admin/src/pages/KnowledgeBaseDetailPage.tsx");
 
     expect(apiServer).not.toContain("apps/admin");
-    expect(sourceFileProcessor).not.toContain("apps/admin");
+    expect(sourceRuntime).not.toContain("apps/admin/src");
     expect(adminPage).not.toContain("apps/api/src");
   });
 
@@ -319,21 +332,22 @@ describe("lightweight architecture boundaries", () => {
   it("keeps folder-aware mutation responsibilities in separate modules", () => {
     const pathPolicy = readWorkspaceFile("apps/api/src/domain/source-path.ts");
     const uploadSessions = readWorkspaceFile("apps/api/src/application/upload-sessions.ts");
+    const uploadRoutes = readWorkspaceFile("apps/api/src/admin/upload-session-routes.ts");
     const directoryIndexes = readWorkspaceFile(
       "apps/api/src/publication/directory-navigation-writer.ts"
     );
 
     expect(pathPolicy).not.toContain("Hono");
     expect(pathPolicy).not.toContain("postgres");
-    expect(uploadSessions).not.toContain("app.post");
-    expect(uploadSessions).not.toContain("sql`");
+    expect(uploadSessions).toContain("UPLOAD_MANIFEST_PAGE_SIZE");
+    expect(uploadSessions).toContain("UPLOAD_CONTENT_TRANSFER_CONCURRENCY");
+    expect(uploadSessions).not.toContain("createUploadSessionService");
     expect(directoryIndexes).not.toContain("Hono");
     expect(directoryIndexes).not.toContain("sql`");
     expect(directoryIndexes).toContain("navigation.applyEntries");
     expect(directoryIndexes).not.toContain("entries: DirectoryIndexEntry[]");
-    expect(uploadSessions).toContain("UploadSessionStoragePort");
-    expect(uploadSessions).toContain("ApplicationRuntime");
-    expect(uploadSessions).not.toContain("StorageAdapter");
+    expect(uploadRoutes).toContain("StorageVnextAdminUploadApplication");
+    expect(uploadRoutes).not.toContain("StorageAdapter");
   });
 
   it("keeps obsolete flat upload and version-one compatibility unreachable", () => {
@@ -373,118 +387,111 @@ describe("lightweight architecture boundaries", () => {
   });
 
   it("keeps hard-delete and Redis cleanup bounded by cursor pages", () => {
-    const hardDeleteJobs = readWorkspaceFile("apps/api/src/worker/hard-delete-jobs.ts");
+    const hardDeleteJobs = readWorkspaceFile(
+      "apps/api/src/storage-vnext/deletion/deletion-purge.ts"
+    );
     const redisCoordination = readWorkspaceFile("apps/api/src/redis/coordination.ts");
 
-    expect(hardDeleteJobs).toContain("listPendingObjectKeys");
-    expect(hardDeleteJobs).toContain("purgeTargetBatch");
-    expect(hardDeleteJobs).toContain("discoveryCursor");
-    expect(hardDeleteJobs).not.toContain("objectKeys.push");
+    expect(hardDeleteJobs).toContain("readScopePage");
+    expect(hardDeleteJobs).toContain("maximumObjectsPerAttempt");
+    expect(hardDeleteJobs).toContain("nextCursor");
+    expect(hardDeleteJobs).not.toContain("listAll");
     expect(redisCoordination).toContain("scanIterator");
     expect(redisCoordination).not.toContain("const seenKeys = new Set<string>()");
   });
 
-  it("persists each reconciliation scan page with one bounded bulk upsert", () => {
+  it("keeps each reconciliation scan on one bounded provider or registration page", () => {
     const repository = readWorkspaceFile(
-      "apps/api/src/infrastructure/postgres/storage-reconciliation-repository.ts"
+      "apps/api/src/storage-vnext/maintenance/object-reconciliation.ts"
     );
 
-    expect(repository).toContain("FROM unnest(");
-    expect(repository).toContain("upsertOrphanCandidates(");
-    expect(repository).toContain("${objects.map((object) => object.key)}::text[]");
-    expect(repository).not.toContain("for (const object of objects)");
+    expect(repository).toContain("reconcileStorageVnextProviderInventoryPage");
+    expect(repository).toContain("reconcileStorageVnextRegistrationPage");
+    expect(repository).toContain("limit: input.limit");
+    expect(repository).toContain("nextCursor");
   });
 
   it("keeps role worker queue state restartable and bounded", () => {
-    const migration = readWorkspaceFile("apps/api/migrations/001_production_admin_web.sql");
     const repository = readWorkspaceFile(
-      "apps/api/src/infrastructure/postgres/role-job-repository.ts"
+      "apps/api/src/storage-vnext/workflow/postgres-repository.ts"
     );
-    const runtime = readWorkspaceFile("apps/api/src/worker/role-runtime.ts");
+    const sourceRole = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/role-runtime.ts"
+    );
+    const publicationRole = readWorkspaceFile(
+      "apps/api/src/storage-vnext/publication/role-runtime.ts"
+    );
     const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
+    const sourceRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/production-runtime.ts"
+    );
     const publicationMain = readWorkspaceFile("apps/api/src/publication-worker-main.ts");
     const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
-    const migrationSql = migration.toLowerCase();
     const repositorySource = repository.toLowerCase();
 
-    expect(migrationSql).toContain("create table focowiki.role_jobs");
-    expect(migrationSql).toContain("create table focowiki.role_heartbeats");
-    expect(migration).toContain("'dead_letter'");
-    expect(migration).toContain("role_jobs_claim_idx");
-    expect(repositorySource).toContain("for update skip locked");
-    expect(repository).toContain("async heartbeat");
-    expect(repository).toContain("async fail");
-    expect(repository).toContain("async release");
-    expect(runtime).toContain("repository.heartbeat");
-    expect(sourceMain).toContain('role: "source"');
-    expect(publicationMain).toContain('role: "publication"');
-    expect(maintenanceMain).toContain('role: "maintenance"');
+    expect(repositorySource).toContain("for update of work skip locked");
+    expect(repository).toContain("async claim");
+    expect(repository).toContain("async releaseForRetry");
+    expect(repository).toContain("async complete");
+    expect(sourceRole).toContain("Math.min(settings.claimBatchSize");
+    expect(publicationRole).toContain("Math.min(settings.claimBatchSize");
+    expect(sourceMain).toContain("runStorageVnextSourceWorker");
+    expect(sourceRuntime).toContain("createPostgresStorageVnextWorkflowRepository");
+    expect(sourceRuntime).toContain("createStorageVnextSourceRoleRuntime");
+    expect(publicationMain).toContain("runStorageVnextPublicationWorker");
+    expect(maintenanceMain).toContain("runStorageVnextMaintenanceWorker");
   });
 
-  it("keeps maintenance leases stable and projection repair in its own runtime", () => {
+  it("keeps maintenance ownership, rebuild, repair, and cleanup in one vNext runtime", () => {
     const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
-    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
-
-    expect(maintenanceMain).toContain("const reconciliationLeaseToken");
-    expect(maintenanceMain).toContain("leaseToken: reconciliationLeaseToken");
-    expect(maintenanceMain).not.toContain("repairLeaseToken");
-    expect(repairMain).toContain("createPostgresProjectionRepairWorkRepository");
-    expect(repairMain).toContain('role: "projection_repair"');
-    expect(repairMain).toContain("work.claimBatch");
-  });
-
-  it("keeps every maintenance-owned projection bootstrap behind request ownership", () => {
-    const maintenanceMain = readWorkspaceFile("apps/api/src/maintenance-worker-main.ts");
-    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
-
-    expect(maintenanceMain).toMatch(
-      /projectionRepairs\.bootstrap\(\{[\s\S]*?requireActiveMaintenanceRequest: true[\s\S]*?\}\)/
+    const maintenanceRuntime = readWorkspaceFile(
+      "apps/api/src/storage-vnext/maintenance/production-runtime.ts"
     );
-    expect(repairMain).toMatch(
-      /work\.bootstrap\(\{[\s\S]*?requireActiveMaintenanceRequest: true[\s\S]*?\}\)/
-    );
-  });
 
-  it("keeps the last valid repair settings when a live refresh is temporarily unavailable", () => {
-    const repairMain = readWorkspaceFile("apps/api/src/projection-repair-worker-main.ts");
-
-    expect(repairMain).toContain("lastValidSnapshot");
-    expect(repairMain).toContain("Projection repair settings refresh failed");
-    expect(repairMain).toContain("return lastValidSnapshot");
+    expect(maintenanceMain).toContain("runStorageVnextMaintenanceWorker");
+    expect(maintenanceRuntime).toContain("createStorageVnextMaintenanceCoordinator");
+    expect(maintenanceRuntime).toContain("createStorageVnextMaintenanceProductionPhases");
+    expect(maintenanceRuntime).toContain("createStorageVnextMaintenanceProductionCleanup");
+    expect(maintenanceRuntime).not.toMatch(/LexicalRebuild|ProjectionRepairWork/u);
   });
 
   it("keeps source-file completion from running publication inline", () => {
-    const processor = readWorkspaceFile("apps/api/src/admin/source-file-processor.ts");
+    const processor = readWorkspaceFile(
+      "apps/api/src/storage-vnext/source-processing/worker.ts"
+    );
 
-    expect(processor).toContain("completion.complete");
-    expect(processor).not.toContain("publishNow");
-    expect(processor).not.toContain("processSourceFilePublicationStage");
-    expect(processor).not.toContain("processSourceFileBundleStage");
+    expect(processor).toContain("handoff.apply");
+    expect(processor).not.toContain("createStorageVnextPublicationProcessor");
+    expect(processor).not.toContain("activateCandidate");
   });
 
   it("keeps source-file list reads out of graph, model, and worker expansion paths", () => {
     const adminRoutes = readWorkspaceFile("apps/api/src/admin/routes.ts");
-    const repository = readWorkspaceFile("apps/api/src/db/admin-repositories.ts");
-    const generatedOutput = readWorkspaceFile("apps/api/src/admin/source-file-generated-output.ts");
+    const repository = readWorkspaceFile(
+      "apps/api/src/storage-vnext/api/postgres-admin-resources.ts"
+    );
+    const adminCore = readWorkspaceFile(
+      "apps/api/src/storage-vnext/api/postgres-admin-core.ts"
+    );
     const sourceListRoute = adminRoutes.slice(
       adminRoutes.indexOf('"/admin/api/knowledge-bases/:knowledgeBaseId/source-files"'),
       adminRoutes.indexOf('"/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId"')
     );
-    const sourceListRepository = repository.slice(
-      repository.indexOf("async listSourceFiles"),
-      repository.indexOf("async listReleases")
-    );
+    const sourceListRepository = repository.slice(repository.indexOf("async function readSourceFiles"));
 
     expect(sourceListRoute).not.toContain("readAdminSourceFileWithGraphSummary");
     expect(sourceListRoute).not.toContain("repositories.graph");
     expect(sourceListRoute).not.toContain("enqueueSourceFileProcessingJobs");
-    expect(sourceListRepository).not.toContain("LEFT JOIN LATERAL");
+    expect(sourceListRepository).toContain("resolve_release_catalog");
+    expect(sourceListRepository).not.toContain("FROM focowiki.graph_edges");
     expect(sourceListRepository).not.toContain("FROM focowiki.model_invocations");
-    expect(generatedOutput).toContain("readGeneratedOutputsForSourceFiles");
-    expect(generatedOutput).toContain("withActiveGeneration");
-    expect(generatedOutput).not.toContain("repositories.graph");
-    expect(generatedOutput).not.toContain("workerJobs");
-    expect(generatedOutput).not.toContain("model_invocations");
+    const sourceListApplication = adminCore.slice(
+      adminCore.indexOf("async listFiles"),
+      adminCore.indexOf("async getFile")
+    );
+    expect(sourceListApplication).not.toContain("graph_edges");
+    expect(sourceListApplication).not.toContain("workerJobs");
+    expect(sourceListApplication).not.toContain("model_invocations");
   });
 
   it("keeps Developer OpenAPI file content reads out of source-file list scans", () => {
@@ -550,13 +557,13 @@ describe("lightweight architecture boundaries", () => {
 
   it("keeps active read models out of queue, assembly, compaction, and migration advancement", () => {
     const activeReadRepository = readWorkspaceFile(
-      "apps/api/src/infrastructure/postgres/active-generation-read-repository.ts"
+      "apps/api/src/storage-vnext/api/postgres-openapi-read.ts"
     );
     const activeTreeReadModel = readWorkspaceFile(
-      "apps/api/src/infrastructure/postgres/active-tree-read-model.ts"
+      "apps/api/src/storage-vnext/api/postgres-admin-read.ts"
     );
     const activeTreeStatistics = readWorkspaceFile(
-      "apps/api/src/infrastructure/postgres/active-tree-statistics.ts"
+      "apps/api/src/storage-vnext/api/postgres-openapi-application.ts"
     );
     const readPlane = `${activeReadRepository}\n${activeTreeReadModel}\n${activeTreeStatistics}`;
 
@@ -572,11 +579,12 @@ describe("lightweight architecture boundaries", () => {
     ]) {
       expect(readPlane).not.toContain(forbidden);
     }
-    expect(activeReadRepository).toContain(
-      'if (version.optimizationState === "optimized_active")'
+    expect(activeReadRepository).toContain("focowiki.resolve_release_catalog");
+    expect(activeReadRepository).toContain("root.root_role = 'active'");
+    expect(activeTreeReadModel).toContain("focowiki.resolve_release_catalog");
+    expect(activeTreeReadModel).toContain(
+      "focowiki.resolve_release_directory_summaries"
     );
-    expect(activeTreeStatistics).toContain("WITH requested(path) AS MATERIALIZED");
-    expect(activeTreeStatistics).toContain("child.parent_path = ANY");
-    expect(activeTreeStatistics).toContain("descendant.logical_path >= requested.path || '/'");
+    expect(activeTreeStatistics).toContain("root.root_role = 'active'");
   });
 });

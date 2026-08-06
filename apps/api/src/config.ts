@@ -5,8 +5,6 @@ import { readConfiguredSecret } from "./security/configured-secret.js";
 const DEFAULT_DATABASE_POOL_MAX = 10;
 const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
 const DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX = 4;
-const DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX = 8;
-const DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX = 8;
 const DEFAULT_MAINTENANCE_WORKER_DATABASE_POOL_MAX = 2;
 const DEFAULT_ADMIN_LIST_PAGE_SIZE = 50;
 const DEFAULT_ADMIN_LIST_MAX_PAGE_SIZE = 200;
@@ -14,7 +12,6 @@ const DEFAULT_TREE_CHILD_PAGE_SIZE = 100;
 const DEFAULT_TREE_CHILD_MAX_PAGE_SIZE = 500;
 const DEFAULT_PAGINATION_CURSOR_TTL_SECONDS = 900;
 const DEFAULT_GENERATED_CONTENT_MAX_BYTES = 10_485_760;
-const DEFAULT_GENERATION_BATCH_SIZE = 50;
 const DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY = 2;
 const DEFAULT_WORKER_CLAIM_BATCH_SIZE = 10;
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
@@ -37,7 +34,6 @@ const DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE = 1_000;
 const DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS = 3;
 const DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS = 30;
-const DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED = false;
 const DEFAULT_PUBLICATION_MODE = "batch";
 const DEFAULT_PUBLICATION_BATCH_SIZE = 300;
 const DEFAULT_PUBLICATION_INTERVAL_SECONDS = 300;
@@ -51,7 +47,6 @@ const DEFAULT_PUBLICATION_DIRTY_AGE_HARD_SECONDS = 900;
 const DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS = 300;
 const DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT = 20_000;
 const DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT = 10_000;
-const DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS = 7;
 const DEFAULT_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_LINK_INDEX_SHARD_SIZE = 1_000;
 const DEFAULT_MANIFEST_SHARD_SIZE = 1_000;
@@ -74,6 +69,8 @@ const DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_SECURITY_AUDIT_RETENTION_DAYS = 30;
 const DEFAULT_LOG_FILE_MAX_BYTES = 10_485_760;
 const DEFAULT_LOG_FILE_MAX_FILES = 5;
+const DEFAULT_LOG_FILE_MAX_TOTAL_BYTES = 1_073_741_824;
+const DEFAULT_LOG_FILE_RETENTION_DAYS = 7;
 export type RuntimeLogLevel = "error" | "warn" | "info" | "debug";
 export type PublicationMode = "batch" | "manual" | "per_file";
 export type GraphRuntimeConfig = {
@@ -92,7 +89,6 @@ export type GraphRuntimeConfig = {
 export type WorkerRuntimeConfig = {
   sourceFileConcurrency: number;
   claimBatchSize: number;
-  generationBatchSize?: number;
   pollIntervalMs: number;
   lockTtlSeconds: number;
   heartbeatIntervalMs?: number;
@@ -113,7 +109,6 @@ export type WorkerRuntimeConfig = {
   hardDeleteMaxAttempts?: number;
   hardDeleteRetryDelayMs?: number;
   hardDeleteFailedRetentionDays?: number;
-  hardDeleteVersionPurgeEnabled?: boolean;
 };
 
 export type RateLimitConfig = {
@@ -156,12 +151,11 @@ export type RuntimeConfig = {
     poolMax?: number;
     sourceWorkerPoolMax?: number;
     publicationWorkerPoolMax?: number;
-    projectionRepairWorkerPoolMax?: number;
-    lexicalRebuildWorkerPoolMax?: number;
     maintenanceWorkerPoolMax?: number;
   };
   redis: {
     url: string;
+    keyPrefix?: string;
   };
   search?: {
     endpoint: string;
@@ -201,7 +195,6 @@ export type RuntimeConfig = {
     dirtyAgeResumeSeconds?: number;
     pendingImpactHardCount?: number;
     pendingImpactResumeCount?: number;
-    generationRetentionDays?: number;
     indexShardSize: number;
     linkIndexShardSize: number;
     manifestShardSize: number;
@@ -233,6 +226,8 @@ export type RuntimeConfig = {
       directory: string;
       maxBytes: number;
       maxFiles: number;
+      maxTotalBytes: number;
+      retentionDays: number;
     };
   };
   model:
@@ -292,18 +287,6 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     DEFAULT_PUBLICATION_WORKER_DATABASE_POOL_MAX,
     issues
   );
-  const projectionRepairWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
-  const lexicalRebuildWorkerPoolMax = optionalPositiveInteger(
-    env,
-    "LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX",
-    DEFAULT_LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX,
-    issues
-  );
   const maintenanceWorkerPoolMax = optionalPositiveInteger(
     env,
     "MAINTENANCE_WORKER_DATABASE_POOL_MAX",
@@ -356,12 +339,11 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
       poolMax: databasePoolMax,
       sourceWorkerPoolMax,
       publicationWorkerPoolMax,
-      projectionRepairWorkerPoolMax,
-      lexicalRebuildWorkerPoolMax,
       maintenanceWorkerPoolMax
     },
     redis: {
-      url: redisUrl
+      url: redisUrl,
+      keyPrefix: optionalString(env, "REDIS_KEY_PREFIX") ?? "focowiki"
     },
     search,
     ports,
@@ -574,7 +556,6 @@ function createDefaultPublicationConfig(): RuntimeConfig["publication"] {
     dirtyAgeResumeSeconds: DEFAULT_PUBLICATION_DIRTY_AGE_RESUME_SECONDS,
     pendingImpactHardCount: DEFAULT_PUBLICATION_PENDING_IMPACT_HARD_COUNT,
     pendingImpactResumeCount: DEFAULT_PUBLICATION_PENDING_IMPACT_RESUME_COUNT,
-    generationRetentionDays: DEFAULT_PUBLICATION_GENERATION_RETENTION_DAYS,
     indexShardSize: DEFAULT_INDEX_SHARD_SIZE,
     linkIndexShardSize: DEFAULT_LINK_INDEX_SHARD_SIZE,
     manifestShardSize: DEFAULT_MANIFEST_SHARD_SIZE,
@@ -604,7 +585,6 @@ function parseWorkerConfig(): WorkerRuntimeConfig {
   return {
     sourceFileConcurrency: DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: DEFAULT_WORKER_CLAIM_BATCH_SIZE,
-    generationBatchSize: DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs: DEFAULT_WORKER_HEARTBEAT_INTERVAL_MS,
@@ -624,8 +604,7 @@ function parseWorkerConfig(): WorkerRuntimeConfig {
     hardDeleteObjectBatchSize: DEFAULT_WORKER_HARD_DELETE_OBJECT_BATCH_SIZE,
     hardDeleteMaxAttempts: DEFAULT_WORKER_HARD_DELETE_MAX_ATTEMPTS,
     hardDeleteRetryDelayMs: DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
-    hardDeleteFailedRetentionDays: DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
-    hardDeleteVersionPurgeEnabled: DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
+    hardDeleteFailedRetentionDays: DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS
   };
 }
 
@@ -636,7 +615,6 @@ export function resolveWorkerConfig(
     sourceFileConcurrency:
       config.worker?.sourceFileConcurrency ?? DEFAULT_WORKER_SOURCE_FILE_CONCURRENCY,
     claimBatchSize: config.worker?.claimBatchSize ?? DEFAULT_WORKER_CLAIM_BATCH_SIZE,
-    generationBatchSize: config.worker?.generationBatchSize ?? DEFAULT_GENERATION_BATCH_SIZE,
     pollIntervalMs: config.worker?.pollIntervalMs ?? DEFAULT_WORKER_POLL_INTERVAL_MS,
     lockTtlSeconds: config.worker?.lockTtlSeconds ?? DEFAULT_WORKER_LOCK_TTL_SECONDS,
     heartbeatIntervalMs:
@@ -673,10 +651,7 @@ export function resolveWorkerConfig(
       config.worker?.hardDeleteRetryDelayMs ?? DEFAULT_WORKER_HARD_DELETE_RETRY_DELAY_MS,
     hardDeleteFailedRetentionDays:
       config.worker?.hardDeleteFailedRetentionDays ??
-      DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS,
-    hardDeleteVersionPurgeEnabled:
-      config.worker?.hardDeleteVersionPurgeEnabled ??
-      DEFAULT_WORKER_HARD_DELETE_VERSION_PURGE_ENABLED
+      DEFAULT_WORKER_HARD_DELETE_FAILED_RETENTION_DAYS
   };
 }
 
@@ -811,9 +786,9 @@ function parseSearchConfig(
     issues.push("MEILI_METRICS_API_KEY is required in production");
   }
 
-  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(indexPrefix)) {
+  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/u.test(indexPrefix)) {
     issues.push(
-      "MEILI_INDEX_PREFIX must start with a lowercase letter or number and contain at most 32 lowercase letters, numbers, underscores, or hyphens"
+      "MEILI_INDEX_PREFIX must start with a lowercase letter or number and contain at most 80 lowercase letters, numbers, underscores, or hyphens"
     );
   }
 
@@ -1043,18 +1018,39 @@ function parseFileLoggingConfig(
   env: RuntimeEnv,
   issues: string[]
 ): NonNullable<NonNullable<RuntimeConfig["logging"]>["file"]> {
+  const maxBytes = optionalPositiveInteger(
+    env,
+    "LOG_FILE_MAX_BYTES",
+    DEFAULT_LOG_FILE_MAX_BYTES,
+    issues
+  );
+  const maxTotalBytes = optionalPositiveInteger(
+    env,
+    "LOG_FILE_MAX_TOTAL_BYTES",
+    DEFAULT_LOG_FILE_MAX_TOTAL_BYTES,
+    issues
+  );
+  if (maxBytes < 256) {
+    issues.push("LOG_FILE_MAX_BYTES must be at least 256");
+  }
+  if (maxTotalBytes < maxBytes) {
+    issues.push("LOG_FILE_MAX_TOTAL_BYTES must be greater than or equal to LOG_FILE_MAX_BYTES");
+  }
+
   return {
     directory: resolve(process.cwd(), optionalString(env, "LOG_FILE_DIR") ?? "logs"),
-    maxBytes: optionalPositiveInteger(
-      env,
-      "LOG_FILE_MAX_BYTES",
-      DEFAULT_LOG_FILE_MAX_BYTES,
-      issues
-    ),
+    maxBytes,
     maxFiles: optionalPositiveInteger(
       env,
       "LOG_FILE_MAX_FILES",
       DEFAULT_LOG_FILE_MAX_FILES,
+      issues
+    ),
+    maxTotalBytes,
+    retentionDays: optionalPositiveInteger(
+      env,
+      "LOG_FILE_RETENTION_DAYS",
+      DEFAULT_LOG_FILE_RETENTION_DAYS,
       issues
     )
   };

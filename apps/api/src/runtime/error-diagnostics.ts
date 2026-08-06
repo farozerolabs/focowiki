@@ -62,9 +62,15 @@ export function createRuntimeErrorDiagnostics(error: unknown): RuntimeErrorDiagn
 export function sanitizeDiagnosticText(value: string): string {
   return redactSecrets(value)
     .replace(/\b(?:postgres(?:ql)?|redis|https?|s3):\/\/[^\s]+/giu, "<redacted-url>")
-    .replace(/\b(?:objectKey|object_key)\s*[:=]\s*[^\s,;]+/giu, "objectKey=<redacted>")
-    .replace(/(?:^|\s)(?:\/[A-Za-z0-9._-]+){3,}(?=[:\s)]|$)/gmu, " <redacted-path>")
-    .replace(/(?:^|\s)[A-Za-z]:\\(?:[^\s\\]+\\){2,}[^\s]+/gmu, " <redacted-path>")
+    .replace(/\bfile:\/\/\/[^\s)]+/giu, "<redacted-path>")
+    .replace(
+      /\b((?:s3)?object[\s_-]*(?:id|key|checksum)|storage[\s_-]*(?:key|prefix)|bucket(?:[\s_-]*name)?|(?:content|manifest)?checksum(?:[\s_-]*sha256)?|(?:meili(?:search)?[\s_-]*)?index[\s_-]*(?:uid|name)|(?:meili(?:search)?[\s_-]*)?task[\s_-]*(?:uid|name|id)|table[\s_-]*(?:name|id|identifier)|owner[\s_-]*row(?:[\s_-]*id)?|lease(?:[\s_-]*(?:id|token|owner|row))?|(?:legacy[\s_-]*)?generation[\s_-]*(?:details|history|kind|payload|row|state)|predecessor[\s_-]*generation[\s_-]*id|cleanup[\s_-]*(?:action[\s_-]*id|details|object[\s_-]*keys?)|deletion[\s_-]*intent[\s_-]*id)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+      "$1=<redacted>"
+    )
+    .replace(/(['"])\/(?:Users|home|tmp|private|var|opt|usr|dev|etc|Volumes)\/[^'"]+\1/giu, "$1<redacted-path>$1")
+    .replace(/(^|[\s'"(:])\/(?:Users|home|tmp|private|var|opt|usr|dev|etc|Volumes)(?:\/[^\s)'":\]]+)+/gimu, "$1<redacted-path>")
+    .replace(/(['"])[A-Za-z]:\\[^'"]+\1/gu, "$1<redacted-path>$1")
+    .replace(/(^|[\s'"(:])[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s)'":\]]+/gmu, "$1<redacted-path>")
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 2_000);

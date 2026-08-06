@@ -14,6 +14,20 @@ const REJECTED_AT_REQUEST = "rejected_at_request";
 const ACCEPTED = "accepted";
 const ACCEPTED_THEN_FAILED = "accepted_then_failed";
 
+export function buildDeploymentBoundedMaintenanceCandidates(settings) {
+  const concurrency = settings?.compactionConcurrency;
+  if (!Number.isSafeInteger(concurrency) || concurrency <= 0) {
+    throw new TypeError("compactionConcurrency must be a positive integer");
+  }
+  return {
+    atLimit: { ...settings },
+    overLimit: {
+      ...settings,
+      compactionConcurrency: concurrency + 1
+    }
+  };
+}
+
 export function buildInterleavedBoundaryCorpus() {
   const combiningTitle = "Re\u0301sume\u0301";
   const normalizedTitle = combiningTitle.normalize("NFC");
@@ -206,7 +220,9 @@ export function buildInterleavedBoundaryCorpus() {
       protocol("page-size-at-limit", "pagination", ACCEPTED),
       protocol("page-size-over-limit", "pagination", REJECTED_AT_REQUEST),
       protocol("concurrency-at-limit", "runtime_setting", ACCEPTED),
-      protocol("concurrency-over-limit", "runtime_setting", REJECTED_AT_REQUEST)
+      protocol("concurrency-over-limit", "runtime_setting", REJECTED_AT_REQUEST),
+      protocol("request-cancellation", "request_cancellation", ACCEPTED),
+      protocol("public-rate-limit", "rate_limit", REJECTED_AT_REQUEST)
     ]
   };
 }

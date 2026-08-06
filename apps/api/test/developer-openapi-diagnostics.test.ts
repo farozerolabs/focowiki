@@ -2,13 +2,26 @@ import { Hono } from "hono";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { createRuntimeLogger, type RuntimeLogger } from "../src/logger.js";
+import {
+  createRuntimeLogger,
+  type RuntimeLogger,
+  type RuntimeLogSink
+} from "../src/logger.js";
 import {
   installDeveloperOpenApiDiagnosticBoundary,
   readDeveloperJsonObjectBody,
   safe
 } from "../src/developer-openapi/route-helpers.js";
+import {
+  registerDeveloperOpenApiSourceResourceRoutes
+} from "../src/developer-openapi/source-resource-routes.js";
+import type { DeveloperOpenApiRouteServices } from
+  "../src/developer-openapi/routes.js";
+import type { DeveloperOpenApiApplication } from
+  "../src/developer-openapi/services.js";
+import { SourceResourceError } from "../src/domain/source-resource.js";
 
 describe("Developer OpenAPI diagnostics", () => {
   it("rejects JSON request bodies with invalid UTF-8 bytes", async () => {
@@ -56,6 +69,40 @@ describe("Developer OpenAPI diagnostics", () => {
       error: {
         code: "VALIDATION_ERROR",
         details: { fields: ["internalFlag"] }
+      }
+    });
+  });
+
+  it("returns a conflict when a concurrent knowledge-base update is busy", async () => {
+    const app = new Hono();
+    registerDeveloperOpenApiSourceResourceRoutes(
+      app,
+      {
+        sourceApplication: {
+          available: () => true,
+          updateKnowledgeBase: vi.fn(async () => {
+            throw new SourceResourceError("RESOURCE_BUSY");
+          })
+        }
+      } as unknown as DeveloperOpenApiRouteServices,
+      {} as DeveloperOpenApiApplication
+    );
+
+    const response = await app.request("/openapi/v2/knowledge-bases/kb-busy", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "if-match": "1"
+      },
+      body: JSON.stringify({ description: "Concurrent update" })
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "CONFLICT",
+        httpStatus: 409,
+        message: "RESOURCE_BUSY"
       }
     });
   });
@@ -125,7 +172,13 @@ describe("Developer OpenAPI diagnostics", () => {
     const logger = createRuntimeLogger({
       logging: {
         level: "debug",
-        file: { directory: logDir, maxBytes: 900, maxFiles: 2 }
+        file: {
+          directory: logDir,
+          maxBytes: 4_096,
+          maxFiles: 2,
+          maxTotalBytes: 8_192,
+          retentionDays: 7
+        }
       }
     }, silentSink(), { streamName: "api" });
     installDeveloperOpenApiDiagnosticBoundary(app, {
@@ -166,11 +219,13 @@ describe("Developer OpenAPI diagnostics", () => {
       const files = readdirSync(logDir)
         .filter((file) => file.startsWith("focowiki-api"))
         .sort();
-      expect(files).toEqual(["focowiki-api.1.log", "focowiki-api.log"]);
+      expect(files).toEqual(["focowiki-api.1.log.gz", "focowiki-api.log"]);
       const persisted = files
-        .map((file) => readFileSync(join(logDir, file), "utf8"))
+        .map((file) => file.endsWith(".gz")
+          ? gunzipSync(readFileSync(join(logDir, file))).toString("utf8")
+          : readFileSync(join(logDir, file), "utf8"))
         .join("\n");
-      expect(persisted).toContain("Developer OpenAPI request failed");
+      expect(persisted).toContain("developer_openapi.request_failed");
       for (const secret of [
         "private-key-",
         "private-cookie-",
@@ -199,7 +254,7 @@ function createLogger() {
   } satisfies RuntimeLogger;
 }
 
-function silentSink(): RuntimeLogger {
+function silentSink(): RuntimeLogSink {
   return {
     error() {},
     warn() {},

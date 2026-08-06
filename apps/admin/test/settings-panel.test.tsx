@@ -55,62 +55,27 @@ vi.mock("@/lib/admin-api", () => ({
       worker: {
         sourceFileConcurrency: 2,
         sourceObjectReadConcurrency: 2,
-        graphQueryConcurrency: 2,
-        databaseMutationConcurrency: 2,
         claimBatchSize: 10,
-        generationBatchSize: 50,
         pollIntervalMs: 1000,
         lockTtlSeconds: 900,
         heartbeatIntervalMs: 15000,
         jobMaxAttempts: 3,
         jobRetryDelayMs: 30000,
-        sourceQueueHardDepth: 5000,
-        sourceQueueResumeDepth: 3000,
-        sourceQueueHardAgeSeconds: 3600,
-        sourceQueueResumeAgeSeconds: 1800,
-        shutdownGraceMs: 30000,
         completedJobRetentionDays: 7,
-        failedJobRetentionDays: 30,
-        deadLetterJobRetentionDays: 90,
-        retentionCleanupBatchSize: 1000,
         hardDeleteConcurrency: 1,
         hardDeleteDatabaseBatchSize: 1000,
         hardDeleteObjectBatchSize: 1000,
         hardDeleteMaxAttempts: 3,
-        hardDeleteRetryDelayMs: 60000,
-        hardDeleteFailedRetentionDays: 30,
-        hardDeleteVersionPurgeEnabled: false
+        hardDeleteRetryDelayMs: 60000
       },
       publication: {
         mode: "batch",
-        batchSize: 300,
         intervalSeconds: 300,
         roleConcurrency: 1,
         claimBatchSize: 1,
-        impactBatchSize: 100,
-        impactConcurrency: 8,
-        generationAssemblyConcurrency: 1,
-        projectionPartitionConcurrency: 8,
         generatedObjectWriteConcurrency: 8,
-        directoryMaterializationConcurrency: 4,
-        dirtyFileHardCount: 2000,
-        dirtyFileResumeCount: 1000,
-        dirtyAgeHardSeconds: 900,
-        dirtyAgeResumeSeconds: 300,
-        pendingImpactHardCount: 20000,
-        pendingImpactResumeCount: 10000,
-        generationRetentionDays: 7,
-        indexShardSize: 1000,
-        linkIndexShardSize: 1000,
-        manifestShardSize: 1000,
-        graphEdgeShardSize: 5000,
-        graphCandidateLimit: 200,
-        graphMaintenanceBatchSize: 500,
-        rootSummaryLimit: 500,
         directoryIndexMaxEntries: 200,
-        directoryIndexMaxBytes: 65536,
-        okfLogMaxEntries: 100,
-        okfLogMaxBytes: 65536
+        directoryIndexMaxBytes: 65536
       },
       graph: {
         candidateLimit: 200,
@@ -120,8 +85,6 @@ vi.mock("@/lib/admin-api", () => ({
         searchDefaultFanout: 10,
         searchMaxFanout: 25,
         modelReviewEnabled: true,
-        publicationShardSize: 5000,
-        cacheTtlSeconds: 30,
         genericPhraseThreshold: 4
       },
       maintenance: {
@@ -129,41 +92,25 @@ vi.mock("@/lib/admin-api", () => ({
         knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
         knowledgeBaseMaintenanceConcurrency: 1,
         reconciliationEnabled: true,
-        scanIntervalSeconds: 21600,
         scanBatchSize: 500,
         deletionBatchSize: 100,
         quarantineGracePeriodSeconds: 86400,
-        confirmationPasses: 2,
         maxAttempts: 5,
         retryDelayMs: 30000,
-        migrationBackfillConcurrency: 2,
-        compactionConcurrency: 1,
         projectionRepairConcurrency: 4,
         projectionRepairDatabaseBatchSize: 2000,
         projectionRepairObjectWriteConcurrency: 8,
         lexicalRebuildConcurrency: 4,
         lexicalRebuildSourceReadConcurrency: 8,
-        lexicalRebuildDatabaseWriteConcurrency: 2,
-        lexicalRebuildClaimBatchSize: 500,
-        lexicalRebuildDatabaseBatchSize: 50,
         lexicalRebuildMaxInFlightSourceBytes: 67_108_864
       },
       search: {
         requestTimeoutMs: 3000,
         engineSearchCutoffMs: 1000,
-        branchCandidateLimit: 200,
-        fusedCandidateLimit: 100,
         overfetchFactor: 3,
-        graphSeedLimit: 100,
-        graphNeighborLimit: 20,
-        cacheTtlSeconds: 15,
         indexBatchDocumentCount: 500,
         indexBatchCompressedBytes: 8_388_608,
         maxInFlightTasks: 8,
-        engineQueueLatencyLimitMs: 30000,
-        engineResidentMemoryLimitBytes: 3221225472,
-        engineDatabaseSizeLimitBytes: 107374182400,
-        engineTaskQueueSizeLimitBytes: 536870912,
         taskPollIntervalMs: 500,
         taskTimeoutMs: 600_000,
         maxAttempts: 5,
@@ -289,6 +236,47 @@ describe("SettingsPanel", () => {
     expect(fetchRuntimeSettings).toHaveBeenCalled();
   });
 
+  it("keeps the released settings page shell while removing only approved fields", async () => {
+    const { container } = render(<SettingsPanel />);
+
+    expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "API limits",
+      "Worker",
+      "Publication",
+      "Graph",
+      "Maintenance",
+      "Search",
+      "Models"
+    ]);
+    expect(container.querySelector("section.flex.min-w-0.flex-col.gap-6")).toBeTruthy();
+    expect(container.querySelector(".max-w-full.overflow-x-auto [role='tablist']")).toBeTruthy();
+
+    for (const tabName of ["Worker", "Publication", "Maintenance", "Search"]) {
+      activateTab(screen.getByRole("tab", { name: tabName }));
+      await waitFor(() => {
+        expect(screen.getByRole("tab", { name: tabName }).getAttribute("data-state"))
+          .toBe("active");
+      });
+      expect(container.querySelector(".grid.gap-4.md\\:grid-cols-2.xl\\:grid-cols-3"))
+        .toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(1);
+    }
+
+    for (const id of [
+      "worker-generationBatchSize",
+      "worker-hardDeleteVersionPurgeEnabled",
+      "publication-generationAssemblyConcurrency",
+      "publication-generationRetentionDays",
+      "maintenance-migrationBackfillConcurrency",
+      "maintenance-lexicalRebuildDatabaseWriteConcurrency",
+      "maintenance-lexicalRebuildClaimBatchSize",
+      "maintenance-lexicalRebuildDatabaseBatchSize"
+    ]) {
+      expect(document.getElementById(id), id).toBeNull();
+    }
+  });
+
   it("keeps empty required number fields empty and blocks settings save", async () => {
     render(<SettingsPanel />);
 
@@ -347,15 +335,6 @@ describe("SettingsPanel", () => {
     const lexicalSourceReads = document.getElementById(
       "maintenance-lexicalRebuildSourceReadConcurrency"
     ) as HTMLInputElement;
-    const lexicalDatabaseWrites = document.getElementById(
-      "maintenance-lexicalRebuildDatabaseWriteConcurrency"
-    ) as HTMLInputElement;
-    const lexicalClaimBatch = document.getElementById(
-      "maintenance-lexicalRebuildClaimBatchSize"
-    ) as HTMLInputElement;
-    const lexicalDatabaseBatch = document.getElementById(
-      "maintenance-lexicalRebuildDatabaseBatchSize"
-    ) as HTMLInputElement;
     const lexicalInFlightBytes = document.getElementById(
       "maintenance-lexicalRebuildMaxInFlightSourceBytes"
     ) as HTMLInputElement;
@@ -364,14 +343,10 @@ describe("SettingsPanel", () => {
     expect(repairObjectWrites?.value).toBe("8");
     expect(lexicalConcurrency?.value).toBe("4");
     expect(lexicalSourceReads?.value).toBe("8");
-    expect(lexicalDatabaseWrites?.value).toBe("2");
-    expect(lexicalClaimBatch?.value).toBe("500");
-    expect(lexicalDatabaseBatch?.value).toBe("50");
     expect(lexicalInFlightBytes?.value).toBe("67108864");
     expect(document.getElementById("maintenance-projectionRepairWorkerPoolMax")).toBeNull();
     expect(document.getElementById("maintenance-lexicalRebuildWorkerPoolMax")).toBeNull();
     expect(screen.getByText(/Larger pages also create more bounded database chunks/)).toBeTruthy();
-    expect(screen.getByText(/Concurrent lexical rebuild work lanes/)).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
     expect(screen.getByText("Source file protection")).toBeTruthy();
     expect(screen.getByText(/Objects resolved/)).toBeTruthy();
@@ -382,15 +357,9 @@ describe("SettingsPanel", () => {
     expect(screen.getByText(/Estimated completion/)).toBeTruthy();
     expect(screen.getByText("50.1")).toBeTruthy();
 
-    fireEvent.change(repairConcurrency, { target: { value: "6" } });
-    fireEvent.change(repairBatchSize, { target: { value: "3000" } });
-    fireEvent.change(repairObjectWrites, { target: { value: "10" } });
-    fireEvent.change(lexicalConcurrency, { target: { value: "6" } });
-    fireEvent.change(lexicalSourceReads, { target: { value: "12" } });
-    fireEvent.change(lexicalDatabaseWrites, { target: { value: "3" } });
-    fireEvent.change(lexicalClaimBatch, { target: { value: "750" } });
-    fireEvent.change(lexicalDatabaseBatch, { target: { value: "75" } });
-    fireEvent.change(lexicalInFlightBytes, { target: { value: "134217728" } });
+    fireEvent.change(scanBatchSize, { target: { value: "600" } });
+    fireEvent.change(knowledgeBaseConcurrency, { target: { value: "2" } });
+    fireEvent.click(document.getElementById("maintenance-reconciliationEnabled")!);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -398,19 +367,15 @@ describe("SettingsPanel", () => {
         expect.objectContaining({
           knowledgeBaseMaintenanceMode: "manual",
           knowledgeBaseMaintenanceScanIntervalSeconds: 21600,
-          knowledgeBaseMaintenanceConcurrency: 1,
-          reconciliationEnabled: true,
-          scanBatchSize: 500,
-          confirmationPasses: 2,
-          projectionRepairConcurrency: 6,
-          projectionRepairDatabaseBatchSize: 3000,
-          projectionRepairObjectWriteConcurrency: 10,
-          lexicalRebuildConcurrency: 6,
-          lexicalRebuildSourceReadConcurrency: 12,
-          lexicalRebuildDatabaseWriteConcurrency: 3,
-          lexicalRebuildClaimBatchSize: 750,
-          lexicalRebuildDatabaseBatchSize: 75,
-          lexicalRebuildMaxInFlightSourceBytes: 134_217_728
+          knowledgeBaseMaintenanceConcurrency: 2,
+          reconciliationEnabled: false,
+          scanBatchSize: 600,
+          projectionRepairConcurrency: 4,
+          projectionRepairDatabaseBatchSize: 2000,
+          projectionRepairObjectWriteConcurrency: 8,
+          lexicalRebuildConcurrency: 4,
+          lexicalRebuildSourceReadConcurrency: 8,
+          lexicalRebuildMaxInFlightSourceBytes: 67_108_864
         })
       );
     });
@@ -455,19 +420,29 @@ describe("SettingsPanel", () => {
     const inFlightTasks = document.getElementById(
       "search-maxInFlightTasks"
     ) as HTMLInputElement;
-    const queueLatencyLimit = document.getElementById(
-      "search-engineQueueLatencyLimitMs"
+    const overfetchFactor = document.getElementById(
+      "search-overfetchFactor"
+    ) as HTMLInputElement;
+    const stagingRetentionHours = document.getElementById(
+      "search-stagingRetentionHours"
+    ) as HTMLInputElement;
+    const cropLength = document.getElementById(
+      "search-cropLength"
     ) as HTMLInputElement;
     expect(requestTimeout.value).toBe("3000");
     expect(engineCutoff.value).toBe("1000");
     expect(inFlightTasks.value).toBe("8");
-    expect(queueLatencyLimit.value).toBe("30000");
+    expect(overfetchFactor.value).toBe("3");
+    expect(stagingRetentionHours.value).toBe("24");
+    expect(cropLength.value).toBe("1200");
     expect(screen.getByText(/Maximum end-to-end time for one search request/)).toBeTruthy();
 
     fireEvent.change(requestTimeout, { target: { value: "4000" } });
     fireEvent.change(engineCutoff, { target: { value: "1200" } });
     fireEvent.change(inFlightTasks, { target: { value: "6" } });
-    fireEvent.change(queueLatencyLimit, { target: { value: "45000" } });
+    fireEvent.change(overfetchFactor, { target: { value: "4" } });
+    fireEvent.change(stagingRetentionHours, { target: { value: "48" } });
+    fireEvent.change(cropLength, { target: { value: "1500" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -475,7 +450,9 @@ describe("SettingsPanel", () => {
         requestTimeoutMs: 4000,
         engineSearchCutoffMs: 1200,
         maxInFlightTasks: 6,
-        engineQueueLatencyLimitMs: 45000,
+        overfetchFactor: 4,
+        stagingRetentionHours: 48,
+        cropLength: 1500,
         indexBatchDocumentCount: 500,
         indexBatchCompressedBytes: 8_388_608
       }));
@@ -491,56 +468,46 @@ describe("SettingsPanel", () => {
     expect(screen.queryByRole("tab", { name: "Upload" })).toBeNull();
   });
 
-  it("saves source worker generation and hysteresis settings", async () => {
+  it("saves live source worker concurrency settings", async () => {
     render(<SettingsPanel />);
     expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Worker" }));
 
-    const generationBatchSize = await waitFor(() => {
-      const input = document.getElementById("worker-generationBatchSize") as HTMLInputElement | null;
-      if (!input) {
-        throw new Error("Expected worker generation batch input.");
-      }
-      return input;
-    });
-    const resumeDepth = document.getElementById("worker-sourceQueueResumeDepth") as HTMLInputElement;
-    fireEvent.change(generationBatchSize, { target: { value: "80" } });
-    fireEvent.change(resumeDepth, { target: { value: "2500" } });
+    const sourceObjectReads = document.getElementById(
+      "worker-sourceObjectReadConcurrency"
+    ) as HTMLInputElement;
+    fireEvent.change(sourceObjectReads, { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updateWorkerSettings).toHaveBeenCalledWith(expect.objectContaining({
-        generationBatchSize: 80,
-        sourceQueueHardDepth: 5000,
-        sourceQueueResumeDepth: 2500
+        sourceFileConcurrency: 2,
+        sourceObjectReadConcurrency: 1
       }));
     });
   });
 
-  it("saves publication pressure and bounded work settings", async () => {
+  it("saves live publication object-write concurrency", async () => {
     render(<SettingsPanel />);
     expect(await screen.findByRole("tab", { name: "API limits" })).toBeTruthy();
     activateTab(screen.getByRole("tab", { name: "Publication" }));
 
-    const impactBatchSize = await waitFor(() => {
-      const input = document.getElementById("publication-impactBatchSize") as HTMLInputElement | null;
+    const objectWriteConcurrency = await waitFor(() => {
+      const input = document.getElementById(
+        "publication-generatedObjectWriteConcurrency"
+      ) as HTMLInputElement | null;
       if (!input) {
-        throw new Error("Expected publication impact batch input.");
+        throw new Error("Expected publication object-write concurrency input.");
       }
       return input;
     });
-    fireEvent.change(impactBatchSize, { target: { value: "120" } });
+    fireEvent.change(objectWriteConcurrency, { target: { value: "7" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(updatePublicationSettings).toHaveBeenCalledWith(expect.objectContaining({
         roleConcurrency: 1,
-        impactBatchSize: 120,
-        impactConcurrency: 8,
-        dirtyFileHardCount: 2000,
-        dirtyFileResumeCount: 1000,
-        pendingImpactHardCount: 20000,
-        pendingImpactResumeCount: 10000
+        generatedObjectWriteConcurrency: 7
       }));
     });
   });

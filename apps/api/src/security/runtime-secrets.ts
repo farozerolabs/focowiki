@@ -43,6 +43,28 @@ export function loadDeploymentSecret(input?: { directory?: string | undefined })
   return existing;
 }
 
+export function assertDeploymentSecret(input?: {
+  directory?: string | undefined;
+}): string {
+  const directory = input?.directory ?? resolveDefaultRuntimeSecretDirectory();
+  const filePath = join(directory, DEPLOYMENT_KEY_FILE);
+  let value: string;
+
+  try {
+    value = readFileSync(filePath, "utf8").trim();
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) {
+      throw new Error("Runtime deployment secret is unavailable");
+    }
+    throw error;
+  }
+
+  if (!isValidDeploymentSecret(value)) {
+    throw new Error("Runtime deployment secret is invalid");
+  }
+  return value;
+}
+
 export function resolveDefaultRuntimeSecretDirectory(startDirectory = process.cwd()): string {
   const workspaceRoot = findWorkspaceRoot(startDirectory);
 

@@ -1,7 +1,29 @@
+import matter from "gray-matter";
 import { describe, expect, it } from "vitest";
 import { parseUploadedMarkdownSource, resolveSourceMetadata } from "../src/metadata.js";
 
+const matterWithCache = matter as typeof matter & {
+  cache: Record<string, unknown>;
+  clearCache(): void;
+};
+
 describe("resolveSourceMetadata", () => {
+  it("does not retain unique source bodies in the parser cache", () => {
+    matterWithCache.clearCache();
+    try {
+      for (let index = 0; index < 10; index += 1) {
+        parseUploadedMarkdownSource({
+          fileName: `source-${index}.md`,
+          content: `---\ntitle: Source ${index}\n---\n# Body ${index}`
+        });
+      }
+
+      expect(Object.keys(matterWithCache.cache)).toHaveLength(0);
+    } finally {
+      matterWithCache.clearCache();
+    }
+  });
+
   it("uses Markdown frontmatter metadata", () => {
     const result = resolveSourceMetadata({
       fileName: "intro.md",

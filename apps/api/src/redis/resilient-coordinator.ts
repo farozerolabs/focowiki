@@ -49,10 +49,6 @@ export function createResilientRedisCoordinator(input: {
       run(() => coordinator.acquireSourceFileGraphLock(...arguments_), false),
     releaseSourceFileGraphLock: (...arguments_) =>
       run(() => coordinator.releaseSourceFileGraphLock(...arguments_), false),
-    recordSourceFileEvent: (...arguments_) =>
-      runVoid(() => coordinator.recordSourceFileEvent(...arguments_)),
-    recordSourceFileGraphState: (...arguments_) =>
-      runVoid(() => coordinator.recordSourceFileGraphState(...arguments_)),
     acquireKnowledgeBasePublicationLock: (...arguments_) =>
       run(() => coordinator.acquireKnowledgeBasePublicationLock(...arguments_), false),
     releaseKnowledgeBasePublicationLock: (...arguments_) =>

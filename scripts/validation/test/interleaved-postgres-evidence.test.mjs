@@ -4,41 +4,38 @@ import {
   createInterleavedPostgresEvidence
 } from "../lib/interleaved-postgres-evidence.mjs";
 
-test("collects bounded lifecycle evidence without storage keys or request bodies", async () => {
+test("collects bounded storage vNext lifecycle evidence without storage keys or bodies", async () => {
   const calls = [];
-  const query = async (name, knowledgeBaseId) => {
-    calls.push({ name, knowledgeBaseId });
-    return fixtures[name] ?? [];
-  };
-  const evidence = createInterleavedPostgresEvidence({ query });
+  const evidence = createInterleavedPostgresEvidence({
+    query: async (name, knowledgeBaseId) => {
+      calls.push({ name, knowledgeBaseId });
+      return fixtures[name] ?? [];
+    }
+  });
 
   const snapshot = await evidence.snapshotKnowledgeBase("kb-validation");
 
   assert.equal(snapshot.knowledgeBase.id, "kb-validation");
   assert.equal(snapshot.sourceFiles[0].resourceRevision, 2);
-  assert.equal(snapshot.sourceRevisions[0].revision, 2);
-  assert.equal(snapshot.generations[0].predecessorGenerationId, "generation-1");
-  assert.equal(snapshot.activeProjections[0].logicalPath, "pages/reference.md");
-  assert.equal(snapshot.immutableObjects[0].checksumSha256, "a".repeat(64));
-  assert.doesNotMatch(JSON.stringify(snapshot), /private-bucket/u);
-  assert.doesNotMatch(JSON.stringify(snapshot), /requestJson/u);
+  assert.equal(snapshot.sourceRevisions[0].revisionRole, "current");
+  assert.equal(snapshot.releaseRoots[0].rootRole, "active");
+  assert.equal(snapshot.activeSnapshots[0].releaseRootId, "root-2");
+  assert.equal(snapshot.objectRegistrations[0].objectFormat, "source-markdown-v1");
+  assert.doesNotMatch(JSON.stringify(snapshot), /private-bucket|requestJson|storageKey/u);
   assert.ok(calls.every((call) => call.knowledgeBaseId === "kb-validation"));
 });
 
 test("rejects missing and cross-scope knowledge-base evidence", async () => {
-  const missing = createInterleavedPostgresEvidence({
-    query: async () => []
-  });
+  const missing = createInterleavedPostgresEvidence({ query: async () => [] });
   await assert.rejects(
     () => missing.snapshotKnowledgeBase("kb-missing"),
     /knowledge base evidence was not found/i
   );
 
   const crossed = createInterleavedPostgresEvidence({
-    query: async (name) =>
-      name === "knowledgeBase"
-        ? [{ id: "kb-other", resourceRevision: 1, catalogGeneration: 0 }]
-        : []
+    query: async (name) => name === "knowledgeBase"
+      ? [{ id: "kb-other", resourceRevision: 1 }]
+      : []
   });
   await assert.rejects(
     () => crossed.snapshotKnowledgeBase("kb-validation"),
@@ -46,7 +43,7 @@ test("rejects missing and cross-scope knowledge-base evidence", async () => {
   );
 });
 
-test("captures bounded global counts, settings versions, workers, and active generations", async () => {
+test("captures bounded global counts, setting revision, live work, active roots, and objects", async () => {
   const evidence = createInterleavedPostgresEvidence({
     query: async (name) => globalFixtures[name] ?? []
   });
@@ -54,28 +51,42 @@ test("captures bounded global counts, settings versions, workers, and active gen
   const snapshot = await evidence.snapshotGlobal();
 
   assert.equal(snapshot.counts.sourceFiles, 10);
-  assert.equal(snapshot.runtimeSettings[0].key, "worker");
+  assert.equal(snapshot.runtimeSettings[0].id, "settings-2");
   assert.equal(snapshot.workers[0].role, "source");
-  assert.equal(snapshot.knowledgeBases[0].activeGenerationId, "generation-1");
-  assert.equal(snapshot.immutableObjects[0].lifecycleState, "active");
+  assert.equal(snapshot.knowledgeBases[0].activeRootPublicId, "root-1");
+  assert.equal(snapshot.immutableObjects[0].state, "verified");
 });
 
-test("captures every lexical rebuild generation referenced by work items", async () => {
+test("detects live work items across every storage vNext work kind", async () => {
+  const observations = [[{ liveCount: "1" }], [{ liveCount: "0" }]];
+  const evidence = createInterleavedPostgresEvidence({
+    query: async (name, knowledgeBaseId) => {
+      assert.equal(name, "liveWorkItemCount");
+      assert.equal(knowledgeBaseId, "kb-validation");
+      return observations.shift();
+    }
+  });
+
+  assert.equal(await evidence.hasLiveWorkItems("kb-validation"), true);
+  assert.equal(await evidence.hasLiveWorkItems("kb-validation"), false);
+});
+
+test("queries only current storage vNext evidence tables and preserves bounded safe errors", async () => {
   const queries = [];
   const sql = async (parts, ...values) => {
     const text = parts.join("$");
     queries.push(text);
     if (
-      text.includes("FROM focowiki.knowledge_bases")
-      && text.includes("WHERE id =")
+      text.includes("FROM focowiki.knowledge_bases knowledge_base")
+      && text.includes("WHERE knowledge_base.public_id =")
     ) {
       return [{
         id: values[0],
         name: "Validation",
         description: null,
-        activeGenerationId: null,
         resourceRevision: 1,
-        catalogGeneration: 0,
+        activeRootPublicId: null,
+        activeRevision: null,
         deletedAt: null
       }];
     }
@@ -87,67 +98,23 @@ test("captures every lexical rebuild generation referenced by work items", async
   await evidence.snapshotKnowledgeBase("kb-validation");
   await evidence.close();
 
-  const lexicalRebuildQuery = queries.find((query) =>
-    query.includes("FROM focowiki.knowledge_base_lexical_rebuilds")
-  );
-  assert.ok(lexicalRebuildQuery);
-  assert.doesNotMatch(lexicalRebuildQuery, /LIMIT 1/u);
-  assert.match(
-    lexicalRebuildQuery,
-    /ORDER BY created_at, target_generation_id/u
-  );
-  const lexicalWorkItemQuery = queries.find((query) =>
-    query.includes("FROM focowiki.lexical_rebuild_work_items")
-  );
-  assert.ok(lexicalWorkItemQuery);
-  assert.match(
-    lexicalWorkItemQuery,
-    /JOIN focowiki\.knowledge_base_lexical_rebuilds/u
-  );
-});
-
-test("preserves bounded safe failure messages needed to diagnose cleaned scenarios", async () => {
-  const queries = new Map();
-  const sql = async (parts, ...values) => {
-    const text = parts.join("$");
-    if (
-      text.includes("FROM focowiki.knowledge_bases")
-      && text.includes("WHERE id =")
-    ) {
-      return [{
-        id: values[0],
-        name: "Validation",
-        description: null,
-        activeGenerationId: null,
-        resourceRevision: 1,
-        catalogGeneration: 0,
-        deletedAt: null
-      }];
-    }
-    for (const table of [
-      "source_files",
-      "role_jobs",
-      "publication_generations",
-      "publication_progress",
-      "publication_impacts",
-      "publication_subtasks"
-    ]) {
-      if (text.includes(`FROM focowiki.${table}`)) queries.set(table, text);
-    }
-    return [];
-  };
-  sql.end = async () => undefined;
-  const evidence = createInterleavedPostgresEvidence({ sql });
-
-  await evidence.snapshotKnowledgeBase("kb-validation");
-  await evidence.close();
-
-  assert.match(queries.get("source_files") ?? "", /terminal_failure_message AS "terminalFailureMessage"/u);
-  assert.match(queries.get("role_jobs") ?? "", /last_error_message AS "lastErrorMessage"/u);
-  assert.match(queries.get("publication_generations") ?? "", /safe_error_message AS "safeErrorMessage"/u);
-  assert.match(queries.get("publication_progress") ?? "", /safe_error_message AS "safeErrorMessage"/u);
-  assert.match(queries.get("publication_impacts") ?? "", /last_error_message AS "lastErrorMessage"/u);
-  assert.match(queries.get("publication_subtasks") ?? "", /last_error_message AS "lastErrorMessage"/u);
+  const serialized = queries.join("\n");
+  for (const table of [
+    "operations",
+    "operation_work_items",
+    "operation_results",
+    "release_roots",
+    "active_snapshots",
+    "search_projections",
+    "object_owners",
+    "object_registrations"
+  ]) {
+    assert.match(serialized, new RegExp(`focowiki\\.${table}`, "u"));
+  }
+  assert.match(serialized, /safe_error_message AS "safeErrorMessage"/u);
+  assert.match(serialized, /safe_message AS "safeMessage"/u);
+  assert.match(serialized, /safe_error_code AS "safeErrorCode"/u);
+  assert.doesNotMatch(serialized, /storage_key|settings_values/u);
 });
 
 const fixtures = {
@@ -155,53 +122,50 @@ const fixtures = {
     id: "kb-validation",
     name: "Validation",
     description: "Lifecycle validation",
-    activeGenerationId: "generation-2",
     resourceRevision: 2,
-    catalogGeneration: 2,
+    activeRootPublicId: "root-2",
+    activeRevision: 2,
     deletedAt: null
   }],
   sourceFiles: [{
     id: "source-1",
-    relativePath: "reference.md",
-    activeRevisionId: "revision-2",
+    logicalPath: "reference.md",
+    currentRevisionId: "revision-2",
     resourceRevision: 2,
-    contentRevision: 2,
-    processingStatus: "completed",
-    processingStage: "generation_activation",
-    generatedOutputStatus: "visible",
-    deletionIntentId: null,
-    candidateOperationId: null,
+    status: "ready",
     deletedAt: null
   }],
   sourceRevisions: [{
     id: "revision-2",
     sourceFileId: "source-1",
-    revision: 2,
-    processingStatus: "completed",
+    objectId: "object-source",
+    revisionRole: "current",
     checksumSha256: "b".repeat(64)
   }],
-  generations: [{
-    id: "generation-2",
-    predecessorGenerationId: "generation-1",
-    successorGenerationId: null,
-    state: "active",
-    safeErrorCode: null
+  releaseRoots: [{
+    id: "root-2",
+    baseRootId: "root-1",
+    rootRole: "active",
+    resourceRevision: 2
   }],
-  activeProjections: [{
-    projectionKind: "tree",
-    recordId: "record-1",
-    sourceFileId: "source-1",
-    relatedSourceFileId: null,
-    logicalPath: "pages/reference.md",
-    lastChangedGenerationId: "generation-2"
+  activeSnapshots: [{
+    releaseRootId: "root-2",
+    searchProjectionId: "search-1",
+    operationId: "operation-1",
+    resourceRevision: 2
   }],
-  immutableObjects: [{
+  objectOwners: [{
+    id: "owner-1",
+    objectId: "object-source",
+    ownerKind: "source_revision",
+    sourceRevisionId: "revision-2"
+  }],
+  objectRegistrations: [{
+    id: "object-source",
     checksumSha256: "a".repeat(64),
-    formatVersion: 1,
-    lifecycleState: "active",
-    sizeBytes: 512,
-    integrityErrorCode: null,
-    objectKey: "private-bucket/generated.md"
+    objectFormat: "source-markdown-v1",
+    state: "verified",
+    byteCount: 512
   }]
 };
 
@@ -210,27 +174,26 @@ const globalFixtures = {
     knowledgeBases: 1,
     sourceFiles: 10,
     uploadSessions: 2,
-    resourceOperations: 3,
-    deletionIntents: 1,
-    roleJobs: 4,
-    generations: 5,
-    activeProjectionRecords: 30,
-    immutableObjects: 20
+    operations: 3,
+    workItems: 1,
+    releaseRoots: 2,
+    activeSnapshots: 1,
+    searchProjections: 1,
+    objectRegistrations: 20,
+    objectOwners: 20,
+    cleanupActions: 0
   }],
-  globalRuntimeSettings: [{ key: "worker", version: 2, source: "admin" }],
-  globalWorkers: [{
-    role: "source",
-    activeJobCount: 0,
-    lastSeenAt: "2026-07-26T00:00:00.000Z"
-  }],
+  globalRuntimeSettings: [{ id: "settings-2", checksumSha256: "c".repeat(64) }],
+  globalWorkers: [{ role: "source", state: "running", activeJobCount: 1 }],
   globalKnowledgeBases: [{
     id: "kb-1",
-    activeGenerationId: "generation-1",
+    activeRootPublicId: "root-1",
     resourceRevision: 1,
-    catalogGeneration: 10
+    activeRevision: 10
   }],
-  globalImmutableObjects: [{
-    lifecycleState: "active",
+  globalObjectRegistrations: [{
+    state: "verified",
+    objectFormat: "source-markdown-v1",
     count: 20,
     totalSizeBytes: 1024
   }]

@@ -5,23 +5,15 @@ describe("process resource budgets", () => {
   it("isolates saturated resource classes", async () => {
     const budgets = createProcessResourceBudgets({
       model: 1,
-      sourceObjectRead: 1,
-      generatedObjectWrite: 1,
-      graphQuery: 1,
-      databaseMutation: 1,
-      directory: 1,
-      projectionPartition: 1,
-      generationAssembly: 1,
-      migrationBackfill: 1,
-      compaction: 1
+      generatedObjectWrite: 1
     });
     let releaseModel!: () => void;
     const blockedModel = budgets.model.run(() => new Promise<void>((resolve) => {
       releaseModel = resolve;
     }));
 
-    await expect(budgets.sourceObjectRead.run(async () => "read"))
-      .resolves.toBe("read");
+    await expect(budgets.generatedObjectWrite.run(async () => "write"))
+      .resolves.toBe("write");
     expect(budgets.model.snapshot()).toMatchObject({ active: 1, waiting: 0 });
     releaseModel();
     await blockedModel;
@@ -32,19 +24,11 @@ describe("process resource budgets", () => {
     try {
       const budgets = createProcessResourceBudgets({
         model: 1,
-        sourceObjectRead: 1,
-        generatedObjectWrite: 1,
-        graphQuery: 1,
-        databaseMutation: 1,
-        directory: 1,
-        projectionPartition: 1,
-        generationAssembly: 1,
-        migrationBackfill: 1,
-        compaction: 1
+        generatedObjectWrite: 1
       });
       let active = 0;
       let peak = 0;
-      const run = () => budgets.graphQuery.run(async () => {
+      const run = () => budgets.generatedObjectWrite.run(async () => {
         active += 1;
         peak = Math.max(peak, active);
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -57,13 +41,13 @@ describe("process resource budgets", () => {
       await Promise.all([first, second]);
       expect(peak).toBe(1);
 
-      budgets.update({ graphQuery: 2 });
+      budgets.update({ generatedObjectWrite: 2 });
       const third = run();
       const fourth = run();
       await vi.advanceTimersByTimeAsync(10);
       await Promise.all([third, fourth]);
       expect(peak).toBe(2);
-      expect(budgets.graphQuery.snapshot()).toMatchObject({
+      expect(budgets.generatedObjectWrite.snapshot()).toMatchObject({
         active: 0,
         waiting: 0,
         started: 4,
@@ -83,15 +67,7 @@ describe("process resource budgets", () => {
     try {
       const budgets = createProcessResourceBudgets({
         model: 1,
-        sourceObjectRead: 1,
-        generatedObjectWrite: 1,
-        graphQuery: 1,
-        databaseMutation: 1,
-        directory: 1,
-        projectionPartition: 1,
-        generationAssembly: 1,
-        migrationBackfill: 1,
-        compaction: 1
+        generatedObjectWrite: 1
       });
       const first = budgets.model.run(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));

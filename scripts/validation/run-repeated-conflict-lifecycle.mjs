@@ -11,6 +11,9 @@ import {
 import {
   createInterleavedLifecycleController
 } from "./lib/interleaved-lifecycle-controller.mjs";
+import {
+  selectClosedMarkdownSample
+} from "./lib/storage-vnext-linked-corpus-samples.mjs";
 
 loadLocalEnv();
 
@@ -71,11 +74,19 @@ try {
   controller.registerOwnership("knowledgeBases", knowledgeBaseId);
 
   const samples = readSamples(3);
-  const initialFiles = [
-    { relativePath: "repeat/source.md", bytes: samples[0] },
-    { relativePath: "repeat/second.md", bytes: samples[1] },
-    { relativePath: "repeat/nested/third.md", bytes: samples[2] }
-  ];
+  const linkedFiles = samples.map((sample) => ({
+    relativePath: `repeat/${sample.basename}`,
+    bytes: sample.bytes
+  }));
+  const moveSource = {
+    relativePath: "repeat/move-source.md",
+    bytes: Buffer.from("# Move source\n\nA link-free source for move conflicts.\n")
+  };
+  const nestedHolder = {
+    relativePath: "repeat/nested/holder.md",
+    bytes: Buffer.from("# Nested holder\n\nA link-free source for directory moves.\n")
+  };
+  const initialFiles = [...linkedFiles, moveSource, nestedHolder];
   const upload = createUpload();
 
   const stableUploadKey = `${runId}-stable-upload`;
@@ -186,7 +197,7 @@ try {
     initialByPath.get(initialFiles[0].relativePath).sourceFileId
   );
   const replacementBody = Buffer.concat([
-    initialFiles[0].bytes,
+    linkedFiles[0].bytes,
     Buffer.from("\n\n## Repeated replacement\n\nStable idempotent content.\n")
   ]);
   const replaceKey = `${runId}-replace-replay`;
@@ -251,7 +262,7 @@ try {
   pass("replace-stale-revision", { status: staleReplace.status });
 
   let moveTarget = await getSourceFile(
-    initialByPath.get(initialFiles[1].relativePath).sourceFileId
+    initialByPath.get(moveSource.relativePath).sourceFileId
   );
   const moveRoute = `${sourceBase()}/${encodeURIComponent(moveTarget.sourceFileId)}`;
   const moveKey = `${runId}-file-move-replay`;
@@ -352,6 +363,50 @@ try {
   knowledgeBaseRevision = (await getKnowledgeBase()).resourceRevision;
   pass("knowledge-base-update-concurrent-revision", {
     statuses: metadataStatuses
+  });
+
+  await waitForForegroundOperationsToSettle();
+  const maintenanceKey = `${runId}-maintenance-replay`;
+  const repeatedMaintenance = await Promise.all([
+    requestMaintenance(maintenanceKey),
+    requestMaintenance(maintenanceKey)
+  ]);
+  const maintenanceRequestId = repeatedMaintenance[0].maintenance?.requestId;
+  assert(
+    maintenanceRequestId
+      && repeatedMaintenance.every((response) =>
+        response.maintenance?.requestId === maintenanceRequestId
+      ),
+    "Repeated maintenance requests did not resolve to one request."
+  );
+  pass("maintenance-idempotent-replay", {
+    sameRequest: true
+  });
+
+  const concurrentMaintenance = await Promise.all([
+    requestMaintenance(`${runId}-maintenance-left`),
+    requestMaintenance(`${runId}-maintenance-right`)
+  ]);
+  assert(
+    concurrentMaintenance.every((response) =>
+      response.maintenance?.requestId === maintenanceRequestId
+    ),
+    "Concurrent maintenance requests created more than one active owner."
+  );
+  pass("maintenance-concurrent-distinct-requests", {
+    sameActiveRequest: true
+  });
+
+  await waitForMaintenanceTerminal(maintenanceRequestId);
+  const terminalMaintenanceReplay = await requestMaintenance(maintenanceKey);
+  assert(
+    terminalMaintenanceReplay.maintenance?.requestId === maintenanceRequestId
+      && terminalMaintenanceReplay.maintenance?.state === "completed",
+    "Terminal maintenance replay did not preserve the completed request."
+  );
+  pass("maintenance-replay-after-terminal", {
+    sameRequest: true,
+    state: terminalMaintenanceReplay.maintenance.state
   });
 
   const taskDeleteSourceFileId = concurrentVisible[0].sourceFileId;
@@ -545,11 +600,11 @@ async function completeUpload(files, idempotencyKey) {
   const created = await upload.create(files, { idempotencyKey });
   registerSession(created.session.id);
   try {
-    await completeCreatedUpload(upload, created.session.id);
+    const entries = await completeCreatedUpload(upload, created.session.id);
     const page = await upload.get(created.session.id, { limit: 100 });
     return {
       session: page.session,
-      entries: page.entries?.items ?? []
+      entries
     };
   } catch (error) {
     await upload.cancel(created.session.id).catch(() => undefined);
@@ -568,8 +623,10 @@ async function completeCreatedUpload(upload, sessionId) {
     throw new Error(`Upload session ${sessionId} did not resolve path reservations.`);
   }
   await upload.uploadMissingContent(sessionId, sealed.entries);
+  const sealedPage = await upload.get(sessionId, { limit: 100 });
   await upload.finalize(sessionId);
   await waitForUploadSession(upload, sessionId);
+  return sealedPage.entries?.items ?? [];
 }
 
 async function waitForUploadSession(upload, sessionId, timeoutMs = 120_000) {
@@ -584,6 +641,60 @@ async function waitForUploadSession(upload, sessionId, timeoutMs = 120_000) {
     await sleep(200);
   }
   throw new Error(`Upload session ${sessionId} did not complete.`);
+}
+
+async function requestMaintenance(idempotencyKey) {
+  return admin.json(
+    `/admin/api/knowledge-bases/${encodeURIComponent(
+      knowledgeBaseId
+    )}/index-maintenance`,
+    {
+      method: "POST",
+      headers: {
+        origin: adminOrigin,
+        "idempotency-key": idempotencyKey
+      },
+      json: { idempotencyKey },
+      expectedStatus: 202
+    }
+  );
+}
+
+async function waitForForegroundOperationsToSettle(timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  const activeStates = ["accepted", "validating", "processing", "publishing"];
+  while (Date.now() < deadline) {
+    const pages = await Promise.all(activeStates.map((state) =>
+      developer.json(
+        `${knowledgeBaseRoute()}/operations?state=${state}&limit=1`
+      )
+    ));
+    if (pages.every((page) => (page.items?.length ?? 0) === 0)) return;
+    await sleep(250);
+  }
+  throw new Error("Foreground operations did not settle before maintenance.");
+}
+
+async function waitForMaintenanceTerminal(requestId, timeoutMs = 10 * 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const summary = await admin.json(
+      `/admin/api/knowledge-bases/${encodeURIComponent(
+        knowledgeBaseId
+      )}/processing-summary`
+    );
+    const maintenance = summary.indexMaintenance;
+    if (maintenance?.requestId === requestId) {
+      if (maintenance.state === "completed") return maintenance;
+      if (["failed", "cancelled", "superseded", "timed_out"].includes(
+        maintenance.state
+      )) {
+        throw new Error(`Maintenance ended in ${maintenance.state}.`);
+      }
+    }
+    await sleep(500);
+  }
+  throw new Error("Maintenance did not complete before its deadline.");
 }
 
 async function submitMutation(pathname, options) {
@@ -775,15 +886,27 @@ async function createOpenApiKey() {
 }
 
 function readSamples(count) {
-  const manifest = JSON.parse(
-    fs.readFileSync(
-      path.join(controller.state.evidenceDir, "corpus-manifest.json"),
-      "utf8"
-    )
-  );
-  return manifest.samples.slice(0, count).map((sample) =>
-    fs.readFileSync(path.join(sourceRoot, sample.relativePath))
-  );
+  const files = [];
+  collectMarkdownFiles(sourceRoot, files);
+  const selected = selectClosedMarkdownSample({
+    filePaths: files,
+    limit: count,
+    readText: (filePath) => fs.readFileSync(filePath, "utf8")
+  });
+  return selected.map((filePath) => ({
+    basename: path.basename(filePath),
+    bytes: fs.readFileSync(filePath)
+  }));
+}
+
+function collectMarkdownFiles(directory, files) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) collectMarkdownFiles(target, files);
+    else if (entry.isFile() && target.toLowerCase().endsWith(".md")) {
+      files.push(target);
+    }
+  }
 }
 
 function assertSingleWinner(outcomes, label) {

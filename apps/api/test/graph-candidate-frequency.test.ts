@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCandidateTermFrequency } from "../src/graph/graph-candidate-frequency.js";
+import { buildPersistedGraphCandidateTerms } from "../src/graph/graph-candidates.js";
 
 describe("graph candidate term frequency", () => {
   it("preserves document-frequency semantics for exact and containing terms", () => {
@@ -33,5 +34,32 @@ describe("graph candidate term frequency", () => {
     expect(frequency.isFrequent("shared policy")).toBe(true);
     expect(frequency.isFrequent("shared policy")).toBe(true);
     expect(frequency.cacheSize()).toBe(1);
+  });
+
+  it("reuses persisted graph terms without loading a runtime tokenizer", () => {
+    const terms = buildPersistedGraphCandidateTerms({
+      fileId: "file-one",
+      path: "pages/legal/atomic-index.md",
+      title: "Atomic index",
+      subjects: ["index lifecycle"],
+      keywords: ["activation"],
+      metadata: {
+        contentProfile: {
+          definitions: ["active pointer"],
+          tokenizerContractVersion: "lexical-tokenizer-v1:test"
+        }
+      }
+    });
+
+    expect(terms).toEqual(expect.arrayContaining([
+      "Atomic index",
+      "legal",
+      "atomic",
+      "index",
+      "index lifecycle",
+      "activation",
+      "active pointer"
+    ]));
+    expect(terms.length).toBeLessThanOrEqual(100);
   });
 });

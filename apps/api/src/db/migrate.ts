@@ -14,7 +14,7 @@ const sql = createDatabaseClient(config);
 
 try {
   await applyMigrations(sql);
-  logger.info("Database migrations applied");
+  logger.info("database.migrations_applied");
 } finally {
   await closeDatabaseClient(sql);
 }

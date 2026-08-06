@@ -30,11 +30,11 @@ export async function connectApiRedis(input: {
       return;
     }
     interruptionReported = true;
-    input.logger.warn("API Redis connection interrupted; continuing with bounded database reads");
+    input.logger.warn("redis.api_connection_interrupted");
   });
   client.on("ready", () => {
     if (interruptionReported) {
-      input.logger.info("API Redis connection restored");
+      input.logger.info("redis.api_connection_restored");
     }
     interruptionReported = false;
   });
@@ -43,7 +43,9 @@ export async function connectApiRedis(input: {
     await client.connect();
     return createResilientRedisCoordinator({
       client,
-      coordinator: createRedisCoordinator(client),
+      coordinator: createRedisCoordinator(client, {
+        keyPrefix: input.config.redis.keyPrefix ?? "focowiki"
+      }),
       sessionWrites: "required"
     });
   } catch {
@@ -52,7 +54,7 @@ export async function connectApiRedis(input: {
     } catch {
       // A failed initial connection can already leave the client closed.
     }
-    input.logger.warn("API Redis unavailable; continuing with bounded database reads");
+    input.logger.warn("redis.api_unavailable");
     return null;
   }
 }

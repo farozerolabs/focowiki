@@ -51,26 +51,3 @@ function isMaintenanceItemSettled(item) {
     "retry"
   ].includes(item.state);
 }
-
-export function createPublicationModeOverride(input) {
-  let original = null;
-
-  return {
-    async enable() {
-      if (original) return;
-      const current = await input.read();
-      if (current.mode === "per_file") return;
-      original = { ...current };
-      await input.write({
-        ...current,
-        mode: "per_file"
-      });
-    },
-    async restore() {
-      if (!original) return;
-      const value = original;
-      original = null;
-      await input.write(value);
-    }
-  };
-}

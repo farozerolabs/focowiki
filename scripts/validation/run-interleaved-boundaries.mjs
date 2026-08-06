@@ -9,6 +9,7 @@ import {
 } from "./lib/interleaved-lifecycle-api.mjs";
 import {
   assertInterleavedBoundaryCoverage,
+  buildDeploymentBoundedMaintenanceCandidates,
   buildInterleavedBoundaryCorpus
 } from "./lib/interleaved-boundary-corpus.mjs";
 import {
@@ -48,6 +49,7 @@ let keyId = null;
 let knowledgeBaseId = null;
 let secondaryKnowledgeBaseId = null;
 let originalMaintenanceSettings = null;
+let originalRateLimitSettings = null;
 let coverage = null;
 const scenarioId = controller.state.scenarios.some(
   (scenario) => scenario.scenarioId === "boundary-inputs"
@@ -119,6 +121,13 @@ try {
   });
   throw error;
 } finally {
+  if (originalRateLimitSettings) {
+    await admin.request("/admin/api/settings/rate-limits", {
+      method: "PUT",
+      headers: { origin: adminOrigin },
+      json: originalRateLimitSettings
+    }).catch(() => undefined);
+  }
   if (originalMaintenanceSettings) {
     await admin.request("/admin/api/settings/maintenance", {
       method: "PUT",
@@ -345,6 +354,8 @@ async function validateProtocolFixtures(resourceRevision) {
     [400, 422]
   );
   await validateConcurrencyBoundary();
+  await validateRequestCancellation();
+  await validatePublicRateLimit();
 }
 
 async function createSecondarySourceFixture() {
@@ -385,12 +396,11 @@ async function createSecondarySourceFixture() {
     transferState: "missing",
     limit: 500
   });
+  const entry = missing.entries?.items?.[0];
+  assert(entry?.sourceFileId, "Secondary boundary fixture returned no source-file ID.");
   await upload.uploadMissingContent(sessionId, missing.entries?.items ?? []);
   await upload.finalize(sessionId);
   await barriers.upload(upload, sessionId, ["completed"]);
-  const completed = await upload.get(sessionId, { limit: 500 });
-  const entry = completed.entries?.items?.[0];
-  assert(entry?.sourceFileId, "Secondary boundary fixture returned no source-file ID.");
   const visible = await barriers.sourceFile(entry.sourceFileId, ["visible"]);
   const replacement = await developer.json(
     `/openapi/v2/knowledge-bases/${encodeURIComponent(
@@ -467,10 +477,9 @@ async function validateConcurrencyBoundary() {
     originalMaintenanceSettings,
     "Runtime settings did not expose maintenance configuration."
   );
-  const atLimit = {
-    ...originalMaintenanceSettings,
-    compactionConcurrency: 16
-  };
+  const { atLimit, overLimit } = buildDeploymentBoundedMaintenanceCandidates(
+    originalMaintenanceSettings
+  );
   await expectStatus(
     "concurrency-at-limit",
     admin.request("/admin/api/settings/maintenance", {
@@ -480,10 +489,6 @@ async function validateConcurrencyBoundary() {
     }),
     [200]
   );
-  const overLimit = {
-    ...originalMaintenanceSettings,
-    compactionConcurrency: 17
-  };
   await expectStatus(
     "concurrency-over-limit",
     admin.request("/admin/api/settings/maintenance", {
@@ -503,6 +508,88 @@ async function validateConcurrencyBoundary() {
     `Maintenance settings restoration returned HTTP ${restored.status}.`
   );
   originalMaintenanceSettings = null;
+}
+
+async function validateRequestCancellation() {
+  const session = await createSession(1, 0);
+  const abort = new AbortController();
+  const request = developer.request(
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(
+      knowledgeBaseId
+    )}/upload-sessions/${encodeURIComponent(session.id)}/entries`,
+    {
+      method: "POST",
+      signal: abort.signal,
+      json: {
+        entries: [{
+          relativePath: "boundary/cancelled-request.md",
+          declaredSize: 0,
+          checksumSha256: sha256("")
+        }]
+      }
+    }
+  );
+  abort.abort(new DOMException("Validation request cancelled.", "AbortError"));
+  let cancelled = false;
+  try {
+    await request;
+  } catch (error) {
+    cancelled = error?.name === "AbortError";
+  }
+  await sleep(100);
+  const current = await developer.json(
+    `/openapi/v2/knowledge-bases/${encodeURIComponent(
+      knowledgeBaseId
+    )}/upload-sessions/${encodeURIComponent(session.id)}?limit=1`
+  );
+  const entryCount = current.entries?.items?.length ?? 0;
+  const passed = cancelled && entryCount === 0;
+  record("request-cancellation", passed, cancelled ? "aborted" : "completed");
+  await cancelSession(session.id);
+  assert(passed, "Cancelled request created partial upload-manifest state.");
+}
+
+async function validatePublicRateLimit() {
+  const runtime = await admin.json("/admin/api/settings/runtime");
+  originalRateLimitSettings = runtime.settings?.rateLimits;
+  assert(
+    originalRateLimitSettings,
+    "Runtime settings did not expose rate-limit configuration."
+  );
+  const limited = {
+    ...originalRateLimitSettings,
+    publicOpenApi: {
+      max: 1,
+      windowSeconds: originalRateLimitSettings.publicOpenApi.windowSeconds
+    }
+  };
+  const updated = await admin.request("/admin/api/settings/rate-limits", {
+    method: "PUT",
+    headers: { origin: adminOrigin },
+    json: limited
+  });
+  assert(updated.status === 200, `Rate-limit setup returned HTTP ${updated.status}.`);
+
+  let limitedResponse = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await developer.request("/openapi/v2/knowledge-bases?limit=1");
+    if (response.status === 429) {
+      limitedResponse = response;
+      break;
+    }
+  }
+  const passed = limitedResponse?.status === 429
+    && /^\d+$/u.test(limitedResponse.headers.get("retry-after") ?? "");
+  record("public-rate-limit", passed, limitedResponse?.status ?? null);
+
+  const restored = await admin.request("/admin/api/settings/rate-limits", {
+    method: "PUT",
+    headers: { origin: adminOrigin },
+    json: originalRateLimitSettings
+  });
+  assert(restored.status === 200, `Rate-limit restoration returned HTTP ${restored.status}.`);
+  originalRateLimitSettings = null;
+  assert(passed, "Public OpenAPI rate limit did not return a bounded 429 response.");
 }
 
 function manifestBoundaryEntries(count, prefix) {
@@ -554,6 +641,10 @@ function sha256(value) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function writeJson(filePath, value) {

@@ -1,10 +1,10 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type {
-  AdminRepositories,
   WebhookDeliveryRecord,
+  WebhookDispatcherRepositories,
   WebhookSubscriptionRecord
-} from "../src/db/admin-repositories.js";
+} from "../src/webhooks/dispatcher.js";
 import { createWebhookDispatcher } from "../src/webhooks/dispatcher.js";
 import { toDeveloperWebhook } from "../src/developer-openapi/serializers.js";
 
@@ -30,29 +30,12 @@ function createRepositories() {
   const deliveries = new Map<string, WebhookDeliveryRecord>();
 
   const repositories = {
-    knowledgeBases: {
-      async listKnowledgeBases() {
-        return { items: [], nextCursor: null };
-      },
-      async createKnowledgeBase() {
-        throw new Error("Not used by webhook dispatcher tests");
-      },
-      async getKnowledgeBase() {
-        return null;
-      }
-    },
     webhooks: {
-      async createWebhookSubscription() {
-        throw new Error("Not used by webhook dispatcher tests");
-      },
       async getWebhookSubscription(id: string) {
         return webhooks.get(id) ?? null;
       },
       async listWebhookSubscriptions() {
         return { items: Array.from(webhooks.values()), nextCursor: null };
-      },
-      async deleteWebhookSubscription() {
-        return false;
       },
       async createWebhookDelivery(input) {
         const delivery = { ...input, updatedAt: input.createdAt };
@@ -69,15 +52,9 @@ function createRepositories() {
         const updated = { ...delivery, ...input };
         deliveries.set(input.id, updated);
         return updated;
-      },
-      async listWebhookDeliveries() {
-        return { items: Array.from(deliveries.values()), nextCursor: null };
-      },
-      async getWebhookDelivery(deliveryId: string) {
-        return deliveries.get(deliveryId) ?? null;
       }
     }
-  } satisfies AdminRepositories;
+  } satisfies WebhookDispatcherRepositories;
 
   return { repositories, deliveries, webhooks };
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeConfig } from "../config.js";
+import { resolveSecurityConfig, type RuntimeConfig } from "../config.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import { loadDeploymentSecret } from "../security/runtime-secrets.js";
 import {
@@ -7,7 +7,20 @@ import {
   encryptRuntimeSecret,
   fingerprintRuntimeSecret
 } from "./encryption.js";
-import type { RuntimeSettingsRepository } from "./repository.js";
+import type {
+  RuntimeSettingsRepository,
+  RuntimeSettingsRevisionIdentity
+} from "./repository.js";
+import {
+  createStorageVnextRuntimeSettingsBackendLimits,
+  validateStorageVnextRuntimeSettingsCandidate,
+  type StorageVnextRuntimeSettingsBackendLimits
+} from "./candidate-validation.js";
+import {
+  createRuntimeSettingsResourceCapacity,
+  validateRuntimeSettingsResourceCapacity,
+  type RuntimeSettingsResourceCapacity
+} from "./resource-capacity-validation.js";
 import {
   modelApiModeValues,
   RuntimeSettingsValidationError,
@@ -52,6 +65,7 @@ const LOCAL_CACHE_TTL_MS = 1_000;
 export type RuntimeSettingsService = {
   ensureBootstrapped: () => Promise<void>;
   getSnapshot: () => Promise<RuntimeSettingsSnapshot>;
+  getCurrentRevision: () => Promise<RuntimeSettingsRevisionIdentity>;
   getMaintenanceRevision: () => Promise<number>;
   getPublicSnapshot: () => Promise<{
     rateLimits: RuntimeRateLimitSettings;
@@ -99,8 +113,15 @@ export function createRuntimeSettingsService(input: {
   repository: RuntimeSettingsRepository;
   redis?: RedisCoordinator | null;
   deploymentSecretDirectory?: string | undefined;
+  resourceCapacity?: RuntimeSettingsResourceCapacity | undefined;
+  backendLimits?: StorageVnextRuntimeSettingsBackendLimits | undefined;
 }): RuntimeSettingsService {
   const defaults = createRuntimeSettingsDefaults(input.config);
+  const resourceCapacity = input.resourceCapacity
+    ?? createRuntimeSettingsResourceCapacity({ config: input.config, defaults });
+  const backendLimits = input.backendLimits
+    ?? createStorageVnextRuntimeSettingsBackendLimits();
+  const auditRetentionDays = resolveSecurityConfig(input.config).audit.retentionDays;
   const deploymentSecret = loadDeploymentSecret({
     directory: input.deploymentSecretDirectory
   });
@@ -229,6 +250,13 @@ export function createRuntimeSettingsService(input: {
       ),
       activeModel: model ? tryDecryptModel(model) : null
     };
+    const capacityIssues = validateRuntimeSettingsResourceCapacity({
+      snapshot,
+      capacity: resourceCapacity
+    });
+    if (capacityIssues.length > 0) {
+      throw new RuntimeSettingsValidationError(capacityIssues);
+    }
 
     cache = {
       version,
@@ -242,15 +270,26 @@ export function createRuntimeSettingsService(input: {
   async function updateSetting<TValue>(
     key: RuntimeSettingKey,
     value: TValue,
-    actor: string | null | undefined
+    actor: string | null | undefined,
+    candidateValue: unknown = value
   ): Promise<RuntimeSettingsSnapshot> {
     await ensureBootstrapped();
+    const current = await getSnapshot();
+    const candidate = withUpdatedSetting(current, key, candidateValue);
+    const candidateIssues = validateStorageVnextRuntimeSettingsCandidate({
+      value: candidate,
+      capacity: resourceCapacity,
+      backendLimits
+    });
+    if (candidateIssues.length > 0) {
+      throw new RuntimeSettingsValidationError(candidateIssues);
+    }
     await input.repository.upsertSetting({
       key,
       value,
       source: "admin"
     });
-    await input.repository.createAuditLog({
+    await writeAuditLog({
       settingKey: key,
       action: "update",
       actor,
@@ -259,6 +298,32 @@ export function createRuntimeSettingsService(input: {
     await bumpVersion();
     cache = null;
     return getSnapshot();
+  }
+
+  async function validateActiveModelCapacity(suggestionConcurrency: number): Promise<void> {
+    const current = await getSnapshot();
+    const capacityIssues = validateRuntimeSettingsResourceCapacity({
+      snapshot: {
+        ...current,
+        activeModel: { suggestionConcurrency } as RuntimeModelConfigPrivate
+      },
+      capacity: resourceCapacity
+    });
+    if (capacityIssues.length > 0) {
+      throw new RuntimeSettingsValidationError(capacityIssues);
+    }
+  }
+
+  async function writeAuditLog(audit: {
+    settingKey: string;
+    action: string;
+    actor?: string | null | undefined;
+    value: unknown;
+  }): Promise<void> {
+    const expiresAt = new Date(
+      Date.now() + auditRetentionDays * 24 * 60 * 60 * 1_000
+    ).toISOString();
+    await input.repository.createAuditLog({ ...audit, expiresAt });
   }
 
   async function createModelInternal(
@@ -290,7 +355,7 @@ export function createRuntimeSettingsService(input: {
       isActive: draft.isActive
     });
 
-    await input.repository.createAuditLog({
+    await writeAuditLog({
       settingKey: "model_configs",
       action: "create",
       actor,
@@ -326,7 +391,7 @@ export function createRuntimeSettingsService(input: {
       return null;
     }
 
-    await input.repository.createAuditLog({
+    await writeAuditLog({
       settingKey: "model_configs",
       action: inputValue.action,
       actor: inputValue.actor,
@@ -340,9 +405,15 @@ export function createRuntimeSettingsService(input: {
   return {
     ensureBootstrapped,
     getSnapshot,
+    async getCurrentRevision() {
+      await ensureBootstrapped();
+      const revision = await input.repository.getCurrentRevision();
+      if (!revision) throw new Error("Runtime settings revision is unavailable");
+      return revision;
+    },
     async getMaintenanceRevision() {
       await ensureBootstrapped();
-      return (await input.repository.getSetting("maintenance"))?.version ?? 0;
+      return (await input.repository.getCurrentRevision())?.version ?? 0;
     },
     async getPublicSnapshot() {
       const snapshot = await getSnapshot();
@@ -361,42 +432,57 @@ export function createRuntimeSettingsService(input: {
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("rate_limits", sanitizeRateLimitSettings(value), actor);
+      return updateSetting(
+        "rate_limits",
+        sanitizeRateLimitSettings(value),
+        actor,
+        value
+      );
     },
     async updateWorker({ value, actor }) {
       const issues = validateWorkerSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("worker", sanitizeWorkerSettings(value), actor);
+      return updateSetting("worker", sanitizeWorkerSettings(value), actor, value);
     },
     async updatePublication({ value, actor }) {
       const issues = validatePublicationSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("publication", sanitizePublicationSettings(value), actor);
+      return updateSetting(
+        "publication",
+        sanitizePublicationSettings(value),
+        actor,
+        value
+      );
     },
     async updateGraph({ value, actor }) {
       const issues = validateGraphSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("graph", sanitizeGraphSettings(value), actor);
+      return updateSetting("graph", sanitizeGraphSettings(value), actor, value);
     },
     async updateMaintenance({ value, actor }) {
       const issues = validateMaintenanceSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("maintenance", sanitizeMaintenanceSettings(value), actor);
+      return updateSetting(
+        "maintenance",
+        sanitizeMaintenanceSettings(value),
+        actor,
+        value
+      );
     },
     async updateSearch({ value, actor }) {
       const issues = validateSearchSettings(value);
       if (issues.length > 0) {
         throw new RuntimeSettingsValidationError(issues);
       }
-      return updateSetting("search", sanitizeSearchSettings(value), actor);
+      return updateSetting("search", sanitizeSearchSettings(value), actor, value);
     },
     async listModels() {
       await ensureBootstrapped();
@@ -404,6 +490,10 @@ export function createRuntimeSettingsService(input: {
       return models.map(serializePublicModel);
     },
     async createModel(modelInput) {
+      await ensureBootstrapped();
+      if (modelInput.isActive) {
+        await validateActiveModelCapacity(modelInput.suggestionConcurrency);
+      }
       const model = await createModelInternal(modelInput, modelInput.actor);
       return serializePublicModel(model);
     },
@@ -414,11 +504,12 @@ export function createRuntimeSettingsService(input: {
         return null;
       }
       assertModelKeyRecoverable(existing);
+      await validateActiveModelCapacity(existing.suggestionConcurrency);
       const model = await input.repository.setActiveModel(id);
       if (!model) {
         return null;
       }
-      await input.repository.createAuditLog({
+      await writeAuditLog({
         settingKey: "model_configs",
         action: "activate",
         actor,
@@ -462,7 +553,7 @@ export function createRuntimeSettingsService(input: {
         return null;
       }
 
-      await input.repository.createAuditLog({
+      await writeAuditLog({
         settingKey: "model_configs",
         action: "delete",
         actor,
@@ -497,7 +588,7 @@ export function createRuntimeSettingsService(input: {
           status: "paused",
           isActive: false
         });
-        await input.repository.createAuditLog({
+        await writeAuditLog({
           settingKey: "model_configs",
           action: "pause_unrecoverable_key",
           actor: "bootstrap",
@@ -536,6 +627,15 @@ export function createRuntimeSettingsService(input: {
       }
     ]);
   }
+}
+
+function withUpdatedSetting<TValue>(
+  snapshot: RuntimeSettingsSnapshot,
+  key: RuntimeSettingKey,
+  value: TValue
+): RuntimeSettingsSnapshot {
+  if (key === "rate_limits") return { ...snapshot, rateLimits: value as never };
+  return { ...snapshot, [key]: value } as RuntimeSettingsSnapshot;
 }
 
 function normalizeModelApiMode(value: ModelApiMode | undefined): ModelApiMode {

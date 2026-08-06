@@ -19,6 +19,20 @@ const dockerPrereleaseWorkflowPath = resolve(rootDir, ".github/workflows/docker-
 const docsPublishWorkflowPath = resolve(rootDir, ".github/workflows/docs-publish.yml");
 const docsCnamePath = resolve(rootDir, "docs/public/CNAME");
 const apiConfigSourcePath = resolve(rootDir, "apps/api/src/config.ts");
+const apiMainSourcePath = resolve(rootDir, "apps/api/src/main.ts");
+const deploymentHealthcheckSourcePath = resolve(
+  rootDir,
+  "apps/api/src/runtime/deployment-healthcheck.ts"
+);
+const meilisearchBootstrapMainSourcePath = resolve(
+  rootDir,
+  "apps/api/src/meilisearch-bootstrap-main.ts"
+);
+const workerMainSourcePaths = [
+  "source-worker-main.ts",
+  "publication-worker-main.ts",
+  "maintenance-worker-main.ts"
+].map((fileName) => resolve(rootDir, "apps/api/src", fileName));
 
 describe("Docker Compose infrastructure", () => {
   it("defines the complete locally built runtime topology in the local template", () => {
@@ -29,13 +43,13 @@ describe("Docker Compose infrastructure", () => {
       "api:",
       "source-worker:",
       "publication-worker:",
-      "projection-repair-worker:",
-      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "meilisearch-init:",
       "migrate:",
       "postgres:",
       "redis:",
+      "minio:",
+      "minio-init:",
       "meilisearch:"
     ]) {
       expect(compose).toContain(service);
@@ -45,8 +59,6 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("image: focowiki-admin:dev");
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("DATABASE_URL: postgres://${POSTGRES_USER:");
     expect(compose).toContain("@postgres:5432/");
@@ -70,10 +82,66 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).not.toContain("7700:7700");
     expect(compose).not.toContain("MEILI_PORT");
     expect(compose).toContain("x-docker-logging: &docker-logging");
-    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-size: "10m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
+  });
+
+  it("applies the measured worker heap caps in every deployment template", () => {
+    for (const composePath of [
+      deploymentComposeTemplatePath,
+      devComposeTemplatePath,
+      localComposeTemplatePath
+    ]) {
+      const compose = readFileSync(composePath, "utf8");
+      expect(composeServiceSection(compose, "source-worker")).toContain(
+        'command: ["node", "--max-old-space-size=256", "apps/api/runtime/source-worker.mjs"]'
+      );
+      expect(composeServiceSection(compose, "publication-worker")).toContain(
+        'command: ["node", "--max-old-space-size=512", "apps/api/runtime/publication-worker.mjs"]'
+      );
+    }
+  });
+
+  it("bounds Redis AOF growth in every deployment template", () => {
+    for (const composePath of [
+      deploymentComposeTemplatePath,
+      devComposeTemplatePath,
+      localComposeTemplatePath
+    ]) {
+      const compose = readFileSync(composePath, "utf8");
+      const redis = composeServiceSection(compose, "redis");
+      expect(redis).toContain('"--appendonly", "yes"');
+      expect(redis).toContain('"--auto-aof-rewrite-percentage", "100"');
+      expect(redis).toContain('"--auto-aof-rewrite-min-size", "8mb"');
+    }
+  });
+
+  it("provides initialized S3-compatible storage in local development templates", () => {
+    for (const composePath of [devComposeTemplatePath, localComposeTemplatePath]) {
+      const compose = readFileSync(composePath, "utf8");
+      const minio = composeServiceSection(compose, "minio");
+      const minioInit = composeServiceSection(compose, "minio-init");
+      const migrate = composeServiceSection(compose, "migrate");
+
+      expect(compose).toContain("S3_ENDPOINT: http://minio:9000");
+      expect(minio).toContain("image: minio/minio:RELEASE.2025-09-07T16-13-09Z");
+      expect(minio).toContain("MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:");
+      expect(minio).toContain("MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:");
+      expect(minio).toContain("./data/minio:/data");
+      expect(minioInit).toContain("image: minio/mc:RELEASE.2025-08-13T08-35-41Z");
+      expect(minioInit).toContain("mc mb --ignore-existing");
+      expect(minioInit).toContain("mc version enable");
+      expect(migrate).toContain(
+        "minio-init:\n        condition: service_completed_successfully"
+      );
+    }
+
+    const localCompose = readFileSync(localComposeTemplatePath, "utf8");
+    expect(localCompose).toContain(
+      '"127.0.0.1:${S3_PORT:?Set S3_PORT in .env}:9000"'
+    );
   });
 
   it("does not define embedded or in-process infrastructure fallbacks", () => {
@@ -90,13 +158,13 @@ describe("Docker Compose infrastructure", () => {
       "api:",
       "source-worker:",
       "publication-worker:",
-      "projection-repair-worker:",
-      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "meilisearch-init:",
       "migrate:",
       "postgres:",
       "redis:",
+      "minio:",
+      "minio-init:",
       "meilisearch:"
     ]) {
       expect(compose).toContain(service);
@@ -109,13 +177,11 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
     expect(compose).toContain("x-docker-logging: &docker-logging");
-    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-size: "10m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).toContain("./logs:/app/logs");
     expect(compose).toContain("./runtime-secrets:/app/runtime-secrets");
@@ -146,8 +212,6 @@ describe("Docker Compose infrastructure", () => {
       "api:",
       "source-worker:",
       "publication-worker:",
-      "projection-repair-worker:",
-      "lexical-rebuild-worker:",
       "maintenance-worker:",
       "meilisearch-init:",
       "migrate:",
@@ -166,15 +230,13 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("apps/api/runtime/migrate.mjs");
     expect(compose).toContain("apps/api/runtime/source-worker.mjs");
     expect(compose).toContain("apps/api/runtime/publication-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs");
-    expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(compose).toContain("--healthcheck");
     expect(compose).toContain("stop_grace_period: 30s");
-    expect(compose).toContain("${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
-    expect(compose).toContain("${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}");
+    expect(compose).toContain("127.0.0.1:${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080");
+    expect(compose).toContain("127.0.0.1:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}");
     expect(compose).toContain(
-      "${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
+      "127.0.0.1:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"
     );
     expect(compose).toContain("./data/postgres:/var/lib/postgresql");
     expect(compose).toContain("./data/redis:/data");
@@ -199,14 +261,54 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("env_file:");
     expect(compose).toContain("- .env");
     expect(compose).toContain("x-docker-logging: &docker-logging");
-    expect(compose).toContain('max-size: "50m"');
+    expect(compose).toContain('max-size: "10m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
     expect(compose).not.toMatch(/sqlite|embedded|in-memory|memory-backed/i);
+  });
+
+  it("uses standard infrastructure with loopback-only host exposure", () => {
+    const deploymentCompose = readFileSync(deploymentComposeTemplatePath, "utf8");
+    const devCompose = readFileSync(devComposeTemplatePath, "utf8");
+    const localCompose = readFileSync(localComposeTemplatePath, "utf8");
+
+    for (const compose of [deploymentCompose, devCompose, localCompose]) {
+      expect(compose).toContain("image: postgres:18-alpine");
+      expect(compose).not.toMatch(/focowiki-postgres|docker\/postgres\/Dockerfile/u);
+      expect(compose).not.toContain("7700:7700");
+    }
+
+    for (const compose of [deploymentCompose, devCompose, localCompose]) {
+      expect(compose).toContain(
+        '"127.0.0.1:${ADMIN_UI_PORT:?Set ADMIN_UI_PORT in .env}:8080"'
+      );
+      expect(compose).toContain(
+        '"127.0.0.1:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}:${ADMIN_API_PORT:?Set ADMIN_API_PORT in .env}"'
+      );
+      expect(compose).toContain(
+        '"127.0.0.1:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}:${PUBLIC_OPENAPI_PORT:?Set PUBLIC_OPENAPI_PORT in .env}"'
+      );
+    }
+    expect(localCompose).toContain(
+      '"127.0.0.1:${POSTGRES_PORT:?Set POSTGRES_PORT in .env}:5432"'
+    );
+    expect(localCompose).toContain(
+      '"127.0.0.1:${REDIS_PORT:?Set REDIS_PORT in .env}:6379"'
+    );
+    expect(localCompose).toContain(
+      '"127.0.0.1:${S3_PORT:?Set S3_PORT in .env}:9000"'
+    );
+
+    for (const service of ["postgres", "redis", "meilisearch"]) {
+      const section = deploymentCompose.match(
+        new RegExp(`\\n  ${service}:\\n([\\s\\S]*?)(?=\\n  [a-z][a-z0-9-]*:|$)`, "u")
+      )?.[1] ?? "";
+      expect(section, service).not.toContain("ports:");
+    }
   });
 
   it("keeps Compose health checks on health-state-only probes", () => {
@@ -215,18 +317,65 @@ describe("Docker Compose infrastructure", () => {
 
     for (const compose of [deploymentCompose, devCompose]) {
       expect(compose).toContain("http://127.0.0.1:8080/healthz");
+      expect(compose).toContain("apps/api/runtime/main.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/source-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/publication-worker.mjs\", \"--healthcheck");
-      expect(compose).toContain("apps/api/runtime/projection-repair-worker.mjs\", \"--healthcheck");
-      expect(compose).toContain("apps/api/runtime/lexical-rebuild-worker.mjs\", \"--healthcheck");
       expect(compose).toContain("apps/api/runtime/maintenance-worker.mjs\", \"--healthcheck");
-      expect(compose).toContain("'/healthz'");
-      expect(compose).toContain("body?.status==='ok'");
       expect(compose).not.toContain("/admin/api/session");
       expect(compose).not.toContain("/openapi/v1/version");
       expect(compose).not.toContain("/openapi/v1/openapi.json");
       expect(compose).not.toContain("apiVersion");
       expect(compose).not.toContain("authenticated");
+    }
+
+    for (const sourcePath of [apiMainSourcePath, ...workerMainSourcePaths]) {
+      const source = readFileSync(sourcePath, "utf8");
+      expect(source, sourcePath).toContain("runRuntimeDeploymentHealthcheck");
+      expect(source, sourcePath).not.toMatch(
+        /role_jobs|knowledge_base_projection_repairs|projection_repair_subtasks|knowledge_base_lexical_rebuilds|lexical_rebuild_work_items|storage_reconciliation_cycles/u
+      );
+    }
+
+    const deploymentHealthcheck = readFileSync(
+      deploymentHealthcheckSourcePath,
+      "utf8"
+    );
+    expect(deploymentHealthcheck).toContain("/healthz");
+    expect(deploymentHealthcheck).toContain('body?.status !== "ok"');
+  });
+
+  it("orders provider health, runtime secrets, migration, and runtime roles", () => {
+    const bootstrapMain = readFileSync(meilisearchBootstrapMainSourcePath, "utf8");
+    expect(bootstrapMain.indexOf("loadDeploymentSecret({"))
+      .toBeLessThan(bootstrapMain.indexOf("await bootstrapMeilisearchKeys({"));
+
+    for (const composePath of [
+      deploymentComposeTemplatePath,
+      devComposeTemplatePath,
+      localComposeTemplatePath
+    ]) {
+      const compose = readFileSync(composePath, "utf8");
+      const meilisearchInit = composeServiceSection(compose, "meilisearch-init");
+      const migrate = composeServiceSection(compose, "migrate");
+
+      expect(meilisearchInit).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
+      expect(meilisearchInit).toContain("meilisearch:\n        condition: service_healthy");
+      expect(migrate).toContain(
+        "meilisearch-init:\n        condition: service_completed_successfully"
+      );
+      expect(migrate).toContain("postgres:\n        condition: service_healthy");
+      expect(migrate).toContain("redis:\n        condition: service_healthy");
+
+      for (const role of [
+        "api",
+        "source-worker",
+        "publication-worker",
+        "maintenance-worker"
+      ]) {
+        expect(composeServiceSection(compose, role), role).toContain(
+          "migrate:\n        condition: service_completed_successfully"
+        );
+      }
     }
   });
 
@@ -247,8 +396,6 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
     expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
-    expect(dockerfile).toContain("apps/api/runtime/projection-repair-worker.mjs");
-    expect(dockerfile).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(dockerfile).toContain("apps/api/runtime/migrations");
@@ -261,8 +408,6 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("Validate API Docker worker runtime");
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs");
-    expect(workflow).toContain("apps/api/runtime/projection-repair-worker.mjs");
-    expect(workflow).toContain("apps/api/runtime/lexical-rebuild-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
     expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
@@ -271,10 +416,8 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("Validate native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
-    expect(workflow).toContain("Validate compatible migration paths");
+    expect(workflow).toContain("Validate storage vNext schema contracts");
     expect(workflow).toContain("Validate current schema idempotence");
-    expect(workflow).toContain("Validate 100k lexical rebuild work plans");
-    expect(workflow).toContain("test/lexical-rebuild-scale.integration.test.ts");
   });
 
   it("proves migrations, role health, and source-to-activation flow in CI", () => {
@@ -292,9 +435,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("Validate API image role health");
     expect(workflow).toContain("source-worker.mjs --healthcheck");
     expect(workflow).toContain("publication-worker.mjs --healthcheck");
-    expect(workflow).toContain("projection-repair-worker.mjs --healthcheck");
-    expect(workflow).toContain("lexical-rebuild-worker.mjs --healthcheck");
     expect(workflow).toContain("maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("focowiki-ci-runtime-secrets-");
+    expect(workflow).toContain("/app/runtime-secrets/deployment.key");
+    expect(workflow).toContain("docker volume rm");
     expect(workflow).toContain("Validate source-to-activation smoke flow");
   });
 
@@ -310,9 +454,10 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs --healthcheck");
-    expect(workflow).toContain("apps/api/runtime/projection-repair-worker.mjs --healthcheck");
-    expect(workflow).toContain("apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("focowiki-build-runtime-secrets-");
+    expect(workflow).toContain("/app/runtime-secrets/deployment.key");
+    expect(workflow).toContain("docker volume rm");
     expect(workflow).toContain("Validate release native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
@@ -480,6 +625,9 @@ describe("Docker Compose infrastructure", () => {
     expect(devEnv).toContain("LOG_FILE_DIR=logs");
     expect(devEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(devEnv).toContain("LOG_FILE_MAX_FILES=5");
+    expect(devEnv).toContain("LOG_FILE_MAX_TOTAL_BYTES=67108864");
+    expect(devEnv).toContain("LOG_FILE_RETENTION_DAYS=7");
+    expect(devEnv).toContain("ADMIN_UI_HOST=0.0.0.0");
     expect(devEnv).not.toContain("LOG_FILE_HOST_DIR");
     expect(devEnv).not.toContain("RUNTIME_SECRET_DIR");
     expect(devEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
@@ -489,11 +637,27 @@ describe("Docker Compose infrastructure", () => {
     expect(devEnv).not.toContain("SETTINGS_ENCRYPTION_SECRET=");
     expect(devEnv).not.toContain("ADMIN_SESSION_SECRET_MIN_LENGTH");
     expect(devEnv).toContain("DATABASE_URL=postgres://focowiki:focowiki@127.0.0.1:55432/focowiki");
+
+    const localS3AccessKey = devEnv.match(/^S3_ACCESS_KEY_ID=(.+)$/mu)?.[1] ?? "";
+    const localS3SecretKey = devEnv.match(/^S3_SECRET_ACCESS_KEY=(.+)$/mu)?.[1] ?? "";
+    expect(localS3AccessKey.length).toBeGreaterThanOrEqual(3);
+    expect(localS3SecretKey.length).toBeGreaterThanOrEqual(8);
     expect(deploymentEnv).toContain("APP_ENV=production");
     expect(deploymentEnv).toContain("LOG_LEVEL=info");
     expect(deploymentEnv).toContain("LOG_FILE_DIR=logs");
     expect(deploymentEnv).toContain("LOG_FILE_MAX_BYTES=10485760");
     expect(deploymentEnv).toContain("LOG_FILE_MAX_FILES=5");
+    expect(deploymentEnv).toContain("LOG_FILE_MAX_TOTAL_BYTES=67108864");
+    expect(deploymentEnv).toContain("LOG_FILE_RETENTION_DAYS=7");
+    for (const localOrUnusedKey of [
+      "ADMIN_UI_HOST",
+      "VITE_ADMIN_API_BASE_URL",
+      "POSTGRES_PORT",
+      "REDIS_PORT",
+      "CORS_ORIGINS"
+    ]) {
+      expect(deploymentEnv).not.toMatch(new RegExp(`^${localOrUnusedKey}=`, "mu"));
+    }
     expect(deploymentEnv).not.toContain("LOG_FILE_HOST_DIR");
     expect(deploymentEnv).not.toContain("RUNTIME_SECRET_DIR");
     expect(deploymentEnv).not.toContain("RUNTIME_SECRET_HOST_DIR");
@@ -518,12 +682,17 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("MEILI_SCHEDULE_SNAPSHOT=86400");
     expect(deploymentEnv).toContain("MEILI_DUMP_DIR=/meili_dumps");
     expect(deploymentEnv).toContain("S3_ENDPOINT=https://s3.example.com");
+    expect(deploymentEnv).toContain("S3_REGION=<set-storage-region>");
+    expect(deploymentEnv).toContain("S3_BUCKET=<set-storage-bucket>");
+    expect(deploymentEnv).toContain("S3_ACCESS_KEY_ID=<set-storage-access-key-id>");
+    expect(deploymentEnv).toContain("S3_FORCE_PATH_STYLE=<true-or-false>");
+    expect(deploymentEnv).not.toContain("S3_REGION=local");
+    expect(deploymentEnv).not.toContain("S3_ACCESS_KEY_ID=focowiki");
     expect(deploymentEnv).toContain("FOCOWIKI_API_IMAGE=ghcr.io/farozerolabs/focowiki-api:latest");
     expect(deploymentEnv).toContain("FOCOWIKI_ADMIN_IMAGE=ghcr.io/farozerolabs/focowiki-admin:latest");
     for (const key of [
       "SOURCE_WORKER_DATABASE_POOL_MAX",
       "PUBLICATION_WORKER_DATABASE_POOL_MAX",
-      "PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX",
       "MAINTENANCE_WORKER_DATABASE_POOL_MAX"
     ]) {
       expect(devEnv).toContain(`${key}=`);
@@ -630,8 +799,13 @@ describe("Docker Compose infrastructure", () => {
     const localComposeRefs = parseComposeEnvRefs(readFileSync(localComposeTemplatePath, "utf8"));
     const deploymentOnlyKeys = new Set(["FOCOWIKI_ADMIN_IMAGE", "FOCOWIKI_API_IMAGE"]);
     const developmentOnlyKeys = new Set([
+      "ADMIN_UI_HOST",
       "MEILI_API_KEY",
-      "MEILI_METRICS_API_KEY"
+      "MEILI_METRICS_API_KEY",
+      "POSTGRES_PORT",
+      "REDIS_PORT",
+      "S3_PORT",
+      "VITE_ADMIN_API_BASE_URL"
     ]);
     const optionalComposeKeys = new Set([
       "MEILI_API_KEY",
@@ -666,8 +840,14 @@ function parseEnvKeys(contents: string): Set<string> {
 
 function parseComposeEnvRefs(contents: string): Set<string> {
   return new Set(
-    [...contents.matchAll(/\$\{([A-Z][A-Z0-9_]*)/g)]
+    [...contents.matchAll(/(?<!\$)\$\{([A-Z][A-Z0-9_]*)/g)]
       .map((match) => match[1])
       .filter((key): key is string => typeof key === "string")
   );
+}
+
+function composeServiceSection(contents: string, service: string): string {
+  return contents.match(
+    new RegExp(`\\n  ${service}:\\n([\\s\\S]*?)(?=\\n  [a-z][a-z0-9-]*:|$)`, "u")
+  )?.[1] ?? "";
 }

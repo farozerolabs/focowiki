@@ -149,7 +149,7 @@ Focowiki uses pnpm, TypeScript, Vite, React, Hono, PostgreSQL, Redis, and S3-com
 pnpm install
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
-docker compose -f docker-compose.local.yml up -d postgres redis
+docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init meilisearch
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
@@ -160,7 +160,7 @@ Local service URLs:
 - Admin API: `http://127.0.0.1:43000`
 - Developer OpenAPI: `http://127.0.0.1:43200`
 
-Parsing real uploads requires S3-compatible storage settings in `.env`.
+The local Compose template starts PostgreSQL, Redis, MinIO, and Meilisearch with the values from `.env`.
 
 ## License
 

@@ -129,30 +129,13 @@ class MemoryPublicOpenApiKeyRepository implements PublicOpenApiKeyRepository {
   }
 }
 
-function createRepositories(publicApiKeys: PublicOpenApiKeyRepository) {
-  return {
-    publicApiKeys,
-    knowledgeBases: {
-      async listKnowledgeBases() {
-        return { items: [], nextCursor: null };
-      },
-      async createKnowledgeBase() {
-        throw new Error("Not used by OpenAPI key admin tests");
-      },
-      async getKnowledgeBase() {
-        return null;
-      }
-    }
-  };
-}
-
 describe("Admin public OpenAPI key API", () => {
   it("bootstraps, creates, lists, and deletes managed keys through authenticated routes", async () => {
     const publicApiKeys = new MemoryPublicOpenApiKeyRepository();
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(publicApiKeys)
+      storageVnextApiKeys: publicApiKeys
     });
     const cookie = await loginAndReadSessionCookie(app);
     const firstList = await app.request("/admin/api/openapi-keys", {
@@ -221,7 +204,7 @@ describe("Admin public OpenAPI key API", () => {
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(new MemoryPublicOpenApiKeyRepository())
+      storageVnextApiKeys: new MemoryPublicOpenApiKeyRepository()
     });
 
     expect((await app.request("/admin/api/openapi-keys")).status).toBe(401);

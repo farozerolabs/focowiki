@@ -13,30 +13,30 @@ import {
 import {
   createSpecificPhraseIndex,
   findSharedSpecificPhrasesFromIndex,
-  isSpecificSharedSignal,
-  isStrongContentSignal,
-  listStrongGraphNodeTerms,
   type SpecificPhraseIndex
 } from "./relationship-signals.js";
 import {
-  intersectUseful,
   normalizePublicPath,
-  normalizeSearchText,
-  readContentProfileStringArray,
-  stripMarkdownExtension
+  normalizeSearchText
 } from "./graph-utils.js";
+import {
+  createGraphEdgeNodeProfile,
+  createGraphEdgeNormalizationCache,
+  intersectGraphEdgeProfileTerms,
+  type GraphEdgeNodeProfile,
+  type GraphEdgeNormalizationCache
+} from "./graph-edge-scoring-profile.js";
 
 type GraphEdgeScoringContext = {
   normalizedBody: string;
   semanticBody: string;
-  sourceVersionHints: string[];
-  sourceTitle: string;
+  source: GraphEdgeNodeProfile;
   sourcePhraseIndex: SpecificPhraseIndex;
-  sourceNormalizedTerms: Set<string>;
   candidateTermFrequency: CandidateTermFrequency;
+  normalization: GraphEdgeNormalizationCache;
 };
 
-export function buildGraphEdges(input: {
+export type GraphEdgeBuildInput = {
   source: OkfGraphNode;
   body: string;
   suggestions:
@@ -47,37 +47,83 @@ export function buildGraphEdges(input: {
   candidates: OkfGraphNode[];
   acceptedEdgeLimit: number;
   genericPhraseThreshold: number;
-}): OkfGraphEdge[] {
-  const sourceStrongTerms = listStrongGraphNodeTerms(input.source);
-  const candidateStrongTerms = input.candidates.map(listStrongGraphNodeTerms);
-  const sourceVersionHints = readContentProfileStringArray(input.source, "versionHints");
-  const normalizedBody = normalizeSearchText(stripGeneratedSections(input.body));
+};
+
+type GraphEdgeProfileKeys = {
+  source: string;
+  candidates: readonly string[];
+};
+
+export function createGraphEdgeScorer(input: {
+  maximumCachedProfiles: number;
+}) {
+  if (
+    !Number.isSafeInteger(input.maximumCachedProfiles)
+    || input.maximumCachedProfiles < 1
+  ) throw new Error("Graph edge scorer profile cache limit is invalid");
+  const profiles = new Map<string, GraphEdgeNodeProfile>();
+  return {
+    build(request: GraphEdgeBuildInput & { profileKeys: GraphEdgeProfileKeys }) {
+      if (request.profileKeys.candidates.length !== request.candidates.length) {
+        throw new Error("Graph edge scorer profile keys do not match candidates");
+      }
+      return scoreGraphEdges(request, {
+        maximumProfiles: input.maximumCachedProfiles,
+        profiles,
+        keys: request.profileKeys
+      });
+    }
+  };
+}
+
+export function buildGraphEdges(input: GraphEdgeBuildInput): OkfGraphEdge[] {
+  return scoreGraphEdges(input, null);
+}
+
+function scoreGraphEdges(
+  input: GraphEdgeBuildInput,
+  profileCache: {
+    maximumProfiles: number;
+    profiles: Map<string, GraphEdgeNodeProfile>;
+    keys: GraphEdgeProfileKeys;
+  } | null
+): OkfGraphEdge[] {
+  const normalization = createGraphEdgeNormalizationCache();
+  const source = loadGraphEdgeNodeProfile(
+    input.source,
+    profileCache?.keys.source ?? null,
+    normalization,
+    profileCache
+  );
+  const candidates = input.candidates.map((candidate, index) =>
+    loadGraphEdgeNodeProfile(
+      candidate,
+      profileCache?.keys.candidates[index] ?? null,
+      normalization,
+      profileCache
+    ));
+  const normalizedBody = normalization.searchText(stripGeneratedSections(input.body));
   const context: GraphEdgeScoringContext = {
     normalizedBody,
-    semanticBody: removeVersionContext(normalizedBody, sourceVersionHints),
-    sourceVersionHints,
-    sourceTitle: normalizeSearchText(input.source.title),
-    sourcePhraseIndex: createSpecificPhraseIndex(sourceStrongTerms),
-    sourceNormalizedTerms: normalizedStrongTerms(sourceStrongTerms),
+    semanticBody: removeVersionContext(normalizedBody, source.normalizedVersionHints),
+    source,
+    sourcePhraseIndex: createSpecificPhraseIndex(source.strongTerms),
     candidateTermFrequency: createCandidateTermFrequency([
-      new Set(sourceStrongTerms.map(normalizeCompactTerm).filter(Boolean)),
-      ...candidateStrongTerms.map(
-        (terms) => new Set(terms.map(normalizeCompactTerm).filter(Boolean))
-      )
-    ])
+      source.compactStrongTerms,
+      ...candidates.map((candidate) => candidate.compactStrongTerms)
+    ]),
+    normalization
   };
   const suggestedPaths = new Set(
     (input.suggestions?.related_links ?? []).map((link) => normalizePublicPath(link.path))
   );
 
-  return input.candidates
-    .map((candidate, index) =>
+  return candidates
+    .map((candidate) =>
       bestEdgeForCandidate({
-        source: input.source,
         context,
         suggestedPaths,
         candidate,
-        candidateStrongTerms: candidateStrongTerms[index] ?? [],
         genericPhraseThreshold: input.genericPhraseThreshold
       })
     )
@@ -89,6 +135,32 @@ export function buildGraphEdges(input: {
         left.relationType.localeCompare(right.relationType)
     )
     .slice(0, input.acceptedEdgeLimit);
+}
+
+function loadGraphEdgeNodeProfile(
+  node: OkfGraphNode,
+  key: string | null,
+  normalization: GraphEdgeNormalizationCache,
+  cache: {
+    maximumProfiles: number;
+    profiles: Map<string, GraphEdgeNodeProfile>;
+  } | null
+): GraphEdgeNodeProfile {
+  if (!key || !cache) return createGraphEdgeNodeProfile(node, normalization);
+  const current = cache.profiles.get(key);
+  if (current) {
+    cache.profiles.delete(key);
+    cache.profiles.set(key, current);
+    return current;
+  }
+  const profile = createGraphEdgeNodeProfile(node, normalization);
+  cache.profiles.set(key, profile);
+  while (cache.profiles.size > cache.maximumProfiles) {
+    const oldest = cache.profiles.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    cache.profiles.delete(oldest);
+  }
+  return profile;
 }
 
 export function isSharedPhraseOnlyEdge(edge: OkfGraphEdge): boolean {
@@ -179,85 +251,85 @@ export function createRejectedEdge(edge: OkfGraphEdge, reason: string): OkfGraph
 }
 
 function bestEdgeForCandidate(input: {
-  source: OkfGraphNode;
   context: GraphEdgeScoringContext;
   suggestedPaths: Set<string>;
-  candidate: OkfGraphNode;
-  candidateStrongTerms: string[];
+  candidate: GraphEdgeNodeProfile;
   genericPhraseThreshold: number;
 }): OkfGraphEdge | null {
-  const { source, context, suggestedPaths, candidate } = input;
+  const { context, suggestedPaths, candidate } = input;
+  const { source, normalization } = context;
   const signals: OkfGraphEdge[] = [];
-  const { normalizedBody, semanticBody, sourceVersionHints } = context;
-  const candidateVersionHints = readContentProfileStringArray(candidate, "versionHints");
+  const { normalizedBody, semanticBody } = context;
   const sameDocumentTitle =
-    context.sourceTitle.length > 0 &&
-    context.sourceTitle === normalizeSearchText(candidate.title);
+    source.normalizedTitle.length > 0 &&
+    source.normalizedTitle === candidate.normalizedTitle;
   const hasDistinctVersionEvidence =
     sameDocumentTitle &&
-    hasDifferentVersionEvidence(source, candidate, sourceVersionHints, candidateVersionHints);
-  const candidateTitle = normalizeSearchText(candidate.title);
-  const candidateStem = normalizeSearchText(
-    stripMarkdownExtension(candidate.path.split("/").at(-1) ?? candidate.title)
-  );
-  const candidateNormalizedTerms = normalizedStrongTerms(input.candidateStrongTerms);
-  const sharedSubjects = intersectUseful(source.subjects ?? [], candidate.subjects ?? []).filter(
-    isSpecificSharedSignal
-  );
-  const sharedEntities = intersectUseful(source.entities ?? [], candidate.entities ?? []).filter(
-    isSpecificSharedSignal
-  );
-  const sharedKeywords = intersectUseful(source.keywords ?? [], candidate.keywords ?? []).filter(
-    isSpecificSharedSignal
-  );
-  const sharedDefinitions = intersectUseful(
-    readContentProfileStringArray(source, "definitions"),
-    readContentProfileStringArray(candidate, "definitions")
-  ).filter(isSpecificSharedSignal);
-  const sharedProcessHints = intersectUseful(
-    readContentProfileStringArray(source, "processHints"),
-    readContentProfileStringArray(candidate, "processHints")
-  ).filter(isSpecificSharedSignal);
-  const sharedVersionHints = intersectUseful(sourceVersionHints, candidateVersionHints).filter(
-    isSpecificSharedSignal
-  );
+    hasDifferentVersionEvidence(source, candidate);
+  const sharedSubjects = intersectGraphEdgeProfileTerms(
+    source.subjects,
+    candidate.subjects
+  ).filter(normalization.specific);
+  const sharedEntities = intersectGraphEdgeProfileTerms(
+    source.entities,
+    candidate.entities
+  ).filter(normalization.specific);
+  const sharedKeywords = intersectGraphEdgeProfileTerms(
+    source.keywords,
+    candidate.keywords
+  ).filter(normalization.specific);
+  const sharedDefinitions = intersectGraphEdgeProfileTerms(
+    source.definitions,
+    candidate.definitions
+  ).filter(normalization.specific);
+  const sharedProcessHints = intersectGraphEdgeProfileTerms(
+    source.processHints,
+    candidate.processHints
+  ).filter(normalization.specific);
+  const sharedVersionHints = intersectGraphEdgeProfileTerms(
+    source.normalizedVersionHints,
+    candidate.normalizedVersionHints
+  ).filter(normalization.specific);
   const isCorpusSpecific = (term: string) =>
     !context.candidateTermFrequency.isFrequent(term);
-  const strongSharedSubjects = sharedSubjects.filter(isStrongContentSignal).filter(isCorpusSpecific);
-  const strongSharedEntities = sharedEntities.filter(isStrongContentSignal).filter(isCorpusSpecific);
-  const strongSharedKeywords = sharedKeywords.filter(isStrongContentSignal).filter(isCorpusSpecific);
-  const strongSharedDefinitions = sharedDefinitions.filter(isStrongContentSignal).filter(isCorpusSpecific);
-  const strongSharedProcessHints = sharedProcessHints.filter(isStrongContentSignal).filter(isCorpusSpecific);
-  const strongSharedVersionHints = sharedVersionHints.filter(isStrongContentSignal).filter(isCorpusSpecific);
+  const strongSharedSubjects = sharedSubjects.filter(normalization.strong).filter(isCorpusSpecific);
+  const strongSharedEntities = sharedEntities.filter(normalization.strong).filter(isCorpusSpecific);
+  const strongSharedKeywords = sharedKeywords.filter(normalization.strong).filter(isCorpusSpecific);
+  const strongSharedDefinitions = sharedDefinitions.filter(normalization.strong).filter(isCorpusSpecific);
+  const strongSharedProcessHints = sharedProcessHints.filter(normalization.strong).filter(isCorpusSpecific);
+  const strongSharedVersionHints = sharedVersionHints.filter(normalization.strong).filter(isCorpusSpecific);
   const titleSupportedSharedSubjects = strongSharedSubjects.filter((term) =>
-    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
+    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold,
+      normalization)
   );
   const titleSupportedSharedEntities = strongSharedEntities.filter((term) =>
-    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
+    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold,
+      normalization)
   );
   const sharedKeyPhrases = findSharedSpecificPhrasesFromIndex(
     context.sourcePhraseIndex,
-    input.candidateStrongTerms
+    candidate.strongTerms
   ).filter((term) =>
-    normalizedBody.includes(normalizeSearchText(term))
+    normalizedBody.includes(normalization.searchText(term))
   );
   const strongSharedKeyPhrases = compactSharedPhrases(
     sharedKeyPhrases.filter(
       (term) =>
-        !isSharedVersionContextTerm(term, sourceVersionHints, candidateVersionHints) &&
+        !isSharedVersionContextTerm(term, source, candidate, normalization) &&
         isStrongSharedKeyPhrase(
           term,
           source,
           candidate,
           context.candidateTermFrequency,
-          context.sourceNormalizedTerms,
-          candidateNormalizedTerms,
-          input.genericPhraseThreshold
+          input.genericPhraseThreshold,
+          normalization
         )
-    )
+    ),
+    normalization
   );
   const titleSupportedSharedKeyPhrases = strongSharedKeyPhrases.filter((term) =>
-    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold)
+    isDiscriminativeSharedTitlePhrase(term, source, candidate, input.genericPhraseThreshold,
+      normalization)
   );
   const hasTitleSupportedSharedKeyPhrase = titleSupportedSharedKeyPhrases.length > 0;
   const distinctSharedContentSignalCount = countDistinctSignals([
@@ -265,13 +337,13 @@ function bestEdgeForCandidate(input: {
     ...strongSharedEntities,
     ...strongSharedKeywords,
     ...strongSharedKeyPhrases
-  ]);
-  const hasSuggestedPath = suggestedPaths.has(normalizePublicPath(candidate.path));
+  ], normalization);
+  const hasSuggestedPath = suggestedPaths.has(candidate.normalizedPath);
   const hasExplicitReference = matchesExplicitReference(source, candidate);
   const hasTitleMention =
     !sameDocumentTitle &&
-    ((candidateTitle.length > 0 && semanticBody.includes(candidateTitle)) ||
-      (candidateStem.length > 0 && semanticBody.includes(candidateStem)));
+    ((candidate.normalizedTitle.length > 0 && semanticBody.includes(candidate.normalizedTitle)) ||
+      (candidate.normalizedStem.length > 0 && semanticBody.includes(candidate.normalizedStem)));
   const hasContentOverlap =
     strongSharedSubjects.length > 0 ||
     strongSharedEntities.length > 0 ||
@@ -281,9 +353,9 @@ function bestEdgeForCandidate(input: {
 
   if (hasExplicitReference) {
     signals.push(
-      createEdge(source, candidate, "direct_reference", 0.95, "The source explicitly references this file.", {
-        targetPath: candidate.path,
-        targetTitle: candidate.title,
+      createEdge(source.node, candidate.node, "direct_reference", 0.95, "The source explicitly references this file.", {
+        targetPath: candidate.node.path,
+        targetTitle: candidate.node.title,
         signal: "direct_reference"
       })
     );
@@ -292,14 +364,17 @@ function bestEdgeForCandidate(input: {
   if (hasDistinctVersionEvidence) {
     signals.push(
       createEdge(
-        source,
-        candidate,
+        source.node,
+        candidate.node,
         "version_relation",
         0.92,
         "Both files are versions of the same titled document.",
         {
-          title: source.title,
-          versionHints: uniqueStrings([...sourceVersionHints, ...candidateVersionHints]).slice(0, 8),
+          title: source.node.title,
+          versionHints: uniqueStrings([
+            ...source.versionHints,
+            ...candidate.versionHints
+          ]).slice(0, 8),
           signal: "same_document_title"
         }
       )
@@ -309,13 +384,13 @@ function bestEdgeForCandidate(input: {
   if (hasSuggestedPath && hasContentOverlap) {
     signals.push(
       createEdge(
-        source,
-        candidate,
+        source.node,
+        candidate.node,
         "same_specific_subject",
         0.82,
         "The model selected this existing file path with content evidence.",
         {
-          path: candidate.path,
+          path: candidate.node.path,
           signal: "same_specific_subject"
         },
         "model_suggested"
@@ -325,8 +400,8 @@ function bestEdgeForCandidate(input: {
 
   if (hasTitleMention) {
     signals.push(
-      createEdge(source, candidate, "direct_reference", 0.7, "The source body mentions the related file title.", {
-        title: candidate.title,
+      createEdge(source.node, candidate.node, "direct_reference", 0.7, "The source body mentions the related file title.", {
+        title: candidate.node.title,
         signal: "direct_reference"
       })
     );
@@ -338,7 +413,7 @@ function bestEdgeForCandidate(input: {
     (strongSharedSubjects.length > 0 || strongSharedKeywords.length >= 2)
   ) {
     signals.push(
-      createEdge(source, candidate, "same_entity", 0.68, "Both files share body-derived entities and content terms.", {
+      createEdge(source.node, candidate.node, "same_entity", 0.68, "Both files share body-derived entities and content terms.", {
         entities: titleSupportedSharedEntities.slice(0, 8),
         subjects: strongSharedSubjects.slice(0, 8),
         keywords: strongSharedKeywords.slice(0, 8),
@@ -352,11 +427,12 @@ function bestEdgeForCandidate(input: {
     titleSupportedSharedSubjects.length > 0 &&
     (
       distinctSharedContentSignalCount >= 2 ||
-      titleSupportedSharedSubjects.some(isStandaloneSpecificSubject)
+      titleSupportedSharedSubjects.some((value) =>
+        isStandaloneSpecificSubject(value, normalization))
     )
   ) {
     signals.push(
-      createEdge(source, candidate, "same_specific_subject", 0.64, "Both files share body-derived subjects.", {
+      createEdge(source.node, candidate.node, "same_specific_subject", 0.64, "Both files share body-derived subjects.", {
         subjects: titleSupportedSharedSubjects.slice(0, 8),
         keywords: strongSharedKeywords.slice(0, 8),
         titleSupported: true,
@@ -371,8 +447,8 @@ function bestEdgeForCandidate(input: {
   ) {
     signals.push(
       createEdge(
-        source,
-        candidate,
+        source.node,
+        candidate.node,
         "same_specific_subject",
         0.69,
         "Both files share specific body-derived key phrases.",
@@ -388,8 +464,8 @@ function bestEdgeForCandidate(input: {
   if (strongSharedProcessHints.length > 0) {
     signals.push(
       createEdge(
-        source,
-        candidate,
+        source.node,
+        candidate.node,
         "process_adjacent",
         0.66,
         "Both files describe adjacent process steps or operational sequences.",
@@ -404,8 +480,8 @@ function bestEdgeForCandidate(input: {
   if (strongSharedVersionHints.length > 0 && !sameDocumentTitle) {
     signals.push(
       createEdge(
-        source,
-        candidate,
+        source.node,
+        candidate.node,
         "collection_neighbor",
         0.67,
         "Both files share the same publication or update context.",
@@ -419,7 +495,7 @@ function bestEdgeForCandidate(input: {
 
   if (strongSharedDefinitions.length > 0) {
     signals.push(
-      createEdge(source, candidate, "background", 0.62, "Both files share definitions or background concepts.", {
+      createEdge(source.node, candidate.node, "background", 0.62, "Both files share definitions or background concepts.", {
         definitions: strongSharedDefinitions.slice(0, 8),
         signal: "shared_definition"
       })
@@ -429,59 +505,32 @@ function bestEdgeForCandidate(input: {
   return signals.sort((left, right) => right.weight - left.weight)[0] ?? null;
 }
 
-function isStandaloneSpecificSubject(value: string): boolean {
-  const normalized = normalizeSearchText(value).replace(/\s+/gu, "");
+function isStandaloneSpecificSubject(
+  value: string,
+  normalization: GraphEdgeNormalizationCache
+): boolean {
+  const normalized = normalization.compactText(value);
   return /\p{Script=Han}/u.test(normalized)
     ? normalized.length >= 4
     : normalized.length >= 8;
 }
 
-const VERSION_METADATA_KEYS = [
-  "version",
-  "timestamp",
-  "publishedAt",
-  "updatedAt",
-  "publicationDate",
-  "status"
-] as const;
-
 function hasDifferentVersionEvidence(
-  source: OkfGraphNode,
-  candidate: OkfGraphNode,
-  sourceHints: string[],
-  candidateHints: string[]
+  source: GraphEdgeNodeProfile,
+  candidate: GraphEdgeNodeProfile
 ): boolean {
-  const normalizedSourceHints = normalizeVersionEvidence(sourceHints);
-  const normalizedCandidateHints = normalizeVersionEvidence(candidateHints);
-
   if (
-    (normalizedSourceHints.length > 0 || normalizedCandidateHints.length > 0) &&
-    normalizedSourceHints.join("\u0000") !== normalizedCandidateHints.join("\u0000")
+    (source.normalizedVersionHints.length > 0 || candidate.normalizedVersionHints.length > 0) &&
+    [...source.normalizedVersionHints].sort().join("\u0000")
+      !== [...candidate.normalizedVersionHints].sort().join("\u0000")
   ) {
     return true;
   }
 
-  return VERSION_METADATA_KEYS.some((key) => {
-    const sourceValue = readVersionMetadataValue(source.metadata, key);
-    const candidateValue = readVersionMetadataValue(candidate.metadata, key);
+  return [...source.versionMetadata].some(([key, sourceValue]) => {
+    const candidateValue = candidate.versionMetadata.get(key) ?? "";
     return Boolean(sourceValue && candidateValue && sourceValue !== candidateValue);
   });
-}
-
-function normalizeVersionEvidence(values: string[]): string[] {
-  return Array.from(
-    new Set(values.map((value) => normalizeSearchText(value)).filter(Boolean))
-  ).sort();
-}
-
-function readVersionMetadataValue(
-  metadata: Record<string, unknown> | undefined,
-  key: string
-): string {
-  const value = metadata?.[key];
-  return typeof value === "string" || typeof value === "number"
-    ? normalizeSearchText(String(value))
-    : "";
 }
 
 function createEdge(
@@ -509,14 +558,13 @@ function createEdge(
 
 function isStrongSharedKeyPhrase(
   term: string,
-  source: OkfGraphNode,
-  candidate: OkfGraphNode,
+  source: GraphEdgeNodeProfile,
+  candidate: GraphEdgeNodeProfile,
   candidateTermFrequency: CandidateTermFrequency,
-  sourceTerms: Set<string>,
-  candidateTerms: Set<string>,
-  genericPhraseThreshold: number
+  genericPhraseThreshold: number,
+  normalization: GraphEdgeNormalizationCache
 ): boolean {
-  const normalized = normalizeSearchText(term).replace(/\s+/gu, "");
+  const normalized = normalization.compactText(term);
 
   if (
     !normalized ||
@@ -530,69 +578,64 @@ function isStrongSharedKeyPhrase(
     return false;
   }
 
-  const sourceTitle = normalizeSearchText(source.title).replace(/\s+/gu, "");
-  const candidateTitle = normalizeSearchText(candidate.title).replace(/\s+/gu, "");
-
-  if (sourceTitle.includes(normalized) && candidateTitle.includes(normalized)) {
-    return isDiscriminativeSharedTitlePhrase(term, source, candidate, genericPhraseThreshold);
+  if (source.compactTitle.includes(normalized) && candidate.compactTitle.includes(normalized)) {
+    return isDiscriminativeSharedTitlePhrase(
+      term,
+      source,
+      candidate,
+      genericPhraseThreshold,
+      normalization
+    );
   }
 
-  return normalized.length > genericPhraseThreshold && sourceTerms.has(normalized) && candidateTerms.has(normalized);
-}
-
-function normalizeCompactTerm(value: string): string {
-  return normalizeSearchText(value).replace(/\s+/gu, "");
+  return normalized.length > genericPhraseThreshold
+    && source.normalizedStrongTerms.has(normalized)
+    && candidate.normalizedStrongTerms.has(normalized);
 }
 
 function isDiscriminativeSharedTitlePhrase(
   value: string,
-  source: OkfGraphNode,
-  candidate: OkfGraphNode,
-  genericPhraseThreshold: number
+  source: GraphEdgeNodeProfile,
+  candidate: GraphEdgeNodeProfile,
+  genericPhraseThreshold: number,
+  normalization: GraphEdgeNormalizationCache
 ): boolean {
-  const phrase = normalizeSearchText(value).replace(/\s+/gu, "");
-  const sourceTitle = normalizeSearchText(source.title).replace(/\s+/gu, "");
-  const candidateTitle = normalizeSearchText(candidate.title).replace(/\s+/gu, "");
+  const phrase = normalization.compactText(value);
 
   if (
     phrase.length < genericPhraseThreshold ||
-    !sourceTitle.includes(phrase) ||
-    !candidateTitle.includes(phrase)
+    !source.compactTitle.includes(phrase) ||
+    !candidate.compactTitle.includes(phrase)
   ) {
     return false;
   }
 
-  const shorterTitleLength = Math.min(sourceTitle.length, candidateTitle.length);
+  const shorterTitleLength = Math.min(
+    source.compactTitle.length,
+    candidate.compactTitle.length
+  );
   const coverage = shorterTitleLength > 0 ? phrase.length / shorterTitleLength : 0;
   return coverage >= 0.65;
 }
 
-function compactSharedPhrases(values: string[]): string[] {
-  const sorted = [...values].sort((left, right) => {
-    const leftLength = normalizeSearchText(left).replace(/\s+/gu, "").length;
-    const rightLength = normalizeSearchText(right).replace(/\s+/gu, "").length;
-
-    return rightLength - leftLength || left.localeCompare(right);
-  });
-  const kept: string[] = [];
+function compactSharedPhrases(
+  values: string[],
+  normalization: GraphEdgeNormalizationCache
+): string[] {
+  const sorted = values
+    .map((value) => ({ value, normalized: normalization.compactText(value) }))
+    .sort((left, right) =>
+      right.normalized.length - left.normalized.length
+      || left.value.localeCompare(right.value));
+  const kept: Array<{ value: string; normalized: string }> = [];
 
   for (const value of sorted) {
-    const normalized = normalizeSearchText(value).replace(/\s+/gu, "");
-
-    if (!kept.some((existing) => normalizeSearchText(existing).replace(/\s+/gu, "").includes(normalized))) {
+    if (!kept.some((existing) => existing.normalized.includes(value.normalized))) {
       kept.push(value);
     }
   }
 
-  return kept;
-}
-
-function normalizedStrongTerms(terms: string[]): Set<string> {
-  return new Set(
-    terms
-      .map((term) => normalizeSearchText(term).replace(/\s+/gu, ""))
-      .filter((term) => term && isStrongContentSignal(term) && !isLowInformationSharedGraphTerm(term))
-  );
+  return kept.map((value) => value.value);
 }
 
 function isStrongConfirmationPhrase(value: string): boolean {
@@ -613,30 +656,26 @@ function isStrongConfirmationPhrase(value: string): boolean {
   return normalized.length >= 8;
 }
 
-function matchesExplicitReference(source: OkfGraphNode, candidate: OkfGraphNode): boolean {
-  const references = source.explicitReferences ?? [];
-  const candidatePath = normalizePublicPath(candidate.path);
-  const candidateTitle = normalizeSearchText(candidate.title);
-
-  return references.some((reference) => {
-    const normalizedReference = normalizePublicPath(reference);
-
+function matchesExplicitReference(
+  source: GraphEdgeNodeProfile,
+  candidate: GraphEdgeNodeProfile
+): boolean {
+  return source.explicitReferences.some((reference) => {
     return (
-      normalizedReference === candidatePath ||
-      normalizedReference.endsWith(`/${candidatePath}`) ||
-      (candidateTitle.length > 0 && normalizeSearchText(reference).includes(candidateTitle))
+      reference.normalizedPath === candidate.normalizedPath ||
+      reference.normalizedPath.endsWith(`/${candidate.normalizedPath}`) ||
+      (candidate.normalizedTitle.length > 0
+        && reference.normalizedText.includes(candidate.normalizedTitle))
     );
   });
 }
 
-function removeVersionContext(body: string, versionHints: string[]): string {
+function removeVersionContext(body: string, normalizedVersionHints: string[]): string {
   let result = body;
 
-  for (const hint of versionHints) {
-    const normalizedHint = normalizeSearchText(hint);
-
-    if (normalizedHint) {
-      result = result.replaceAll(normalizedHint, " ");
+  for (const hint of normalizedVersionHints) {
+    if (hint) {
+      result = result.replaceAll(hint, " ");
     }
   }
 
@@ -645,31 +684,27 @@ function removeVersionContext(body: string, versionHints: string[]): string {
 
 function isSharedVersionContextTerm(
   term: string,
-  sourceVersionHints: string[],
-  candidateVersionHints: string[]
+  source: GraphEdgeNodeProfile,
+  candidate: GraphEdgeNodeProfile,
+  normalization: GraphEdgeNormalizationCache
 ): boolean {
-  const normalizedTerm = normalizeSearchText(term).replace(/\s+/gu, "");
+  const normalizedTerm = normalization.compactText(term);
 
   if (!normalizedTerm) {
     return false;
   }
 
-  const appearsIn = (hints: string[]) =>
-    hints.some((hint) =>
-      normalizeSearchText(hint).replace(/\s+/gu, "").includes(normalizedTerm)
-    );
-
-  return appearsIn(sourceVersionHints) && appearsIn(candidateVersionHints);
+  return source.compactVersionHints.some((hint) => hint.includes(normalizedTerm))
+    && candidate.compactVersionHints.some((hint) => hint.includes(normalizedTerm));
 }
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values));
 }
 
-function countDistinctSignals(values: string[]): number {
-  return new Set(
-    values
-      .map((value) => normalizeSearchText(value).replace(/\s+/gu, ""))
-      .filter(Boolean)
-  ).size;
+function countDistinctSignals(
+  values: string[],
+  normalization: GraphEdgeNormalizationCache
+): number {
+  return new Set(values.map(normalization.compactText).filter(Boolean)).size;
 }

@@ -32,8 +32,9 @@ Focowiki sends each delivery as an HTTP `POST` request.
 | Method | `POST` |
 | Content-Type | `application/json` |
 | Success acknowledgement | Any `2xx` response status. |
-| Delivery timeout | 10 seconds. |
-| Redelivery | Use `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` for manual redelivery. |
+| Delivery timeout | Configured by the deployment. |
+| Automatic retry | Non-`2xx` responses and delivery failures are retried according to the deployment's worker attempt and delay settings. |
+| Manual redelivery | Use `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` to create a new attempt. |
 
 ## Request Headers
 
@@ -50,12 +51,12 @@ Every webhook delivery uses this JSON envelope:
 
 ```json
 {
-  "eventId": "event_123",
+  "eventId": "event-11111111-1111-4111-8111-111111111111",
   "eventType": "source_file.completed",
-  "deliveryId": "delivery_123",
+  "deliveryId": "delivery-11111111-1111-4111-8111-111111111111",
   "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123"
+    "knowledgeBaseId": "knowledge-base-11111111-1111-4111-8111-111111111111",
+    "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111"
   }
 }
 ```
@@ -99,7 +100,7 @@ Use the raw request body bytes or exact raw body string received by the server. 
 | Event type | When it is sent | Payload fields |
 | --- | --- | --- |
 | `source_file.accepted` | A new version of an uploaded Markdown file enters processing. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
-| `source_file.progress` | An uploaded file enters a processing step. | `knowledgeBaseId`, `sourceFileId`, `stage`, `status` |
+| `source_file.progress` | An uploaded file enters a processing step. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `status` |
 | `source_file.completed` | An uploaded file completes processing. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
 | `source_file.failed` | Processing stops because the uploaded Markdown file failed. | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `errorCode` |
 | `generation.activated` | Updated knowledge-base content becomes readable. | `knowledgeBaseId`, `generationId` |
@@ -115,10 +116,10 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-When a delivery fails, call redelivery with the `deliveryId` returned by the delivery list:
+When a delivery remains failed after its automatic attempts, call redelivery with the `deliveryId` returned by the delivery list:
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redeliver" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery-11111111-1111-4111-8111-111111111111/redeliver" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 

@@ -144,7 +144,7 @@ export function renderBoundedRootFile(input: {
     return markdown([
       "# Directory Update Log",
       "",
-      `- Generation \`${input.generationId}\` published ${input.knowledgeBase.sourceFileCount} source-backed Markdown files.`,
+      `- Published ${input.knowledgeBase.sourceFileCount} source-backed Markdown files.`,
       ""
     ]);
   }

@@ -244,22 +244,32 @@ jobs:
         shell: bash
         run: |
           image="${API_IMAGE}@${{ steps.build-api.outputs.digest }}"
+          runtime_secret_volume="focowiki-build-runtime-secrets-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          api_container=""
+          docker volume create "${runtime_secret_volume}" >/dev/null
+          cleanup() {
+            if [[ -n "${api_container}" ]]; then
+              docker rm -f "${api_container}" >/dev/null 2>&1 || true
+            fi
+            docker volume rm -f "${runtime_secret_volume}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
           for platform in linux/amd64 linux/arm64; do
             docker image rm --force "${image}" >/dev/null 2>&1 || true
             docker pull --platform "${platform}" "${image}"
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --entrypoint node "${image}" -e "const fs=require('node:fs'); const secret=require('node:crypto').randomBytes(32).toString('base64url'); fs.writeFileSync('/app/runtime-secrets/deployment.key', secret + '\n', { mode: 0o600 });"
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migrate.mjs
             docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/migration-preflight.mjs
-            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/source-worker.mjs --healthcheck
-            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/publication-worker.mjs --healthcheck
-            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/projection-repair-worker.mjs --healthcheck
-            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
-            docker run --rm --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/maintenance-worker.mjs --healthcheck
-            api_container="$(docker run -d --platform "${platform}" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/main.mjs)"
-            trap 'docker rm -f "${api_container}" >/dev/null 2>&1 || true' EXIT
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/source-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/publication-worker.mjs --healthcheck
+            docker run --rm --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/maintenance-worker.mjs --healthcheck
+            api_container="$(docker run -d --platform "${platform}" --mount "type=volume,source=${runtime_secret_volume},target=/app/runtime-secrets" --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" "${image}" node apps/api/runtime/main.mjs)"
             curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43000/healthz
             curl --fail --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:43200/healthz
             docker rm -f "${api_container}" >/dev/null
+            api_container=""
           done
+          docker volume rm "${runtime_secret_volume}" >/dev/null
           trap - EXIT
 
       - name: Build and push Admin image

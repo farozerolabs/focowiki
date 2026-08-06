@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../db/client.js";
+import {
+  createStorageVnextRuntimeSettingsRevision,
+  readStorageVnextRuntimeSettingsRevision,
+  type StorageVnextRuntimeSettingsRevision
+} from "./revision-document.js";
 import type {
   ModelConfigStatus,
   ModelApiMode,
@@ -8,39 +14,53 @@ import type {
   RuntimeSettingRecord
 } from "./types.js";
 
-type RuntimeSettingRow = {
-  key: RuntimeSettingKey;
-  value_json: unknown;
+type RuntimeSettingRevisionRow = {
+  public_id: string;
+  checksum_sha256: string;
+  settings_values: unknown;
+  created_at: Date | string;
+};
+
+type ReadSql = DatabaseClient | TransactionSql;
+
+export type RuntimeSettingsRevisionIdentity = {
+  publicId: string;
+  checksum: string;
   version: number;
-  source: "bootstrap" | "admin";
-  created_at: Date;
-  updated_at: Date;
 };
 
 type ModelConfigRow = {
-  id: string;
-  display_name: string;
-  api_mode?: ModelApiMode | null;
-  base_url: string;
-  encrypted_api_key: string;
-  api_key_fingerprint: string;
-  model_name: string;
-  context_window_tokens: number;
-  request_max_timeout_ms: number;
-  request_idle_timeout_ms: number;
-  suggestion_concurrency: number;
-  transient_retry_delay_ms: number;
-  request_min_interval_ms: number;
-  status: ModelConfigStatus;
-  is_active: boolean;
-  created_at: Date;
-  updated_at: Date;
-  deleted_at: Date | null;
+  public_id: string;
+  provider: string;
+  model: string;
+  secret_reference: string;
+  config: unknown;
+  enabled: boolean;
+  revision: number | string;
+  created_at: Date | string;
+  updated_at: Date | string;
 };
+
+type ModelConfigDocument = {
+  displayName: string;
+  apiMode: ModelApiMode;
+  baseUrl: string;
+  apiKeyFingerprint: string;
+  contextWindowTokens: number;
+  requestMaxTimeoutMs: number;
+  requestIdleTimeoutMs: number;
+  suggestionConcurrency: number;
+  transientRetryDelayMs: number;
+  requestMinIntervalMs: number;
+  status: Exclude<ModelConfigStatus, "deleted">;
+};
+
+const MODEL_PROVIDER = "openai-compatible";
 
 export type RuntimeSettingsRepository = {
   listSettings: () => Promise<Array<RuntimeSettingRecord>>;
   getSetting: (key: RuntimeSettingKey) => Promise<RuntimeSettingRecord | null>;
+  getCurrentRevision: () => Promise<RuntimeSettingsRevisionIdentity | null>;
   upsertSetting: (input: {
     key: RuntimeSettingKey;
     value: unknown;
@@ -51,6 +71,7 @@ export type RuntimeSettingsRepository = {
     action: string;
     actor?: string | null | undefined;
     value: unknown;
+    expiresAt: string;
   }) => Promise<void>;
   listModels: () => Promise<RuntimeModelConfigPrivate[]>;
   getModel: (id: string) => Promise<RuntimeModelConfigPrivate | null>;
@@ -84,71 +105,113 @@ export type RuntimeSettingsRepository = {
 export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSettingsRepository {
   return {
     async listSettings() {
-      const rows = await sql<RuntimeSettingRow[]>`
-        SELECT key, value_json, version, source, created_at, updated_at
-        FROM focowiki.runtime_settings
-        ORDER BY key ASC
-      `;
-
-      return rows.map(toSettingRecord);
+      const current = await readCurrentRevision(sql, false);
+      return current ? toSettingRecords(current) : [];
     },
     async getSetting(key) {
-      const rows = await sql<RuntimeSettingRow[]>`
-        SELECT key, value_json, version, source, created_at, updated_at
-        FROM focowiki.runtime_settings
-        WHERE key = ${key}
-        LIMIT 1
-      `;
-
-      return rows[0] ? toSettingRecord(rows[0]) : null;
+      const current = await readCurrentRevision(sql, false);
+      return current ? toSettingRecord(current, key) : null;
+    },
+    async getCurrentRevision() {
+      const current = await readCurrentRevision(sql, false);
+      return current ? {
+        publicId: current.revision.publicId,
+        checksum: current.revision.checksum,
+        version: current.revision.document.version
+      } : null;
     },
     async upsertSetting(input) {
-      const rows = await sql<RuntimeSettingRow[]>`
-        INSERT INTO focowiki.runtime_settings (key, value_json, source)
-        VALUES (${input.key}, ${sql.json(input.value as never)}, ${input.source})
-        ON CONFLICT (key) DO UPDATE
-        SET value_json = EXCLUDED.value_json,
-            source = EXCLUDED.source,
-            version = focowiki.runtime_settings.version + 1,
-            updated_at = now()
-        RETURNING key, value_json, version, source, created_at, updated_at
-      `;
-
-      if (!rows[0]) {
-        throw new Error("Runtime setting upsert did not return a row");
-      }
-
-      return toSettingRecord(rows[0]);
+      return sql.begin(async (transaction) => {
+        await transaction`
+          SELECT pg_advisory_xact_lock(
+            hashtext('focowiki.runtime_setting_current')::bigint
+          )
+        `;
+        const current = await readCurrentRevision(transaction, true);
+        const revision = createStorageVnextRuntimeSettingsRevision({
+          current: current?.revision.document ?? null,
+          key: input.key,
+          value: input.value,
+          source: input.source
+        });
+        const inserted = await transaction<RuntimeSettingRevisionRow[]>`
+          INSERT INTO focowiki.runtime_setting_revisions (
+            public_id, checksum_sha256, settings_values, created_by_public_id
+          ) VALUES (
+            ${revision.publicId}, ${revision.checksum},
+            ${transaction.json(revision.document as never)}, NULL
+          )
+          ON CONFLICT (public_id) DO NOTHING
+          RETURNING public_id, checksum_sha256, settings_values, created_at
+        `;
+        const stored = inserted[0] ?? await readRevisionByPublicId(
+          transaction,
+          revision.publicId
+        );
+        if (!stored) throw new Error("Runtime settings revision was not persisted");
+        const verified = readRevisionRow(stored);
+        if (
+          verified.revision.checksum !== revision.checksum
+          || verified.revision.document.version !== revision.document.version
+        ) {
+          throw new Error("Runtime settings revision identity conflict");
+        }
+        await transaction`
+          INSERT INTO focowiki.runtime_setting_current (
+            singleton, revision_public_id, updated_at
+          ) VALUES (true, ${revision.publicId}, now())
+          ON CONFLICT (singleton) DO UPDATE
+          SET revision_public_id = EXCLUDED.revision_public_id,
+              updated_at = EXCLUDED.updated_at
+        `;
+        const record = toSettingRecord(verified, input.key);
+        if (!record) throw new Error("Runtime setting section was not persisted");
+        return record;
+      });
     },
     async createAuditLog(input) {
+      const createdAt = new Date().toISOString();
       await sql`
-        INSERT INTO focowiki.runtime_setting_audit_logs (
-          id, setting_key, action, actor, value_json
+        INSERT INTO focowiki.security_audit_events (
+          public_id, knowledge_base_id, actor_public_id, event_type,
+          target_kind, target_public_id, result, reason_code, source_ip,
+          user_agent, metadata, created_at, expires_at
         )
         VALUES (
           ${`runtime-setting-audit-${randomUUID()}`},
-          ${input.settingKey},
-          ${input.action},
+          NULL,
           ${input.actor ?? null},
-          ${sql.json(input.value as never)}
+          ${`runtime_settings.${input.action}`},
+          'runtime_setting',
+          ${input.settingKey},
+          'success',
+          NULL,
+          NULL,
+          NULL,
+          ${sql.json({ settingKey: input.settingKey, action: input.action })},
+          ${createdAt},
+          ${input.expiresAt}
         )
       `;
     },
     async listModels() {
       const rows = await sql<ModelConfigRow[]>`
-        SELECT *
+        SELECT public_id, provider, model, secret_reference, config,
+               enabled, revision, created_at, updated_at
         FROM focowiki.model_configs
-        WHERE deleted_at IS NULL
-        ORDER BY is_active DESC, created_at DESC, id DESC
+        WHERE knowledge_base_id IS NULL
+        ORDER BY enabled DESC, created_at DESC, public_id DESC
       `;
 
-      return rows.map(toPrivateModel);
+      return rows.map((row) => toPrivateModel(row));
     },
     async getModel(id) {
       const rows = await sql<ModelConfigRow[]>`
-        SELECT *
+        SELECT public_id, provider, model, secret_reference, config,
+               enabled, revision, created_at, updated_at
         FROM focowiki.model_configs
-        WHERE id = ${id}
+        WHERE public_id = ${id}
+          AND knowledge_base_id IS NULL
         LIMIT 1
       `;
 
@@ -156,62 +219,42 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
     },
     async getActiveModel() {
       const rows = await sql<ModelConfigRow[]>`
-        SELECT *
+        SELECT public_id, provider, model, secret_reference, config,
+               enabled, revision, created_at, updated_at
         FROM focowiki.model_configs
-        WHERE is_active = true
-          AND status = 'active'
-          AND deleted_at IS NULL
+        WHERE knowledge_base_id IS NULL
+          AND enabled = true
+          AND config ->> 'status' = 'active'
+        ORDER BY updated_at DESC, public_id DESC
         LIMIT 1
       `;
 
       return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async createModel(input) {
-      if (input.isActive) {
-        await sql`
-          UPDATE focowiki.model_configs
-          SET is_active = false, updated_at = now()
-          WHERE is_active = true
+      const rows = await sql.begin(async (transaction) => {
+        if (input.isActive) {
+          await lockActiveModel(transaction);
+          await transaction`
+            UPDATE focowiki.model_configs
+            SET enabled = false, revision = revision + 1, updated_at = now()
+            WHERE knowledge_base_id IS NULL AND enabled = true
+          `;
+        }
+        return transaction<ModelConfigRow[]>`
+          INSERT INTO focowiki.model_configs (
+            public_id, knowledge_base_id, provider, model,
+            secret_reference, config, enabled, revision
+          ) VALUES (
+            ${`model-config-${randomUUID()}`}, NULL, ${MODEL_PROVIDER},
+            ${input.modelName}, ${input.encryptedApiKey},
+            ${transaction.json(createModelConfigDocument(input) as never)},
+            ${input.isActive}, 1
+          )
+          RETURNING public_id, provider, model, secret_reference, config,
+                    enabled, revision, created_at, updated_at
         `;
-      }
-
-      const rows = await sql<ModelConfigRow[]>`
-        INSERT INTO focowiki.model_configs (
-          id,
-          display_name,
-          api_mode,
-          base_url,
-          encrypted_api_key,
-          api_key_fingerprint,
-          model_name,
-          context_window_tokens,
-          request_max_timeout_ms,
-          request_idle_timeout_ms,
-          suggestion_concurrency,
-          transient_retry_delay_ms,
-          request_min_interval_ms,
-          status,
-          is_active
-        )
-        VALUES (
-          ${`model-config-${randomUUID()}`},
-          ${input.displayName},
-          ${input.apiMode},
-          ${input.baseUrl},
-          ${input.encryptedApiKey},
-          ${input.apiKeyFingerprint},
-          ${input.modelName},
-          ${input.contextWindowTokens},
-          ${input.requestMaxTimeoutMs},
-          ${input.requestIdleTimeoutMs},
-          ${input.suggestionConcurrency},
-          ${input.transientRetryDelayMs},
-          ${input.requestMinIntervalMs},
-          'active',
-          ${input.isActive}
-        )
-        RETURNING *
-      `;
+      });
 
       if (!rows[0]) {
         throw new Error("Runtime model creation did not return a row");
@@ -220,56 +263,80 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
       return toPrivateModel(rows[0]);
     },
     async setModelStatus(input) {
-      const rows = await sql<ModelConfigRow[]>`
-        UPDATE focowiki.model_configs
-        SET status = ${input.status},
-            is_active = ${input.isActive ?? false},
-            updated_at = now()
-        WHERE id = ${input.id}
-          AND deleted_at IS NULL
-        RETURNING *
-      `;
+      const rows = await sql.begin(async (transaction) => {
+        if (input.isActive) {
+          await lockActiveModel(transaction);
+          await transaction`
+            UPDATE focowiki.model_configs
+            SET enabled = false, revision = revision + 1, updated_at = now()
+            WHERE knowledge_base_id IS NULL AND enabled = true
+          `;
+        }
+        return transaction<ModelConfigRow[]>`
+          UPDATE focowiki.model_configs
+          SET config = config || ${transaction.json({ status: input.status })},
+              enabled = ${input.isActive ?? false},
+              revision = revision + 1,
+              updated_at = now()
+          WHERE public_id = ${input.id}
+            AND knowledge_base_id IS NULL
+          RETURNING public_id, provider, model, secret_reference, config,
+                    enabled, revision, created_at, updated_at
+        `;
+      });
 
       return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async setActiveModel(id) {
-      await sql`
-        UPDATE focowiki.model_configs
-        SET is_active = false, updated_at = now()
-        WHERE is_active = true
-      `;
-      const rows = await sql<ModelConfigRow[]>`
-        UPDATE focowiki.model_configs
-        SET is_active = true,
-            status = 'active',
-            updated_at = now()
-        WHERE id = ${id}
-          AND deleted_at IS NULL
-        RETURNING *
-      `;
+      const rows = await sql.begin(async (transaction) => {
+        await lockActiveModel(transaction);
+        const target = await transaction<Array<{ public_id: string }>>`
+          SELECT public_id
+          FROM focowiki.model_configs
+          WHERE public_id = ${id} AND knowledge_base_id IS NULL
+          FOR UPDATE
+        `;
+        if (!target[0]) return [] as ModelConfigRow[];
+        await transaction`
+          UPDATE focowiki.model_configs
+          SET enabled = false, revision = revision + 1, updated_at = now()
+          WHERE knowledge_base_id IS NULL AND enabled = true
+        `;
+        return transaction<ModelConfigRow[]>`
+          UPDATE focowiki.model_configs
+          SET config = config || ${transaction.json({ status: "active" })},
+              enabled = true,
+              revision = revision + 1,
+              updated_at = now()
+          WHERE public_id = ${id} AND knowledge_base_id IS NULL
+          RETURNING public_id, provider, model, secret_reference, config,
+                    enabled, revision, created_at, updated_at
+        `;
+      });
 
       return rows[0] ? toPrivateModel(rows[0]) : null;
     },
     async softDeleteModel(id) {
       const rows = await sql<ModelConfigRow[]>`
-        UPDATE focowiki.model_configs
-        SET status = 'deleted',
-            is_active = false,
-            deleted_at = now(),
-            updated_at = now()
-        WHERE id = ${id}
-          AND deleted_at IS NULL
-        RETURNING *
+        DELETE FROM focowiki.model_configs
+        WHERE public_id = ${id}
+          AND knowledge_base_id IS NULL
+        RETURNING public_id, provider, model, secret_reference, config,
+                  enabled, revision, created_at, updated_at
       `;
 
-      return rows[0] ? toPrivateModel(rows[0]) : null;
+      return rows[0] ? toPrivateModel(rows[0], {
+        status: "deleted",
+        isActive: false,
+        deletedAt: new Date().toISOString()
+      }) : null;
     },
-    async countRunningModelInvocations(modelConfigId) {
+    async countRunningModelInvocations(_modelConfigId) {
       const rows = await sql<Array<{ count: number | string }>>`
         SELECT count(*) AS count
-        FROM focowiki.model_invocations
-        WHERE model_config_id = ${modelConfigId}
-          AND status = 'running'
+        FROM focowiki.source_files
+        WHERE status = 'processing'
+          AND deleted_at IS NULL
       `;
 
       return Number(rows[0]?.count ?? 0);
@@ -278,7 +345,8 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
       const rows = await sql<Array<{ count: number | string }>>`
         SELECT count(*) AS count
         FROM focowiki.source_files
-        WHERE processing_status = 'running'
+        WHERE status = 'processing'
+          AND deleted_at IS NULL
       `;
 
       return Number(rows[0]?.count ?? 0);
@@ -286,40 +354,203 @@ export function createRuntimeSettingsRepository(sql: DatabaseClient): RuntimeSet
   };
 }
 
-function toSettingRecord(row: RuntimeSettingRow): RuntimeSettingRecord {
+type VerifiedRuntimeSettingsRevision = {
+  revision: StorageVnextRuntimeSettingsRevision;
+  createdAt: string;
+};
+
+const SETTING_KEYS: readonly RuntimeSettingKey[] = [
+  "rate_limits",
+  "worker",
+  "publication",
+  "graph",
+  "maintenance",
+  "search"
+];
+
+async function readCurrentRevision(
+  sql: ReadSql,
+  lock: boolean
+): Promise<VerifiedRuntimeSettingsRevision | null> {
+  const rows = await sql<RuntimeSettingRevisionRow[]>`
+    SELECT revision.public_id, revision.checksum_sha256,
+           revision.settings_values, revision.created_at
+    FROM focowiki.runtime_setting_current AS current_pointer
+    JOIN focowiki.runtime_setting_revisions AS revision
+      ON revision.public_id = current_pointer.revision_public_id
+    WHERE current_pointer.singleton = true
+    ${lock ? sql`FOR UPDATE OF current_pointer` : sql``}
+  `;
+  return rows[0] ? readRevisionRow(rows[0]) : null;
+}
+
+async function readRevisionByPublicId(
+  sql: ReadSql,
+  publicId: string
+): Promise<RuntimeSettingRevisionRow | null> {
+  const rows = await sql<RuntimeSettingRevisionRow[]>`
+    SELECT public_id, checksum_sha256, settings_values, created_at
+    FROM focowiki.runtime_setting_revisions
+    WHERE public_id = ${publicId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+function readRevisionRow(
+  row: RuntimeSettingRevisionRow
+): VerifiedRuntimeSettingsRevision {
   return {
-    key: row.key,
-    value: row.value_json,
-    version: row.version,
-    source: row.source,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString()
+    revision: readStorageVnextRuntimeSettingsRevision({
+      publicId: row.public_id,
+      checksum: row.checksum_sha256,
+      document: row.settings_values
+    }),
+    createdAt: timestamp(row.created_at)
   };
 }
 
-function toPrivateModel(row: ModelConfigRow): RuntimeModelConfigPrivate {
+function toSettingRecords(
+  current: VerifiedRuntimeSettingsRevision
+): RuntimeSettingRecord[] {
+  return SETTING_KEYS
+    .map((key) => toSettingRecord(current, key))
+    .filter((record): record is RuntimeSettingRecord => record !== null);
+}
+
+function toSettingRecord(
+  current: VerifiedRuntimeSettingsRevision,
+  key: RuntimeSettingKey
+): RuntimeSettingRecord | null {
+  const value = current.revision.document.sections[key];
+  if (value === undefined) return null;
   return {
-    id: row.id,
-    displayName: row.display_name,
-    apiMode: normalizeModelApiMode(row.api_mode),
-    baseUrl: row.base_url,
-    apiKey: row.encrypted_api_key,
-    apiKeyFingerprint: row.api_key_fingerprint,
-    modelName: row.model_name,
-    contextWindowTokens: Number(row.context_window_tokens),
-    requestMaxTimeoutMs: Number(row.request_max_timeout_ms),
-    requestIdleTimeoutMs: Number(row.request_idle_timeout_ms),
-    suggestionConcurrency: Number(row.suggestion_concurrency),
-    transientRetryDelayMs: Number(row.transient_retry_delay_ms),
-    requestMinIntervalMs: Number(row.request_min_interval_ms),
-    status: row.status,
-    isActive: row.is_active,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-    deletedAt: row.deleted_at?.toISOString() ?? null
+    key,
+    value: structuredClone(value),
+    version: current.revision.document.version,
+    source: current.revision.document.source,
+    createdAt: current.createdAt,
+    updatedAt: current.createdAt
   };
 }
 
-function normalizeModelApiMode(value: unknown): ModelApiMode {
-  return value === "chat_completions" ? "chat_completions" : "responses";
+function timestamp(value: Date | string): string {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("Runtime settings revision timestamp is invalid");
+  }
+  return parsed.toISOString();
+}
+
+async function lockActiveModel(sql: TransactionSql): Promise<void> {
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtext('focowiki.model_configs.active')::bigint
+    )
+  `;
+}
+
+function createModelConfigDocument(
+  input: Parameters<RuntimeSettingsRepository["createModel"]>[0]
+): ModelConfigDocument {
+  return {
+    displayName: input.displayName,
+    apiMode: input.apiMode,
+    baseUrl: input.baseUrl,
+    apiKeyFingerprint: input.apiKeyFingerprint,
+    contextWindowTokens: input.contextWindowTokens,
+    requestMaxTimeoutMs: input.requestMaxTimeoutMs,
+    requestIdleTimeoutMs: input.requestIdleTimeoutMs,
+    suggestionConcurrency: input.suggestionConcurrency,
+    transientRetryDelayMs: input.transientRetryDelayMs,
+    requestMinIntervalMs: input.requestMinIntervalMs,
+    status: "active"
+  };
+}
+
+function toPrivateModel(
+  row: ModelConfigRow,
+  override?: {
+    status: ModelConfigStatus;
+    isActive: boolean;
+    deletedAt: string;
+  }
+): RuntimeModelConfigPrivate {
+  const config = readModelConfigDocument(row.config);
+  return {
+    id: row.public_id,
+    displayName: config.displayName,
+    apiMode: config.apiMode,
+    baseUrl: config.baseUrl,
+    apiKey: row.secret_reference,
+    apiKeyFingerprint: config.apiKeyFingerprint,
+    modelName: row.model,
+    contextWindowTokens: config.contextWindowTokens,
+    requestMaxTimeoutMs: config.requestMaxTimeoutMs,
+    requestIdleTimeoutMs: config.requestIdleTimeoutMs,
+    suggestionConcurrency: config.suggestionConcurrency,
+    transientRetryDelayMs: config.transientRetryDelayMs,
+    requestMinIntervalMs: config.requestMinIntervalMs,
+    status: override?.status ?? config.status,
+    isActive: override?.isActive ?? row.enabled,
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+    deletedAt: override?.deletedAt ?? null
+  };
+}
+
+function readModelConfigDocument(value: unknown): ModelConfigDocument {
+  if (!isRecord(value)) {
+    throw new Error("Runtime model config document is invalid");
+  }
+  const status = value.status;
+  if (status !== "active" && status !== "paused") {
+    throw new Error("Runtime model config status is invalid");
+  }
+  return {
+    displayName: readModelString(value, "displayName"),
+    apiMode: readModelApiMode(value.apiMode),
+    baseUrl: readModelString(value, "baseUrl"),
+    apiKeyFingerprint: readModelString(value, "apiKeyFingerprint"),
+    contextWindowTokens: readModelNumber(value, "contextWindowTokens"),
+    requestMaxTimeoutMs: readModelNumber(value, "requestMaxTimeoutMs"),
+    requestIdleTimeoutMs: readModelNumber(value, "requestIdleTimeoutMs"),
+    suggestionConcurrency: readModelNumber(value, "suggestionConcurrency"),
+    transientRetryDelayMs: readModelNumber(value, "transientRetryDelayMs"),
+    requestMinIntervalMs: readModelNumber(value, "requestMinIntervalMs"),
+    status
+  };
+}
+
+function readModelString(
+  value: Record<string, unknown>,
+  field: string
+): string {
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string" || fieldValue.length === 0) {
+    throw new Error(`Runtime model config ${field} is invalid`);
+  }
+  return fieldValue;
+}
+
+function readModelNumber(
+  value: Record<string, unknown>,
+  field: string
+): number {
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "number" || !Number.isFinite(fieldValue)) {
+    throw new Error(`Runtime model config ${field} is invalid`);
+  }
+  return fieldValue;
+}
+
+function readModelApiMode(value: unknown): ModelApiMode {
+  if (value !== "responses" && value !== "chat_completions") {
+    throw new Error("Runtime model config apiMode is invalid");
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -212,22 +212,9 @@ describe("Admin API auth", () => {
     const app = createApiApp({
       config,
       redis: createTestRedisCoordinator(),
-      repositories: {
-        knowledgeBases: {
-          async listKnowledgeBases() {
-            return { items: [], nextCursor: null };
-          },
-          async createKnowledgeBase() {
-            throw new Error("Unused");
-          },
-          async getKnowledgeBase() {
-            return null;
-          }
-        },
-        securityAudit: {
-          async createSecurityAuditEvent(event) {
-            events.push(event);
-          }
+      storageVnextAudit: {
+        async append(event) {
+          events.push(event);
         }
       }
     });
@@ -244,8 +231,9 @@ describe("Admin API auth", () => {
       expect.objectContaining({
         eventType: "admin_login",
         result: "failure",
-        errorCode: "UNAUTHORIZED",
-        username: "admin"
+        reasonCode: "UNAUTHORIZED",
+        actorPublicId: "admin",
+        sourceIp: null
       })
     ]);
     expect(JSON.stringify(events)).not.toContain("wrong");

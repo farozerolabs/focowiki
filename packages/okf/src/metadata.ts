@@ -189,7 +189,10 @@ function assertMarkdownFile(fileName: string): void {
 
 function parseMarkdown(content: string): matter.GrayMatterFile<string> {
   try {
-    return matter(content);
+    // gray-matter caches every unique source body when called without options.
+    // Source processing parses unbounded user content, so pass explicit options
+    // to keep parsing request-scoped while preserving the default syntax.
+    return matter(content, {});
   } catch (error) {
     if (error instanceof Error) {
       throw new MetadataValidationError([`frontmatter is invalid: ${error.message}`]);

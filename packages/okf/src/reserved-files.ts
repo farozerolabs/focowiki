@@ -28,6 +28,8 @@ export const DEFAULT_OKF_LOG_LIMITS: OkfLogLimits = {
 };
 
 const FORBIDDEN_LOG_PATTERNS = [
+  /\b(?:s3)?object[\s_-]*(?:id|key|checksum)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+  /\b(?:storage[\s_-]*(?:key|prefix)|bucket(?:[\s_-]*name)?|(?:content|manifest)?checksum(?:[\s_-]*sha256)?|(?:meili(?:search)?[\s_-]*)?index[\s_-]*(?:uid|name)|(?:meili(?:search)?[\s_-]*)?task[\s_-]*(?:uid|name|id)|table[\s_-]*(?:name|id|identifier)|owner[\s_-]*row(?:[\s_-]*id)?|lease(?:[\s_-]*(?:id|token|owner|row))?|(?:legacy[\s_-]*)?generation[\s_-]*(?:details|history|kind|payload|row|state)|predecessor[\s_-]*generation[\s_-]*id|cleanup[\s_-]*(?:action[\s_-]*id|details|object[\s_-]*keys?)|deletion[\s_-]*intent[\s_-]*id)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
   /\bS3_PREFIX\b/gi,
   /\bs3:\/\/[^\s)]+/gi,
   /\b(?:release|task)-[a-z0-9-]+\b/gi,

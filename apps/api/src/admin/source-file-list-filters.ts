@@ -1,12 +1,33 @@
 import type {
-  GeneratedOutputStatus,
-  SourceFileActionState,
-  SourceFileErrorState,
-  SourceFileListFilters,
-  SourceFileModelInvocationFilter,
-  SourceFileProcessingStage
-} from "../db/admin-repositories.js";
-import type { SourceFileLifecycleState } from "../domain/source-file-lifecycle.js";
+  SourceFileFailureStage,
+  SourceFileLifecycleState
+} from "../domain/source-file-lifecycle.js";
+
+export type GeneratedOutputStatus = "pending" | "visible" | "unavailable";
+export type SourceFileActionState = "openable" | "retryable" | "none";
+export type SourceFileErrorState = "with_error" | "without_error";
+export type SourceFileProcessingStage = SourceFileFailureStage;
+export type SourceFileModelInvocationFilter =
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped"
+  | "not_recorded";
+export type SourceFileListFilters = {
+  fileNameQuery?: string | null;
+  fileIdQuery?: string | null;
+  state?: SourceFileLifecycleState | null;
+  currentStage?: SourceFileProcessingStage | null;
+  modelInvocationStatus?: SourceFileModelInvocationFilter | null;
+  generatedOutputStatus?: GeneratedOutputStatus | null;
+  startedFrom?: string | null;
+  startedTo?: string | null;
+  endedFrom?: string | null;
+  endedTo?: string | null;
+  errorState?: SourceFileErrorState | null;
+  errorCodeQuery?: string | null;
+  actionState?: SourceFileActionState | null;
+};
 
 export type SourceFileListFilterErrorCode =
   | "INVALID_SOURCE_FILE_FILTER"

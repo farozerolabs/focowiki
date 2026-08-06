@@ -5,7 +5,7 @@ import {
   MIGRATION_MANIFEST,
   MigrationManifestValidationError,
   UnsupportedMigrationGenerationError,
-  createMigrationPlan,
+  createBootstrapPlan,
   validateMigrationManifest,
   type MigrationDescriptor
 } from "../src/db/migration-manifest.js";
@@ -14,133 +14,23 @@ import {
   RUNTIME_SCHEMA_GENERATION
 } from "../src/db/migrations.js";
 
-const EXPECTED_MIGRATIONS = [
-  ["001_production_admin_web.sql", "absent", "incremental-sharded-publication-v1", "requires_drain"],
-  [
-    "002_tree_graph_storage_reconciliation.sql",
-    "incremental-sharded-publication-v1",
-    "tree-graph-storage-reconciliation-v2",
-    "requires_drain"
-  ],
-  [
-    "003_bounded_publication_recovery.sql",
-    "tree-graph-storage-reconciliation-v2",
-    "bounded-publication-recovery-v3",
-    "requires_drain"
-  ],
-  [
-    "004_immutable_object_contention_recovery.sql",
-    "bounded-publication-recovery-v3",
-    "immutable-object-contention-recovery-v4",
-    "requires_drain"
-  ],
-  [
-    "005_publication_retry_budget_recovery.sql",
-    "immutable-object-contention-recovery-v4",
-    "publication-retry-budget-recovery-v5",
-    "requires_drain"
-  ],
-  [
-    "006_publication_continuation_recovery.sql",
-    "publication-retry-budget-recovery-v5",
-    "publication-continuation-recovery-v6",
-    "requires_drain"
-  ],
-  [
-    "007_publication_write_livelock_recovery.sql",
-    "publication-continuation-recovery-v6",
-    "publication-write-livelock-recovery-v7",
-    "requires_drain"
-  ],
-  [
-    "008_large_scale_ingestion_runtime.sql",
-    "publication-write-livelock-recovery-v7",
-    "large-scale-ingestion-runtime-v8",
-    "requires_drain"
-  ],
-  [
-    "009_optimization_migration_rebase_recovery.sql",
-    "large-scale-ingestion-runtime-v8",
-    "optimization-migration-rebase-recovery-v9",
-    "requires_drain"
-  ],
-  [
-    "010_generation_consistent_read_repair.sql",
-    "optimization-migration-rebase-recovery-v9",
-    "generation-consistent-read-repair-v10",
-    "requires_drain"
-  ],
-  [
-    "011_body_search_projection.sql",
-    "generation-consistent-read-repair-v10",
-    "body-search-projection-v11",
-    "requires_drain"
-  ],
-  [
-    "012_storage_reconciliation_lease_recovery.sql",
-    "body-search-projection-v11",
-    "storage-reconciliation-lease-recovery-v12",
-    "requires_drain"
-  ],
-  [
-    "013_projection_repair_throughput.sql",
-    "storage-reconciliation-lease-recovery-v12",
-    "projection-repair-throughput-v13",
-    "requires_drain"
-  ],
-  [
-    "014_directory_order_repair.sql",
-    "projection-repair-throughput-v13",
-    "directory-order-repair-v14",
-    "compatible_with_persisted_work"
-  ],
-  [
-    "015_lexical_rebuild_worker.sql",
-    "directory-order-repair-v14",
-    "lexical-rebuild-worker-v15",
-    "compatible_with_persisted_work"
-  ],
-  [
-    "016_knowledge_base_index_maintenance.sql",
-    "lexical-rebuild-worker-v15",
-    "knowledge-base-index-maintenance-v16",
-    "compatible_with_persisted_work"
-  ],
-  [
-    "017_indexed_storage_object_protection.sql",
-    "knowledge-base-index-maintenance-v16",
-    "indexed-storage-object-protection-v17",
-    "compatible_with_persisted_work"
-  ],
-  [
-    "018_meilisearch_search_projection.sql",
-    "indexed-storage-object-protection-v17",
-    "meilisearch-search-projection-v18",
-    "compatible_with_persisted_work"
-  ],
-  [
-    "019_durable_search_projection_planning.sql",
-    "meilisearch-search-projection-v18",
-    "durable-search-projection-planning-v19",
-    "compatible_with_persisted_work"
-  ]
+const EXPECTED_BOOTSTRAP = [
+  ["001_storage_vnext.sql", "absent", "storage-vnext-v1", "clean_bootstrap"]
 ] as const;
 
-describe("migration manifest", () => {
-  it("records the released migration chain and safety contract in one order", () => {
+describe("storage vNext bootstrap manifest", () => {
+  it("declares one absent-only destructive bootstrap", () => {
     expect(MIGRATION_MANIFEST.map((migration) => [
       migration.fileName,
       migration.sourceGeneration,
       migration.targetGeneration,
       migration.safety
-    ])).toEqual(EXPECTED_MIGRATIONS);
-    expect(MIGRATION_FILES).toEqual(EXPECTED_MIGRATIONS.map(([fileName]) => fileName));
-    expect(RUNTIME_SCHEMA_GENERATION).toBe(
-      EXPECTED_MIGRATIONS.at(-1)?.[2]
-    );
+    ])).toEqual(EXPECTED_BOOTSTRAP);
+    expect(MIGRATION_FILES).toEqual(["001_storage_vnext.sql"]);
+    expect(RUNTIME_SCHEMA_GENERATION).toBe("storage-vnext-v1");
   });
 
-  it("covers every SQL migration file exactly once", () => {
+  it("covers the migration directory exactly once", () => {
     const migrationFiles = readdirSync(
       resolve(import.meta.dirname, "../migrations")
     )
@@ -154,92 +44,66 @@ describe("migration manifest", () => {
     })).not.toThrow();
   });
 
-  it("derives every supported historical plan from the manifest", () => {
-    for (let index = 0; index < MIGRATION_MANIFEST.length; index += 1) {
-      const currentGeneration = index === 0
-        ? "absent"
-        : MIGRATION_MANIFEST[index - 1]!.targetGeneration;
-      const plan = createMigrationPlan(currentGeneration);
-
-      expect(plan.pendingMigrations).toEqual(MIGRATION_MANIFEST.slice(index));
-      expect(plan.pendingFiles).toEqual(
-        MIGRATION_MANIFEST.slice(index).map((migration) => migration.fileName)
-      );
-      expect(plan.targetGeneration).toBe(RUNTIME_SCHEMA_GENERATION);
-      expect(plan.requiresDrain).toBe(index < 13);
-    }
-
-    expect(createMigrationPlan(RUNTIME_SCHEMA_GENERATION)).toMatchObject({
+  it("initializes only an absent schema and becomes a no-op at the target", () => {
+    expect(createBootstrapPlan("absent")).toEqual({
+      pendingMigrations: MIGRATION_MANIFEST,
+      pendingFiles: ["001_storage_vnext.sql"],
+      targetGeneration: RUNTIME_SCHEMA_GENERATION
+    });
+    expect(createBootstrapPlan(RUNTIME_SCHEMA_GENERATION)).toEqual({
       pendingMigrations: [],
       pendingFiles: [],
-      requiresDrain: false,
       targetGeneration: RUNTIME_SCHEMA_GENERATION
     });
   });
 
-  it("rejects unsupported generations without guessing a start index", () => {
-    expect(() => createMigrationPlan("unknown-generation-v99")).toThrow(
-      UnsupportedMigrationGenerationError
-    );
+  it("rejects every historical or unknown schema generation", () => {
+    for (const generation of [
+      "incremental-sharded-publication-v1",
+      "durable-search-projection-planning-v19",
+      "unknown-generation-v99"
+    ]) {
+      expect(() => createBootstrapPlan(generation)).toThrow(
+        UnsupportedMigrationGenerationError
+      );
+    }
   });
 
   it.each([
     {
-      name: "duplicate files",
-      mutate: () => [
-        MIGRATION_MANIFEST[0]!,
-        { ...MIGRATION_MANIFEST[1]!, fileName: MIGRATION_MANIFEST[0]!.fileName }
-      ]
+      name: "multiple entries",
+      manifest: [MIGRATION_MANIFEST[0]!, MIGRATION_MANIFEST[0]!]
     },
     {
-      name: "duplicate target generations",
-      mutate: () => [
-        MIGRATION_MANIFEST[0]!,
-        {
-          ...MIGRATION_MANIFEST[1]!,
-          sourceGeneration: MIGRATION_MANIFEST[0]!.targetGeneration,
-          targetGeneration: MIGRATION_MANIFEST[0]!.targetGeneration
-        }
-      ]
+      name: "a non-bootstrap file",
+      manifest: [{
+        ...MIGRATION_MANIFEST[0]!,
+        fileName: "001_other.sql"
+      }]
     },
     {
-      name: "generation chain gaps",
-      mutate: () => [
-        MIGRATION_MANIFEST[0]!,
-        {
-          ...MIGRATION_MANIFEST[1]!,
-          sourceGeneration: "unexpected-generation"
-        }
-      ]
+      name: "a non-absent source",
+      manifest: [{
+        ...MIGRATION_MANIFEST[0]!,
+        sourceGeneration: "previous"
+      }]
     },
     {
-      name: "file order gaps",
-      mutate: () => [
-        MIGRATION_MANIFEST[0]!,
-        {
-          ...MIGRATION_MANIFEST[1]!,
-          fileName: "003_tree_graph_storage_reconciliation.sql"
-        }
-      ]
-    },
-    {
-      name: "unsupported safety classes",
-      mutate: () => [
-        {
-          ...MIGRATION_MANIFEST[0]!,
-          safety: "best_effort"
-        }
-      ]
+      name: "an unsupported safety class",
+      manifest: [{
+        ...MIGRATION_MANIFEST[0]!,
+        safety: "requires_drain"
+      }]
     }
-  ])("rejects $name", ({ mutate }) => {
+  ])("rejects $name", ({ manifest }) => {
     expect(() => validateMigrationManifest(
-      mutate() as unknown as readonly MigrationDescriptor[]
+      manifest as unknown as readonly MigrationDescriptor[]
     )).toThrow(MigrationManifestValidationError);
   });
 
-  it("rejects migration-file coverage and runtime-generation drift", () => {
+  it("rejects file coverage and runtime-generation drift", () => {
     expect(() => validateMigrationManifest(MIGRATION_MANIFEST, {
-      availableFiles: MIGRATION_FILES.slice(0, -1)
+      availableFiles: []
     })).toThrow(MigrationManifestValidationError);
     expect(() => validateMigrationManifest(MIGRATION_MANIFEST, {
       expectedRuntimeGeneration: "unexpected-runtime-generation"

@@ -23,6 +23,7 @@ import {
   type SourceModelSuggestions
 } from "@focowiki/okf";
 import { GENERATED_GRAPH_RESOURCES } from "./generated-graph-resources.js";
+import { removeDeletedSourceMarkdownLinks } from "./deleted-source-links.js";
 
 export type GeneratedFileKind =
   | "page"
@@ -101,14 +102,18 @@ export { applyPresentationSuggestions };
 
 export function renderPageFile(
   page: GeneratedPageSummary,
-  body: string
+  body: string,
+  options: { removedSourceLogicalPaths?: readonly string[] | undefined } = {}
 ): string {
-  const prepared = prepareGeneratedMarkdownBody(body);
-  const rewrittenBody = rewriteSourceMarkdownLinks(
-    prepared.content,
-    page.pagePath.replace(/^pages\//u, "")
+  const prepared = prepareSourceBodyForPublication(
+    body,
+    page.pagePath,
+    options.removedSourceLogicalPaths ?? []
   );
-  const canonicalBody = canonicalizeFirstHeading(rewrittenBody, page.metadata.title);
+  const canonicalBody = canonicalizeFirstHeading(
+    prepared.content,
+    page.metadata.title
+  );
   return renderConceptFile(
     page.metadata,
     [
@@ -120,6 +125,25 @@ export function renderPageFile(
         : renderCitations(page.metadata))
     ].join("\n")
   );
+}
+
+export function prepareSourceBodyForPublication(
+  body: string,
+  pagePath: string,
+  removedSourceLogicalPaths: readonly string[] = []
+): ReturnType<typeof prepareGeneratedMarkdownBody> {
+  const prepared = prepareGeneratedMarkdownBody(body);
+  const rewrittenBody = rewriteSourceMarkdownLinks(
+    prepared.content,
+    pagePath.replace(/^pages\//u, "")
+  );
+  return {
+    ...prepared,
+    content: removeDeletedSourceMarkdownLinks(
+      rewrittenBody,
+      removedSourceLogicalPaths
+    )
+  };
 }
 
 export function renderIndexFile(

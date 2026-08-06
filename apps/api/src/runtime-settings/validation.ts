@@ -20,53 +20,36 @@ import {
   type RuntimeWorkerSettings
 } from "./types.js";
 
-const DEFAULT_OKF_LOG_MAX_ENTRIES = 100;
-const DEFAULT_OKF_LOG_MAX_BYTES = 65_536;
 const MAX_WORKER_RESOURCE_CONCURRENCY = 32;
 const MAX_PUBLICATION_RESOURCE_CONCURRENCY = 32;
 const MAX_MAINTENANCE_RESOURCE_CONCURRENCY = 16;
+const DEFAULT_GENERATED_OBJECT_WRITE_CONCURRENCY = 8;
 
 export const DEFAULT_MAINTENANCE_SETTINGS: RuntimeMaintenanceSettings = {
   reconciliationEnabled: true,
   knowledgeBaseMaintenanceMode: "manual",
   knowledgeBaseMaintenanceScanIntervalSeconds: 21_600,
   knowledgeBaseMaintenanceConcurrency: 1,
-  scanIntervalSeconds: 21_600,
   scanBatchSize: 500,
   deletionBatchSize: 100,
   quarantineGracePeriodSeconds: 86_400,
-  confirmationPasses: 2,
   maxAttempts: 5,
   retryDelayMs: 30_000,
-  migrationBackfillConcurrency: 2,
-  compactionConcurrency: 1,
   projectionRepairConcurrency: 4,
   projectionRepairDatabaseBatchSize: 2_000,
-  projectionRepairObjectWriteConcurrency: 8,
+  projectionRepairObjectWriteConcurrency: 4,
   lexicalRebuildConcurrency: 4,
   lexicalRebuildSourceReadConcurrency: 2,
-  lexicalRebuildDatabaseWriteConcurrency: 2,
-  lexicalRebuildClaimBatchSize: 500,
-  lexicalRebuildDatabaseBatchSize: 50,
   lexicalRebuildMaxInFlightSourceBytes: 67_108_864
 };
 
 export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
   requestTimeoutMs: 3_000,
   engineSearchCutoffMs: 1_000,
-  branchCandidateLimit: 200,
-  fusedCandidateLimit: 100,
   overfetchFactor: 3,
-  graphSeedLimit: 100,
-  graphNeighborLimit: 20,
-  cacheTtlSeconds: 15,
-  indexBatchDocumentCount: 500,
+  indexBatchDocumentCount: 10_000,
   indexBatchCompressedBytes: 8 * 1_024 * 1_024,
   maxInFlightTasks: 8,
-  engineQueueLatencyLimitMs: 30_000,
-  engineResidentMemoryLimitBytes: 3 * 1_024 * 1_024 * 1_024,
-  engineDatabaseSizeLimitBytes: 100 * 1_024 * 1_024 * 1_024,
-  engineTaskQueueSizeLimitBytes: 512 * 1_024 * 1_024,
   taskPollIntervalMs: 500,
   taskTimeoutMs: 600_000,
   maxAttempts: 5,
@@ -77,29 +60,23 @@ export const DEFAULT_SEARCH_SETTINGS: RuntimeSearchSettings = {
 };
 
 export function createRuntimeSettingsDefaults(config: RuntimeConfig): RuntimeSettingsDefaults {
+  const worker = resolveWorkerConfig(config);
+  const publication = resolvePublicationConfig(config);
   return {
     rateLimits: resolveSecurityConfig(config).rateLimits,
     worker: sanitizeWorkerSettings({
-      ...resolveWorkerConfig(config),
-      sourceObjectReadConcurrency: resolveWorkerConfig(config).sourceFileConcurrency,
-      graphQueryConcurrency: resolveWorkerConfig(config).sourceFileConcurrency,
-      databaseMutationConcurrency: Math.min(
-        4,
-        resolveWorkerConfig(config).sourceFileConcurrency
-      )
+      ...worker,
+      sourceObjectReadConcurrency: worker.sourceFileConcurrency
     }),
-    publication: {
-      ...resolvePublicationConfig(config),
-      okfLogMaxEntries: config.okf?.log.maxEntries ?? DEFAULT_OKF_LOG_MAX_ENTRIES,
-      okfLogMaxBytes: config.okf?.log.maxBytes ?? DEFAULT_OKF_LOG_MAX_BYTES,
-      generationAssemblyConcurrency: resolvePublicationConfig(config).roleConcurrency,
-      projectionPartitionConcurrency: resolvePublicationConfig(config).impactConcurrency,
-      generatedObjectWriteConcurrency: resolvePublicationConfig(config).impactConcurrency,
-      directoryMaterializationConcurrency: Math.min(
-        4,
-        resolvePublicationConfig(config).impactConcurrency
-      )
-    },
+    publication: sanitizePublicationSettings({
+      mode: publication.mode,
+      intervalSeconds: publication.intervalSeconds,
+      roleConcurrency: publication.roleConcurrency,
+      claimBatchSize: publication.claimBatchSize,
+      generatedObjectWriteConcurrency: DEFAULT_GENERATED_OBJECT_WRITE_CONCURRENCY,
+      directoryIndexMaxEntries: publication.directoryIndexMaxEntries,
+      directoryIndexMaxBytes: publication.directoryIndexMaxBytes
+    }),
     graph: sanitizeGraphSettings(resolveGraphConfig(config)),
     maintenance: { ...DEFAULT_MAINTENANCE_SETTINGS },
     search: { ...DEFAULT_SEARCH_SETTINGS },
@@ -130,13 +107,8 @@ export function validateSearchSettings(input: unknown): RuntimeSettingsValidatio
   }
   validateIntegerRange(value, "requestTimeoutMs", 100, 30_000, issues);
   validateIntegerRange(value, "engineSearchCutoffMs", 50, 10_000, issues);
-  validateIntegerRange(value, "branchCandidateLimit", 10, 500, issues);
-  validateIntegerRange(value, "fusedCandidateLimit", 10, 500, issues);
   validateIntegerRange(value, "overfetchFactor", 1, 10, issues);
-  validateIntegerRange(value, "graphSeedLimit", 1, 500, issues);
-  validateIntegerRange(value, "graphNeighborLimit", 1, 100, issues);
-  validateIntegerRange(value, "cacheTtlSeconds", 1, 300, issues);
-  validateIntegerRange(value, "indexBatchDocumentCount", 1, 2_000, issues);
+  validateIntegerRange(value, "indexBatchDocumentCount", 1, 10_000, issues);
   validateIntegerRange(
     value,
     "indexBatchCompressedBytes",
@@ -145,28 +117,6 @@ export function validateSearchSettings(input: unknown): RuntimeSettingsValidatio
     issues
   );
   validateIntegerRange(value, "maxInFlightTasks", 1, 32, issues);
-  validateIntegerRange(value, "engineQueueLatencyLimitMs", 1_000, 600_000, issues);
-  validateIntegerRange(
-    value,
-    "engineResidentMemoryLimitBytes",
-    268_435_456,
-    137_438_953_472,
-    issues
-  );
-  validateIntegerRange(
-    value,
-    "engineDatabaseSizeLimitBytes",
-    1_073_741_824,
-    17_592_186_044_416,
-    issues
-  );
-  validateIntegerRange(
-    value,
-    "engineTaskQueueSizeLimitBytes",
-    16_777_216,
-    8_589_934_592,
-    issues
-  );
   validateIntegerRange(value, "taskPollIntervalMs", 100, 30_000, issues);
   validateIntegerRange(value, "taskTimeoutMs", 10_000, 3_600_000, issues);
   validateIntegerRange(value, "maxAttempts", 1, 20, issues);
@@ -174,12 +124,6 @@ export function validateSearchSettings(input: unknown): RuntimeSettingsValidatio
   validateIntegerRange(value, "cleanupBatchSize", 1, 5_000, issues);
   validateIntegerRange(value, "stagingRetentionHours", 1, 720, issues);
   validateIntegerRange(value, "cropLength", 50, 5_000, issues);
-  validateAtMost(
-    value,
-    "fusedCandidateLimit",
-    "branchCandidateLimit",
-    issues
-  );
   validateAtMost(
     value,
     "engineSearchCutoffMs",
@@ -195,19 +139,10 @@ export function sanitizeSearchSettings(
   return {
     requestTimeoutMs: input.requestTimeoutMs,
     engineSearchCutoffMs: input.engineSearchCutoffMs,
-    branchCandidateLimit: input.branchCandidateLimit,
-    fusedCandidateLimit: input.fusedCandidateLimit,
     overfetchFactor: input.overfetchFactor,
-    graphSeedLimit: input.graphSeedLimit,
-    graphNeighborLimit: input.graphNeighborLimit,
-    cacheTtlSeconds: input.cacheTtlSeconds,
     indexBatchDocumentCount: input.indexBatchDocumentCount,
     indexBatchCompressedBytes: input.indexBatchCompressedBytes,
     maxInFlightTasks: input.maxInFlightTasks,
-    engineQueueLatencyLimitMs: input.engineQueueLatencyLimitMs,
-    engineResidentMemoryLimitBytes: input.engineResidentMemoryLimitBytes,
-    engineDatabaseSizeLimitBytes: input.engineDatabaseSizeLimitBytes,
-    engineTaskQueueSizeLimitBytes: input.engineTaskQueueSizeLimitBytes,
     taskPollIntervalMs: input.taskPollIntervalMs,
     taskTimeoutMs: input.taskTimeoutMs,
     maxAttempts: input.maxAttempts,
@@ -246,30 +181,18 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
   [
     "sourceFileConcurrency",
     "sourceObjectReadConcurrency",
-    "graphQueryConcurrency",
-    "databaseMutationConcurrency",
     "claimBatchSize",
-    "generationBatchSize",
     "pollIntervalMs",
     "lockTtlSeconds",
     "heartbeatIntervalMs",
     "jobMaxAttempts",
     "jobRetryDelayMs",
-    "sourceQueueHardDepth",
-    "sourceQueueResumeDepth",
-    "sourceQueueHardAgeSeconds",
-    "sourceQueueResumeAgeSeconds",
-    "shutdownGraceMs",
     "completedJobRetentionDays",
-    "failedJobRetentionDays",
-    "deadLetterJobRetentionDays",
-    "retentionCleanupBatchSize",
     "hardDeleteConcurrency",
     "hardDeleteDatabaseBatchSize",
     "hardDeleteObjectBatchSize",
     "hardDeleteMaxAttempts",
-    "hardDeleteRetryDelayMs",
-    "hardDeleteFailedRetentionDays"
+    "hardDeleteRetryDelayMs"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
   if (
@@ -293,11 +216,7 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     });
   }
 
-  for (const field of [
-    "sourceObjectReadConcurrency",
-    "graphQueryConcurrency",
-    "databaseMutationConcurrency"
-  ] as const) {
+  for (const field of ["sourceObjectReadConcurrency"] as const) {
     if (Number.isInteger(value[field]) && Number(value[field]) > MAX_WORKER_RESOURCE_CONCURRENCY) {
       issues.push({
         field,
@@ -323,21 +242,6 @@ export function validateWorkerSettings(input: unknown): RuntimeSettingsValidatio
     });
   }
 
-  validateResumeBelowHard(value, "sourceQueueResumeDepth", "sourceQueueHardDepth", issues);
-  validateResumeBelowHard(
-    value,
-    "sourceQueueResumeAgeSeconds",
-    "sourceQueueHardAgeSeconds",
-    issues
-  );
-
-  if (typeof value.hardDeleteVersionPurgeEnabled !== "boolean") {
-    issues.push({
-      field: "hardDeleteVersionPurgeEnabled",
-      message: "hardDeleteVersionPurgeEnabled must be true or false"
-    });
-  }
-
   return issues;
 }
 
@@ -345,31 +249,18 @@ export function sanitizeWorkerSettings(input: RuntimeWorkerSettings): RuntimeWor
   return {
     sourceFileConcurrency: input.sourceFileConcurrency,
     sourceObjectReadConcurrency: input.sourceObjectReadConcurrency,
-    graphQueryConcurrency: input.graphQueryConcurrency,
-    databaseMutationConcurrency: input.databaseMutationConcurrency,
     claimBatchSize: input.claimBatchSize,
-    generationBatchSize: input.generationBatchSize,
     pollIntervalMs: input.pollIntervalMs,
     lockTtlSeconds: input.lockTtlSeconds,
     heartbeatIntervalMs: input.heartbeatIntervalMs!,
     jobMaxAttempts: input.jobMaxAttempts,
     jobRetryDelayMs: input.jobRetryDelayMs,
-    sourceQueueHardDepth: input.sourceQueueHardDepth,
-    sourceQueueResumeDepth: input.sourceQueueResumeDepth,
-    sourceQueueHardAgeSeconds: input.sourceQueueHardAgeSeconds,
-    sourceQueueResumeAgeSeconds: input.sourceQueueResumeAgeSeconds,
-    shutdownGraceMs: input.shutdownGraceMs,
-    completedJobRetentionDays: input.completedJobRetentionDays!,
-    failedJobRetentionDays: input.failedJobRetentionDays!,
-    deadLetterJobRetentionDays: input.deadLetterJobRetentionDays!,
-    retentionCleanupBatchSize: input.retentionCleanupBatchSize!,
-    hardDeleteConcurrency: input.hardDeleteConcurrency!,
-    hardDeleteDatabaseBatchSize: input.hardDeleteDatabaseBatchSize!,
-    hardDeleteObjectBatchSize: Math.min(input.hardDeleteObjectBatchSize!, 1_000),
-    hardDeleteMaxAttempts: input.hardDeleteMaxAttempts!,
-    hardDeleteRetryDelayMs: input.hardDeleteRetryDelayMs!,
-    hardDeleteFailedRetentionDays: input.hardDeleteFailedRetentionDays!,
-    hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled!
+    completedJobRetentionDays: input.completedJobRetentionDays,
+    hardDeleteConcurrency: input.hardDeleteConcurrency,
+    hardDeleteDatabaseBatchSize: input.hardDeleteDatabaseBatchSize,
+    hardDeleteObjectBatchSize: Math.min(input.hardDeleteObjectBatchSize, 1_000),
+    hardDeleteMaxAttempts: input.hardDeleteMaxAttempts,
+    hardDeleteRetryDelayMs: input.hardDeleteRetryDelayMs
   };
 }
 
@@ -385,80 +276,24 @@ export function validatePublicationSettings(input: unknown): RuntimeSettingsVali
   }
 
   [
-    "batchSize",
     "intervalSeconds",
     "roleConcurrency",
     "claimBatchSize",
-    "impactBatchSize",
-    "impactConcurrency",
-    "dirtyFileHardCount",
-    "dirtyFileResumeCount",
-    "dirtyAgeHardSeconds",
-    "dirtyAgeResumeSeconds",
-    "pendingImpactHardCount",
-    "pendingImpactResumeCount",
-    "generationRetentionDays",
-    "indexShardSize",
-    "linkIndexShardSize",
-    "manifestShardSize",
-    "graphMaintenanceBatchSize",
-    "rootSummaryLimit",
     "directoryIndexMaxEntries",
     "directoryIndexMaxBytes",
-    "okfLogMaxEntries",
-    "okfLogMaxBytes",
-    "generationAssemblyConcurrency",
-    "projectionPartitionConcurrency",
-    "generatedObjectWriteConcurrency",
-    "directoryMaterializationConcurrency"
+    "generatedObjectWriteConcurrency"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
-  for (const field of [
-    "generationAssemblyConcurrency",
-    "projectionPartitionConcurrency",
-    "generatedObjectWriteConcurrency",
-    "directoryMaterializationConcurrency"
-  ] as const) {
-    if (
-      Number.isInteger(value[field])
-      && Number(value[field]) > MAX_PUBLICATION_RESOURCE_CONCURRENCY
-    ) {
-      issues.push({
-        field,
-        message: `${field} must be less than or equal to ${MAX_PUBLICATION_RESOURCE_CONCURRENCY}`
-      });
-    }
-  }
-  validateAtMost(value, "generationAssemblyConcurrency", "roleConcurrency", issues);
-  validateAtMost(value, "projectionPartitionConcurrency", "impactConcurrency", issues);
-  validateAtMost(
-    value,
-    "generatedObjectWriteConcurrency",
-    "projectionPartitionConcurrency",
-    issues
-  );
-  validateAtMost(
-    value,
-    "directoryMaterializationConcurrency",
-    "projectionPartitionConcurrency",
-    issues
-  );
-
-  if (Number.isInteger(value.impactConcurrency) && Number(value.impactConcurrency) > 32) {
+  if (
+    Number.isInteger(value.generatedObjectWriteConcurrency)
+    && Number(value.generatedObjectWriteConcurrency) > MAX_PUBLICATION_RESOURCE_CONCURRENCY
+  ) {
     issues.push({
-      field: "impactConcurrency",
-      message: "impactConcurrency must be less than or equal to 32"
+      field: "generatedObjectWriteConcurrency",
+      message: `generatedObjectWriteConcurrency must be less than or equal to ${MAX_PUBLICATION_RESOURCE_CONCURRENCY}`
     });
   }
-
-  validateResumeBelowHard(value, "dirtyFileResumeCount", "dirtyFileHardCount", issues);
-  validateResumeBelowHard(value, "dirtyAgeResumeSeconds", "dirtyAgeHardSeconds", issues);
-  validateResumeBelowHard(
-    value,
-    "pendingImpactResumeCount",
-    "pendingImpactHardCount",
-    issues
-  );
+  validateAtMost(value, "roleConcurrency", "claimBatchSize", issues);
 
   return issues;
 }
@@ -472,8 +307,6 @@ export function validateGraphSettings(input: unknown): RuntimeSettingsValidation
     "acceptedEdgeLimit",
     "searchDefaultFanout",
     "searchMaxFanout",
-    "publicationShardSize",
-    "cacheTtlSeconds",
     "genericPhraseThreshold"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
@@ -552,23 +385,16 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
   [
     "knowledgeBaseMaintenanceScanIntervalSeconds",
     "knowledgeBaseMaintenanceConcurrency",
-    "scanIntervalSeconds",
     "scanBatchSize",
     "deletionBatchSize",
     "quarantineGracePeriodSeconds",
-    "confirmationPasses",
     "maxAttempts",
     "retryDelayMs",
-    "migrationBackfillConcurrency",
-    "compactionConcurrency",
     "projectionRepairConcurrency",
     "projectionRepairDatabaseBatchSize",
     "projectionRepairObjectWriteConcurrency",
     "lexicalRebuildConcurrency",
     "lexicalRebuildSourceReadConcurrency",
-    "lexicalRebuildDatabaseWriteConcurrency",
-    "lexicalRebuildClaimBatchSize",
-    "lexicalRebuildDatabaseBatchSize",
     "lexicalRebuildMaxInFlightSourceBytes"
   ].forEach((field) => requirePositiveInteger(value[field], field, issues));
 
@@ -581,7 +407,10 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
   );
   validateIntegerRange(value, "knowledgeBaseMaintenanceConcurrency", 1, 16, issues);
 
-  for (const field of ["migrationBackfillConcurrency", "compactionConcurrency"] as const) {
+  for (const field of [
+    "projectionRepairConcurrency",
+    "lexicalRebuildConcurrency"
+  ] as const) {
     if (
       Number.isInteger(value[field])
       && Number(value[field]) > MAX_MAINTENANCE_RESOURCE_CONCURRENCY
@@ -593,31 +422,14 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
     }
   }
 
-  validateIntegerRange(value, "projectionRepairConcurrency", 1, 16, issues);
   validateIntegerRange(value, "projectionRepairDatabaseBatchSize", 100, 10_000, issues);
   validateIntegerRange(value, "projectionRepairObjectWriteConcurrency", 1, 32, issues);
-  validateIntegerRange(value, "lexicalRebuildConcurrency", 1, 16, issues);
   validateIntegerRange(value, "lexicalRebuildSourceReadConcurrency", 1, 32, issues);
-  validateIntegerRange(value, "lexicalRebuildDatabaseWriteConcurrency", 1, 16, issues);
-  validateIntegerRange(value, "lexicalRebuildClaimBatchSize", 50, 2_000, issues);
-  validateIntegerRange(value, "lexicalRebuildDatabaseBatchSize", 1, 250, issues);
   validateIntegerRange(
     value,
     "lexicalRebuildMaxInFlightSourceBytes",
     1_048_576,
     536_870_912,
-    issues
-  );
-  validateAtMost(
-    value,
-    "lexicalRebuildDatabaseWriteConcurrency",
-    "lexicalRebuildConcurrency",
-    issues
-  );
-  validateAtMost(
-    value,
-    "lexicalRebuildDatabaseBatchSize",
-    "lexicalRebuildClaimBatchSize",
     issues
   );
 
@@ -628,13 +440,6 @@ export function validateMaintenanceSettings(input: unknown): RuntimeSettingsVali
         message: `${field} must be less than or equal to 1000`
       });
     }
-  }
-
-  if (Number.isInteger(value.confirmationPasses) && Number(value.confirmationPasses) < 2) {
-    issues.push({
-      field: "confirmationPasses",
-      message: "confirmationPasses must be greater than or equal to 2"
-    });
   }
 
   return issues;
@@ -649,23 +454,16 @@ export function sanitizeMaintenanceSettings(
     knowledgeBaseMaintenanceScanIntervalSeconds:
       input.knowledgeBaseMaintenanceScanIntervalSeconds,
     knowledgeBaseMaintenanceConcurrency: input.knowledgeBaseMaintenanceConcurrency,
-    scanIntervalSeconds: input.scanIntervalSeconds,
     scanBatchSize: Math.min(input.scanBatchSize, 1_000),
     deletionBatchSize: Math.min(input.deletionBatchSize, 1_000),
     quarantineGracePeriodSeconds: input.quarantineGracePeriodSeconds,
-    confirmationPasses: input.confirmationPasses,
     maxAttempts: input.maxAttempts,
     retryDelayMs: input.retryDelayMs,
-    migrationBackfillConcurrency: input.migrationBackfillConcurrency,
-    compactionConcurrency: input.compactionConcurrency,
     projectionRepairConcurrency: input.projectionRepairConcurrency,
     projectionRepairDatabaseBatchSize: input.projectionRepairDatabaseBatchSize,
     projectionRepairObjectWriteConcurrency: input.projectionRepairObjectWriteConcurrency,
     lexicalRebuildConcurrency: input.lexicalRebuildConcurrency,
     lexicalRebuildSourceReadConcurrency: input.lexicalRebuildSourceReadConcurrency,
-    lexicalRebuildDatabaseWriteConcurrency: input.lexicalRebuildDatabaseWriteConcurrency,
-    lexicalRebuildClaimBatchSize: input.lexicalRebuildClaimBatchSize,
-    lexicalRebuildDatabaseBatchSize: input.lexicalRebuildDatabaseBatchSize,
     lexicalRebuildMaxInFlightSourceBytes: input.lexicalRebuildMaxInFlightSourceBytes
   };
 }
@@ -675,34 +473,12 @@ export function sanitizePublicationSettings(
 ): RuntimePublicationSettings {
   return {
     mode: input.mode,
-    batchSize: input.batchSize,
     intervalSeconds: input.intervalSeconds,
     roleConcurrency: input.roleConcurrency,
     claimBatchSize: input.claimBatchSize,
-    impactBatchSize: input.impactBatchSize,
-    impactConcurrency: input.impactConcurrency,
-    dirtyFileHardCount: input.dirtyFileHardCount,
-    dirtyFileResumeCount: input.dirtyFileResumeCount,
-    dirtyAgeHardSeconds: input.dirtyAgeHardSeconds,
-    dirtyAgeResumeSeconds: input.dirtyAgeResumeSeconds,
-    pendingImpactHardCount: input.pendingImpactHardCount,
-    pendingImpactResumeCount: input.pendingImpactResumeCount,
-    generationRetentionDays: input.generationRetentionDays,
-    indexShardSize: input.indexShardSize,
-    linkIndexShardSize: input.linkIndexShardSize,
-    manifestShardSize: input.manifestShardSize,
-    graphEdgeShardSize: input.graphEdgeShardSize,
-    graphCandidateLimit: input.graphCandidateLimit,
-    graphMaintenanceBatchSize: input.graphMaintenanceBatchSize,
-    rootSummaryLimit: input.rootSummaryLimit,
     directoryIndexMaxEntries: input.directoryIndexMaxEntries,
     directoryIndexMaxBytes: input.directoryIndexMaxBytes,
-    okfLogMaxEntries: input.okfLogMaxEntries,
-    okfLogMaxBytes: input.okfLogMaxBytes,
-    generationAssemblyConcurrency: input.generationAssemblyConcurrency,
-    projectionPartitionConcurrency: input.projectionPartitionConcurrency,
-    generatedObjectWriteConcurrency: input.generatedObjectWriteConcurrency,
-    directoryMaterializationConcurrency: input.directoryMaterializationConcurrency
+    generatedObjectWriteConcurrency: input.generatedObjectWriteConcurrency
   };
 }
 
@@ -715,8 +491,6 @@ export function sanitizeGraphSettings(input: RuntimeGraphSettings): RuntimeGraph
     searchDefaultFanout: input.searchDefaultFanout,
     searchMaxFanout: input.searchMaxFanout,
     modelReviewEnabled: input.modelReviewEnabled,
-    publicationShardSize: input.publicationShardSize,
-    cacheTtlSeconds: input.cacheTtlSeconds,
     genericPhraseThreshold: input.genericPhraseThreshold
   };
 }
@@ -813,24 +587,6 @@ function requirePositiveInteger(
 ) {
   if (!Number.isInteger(value) || Number(value) <= 0) {
     issues.push({ field, message: `${field} must be a positive integer` });
-  }
-}
-
-function validateResumeBelowHard(
-  value: Record<string, unknown>,
-  resumeField: string,
-  hardField: string,
-  issues: RuntimeSettingsValidationIssue[]
-): void {
-  if (
-    Number.isSafeInteger(value[resumeField]) &&
-    Number.isSafeInteger(value[hardField]) &&
-    Number(value[resumeField]) >= Number(value[hardField])
-  ) {
-    issues.push({
-      field: resumeField,
-      message: `${resumeField} must be less than ${hardField}`
-    });
   }
 }
 

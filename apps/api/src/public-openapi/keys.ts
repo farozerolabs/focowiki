@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { CursorPage } from "../db/admin-repositories.js";
+import type { CursorPage } from "../runtime/bounded.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 
 const RAW_KEY_PREFIX = "fwok_";

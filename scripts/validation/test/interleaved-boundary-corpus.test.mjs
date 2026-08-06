@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertInterleavedBoundaryCoverage,
+  buildDeploymentBoundedMaintenanceCandidates,
   buildInterleavedBoundaryCorpus,
   summarizeInterleavedBoundaryCorpus
 } from "../lib/interleaved-boundary-corpus.mjs";
@@ -12,7 +13,7 @@ test("builds accepted, rejected, and deferred-validation Markdown fixtures", () 
 
   assert.equal(summary.fileCount, 24);
   assert.equal(summary.duplicateSetCount, 2);
-  assert.equal(summary.protocolCaseCount, 17);
+  assert.equal(summary.protocolCaseCount, 19);
   assert.deepEqual(summary.fileExpectations, {
     accepted: 10,
     accepted_then_failed: 1,
@@ -45,7 +46,9 @@ test("covers path, character, content, identifier, cursor, revision, and limits"
     "request_body",
     "transport_encoding",
     "pagination",
-    "runtime_setting"
+    "runtime_setting",
+    "rate_limit",
+    "request_cancellation"
   ]) {
     assert.match(serialized, new RegExp(marker, "u"));
   }
@@ -75,6 +78,28 @@ test("normalization fixture declares the canonical resulting path", () => {
 
   assert.notEqual(fixture.relativePath, fixture.normalizedPath);
   assert.equal(fixture.relativePath.normalize("NFC"), fixture.normalizedPath);
+});
+
+test("derives maintenance boundaries from the deployment-safe baseline", () => {
+  const original = {
+    reconciliationEnabled: true,
+    compactionConcurrency: 3
+  };
+
+  assert.deepEqual(buildDeploymentBoundedMaintenanceCandidates(original), {
+    atLimit: original,
+    overLimit: {
+      ...original,
+      compactionConcurrency: 4
+    }
+  });
+  assert.throws(
+    () => buildDeploymentBoundedMaintenanceCandidates({
+      ...original,
+      compactionConcurrency: 0
+    }),
+    /positive integer/u
+  );
 });
 
 test("rejects incomplete or duplicated boundary execution results", () => {

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createSourceFileFilterSignature } from "../src/admin/source-file-list-filter-signature.js";
 import { readSourceFileListFilters } from "../src/admin/source-file-list-filters.js";
 
 describe("source file list filters", () => {
@@ -113,24 +112,5 @@ describe("source file list filters", () => {
         actionState: undefined
       })
     ).toEqual({ ok: false, code: "SOURCE_FILE_FILTER_TIME_RANGE_INVALID" });
-  });
-
-  it("creates stable bounded signatures for cursor and cache scope", () => {
-    const first = createSourceFileFilterSignature({
-      fileNameQuery: "intro",
-      state: "visible"
-    });
-    const second = createSourceFileFilterSignature({
-      fileNameQuery: "intro",
-      state: "visible"
-    });
-    const third = createSourceFileFilterSignature({
-      fileNameQuery: "setup",
-      state: "visible"
-    });
-
-    expect(first).toBe(second);
-    expect(first).not.toBe(third);
-    expect(first).toMatch(/^[a-f0-9]{32}$/);
   });
 });

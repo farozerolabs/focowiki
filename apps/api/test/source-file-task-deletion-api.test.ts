@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createApiApp } from "../src/server.js";
-import type { SourceFileTaskDeletionRepository } from "../src/application/ports/source-file-task-deletion-repository.js";
 import type { RuntimeConfig } from "../src/config.js";
-import type { AdminRepositories } from "../src/db/admin-repositories.js";
-import type { StorageAdapter } from "../src/storage/s3.js";
+import { createApiApp } from "../src/server.js";
+import type { StorageVnextAdminSourceApplication } from
+  "../src/storage-vnext/api/admin-source-application.js";
+import { createPostgresStorageVnextAdminSource } from
+  "../src/storage-vnext/api/postgres-admin-source.js";
 import {
   createTestRedisCoordinator,
   loginAndReadSessionCookie,
@@ -75,31 +76,64 @@ function createConfig(): RuntimeConfig {
   };
 }
 
-function createRepositories() {
-  return {
-    knowledgeBases: {
-      async getKnowledgeBase(id: string) {
-        return id === knowledgeBase.id ? knowledgeBase : null;
-      }
-    },
-    files: {}
-  } as unknown as AdminRepositories;
-}
-
 describe("source file task deletion Admin API", () => {
-  it("deletes selected source-file tasks through explicit current-page IDs", async () => {
-    const deleteTasks = vi.fn(async () => [
-      {
-        sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
-        outcome: "hidden" as const
+  it("maps internal deletion outcomes to the released Admin response fields", async () => {
+    const application = createPostgresStorageVnextAdminSource({
+      catalog: {
+        getKnowledgeBase: vi.fn(async () => ({ publicId: knowledgeBase.id }))
+      } as never,
+      workflow: {} as never,
+      deletion: {
+        deleteSourceTasks: vi.fn(async () => [{
+          sourceFilePublicId: "source-file-11111111-1111-4111-8111-111111111111",
+          outcome: "hidden" as const,
+          generatedFilePublicId: "generated-file-1",
+          generatedFilePath: "pages/guide.md"
+        }])
+      } as never,
+      runtimeSettings: {
+        getCurrentRevision: vi.fn(async () => ({ publicId: "settings-1" }))
+      } as never
+    });
+
+    await expect(application.deleteSourceFileTasks({
+      knowledgeBaseId: knowledgeBase.id,
+      sourceFileIds: ["source-file-11111111-1111-4111-8111-111111111111"]
+    })).resolves.toEqual({
+      ok: true,
+      value: {
+        results: [{
+          sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
+          status: "hidden",
+          generatedFileId: "generated-file-1",
+          generatedFilePath: "pages/guide.md"
+        }],
+        summary: { deleted: 0, hidden: 1, skipped: 0 }
       }
-    ]);
+    });
+  });
+
+  it("deletes selected source-file tasks through explicit current-page IDs", async () => {
+    const deleteTasks = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        results: [
+          {
+            sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
+            status: "hidden"
+          }
+        ],
+        summary: {
+          deleted: 0,
+          hidden: 1,
+          skipped: 0
+        }
+      }
+    }));
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(),
-      sourceFileTaskDeletions: { deleteTasks } as SourceFileTaskDeletionRepository,
-      storage: {} as StorageAdapter
+      storageVnextAdminSource: createSourceApplication(deleteTasks)
     });
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request(
@@ -132,14 +166,7 @@ describe("source file task deletion Admin API", () => {
     });
     expect(deleteTasks).toHaveBeenCalledWith({
       knowledgeBaseId: knowledgeBase.id,
-      sourceFileIds: ["source-file-11111111-1111-4111-8111-111111111111"],
-      deletedAt: expect.any(String),
-      hardDeleteMaxAttempts: expect.any(Number),
-      publicationSettingsSnapshot: {
-        graph: {},
-        publication: {},
-        worker: {}
-      }
+      sourceFileIds: ["source-file-11111111-1111-4111-8111-111111111111"]
     });
   });
 
@@ -148,9 +175,7 @@ describe("source file task deletion Admin API", () => {
     const app = createApiApp({
       config: createConfig(),
       redis: createTestRedisCoordinator(),
-      repositories: createRepositories(),
-      sourceFileTaskDeletions: { deleteTasks } as SourceFileTaskDeletionRepository,
-      storage: {} as StorageAdapter
+      storageVnextAdminSource: createSourceApplication(deleteTasks)
     });
     const cookie = await loginAndReadSessionCookie(app);
     const response = await app.request(
@@ -177,3 +202,14 @@ describe("source file task deletion Admin API", () => {
     expect(deleteTasks).not.toHaveBeenCalled();
   });
 });
+
+function createSourceApplication(
+  deleteSourceFileTasks: StorageVnextAdminSourceApplication["deleteSourceFileTasks"]
+): StorageVnextAdminSourceApplication {
+  return {
+    async retrySourceFile() {
+      return { ok: false, code: "DATABASE_REPOSITORY_UNAVAILABLE" };
+    },
+    deleteSourceFileTasks
+  };
+}

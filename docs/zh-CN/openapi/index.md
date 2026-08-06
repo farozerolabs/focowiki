@@ -45,7 +45,7 @@ GET /openapi/v2/openapi.json
     "message": "The request failed validation.",
     "httpStatus": 422
   },
-  "requestId": "req_123"
+  "requestId": "req-11111111-1111-4111-8111-111111111111"
 }
 ```
 

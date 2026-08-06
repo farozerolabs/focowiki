@@ -106,6 +106,92 @@ export function createMeilisearchTransport(
       }
     },
 
+    async getIndexStats(input) {
+      const stats = await execute(() => client.index(input.indexUid).getStats());
+      return { numberOfDocuments: stats.numberOfDocuments };
+    },
+
+    async listDocuments(input) {
+      const page = await execute(() => client.index(input.indexUid).getDocuments({
+        offset: input.offset,
+        limit: input.limit,
+        fields: [...input.fields]
+      }));
+      return {
+        documents: page.results as Array<Record<string, unknown>>,
+        total: page.total,
+        offset: page.offset ?? input.offset
+      };
+    },
+
+    async listIndexes(input) {
+      const page = await execute(() => client.getRawIndexes({
+        offset: input.offset,
+        limit: input.limit
+      }));
+      return {
+        indexes: page.results.map((index) => ({
+          uid: index.uid,
+          createdAt: index.createdAt,
+          updatedAt: index.updatedAt
+        })),
+        total: page.total,
+        offset: page.offset ?? input.offset
+      };
+    },
+
+    async listFinishedTasks(input) {
+      const page = await execute(() => diagnosticsClient.tasks.getTasks({
+        statuses: [...input.statuses],
+        beforeFinishedAt: input.beforeFinishedAt,
+        from: input.from,
+        limit: input.limit
+      }));
+      return {
+        tasks: page.results.map((task) => normalizeFinishedTask(task)),
+        next: page.next
+      };
+    },
+
+    async deleteFinishedTasks(input) {
+      assertTaskUids(input.taskUids);
+      const task = await execute(() => diagnosticsClient.tasks.deleteTasks({
+        uids: [...input.taskUids]
+      }));
+      return { taskUid: task.taskUid };
+    },
+
+    async getDatabaseStats() {
+      const stats = await execute(() => diagnosticsClient.getStats());
+      return {
+        databaseSizeBytes: safeMetric(stats.databaseSize),
+        usedDatabaseSizeBytes: safeMetric(stats.usedDatabaseSize)
+      };
+    },
+
+    async compactIndex(indexUid) {
+      const url = new URL(
+        `/indexes/${encodeURIComponent(indexUid)}/compact`,
+        `${config.endpoint}/`
+      );
+      const task = await execute(async () => {
+        const response = await fetchImpl(url.toString(), {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${config.apiKey}`
+          },
+          signal: AbortSignal.timeout(config.timeoutMs)
+        });
+        if (!response.ok) throw await createHttpError(response);
+        return await response.json() as { taskUid: number };
+      });
+      if (!Number.isSafeInteger(task.taskUid) || task.taskUid < 0) {
+        throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+      }
+      return { taskUid: task.taskUid };
+    },
+
     async getDocument(input) {
       try {
         return await execute(
@@ -177,7 +263,7 @@ export function createMeilisearchTransport(
       const tasks = await execute(() => client.tasks.getTasks({
         indexUids: [input.indexUid],
         types: ["documentAdditionOrUpdate", "documentDeletion"],
-        statuses: ["enqueued", "processing", "succeeded"],
+        statuses: ["enqueued", "processing", "succeeded", "failed", "canceled"],
         limit: 100
       }));
       const task = tasks.results.find(
@@ -310,6 +396,42 @@ function normalizeTask(task: {
   };
 }
 
+function normalizeFinishedTask(task: {
+  uid: number;
+  indexUid: string | null;
+  status: string;
+  finishedAt: string | null;
+}) {
+  if (
+    !Number.isSafeInteger(task.uid)
+    || task.uid < 0
+    || !task.finishedAt
+    || !["succeeded", "failed", "canceled"].includes(task.status)
+  ) throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+  return {
+    taskUid: task.uid,
+    indexUid: task.indexUid,
+    status: task.status as "succeeded" | "failed" | "canceled",
+    finishedAt: task.finishedAt
+  };
+}
+
+function assertTaskUids(taskUids: readonly number[]) {
+  if (
+    taskUids.length < 1
+    || taskUids.length > 1_000
+    || new Set(taskUids).size !== taskUids.length
+    || taskUids.some((value) => !Number.isSafeInteger(value) || value < 0)
+  ) throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+}
+
+function safeMetric(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+  }
+  return value;
+}
+
 function normalizedPairs(
   pairs: Array<{ left: string; right: string }>
 ): string {
@@ -372,7 +494,7 @@ function assertSupportedVersion(value: string): void {
 function normalizeSettings(settings: Record<string, unknown>): SearchEngineSettings {
   return {
     searchableAttributes: stringArray(settings.searchableAttributes),
-    filterableAttributes: stringArray(settings.filterableAttributes),
+    filterableAttributes: filterableAttributeArray(settings.filterableAttributes),
     displayedAttributes: stringArray(settings.displayedAttributes),
     sortableAttributes: stringArray(settings.sortableAttributes),
     rankingRules: stringArray(settings.rankingRules),
@@ -480,6 +602,45 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function filterableAttributeArray(
+  value: unknown
+): SearchEngineSettings["filterableAttributes"] {
+  if (!Array.isArray(value)) return [];
+  const attributes: SearchEngineSettings["filterableAttributes"] = [];
+  for (const item of value) {
+    if (typeof item === "string") {
+      attributes.push(item);
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as {
+      attributePatterns?: unknown;
+      features?: {
+        facetSearch?: unknown;
+        filter?: { equality?: unknown; comparison?: unknown };
+      };
+    };
+    const attributePatterns = stringArray(candidate.attributePatterns);
+    if (
+      attributePatterns.length === 0
+      || typeof candidate.features?.facetSearch !== "boolean"
+      || typeof candidate.features.filter?.equality !== "boolean"
+      || typeof candidate.features.filter.comparison !== "boolean"
+    ) continue;
+    attributes.push({
+      attributePatterns,
+      features: {
+        facetSearch: candidate.features.facetSearch,
+        filter: {
+          equality: candidate.features.filter.equality,
+          comparison: candidate.features.filter.comparison
+        }
+      }
+    });
+  }
+  return attributes;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {

@@ -1,13 +1,56 @@
 import { createHmac, randomUUID } from "node:crypto";
-import type {
-  AdminRepositories,
-  WebhookDeliveryRecord,
-  WebhookSubscriptionRecord
-} from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { WebhookEventType } from "./events.js";
 
 export type { WebhookEventType } from "./events.js";
+
+export type WebhookSubscriptionRecord = {
+  id: string;
+  name: string;
+  url: string;
+  signingSecret: string;
+  events: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastDeliveryAt: string | null;
+};
+
+export type WebhookDeliveryRecord = {
+  id: string;
+  webhookId: string;
+  eventId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  status: "pending" | "success" | "failed";
+  attemptCount: number;
+  httpStatus: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WebhookRepository = {
+  getWebhookSubscription?: (id: string) => Promise<WebhookSubscriptionRecord | null>;
+  listWebhookSubscriptions(request: {
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: WebhookSubscriptionRecord[]; nextCursor: string | null }>;
+  createWebhookDelivery?: (input: Omit<WebhookDeliveryRecord, "updatedAt">) =>
+    Promise<WebhookDeliveryRecord>;
+  updateWebhookDeliveryResult?: (input: {
+    id: string;
+    status: WebhookDeliveryRecord["status"];
+    attemptCount: number;
+    httpStatus: number | null;
+    errorCode: string | null;
+    updatedAt: string;
+  }) => Promise<WebhookDeliveryRecord | null>;
+};
+
+export type WebhookDispatcherRepositories = {
+  webhooks?: WebhookRepository;
+};
 
 export type WebhookEvent = {
   eventId?: string;
@@ -21,16 +64,16 @@ export type WebhookDispatcher = {
   redeliver: (delivery: WebhookDeliveryRecord) => Promise<WebhookDeliveryRecord | null>;
 };
 
-type DispatchWebhookRepository = NonNullable<AdminRepositories["webhooks"]> &
+type DispatchWebhookRepository = NonNullable<WebhookDispatcherRepositories["webhooks"]> &
   Required<
     Pick<
-      NonNullable<AdminRepositories["webhooks"]>,
+      NonNullable<WebhookDispatcherRepositories["webhooks"]>,
       "createWebhookDelivery" | "updateWebhookDeliveryResult" | "getWebhookSubscription"
     >
   >;
 
 export function createWebhookDispatcher(input: {
-  repositories: AdminRepositories | null;
+  repositories: WebhookDispatcherRepositories | null;
   redis: RedisCoordinator | null;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -107,7 +150,7 @@ function acceptsEvent(webhook: WebhookSubscriptionRecord, eventType: string): bo
 }
 
 async function sendDelivery(input: {
-  repo: NonNullable<AdminRepositories["webhooks"]>;
+  repo: NonNullable<WebhookDispatcherRepositories["webhooks"]>;
   webhook: WebhookSubscriptionRecord;
   delivery: WebhookDeliveryRecord;
   fetchImpl: typeof fetch;
@@ -169,7 +212,7 @@ async function sendDelivery(input: {
 
 async function updateDelivery(
   input: {
-    repo: NonNullable<AdminRepositories["webhooks"]>;
+    repo: NonNullable<WebhookDispatcherRepositories["webhooks"]>;
     delivery: WebhookDeliveryRecord;
     redis: RedisCoordinator | null;
     webhook: WebhookSubscriptionRecord;

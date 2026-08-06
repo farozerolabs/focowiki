@@ -1,45 +1,26 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
 import { readSourceFileTaskDeletionRequest } from "./source-file-task-deletion-request.js";
-import { createSourceFileTaskDeletionService } from "./source-file-task-deletion-service.js";
+import type { StorageVnextAdminSourceApplication } from "../storage-vnext/api/admin-source-application.js";
 
 export function registerAdminSourceFileTaskDeletionRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    redis: RedisCoordinator | null;
-    repositories: AdminRepositories | null;
-    sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
-    runtimeSettings?: RuntimeSettingsService | null | undefined;
+    application: StorageVnextAdminSourceApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
     requireWriteProtection: MiddlewareHandler;
   }
 ): void {
-  const { config, redis, repositories, runtimeSettings, sourceFileTaskDeletions } = services;
+  const { config, application } = services;
 
   app.post(
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/task-deletions",
     middlewares.requireAuth,
     middlewares.requireWriteProtection,
     async (context) => {
-      if (!repositories || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
       const request = readSourceFileTaskDeletionRequest(await readJsonBody(context.req.raw), {
         maxSourceFileIds: config.pagination.maxPageSize
       });
@@ -56,35 +37,16 @@ export function registerAdminSourceFileTaskDeletionRoutes(
         );
       }
 
-      const service = createSourceFileTaskDeletionService(
-        repositories,
-        sourceFileTaskDeletions,
-        redis
-      );
-
-      if (!service) {
-        return missingRepositoryBackend(context);
-      }
-
-      const runtimeSnapshot = await runtimeSettings?.getSnapshot();
-      const result = await service.deleteTasks({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFileIds: request.sourceFileIds,
-        deletedAt: new Date().toISOString(),
-        cursorTtlSeconds: config.pagination.cursorTtlSeconds,
-        hardDeleteMaxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts,
-        publicationSettingsSnapshot: {
-          publication: runtimeSnapshot?.publication ?? {},
-          graph: runtimeSnapshot?.graph ?? {},
-          worker: runtimeSnapshot?.worker ?? {}
-        }
+      const result = await application.deleteSourceFileTasks({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        sourceFileIds: request.sourceFileIds
       });
-
-      if (!result) {
-        return notFound(context);
+      if (!result.ok) {
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      return context.json(result);
+      return context.json(result.value);
     }
   );
 }

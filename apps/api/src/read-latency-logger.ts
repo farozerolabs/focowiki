@@ -13,7 +13,7 @@ export function logReadLatency(input: {
     return;
   }
 
-  input.logger.info("API read request completed", {
+  input.logger.info("api.read_completed", {
     plane: endpoint.plane,
     endpoint: endpoint.name,
     status: input.status,

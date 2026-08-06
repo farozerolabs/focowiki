@@ -1,133 +1,68 @@
-import type { OpenAIModelClient } from "@focowiki/okf";
-import { randomUUID } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
 import { type RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
-import type {
-  AdminRepositories,
-  GeneratedSourceFileOutputRecord,
-  SourceFileRecord
-} from "../db/admin-repositories.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import {
-  StorageObjectTooLargeError,
-  type StorageAdapter
-} from "../storage/s3.js";
-import { createDeletionService } from "./deletion-service.js";
-import { readGeneratedOutputsForSourceFilesSafely } from "./source-file-generated-output.js";
-import {
   adminUnauthorized,
-  createAdminAuthMiddleware,
-  createAdminWriteProtectionMiddleware,
-  limitAdminLoginRequest,
-  missingSessionBackend,
-  recordAdminAudit,
-  registerAdminSecurityMiddlewares
+  missingSessionBackend
 } from "./security.js";
-import {
-  toAdminSourceFile,
-  toAdminSourceFileEvent
-} from "./serializers.js";
-import {
-  toAdminActiveFile,
-  toAdminActiveRelationship
-} from "./active-generation-serializers.js";
 import { registerAdminFileTreeRoutes } from "./file-tree-routes.js";
 import { registerAdminFileTreeSearchRoutes } from "./file-tree-search-routes.js";
 import { registerAdminKnowledgeBaseListRoutes } from "./knowledge-base-list-routes.js";
 import { registerAdminOpenApiKeyRoutes } from "./openapi-key-routes.js";
 import { readPageLimit } from "./pagination.js";
-import { readPageResponseCache, writePageResponseCache } from "../page-response-cache.js";
-import {
-  createActiveReadCacheScope,
-  createActiveReadPageCacheId
-} from "../active-read-cache-scope.js";
 import { registerAdminProcessingSummaryRoutes } from "./processing-summary-routes.js";
 import { registerAdminPublicUrlRoutes } from "./public-url-routes.js";
 import { registerAdminRuntimeSettingsRoutes } from "./runtime-settings-routes.js";
 import { registerAdminSourceFileRetryRoutes } from "./source-file-retry-routes.js";
 import { registerAdminSourceFileTaskDeletionRoutes } from "./source-file-task-deletion-routes.js";
 import {
-  createSourceFileCursorScope,
-  createSourceFileFilterSignature
-} from "./source-file-list-filter-signature.js";
-import {
   readSourceFileListFiltersFromQuery,
   type SourceFileListFilterErrorCode
 } from "./source-file-list-filters.js";
 import { registerAdminUploadSessionRoutes } from "./upload-session-routes.js";
 import { registerAdminSourceResourceEditingRoutes } from "./source-resource-editing-routes.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
-import type { RuntimeLogger } from "../logger.js";
-import { readGeneratedContentWithMetrics } from "../application/generated-content-read.js";
-import { reportGeneratedContentRead } from "../app/generated-content-read-logger.js";
-import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { SourceDispatchRepository } from "../application/ports/source-dispatch-repository.js";
-import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
-import type { SourceFileTaskDeletionRepository } from "../application/ports/source-file-task-deletion-repository.js";
-import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
-import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
-import type { MaintenanceProgressRepository } from "../application/ports/maintenance-progress-repository.js";
-import type {
-  KnowledgeBaseIndexMaintenanceRepository
-} from "../application/ports/knowledge-base-index-maintenance-repository.js";
 import {
   registerAdminKnowledgeBaseIndexMaintenanceRoutes
 } from "./knowledge-base-index-maintenance-routes.js";
+import type { StorageVnextAdminReadApplication } from "../storage-vnext/api/admin-read-application.js";
+import type { StorageVnextAdminProcessingApplication } from "../storage-vnext/api/admin-processing-application.js";
+import type { StorageVnextAdminSourceApplication } from "../storage-vnext/api/admin-source-application.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
+import type { StorageVnextAdminMaintenanceApplication } from "../storage-vnext/api/admin-maintenance-application.js";
+import type { StorageVnextAdminUploadApplication } from "../storage-vnext/api/admin-upload-application.js";
+import type { StorageVnextAdminOpenApiKeyApplication } from "../storage-vnext/api/admin-openapi-key-application.js";
+import type { StorageVnextAdminMutationApplication } from "../storage-vnext/api/admin-mutation-application.js";
+import type { StorageVnextAdminCoreApplication } from "../storage-vnext/api/admin-core-application.js";
+import type { StorageVnextAdminSecurityApplication } from "../storage-vnext/api/admin-security-application.js";
 
 export type AdminApiServices = {
+  adminApplication: StorageVnextAdminReadApplication;
+  adminAuditApplication: StorageVnextAdminAuditApplication;
+  adminMaintenanceApplication: StorageVnextAdminMaintenanceApplication;
+  adminUploadApplication: StorageVnextAdminUploadApplication;
+  adminOpenApiKeyApplication: StorageVnextAdminOpenApiKeyApplication;
+  adminMutationApplication: StorageVnextAdminMutationApplication;
+  adminCoreApplication: StorageVnextAdminCoreApplication;
+  adminSecurityApplication: StorageVnextAdminSecurityApplication;
+  adminProcessingApplication: StorageVnextAdminProcessingApplication;
+  adminSourceApplication: StorageVnextAdminSourceApplication;
   config: RuntimeConfig;
-  storage: StorageAdapter;
-  modelClient: OpenAIModelClient | null;
   sessionManager: AdminSessionManager | null;
-  redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
   runtimeSettings: RuntimeSettingsService | null;
-  applicationRuntime: ApplicationRuntime;
-  uploadSessionStorage: UploadSessionStoragePort;
-  logger?: RuntimeLogger;
-  activeGenerationReads: ActiveGenerationReadRepository | null;
-  roleJobs: RoleJobRepository | null;
-  publicationGenerations: PublicationGenerationRepository | null;
-  sourceDispatch: SourceDispatchRepository | null;
-  sourceFileRetries: SourceFileRetryRepository | null;
-  sourceFileTaskDeletions: SourceFileTaskDeletionRepository | null;
-  storageReconciliation: StorageReconciliationRepository | null;
-  objectProtection: ObjectProtectionRepository | null;
-  maintenanceProgress: MaintenanceProgressRepository | null;
-  knowledgeBaseIndexMaintenance: KnowledgeBaseIndexMaintenanceRepository | null;
 };
 
 export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): void {
-  const { config, storage, sessionManager, redis, repositories, runtimeSettings } = services;
-  const requireAuth = createAdminAuthMiddleware({
-    config,
-    sessionManager,
-    redis,
-    repositories
-  });
-  const requireWriteProtection = createAdminWriteProtectionMiddleware({
-    config,
-    repositories
-  });
-
-  registerAdminSecurityMiddlewares(app, {
-    config,
-    redis,
-    repositories,
-    runtimeSettings
-  });
+  const { config, sessionManager, runtimeSettings } = services;
+  const { requireAuth, requireWriteProtection } = services.adminSecurityApplication;
+  services.adminSecurityApplication.register(app);
 
   registerAdminOpenApiKeyRoutes(
     app,
     {
       config,
-      redis,
-      repositories
+      application: services.adminOpenApiKeyApplication,
+      audit: services.adminAuditApplication
     },
     {
       requireAuth,
@@ -136,12 +71,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminRuntimeSettingsRoutes(
     app,
-    {
-      runtimeSettings,
-      storageReconciliation: services.storageReconciliation,
-      objectProtection: services.objectProtection,
-      storagePrefix: config.storage.prefix
-    },
+    { runtimeSettings },
     {
       requireAuth,
       requireWriteProtection
@@ -150,11 +80,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   registerAdminSourceFileRetryRoutes(
     app,
     {
-      config,
-      redis,
-      repositories,
-      runtimeSettings,
-      sourceFileRetries: services.sourceFileRetries
+      application: services.adminSourceApplication
     },
     {
       requireAuth,
@@ -165,10 +91,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     app,
     {
       config,
-      redis,
-      repositories,
-      runtimeSettings,
-      sourceFileTaskDeletions: services.sourceFileTaskDeletions
+      application: services.adminSourceApplication
     },
     {
       requireAuth,
@@ -179,9 +102,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     app,
     {
       config,
-      redis,
-      repositories,
-      activeGenerationReads: services.activeGenerationReads
+      application: services.adminApplication
     },
     {
       requireAuth
@@ -191,9 +112,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     app,
     {
       config,
-      redis,
-      repositories,
-      activeGenerationReads: services.activeGenerationReads
+      application: services.adminApplication
     },
     { requireAuth }
   );
@@ -201,25 +120,15 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     app,
     {
       config,
-      repositories,
-      redis,
-      runtimeSettings,
-      storage,
-      roleJobs: services.roleJobs,
-      publicationGenerations: services.publicationGenerations,
-      applicationRuntime: services.applicationRuntime
+      application: services.adminMutationApplication,
+      audit: services.adminAuditApplication
     },
     { requireAuth, requireWriteProtection }
   );
   registerAdminProcessingSummaryRoutes(
     app,
     {
-      repositories,
-      roleJobs: services.roleJobs,
-      publicationGenerations: services.publicationGenerations,
-      sourceDispatch: services.sourceDispatch,
-      maintenanceProgress: services.maintenanceProgress,
-      knowledgeBaseIndexMaintenance: services.knowledgeBaseIndexMaintenance
+      application: services.adminProcessingApplication
     },
     {
       requireAuth
@@ -228,10 +137,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   registerAdminKnowledgeBaseIndexMaintenanceRoutes(
     app,
     {
-      config,
-      repositories,
-      requests: services.knowledgeBaseIndexMaintenance,
-      runtimeSettings
+      application: services.adminMaintenanceApplication,
+      audit: services.adminAuditApplication
     },
     {
       requireAuth,
@@ -240,14 +147,14 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   );
   registerAdminPublicUrlRoutes(
     app,
-    { config, repositories },
+    { config, application: services.adminApplication },
     {
       requireAuth
     }
   );
   registerAdminKnowledgeBaseListRoutes(
     app,
-    { config, redis, repositories },
+    { config, application: services.adminApplication },
     {
       requireAuth
     }
@@ -255,12 +162,8 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   registerAdminUploadSessionRoutes(
     app,
     {
-      config,
-      redis,
-      repositories,
-      runtimeSettings,
-      applicationRuntime: services.applicationRuntime,
-      uploadSessionStorage: services.uploadSessionStorage
+      application: services.adminUploadApplication,
+      audit: services.adminAuditApplication
     },
     { requireAuth, requireWriteProtection }
   );
@@ -284,11 +187,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     const body = await readJsonBody(context.req.raw);
     const username = typeof body.username === "string" ? body.username : "";
     const password = typeof body.password === "string" ? body.password : "";
-    const loginLimited = await limitAdminLoginRequest({
-      config,
-      redis,
-      repositories,
-      runtimeSettings,
+    const loginLimited = await services.adminSecurityApplication.limitLogin({
       context,
       username
     });
@@ -298,9 +197,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
 
     if (!sessionManager.authenticate({ username, password })) {
-      await recordAdminAudit({
-        repositories,
-        config,
+      await services.adminAuditApplication.record({
         context,
         eventType: "admin_login",
         result: "failure",
@@ -311,9 +208,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     }
 
     context.header("set-cookie", await sessionManager.createSessionCookie(username));
-    await recordAdminAudit({
-      repositories,
-      config,
+    await services.adminAuditApplication.record({
       context,
       eventType: "admin_login",
       result: "success",
@@ -333,9 +228,7 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
 
     await sessionManager.clearSessionFromCookieHeader(context.req.header("cookie"));
     context.header("set-cookie", sessionManager.createClearedSessionCookie());
-    await recordAdminAudit({
-      repositories,
-      config,
+    await services.adminAuditApplication.record({
       context,
       eventType: "admin_logout",
       result: "success"
@@ -344,10 +237,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
   });
 
   app.post("/admin/api/knowledge-bases", requireAuth, requireWriteProtection, async (context) => {
-    if (!repositories) {
-      return missingRepositoryBackend(context);
-    }
-
     const input = readKnowledgeBaseCreateInput(await readJsonBody(context.req.raw));
 
     if (!input) {
@@ -362,27 +251,25 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       );
     }
 
-    const knowledgeBase = await repositories.knowledgeBases.createKnowledgeBase(input);
-    return context.json({ knowledgeBase }, 201);
+    const result = await services.adminCoreApplication.createKnowledgeBase(input);
+    return result.ok
+      ? context.json({ knowledgeBase: result.value }, 201)
+      : missingRepositoryBackend(context);
   });
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId",
     requireAuth,
     async (context) => {
-      if (!repositories) {
-        return missingRepositoryBackend(context);
+      const result = await services.adminCoreApplication.getKnowledgeBase({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
+      });
+      if (!result.ok) {
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      return context.json({ knowledgeBase });
+      return context.json({ knowledgeBase: result.value });
     }
   );
 
@@ -391,43 +278,15 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     requireAuth,
     requireWriteProtection,
     async (context) => {
-      if (!repositories || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const runtimeSnapshot = runtimeSettings ? await runtimeSettings.getSnapshot() : null;
-      if (!services.activeGenerationReads || !services.roleJobs || !services.publicationGenerations) {
-        return missingRepositoryBackend(context);
-      }
-      const deletionService = createDeletionService({
-        repositories,
-        activeGenerationReads: services.activeGenerationReads,
-        roleJobs: services.roleJobs,
-        publicationGenerations: services.publicationGenerations,
-        storage,
-        redis,
-        runtime: services.applicationRuntime,
-        publicationSettingsSnapshot: {
-          publication: runtimeSnapshot?.publication ?? {},
-          graph: runtimeSnapshot?.graph ?? {},
-          worker: runtimeSnapshot?.worker ?? {}
-        }
+      const result = await services.adminCoreApplication.deleteKnowledgeBase({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
       });
-
-      if (!deletionService) {
-        return missingRepositoryBackend(context);
+      if (!result.ok) {
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      const deleted = await deletionService.deleteKnowledgeBase({
-        knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        maxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts ?? 3
-      });
-
-      if (!deleted) {
-        return notFound(context);
-      }
-
-      return context.json({ deleted: true });
+      return context.json(result.value);
     }
   );
 
@@ -435,10 +294,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     "/admin/api/knowledge-bases/:knowledgeBaseId/files/detail",
     requireAuth,
     async (context) => {
-      if (!services.activeGenerationReads) {
-        return missingRepositoryBackend(context);
-      }
-
       const logicalPath = context.req.query("path");
 
       if (!logicalPath) {
@@ -446,43 +301,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
       }
       const includeRelationships = context.req.query("includeRelationships") === "1";
 
-      const result = await readGeneratedContentWithMetrics({
-        resolve: () => services.activeGenerationReads!.withActiveGeneration(
-          context.req.param("knowledgeBaseId"),
-          async (scope) => {
-            const file = await scope.findFileByPath(logicalPath);
-            if (!file) return null;
-            const relationships = includeRelationships && file.sourceFileId
-              ? (await scope.listRelated({
-                  sourceFileId: file.sourceFileId,
-                  limit: 8,
-                  cursor: null
-                })).items
-              : [];
-            return { file, relationships };
-          }
-        ),
-        read: ({ file }) => readGeneratedObjectText(storage, file.objectKey, config),
-        now: () => performance.now(),
-        onComplete: (metrics) => reportGeneratedContentRead(services.logger, "admin", metrics)
+      const result = await services.adminCoreApplication.readGeneratedContent({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        logicalPath,
+        includeRelationships
       });
-      const content = result.content;
-
-      if (content instanceof Response) {
-        return content;
+      if (!result.ok) {
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      if (!result.descriptor || content === null) {
-        return notFound(context);
-      }
-      const { file, relationships } = result.descriptor;
-
-      return context.json({
-        file: toAdminActiveFile(file),
-        relationships: relationships.map(toAdminActiveRelationship),
-        content,
-        readOnly: true
-      });
+      return result.value instanceof Response
+        ? result.value
+        : context.json(result.value);
     }
   );
 
@@ -491,56 +322,24 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     requireAuth,
     requireWriteProtection,
     async (context) => {
-      if (!repositories?.sourceResources || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
       const logicalPath = context.req.query("path");
 
       if (!logicalPath) {
         return notFound(context);
       }
 
-      const runtimeSnapshot = runtimeSettings ? await runtimeSettings.getSnapshot() : null;
-      if (!services.activeGenerationReads || !services.roleJobs || !services.publicationGenerations) {
-        return missingRepositoryBackend(context);
-      }
-      const deletionService = createDeletionService({
-        repositories,
-        activeGenerationReads: services.activeGenerationReads,
-        roleJobs: services.roleJobs,
-        publicationGenerations: services.publicationGenerations,
-        storage,
-        redis,
-        runtime: services.applicationRuntime,
-        publicationSettingsSnapshot: {
-          publication: runtimeSnapshot?.publication ?? {},
-          graph: runtimeSnapshot?.graph ?? {},
-          worker: runtimeSnapshot?.worker ?? {}
-        }
-      });
-
-      if (!deletionService) {
-        return missingRepositoryBackend(context);
-      }
-
-      const result = await deletionService.deleteSourcePage({
+      const result = await services.adminCoreApplication.deleteSourceFile({
         knowledgeBaseId: context.req.param("knowledgeBaseId"),
-        logicalPath,
-        maxAttempts: runtimeSnapshot?.worker.hardDeleteMaxAttempts ?? 3
+        logicalPath
       });
 
       if (!result.ok) {
-        return result.reason === "not_deletable" ? fileNotDeletable(context) : notFound(context);
+        if (result.code === "FILE_NOT_DELETABLE") return fileNotDeletable(context);
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      return context.json(
-        {
-          deleted: true,
-          publicationQueued: result.publicationQueued
-        },
-        200
-      );
+      return context.json(result.value, 200);
     }
   );
 
@@ -548,18 +347,6 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files",
     requireAuth,
     async (context) => {
-      if (!repositories?.files || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
       const limit = readPageLimit(context.req.query("limit"), config);
 
       if (!limit) {
@@ -572,80 +359,19 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
         return invalidSourceFileFilter(context, filters.code);
       }
 
-      const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = createSourceFileCursorScope(knowledgeBase.id, filters.filters);
-      const filterSignature = createSourceFileFilterSignature(filters.filters);
-      const cacheScope = createActiveReadCacheScope({
-        authorizationScope: "admin",
-        operation: "source-file-list",
-        knowledgeBaseId: knowledgeBase.id,
-        generationId: knowledgeBase.activeGenerationId,
-        filters: { signature: filterSignature }
-      });
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
-
-      if (cursorToken && !repositoryCursor) {
-        return invalidPagination(context);
-      }
-
-      const cacheId = createActiveReadPageCacheId({
-        cursorToken,
+      const result = await services.adminCoreApplication.listFiles({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         limit,
-        input: { signature: filterSignature }
+        cursor: context.req.query("cursor") ?? null,
+        filters: filters.filters
       });
-      const cachedResponse = await readPageResponseCache<{
-        items: ReturnType<typeof toAdminSourceFile>[];
-        nextCursor: string | null;
-        refreshAfterMs: number;
-      }>({
-        redis,
-        scope: cacheScope,
-        cacheId,
-        invalidationScopes: [`source-files:${knowledgeBase.id}`]
-      });
-
-      if (cachedResponse) {
-        return context.json(cachedResponse);
+      if (!result.ok) {
+        if (result.code === "INVALID_PAGINATION") return invalidPagination(context);
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
       }
-
-      const page = await repositories.files.listSourceFiles({
-        knowledgeBaseId: knowledgeBase.id,
-        limit,
-        cursor: repositoryCursor,
-        ...filters.filters
-      });
-      const generatedOutputs = await readGeneratedOutputsForSourceFilesSafely({
-        activeGenerationReads: services.activeGenerationReads,
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFiles: page.items
-      });
-      const items = page.items.map((file) =>
-        toAdminSourceFile(file, null, generatedOutputs.get(file.id) ?? null)
-      );
-      const nextCursor = await writeOpaqueCursor({
-        redis,
-        scope: cursorScope,
-        cursor: page.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-
-      const responseBody = {
-        items,
-        nextCursor,
-        refreshAfterMs: readSourceFileRefreshAfterMs(page.items)
-      };
-
-      await writePageResponseCache({
-        redis,
-        scope: cacheScope,
-        cacheId,
-        value: responseBody,
-        refreshAfterMs: responseBody.refreshAfterMs
-      });
-
-      return context.json(responseBody);
+      return context.json(result.value);
     }
   );
 
@@ -653,127 +379,28 @@ export function registerAdminApiRoutes(app: Hono, services: AdminApiServices): v
     "/admin/api/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId",
     requireAuth,
     async (context) => {
-      if (!repositories?.files?.getSourceFile || !repositories.files.listSourceFileEvents || !redis) {
-        return missingRepositoryBackend(context);
-      }
-
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase) {
-        return notFound(context);
-      }
-
-      const sourceFile = await repositories.files.getSourceFile({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFileId: context.req.param("sourceFileId")
-      });
-
-      if (!sourceFile) {
-        return notFound(context);
-      }
-
       const limit = readPageLimit(context.req.query("limit"), config);
 
       if (!limit) {
         return invalidPagination(context);
       }
 
-      const cursorToken = context.req.query("cursor") ?? null;
-      const cursorScope = `source-file-events:${knowledgeBase.id}:${sourceFile.id}`;
-      const repositoryCursor = cursorToken
-        ? await redis.getPaginationCursor<string>(cursorScope, cursorToken)
-        : null;
-
-      if (cursorToken && !repositoryCursor) {
-        return invalidPagination(context);
-      }
-
-      const events = await repositories.files.listSourceFileEvents({
-        knowledgeBaseId: knowledgeBase.id,
-        sourceFileId: sourceFile.id,
+      const result = await services.adminCoreApplication.getFile({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
+        sourceFileId: context.req.param("sourceFileId"),
         limit,
-        cursor: repositoryCursor
+        cursor: context.req.query("cursor") ?? null
       });
-      const nextCursor = await writeOpaqueCursor({
-        redis,
-        scope: cursorScope,
-        cursor: events.nextCursor,
-        ttlSeconds: config.pagination.cursorTtlSeconds
-      });
-
-      return context.json({
-        file: await readAdminSourceFileWithGraphSummary({
-          repositories,
-          knowledgeBaseId: knowledgeBase.id,
-          sourceFile,
-          generatedOutput:
-            (
-              await readGeneratedOutputsForSourceFilesSafely({
-                activeGenerationReads: services.activeGenerationReads,
-                knowledgeBaseId: knowledgeBase.id,
-                sourceFiles: [sourceFile]
-              })
-            ).get(sourceFile.id) ?? null
-        }),
-        events: {
-          items: events.items.map(toAdminSourceFileEvent),
-          nextCursor
-        }
-      });
+      if (!result.ok) {
+        if (result.code === "INVALID_PAGINATION") return invalidPagination(context);
+        return result.code === "NOT_FOUND"
+          ? notFound(context)
+          : missingRepositoryBackend(context);
+      }
+      return context.json(result.value);
     }
   );
 
-}
-
-async function readAdminSourceFileWithGraphSummary(input: {
-  repositories: AdminRepositories;
-  knowledgeBaseId: string;
-  sourceFile: SourceFileRecord;
-  generatedOutput?: GeneratedSourceFileOutputRecord | null;
-}) {
-  if (!input.repositories.graph?.getGraphSummary) {
-    return toAdminSourceFile(input.sourceFile, null, input.generatedOutput ?? null);
-  }
-
-  const summary = await input.repositories.graph.getGraphSummary({
-    knowledgeBaseId: input.knowledgeBaseId,
-    sourceFileId: input.sourceFile.id,
-    limit: 3
-  });
-
-  return toAdminSourceFile(input.sourceFile, summary, input.generatedOutput ?? null);
-}
-
-async function readGeneratedObjectText(
-  storage: StorageAdapter,
-  objectKey: string,
-  config: RuntimeConfig
-): Promise<string | null | Response> {
-  try {
-    return await storage.getObjectText(objectKey, {
-      maxBytes: config.pagination.generatedContentMaxBytes
-    });
-  } catch (error) {
-    if (error instanceof StorageObjectTooLargeError) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            code: "GENERATED_CONTENT_TOO_LARGE"
-          }
-        }),
-        {
-          status: 413,
-          headers: {
-            "content-type": "application/json"
-          }
-        }
-      );
-    }
-
-    throw error;
-  }
 }
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
@@ -821,17 +448,6 @@ function invalidSourceFileFilter(
   );
 }
 
-function readSourceFileRefreshAfterMs(sourceFiles: SourceFileRecord[]): number {
-  return sourceFiles.some(
-    (file) =>
-      file.processingStatus === "queued" ||
-      file.processingStatus === "running" ||
-      file.generatedOutputStatus === "pending"
-  )
-    ? 2_000
-    : 30_000;
-}
-
 function containsCredentialQuery(rawUrl: string): boolean {
   const searchParams = new URL(rawUrl).searchParams;
   return (
@@ -859,26 +475,6 @@ function readKnowledgeBaseCreateInput(
     name,
     description
   };
-}
-
-async function writeOpaqueCursor(options: {
-  redis: RedisCoordinator;
-  scope: string;
-  cursor: string | null;
-  ttlSeconds: number;
-}): Promise<string | null> {
-  if (!options.cursor) {
-    return null;
-  }
-
-  const cursorId = `cursor-${randomUUID()}`;
-  await options.redis.setPaginationCursor(
-    options.scope,
-    cursorId,
-    options.cursor,
-    options.ttlSeconds
-  );
-  return cursorId;
 }
 
 function notFound(context: Parameters<MiddlewareHandler>[0]): Response {
