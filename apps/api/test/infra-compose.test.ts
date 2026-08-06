@@ -436,6 +436,9 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("source-worker.mjs --healthcheck");
     expect(workflow).toContain("publication-worker.mjs --healthcheck");
     expect(workflow).toContain("maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("focowiki-ci-runtime-secrets-");
+    expect(workflow).toContain("/app/runtime-secrets/deployment.key");
+    expect(workflow).toContain("docker volume rm");
     expect(workflow).toContain("Validate source-to-activation smoke flow");
   });
 
@@ -452,6 +455,9 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/source-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/publication-worker.mjs --healthcheck");
     expect(workflow).toContain("apps/api/runtime/maintenance-worker.mjs --healthcheck");
+    expect(workflow).toContain("focowiki-build-runtime-secrets-");
+    expect(workflow).toContain("/app/runtime-secrets/deployment.key");
+    expect(workflow).toContain("docker volume rm");
     expect(workflow).toContain("Validate release native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
