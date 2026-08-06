@@ -79,65 +79,27 @@ const rateLimitGroups = [
 const workerNumberFields = [
   "sourceFileConcurrency",
   "sourceObjectReadConcurrency",
-  "graphQueryConcurrency",
-  "databaseMutationConcurrency",
   "claimBatchSize",
-  "generationBatchSize",
   "pollIntervalMs",
   "lockTtlSeconds",
   "heartbeatIntervalMs",
   "jobMaxAttempts",
   "jobRetryDelayMs",
-  "sourceQueueHardDepth",
-  "sourceQueueResumeDepth",
-  "sourceQueueHardAgeSeconds",
-  "sourceQueueResumeAgeSeconds",
-  "shutdownGraceMs",
   "completedJobRetentionDays",
-  "failedJobRetentionDays",
-  "deadLetterJobRetentionDays",
-  "retentionCleanupBatchSize",
   "hardDeleteConcurrency",
   "hardDeleteDatabaseBatchSize",
   "hardDeleteObjectBatchSize",
   "hardDeleteMaxAttempts",
-  "hardDeleteRetryDelayMs",
-  "hardDeleteFailedRetentionDays"
-] as const satisfies readonly (keyof Omit<WorkerSettings, "hardDeleteVersionPurgeEnabled">)[];
-
-const workerBooleanFields = [
-  "hardDeleteVersionPurgeEnabled"
-] as const satisfies readonly (keyof Pick<WorkerSettings, "hardDeleteVersionPurgeEnabled">)[];
+  "hardDeleteRetryDelayMs"
+] as const satisfies readonly (keyof WorkerSettings)[];
 
 const publicationFields = [
-  "batchSize",
   "intervalSeconds",
   "roleConcurrency",
   "claimBatchSize",
-  "impactBatchSize",
-  "impactConcurrency",
-  "generationAssemblyConcurrency",
-  "projectionPartitionConcurrency",
   "generatedObjectWriteConcurrency",
-  "directoryMaterializationConcurrency",
-  "dirtyFileHardCount",
-  "dirtyFileResumeCount",
-  "dirtyAgeHardSeconds",
-  "dirtyAgeResumeSeconds",
-  "pendingImpactHardCount",
-  "pendingImpactResumeCount",
-  "generationRetentionDays",
-  "indexShardSize",
-  "linkIndexShardSize",
-  "manifestShardSize",
-  "graphEdgeShardSize",
-  "graphCandidateLimit",
-  "graphMaintenanceBatchSize",
-  "rootSummaryLimit",
   "directoryIndexMaxEntries",
-  "directoryIndexMaxBytes",
-  "okfLogMaxEntries",
-  "okfLogMaxBytes"
+  "directoryIndexMaxBytes"
 ] as const satisfies readonly (keyof Omit<PublicationSettings, "mode">)[];
 
 const publicationModes = ["batch", "manual", "per_file"] as const satisfies readonly PublicationSettings["mode"][];
@@ -149,8 +111,6 @@ const graphNumberFields = [
   "searchMaxDepth",
   "searchDefaultFanout",
   "searchMaxFanout",
-  "publicationShardSize",
-  "cacheTtlSeconds",
   "genericPhraseThreshold"
 ] as const satisfies readonly (keyof Omit<GraphSettings, "modelReviewEnabled">)[];
 
@@ -161,23 +121,16 @@ const graphBooleanFields = [
 const maintenanceNumberFields = [
   "knowledgeBaseMaintenanceScanIntervalSeconds",
   "knowledgeBaseMaintenanceConcurrency",
-  "scanIntervalSeconds",
   "scanBatchSize",
   "deletionBatchSize",
   "quarantineGracePeriodSeconds",
-  "confirmationPasses",
   "maxAttempts",
   "retryDelayMs",
-  "migrationBackfillConcurrency",
-  "compactionConcurrency",
   "projectionRepairConcurrency",
   "projectionRepairDatabaseBatchSize",
   "projectionRepairObjectWriteConcurrency",
   "lexicalRebuildConcurrency",
   "lexicalRebuildSourceReadConcurrency",
-  "lexicalRebuildDatabaseWriteConcurrency",
-  "lexicalRebuildClaimBatchSize",
-  "lexicalRebuildDatabaseBatchSize",
   "lexicalRebuildMaxInFlightSourceBytes"
 ] as const satisfies readonly (
   keyof Omit<MaintenanceSettings, "reconciliationEnabled" | "knowledgeBaseMaintenanceMode">
@@ -186,19 +139,10 @@ const maintenanceNumberFields = [
 const searchNumberFields = [
   "requestTimeoutMs",
   "engineSearchCutoffMs",
-  "branchCandidateLimit",
-  "fusedCandidateLimit",
   "overfetchFactor",
-  "graphSeedLimit",
-  "graphNeighborLimit",
-  "cacheTtlSeconds",
   "indexBatchDocumentCount",
   "indexBatchCompressedBytes",
   "maxInFlightTasks",
-  "engineQueueLatencyLimitMs",
-  "engineResidentMemoryLimitBytes",
-  "engineDatabaseSizeLimitBytes",
-  "engineTaskQueueSizeLimitBytes",
   "taskPollIntervalMs",
   "taskTimeoutMs",
   "maxAttempts",
@@ -230,7 +174,7 @@ const rateLimitTipItems = rateLimitGroups.flatMap((group) => [
   }
 ]);
 
-const workerTipItems = [...workerNumberFields, ...workerBooleanFields].map((field) => ({
+const workerTipItems = workerNumberFields.map((field) => ({
   labelKey: `settings.fields.${field}`,
   descriptionKey: `settings.tips.worker.${field}`
 }));
@@ -294,8 +238,7 @@ type EditableRateLimitSettings = Record<
     windowSeconds: EditableNumber;
   }
 >;
-type EditableWorkerSettings = Record<WorkerNumberField, EditableNumber> &
-  Pick<WorkerSettings, "hardDeleteVersionPurgeEnabled">;
+type EditableWorkerSettings = Record<WorkerNumberField, EditableNumber>;
 type EditablePublicationSettings = {
   mode: PublicationSettings["mode"];
 } & Record<PublicationField, EditableNumber>;
@@ -660,27 +603,6 @@ export function SettingsPanel() {
                               onChange={(value) => setWorker({ ...worker, [field]: value })}
                             />
                           ))}
-                          <Field>
-                            <FieldLabel htmlFor="worker-hardDeleteVersionPurgeEnabled">
-                              <RequiredLabel
-                                label={t("settings.fields.hardDeleteVersionPurgeEnabled")}
-                                required
-                              />
-                            </FieldLabel>
-                            <label className="flex min-h-9 items-center gap-2 rounded-md border border-input px-3 text-sm">
-                              <Checkbox
-                                id="worker-hardDeleteVersionPurgeEnabled"
-                                checked={worker.hardDeleteVersionPurgeEnabled}
-                                onCheckedChange={(checked) =>
-                                  setWorker({
-                                    ...worker,
-                                    hardDeleteVersionPurgeEnabled: checked === true
-                                  })
-                                }
-                              />
-                              <span>{t("settings.fields.hardDeleteVersionPurgeEnabled")}</span>
-                            </label>
-                          </Field>
                         </div>
                         <SaveButton isSaving={isSaving === "worker"} />
                       </FieldGroup>
@@ -894,7 +816,7 @@ export function SettingsPanel() {
                                 field === "knowledgeBaseMaintenanceScanIntervalSeconds"
                                 && maintenance.knowledgeBaseMaintenanceMode === "manual"
                               }
-                              min={field === "confirmationPasses" ? 2 : 1}
+                              min={1}
                               {...(field === "scanBatchSize" || field === "deletionBatchSize"
                                 ? { max: 1_000 }
                                 : field === "knowledgeBaseMaintenanceScanIntervalSeconds"
@@ -911,12 +833,6 @@ export function SettingsPanel() {
                                         ? { max: 16 }
                                         : field === "lexicalRebuildSourceReadConcurrency"
                                           ? { max: 32 }
-                                          : field === "lexicalRebuildDatabaseWriteConcurrency"
-                                            ? { max: 16 }
-                                            : field === "lexicalRebuildClaimBatchSize"
-                                              ? { min: 50, max: 2_000 }
-                                              : field === "lexicalRebuildDatabaseBatchSize"
-                                                ? { max: 250 }
                                                 : field === "lexicalRebuildMaxInFlightSourceBytes"
                                                   ? { min: 1_048_576, max: 536_870_912 }
                                 : {})}
@@ -1579,19 +1495,12 @@ function buildWorkerSettings(input: EditableWorkerSettings): WorkerSettings | nu
   if (
     !settings
     || settings.sourceObjectReadConcurrency > settings.sourceFileConcurrency
-    || settings.graphQueryConcurrency > settings.sourceFileConcurrency
-    || settings.databaseMutationConcurrency > settings.sourceFileConcurrency
     || settings.sourceObjectReadConcurrency > 32
-    || settings.graphQueryConcurrency > 32
-    || settings.databaseMutationConcurrency > 32
   ) {
     return null;
   }
 
-  return {
-    ...settings,
-    hardDeleteVersionPurgeEnabled: input.hardDeleteVersionPurgeEnabled
-  } as WorkerSettings;
+  return settings as WorkerSettings;
 }
 
 function buildPublicationSettings(input: EditablePublicationSettings): PublicationSettings | null {
@@ -1599,14 +1508,8 @@ function buildPublicationSettings(input: EditablePublicationSettings): Publicati
 
   if (
     !settings
-    || settings.generationAssemblyConcurrency > settings.roleConcurrency
-    || settings.projectionPartitionConcurrency > settings.impactConcurrency
-    || settings.generatedObjectWriteConcurrency > settings.projectionPartitionConcurrency
-    || settings.directoryMaterializationConcurrency > settings.projectionPartitionConcurrency
-    || settings.generationAssemblyConcurrency > 32
-    || settings.projectionPartitionConcurrency > 32
     || settings.generatedObjectWriteConcurrency > 32
-    || settings.directoryMaterializationConcurrency > 32
+    || settings.roleConcurrency > settings.claimBatchSize
   ) {
     return null;
   }
@@ -1651,23 +1554,12 @@ function buildMaintenanceSettings(
     settings.knowledgeBaseMaintenanceScanIntervalSeconds < 60 ||
     settings.knowledgeBaseMaintenanceScanIntervalSeconds > 2_592_000 ||
     settings.knowledgeBaseMaintenanceConcurrency > 16 ||
-    settings.confirmationPasses < 2 ||
-    settings.migrationBackfillConcurrency > 16 ||
-    settings.compactionConcurrency > 16 ||
     settings.projectionRepairConcurrency > 16 ||
     settings.projectionRepairDatabaseBatchSize < 100 ||
     settings.projectionRepairDatabaseBatchSize > 10_000 ||
     settings.projectionRepairObjectWriteConcurrency > 32 ||
     settings.lexicalRebuildConcurrency > 16 ||
     settings.lexicalRebuildSourceReadConcurrency > 32 ||
-    settings.lexicalRebuildDatabaseWriteConcurrency > 16 ||
-    settings.lexicalRebuildDatabaseWriteConcurrency
-      > settings.lexicalRebuildConcurrency ||
-    settings.lexicalRebuildClaimBatchSize < 50 ||
-    settings.lexicalRebuildClaimBatchSize > 2_000 ||
-    settings.lexicalRebuildDatabaseBatchSize > 250 ||
-    settings.lexicalRebuildDatabaseBatchSize
-      > settings.lexicalRebuildClaimBatchSize ||
     settings.lexicalRebuildMaxInFlightSourceBytes < 1_048_576 ||
     settings.lexicalRebuildMaxInFlightSourceBytes > 536_870_912
   ) {
@@ -1689,26 +1581,11 @@ function buildSearchSettings(input: EditableSearchSettings): SearchSettings | nu
     || settings.requestTimeoutMs > 30_000
     || settings.engineSearchCutoffMs < 50
     || settings.engineSearchCutoffMs > settings.requestTimeoutMs
-    || settings.branchCandidateLimit < 10
-    || settings.branchCandidateLimit > 500
-    || settings.fusedCandidateLimit < 10
-    || settings.fusedCandidateLimit > settings.branchCandidateLimit
     || settings.overfetchFactor > 10
-    || settings.graphSeedLimit > 500
-    || settings.graphNeighborLimit > 100
-    || settings.cacheTtlSeconds > 300
-    || settings.indexBatchDocumentCount > 2_000
+    || settings.indexBatchDocumentCount > 10_000
     || settings.indexBatchCompressedBytes < 65_536
     || settings.indexBatchCompressedBytes > 33_554_432
     || settings.maxInFlightTasks > 32
-    || settings.engineQueueLatencyLimitMs < 1_000
-    || settings.engineQueueLatencyLimitMs > 600_000
-    || settings.engineResidentMemoryLimitBytes < 268_435_456
-    || settings.engineResidentMemoryLimitBytes > 137_438_953_472
-    || settings.engineDatabaseSizeLimitBytes < 1_073_741_824
-    || settings.engineDatabaseSizeLimitBytes > 17_592_186_044_416
-    || settings.engineTaskQueueSizeLimitBytes < 16_777_216
-    || settings.engineTaskQueueSizeLimitBytes > 8_589_934_592
     || settings.taskPollIntervalMs < 100
     || settings.taskPollIntervalMs > 30_000
     || settings.taskTimeoutMs < 10_000

@@ -22,11 +22,17 @@ describe("destructive folder-aware upload contract", () => {
   });
 
   it("uses normalized relative paths instead of basenames for duplicate identity", () => {
-    const uploadSessions = readWorkspaceFile("apps/api/src/application/upload-sessions.ts");
+    const uploadApplication = readWorkspaceFile(
+      "apps/api/src/storage-vnext/api/postgres-admin-upload.ts"
+    );
+    const manifest = readWorkspaceFile(
+      "apps/api/src/storage-vnext/upload/manifest.ts"
+    );
 
-    expect(uploadSessions).toContain("relativePath");
-    expect(uploadSessions).toContain("pathKey");
-    expect(uploadSessions).not.toContain("hasDuplicateUploadFileNames");
+    expect(uploadApplication).toContain("entry.relativePath");
+    expect(uploadApplication).toContain("path.pathKey");
+    expect(manifest).toContain("path.pathKey");
+    expect(`${uploadApplication}\n${manifest}`).not.toContain("hasDuplicateUploadFileNames");
   });
 
   it("maps nested source paths to nested generated pages", () => {

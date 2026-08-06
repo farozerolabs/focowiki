@@ -1,0 +1,150 @@
+import { describe, expect, it } from "vitest";
+import { StorageVnextCatalogRepositoryError } from
+  "../src/storage-vnext/catalog/postgres-repository.js";
+import { createPostgresStorageVnextOpenApiApplication } from
+  "../src/storage-vnext/api/postgres-openapi-application.js";
+import type { StorageVnextSourceEventSummary } from
+  "../src/storage-vnext/source-events/ports.js";
+import { StorageVnextSourceEventRepositoryError } from
+  "../src/storage-vnext/source-events/postgres-repository.js";
+
+describe("storage vNext Developer OpenAPI application", () => {
+  it("maps an invalid knowledge-base cursor to the public validation error", async () => {
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: null as never,
+      catalog: {
+        async listKnowledgeBases() {
+          throw new StorageVnextCatalogRepositoryError("invalid_cursor");
+        }
+      } as never,
+      releases: null as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: null as never,
+      sourceEvents: null as never,
+      source: null as never,
+      search: null,
+      webhooks: null as never
+    });
+
+    await expect(application.listKnowledgeBases({
+      limit: 10,
+      cursor: "tampered"
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      httpStatus: 422,
+      details: { field: "cursor" }
+    });
+  });
+
+  it("returns the bounded source event history with the requested page cursor", async () => {
+    const calls: unknown[] = [];
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: null as never,
+      catalog: null as never,
+      releases: null as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: {
+        async getSourceFile() {
+          return { id: "source-file-one" };
+        }
+      } as never,
+      sourceEvents: {
+        async list(input: unknown) {
+          calls.push(input);
+          return {
+            items: [
+              sourceEvent("source-event-accepted", "upload_storage", "info"),
+              sourceEvent("source-event-progress", "metadata_resolution", "warning")
+            ],
+            nextCursor: "events-next"
+          };
+        }
+      },
+      source: null as never,
+      search: null,
+      webhooks: null as never
+    });
+
+    await expect(application.listSourceFileEvents({
+      knowledgeBaseId: "knowledge-base-one",
+      sourceFileId: "source-file-one",
+      limit: 2,
+      cursor: "events-cursor"
+    })).resolves.toEqual({
+      items: [
+        expect.objectContaining({
+          eventId: "source-event-accepted",
+          stageKey: "upload_storage"
+        }),
+        expect.objectContaining({
+          eventId: "source-event-progress",
+          severity: "warning"
+        })
+      ],
+      nextCursor: "events-next"
+    });
+    expect(calls).toEqual([{
+      knowledgeBaseId: "knowledge-base-one",
+      sourceFileId: "source-file-one",
+      limit: 2,
+      cursor: "events-cursor"
+    }]);
+  });
+
+  it("maps an invalid source event cursor to the public validation error", async () => {
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: null as never,
+      catalog: null as never,
+      releases: null as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: {
+        async getSourceFile() {
+          return { id: "source-file-one" };
+        }
+      } as never,
+      sourceEvents: {
+        async list() {
+          throw new StorageVnextSourceEventRepositoryError("invalid_cursor");
+        }
+      },
+      source: null as never,
+      search: null,
+      webhooks: null as never
+    });
+
+    await expect(application.listSourceFileEvents({
+      knowledgeBaseId: "knowledge-base-one",
+      sourceFileId: "source-file-one",
+      limit: 10,
+      cursor: "tampered"
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      httpStatus: 422,
+      details: { field: "cursor" }
+    });
+  });
+});
+
+function sourceEvent(
+  publicId: string,
+  stageKey: StorageVnextSourceEventSummary["stageKey"],
+  severity: "info" | "warning" | "error"
+) {
+  return {
+    publicId,
+    knowledgeBaseId: "knowledge-base-one",
+    sourceFilePublicId: "source-file-one",
+    sourceRevisionPublicId: "source-revision-one",
+    sequence: 10,
+    stageKey,
+    messageKey: `sourceFiles.phase.${stageKey}`,
+    startedAt: "2026-08-01T00:00:00.000Z",
+    endedAt: null,
+    severity,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    expiresAt: "2026-09-01T00:00:00.000Z"
+  };
+}

@@ -1,13 +1,14 @@
 import { Hono, type Context } from "hono";
 import {
-  createUploadSessionService,
   UPLOAD_CONTENT_TRANSFER_CONCURRENCY,
-  UPLOAD_MANIFEST_PAGE_SIZE,
-  UPLOAD_SESSION_TTL_SECONDS
+  UPLOAD_MANIFEST_PAGE_SIZE
 } from "../application/upload-sessions.js";
-import { UploadSessionError, type UploadSessionEntryRecord } from "../domain/upload-session.js";
+import {
+  UploadSessionError,
+  type UploadSessionEntryRecord,
+  type UploadSessionRecord
+} from "../domain/upload-session.js";
 import { SourcePathValidationError } from "../domain/source-path.js";
-import { recordSecurityAudit } from "../security/audit.js";
 import {
   conflict,
   notFound,
@@ -21,6 +22,7 @@ import {
 } from "./route-helpers.js";
 import type { DeveloperOpenApiRouteServices } from "./routes.js";
 import { readIdempotencyKey } from "./idempotency-key.js";
+import { StorageVnextAdminUploadApplicationError } from "../storage-vnext/api/admin-upload-application.js";
 
 export function registerDeveloperOpenApiUploadSessionRoutes(
   app: Hono,
@@ -30,7 +32,6 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(prefix, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       const body = await readDeveloperJsonObjectBody(
         context.req.raw,
         ["declaredFileCount", "declaredByteCount"]
@@ -47,8 +48,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       const declaredFileCount = body.declaredFileCount;
       const declaredByteCount = body.declaredByteCount;
       const session = await run(() =>
-        environment.service.createSession({
-          knowledgeBaseId: environment.knowledgeBaseId,
+        services.uploadApplication.createUploadSession({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
           idempotencyKey,
           declaredFileCount,
           declaredByteCount
@@ -67,7 +68,6 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(`${prefix}/:uploadSessionId/entries`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       const body = await readDeveloperJsonObjectBody(context.req.raw, ["entries"]);
       if (
         !Array.isArray(body.entries)
@@ -85,8 +85,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       return {
         session: toSafeSession(
           await run(
-            () => environment.service.addManifestEntries({
-              knowledgeBaseId: environment.knowledgeBaseId,
+            () => services.uploadApplication.addUploadEntries({
+              knowledgeBaseId: context.req.param("knowledgeBaseId"),
               sessionId: context.req.param("uploadSessionId"),
               entries: entries.filter(isDefined)
             }),
@@ -99,28 +99,26 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(`${prefix}/:uploadSessionId/seal`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const session = await run(() =>
-        environment.service.sealManifest({
-          knowledgeBaseId: environment.knowledgeBaseId,
+      const result = await run(() =>
+        services.uploadApplication.sealUploadSession({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sessionId: context.req.param("uploadSessionId")
         })
       );
       await recordUploadSessionAudit(services, context, "upload_session_sealed", "success");
-      return { session: toSafeSession(session) };
+      return { session: toSafeSession(result.session) };
     })
   );
 
   app.put(`${prefix}/:uploadSessionId/entries/:entryId/content`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       const body = context.req.raw.body;
       if (!body || !isMarkdownContentType(context.req.header("content-type"))) {
         throw validationError("A text/markdown request body is required.");
       }
       const entry = await run(() =>
-        environment.service.putEntryContent({
-          knowledgeBaseId: environment.knowledgeBaseId,
+        services.uploadApplication.writeUploadContent({
+          knowledgeBaseId: context.req.param("knowledgeBaseId"),
           sessionId: context.req.param("uploadSessionId"),
           entryId: context.req.param("entryId"),
           body
@@ -132,20 +130,13 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.get(`${prefix}/:uploadSessionId`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       const sessionId = context.req.param("uploadSessionId");
-      const session = await run(() =>
-        environment.service.getSession({
-          knowledgeBaseId: environment.knowledgeBaseId,
-          sessionId
-        })
-      );
       const state = readTransferState(context.req.query("transferState"));
       if (context.req.query("transferState") && !state) {
         throw validationError("Upload file transferState is invalid.");
       }
-      const page = await environment.service.listEntries({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const result = await run(() => services.uploadApplication.getUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId,
         ...(state ? { transferState: state } : {}),
         limit: readLimit(context.req.query("limit"), services.config, {
@@ -153,21 +144,23 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
           maxPageSize: UPLOAD_MANIFEST_PAGE_SIZE
         }),
         cursor: context.req.query("cursor") ?? null
-      });
+      }));
       return {
-        session: toSafeSession(session),
-        entries: { items: page.items.map(toSafeEntry), nextCursor: page.nextCursor }
+        session: toSafeSession(result.session),
+        entries: {
+          items: result.entries.items.map(toSafeEntry),
+          nextCursor: result.entries.nextCursor
+        }
       };
     })
   );
 
   app.post(`${prefix}/:uploadSessionId/reconcile`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
       return {
         session: toSafeSession(
-          await run(() => environment.service.reconcileReservations({
-            knowledgeBaseId: environment.knowledgeBaseId,
+          await run(() => services.uploadApplication.reconcileUploadSession({
+            knowledgeBaseId: context.req.param("knowledgeBaseId"),
             sessionId: context.req.param("uploadSessionId")
           }))
         )
@@ -177,9 +170,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.post(`${prefix}/:uploadSessionId/finalize`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const session = await run(() => environment.service.finalizeSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await run(() => services.uploadApplication.finalizeUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("uploadSessionId")
       }));
       await recordUploadSessionAudit(services, context, "upload_session_finalized", "success");
@@ -193,9 +185,8 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
 
   app.delete(`${prefix}/:uploadSessionId`, async (context) =>
     safe(context, async () => {
-      const environment = await createEnvironment(services, context.req.param("knowledgeBaseId"));
-      const session = await run(() => environment.service.cancelSession({
-        knowledgeBaseId: environment.knowledgeBaseId,
+      const session = await run(() => services.uploadApplication.cancelUploadSession({
+        knowledgeBaseId: context.req.param("knowledgeBaseId"),
         sessionId: context.req.param("uploadSessionId")
       }));
       await recordUploadSessionAudit(services, context, "upload_session_cancelled", "success");
@@ -206,27 +197,6 @@ export function registerDeveloperOpenApiUploadSessionRoutes(
       };
     })
   );
-}
-
-async function createEnvironment(services: DeveloperOpenApiRouteServices, knowledgeBaseId: string) {
-  const repositories = services.repositories;
-  const repository = repositories?.uploadSessions;
-  if (!repository) {
-    throw repositoryUnavailable();
-  }
-  const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(knowledgeBaseId);
-  if (!knowledgeBase) {
-    throw notFound("Knowledge base was not found.");
-  }
-  return {
-    knowledgeBaseId,
-    service: createUploadSessionService({
-      repository,
-      storage: services.uploadSessionStorage,
-      runtime: services.applicationRuntime,
-      sessionTtlSeconds: UPLOAD_SESSION_TTL_SECONDS
-    })
-  };
 }
 
 function isMarkdownContentType(value: string | undefined): boolean {
@@ -251,6 +221,11 @@ async function run<T>(operation: () => Promise<T>, onInvalidPath?: () => Promise
       }
       throw conflict(error.code);
     }
+    if (error instanceof StorageVnextAdminUploadApplicationError) {
+      throw error.code === "NOT_FOUND"
+        ? notFound("Knowledge base was not found.")
+        : repositoryUnavailable();
+    }
     throw error;
   }
 }
@@ -262,9 +237,7 @@ async function recordUploadSessionAudit(
   result: "success" | "failure" | "blocked",
   errorCode: string | null = null
 ): Promise<void> {
-  await recordSecurityAudit({
-    repositories: services.repositories,
-    config: services.config,
+  await services.auditApplication.record({
     context,
     eventType,
     result,
@@ -290,7 +263,7 @@ function toSafeEntry(entry: UploadSessionEntryRecord) {
   };
 }
 
-function toSafeSession(session: Awaited<ReturnType<ReturnType<typeof createUploadSessionService>["getSession"]>>) {
+function toSafeSession(session: UploadSessionRecord) {
   return {
     id: session.id,
     knowledgeBaseId: session.knowledgeBaseId,

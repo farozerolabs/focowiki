@@ -32,6 +32,7 @@ export type SourceResourceFileRecord = {
   generatedPath: string | null;
   deleting: boolean;
   createdAt: string;
+  updatedAt?: string;
 };
 
 export type SourceResourceFileFilters = {
@@ -40,6 +41,14 @@ export type SourceResourceFileFilters = {
   state: SourceFileLifecycleState | null;
   currentStage: string | null;
   generatedOutputStatus: SourceResourceFileRecord["generatedOutputStatus"] | null;
+  modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | "not_recorded" | null;
+  startedFrom?: string | null;
+  startedTo?: string | null;
+  endedFrom?: string | null;
+  endedTo?: string | null;
+  errorState?: "with_error" | "without_error" | null;
+  errorCodeQuery?: string | null;
+  actionState?: "openable" | "retryable" | "none" | null;
 };
 
 export type ResourceOperationKind =

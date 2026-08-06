@@ -8,32 +8,19 @@ import {
 } from "../lib/interleaved-maintenance-observer.mjs";
 
 test("builds knowledge-base-scoped maintenance observation queries", () => {
-  for (const kind of [
-    "projection-repair",
-    "lexical-rebuild",
-    "projection-compaction"
-  ]) {
-    const query = maintenanceObservationQuery({
-      kind,
-      knowledgeBaseId: "kb-owned",
-      prefix: "test-prefix/generated/"
-    });
-    assert.match(query.text, /knowledge_base_id = \$1/u);
-    assert.deepEqual(query.parameters, ["kb-owned"]);
-  }
-
-  const reconciliation = maintenanceObservationQuery({
-    kind: "storage-reconciliation",
-    knowledgeBaseId: "kb-owned",
-    prefix: "test-prefix/generated/"
+  const query = maintenanceObservationQuery({
+    kind: "index-maintenance",
+    knowledgeBaseId: "kb-owned"
   });
-  assert.match(reconciliation.text, /prefix = \$1/u);
-  assert.deepEqual(reconciliation.parameters, ["test-prefix/generated/"]);
+  assert.match(query.text, /FROM focowiki\.operations AS operation/u);
+  assert.match(query.text, /operation\.knowledge_base_id = \$1/u);
+  assert.match(query.text, /operation\.operation_kind = 'maintenance'/u);
+  assert.deepEqual(query.parameters, ["kb-owned"]);
 });
 
 test("classifies fast terminal maintenance as started after the precondition", () => {
   const observation = classifyMaintenanceObservation({
-    kind: "projection-repair",
+    kind: "index-maintenance",
     preparedAt: "2026-07-26T00:00:00.000Z",
     row: {
       state: "completed",
@@ -73,7 +60,7 @@ test("waits for a maintenance lifecycle to start and finish", async () => {
   const observed = [];
   let index = 0;
   const result = await waitForMaintenanceLifecycle({
-    kind: "projection-repair",
+    kind: "index-maintenance",
     preparedAt: "2026-07-26T00:00:00.000Z",
     observe: async () => rows[Math.min(index++, rows.length - 1)],
     pollIntervalMs: 1,
@@ -100,7 +87,7 @@ test("returns at the first observed running maintenance barrier", async () => {
   ];
   let index = 0;
   const result = await waitForMaintenanceStart({
-    kind: "projection-repair",
+    kind: "index-maintenance",
     preparedAt: "2026-07-26T00:00:00.000Z",
     observe: async () => rows[Math.min(index++, rows.length - 1)],
     pollIntervalMs: 1,

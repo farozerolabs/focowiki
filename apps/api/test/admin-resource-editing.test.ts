@@ -1,202 +1,17 @@
-import { createStorageKeyspace } from "../src/storage/keys.js";
 import { describe, expect, it, vi } from "vitest";
-import type { SourceResourceRepository } from "../src/application/ports/source-resource-repository.js";
 import type { RuntimeConfig } from "../src/config.js";
-import type { AdminRepositories, KnowledgeBaseRecord } from "../src/db/admin-repositories.js";
-import type { PublicationGenerationRepository } from "../src/application/ports/publication-generation-repository.js";
-import type { RoleJobRepository } from "../src/application/ports/role-job-repository.js";
-import type { ResourceOperationRecord } from "../src/domain/source-resource.js";
-import { SourceResourceError } from "../src/domain/source-resource.js";
+import {
+  SourceResourceError,
+  type ResourceOperationRecord
+} from "../src/domain/source-resource.js";
 import { createApiApp } from "../src/server.js";
-import type { StorageAdapter } from "../src/storage/s3.js";
+import type { StorageVnextAdminMutationApplication } from
+  "../src/storage-vnext/api/admin-mutation-application.js";
 import {
   createTestRedisCoordinator,
   loginAndReadSessionCookie,
   withTrustedAdminOrigin
 } from "./support/session.js";
-
-function createConfig(): RuntimeConfig {
-  return {
-    admin: { username: "admin", password: "admin-secret" },
-    database: { url: "postgres://test:test@127.0.0.1:5432/test" },
-    redis: { url: "redis://127.0.0.1:6379/0" },
-    ports: { adminApi: 43_000, adminUi: 43_100, publicOpenApi: 43_200 },
-    publicApi: { baseUrl: "https://kb.example.com" },
-    storage: {
-      endpoint: "https://s3.example.com",
-      region: "us-east-1",
-      bucket: "test",
-      accessKeyId: "access",
-      secretAccessKey: "secret",
-      prefix: "tenant/test",
-      forcePathStyle: true
-    },
-    publication: {
-      mode: "batch",
-      batchSize: 300,
-      intervalSeconds: 300,
-      indexShardSize: 1_000,
-      linkIndexShardSize: 1_000,
-      manifestShardSize: 1_000,
-      graphEdgeShardSize: 5_000,
-      graphCandidateLimit: 200,
-      graphMaintenanceBatchSize: 500,
-      rootSummaryLimit: 500
-    },
-    pagination: {
-      defaultPageSize: 50,
-      maxPageSize: 200,
-      treeDefaultPageSize: 100,
-      treeMaxPageSize: 500,
-      cursorTtlSeconds: 900,
-      generatedContentMaxBytes: 10_485_760
-    },
-    model: { enabled: false },
-    corsOrigins: []
-  };
-}
-
-function operation(overrides: Partial<ResourceOperationRecord> = {}): ResourceOperationRecord {
-  return {
-    id: "resource-operation-1",
-    knowledgeBaseId: "kb-docs",
-    kind: "source_file_move",
-    state: "accepted",
-    expectedResourceRevision: 3,
-    candidateCatalogGeneration: 2,
-    result: null,
-    errorCode: null,
-    createdAt: "2026-07-12T00:00:00.000Z",
-    updatedAt: "2026-07-12T00:00:00.000Z",
-    completedAt: null,
-    ...overrides
-  };
-}
-
-async function createApp(overrides: Partial<SourceResourceRepository> = {}) {
-  const knowledgeBase: KnowledgeBaseRecord = {
-    id: "kb-docs",
-    name: "Docs",
-    description: "Current description",
-    activeGenerationId: "generation-active",
-    resourceRevision: 2,
-    catalogGeneration: 1,
-    createdAt: "2026-07-12T00:00:00.000Z",
-    updatedAt: "2026-07-12T00:00:00.000Z"
-  };
-  const sourceResources = {
-    updateKnowledgeBase: vi.fn(async (input) => ({
-      ...knowledgeBase,
-      name: input.name ?? knowledgeBase.name,
-      description: input.description === undefined ? knowledgeBase.description : input.description,
-      resourceRevision: 3,
-      catalogGeneration: 2
-    })),
-    listDirectories: vi.fn(async () => ({ items: [], nextCursor: null })),
-    getDirectory: vi.fn(async () => ({
-      id: "source-directory-guides",
-      knowledgeBaseId: "kb-docs",
-      parentDirectoryId: null,
-      name: "guides",
-      relativePath: "guides",
-      depth: 1,
-      resourceRevision: 4,
-      directFileCount: 1,
-      descendantFileCount: 1,
-      deleting: false,
-      createdAt: "2026-07-12T00:00:00.000Z",
-      updatedAt: "2026-07-12T00:00:00.000Z"
-    })),
-    listSourceFiles: vi.fn(async () => ({ items: [], nextCursor: null })),
-    getSourceFile: vi.fn(async () => ({
-      id: "source-file-intro",
-      knowledgeBaseId: "kb-docs",
-      directoryId: null,
-      name: "intro.md",
-      relativePath: "intro.md",
-      contentType: "text/markdown; charset=utf-8",
-      sizeBytes: 7,
-      checksumSha256: "checksum",
-      resourceRevision: 3,
-      contentRevision: 1,
-      activeRevisionId: "source-revision-1",
-      processingStatus: "completed" as const,
-      currentStage: "generation_activation" as const,
-      terminalFailure: null,
-      generatedOutputStatus: "visible" as const,
-      generatedPath: "pages/intro.md",
-      deleting: false,
-      createdAt: "2026-07-12T00:00:00.000Z"
-    })),
-    getSourceFileContentDescriptor: vi.fn(async () => ({
-      objectKey: "tenant/test/source.md",
-      contentType: "text/markdown; charset=utf-8",
-      sizeBytes: 7,
-      checksumSha256: "checksum",
-      resourceRevision: 1,
-      contentRevision: 1
-    })),
-    createOperation: vi.fn(async (input) => ({
-      operation: operation({
-        kind: input.kind,
-        expectedResourceRevision: input.expectedResourceRevision
-      }),
-      replayed: false
-    })),
-    prepareOperation: vi.fn(),
-    failOperation: vi.fn(async () => ({ operation: null, objectKeys: [] })),
-    failSourceFileCandidateOperation: vi.fn(async () => ({ operation: null, objectKeys: [] })),
-    getOperation: vi.fn(async () => operation({ state: "processing" })),
-    listOperations: vi.fn(async () => ({ items: [operation({ state: "processing" })], nextCursor: null })),
-    acceptDirectoryDeletion: vi.fn(),
-    acceptSourceFileDeletion: vi.fn(),
-    acceptKnowledgeBaseDeletion: vi.fn(),
-    ...overrides
-  } satisfies SourceResourceRepository;
-  const enqueueRoleJob = vi.fn(async () => null);
-  const commitMutation = vi.fn(async () => ({
-    generationId: "generation-next",
-    changeFactCreated: true,
-    scheduledPublication: true
-  }));
-  const roleJobs = { enqueue: enqueueRoleJob } as unknown as RoleJobRepository;
-  const publicationGenerations = {
-    commitMutation
-  } as unknown as PublicationGenerationRepository;
-  const storage = {
-    keyspace: createStorageKeyspace("tenant/test"),
-    getObjectText: vi.fn(async () => "# Intro"),
-    getObjectBody: vi.fn(async () => new TextEncoder().encode("# Intro")),
-    putObject: vi.fn(async () => undefined),
-    headObjectMetadata: vi.fn(async () => null),
-    deleteObject: vi.fn(async () => undefined)
-  } satisfies StorageAdapter;
-  const repositories = {
-    knowledgeBases: {
-      listKnowledgeBases: vi.fn(async () => ({ items: [knowledgeBase], nextCursor: null })),
-      createKnowledgeBase: vi.fn(),
-      getKnowledgeBase: vi.fn(async () => knowledgeBase)
-    },
-    sourceResources
-  } as unknown as AdminRepositories;
-  const app = createApiApp({
-    config: createConfig(),
-    redis: createTestRedisCoordinator(),
-    repositories,
-    storage,
-    roleJobs,
-    publicationGenerations
-  });
-  const cookie = await loginAndReadSessionCookie(app);
-  return {
-    app,
-    cookie,
-    sourceResources,
-    storage,
-    commitMutation,
-    enqueueRoleJob
-  };
-}
 
 describe("Admin resource editing", () => {
   it("updates knowledge-base metadata with revision protection", async () => {
@@ -208,7 +23,10 @@ describe("Admin resource editing", () => {
         "content-type": "application/json",
         "if-match": "2"
       }),
-      body: JSON.stringify({ name: "Updated docs", description: "Updated description" })
+      body: JSON.stringify({
+        name: "Updated docs",
+        description: "Updated description"
+      })
     });
 
     expect(response.status).toBe(200);
@@ -221,16 +39,15 @@ describe("Admin resource editing", () => {
       },
       publicationQueued: true
     });
-    expect(context.commitMutation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        knowledgeBaseId: "kb-docs",
-        kind: "knowledge_base_metadata_changed",
-        resourceRevision: 3
-      })
-    );
+    expect(context.application.updateKnowledgeBase).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      expectedResourceRevision: 2,
+      name: "Updated docs",
+      description: "Updated description"
+    });
   });
 
-  it("accepts file move and enqueues one durable operation", async () => {
+  it("accepts file move through one vNext durable operation", async () => {
     const context = await createApp();
     const response = await context.app.request(
       "/admin/api/knowledge-bases/kb-docs/source-files/source-file-intro",
@@ -250,13 +67,13 @@ describe("Admin resource editing", () => {
     await expect(response.json()).resolves.toMatchObject({
       operation: { operationId: "resource-operation-1", kind: "source_file_move" }
     });
-    expect(context.enqueueRoleJob).toHaveBeenCalledWith(
-      expect.objectContaining({
-        role: "source",
-        kind: "resource_operation",
-        knowledgeBaseId: "kb-docs"
-      })
-    );
+    expect(context.application.moveSourceFile).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-docs",
+      targetId: "source-file-intro",
+      expectedResourceRevision: 3,
+      idempotencyKey: "move-intro",
+      relativePath: "guides/intro.md"
+    });
   });
 
   it("reads and replaces original source Markdown", async () => {
@@ -287,7 +104,9 @@ describe("Admin resource editing", () => {
     await expect(replace.json()).resolves.toMatchObject({
       operation: { kind: "source_file_replace" }
     });
-    expect(context.storage.putObject).toHaveBeenCalledTimes(1);
+    const request = vi.mocked(context.application.replaceSourceFileContent)
+      .mock.calls[0]![0];
+    expect(new TextDecoder().decode(request.bytes)).toBe("# Updated");
   });
 
   it("lists directories and accepts directory moves", async () => {
@@ -333,7 +152,7 @@ describe("Admin resource editing", () => {
 
   it("returns a stable conflict response when a source resource is busy", async () => {
     const context = await createApp({
-      createOperation: vi.fn(async () => {
+      moveSourceFile: vi.fn(async () => {
         throw new SourceResourceError("RESOURCE_BUSY");
       })
     });
@@ -357,3 +176,153 @@ describe("Admin resource editing", () => {
     });
   });
 });
+
+async function createApp(
+  overrides: Partial<StorageVnextAdminMutationApplication> = {}
+) {
+  const knowledgeBase = {
+    id: "kb-docs",
+    name: "Docs",
+    description: "Current description",
+    activeGenerationId: "generation-active",
+    resourceRevision: 2,
+    catalogGeneration: 1,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z"
+  };
+  const application: StorageVnextAdminMutationApplication = {
+    available: () => true,
+    updateKnowledgeBase: vi.fn(async (request) => ({
+      knowledgeBase: {
+        ...knowledgeBase,
+        name: request.name ?? knowledgeBase.name,
+        description: request.description === undefined
+          ? knowledgeBase.description
+          : request.description,
+        resourceRevision: 3,
+        catalogGeneration: 2
+      },
+      publicationQueued: true
+    })),
+    deleteKnowledgeBase: vi.fn(async () => ({
+      operation: operation({ kind: "knowledge_base_delete" }),
+      affectedDirectoryCount: 0,
+      affectedFileCount: 0
+    })),
+    getKnowledgeBase: vi.fn(async () => knowledgeBase),
+    listDirectories: vi.fn(async () => ({ items: [], nextCursor: null })),
+    getDirectory: vi.fn(async () => ({
+      id: "source-directory-guides",
+      knowledgeBaseId: "kb-docs",
+      parentDirectoryId: null,
+      name: "guides",
+      relativePath: "guides",
+      depth: 1,
+      resourceRevision: 4,
+      directFileCount: 1,
+      descendantFileCount: 1,
+      deleting: false,
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z"
+    })),
+    listSourceFiles: vi.fn(async () => ({ items: [], nextCursor: null })),
+    getSourceFile: vi.fn(async () => null),
+    moveSourceDirectory: vi.fn(async () => ({
+      operation: operation({ kind: "source_directory_move" })
+    })),
+    deleteSourceDirectory: vi.fn(async () => ({
+      operation: operation({ kind: "source_directory_delete" }),
+      effectiveDirectoryId: "source-directory-guides",
+      affectedDirectoryCount: 1,
+      affectedFileCount: 1
+    })),
+    readSourceContent: vi.fn(async () => ({
+      content: "# Intro",
+      contentType: "text/markdown; charset=utf-8",
+      resourceRevision: 1,
+      contentRevision: 1
+    })),
+    moveSourceFile: vi.fn(async () => ({
+      operation: operation({ kind: "source_file_move" })
+    })),
+    replaceSourceFileContent: vi.fn(async () => ({
+      operation: operation({ kind: "source_file_replace" })
+    })),
+    deleteSourceFile: vi.fn(async () => ({
+      operation: operation({ kind: "source_file_delete" })
+    })),
+    listOperations: vi.fn(async () => ({
+      items: [operation({ state: "processing" })],
+      nextCursor: null
+    })),
+    getOperation: vi.fn(async () => operation({ state: "processing" })),
+    ...overrides
+  };
+  const app = createApiApp({
+    config: createConfig(),
+    redis: createTestRedisCoordinator(),
+    storageVnextAdminMutation: application
+  });
+  const cookie = await loginAndReadSessionCookie(app);
+  return { app, cookie, application };
+}
+
+function operation(
+  overrides: Partial<ResourceOperationRecord> = {}
+): ResourceOperationRecord {
+  return {
+    id: "resource-operation-1",
+    knowledgeBaseId: "kb-docs",
+    kind: "source_file_move",
+    state: "accepted",
+    expectedResourceRevision: 3,
+    candidateCatalogGeneration: 2,
+    result: null,
+    errorCode: null,
+    createdAt: "2026-07-12T00:00:00.000Z",
+    updatedAt: "2026-07-12T00:00:00.000Z",
+    completedAt: null,
+    ...overrides
+  };
+}
+
+function createConfig(): RuntimeConfig {
+  return {
+    admin: { username: "admin", password: "admin-secret" },
+    database: { url: "postgres://test:test@127.0.0.1:5432/test" },
+    redis: { url: "redis://127.0.0.1:6379/0" },
+    ports: { adminApi: 43_000, adminUi: 43_100, publicOpenApi: 43_200 },
+    publicApi: { baseUrl: "https://kb.example.com" },
+    storage: {
+      endpoint: "https://s3.example.com",
+      region: "us-east-1",
+      bucket: "test",
+      accessKeyId: "access",
+      secretAccessKey: "secret",
+      prefix: "tenant/test",
+      forcePathStyle: true
+    },
+    publication: {
+      mode: "batch",
+      batchSize: 300,
+      intervalSeconds: 300,
+      indexShardSize: 1_000,
+      linkIndexShardSize: 1_000,
+      manifestShardSize: 1_000,
+      graphEdgeShardSize: 5_000,
+      graphCandidateLimit: 200,
+      graphMaintenanceBatchSize: 500,
+      rootSummaryLimit: 500
+    },
+    pagination: {
+      defaultPageSize: 50,
+      maxPageSize: 200,
+      treeDefaultPageSize: 100,
+      treeMaxPageSize: 500,
+      cursorTtlSeconds: 900,
+      generatedContentMaxBytes: 10_485_760
+    },
+    model: { enabled: false },
+    corsOrigins: []
+  };
+}

@@ -16,13 +16,19 @@ test("defines API and every independently controlled Worker runtime", () => {
     "api",
     "source-worker",
     "publication-worker",
-    "projection-repair-worker",
-    "lexical-rebuild-worker",
     "maintenance-worker"
   ]);
   for (const serviceName of RUNTIME_SERVICE_ORDER) {
     assert.ok(definitions[serviceName].entrypoint.endsWith(".mjs"));
   }
+  assert.deepEqual(definitions.api.execArgv, []);
+  assert.deepEqual(definitions["source-worker"].execArgv, [
+    "--max-old-space-size=256"
+  ]);
+  assert.deepEqual(definitions["publication-worker"].execArgv, [
+    "--max-old-space-size=512"
+  ]);
+  assert.deepEqual(definitions["maintenance-worker"].execArgv, []);
 });
 
 test("starts, verifies, stops, and restores independently controlled services", async () => {

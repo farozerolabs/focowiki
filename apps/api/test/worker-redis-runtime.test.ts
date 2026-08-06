@@ -21,11 +21,11 @@ describe("worker Redis runtime events", () => {
     expect(logger.warn).toHaveBeenCalledTimes(2);
     expect(logger.warn).toHaveBeenNthCalledWith(
       1,
-      "Worker Redis connection interrupted; processing will resume after recovery",
+      "redis.worker_connection_interrupted",
       { role: "source" }
     );
     expect(logger.info).toHaveBeenCalledOnce();
-    expect(logger.info).toHaveBeenCalledWith("Worker Redis connection restored", {
+    expect(logger.info).toHaveBeenCalledWith("redis.worker_connection_restored", {
       role: "source"
     });
   });

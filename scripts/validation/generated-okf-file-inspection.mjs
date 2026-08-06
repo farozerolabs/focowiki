@@ -25,7 +25,7 @@ import {
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
-  "implement-incremental-sharded-publication";
+  "implement-breaking-storage-vnext";
 const CHANGE_DIR = path.resolve("openspec/changes", CHANGE_ID);
 const REPORT_JSON = path.join(CHANGE_DIR, "file-inspection-report.json");
 const REPORT_MD = path.join(CHANGE_DIR, "file-inspection-report.md");
@@ -434,24 +434,24 @@ async function waitForPublicationQuiescence(
   try {
     while (Date.now() < deadline) {
       const rows = await sql`
-        SELECT knowledge_base.active_generation_id,
+        SELECT snapshot.release_root_public_id AS active_generation_id,
                (
                  SELECT count(*)::int
-                 FROM focowiki.role_jobs job
-                 WHERE job.knowledge_base_id = ${knowledgeBaseId}
-                   AND job.role = 'publication'
-                   AND job.status IN ('queued', 'running')
+                 FROM focowiki.operation_work_items work
+                 WHERE work.knowledge_base_id = ${knowledgeBaseId}
+                   AND work.work_kind IN ('publication', 'search')
+                   AND work.state IN ('queued', 'running', 'retry')
                ) AS publication_job_count,
                (
                  SELECT count(*)::int
-                 FROM focowiki.publication_generations generation
-                 WHERE generation.knowledge_base_id = ${knowledgeBaseId}
-                   AND generation.state IN (
-                     'open', 'frozen', 'building', 'validating'
-                   )
+                 FROM focowiki.release_candidates candidate
+                 WHERE candidate.knowledge_base_id = ${knowledgeBaseId}
+                   AND candidate.state IN ('building', 'validating', 'ready')
                ) AS nonterminal_generation_count
         FROM focowiki.knowledge_bases knowledge_base
-        WHERE knowledge_base.id = ${knowledgeBaseId}
+        LEFT JOIN focowiki.active_snapshots snapshot
+          ON snapshot.knowledge_base_id = knowledge_base.public_id
+        WHERE knowledge_base.public_id = ${knowledgeBaseId}
           AND knowledge_base.deleted_at IS NULL
       `;
       const row = rows[0];
@@ -511,45 +511,43 @@ async function listActiveGeneratedFiles(databaseUrl, knowledgeBaseId) {
   const sql = postgres(databaseUrl, { max: 1 });
   try {
     const rows = await sql`
-      SELECT reference.file_id AS id,
-             reference.ref_kind,
-             reference.logical_path,
-             reference.source_file_id,
-             object.object_key,
-             object.content_type,
-             object.size_bytes,
-             object.checksum_sha256
-      FROM focowiki.active_object_refs reference
-      JOIN focowiki.immutable_objects object
-        ON object.checksum_sha256 = reference.checksum_sha256
-       AND object.format_version = reference.format_version
-      WHERE reference.knowledge_base_id = ${knowledgeBaseId}
-        AND reference.logical_path IS NOT NULL
-        AND object.lifecycle_state = 'active'
-      ORDER BY reference.logical_path
+      SELECT coalesce(entry.source_file_public_id, entry.object_id) AS id,
+             entry.entry_kind,
+             entry.logical_path,
+             entry.source_file_public_id,
+             registration.storage_key,
+             registration.content_type,
+             entry.byte_count,
+             entry.checksum_sha256
+      FROM focowiki.active_snapshots snapshot
+      CROSS JOIN LATERAL
+        focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+      JOIN focowiki.object_registrations registration
+        ON registration.object_id = entry.object_id
+       AND registration.state = 'verified'
+      WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY entry.logical_path
     `;
     if (rows.length === 0) throw new Error("No active generated files were returned.");
     return rows.map((row) => ({
       id: row.id,
       logicalPath: row.logical_path,
-      sourceFileId: row.source_file_id,
-      fileKind: generatedFileKind(row.ref_kind, row.logical_path),
-      objectKey: row.object_key,
+      sourceFileId: row.source_file_public_id,
+      fileKind: generatedFileKind(row.entry_kind, row.logical_path),
+      objectKey: row.storage_key,
       contentType: row.content_type,
-      sizeBytes: Number(row.size_bytes),
+      sizeBytes: Number(row.byte_count),
       checksumSha256: row.checksum_sha256,
       title: null,
-      deletable: row.ref_kind === "page" && Boolean(row.source_file_id)
+      deletable: row.entry_kind === "source" && Boolean(row.source_file_public_id)
     }));
   } finally {
     await sql.end({ timeout: 5 });
   }
 }
 
-function generatedFileKind(refKind, logicalPath) {
-  if (refKind === "page") return "page";
-  if (refKind === "directory_root") return "directory_index";
-  if (refKind === "directory_leaf") return "directory_index_page";
+function generatedFileKind(entryKind, logicalPath) {
+  if (entryKind === "source") return "page";
   if (logicalPath.startsWith("_graph/")) return "graph_index";
   if (logicalPath.startsWith("_index/")) return "search_index";
   return "index";

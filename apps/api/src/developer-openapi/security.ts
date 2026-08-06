@@ -1,29 +1,30 @@
 import type { MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import { recordSecurityAudit } from "../security/audit.js";
 import { getRateLimitClientKey } from "../security/request.js";
 import {
   createPublicOpenApiKeyService,
+  type PublicOpenApiKeyRepository,
   type PublicOpenApiKeyService
 } from "../public-openapi/keys.js";
+import type { StorageVnextOpenApiAuditApplication } from "../storage-vnext/api/openapi-audit-application.js";
 import { rateLimited, repositoryUnavailable, unauthorized, writeDeveloperOpenApiError } from "./errors.js";
 
 export type DeveloperOpenApiSecurityServices = {
   config: RuntimeConfig;
-  repositories: AdminRepositories | null;
+  apiKeys: PublicOpenApiKeyRepository | null;
   redis: RedisCoordinator | null;
   runtimeSettings?: RuntimeSettingsService | null;
+  auditApplication: StorageVnextOpenApiAuditApplication;
 };
 
 export function createDeveloperOpenApiKeyService(
   services: DeveloperOpenApiSecurityServices
 ): PublicOpenApiKeyService | null {
-  return services.repositories?.publicApiKeys
+  return services.apiKeys
     ? createPublicOpenApiKeyService({
-        repository: services.repositories.publicApiKeys,
+        repository: services.apiKeys,
         redis: services.redis
       })
     : null;
@@ -47,9 +48,7 @@ export function requireDeveloperOpenApiAuth(
     const token = readBearerToken(context.req.header("authorization"));
 
     if (!token || !(await keyService.authorize(token)).authorized) {
-      await recordSecurityAudit({
-        repositories: services.repositories,
-        config: services.config,
+      await services.auditApplication.record({
         context,
         eventType: "developer_openapi_auth",
         result: "failure",
@@ -88,9 +87,7 @@ async function checkDeveloperOpenApiRateLimit(
 
   const retryAfterSeconds = coarseRetryAfterSeconds(result.resetAt);
   context.header("retry-after", String(retryAfterSeconds));
-  await recordSecurityAudit({
-    repositories: services.repositories,
-    config: services.config,
+  await services.auditApplication.record({
     context,
     eventType: "developer_openapi_rate_limited",
     result: "blocked",

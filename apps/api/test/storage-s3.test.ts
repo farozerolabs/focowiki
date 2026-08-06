@@ -290,6 +290,41 @@ describe("S3 storage adapter", () => {
     ]);
   });
 
+  it("falls back to current-object deletion when version listing is unsupported", async () => {
+    const send = vi.fn(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === "ListObjectVersionsCommand") {
+        throw Object.assign(new Error("ListObjectVersions not implemented"), {
+          name: "NotImplemented",
+          Code: "NotImplemented",
+          $metadata: { httpStatusCode: 501 }
+        });
+      }
+      return {};
+    });
+    const storage = new S3StorageAdapter({
+      bucket: "bucket-test",
+      keyspace: createStorageKeyspace("tenant/test"),
+      client: { send } as never
+    });
+
+    await expect(storage.deleteObjectVersions([
+      "tenant/test/objects/a.md",
+      "tenant/test/objects/b.md"
+    ])).resolves.toBeUndefined();
+
+    expect(send.mock.calls.map(([command]) => command.constructor.name)).toEqual([
+      "ListObjectVersionsCommand",
+      "DeleteObjectsCommand"
+    ]);
+    const deletion = send.mock.calls[1]?.[0] as unknown as {
+      input: { Delete: { Objects: Array<{ Key: string }> } };
+    };
+    expect(deletion.input.Delete.Objects).toEqual([
+      { Key: "tenant/test/objects/a.md" },
+      { Key: "tenant/test/objects/b.md" }
+    ]);
+  });
+
   it("purges versioned and current objects under a prefix before verifying emptiness", async () => {
     let versionListCount = 0;
     let objectListCount = 0;

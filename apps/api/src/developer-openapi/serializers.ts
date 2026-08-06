@@ -1,10 +1,51 @@
-import type {
-  KnowledgeBaseRecord,
-  SourceFileEventRecord,
-  WebhookDeliveryRecord,
-  WebhookSubscriptionRecord
-} from "../db/admin-repositories.js";
 import { WEBHOOK_EVENT_TYPES } from "../webhooks/events.js";
+
+type KnowledgeBaseRecord = {
+  id: string;
+  name: string;
+  description: string | null;
+  activeGenerationId: string | null;
+  resourceRevision?: number;
+  catalogGeneration?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SourceFileEventRecord = {
+  id: string;
+  knowledgeBaseId: string;
+  sourceFileId: string;
+  stageKey: string;
+  messageKey: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  severity: "info" | "warning" | "error";
+  createdAt: string;
+};
+
+type WebhookSubscriptionRecord = {
+  id: string;
+  name: string;
+  url: string;
+  events: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastDeliveryAt: string | null;
+};
+
+type WebhookDeliveryRecord = {
+  id: string;
+  webhookId: string;
+  eventId: string;
+  eventType: string;
+  status: "pending" | "success" | "failed";
+  attemptCount: number;
+  httpStatus: number | null;
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export function toDeveloperKnowledgeBase(record: KnowledgeBaseRecord) {
   return {

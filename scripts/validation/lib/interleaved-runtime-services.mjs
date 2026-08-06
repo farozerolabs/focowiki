@@ -6,8 +6,6 @@ export const RUNTIME_SERVICE_ORDER = Object.freeze([
   "api",
   "source-worker",
   "publication-worker",
-  "projection-repair-worker",
-  "lexical-rebuild-worker",
   "maintenance-worker"
 ]);
 
@@ -17,19 +15,13 @@ export function createRuntimeServiceDefinitions(runtimeRoot) {
     api: definition("api", path.join(root, "main.mjs")),
     "source-worker": definition(
       "source-worker",
-      path.join(root, "source-worker.mjs")
+      path.join(root, "source-worker.mjs"),
+      256
     ),
     "publication-worker": definition(
       "publication-worker",
-      path.join(root, "publication-worker.mjs")
-    ),
-    "projection-repair-worker": definition(
-      "projection-repair-worker",
-      path.join(root, "projection-repair-worker.mjs")
-    ),
-    "lexical-rebuild-worker": definition(
-      "lexical-rebuild-worker",
-      path.join(root, "lexical-rebuild-worker.mjs")
+      path.join(root, "publication-worker.mjs"),
+      512
     ),
     "maintenance-worker": definition(
       "maintenance-worker",
@@ -80,7 +72,7 @@ export function createRuntimeServiceSupervisor(input) {
 
       const logPath = path.join(evidenceDir, `${serviceName}.log`);
       const logStream = fs.createWriteStream(logPath, { flags: "a" });
-      const child = spawn(process.execPath, [service.entrypoint], {
+      const child = spawn(process.execPath, [...service.execArgv, service.entrypoint], {
         cwd: input.cwd,
         env: { ...process.env, ...input.env },
         stdio: ["ignore", "pipe", "pipe"]
@@ -136,8 +128,14 @@ export function createRuntimeServiceSupervisor(input) {
   };
 }
 
-function definition(name, entrypoint) {
-  return { name, entrypoint };
+function definition(name, entrypoint, maximumOldSpaceMiB = null) {
+  return {
+    name,
+    entrypoint,
+    execArgv: maximumOldSpaceMiB === null
+      ? []
+      : [`--max-old-space-size=${maximumOldSpaceMiB}`]
+  };
 }
 
 function waitForExit(child, timeoutMs) {

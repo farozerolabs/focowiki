@@ -403,63 +403,28 @@ export type RateLimitSettings = {
 export type WorkerSettings = {
   sourceFileConcurrency: number;
   sourceObjectReadConcurrency: number;
-  graphQueryConcurrency: number;
-  databaseMutationConcurrency: number;
   claimBatchSize: number;
-  generationBatchSize: number;
   pollIntervalMs: number;
   lockTtlSeconds: number;
   heartbeatIntervalMs: number;
   jobMaxAttempts: number;
   jobRetryDelayMs: number;
-  sourceQueueHardDepth: number;
-  sourceQueueResumeDepth: number;
-  sourceQueueHardAgeSeconds: number;
-  sourceQueueResumeAgeSeconds: number;
-  shutdownGraceMs: number;
   completedJobRetentionDays: number;
-  failedJobRetentionDays: number;
-  deadLetterJobRetentionDays: number;
-  retentionCleanupBatchSize: number;
   hardDeleteConcurrency: number;
   hardDeleteDatabaseBatchSize: number;
   hardDeleteObjectBatchSize: number;
   hardDeleteMaxAttempts: number;
   hardDeleteRetryDelayMs: number;
-  hardDeleteFailedRetentionDays: number;
-  hardDeleteVersionPurgeEnabled: boolean;
 };
 
 export type PublicationSettings = {
   mode: "batch" | "manual" | "per_file";
-  batchSize: number;
   intervalSeconds: number;
   roleConcurrency: number;
   claimBatchSize: number;
-  impactBatchSize: number;
-  impactConcurrency: number;
-  generationAssemblyConcurrency: number;
-  projectionPartitionConcurrency: number;
   generatedObjectWriteConcurrency: number;
-  directoryMaterializationConcurrency: number;
-  dirtyFileHardCount: number;
-  dirtyFileResumeCount: number;
-  dirtyAgeHardSeconds: number;
-  dirtyAgeResumeSeconds: number;
-  pendingImpactHardCount: number;
-  pendingImpactResumeCount: number;
-  generationRetentionDays: number;
-  indexShardSize: number;
-  linkIndexShardSize: number;
-  manifestShardSize: number;
-  graphEdgeShardSize: number;
-  graphCandidateLimit: number;
-  graphMaintenanceBatchSize: number;
-  rootSummaryLimit: number;
   directoryIndexMaxEntries: number;
   directoryIndexMaxBytes: number;
-  okfLogMaxEntries: number;
-  okfLogMaxBytes: number;
 };
 
 export type GraphSettings = {
@@ -470,8 +435,6 @@ export type GraphSettings = {
   searchDefaultFanout: number;
   searchMaxFanout: number;
   modelReviewEnabled: boolean;
-  publicationShardSize: number;
-  cacheTtlSeconds: number;
   genericPhraseThreshold: number;
 };
 
@@ -480,42 +443,26 @@ export type MaintenanceSettings = {
   knowledgeBaseMaintenanceScanIntervalSeconds: number;
   knowledgeBaseMaintenanceConcurrency: number;
   reconciliationEnabled: boolean;
-  scanIntervalSeconds: number;
   scanBatchSize: number;
   deletionBatchSize: number;
   quarantineGracePeriodSeconds: number;
-  confirmationPasses: number;
   maxAttempts: number;
   retryDelayMs: number;
-  migrationBackfillConcurrency: number;
-  compactionConcurrency: number;
   projectionRepairConcurrency: number;
   projectionRepairDatabaseBatchSize: number;
   projectionRepairObjectWriteConcurrency: number;
   lexicalRebuildConcurrency: number;
   lexicalRebuildSourceReadConcurrency: number;
-  lexicalRebuildDatabaseWriteConcurrency: number;
-  lexicalRebuildClaimBatchSize: number;
-  lexicalRebuildDatabaseBatchSize: number;
   lexicalRebuildMaxInFlightSourceBytes: number;
 };
 
 export type SearchSettings = {
   requestTimeoutMs: number;
   engineSearchCutoffMs: number;
-  branchCandidateLimit: number;
-  fusedCandidateLimit: number;
   overfetchFactor: number;
-  graphSeedLimit: number;
-  graphNeighborLimit: number;
-  cacheTtlSeconds: number;
   indexBatchDocumentCount: number;
   indexBatchCompressedBytes: number;
   maxInFlightTasks: number;
-  engineQueueLatencyLimitMs: number;
-  engineResidentMemoryLimitBytes: number;
-  engineDatabaseSizeLimitBytes: number;
-  engineTaskQueueSizeLimitBytes: number;
   taskPollIntervalMs: number;
   taskTimeoutMs: number;
   maxAttempts: number;

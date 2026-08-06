@@ -14,36 +14,68 @@ export type IndexMetadataFields = {
 };
 
 const INTERNAL_METADATA_KEYS = new Set([
-  "accessKeyId",
-  "apiKey",
-  "api_key",
+  "accesskeyid",
+  "apikey",
   "authorization",
   "bucket",
-  "bucketName",
-  "objectKey",
-  "object_key",
+  "bucketname",
+  "checksum",
+  "checksumsha256",
+  "cleanupactionid",
+  "cleanupdetails",
+  "cleanupobjectkey",
+  "cleanupobjectkeys",
+  "contentchecksum",
+  "deletionintentid",
+  "generationdetails",
+  "generationhistory",
+  "generationkind",
+  "generationpayload",
+  "generationrow",
+  "generationrowid",
+  "generationstate",
+  "indexname",
+  "indexnames",
+  "indexuid",
+  "indexuids",
+  "legacygeneration",
+  "legacygenerationid",
+  "manifestchecksum",
+  "meiliindexuid",
+  "meilitaskuid",
+  "meilisearchindexuid",
+  "meilisearchtaskuid",
+  "objectchecksum",
+  "objectid",
+  "objectkey",
+  "ownerrow",
+  "ownerrowid",
+  "ownerrows",
   "password",
-  "providerPayload",
-  "provider_payload",
-  "rawUploadPath",
-  "raw_upload_path",
-  "redisKey",
-  "redis_key",
-  "releaseId",
-  "release_id",
-  "s3ObjectKey",
-  "s3_object_key",
+  "predecessorgenerationid",
+  "providerpayload",
+  "providertaskuid",
+  "publicationgenerationid",
+  "rawuploadpath",
+  "rediskey",
+  "releaseid",
+  "reservationid",
+  "rootpublicid",
+  "s3objectkey",
   "secret",
-  "secretAccessKey",
+  "secretaccesskey",
+  "shardpublicid",
   "sql",
-  "sqlDetails",
-  "sql_details",
-  "storageKey",
-  "storage_key",
-  "storagePrefix",
-  "storage_prefix",
-  "taskId",
-  "task_id",
+  "sqldetails",
+  "storagekey",
+  "storageprefix",
+  "tablename",
+  "tableid",
+  "tableidentifier",
+  "taskid",
+  "taskname",
+  "taskuid",
+  "taskuids",
   "token"
 ]);
 
@@ -115,7 +147,7 @@ export function sanitizeIndexMetadata(input: unknown): IndexMetadata | undefined
 }
 
 function sanitizeMetadataValue(key: string, value: unknown): JsonValue | undefined {
-  if (INTERNAL_METADATA_KEYS.has(key) || value === undefined) {
+  if (isInternalMetadataKey(key) || value === undefined) {
     return undefined;
   }
 
@@ -143,6 +175,17 @@ function sanitizeMetadataValue(key: string, value: unknown): JsonValue | undefin
   }
 
   return undefined;
+}
+
+function isInternalMetadataKey(key: string): boolean {
+  const canonical = key.replace(/[^a-z0-9]/giu, "").toLowerCase();
+  return INTERNAL_METADATA_KEYS.has(canonical)
+    || canonical.startsWith("lease")
+    || canonical.startsWith("cleanup")
+    || canonical.startsWith("legacygeneration")
+    || canonical.startsWith("ownerrow")
+    || /^generation(?:details|history|kind|payload|row|state)/u.test(canonical)
+    || /^(?:active|candidate|search)index(?:uid|name)$/u.test(canonical);
 }
 
 function isPlaceholderMetadataString(value: string): boolean {

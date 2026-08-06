@@ -13,6 +13,7 @@ const docsRoot = path.join(repoRoot, "docs");
 const vitePressConfigPath = path.join(docsRoot, ".vitepress", "config.ts");
 const publicOpenApiDir = path.join(docsRoot, "public", "openapi");
 const contractPath = path.join(publicOpenApiDir, "focowiki-openapi.json");
+const deploymentEnvTemplatePath = path.join(repoRoot, ".env.example");
 const swaggerUiStylesheetPath = path.join(
   docsRoot,
   "public",
@@ -97,6 +98,7 @@ async function main() {
   await validateSwaggerUiStaticAsset();
   await validateGuideNavigation();
   await validateDeploymentNavigation();
+  await validateDeploymentDocumentation();
   await validateOpenApiExplorer();
   await validateGeneratedOpenApiContractVersion(openApiDocument);
   await validateOpenApiLocaleCopy(openApiDocument);
@@ -105,6 +107,7 @@ async function main() {
   await validateGeneratedOperationExamples(openApiDocument);
   await validateGeneratedOperationTables();
   await validatePublicOpenApiCopy();
+  await validateDocumentedRuntimeFacts();
   await validateMarkdownLinks(markdownFiles);
   await validateLanguageStyle(markdownFiles);
   await validateCurrentArchitectureLanguage(markdownFiles);
@@ -241,6 +244,24 @@ async function validatePublicOpenApiCopy() {
       path.join(locale.operationsDir, "retry-knowledge-base-source-file.md"),
       "utf8"
     );
+  }
+}
+
+async function validateDocumentedRuntimeFacts() {
+  for (const file of [
+    path.join(docsRoot, "openapi", "webhook-delivery.md"),
+    path.join(docsRoot, "zh-CN", "openapi", "webhook-delivery.md")
+  ]) {
+    const content = await fs.readFile(file, "utf8");
+    if (/10 seconds|10 秒/u.test(content)) {
+      throw new Error(`Webhook documentation hard-codes a deployment-controlled timeout in ${relative(file)}.`);
+    }
+    if (!/source_file\.progress[^\n]+sourceRevisionId/u.test(content)) {
+      throw new Error(`Webhook progress payload omits sourceRevisionId in ${relative(file)}.`);
+    }
+    if (!/Automatic retry|自动重试/u.test(content)) {
+      throw new Error(`Webhook automatic retry behavior is missing in ${relative(file)}.`);
+    }
   }
 }
 
@@ -537,6 +558,133 @@ async function validateDeploymentNavigation() {
     'text: "Docker Compose", link: "/zh-CN/deployment/docker-compose"',
     'text: "使用 Agent 部署", link: "/zh-CN/deployment/agent-deployment"'
   ], "Simplified Chinese deployment sidebar");
+}
+
+async function validateDeploymentDocumentation() {
+  const envTemplate = await fs.readFile(deploymentEnvTemplatePath, "utf8");
+  const documentedEnvKeys = Array.from(
+    envTemplate.matchAll(/^([A-Z][A-Z0-9_]*)=/gmu),
+    (match) => match[1] ?? ""
+  ).filter(Boolean);
+  const deploymentLocales = [
+    {
+      environment: path.join(docsRoot, "deployment", "environment.md"),
+      compose: path.join(docsRoot, "deployment", "docker-compose.md"),
+      settings: path.join(docsRoot, "deployment", "admin-settings.md"),
+      agent: path.join(docsRoot, "deployment", "agent-deployment.md"),
+      privateInfrastructureText: "PostgreSQL and Redis are not published to host ports",
+      settingsSections: {
+        "API Rate Limits": 6,
+        Worker: 14,
+        Publication: 7,
+        Graph: 8,
+        Maintenance: 15,
+        Search: 13,
+        Models: 11
+      }
+    },
+    {
+      environment: path.join(docsRoot, "zh-CN", "deployment", "environment.md"),
+      compose: path.join(docsRoot, "zh-CN", "deployment", "docker-compose.md"),
+      settings: path.join(docsRoot, "zh-CN", "deployment", "admin-settings.md"),
+      agent: path.join(docsRoot, "zh-CN", "deployment", "agent-deployment.md"),
+      privateInfrastructureText: "PostgreSQL 和 Redis 不会映射到宿主机端口",
+      settingsSections: {
+        "API 限流": 6,
+        Worker: 14,
+        发布: 7,
+        图关系: 8,
+        维护: 15,
+        搜索: 13,
+        模型: 11
+      }
+    }
+  ];
+  const forbiddenImplementationLanguage = [
+    /storage[- ]vnext/iu,
+    /active\/candidate release roots|活动与候选发布根/iu,
+    /bounded audit evidence|有界审计证据/iu,
+    /scoped coordination|范围协调/iu,
+    /content-addressed generated|内容寻址的生成/iu,
+    /\bprojection(?:s| objects?| validation| partitions?| impacts?| repair| compaction)?\b|投影(?:对象|校验|分区|影响|修复|压缩)?/iu,
+    /candidate release|candidate generation|active root|候选发布|候选 generation|活动发布根/iu,
+    /authoritative markdown|权威 Markdown/iu,
+    /object ownership|对象所有权/iu,
+    /write-capable role|可写角色/iu,
+    /backup manifest|备份 manifest/iu,
+    /publication pressure|发布压力/iu,
+    /\bbounded\b|有界/iu,
+    /\bshards?\b|分片/iu
+  ];
+
+  for (const localOrUnusedKey of [
+    "ADMIN_UI_HOST",
+    "VITE_ADMIN_API_BASE_URL",
+    "POSTGRES_PORT",
+    "REDIS_PORT",
+    "CORS_ORIGINS"
+  ]) {
+    if (new RegExp(`^${localOrUnusedKey}=`, "mu").test(envTemplate)) {
+      throw new Error(`Production environment template exposes ${localOrUnusedKey}.`);
+    }
+  }
+
+  for (const locale of deploymentLocales) {
+    const environment = await fs.readFile(locale.environment, "utf8");
+    const compose = await fs.readFile(locale.compose, "utf8");
+    const settings = await fs.readFile(locale.settings, "utf8");
+    const agent = await fs.readFile(locale.agent, "utf8");
+
+    for (const key of documentedEnvKeys) {
+      if (!environment.includes(`\`${key}\``)) {
+        throw new Error(`Environment documentation is missing ${key} in ${relative(locale.environment)}.`);
+      }
+    }
+    for (const requiredText of [
+      "LOG_FILE_MAX_TOTAL_BYTES",
+      "LOG_FILE_RETENTION_DAYS",
+      "10m",
+      locale.privateInfrastructureText
+    ]) {
+      if (!environment.includes(requiredText)) {
+        throw new Error(`Environment documentation is missing ${requiredText} in ${relative(locale.environment)}.`);
+      }
+    }
+
+    for (const [heading, expectedRows] of Object.entries(locale.settingsSections)) {
+      const actualRows = countFirstTableRowsInSection(settings, heading);
+      if (actualRows !== expectedRows) {
+        throw new Error(
+          `Admin settings section ${heading} has ${actualRows} documented fields; expected ${expectedRows} in ${relative(locale.settings)}.`
+        );
+      }
+    }
+
+    for (const file of [locale.environment, locale.compose, locale.settings, locale.agent]) {
+      const content = file === locale.environment
+        ? environment
+        : file === locale.compose
+          ? compose
+          : file === locale.settings
+            ? settings
+            : agent;
+      for (const pattern of forbiddenImplementationLanguage) {
+        if (pattern.test(content)) {
+          throw new Error(`Deployment documentation contains internal implementation language in ${relative(file)}.`);
+        }
+      }
+    }
+  }
+}
+
+function countFirstTableRowsInSection(content: string, heading: string): number {
+  const marker = `## ${heading}`;
+  const start = content.indexOf(marker);
+  if (start === -1) return 0;
+  const next = content.indexOf("\n## ", start + marker.length);
+  const section = content.slice(start, next === -1 ? content.length : next);
+  const table = extractMarkdownTables(section)[0] ?? [];
+  return Math.max(0, table.length - 2);
 }
 
 function assertOrderedSnippets(content: string, snippets: string[], label: string) {

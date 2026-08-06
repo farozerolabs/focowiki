@@ -1,33 +1,35 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import { buildPublicFileUrl } from "../public-url.js";
+import type { StorageVnextAdminReadApplication } from "../storage-vnext/api/admin-read-application.js";
 
 export function registerAdminPublicUrlRoutes(
   app: Hono,
   services: {
     config: RuntimeConfig;
-    repositories: AdminRepositories | null;
+    application: StorageVnextAdminReadApplication;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
   }
 ): void {
-  const { config, repositories } = services;
+  const { config, application } = services;
 
   app.get(
     "/admin/api/knowledge-bases/:knowledgeBaseId/public-urls",
     middlewares.requireAuth,
     async (context) => {
-      if (!repositories) {
-        return missingRepositoryBackend(context);
+      const result = await application.getKnowledgeBase({
+        knowledgeBaseId: context.req.param("knowledgeBaseId")
+      });
+      if (!result.ok) {
+        return result.code === "DATABASE_REPOSITORY_UNAVAILABLE"
+          ? missingRepositoryBackend(context)
+          : notFound(context);
       }
+      const knowledgeBase = result.value;
 
-      const knowledgeBase = await repositories.knowledgeBases.getKnowledgeBase(
-        context.req.param("knowledgeBaseId")
-      );
-
-      if (!knowledgeBase?.activeGenerationId) {
+      if (!knowledgeBase?.activeVersionId) {
         return notFound(context);
       }
 

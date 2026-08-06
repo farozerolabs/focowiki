@@ -3,10 +3,7 @@ import {
 } from "./interleaved-lifecycle-matrix.mjs";
 
 export const MAINTENANCE_CASES = Object.freeze([
-  "projection-repair",
-  "lexical-rebuild",
-  "projection-compaction",
-  "storage-reconciliation"
+  "index-maintenance"
 ]);
 
 const DELETION_CASES = Object.freeze([
@@ -23,13 +20,6 @@ export function selectLifecycleCases(index) {
     maintenanceKind: MAINTENANCE_CASES[index % MAINTENANCE_CASES.length],
     deletionKind: DELETION_CASES[index % DELETION_CASES.length]
   };
-}
-
-export function buildProjectionAmplificationPath(sequence) {
-  if (!Number.isSafeInteger(sequence) || sequence < 1) {
-    throw new Error("Projection amplification sequence must be a positive integer.");
-  }
-  return `baseline/compaction-source-${sequence}.md`;
 }
 
 export function buildModificationRequest(input) {
@@ -129,35 +119,30 @@ export function buildMaintenancePrecondition(input) {
     );
   }
 
-  if (input.kind === "projection-repair") {
+  return {
+    kind: input.kind,
+    strategy: "request-run-owned-maintenance",
+    knowledgeBaseId
+  };
+}
+
+export function classifyMaintenanceRequestResponse(response) {
+  const maintenance = response?.maintenance;
+  if (
+    maintenance?.requestId == null
+    && maintenance?.state === "idle"
+    && maintenance?.active === false
+  ) {
     return {
-      kind: input.kind,
-      strategy: "invalidate-run-owned-projection-version",
-      knowledgeBaseId,
-      projectionKind: "tree"
-    };
-  }
-  if (input.kind === "lexical-rebuild") {
-    return {
-      kind: input.kind,
-      strategy: "invalidate-run-owned-lexical-version",
-      knowledgeBaseId,
-      staleVersion: `validation-${requiredText(input.runId, "Run ID")}`
-    };
-  }
-  if (input.kind === "projection-compaction") {
-    return {
-      kind: input.kind,
-      strategy: "natural-segment-amplification",
-      knowledgeBaseId,
-      requiredActiveSegmentCount: 9
+      lifecycleState: "failed",
+      shouldObserve: false
     };
   }
   return {
-    kind: input.kind,
-    strategy: "advance-existing-cycle",
-    knowledgeBaseId,
-    prefix: normalizePrefix(input.s3Prefix)
+    lifecycleState: typeof maintenance?.state === "string"
+      ? maintenance.state
+      : "failed",
+    shouldObserve: true
   };
 }
 
@@ -215,11 +200,6 @@ function quoteRevision(value) {
 function joinParent(relativePath, basename) {
   const index = relativePath.lastIndexOf("/");
   return index === -1 ? basename : `${relativePath.slice(0, index)}/${basename}`;
-}
-
-function normalizePrefix(value) {
-  const prefix = requiredText(value, "S3 prefix").replace(/^\/+|\/+$/gu, "");
-  return `${prefix}/generated/`;
 }
 
 function requiredText(value, name) {

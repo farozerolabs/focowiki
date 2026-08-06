@@ -1,13 +1,4 @@
 import { Hono } from "hono";
-import type { OpenAIModelClient } from "@focowiki/okf";
-import type { RuntimeConfig } from "../config.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
-import type { RedisCoordinator } from "../redis/coordination.js";
-import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageAdapter } from "../storage/s3.js";
-import { createSourceResourceService } from "../application/source-resources.js";
-import type { ApplicationRuntime } from "../application/ports/runtime.js";
-import type { UploadSessionStoragePort } from "../application/ports/upload-session-storage.js";
 import { apiVersion, readProductReleaseVersion } from "../release-version.js";
 import { readTreeEntryTypeFilter } from "../tree-entry-filters.js";
 import {
@@ -16,11 +7,6 @@ import {
   validationError,
   writeDeveloperOpenApiError
 } from "./errors.js";
-import {
-  createDeveloperOpenApiKeyService,
-  requireDeveloperOpenApiAuth
-} from "./security.js";
-import { createDeveloperOpenApiService } from "./services.js";
 import { createDeveloperOpenApiDocument } from "./openapi-document.js";
 import { registerDeveloperOpenApiFileSearchRoutes } from "./file-search-routes.js";
 import { registerDeveloperOpenApiGraphExpansionRoutes } from "./graph-expansion-routes.js";
@@ -34,36 +20,16 @@ import {
   readLimit,
   safe
 } from "./route-helpers.js";
-import type { ActiveGenerationReadRepository } from "../application/ports/active-generation-read-repository.js";
-import type { RoleJobRepository } from "../application/ports/role-job-repository.js";
-import type { PublicationGenerationRepository } from "../application/ports/publication-generation-repository.js";
-import type { SourceFileRetryRepository } from "../application/ports/source-file-retry-repository.js";
-import type { RuntimeLogger } from "../logger.js";
 import { installDeveloperOpenApiDiagnosticBoundary } from "./route-helpers.js";
+import type { StorageVnextOpenApiRouteContext } from "../storage-vnext/api/openapi-route-context.js";
 
-export type DeveloperOpenApiRouteServices = {
-  config: RuntimeConfig;
-  storage: StorageAdapter;
-  repositories: AdminRepositories | null;
-  redis: RedisCoordinator | null;
-  modelClient: OpenAIModelClient | null;
-  runtimeSettings: RuntimeSettingsService | null;
-  applicationRuntime: ApplicationRuntime;
-  uploadSessionStorage: UploadSessionStoragePort;
-  activeGenerationReads: ActiveGenerationReadRepository | null;
-  roleJobs: RoleJobRepository | null;
-  publicationGenerations: PublicationGenerationRepository | null;
-  sourceFileRetries: SourceFileRetryRepository | null;
-  logger: RuntimeLogger;
-};
+export type DeveloperOpenApiRouteServices = StorageVnextOpenApiRouteContext;
 
 export function registerDeveloperOpenApiRoutes(
   app: Hono,
   services: DeveloperOpenApiRouteServices
 ): void {
-  const keyService = createDeveloperOpenApiKeyService(services);
-  const requireAuth = requireDeveloperOpenApiAuth(services, keyService);
-  const api = createDeveloperOpenApiService(services);
+  const { api, requireAuth } = services;
   const openApiDocument = createDeveloperOpenApiDocument();
 
   installDeveloperOpenApiDiagnosticBoundary(app, {
@@ -125,7 +91,7 @@ export function registerDeveloperOpenApiRoutes(
   );
 
   registerDeveloperOpenApiUploadSessionRoutes(app, services);
-  registerDeveloperOpenApiSourceResourceRoutes(app, services);
+  registerDeveloperOpenApiSourceResourceRoutes(app, services, api);
 
   app.get(
     "/openapi/v2/knowledge-bases/:knowledgeBaseId/source-files/:sourceFileId/events",
@@ -149,16 +115,7 @@ export function registerDeveloperOpenApiRoutes(
           const knowledgeBaseId = context.req.param("knowledgeBaseId");
           const sourceFileId = context.req.param("sourceFileId");
           const retry = await api.retrySourceFile({ knowledgeBaseId, sourceFileId });
-          const sourceResources = services.repositories?.sourceResources;
-
-          if (!sourceResources) {
-            throw repositoryUnavailable();
-          }
-
-          const sourceFile = await createSourceResourceService(
-            sourceResources,
-            services.applicationRuntime
-          ).getSourceFile({
+          const sourceFile = await api.getSourceFile({
             knowledgeBaseId,
             sourceFileId
           });

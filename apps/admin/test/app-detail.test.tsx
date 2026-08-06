@@ -562,6 +562,77 @@ describe("Admin knowledge base detail", () => {
     expect(screen.queryByText("No active maintenance")).toBeNull();
   });
 
+  it("renders every processing summary card from the backend response", async () => {
+    const currentSummary = await vi.mocked(fetchKnowledgeBaseProcessingSummary)({
+      knowledgeBaseId: "kb-docs"
+    });
+    expect(currentSummary).not.toBeNull();
+    if (!currentSummary) {
+      throw new Error("Expected the processing summary fixture.");
+    }
+    vi.mocked(fetchKnowledgeBaseProcessingSummary).mockResolvedValue({
+      ...currentSummary,
+      activeGenerationId: "generation-active",
+      pendingDispatch: {
+        pendingCount: 5,
+        oldestPendingAt: "2026-07-20T00:00:00.000Z",
+        paused: true,
+        pausedReason: "resource_pressure"
+      },
+      sourceFileJobs: {
+        queuedCount: 2,
+        runningCount: 1,
+        completedCount: 8,
+        failedCount: 1,
+        deadLetterCount: 1,
+        oldestQueuedAt: "2026-07-20T00:00:00.000Z",
+        oldestQueuedAgeSeconds: 42
+      },
+      publicationJobs: {
+        queuedCount: 1,
+        runningCount: 1,
+        completedCount: 3,
+        failedCount: 0,
+        deadLetterCount: 0,
+        oldestQueuedAt: "2026-07-20T00:00:00.000Z",
+        oldestQueuedAgeSeconds: 20
+      },
+      publicationProgress: {
+        ...currentSummary.publicationProgress,
+        generationId: "generation-candidate",
+        stage: "building",
+        processedImpactCount: 3,
+        totalImpactCount: 5,
+        safeErrorCode: "RELEASE_VALIDATION_FAILED",
+        safeErrorMessage: "Release validation failed."
+      },
+      maintenanceProgress: {
+        ...currentSummary.maintenanceProgress,
+        projectionRepair: currentSummary.maintenanceProgress.projectionRepair
+          ? {
+              ...currentSummary.maintenanceProgress.projectionRepair,
+              safeErrorCode: "PROJECTION_REPAIR_FAILED",
+              safeErrorMessage: "Projection repair failed."
+            }
+          : null
+      }
+    });
+
+    await openDetail();
+
+    expect(await screen.findByText("5 pending")).toBeTruthy();
+    expect(screen.getByText("Dispatch is paused by processing pressure")).toBeTruthy();
+    expect(screen.getByText("3 active")).toBeTruthy();
+    expect(screen.getByText("2 queued / 1 running / 1 failed / 1 dead-letter / oldest 42s"))
+      .toBeTruthy();
+    expect(screen.getByText("2 active")).toBeTruthy();
+    expect(screen.getByText("building · 3/5 impacts")).toBeTruthy();
+    expect(screen.getByText("Active generation")).toBeTruthy();
+    expect(screen.getByText("Publication failed: RELEASE_VALIDATION_FAILED")).toBeTruthy();
+    expect(screen.getByText("Maintenance failed")).toBeTruthy();
+    expect(screen.getByText("PROJECTION_REPAIR_FAILED")).toBeTruthy();
+  });
+
   it("requests index maintenance from the knowledge-base settings view", async () => {
     await openDetail();
 
@@ -715,6 +786,12 @@ describe("Admin knowledge base detail", () => {
           ],
           processingStartedAt: "2026-06-14T00:00:00.000Z",
           processingEndedAt: "2026-06-14T00:00:10.000Z",
+          modelInvocationStatus: "completed",
+          modelInvocationModelName: "audit-model",
+          modelInvocationStartedAt: "2026-06-14T00:00:02.000Z",
+          modelInvocationEndedAt: "2026-06-14T00:00:07.000Z",
+          modelInvocationWarningCount: 1,
+          modelInvocationErrorCode: null,
           generatedFileAvailable: true,
           generatedFileId: "file-001",
           generatedFilePath: "pages/intro.md",
@@ -726,7 +803,12 @@ describe("Admin knowledge base detail", () => {
 
     await openDetail();
 
+    const row = await screen.findByTestId("source-file-row-source-001");
     expect(await screen.findByText("Available")).toBeTruthy();
+    expect(within(row).getByText("Visible")).toBeTruthy();
+    expect(within(row).getByText("Generation activation")).toBeTruthy();
+    expect(within(row).getByText("audit-model / Completed / 5.0s / 1 warning")).toBeTruthy();
+    expect(within(row).getByText("No error")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
 
     await waitFor(() => {
@@ -934,6 +1016,41 @@ describe("Admin knowledge base detail", () => {
       expect(listSourceFiles).toHaveBeenLastCalledWith({
         knowledgeBaseId: "kb-docs",
         cursor: null
+      });
+    });
+  });
+
+  it("forwards started and ended time filters from their table headers", async () => {
+    await openDetail();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Filter Started" }));
+    fireEvent.change(await screen.findByLabelText("From"), {
+      target: { value: "2026-06-14T00:00" }
+    });
+
+    await waitFor(() => {
+      expect(listSourceFiles).toHaveBeenLastCalledWith({
+        knowledgeBaseId: "kb-docs",
+        cursor: null,
+        filters: expect.objectContaining({
+          startedFrom: new Date("2026-06-14T00:00").toISOString()
+        })
+      });
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear" }));
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Filter Ended" }));
+    fireEvent.change(await screen.findByLabelText("To"), {
+      target: { value: "2026-06-15T00:00" }
+    });
+
+    await waitFor(() => {
+      expect(listSourceFiles).toHaveBeenLastCalledWith({
+        knowledgeBaseId: "kb-docs",
+        cursor: null,
+        filters: expect.objectContaining({
+          endedTo: new Date("2026-06-15T00:00").toISOString()
+        })
       });
     });
   });

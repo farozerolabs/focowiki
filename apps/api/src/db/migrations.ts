@@ -4,19 +4,16 @@ import type { DatabaseClient } from "./client.js";
 import {
   MIGRATION_MANIFEST,
   UnsupportedMigrationGenerationError,
-  createMigrationPlan,
+  createBootstrapPlan,
   validateMigrationManifest,
   type MigrationFile
 } from "./migration-manifest.js";
-import { assertMigrationWorkDrained } from "./migration-preflight.js";
 
 export const MIGRATION_FILES = MIGRATION_MANIFEST.map(
   (migration) => migration.fileName
 ) as readonly MigrationFile[];
-export const RELEASED_SCHEMA_GENERATION =
-  MIGRATION_MANIFEST[4].targetGeneration;
 export const RUNTIME_SCHEMA_GENERATION =
-  MIGRATION_MANIFEST.at(-1)!.targetGeneration;
+  MIGRATION_MANIFEST[0].targetGeneration;
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {
@@ -70,7 +67,7 @@ export async function preflightMigrations(
   }
   let plan;
   try {
-    plan = createMigrationPlan(state);
+    plan = createBootstrapPlan(state);
   } catch (error) {
     if (error instanceof UnsupportedMigrationGenerationError) {
       throw new RuntimeSchemaGenerationError(state);
@@ -78,9 +75,6 @@ export async function preflightMigrations(
     throw error;
   }
 
-  if (state !== "absent" && plan.requiresDrain) {
-    await assertMigrationWorkDrained(sql);
-  }
   return {
     currentGeneration: state,
     pendingFiles: plan.pendingFiles

@@ -14,7 +14,7 @@ const sql = createDatabaseClient(config);
 
 try {
   const plan = await preflightMigrations(sql);
-  logger.info("Database migration preflight passed", {
+  logger.info("database.migration_preflight_passed", {
     currentGeneration: plan.currentGeneration,
     pendingMigrationCount: plan.pendingFiles.length
   });

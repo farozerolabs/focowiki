@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+      FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
+      FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER: svnext-ci000001
       FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
       FOCOWIKI_TEST_MEILISEARCH_API_KEY: focowiki-development-master-key
       REDIS_URL: redis://127.0.0.1:56379/0
@@ -65,6 +67,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6.4.0
@@ -118,17 +122,15 @@ jobs:
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/migration-preflight.mjs
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/migrate.mjs
 
-      - name: Validate compatible migration paths
+      - name: Validate storage vNext schema contracts
         run: >-
           pnpm --filter @focowiki/api exec vitest run
           test/migration-manifest.test.ts
           test/migrations.test.ts
-          test/migration-preflight.test.ts
-          test/migration-preflight.integration.test.ts
-          test/migration-maintenance-separation.test.ts
-          test/knowledge-base-index-maintenance-migration.integration.test.ts
-          test/partial-schema-migration.integration.test.ts
-          test/tree-graph-storage-migration.integration.test.ts
+          test/storage-vnext-bootstrap-reset-contract.test.ts
+          test/storage-vnext-bootstrap-reset.integration.test.ts
+          test/storage-vnext-schema-constraints-contract.test.ts
+          test/storage-vnext-schema-constraints.integration.test.ts
 
       - name: Start S3 health fixture
         run: |
@@ -138,37 +140,27 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Validate 100k graph candidate query plan
-        env:
-          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
+      - name: Validate storage vNext PostgreSQL plans
         run: >-
           pnpm --filter @focowiki/api exec vitest run
-          test/graph-candidate-query-plan.integration.test.ts
-
-      - name: Validate 100k lexical rebuild work plans
-        env:
-          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
-        run: >-
-          pnpm --filter @focowiki/api exec vitest run
-          test/lexical-rebuild-scale.integration.test.ts
-
-      - name: Validate bounded migration preflight plans
-        env:
-          FOCOWIKI_RUN_SCALE_QUERY_PLAN_TESTS: "true"
-        run: >-
-          pnpm --filter @focowiki/api exec vitest run
-          test/migration-preflight-scale.integration.test.ts
+          test/storage-vnext-index.integration.test.ts
 
       - name: Validate source-to-activation smoke flow
         run: >-
           pnpm --filter @focowiki/api exec vitest run
-          test/upload-session-repository.integration.test.ts
-          test/source-dispatch-repository.integration.test.ts
-          test/publication-generation-repository.integration.test.ts
-          test/active-generation-read-repository.integration.test.ts
+          test/storage-vnext-upload-repository.integration.test.ts
+          test/storage-vnext-source-processing.integration.test.ts
+          test/storage-vnext-release-repository.integration.test.ts
+          test/storage-vnext-search-projection-repository.integration.test.ts
 
       - name: Test validation scripts
         run: pnpm test:validation
+
+      - name: Validate storage vNext change scope
+        run: pnpm validate:storage-vnext:scope
+
+      - name: Validate storage vNext release evidence
+        run: pnpm validate:storage-vnext:release-gate
 
       - name: Build
         run: pnpm build
@@ -180,7 +172,7 @@ jobs:
         run: pnpm openapi:validate
 
       - name: Validate API Docker worker runtimes
-        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/meilisearch-bootstrap.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/projection-repair-worker.mjs','apps/api/runtime/lexical-rebuild-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
+        run: docker run --rm --entrypoint node focowiki-api:ci -e "const fs=require('node:fs'); for (const file of ['apps/api/runtime/main.mjs','apps/api/runtime/migrate.mjs','apps/api/runtime/migration-preflight.mjs','apps/api/runtime/meilisearch-bootstrap.mjs','apps/api/runtime/source-worker.mjs','apps/api/runtime/publication-worker.mjs','apps/api/runtime/maintenance-worker.mjs']) fs.accessSync(file);"
 
       - name: Validate native tokenizer runtime
         run: |
@@ -193,8 +185,6 @@ jobs:
         run: |
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/source-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/publication-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/projection-repair-worker.mjs --healthcheck
-          docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/lexical-rebuild-worker.mjs --healthcheck
           docker run --rm --network host --env-file .env.dev.example -e DATABASE_URL="${FOCOWIKI_TEST_DATABASE_URL}" -e REDIS_URL="${REDIS_URL}" focowiki-api:ci node apps/api/runtime/maintenance-worker.mjs --healthcheck
 
       - name: Build Admin Docker image

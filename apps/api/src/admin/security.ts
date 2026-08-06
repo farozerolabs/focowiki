@@ -1,13 +1,12 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RuntimeConfig } from "../config.js";
 import type { AdminSessionManager } from "../auth/session.js";
-import type { AdminRepositories } from "../db/admin-repositories.js";
 import type { RedisCoordinator } from "../redis/coordination.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
 import { applyAdminCors } from "../security/headers.js";
-import { recordSecurityAudit } from "../security/audit.js";
 import { requireRateLimit } from "../security/rate-limit.js";
 import { isTrustedAdminOrigin } from "../security/request.js";
+import type { StorageVnextAdminAuditApplication } from "../storage-vnext/api/admin-audit-application.js";
 
 type RequestContext = Parameters<MiddlewareHandler>[0];
 
@@ -15,7 +14,7 @@ export type AdminSecurityServices = {
   config: RuntimeConfig;
   sessionManager: AdminSessionManager | null;
   redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   runtimeSettings?: RuntimeSettingsService | null | undefined;
 };
 
@@ -84,7 +83,7 @@ export function createAdminAuthMiddleware(
 }
 
 export function createAdminWriteProtectionMiddleware(
-  services: Pick<AdminSecurityServices, "config" | "repositories">
+  services: Pick<AdminSecurityServices, "config" | "audit">
 ): MiddlewareHandler {
   return async (context, next) => {
     if (isTrustedAdminOrigin(services.config, context)) {
@@ -114,7 +113,7 @@ export function createAdminWriteProtectionMiddleware(
 export async function limitAdminLoginRequest(input: {
   config: RuntimeConfig;
   redis: RedisCoordinator | null;
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   runtimeSettings?: RuntimeSettingsService | null | undefined;
   context: RequestContext;
   username: string;
@@ -173,7 +172,7 @@ function defaultRateLimit(
 }
 
 export async function recordAdminAudit(input: {
-  repositories: AdminRepositories | null;
+  audit: StorageVnextAdminAuditApplication;
   config: RuntimeConfig;
   context: RequestContext;
   eventType: string;
@@ -181,7 +180,13 @@ export async function recordAdminAudit(input: {
   errorCode?: string | null;
   username?: string | null;
 }): Promise<void> {
-  await recordSecurityAudit(input);
+  await input.audit.record({
+    context: input.context,
+    eventType: input.eventType,
+    result: input.result,
+    errorCode: input.errorCode ?? null,
+    username: input.username ?? null
+  });
 }
 
 export function adminUnauthorized(context: RequestContext, messageKey?: string): Response {

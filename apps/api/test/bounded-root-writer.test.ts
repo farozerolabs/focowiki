@@ -54,6 +54,8 @@ describe("bounded root writer", () => {
     const schema = renderBoundedRootFile({ ...base, path: "schema.md" });
     expect(log.body).toMatch(/^# Directory Update Log\n/u);
     expect(log.body).not.toMatch(/^---\n/u);
+    expect(log.body).not.toContain(base.generationId);
+    expect(log.body).toContain("Published 100000 source-backed Markdown files.");
     expect(schema.body).toMatch(
       /^---\ntype: "Schema Reference"\ntitle: "Metadata and navigation schema"\n/u
     );

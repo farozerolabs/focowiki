@@ -19,13 +19,13 @@ export function registerWorkerRedisRuntimeEvents(input: {
       return;
     }
     interruptionReported = true;
-    input.logger.warn("Worker Redis connection interrupted; processing will resume after recovery", {
+    input.logger.warn("redis.worker_connection_interrupted", {
       role: input.role
     });
   });
   input.client.on("ready", () => {
     if (interruptionReported) {
-      input.logger.info("Worker Redis connection restored", { role: input.role });
+      input.logger.info("redis.worker_connection_restored", { role: input.role });
     }
     interruptionReported = false;
   });

@@ -393,13 +393,13 @@ function parameterExample(entry: OperationEntry, parameter: SchemaObject, schema
 
 function parameterExampleByName(name: string): string | undefined {
   const examples: Record<string, string> = {
-    knowledgeBaseId: "kb_123",
+    knowledgeBaseId: "knowledge-base-11111111-1111-4111-8111-111111111111",
     sourceFileId: "source-file-11111111-1111-4111-8111-111111111111",
-    fileId: "bundle-file-11111111-1111-4111-8111-111111111111",
-    nodeId: "graph-node-11111111-1111-4111-8111-111111111111",
-    edgeId: "graph-edge-11111111-1111-4111-8111-111111111111",
-    webhookId: "webhook_123",
-    deliveryId: "delivery_123",
+    fileId: "source-file-11111111-1111-4111-8111-111111111111",
+    nodeId: `graph-node-v1:${"1".repeat(64)}`,
+    edgeId: `graph-edge-v1:${"1".repeat(64)}`,
+    webhookId: "webhook-11111111-1111-4111-8111-111111111111",
+    deliveryId: "delivery-11111111-1111-4111-8111-111111111111",
     cursor: "cursor_123",
     limit: "50",
     path: "pages/guide.md",

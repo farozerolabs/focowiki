@@ -32,8 +32,9 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 | Method | `POST` |
 | Content-Type | `application/json` |
 | 成功确认 | 任意 `2xx` 响应状态。 |
-| 投递超时 | 10 秒。 |
-| 重投递 | 失败后可用 `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` 手动重投递。 |
+| 投递超时 | 由部署配置决定。 |
+| 自动重试 | 非 `2xx` 响应和投递失败会按照部署中的 Worker 尝试次数和延迟配置自动重试。 |
+| 手动重投递 | 使用 `POST /openapi/v2/webhook-deliveries/{deliveryId}/redeliver` 创建一次新尝试。 |
 
 ## 请求头
 
@@ -50,12 +51,12 @@ Focowiki 每次投递都会发送 HTTP `POST` 请求。
 
 ```json
 {
-  "eventId": "event_123",
+  "eventId": "event-11111111-1111-4111-8111-111111111111",
   "eventType": "source_file.completed",
-  "deliveryId": "delivery_123",
+  "deliveryId": "delivery-11111111-1111-4111-8111-111111111111",
   "payload": {
-    "knowledgeBaseId": "kb_123",
-    "sourceFileId": "file_source_123"
+    "knowledgeBaseId": "knowledge-base-11111111-1111-4111-8111-111111111111",
+    "sourceFileId": "source-file-11111111-1111-4111-8111-111111111111"
   }
 }
 ```
@@ -99,7 +100,7 @@ export function verifyFocowikiWebhook({ rawBody, timestamp, signatureHeader, sig
 | 事件类型 | 触发时机 | 数据字段 |
 | --- | --- | --- |
 | `source_file.accepted` | 上传的 Markdown 文件有新版本进入处理流程。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
-| `source_file.progress` | 已上传文件进入一个处理步骤。 | `knowledgeBaseId`, `sourceFileId`, `stage`, `status` |
+| `source_file.progress` | 已上传文件进入一个处理步骤。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `status` |
 | `source_file.completed` | 已上传文件处理完成。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId` |
 | `source_file.failed` | 上传的 Markdown 文件处理失败并停止。 | `knowledgeBaseId`, `sourceFileId`, `sourceRevisionId`, `stage`, `errorCode` |
 | `generation.activated` | 更新后的知识库内容可以读取。 | `knowledgeBaseId`, `generationId` |
@@ -115,10 +116,10 @@ curl -X GET "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries?limit=50" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 
-当投递失败时，使用投递列表返回的 `deliveryId` 手动重投递：
+自动尝试结束后投递仍为失败时，使用投递列表返回的 `deliveryId` 手动重投递：
 
 ```bash
-curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery_123/redeliver" \
+curl -X POST "$OPENAPI_BASE_URL/openapi/v2/webhook-deliveries/delivery-11111111-1111-4111-8111-111111111111/redeliver" \
   -H "Authorization: Bearer $OPENAPI_KEY"
 ```
 

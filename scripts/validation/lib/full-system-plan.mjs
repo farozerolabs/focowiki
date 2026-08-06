@@ -2,9 +2,9 @@ import path from "node:path";
 
 export const FULL_SYSTEM_EXTERNAL_APPROVAL_ENV =
   "FOCOWIKI_FULL_SYSTEM_ALLOW_CONFIGURED_EXTERNALS";
-export const DEFAULT_FULL_SYSTEM_CHANGE_ID = "implement-incremental-sharded-publication";
+export const DEFAULT_FULL_SYSTEM_CHANGE_ID = "implement-breaking-storage-vnext";
 export const DEFAULT_FULL_SYSTEM_REPORT_DIR =
-  "ReferenceDocs/implement-incremental-sharded-publication";
+  "ReferenceDocs/implement-breaking-storage-vnext";
 
 export function readFullSystemConfig(command = "all", env = process.env) {
   if (!["plan", "baseline", "runtime", "all"].includes(command)) {
@@ -87,7 +87,7 @@ export function buildFullSystemPlan(config) {
           )
         ]
       : []),
-    localDatabaseStep("incremental-database")
+    localDatabaseStep("storage-vnext-database")
   ];
 
   if (config.command === "plan") {
@@ -130,14 +130,14 @@ function localDatabaseStep(id) {
       "exec",
       "vitest",
       "run",
-      "test/upload-session-repository.integration.test.ts",
-      "test/source-dispatch-repository.integration.test.ts",
-      "test/publication-generation-repository.integration.test.ts",
-      "test/publication-impact-repository.integration.test.ts",
-      "test/directory-navigation-repository.integration.test.ts",
-      "test/active-generation-read-repository.integration.test.ts",
-      "test/generation-cleanup-repository.integration.test.ts",
-      "test/query-plan-validation.test.ts"
+      "test/storage-vnext-schema-constraints.integration.test.ts",
+      "test/storage-vnext-catalog-repository.integration.test.ts",
+      "test/storage-vnext-graph-repository.integration.test.ts",
+      "test/storage-vnext-workflow-audit-repository.integration.test.ts",
+      "test/storage-vnext-release-repository.integration.test.ts",
+      "test/storage-vnext-object-ownership.integration.test.ts",
+      "test/storage-vnext-search-projection-repository.integration.test.ts",
+      "test/storage-vnext-source-processing.integration.test.ts"
     ],
     extraEnv: {
       FOCOWIKI_TEST_DATABASE_URL: "<DATABASE_URL>"

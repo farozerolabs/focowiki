@@ -1,323 +1,223 @@
-const PUBLIC_OUTCOMES = new Set([
-  "pending",
-  "succeeded",
-  "failed",
-  "cancelled",
-  "superseded",
-  "conflicted"
+const TERMINAL_OPERATION_STATES = new Set([
+  "completed", "failed", "cancelled", "superseded", "timed_out", "deleted"
 ]);
 
 export function createHandoffLedger(input) {
   if (!input?.scenarioId || !input?.knowledgeBaseId) {
     throw new Error("Handoff ledger requires scenario and knowledge-base identities.");
   }
-
   return {
+    kind: "focowiki-storage-vnext-handoff-ledger",
     scenarioId: input.scenarioId,
     knowledgeBaseId: input.knowledgeBaseId,
+    capturedAt: new Date().toISOString(),
+    publicOutcome: input.publicOutcome ?? null,
     expectedKinds: [...new Set(input.expectedKinds ?? [])],
     expectedTerminalKinds: [...new Set(input.expectedTerminalKinds ?? [])],
-    publicOutcome: "pending",
     records: []
   };
 }
 
 export function addHandoffRecord(ledger, record) {
-  if (!ledger || !record?.kind || !record?.id) {
-    throw new Error("Handoff records require kind and identity.");
+  if (!record?.kind || !record?.id) {
+    throw new Error("Handoff record requires kind and identity.");
   }
-
   ledger.records.push({
     kind: record.kind,
-    id: String(record.id),
+    id: record.id,
     knowledgeBaseId: record.knowledgeBaseId ?? ledger.knowledgeBaseId,
     ownerKind: record.ownerKind ?? null,
-    ownerId: record.ownerId == null ? null : String(record.ownerId),
-    resourceRevision: normalizeRevision(record.resourceRevision),
-    predecessorId: record.predecessorId == null
-      ? null
-      : String(record.predecessorId),
+    ownerId: record.ownerId ?? null,
+    resourceRevision: record.resourceRevision ?? null,
     state: record.state ?? null,
     durable: record.durable === true,
     terminal: record.terminal === true,
-    observedAt: record.observedAt ?? null,
-    metadata: sanitizeMetadata(record.metadata)
+    metadata: record.metadata ?? {}
   });
-
-  return ledger.records.at(-1);
+  return ledger;
 }
 
 export function assertHandoffLedger(ledger) {
-  if (!PUBLIC_OUTCOMES.has(ledger?.publicOutcome)) {
-    throw new Error("Handoff ledger has an invalid public outcome.");
+  if (!ledger?.scenarioId || !ledger?.knowledgeBaseId || !Array.isArray(ledger.records)) {
+    throw new Error("Handoff ledger is incomplete.");
   }
-
-  const records = ledger.records ?? [];
-  const identities = new Map(
-    records.map((record) => [`${record.kind}:${record.id}`, record])
-  );
-
-  for (const record of records) {
-    if (record.knowledgeBaseId !== ledger.knowledgeBaseId) {
-      throw new Error(`Handoff knowledge base continuity failed for ${record.kind}.`);
-    }
-
-    if (record.ownerKind || record.ownerId) {
-      if (!record.ownerKind || !record.ownerId) {
-        throw new Error(`Handoff owner identity is incomplete for ${record.kind}.`);
-      }
-      if (!identities.has(`${record.ownerKind}:${record.ownerId}`)) {
-        throw new Error(`Handoff owner is missing for ${record.kind}:${record.id}.`);
-      }
-    } else if (record.durable) {
-      throw new Error(`Durable handoff has no owner: ${record.kind}:${record.id}.`);
-    }
-  }
-
-  if (ledger.publicOutcome === "succeeded") {
-    for (const kind of ledger.expectedKinds) {
-      if (!records.some((record) => record.kind === kind)) {
-        throw new Error(`Missing expected handoff kind: ${kind}.`);
-      }
-    }
-  }
-
-  assertRevisionMonotonicity(records);
-  assertModificationPathContinuity(records);
-  assertModificationRevisionContinuity(records);
-  assertGenerationPredecessorContinuity(records);
-  assertSingleActivation(records);
-  assertAttemptBounds(records);
-  assertTerminalConvergence(ledger, records);
-  assertExceptionalOutcome(ledger, records);
-  return true;
+  assertUniqueRecords(ledger.records);
+  assertKnowledgeBaseContinuity(ledger);
+  assertExpectedKinds(ledger);
+  assertOwnershipClosure(ledger.records);
+  assertResourceRevisions(ledger.records);
+  assertAttemptBudgets(ledger.records);
+  assertTerminalConvergence(ledger);
+  assertCurrentRevisionContinuity(ledger.records);
+  assertActiveSnapshotContinuity(ledger);
+  assertObjectOwnerClosure(ledger.records);
+  assertNoPhysicalDisclosure(ledger);
+  return ledger;
 }
 
-function assertRevisionMonotonicity(records) {
-  const revisions = new Map();
-
+function assertUniqueRecords(records) {
+  const identities = new Set();
   for (const record of records) {
-    if (record.resourceRevision === null) continue;
-    const key = record.kind === "source_revision"
-      ? `${record.kind}:${record.ownerKind ?? ""}:${record.ownerId ?? record.id}`
-      : `${record.kind}:${record.id}`;
-    const previous = revisions.get(key);
-
-    if (previous !== undefined && record.resourceRevision < previous) {
-      throw new Error(`Resource revision regressed for ${record.kind}.`);
-    }
-    revisions.set(key, record.resourceRevision);
+    const key = recordKey(record.kind, record.id);
+    if (identities.has(key)) throw new Error(`Duplicate handoff record: ${key}.`);
+    identities.add(key);
   }
 }
 
-function assertSingleActivation(records) {
-  const activeIds = new Set(
-    records
-      .filter((record) => record.kind === "activation")
-      .map((record) => record.id)
-  );
-
-  if (activeIds.size > 1) {
-    throw new Error("Handoff ledger contains multiple active Generations.");
+function assertKnowledgeBaseContinuity(ledger) {
+  if (ledger.records.some((record) => record.knowledgeBaseId !== ledger.knowledgeBaseId)) {
+    throw new Error("Handoff knowledge base continuity failed.");
   }
-  const knowledgeBase = records.find(
-    (record) => record.kind === "knowledge_base"
-  );
-  const expectedActive = knowledgeBase?.metadata?.activeGenerationId;
-  if (
-    expectedActive &&
-    (activeIds.size !== 1 || !activeIds.has(expectedActive))
-  ) {
-    throw new Error("Active Generation ownership failed.");
+  const roots = ledger.records.filter((record) => record.kind === "knowledge_base");
+  if (roots.length !== 1 || roots[0].id !== ledger.knowledgeBaseId) {
+    throw new Error("Handoff ledger must contain exactly one knowledge-base root.");
   }
 }
 
-function assertAttemptBounds(records) {
+function assertExpectedKinds(ledger) {
+  for (const kind of ledger.expectedKinds) {
+    if (!ledger.records.some((record) => record.kind === kind)) {
+      throw new Error(`Missing expected handoff kind: ${kind}.`);
+    }
+  }
+  for (const kind of ledger.expectedTerminalKinds) {
+    const records = ledger.records.filter((record) => record.kind === kind);
+    if (records.length === 0 || records.some((record) => !record.terminal)) {
+      throw new Error(`Expected terminal handoff kind is incomplete: ${kind}.`);
+    }
+  }
+}
+
+function assertOwnershipClosure(records) {
+  const identities = new Set(records.map((record) => recordKey(record.kind, record.id)));
   for (const record of records) {
-    const attemptCount = record.metadata?.attemptCount;
-    const maxAttempts = record.metadata?.maxAttempts;
+    if (record.kind === "knowledge_base") continue;
+    if (!record.ownerKind || !record.ownerId) {
+      if (record.durable) throw new Error(`Durable handoff has no owner: ${record.kind}.`);
+      throw new Error(`Handoff has no owner: ${record.kind}.`);
+    }
+    if (!identities.has(recordKey(record.ownerKind, record.ownerId))) {
+      throw new Error(`Handoff owner is missing: ${record.kind}.`);
+    }
+  }
+}
+
+function assertResourceRevisions(records) {
+  for (const record of records) {
     if (
-      Number.isSafeInteger(attemptCount) &&
-      Number.isSafeInteger(maxAttempts) &&
-      attemptCount > maxAttempts
+      record.resourceRevision !== null
+      && (!Number.isSafeInteger(record.resourceRevision) || record.resourceRevision < 0)
+    ) {
+      throw new Error(`Invalid resource revision for ${record.kind}.`);
+    }
+  }
+}
+
+function assertAttemptBudgets(records) {
+  for (const record of records) {
+    const attempt = record.metadata?.attemptCount;
+    const maximum = record.metadata?.maxAttempts;
+    if (
+      Number.isSafeInteger(attempt)
+      && Number.isSafeInteger(maximum)
+      && attempt > maximum
     ) {
       throw new Error(`Attempt budget exceeded for ${record.kind}.`);
     }
-    if (
-      record.state === "retry" &&
-      record.metadata?.retryAt === undefined
-    ) {
-      throw new Error(`Retry schedule is missing for ${record.kind}.`);
+  }
+}
+
+function assertTerminalConvergence(ledger) {
+  if (!new Set(["succeeded", "conflicted", "failed"]).has(ledger.publicOutcome)) return;
+  const live = ledger.records.filter((record) => record.kind === "work_item");
+  if (live.length > 0) {
+    throw new Error("Terminal public outcome retained live work items.");
+  }
+  for (const operation of ledger.records.filter((record) => record.kind === "operation")) {
+    if (!TERMINAL_OPERATION_STATES.has(operation.state)) {
+      throw new Error("Terminal public outcome retained a nonterminal operation.");
     }
   }
 }
 
-function assertTerminalConvergence(ledger, records) {
-  if (ledger.publicOutcome === "pending") return;
-
-  for (const kind of ledger.expectedTerminalKinds) {
-    const matches = records.filter((record) => record.kind === kind);
-    if (matches.length === 0) {
-      throw new Error(`Missing terminal handoff kind: ${kind}.`);
-    }
-    if (!matches.some((record) => record.terminal)) {
-      throw new Error(`Handoff kind did not converge: ${kind}.`);
-    }
-  }
-}
-
-function assertExceptionalOutcome(ledger, records) {
-  if (!["failed", "cancelled", "superseded", "conflicted"].includes(
-    ledger.publicOutcome
-  )) {
-    return;
-  }
-
-  const activeGenerationIds = new Set(
+function assertCurrentRevisionContinuity(records) {
+  const revisions = new Map(
     records
-      .filter((record) => record.kind === "activation")
-      .map((record) => record.id)
+      .filter((record) => record.kind === "source_revision")
+      .map((record) => [record.id, record])
   );
-  const failedGenerationIds = records
-    .filter(
-      (record) =>
-        record.kind === "generation" &&
-        ["failed", "cancelled", "superseded"].includes(record.state)
-    )
-    .map((record) => record.id);
-  if (failedGenerationIds.some((id) => activeGenerationIds.has(id))) {
-    throw new Error("Exceptional Generation was activated.");
-  }
-
-  if (ledger.publicOutcome === "conflicted") {
-    const staged = records.find(
-      (record) =>
-        record.kind === "source" &&
-        (
-          record.metadata?.candidateOperationId ||
-          record.metadata?.candidateRevisionId ||
-          record.metadata?.candidateRelativePath
-        )
-    );
-    if (staged) {
-      throw new Error("Conflicted modification left staged source state.");
+  for (const source of records.filter((record) => record.kind === "source_file")) {
+    const currentRevisionId = source.metadata?.currentRevisionId;
+    if (source.state === "ready" && !currentRevisionId) {
+      throw new Error("Ready source file has no current revision.");
+    }
+    if (!currentRevisionId) continue;
+    const revision = revisions.get(currentRevisionId);
+    if (
+      !revision
+      || revision.ownerId !== source.id
+      || revision.metadata?.revisionRole !== "current"
+    ) {
+      throw new Error("Source current revision continuity failed.");
     }
   }
 }
 
-function assertModificationPathContinuity(records) {
-  const operation = records.find(
-    (record) =>
-      ["operation", "public_operation"].includes(record.kind) &&
-      typeof record.metadata?.resultingPath === "string"
+function assertActiveSnapshotContinuity(ledger) {
+  const snapshots = ledger.records.filter((record) => record.kind === "active_snapshot");
+  if (snapshots.length > 1) throw new Error("Multiple active snapshots were recorded.");
+  if (ledger.publicOutcome === "succeeded" && snapshots.length !== 1) {
+    throw new Error("Successful handoff has no active snapshot.");
+  }
+  if (snapshots.length === 0) return;
+  const snapshot = snapshots[0];
+  const root = findRecord(ledger.records, "release_root", snapshot.metadata.releaseRootId);
+  const search = findRecord(
+    ledger.records,
+    "search_projection",
+    snapshot.metadata.searchProjectionId
   );
-  if (!operation) return;
-
-  const source = records.find(
-    (record) =>
-      record.kind === "source" &&
-      record.metadata?.logicalPath !== undefined
-  );
-  if (
-    source &&
-    source.metadata.logicalPath !== operation.metadata.resultingPath
-  ) {
-    throw new Error("Modification path continuity failed.");
+  const operation = findRecord(ledger.records, "operation", snapshot.metadata.operationId);
+  if (!root || root.metadata?.rootRole !== "active") {
+    throw new Error("Active snapshot release-root continuity failed.");
+  }
+  if (!search || search.metadata?.role !== "active" || search.state !== "ready") {
+    throw new Error("Active snapshot search continuity failed.");
+  }
+  if (!operation || operation.state !== "completed") {
+    throw new Error("Active snapshot operation continuity failed.");
   }
 }
 
-function assertModificationRevisionContinuity(records) {
-  const operation = records.find(
-    (record) =>
-      ["operation", "public_operation"].includes(record.kind) &&
-      typeof record.metadata?.mutationKind === "string" &&
-      Number.isSafeInteger(record.metadata?.resultingResourceRevision)
-  );
-  if (!operation) return;
-
-  const expected = operation.metadata.expectedResourceRevision;
-  const resulting = operation.metadata.resultingResourceRevision;
-  if (Number.isSafeInteger(expected) && resulting <= expected) {
-    throw new Error("Modification revision continuity failed.");
+function assertObjectOwnerClosure(records) {
+  const ownersByObject = new Map();
+  for (const owner of records.filter((record) => record.kind === "object_owner")) {
+    const objectId = owner.metadata?.objectId;
+    if (!objectId) throw new Error("Object owner has no object identity.");
+    const owners = ownersByObject.get(objectId) ?? [];
+    owners.push(owner);
+    ownersByObject.set(objectId, owners);
   }
-
-  const targetKind = operation.metadata.mutationKind.startsWith(
-    "source_directory_"
-  )
-    ? "directory"
-    : operation.metadata.mutationKind === "knowledge_base_metadata_update"
-      ? "knowledge_base"
-      : "source";
-  const target = records.find((record) => record.kind === targetKind);
-  if (target && target.resourceRevision !== resulting) {
-    throw new Error("Modification revision continuity failed.");
+  for (const registration of records.filter(
+    (record) => record.kind === "object_registration" && record.state !== "deleted"
+  )) {
+    if ((ownersByObject.get(registration.id) ?? []).length === 0) {
+      throw new Error("Object registration has no authoritative owner.");
+    }
   }
 }
 
-function assertGenerationPredecessorContinuity(records) {
-  const priorActive = records.find(
-    (record) => record.kind === "active_generation"
-  );
-  const candidate = records.find(
-    (record) =>
-      record.kind === "generation" &&
-      record.metadata?.candidateGeneration === true
-  ) ?? records.find((record) => record.kind === "generation");
-  if (
-    priorActive &&
-    candidate &&
-    candidate.predecessorId !== priorActive.id
-  ) {
-    throw new Error("Generation predecessor continuity failed.");
+function assertNoPhysicalDisclosure(ledger) {
+  const serialized = JSON.stringify(ledger);
+  if (/storageKey|objectKey|providerIndexUid|secret|authorization|requestJson/u.test(serialized)) {
+    throw new Error("Handoff ledger exposed physical or secret data.");
   }
 }
 
-function normalizeRevision(value) {
-  if (value === undefined || value === null) return null;
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error("Handoff resource revision must be a positive integer.");
-  }
-  return value;
+function findRecord(records, kind, id) {
+  return records.find((record) => record.kind === kind && record.id === id) ?? null;
 }
 
-function sanitizeMetadata(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) =>
-        [
-          "state",
-          "phase",
-          "result",
-          "attemptCount",
-          "maxAttempts",
-          "retryAt",
-          "mutationKind",
-          "priorPath",
-          "resultingPath",
-          "logicalPath",
-          "expectedResourceRevision",
-          "resultingResourceRevision",
-          "contentRevision",
-          "catalogGeneration",
-          "candidateCatalogGeneration",
-          "candidateOperationId",
-          "candidateRevisionId",
-          "candidateRelativePath",
-          "projectionKind",
-          "action",
-          "role",
-          "taskKind",
-          "transferState",
-          "disposition",
-          "errorCode",
-          "errorMessage",
-          "lifecycleState",
-          "formatVersion",
-          "activeGenerationId",
-          "candidateGeneration"
-        ].includes(key)
-      )
-  );
+function recordKey(kind, id) {
+  return `${kind}:${id}`;
 }

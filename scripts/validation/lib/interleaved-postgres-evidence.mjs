@@ -11,29 +11,28 @@ const KNOWLEDGE_BASE_QUERY_NAMES = Object.freeze([
   "uploadSessions",
   "uploadEntries",
   "operations",
-  "operationTargets",
+  "workItems",
+  "operationResults",
+  "operationDependencies",
   "sourceDirectories",
   "sourceFiles",
   "sourceRevisions",
-  "dispatchMarkers",
-  "sourceEvents",
-  "deletionIntents",
-  "roleJobs",
-  "generations",
-  "publicationProgress",
-  "publicationImpacts",
-  "publicationSubtasks",
-  "projectionInputs",
-  "generationProjections",
-  "generationObjectRefs",
-  "immutableObjects",
-  "activeProjections",
-  "projectionRepairs",
-  "projectionRepairSubtasks",
-  "lexicalRebuilds",
-  "lexicalWorkItems",
-  "compactionJobs",
-  "cleanupObjectDeletions"
+  "graphNodes",
+  "graphEdges",
+  "graphEvidenceRefs",
+  "releaseRoots",
+  "releaseShards",
+  "releaseRootShards",
+  "releaseCatalogEntries",
+  "releaseCatalogTombstones",
+  "searchProjections",
+  "activeSnapshots",
+  "releaseCandidates",
+  "releaseCandidateValidations",
+  "releaseEventSummaries",
+  "objectOwners",
+  "objectRegistrations",
+  "cleanupActions"
 ]);
 
 const GLOBAL_QUERY_NAMES = Object.freeze([
@@ -41,7 +40,7 @@ const GLOBAL_QUERY_NAMES = Object.freeze([
   "globalRuntimeSettings",
   "globalWorkers",
   "globalKnowledgeBases",
-  "globalImmutableObjects"
+  "globalObjectRegistrations"
 ]);
 
 export function createInterleavedPostgresEvidence(input) {
@@ -67,14 +66,14 @@ export function createInterleavedPostgresEvidence(input) {
         runtimeSettings: raw.globalRuntimeSettings ?? [],
         workers: raw.globalWorkers ?? [],
         knowledgeBases: raw.globalKnowledgeBases ?? [],
-        immutableObjects: raw.globalImmutableObjects ?? []
+        immutableObjects: raw.globalObjectRegistrations ?? []
       });
     },
+
     async snapshotKnowledgeBase(knowledgeBaseId) {
       if (!knowledgeBaseId) {
         throw new Error("PostgreSQL evidence requires a knowledge-base identity.");
       }
-
       const entries = await Promise.all(
         KNOWLEDGE_BASE_QUERY_NAMES.map(async (name) => [
           name,
@@ -89,15 +88,21 @@ export function createInterleavedPostgresEvidence(input) {
       if (knowledgeBase.id !== knowledgeBaseId) {
         throw new Error("Knowledge base evidence crossed its requested scope.");
       }
-
       return sanitizeEvidenceValue({
         capturedAt: new Date().toISOString(),
         knowledgeBase,
-        ...Object.fromEntries(
-          entries.filter(([name]) => name !== "knowledgeBase")
-        )
+        ...Object.fromEntries(entries.filter(([name]) => name !== "knowledgeBase"))
       });
     },
+
+    async hasLiveWorkItems(knowledgeBaseId) {
+      if (!knowledgeBaseId) {
+        throw new Error("PostgreSQL evidence requires a knowledge-base identity.");
+      }
+      const rows = await query("liveWorkItemCount", knowledgeBaseId);
+      return Number(rows[0]?.liveCount ?? 0) > 0;
+    },
+
     async close() {
       if (sql) await sql.end({ timeout: 5 });
     }
@@ -113,443 +118,367 @@ function createQueryExecutor(sql) {
             (SELECT count(*) FROM focowiki.knowledge_bases) AS "knowledgeBases",
             (SELECT count(*) FROM focowiki.source_files) AS "sourceFiles",
             (SELECT count(*) FROM focowiki.upload_sessions) AS "uploadSessions",
-            (SELECT count(*) FROM focowiki.resource_operations) AS "resourceOperations",
-            (SELECT count(*) FROM focowiki.deletion_intents) AS "deletionIntents",
-            (SELECT count(*) FROM focowiki.role_jobs) AS "roleJobs",
-            (SELECT count(*) FROM focowiki.publication_generations) AS "generations",
-            (SELECT count(*) FROM focowiki.active_projection_records) AS "activeProjectionRecords",
-            (SELECT count(*) FROM focowiki.immutable_objects) AS "immutableObjects"
+            (SELECT count(*) FROM focowiki.operations) AS "operations",
+            (SELECT count(*) FROM focowiki.operation_work_items) AS "workItems",
+            (SELECT count(*) FROM focowiki.release_roots) AS "releaseRoots",
+            (SELECT count(*) FROM focowiki.active_snapshots) AS "activeSnapshots",
+            (SELECT count(*) FROM focowiki.search_projections) AS "searchProjections",
+            (SELECT count(*) FROM focowiki.object_registrations) AS "objectRegistrations",
+            (SELECT count(*) FROM focowiki.object_owners) AS "objectOwners",
+            (SELECT count(*) FROM focowiki.cleanup_actions) AS "cleanupActions"
         `;
       case "globalRuntimeSettings":
         return sql`
-          SELECT key, version, source, updated_at AS "updatedAt"
-          FROM focowiki.runtime_settings
-          ORDER BY key
-          LIMIT 100
+          SELECT revision.public_id AS id,
+                 revision.checksum_sha256 AS "checksumSha256",
+                 revision.created_at AS "createdAt"
+          FROM focowiki.runtime_setting_current current
+          JOIN focowiki.runtime_setting_revisions revision
+            ON revision.public_id = current.revision_public_id
+          WHERE current.singleton = true
+          LIMIT 1
         `;
       case "globalWorkers":
         return sql`
-          SELECT role, active_job_count AS "activeJobCount",
-                 last_seen_at AS "lastSeenAt", updated_at AS "updatedAt"
-          FROM focowiki.role_heartbeats
-          ORDER BY role, last_seen_at DESC
+          SELECT work_kind AS role, state, count(*) AS "activeJobCount",
+                 min(updated_at) AS "oldestUpdatedAt"
+          FROM focowiki.operation_work_items
+          GROUP BY work_kind, state
+          ORDER BY work_kind, state
           LIMIT 100
         `;
       case "globalKnowledgeBases":
         return sql`
-          SELECT id, active_generation_id AS "activeGenerationId",
-                 resource_revision AS "resourceRevision",
-                 catalog_generation AS "catalogGeneration",
-                 deleted_at AS "deletedAt"
-          FROM focowiki.knowledge_bases
-          ORDER BY created_at, id
+          SELECT knowledge_base.public_id AS id,
+                 knowledge_base.revision AS "resourceRevision",
+                 snapshot.release_root_public_id AS "activeRootPublicId",
+                 snapshot.revision AS "activeRevision",
+                 knowledge_base.deleted_at AS "deletedAt"
+          FROM focowiki.knowledge_bases knowledge_base
+          LEFT JOIN focowiki.active_snapshots snapshot
+            ON snapshot.knowledge_base_id = knowledge_base.public_id
+          ORDER BY knowledge_base.created_at, knowledge_base.public_id
           LIMIT 10000
         `;
-      case "globalImmutableObjects":
+      case "globalObjectRegistrations":
         return sql`
-          SELECT lifecycle_state AS "lifecycleState",
-                 count(*) AS count,
-                 coalesce(sum(size_bytes), 0) AS "totalSizeBytes"
-          FROM focowiki.immutable_objects
-          GROUP BY lifecycle_state
-          ORDER BY lifecycle_state
-          LIMIT 20
+          SELECT state, object_format AS "objectFormat", count(*) AS count,
+                 coalesce(sum(byte_count), 0) AS "totalSizeBytes"
+          FROM focowiki.object_registrations
+          GROUP BY state, object_format
+          ORDER BY state, object_format
+          LIMIT 100
         `;
       case "knowledgeBase":
         return sql`
-          SELECT id, name, description,
-                 active_generation_id AS "activeGenerationId",
-                 resource_revision AS "resourceRevision",
-                 catalog_generation AS "catalogGeneration",
-                 deleted_at AS "deletedAt"
-          FROM focowiki.knowledge_bases
-          WHERE id = ${knowledgeBaseId}
+          SELECT knowledge_base.public_id AS id, knowledge_base.name,
+                 knowledge_base.description,
+                 knowledge_base.revision AS "resourceRevision",
+                 snapshot.release_root_public_id AS "activeRootPublicId",
+                 snapshot.revision AS "activeRevision",
+                 knowledge_base.deleted_at AS "deletedAt"
+          FROM focowiki.knowledge_bases knowledge_base
+          LEFT JOIN focowiki.active_snapshots snapshot
+            ON snapshot.knowledge_base_id = knowledge_base.public_id
+          WHERE knowledge_base.public_id = ${knowledgeBaseId}
           LIMIT 1
+        `;
+      case "liveWorkItemCount":
+        return sql`
+          SELECT count(*) AS "liveCount"
+          FROM focowiki.operation_work_items
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+            AND state IN ('queued', 'running', 'retry')
         `;
       case "uploadSessions":
         return sql`
-          SELECT id, state, declared_file_count AS "declaredFileCount",
-                 selected_count AS "selectedCount",
-                 upload_required_count AS "uploadRequiredCount",
-                 skipped_existing_count AS "skippedExistingCount",
-                 waiting_reservation_count AS "waitingReservationCount",
-                 rejected_deleting_count AS "rejectedDeletingCount",
-                 uploaded_count AS "uploadedCount",
-                 failed_count AS "failedCount",
-                 finalized_count AS "finalizedCount",
-                 error_code AS "errorCode", expires_at AS "expiresAt",
-                 completed_at AS "completedAt", updated_at AS "updatedAt"
+          SELECT public_id AS id, operation_public_id AS "operationId", state,
+                 expected_entry_count AS "expectedEntryCount",
+                 expected_byte_count AS "expectedByteCount",
+                 received_entry_count AS "receivedEntryCount",
+                 received_byte_count AS "receivedByteCount",
+                 expires_at AS "expiresAt", updated_at AS "updatedAt"
           FROM focowiki.upload_sessions
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY created_at, public_id
           LIMIT 50000
         `;
       case "uploadEntries":
         return sql`
-          SELECT entry.id, entry.session_id AS "sessionId",
-                 entry.source_file_id AS "sourceFileId",
-                 entry.source_directory_id AS "sourceDirectoryId",
-                 entry.relative_path AS "relativePath",
-                 entry.disposition, entry.transfer_state AS "transferState",
-                 entry.existing_resource_revision AS "existingResourceRevision",
-                 entry.error_code AS "errorCode",
-                 entry.finalized_at AS "finalizedAt"
-          FROM focowiki.upload_session_entries entry
-          WHERE entry.knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY entry.session_id, entry.sequence_number
+          SELECT upload_session_public_id AS "sessionId",
+                 entry_public_id AS id,
+                 source_file_public_id AS "sourceFileId",
+                 logical_path AS "logicalPath", state,
+                 object_id AS "objectId", updated_at AS "updatedAt"
+          FROM focowiki.upload_entries
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY upload_session_public_id, entry_public_id
           LIMIT 50000
         `;
       case "operations":
         return sql`
-          SELECT id, operation_kind AS "operationKind", state,
+          SELECT public_id AS id, operation_kind AS "operationKind", state,
                  expected_resource_revision AS "expectedResourceRevision",
-                 candidate_catalog_generation AS "candidateCatalogGeneration",
-                 error_code AS "errorCode", completed_at AS "completedAt",
-                 updated_at AS "updatedAt"
-          FROM focowiki.resource_operations
+                 target_kind AS "targetKind", target_public_id AS "targetId",
+                 candidate_relative_path AS "candidateRelativePath",
+                 completed_at AS "completedAt", updated_at AS "updatedAt"
+          FROM focowiki.operations
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY created_at, public_id
           LIMIT 50000
         `;
-      case "operationTargets":
+      case "workItems":
         return sql`
-          SELECT target.operation_id AS "operationId",
-                 target.target_kind AS "targetKind",
-                 target.target_id AS "targetId",
-                 target.expected_resource_revision AS "expectedResourceRevision",
-                 target.sequence_number AS "sequenceNumber"
-          FROM focowiki.resource_operation_targets target
-          JOIN focowiki.resource_operations operation
-            ON operation.id = target.operation_id
-          WHERE operation.knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY target.operation_id, target.sequence_number
+          SELECT operation_public_id AS "operationId", work_kind AS "workKind",
+                 state, operation_revision AS "operationRevision",
+                 attempt_count AS "attemptCount", safe_error_code AS "safeErrorCode",
+                 checkpoint, lease_expires_at AS "leaseExpiresAt",
+                 next_attempt_at AS "nextAttemptAt", updated_at AS "updatedAt"
+          FROM focowiki.operation_work_items
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY updated_at, operation_public_id
+          LIMIT 50000
+        `;
+      case "operationResults":
+        return sql`
+          SELECT public_id AS id, operation_kind AS "operationKind",
+                 terminal_state AS state, result_code AS "resultCode",
+                 safe_message AS "safeMessage", result_summary AS summary,
+                 completed_at AS "completedAt", expires_at AS "expiresAt"
+          FROM focowiki.operation_results
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY completed_at, public_id
+          LIMIT 50000
+        `;
+      case "operationDependencies":
+        return sql`
+          SELECT operation_public_id AS "operationId",
+                 dependency_operation_public_id AS "dependencyOperationId"
+          FROM focowiki.operation_dependencies
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY operation_public_id, dependency_operation_public_id
           LIMIT 50000
         `;
       case "sourceDirectories":
         return sql`
-          SELECT id, parent_id AS "parentId", relative_path AS "relativePath",
-                 depth, resource_revision AS "resourceRevision",
-                 deletion_intent_id AS "deletionIntentId",
-                 candidate_operation_id AS "candidateOperationId",
-                 candidate_relative_path AS "candidateRelativePath",
-                 deleted_at AS "deletedAt", updated_at AS "updatedAt"
+          SELECT public_id AS id, parent_public_id AS "parentId",
+                 logical_path AS "logicalPath", revision AS "resourceRevision",
+                 deleted_at AS "deletedAt"
           FROM focowiki.source_directories
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY depth, relative_path, id
+          ORDER BY logical_path, public_id
           LIMIT 50000
         `;
       case "sourceFiles":
         return sql`
-          SELECT id, relative_path AS "relativePath",
-                 directory_id AS "directoryId",
-                 active_revision_id AS "activeRevisionId",
-                 resource_revision AS "resourceRevision",
-                 content_revision AS "contentRevision",
-                 processing_status AS "processingStatus",
-                 processing_stage AS "processingStage",
-                 generated_output_status AS "generatedOutputStatus",
-                 terminal_failure_stage AS "terminalFailureStage",
-                 terminal_failure_code AS "terminalFailureCode",
-                 terminal_failure_message AS "terminalFailureMessage",
-                 terminal_failure_retry_kind AS "terminalFailureRetryKind",
-                 candidate_operation_id AS "candidateOperationId",
-                 candidate_revision_id AS "candidateRevisionId",
-                 candidate_relative_path AS "candidateRelativePath",
-                 deletion_intent_id AS "deletionIntentId",
-                 task_deleted_at AS "taskDeletedAt", deleted_at AS "deletedAt"
-          FROM focowiki.source_files
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY relative_path, id
+          SELECT source.public_id AS id, source.directory_public_id AS "directoryId",
+                 source.logical_path AS "logicalPath", source.status,
+                 source.revision AS "resourceRevision",
+                 current.source_revision_public_id AS "currentRevisionId",
+                 source.safe_error_code AS "safeErrorCode",
+                 source.safe_error_message AS "safeErrorMessage",
+                 source.deleted_at AS "deletedAt", source.updated_at AS "updatedAt"
+          FROM focowiki.source_files source
+          LEFT JOIN focowiki.source_file_current_revisions current
+            ON current.knowledge_base_id = source.knowledge_base_id
+           AND current.source_file_public_id = source.public_id
+          WHERE source.knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY source.logical_path, source.public_id
           LIMIT 50000
         `;
       case "sourceRevisions":
         return sql`
-          SELECT id, source_file_id AS "sourceFileId", revision,
-                 processing_status AS "processingStatus",
-                 checksum_sha256 AS "checksumSha256", created_at AS "createdAt"
+          SELECT public_id AS id, source_file_public_id AS "sourceFileId",
+                 object_id AS "objectId", checksum_sha256 AS "checksumSha256",
+                 byte_count AS "byteCount", revision_role AS "revisionRole",
+                 expires_at AS "expiresAt", created_at AS "createdAt"
           FROM focowiki.source_revisions
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY source_file_id, revision, id
+          ORDER BY source_file_public_id, created_at, public_id
           LIMIT 50000
         `;
-      case "dispatchMarkers":
+      case "graphNodes":
         return sql`
-          SELECT id, source_file_id AS "sourceFileId",
-                 source_revision_id AS "sourceRevisionId",
-                 sequence_number AS "sequenceNumber", status,
-                 run_after AS "runAfter", claimed_at AS "claimedAt",
-                 dispatched_at AS "dispatchedAt",
-                 last_error_code AS "lastErrorCode",
-                 updated_at AS "updatedAt"
-          FROM focowiki.source_dispatch_markers
+          SELECT public_id AS id, source_file_public_id AS "sourceFileId",
+                 source_revision_public_id AS "sourceRevisionId",
+                 logical_path AS "logicalPath", node_kind AS "nodeKind",
+                 revision AS "resourceRevision"
+          FROM focowiki.graph_nodes
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY sequence_number, id
+          ORDER BY logical_path, public_id
           LIMIT 50000
         `;
-      case "sourceEvents":
+      case "graphEdges":
         return sql`
-          SELECT id, source_file_id AS "sourceFileId",
-                 stage_key AS "stageKey", message_key AS "messageKey",
-                 severity, started_at AS "startedAt", ended_at AS "endedAt",
-                 created_at AS "createdAt"
-          FROM focowiki.source_file_events
+          SELECT public_id AS id, from_node_public_id AS "fromNodeId",
+                 to_node_public_id AS "toNodeId", relation, edge_source AS "edgeSource",
+                 revision AS "resourceRevision"
+          FROM focowiki.graph_edges
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY from_node_public_id, to_node_public_id, public_id
           LIMIT 50000
         `;
-      case "deletionIntents":
+      case "graphEvidenceRefs":
         return sql`
-          SELECT id, target_kind AS "targetKind", target_id AS "targetId",
-                 catalog_generation AS "catalogGeneration", state,
-                 attempt_count AS "attemptCount",
-                 error_code AS "errorCode", completed_at AS "completedAt",
-                 updated_at AS "updatedAt"
-          FROM focowiki.deletion_intents
+          SELECT public_id AS id, node_public_id AS "nodeId",
+                 edge_public_id AS "edgeId", source_file_public_id AS "sourceFileId",
+                 source_revision_public_id AS "sourceRevisionId",
+                 logical_path AS "logicalPath", checksum_sha256 AS "checksumSha256"
+          FROM focowiki.graph_evidence_refs
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY public_id
           LIMIT 50000
         `;
-      case "roleJobs":
+      case "releaseRoots":
         return sql`
-          SELECT id, role, kind, source_file_id AS "sourceFileId",
-                 source_revision_id AS "sourceRevisionId",
-                 generation_id AS "generationId", status,
-                 run_after AS "runAfter", attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts", locked_at AS "lockedAt",
-                 heartbeat_at AS "heartbeatAt",
-                 completed_at AS "completedAt", failed_at AS "failedAt",
-                 last_error_code AS "lastErrorCode",
-                 last_error_message AS "lastErrorMessage",
-                 updated_at AS "updatedAt"
-          FROM focowiki.role_jobs
+          SELECT public_id AS id, base_root_public_id AS "baseRootId",
+                 root_role AS "rootRole", revision AS "resourceRevision",
+                 manifest_checksum_sha256 AS "manifestChecksumSha256",
+                 expires_at AS "expiresAt", created_at AS "createdAt"
+          FROM focowiki.release_roots
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY created_at, public_id
           LIMIT 50000
         `;
-      case "generations":
+      case "releaseShards":
         return sql`
-          SELECT id,
-                 predecessor_generation_id AS "predecessorGenerationId",
-                 successor_generation_id AS "successorGenerationId",
-                 state, format_version AS "formatVersion",
-                 safe_error_code AS "safeErrorCode",
-                 safe_error_message AS "safeErrorMessage",
-                 frozen_at AS "frozenAt", validated_at AS "validatedAt",
-                 activated_at AS "activatedAt", failed_at AS "failedAt",
-                 updated_at AS "updatedAt"
-          FROM focowiki.publication_generations
+          SELECT public_id AS id, logical_kind AS "logicalKind",
+                 first_logical_path AS "firstLogicalPath",
+                 last_logical_path AS "lastLogicalPath",
+                 record_count AS "recordCount", byte_count AS "byteCount",
+                 object_id AS "objectId", checksum_sha256 AS "checksumSha256"
+          FROM focowiki.release_shards
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
+          ORDER BY logical_kind, first_logical_path, public_id
           LIMIT 50000
         `;
-      case "publicationProgress":
+      case "releaseRootShards":
         return sql`
-          SELECT generation_id AS "generationId", stage,
-                 processed_impact_count AS "processedImpactCount",
-                 total_impact_count AS "totalImpactCount",
-                 touched_shard_count AS "touchedShardCount",
-                 heartbeat_at AS "heartbeatAt",
-                 completed_at AS "completedAt",
-                 safe_error_code AS "safeErrorCode",
-                 safe_error_message AS "safeErrorMessage",
-                 updated_at AS "updatedAt"
-          FROM focowiki.publication_progress
+          SELECT release_root_public_id AS "releaseRootId",
+                 release_shard_public_id AS "releaseShardId", ordinal
+          FROM focowiki.release_root_shards
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY updated_at, generation_id
+          ORDER BY release_root_public_id, ordinal, release_shard_public_id
           LIMIT 50000
         `;
-      case "publicationImpacts":
+      case "releaseCatalogEntries":
         return sql`
-          SELECT id, generation_id AS "generationId",
-                 projection_kind AS "projectionKind",
-                 projection_key AS "projectionKey",
-                 record_identity AS "recordIdentity", action, status,
-                 attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts",
-                 last_error_code AS "lastErrorCode",
-                 last_error_message AS "lastErrorMessage",
-                 updated_at AS "updatedAt"
-          FROM focowiki.publication_impacts
+          SELECT release_root_public_id AS "releaseRootId",
+                 logical_path AS "logicalPath", entry_kind AS "entryKind",
+                 source_file_public_id AS "sourceFileId", object_id AS "objectId",
+                 checksum_sha256 AS "checksumSha256", byte_count AS "byteCount",
+                 ordinal
+          FROM focowiki.release_catalog_entries
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY generation_id, id
+          ORDER BY release_root_public_id, logical_path
           LIMIT 50000
         `;
-      case "publicationSubtasks":
+      case "releaseCatalogTombstones":
         return sql`
-          SELECT id, generation_id AS "generationId",
-                 task_kind AS "taskKind",
-                 projection_kind AS "projectionKind",
-                 physical_partition AS "physicalPartition", state,
-                 processed_count AS "processedCount",
-                 total_count AS "totalCount",
-                 attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts",
-                 lease_expires_at AS "leaseExpiresAt",
-                 last_error_code AS "lastErrorCode",
-                 last_error_message AS "lastErrorMessage",
-                 updated_at AS "updatedAt"
-          FROM focowiki.publication_subtasks
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY generation_id, task_kind, physical_partition, id
-          LIMIT 50000
-        `;
-      case "projectionInputs":
-        return sql`
-          SELECT generation_id AS "generationId", input_key AS "inputKey",
-                 updated_at AS "updatedAt"
-          FROM focowiki.publication_projection_inputs
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY generation_id, input_key
-          LIMIT 50000
-        `;
-      case "generationProjections":
-        return sql`
-          SELECT generation_id AS "generationId",
-                 projection_kind AS "projectionKind",
-                 record_id AS "recordId", action, source_file_id AS "sourceFileId",
-                 related_source_file_id AS "relatedSourceFileId",
+          SELECT release_root_public_id AS "releaseRootId",
                  logical_path AS "logicalPath"
-          FROM focowiki.generation_projection_records
+          FROM focowiki.release_catalog_tombstones
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY generation_id, projection_kind, record_id
+          ORDER BY release_root_public_id, logical_path
           LIMIT 50000
         `;
-      case "generationObjectRefs":
+      case "searchProjections":
         return sql`
-          SELECT generation_id AS "generationId", ref_kind AS "refKind",
-                 ref_key AS "refKey", file_id AS "fileId", action,
-                 checksum_sha256 AS "checksumSha256",
-                 format_version AS "formatVersion",
-                 logical_path AS "logicalPath",
-                 source_file_id AS "sourceFileId",
-                 projection_shard_id AS "projectionShardId"
-          FROM focowiki.generation_object_refs
+          SELECT public_id AS id, projection_role AS role, state,
+                 revision AS "resourceRevision", document_count AS "documentCount",
+                 safe_error_code AS "safeErrorCode", updated_at AS "updatedAt"
+          FROM focowiki.search_projections
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY generation_id, ref_kind, ref_key
-          LIMIT 50000
+          ORDER BY role, public_id
+          LIMIT 10
         `;
-      case "immutableObjects":
+      case "activeSnapshots":
         return sql`
-          SELECT DISTINCT object.checksum_sha256 AS "checksumSha256",
-                 object.format_version AS "formatVersion",
-                 object.lifecycle_state AS "lifecycleState",
-                 object.size_bytes AS "sizeBytes",
-                 object.write_attempt_count AS "writeAttemptCount",
-                 object.last_write_error_code AS "lastWriteErrorCode",
-                 object.integrity_error_code AS "integrityErrorCode"
-          FROM focowiki.generation_object_refs ref
-          JOIN focowiki.immutable_objects object
-            ON object.checksum_sha256 = ref.checksum_sha256
-           AND object.format_version = ref.format_version
-          WHERE ref.knowledge_base_id = ${knowledgeBaseId}
-            AND ref.action = 'upsert'
-          ORDER BY object.checksum_sha256, object.format_version
-          LIMIT 50000
-        `;
-      case "activeProjections":
-        return sql`
-          SELECT projection_kind AS "projectionKind",
-                 record_id AS "recordId",
-                 last_changed_generation_id AS "lastChangedGenerationId",
-                 source_file_id AS "sourceFileId",
-                 related_source_file_id AS "relatedSourceFileId",
-                 logical_path AS "logicalPath",
-                 parent_path AS "parentPath"
-          FROM focowiki.active_projection_records
+          SELECT release_root_public_id AS "releaseRootId",
+                 search_projection_public_id AS "searchProjectionId",
+                 revision AS "resourceRevision",
+                 activated_by_operation_public_id AS "operationId",
+                 publicly_visible_at AS "publiclyVisibleAt"
+          FROM focowiki.active_snapshots
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY projection_kind, record_id
+          LIMIT 1
+        `;
+      case "releaseCandidates":
+        return sql`
+          SELECT public_id AS id, operation_public_id AS "operationId",
+                 candidate_root_public_id AS "candidateRootId",
+                 expected_active_root_public_id AS "expectedActiveRootId",
+                 expected_active_revision AS "expectedActiveRevision", state,
+                 reason_code AS "reasonCode", updated_at AS "updatedAt"
+          FROM focowiki.release_candidates
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY created_at, public_id
+          LIMIT 100
+        `;
+      case "releaseCandidateValidations":
+        return sql`
+          SELECT validation.candidate_public_id AS "candidateId",
+                 validation.search_projection_public_id AS "searchProjectionId",
+                 validation.object_owner_count AS "objectOwnerCount",
+                 validation.search_document_count AS "searchDocumentCount",
+                 validation.graph_node_count AS "graphNodeCount",
+                 validation.graph_edge_count AS "graphEdgeCount",
+                 validation.generated_entry_count AS "generatedEntryCount",
+                 validation.validated_at AS "validatedAt"
+          FROM focowiki.release_candidate_validations validation
+          WHERE validation.knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY validation.validated_at, validation.candidate_public_id
+          LIMIT 100
+        `;
+      case "releaseEventSummaries":
+        return sql`
+          SELECT public_id AS id, operation_public_id AS "operationId",
+                 candidate_public_id AS "candidateId",
+                 release_root_public_id AS "releaseRootId", outcome,
+                 result_code AS "resultCode", safe_message AS "safeMessage",
+                 revision AS "resourceRevision", created_at AS "createdAt"
+          FROM focowiki.release_event_summaries
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY created_at, public_id
           LIMIT 50000
         `;
-      case "projectionRepairs":
+      case "objectOwners":
         return sql`
-          SELECT repair_version AS "repairVersion",
-                 base_generation_id AS "baseGenerationId",
-                 target_generation_id AS "targetGenerationId", state,
+          SELECT public_id AS id, object_id AS "objectId", owner_kind AS "ownerKind",
+                 source_revision_public_id AS "sourceRevisionId",
+                 release_root_public_id AS "releaseRootId",
+                 release_shard_public_id AS "releaseShardId",
+                 operation_public_id AS "operationId"
+          FROM focowiki.object_owners
+          WHERE knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY object_id, owner_kind, public_id
+          LIMIT 50000
+        `;
+      case "objectRegistrations":
+        return sql`
+          SELECT DISTINCT registration.object_id AS id,
+                 registration.checksum_sha256 AS "checksumSha256",
+                 registration.byte_count AS "byteCount",
+                 registration.object_format AS "objectFormat", registration.state,
+                 registration.zero_owner_since AS "zeroOwnerSince"
+          FROM focowiki.object_owners owner
+          JOIN focowiki.object_registrations registration
+            ON registration.object_id = owner.object_id
+          WHERE owner.knowledge_base_id = ${knowledgeBaseId}
+          ORDER BY registration.object_id
+          LIMIT 50000
+        `;
+      case "cleanupActions":
+        return sql`
+          SELECT public_id AS id, operation_public_id AS "operationId",
+                 action_kind AS "actionKind", cleanup_plane AS "cleanupPlane",
+                 resource_kind AS "resourceKind",
+                 resource_public_id AS "resourceId", required, state,
                  attempt_count AS "attemptCount",
-                 next_attempt_at AS "nextAttemptAt",
-                 last_error_code AS "lastErrorCode",
-                 completed_at AS "completedAt", updated_at AS "updatedAt"
-          FROM focowiki.knowledge_base_projection_repairs
+                 safe_error_code AS "safeErrorCode", updated_at AS "updatedAt"
+          FROM focowiki.cleanup_actions
           WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY repair_version
-          LIMIT 50000
-        `;
-      case "projectionRepairSubtasks":
-        return sql`
-          SELECT repair_version AS "repairVersion",
-                 target_generation_id AS "targetGenerationId",
-                 task_kind AS "taskKind", partition_key AS "partitionKey",
-                 state, expected_record_count AS "expectedRecordCount",
-                 processed_record_count AS "processedRecordCount",
-                 attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts",
-                 lease_expires_at AS "leaseExpiresAt",
-                 last_error_code AS "lastErrorCode",
-                 updated_at AS "updatedAt"
-          FROM focowiki.projection_repair_subtasks
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY repair_version, phase_order, partition_key
-          LIMIT 50000
-        `;
-      case "lexicalRebuilds":
-        return sql`
-          SELECT target_generation_id AS "targetGenerationId",
-                 base_generation_id AS "baseGenerationId", state, phase,
-                 processed_source_count AS "processedSourceCount",
-                 total_source_count AS "totalSourceCount",
-                 rebase_count AS "rebaseCount",
-                 attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts",
-                 last_error_code AS "lastErrorCode",
-                 updated_at AS "updatedAt"
-          FROM focowiki.knowledge_base_lexical_rebuilds
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, target_generation_id
-          LIMIT 50000
-        `;
-      case "lexicalWorkItems":
-        return sql`
-          SELECT work.target_generation_id AS "targetGenerationId",
-                 work.source_file_id AS "sourceFileId",
-                 work.source_revision_id AS "sourceRevisionId",
-                 work.logical_path AS "logicalPath", work.state,
-                 work.attempt_count AS "attemptCount",
-                 work.max_attempts AS "maxAttempts",
-                 work.lease_expires_at AS "leaseExpiresAt",
-                 work.last_error_stage AS "lastErrorStage",
-                 work.last_error_code AS "lastErrorCode",
-                 work.updated_at AS "updatedAt"
-          FROM focowiki.lexical_rebuild_work_items work
-          JOIN focowiki.knowledge_base_lexical_rebuilds rebuild
-            ON rebuild.knowledge_base_id = work.knowledge_base_id
-           AND rebuild.target_generation_id = work.target_generation_id
-          WHERE work.knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY work.target_generation_id, work.source_file_id
-          LIMIT 50000
-        `;
-      case "compactionJobs":
-        return sql`
-          SELECT id, projection_kind AS "projectionKind",
-                 logical_partition AS "logicalPartition",
-                 active_generation_id AS "activeGenerationId",
-                 state, attempt_count AS "attemptCount",
-                 max_attempts AS "maxAttempts",
-                 lease_expires_at AS "leaseExpiresAt",
-                 last_error_code AS "lastErrorCode",
-                 updated_at AS "updatedAt"
-          FROM focowiki.projection_compaction_jobs
-          WHERE knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY created_at, id
-          LIMIT 50000
-        `;
-      case "cleanupObjectDeletions":
-        return sql`
-          SELECT deletion.job_id AS "jobId", deletion.status,
-                 deletion.deleted_at AS "deletedAt",
-                 deletion.updated_at AS "updatedAt"
-          FROM focowiki.cleanup_object_deletions deletion
-          WHERE deletion.knowledge_base_id = ${knowledgeBaseId}
-          ORDER BY deletion.created_at, deletion.job_id
+          ORDER BY sequence_number, public_id
           LIMIT 50000
         `;
       default:

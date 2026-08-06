@@ -214,6 +214,40 @@ describe("Meilisearch transport", () => {
     expect(SearchEngineTransportError).toBeDefined();
   });
 
+  it("recovers failed document tasks by durable correlation", async () => {
+    const getTasks = vi.fn(async () => ({
+      results: [{
+        uid: 18,
+        status: "failed",
+        customMetadata: "candidate-batch-18",
+        error: { code: "invalid_document" }
+      }]
+    }));
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "server-secret",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      { client: { tasks: { getTasks } } as never }
+    );
+
+    await expect(transport.findTaskByCorrelation?.({
+      indexUid: "candidate-index",
+      correlation: "candidate-batch-18"
+    })).resolves.toEqual({
+      taskUid: 18,
+      status: "failed",
+      errorCode: "SEARCH_INDEX_TASK_FAILED"
+    });
+    expect(getTasks).toHaveBeenCalledWith(expect.objectContaining({
+      indexUids: ["candidate-index"],
+      statuses: ["enqueued", "processing", "succeeded", "failed", "canceled"]
+    }));
+  });
+
   it("reads global index-swap tasks through the diagnostics client", async () => {
     const runtimeClient = {
       tasks: {
@@ -299,6 +333,197 @@ describe("Meilisearch transport", () => {
       indexUid: "content",
       documentId: "missing"
     })).resolves.toBeNull();
+  });
+
+  it("pages candidate documents and reads their authoritative provider count", async () => {
+    const getStats = vi.fn(async () => ({ numberOfDocuments: 2 }));
+    const getDocuments = vi.fn(async () => ({
+      results: [{ id: "one" }, { id: "two" }],
+      total: 2,
+      offset: 0,
+      limit: 2
+    }));
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "server-secret",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      {
+        client: {
+          index() {
+            return { getStats, getDocuments };
+          }
+        } as never
+      }
+    );
+
+    await expect(transport.getIndexStats?.({ indexUid: "candidate" }))
+      .resolves.toEqual({ numberOfDocuments: 2 });
+    await expect(transport.listDocuments?.({
+      indexUid: "candidate",
+      offset: 0,
+      limit: 2,
+      fields: ["id"]
+    })).resolves.toEqual({
+      documents: [{ id: "one" }, { id: "two" }],
+      total: 2,
+      offset: 0
+    });
+    expect(getDocuments).toHaveBeenCalledWith({
+      offset: 0,
+      limit: 2,
+      fields: ["id"]
+    });
+  });
+
+  it("preserves equality-only filter settings returned by Meilisearch", async () => {
+    const filterableAttributes = [{
+      attributePatterns: ["knowledgeBaseId", "documentKind"],
+      features: {
+        facetSearch: false,
+        filter: { equality: true, comparison: false }
+      }
+    }];
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "server-secret",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      {
+        client: {
+          index() {
+            return {
+              async getSettings() {
+                return {
+                  searchableAttributes: ["searchText"],
+                  filterableAttributes,
+                  displayedAttributes: ["id"],
+                  sortableAttributes: [],
+                  rankingRules: ["words"],
+                  distinctAttribute: null,
+                  pagination: { maxTotalHits: 100 },
+                  searchCutoffMs: 500,
+                  localizedAttributes: [],
+                  typoTolerance: { disableOnAttributes: [] }
+                };
+              }
+            };
+          }
+        } as never
+      }
+    );
+
+    await expect(transport.getSettings("content")).resolves.toMatchObject({
+      filterableAttributes
+    });
+  });
+
+  it("exposes bounded cleanup inventory, task deletion, stats, and compaction", async () => {
+    const getRawIndexes = vi.fn(async () => ({
+      results: [{
+        uid: "owned_vnext_active",
+        primaryKey: "id",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-02T00:00:00.000Z"
+      }],
+      total: 1,
+      offset: 0,
+      limit: 100
+    }));
+    const getTasks = vi.fn(async () => ({
+      results: [{
+        uid: 31,
+        indexUid: "owned_vnext_active",
+        status: "succeeded",
+        finishedAt: "2026-07-01T00:00:00.000Z"
+      }],
+      total: 1,
+      limit: 100,
+      from: null,
+      next: null
+    }));
+    const deleteTasks = vi.fn(async () => ({ taskUid: 32 }));
+    const runtimeClient = {
+      getRawIndexes
+    };
+    const diagnosticsClient = {
+      getStats: vi.fn(async () => ({
+        databaseSize: 100,
+        usedDatabaseSize: 60,
+        indexes: {}
+      })),
+      tasks: { getTasks, deleteTasks }
+    };
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ taskUid: 33 }), {
+      status: 202,
+      headers: { "content-type": "application/json" }
+    }));
+    const transport = createMeilisearchTransport(
+      {
+        endpoint: "http://search.internal:7700",
+        apiKey: "prefix-scoped-runtime-key",
+        metricsApiKey: "global-diagnostics-key",
+        timeoutMs: 100,
+        maxAttempts: 1,
+        retryDelayMs: 1
+      },
+      {
+        client: runtimeClient as never,
+        diagnosticsClient: diagnosticsClient as never,
+        fetch: fetch as typeof globalThis.fetch
+      }
+    );
+
+    await expect(transport.listIndexes?.({ offset: 0, limit: 100 }))
+      .resolves.toEqual({
+        indexes: [{
+          uid: "owned_vnext_active",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          updatedAt: "2026-07-02T00:00:00.000Z"
+        }],
+        total: 1,
+        offset: 0
+      });
+    expect(getRawIndexes).toHaveBeenCalledOnce();
+    await expect(transport.listFinishedTasks?.({
+      statuses: ["succeeded", "failed", "canceled"],
+      beforeFinishedAt: "2026-08-01T00:00:00.000Z",
+      from: null,
+      limit: 100
+    })).resolves.toEqual({
+      tasks: [{
+        taskUid: 31,
+        indexUid: "owned_vnext_active",
+        status: "succeeded",
+        finishedAt: "2026-07-01T00:00:00.000Z"
+      }],
+      next: null
+    });
+    await expect(transport.deleteFinishedTasks?.({ taskUids: [31] }))
+      .resolves.toEqual({ taskUid: 32 });
+    await expect(transport.getDatabaseStats?.()).resolves.toEqual({
+      databaseSizeBytes: 100,
+      usedDatabaseSizeBytes: 60
+    });
+    await expect(transport.compactIndex?.("owned_vnext_active"))
+      .resolves.toEqual({ taskUid: 33 });
+
+    expect(deleteTasks).toHaveBeenCalledWith({ uids: [31] });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://search.internal:7700/indexes/owned_vnext_active/compact",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer prefix-scoped-runtime-key"
+        })
+      })
+    );
   });
 
   it("maps a missing active search index to retryable unavailability", async () => {

@@ -22,7 +22,7 @@ describe("read latency logger", () => {
 
     expect(entries).toEqual([
       [
-        "API read request completed",
+        "api.read_completed",
         {
           plane: "admin",
           endpoint: "source_file_list",
@@ -87,7 +87,7 @@ describe("read latency logger", () => {
 
     expect(entries).toEqual([
       [
-        "API read request completed",
+        "api.read_completed",
         {
           plane: "developer_openapi",
           endpoint: "source_file_list",
@@ -96,7 +96,7 @@ describe("read latency logger", () => {
         }
       ],
       [
-        "API read request completed",
+        "api.read_completed",
         {
           plane: "developer_openapi",
           endpoint: "file_tree",

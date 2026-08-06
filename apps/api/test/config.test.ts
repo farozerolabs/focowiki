@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { parseRuntimeConfig } from "../src/config.js";
+import { createStorageVnextOwnedScopeProof } from "../src/storage-vnext/bootstrap/owned-scope.js";
 
 const validEnv = {
   ADMIN_USERNAME: "admin",
@@ -40,11 +41,12 @@ describe("parseRuntimeConfig", () => {
       poolMax: 10,
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
-      projectionRepairWorkerPoolMax: 8,
-      lexicalRebuildWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
-    expect(config.redis.url).toBe("redis://127.0.0.1:6379/0");
+    expect(config.redis).toEqual({
+      url: "redis://127.0.0.1:6379/0",
+      keyPrefix: "focowiki"
+    });
     expect(config.search).toEqual({
       endpoint: "http://127.0.0.1:7700",
       apiKey: "development-search-key",
@@ -81,7 +83,6 @@ describe("parseRuntimeConfig", () => {
       dirtyAgeResumeSeconds: 300,
       pendingImpactHardCount: 20_000,
       pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,
@@ -105,7 +106,6 @@ describe("parseRuntimeConfig", () => {
     expect(config.worker).toEqual({
       sourceFileConcurrency: 2,
       claimBatchSize: 10,
-      generationBatchSize: 50,
       pollIntervalMs: 1_000,
       lockTtlSeconds: 900,
       jobMaxAttempts: 3,
@@ -125,15 +125,16 @@ describe("parseRuntimeConfig", () => {
       hardDeleteObjectBatchSize: 1_000,
       hardDeleteMaxAttempts: 3,
       hardDeleteRetryDelayMs: 60_000,
-      hardDeleteFailedRetentionDays: 30,
-      hardDeleteVersionPurgeEnabled: false
+      hardDeleteFailedRetentionDays: 30
     });
     expect(config.logging).toEqual({
       level: "debug",
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect(config.okf).toEqual({
@@ -147,6 +148,15 @@ describe("parseRuntimeConfig", () => {
       "https://admin.example.com",
       "https://docs.example.com"
     ]);
+  });
+
+  it("accepts an isolated Redis key prefix", () => {
+    const config = parseRuntimeConfig({
+      ...validEnv,
+      REDIS_KEY_PREFIX: "focowiki:validation:svnext-owned"
+    });
+
+    expect(config.redis.keyPrefix).toBe("focowiki:validation:svnext-owned");
   });
 
   it("parses public OpenAPI URL while leaving key management to the database", () => {
@@ -246,6 +256,23 @@ describe("parseRuntimeConfig", () => {
     ).toThrow(/MEILI_METRICS_API_KEY/);
   });
 
+  it("accepts the canonical run-owned Meilisearch namespace", () => {
+    const proof = createStorageVnextOwnedScopeProof({
+      runId: "svnext-20260802T101443Z-7aa18b22cafe",
+      nonceHash: "a".repeat(64),
+      createdAt: "2026-08-02T02:14:43.000Z",
+      filesystemScope: join(
+        tmpdir(),
+        "svnext-20260802T101443Z-7aa18b22cafe"
+      )
+    });
+
+    expect(() => parseRuntimeConfig({
+      ...validEnv,
+      MEILI_INDEX_PREFIX: proof.searchScope
+    })).not.toThrow();
+  });
+
   it("loads production search credentials from runtime secret files", () => {
     const directory = mkdtempSync(join(tmpdir(), "focowiki-search-secrets-"));
     const apiKeyFile = join(directory, "meilisearch-api-key");
@@ -335,7 +362,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect(
@@ -355,7 +384,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
     expect(
@@ -368,7 +399,9 @@ describe("parseRuntimeConfig", () => {
       file: {
         directory: resolve(process.cwd(), "logs"),
         maxBytes: 10_485_760,
-        maxFiles: 5
+        maxFiles: 5,
+        maxTotalBytes: 1_073_741_824,
+        retentionDays: 7
       }
     });
 
@@ -384,7 +417,9 @@ describe("parseRuntimeConfig", () => {
     expect(parseRuntimeConfig(validEnv).logging?.file).toEqual({
       directory: resolve(process.cwd(), "logs"),
       maxBytes: 10_485_760,
-      maxFiles: 5
+      maxFiles: 5,
+      maxTotalBytes: 1_073_741_824,
+      retentionDays: 7
     });
 
     expect(
@@ -392,12 +427,16 @@ describe("parseRuntimeConfig", () => {
         ...validEnv,
         LOG_FILE_DIR: "runtime-logs",
         LOG_FILE_MAX_BYTES: "1024",
-        LOG_FILE_MAX_FILES: "3"
+        LOG_FILE_MAX_FILES: "3",
+        LOG_FILE_MAX_TOTAL_BYTES: "4096",
+        LOG_FILE_RETENTION_DAYS: "2"
       }).logging?.file
     ).toEqual({
       directory: resolve(process.cwd(), "runtime-logs"),
       maxBytes: 1_024,
-      maxFiles: 3
+      maxFiles: 3,
+      maxTotalBytes: 4_096,
+      retentionDays: 2
     });
 
     expect(() =>
@@ -412,6 +451,19 @@ describe("parseRuntimeConfig", () => {
         LOG_FILE_MAX_FILES: "-1"
       })
     ).toThrow(/LOG_FILE_MAX_FILES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_MAX_BYTES: "1024",
+        LOG_FILE_MAX_TOTAL_BYTES: "512"
+      })
+    ).toThrow(/LOG_FILE_MAX_TOTAL_BYTES/);
+    expect(() =>
+      parseRuntimeConfig({
+        ...validEnv,
+        LOG_FILE_RETENTION_DAYS: "0"
+      })
+    ).toThrow(/LOG_FILE_RETENTION_DAYS/);
   });
 
   it("validates trusted origins and CORS settings", () => {
@@ -557,7 +609,6 @@ describe("parseRuntimeConfig", () => {
         DATABASE_POOL_MAX: "16",
         SOURCE_WORKER_DATABASE_POOL_MAX: "9",
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "7",
-        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "8",
         MAINTENANCE_WORKER_DATABASE_POOL_MAX: "5",
         WORKER_SOURCE_FILE_CONCURRENCY: "3",
         WORKER_CLAIM_BATCH_SIZE: "12",
@@ -572,13 +623,11 @@ describe("parseRuntimeConfig", () => {
       poolMax: 16,
       sourceWorkerPoolMax: 9,
       publicationWorkerPoolMax: 7,
-      projectionRepairWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 5
       },
       worker: {
         sourceFileConcurrency: 2,
         claimBatchSize: 10,
-        generationBatchSize: 50,
         heartbeatIntervalMs: 15_000,
         sourceQueueHardDepth: 5_000,
         sourceQueueResumeDepth: 3_000,
@@ -602,8 +651,6 @@ describe("parseRuntimeConfig", () => {
       poolMax: 10,
       sourceWorkerPoolMax: 6,
       publicationWorkerPoolMax: 4,
-      projectionRepairWorkerPoolMax: 8,
-      lexicalRebuildWorkerPoolMax: 8,
       maintenanceWorkerPoolMax: 2
     });
     expect(() =>
@@ -612,18 +659,6 @@ describe("parseRuntimeConfig", () => {
         PUBLICATION_WORKER_DATABASE_POOL_MAX: "-1"
       })
     ).toThrow(/PUBLICATION_WORKER_DATABASE_POOL_MAX/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX: "-1"
-      })
-    ).toThrow(/PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX/);
-    expect(() =>
-      parseRuntimeConfig({
-        ...validEnv,
-        LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX: "-1"
-      })
-    ).toThrow(/LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX/);
   });
 
   it("uses default publication settings managed by runtime settings", () => {
@@ -641,7 +676,6 @@ describe("parseRuntimeConfig", () => {
       dirtyAgeResumeSeconds: 300,
       pendingImpactHardCount: 20_000,
       pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,
@@ -678,7 +712,6 @@ describe("parseRuntimeConfig", () => {
       dirtyAgeResumeSeconds: 300,
       pendingImpactHardCount: 20_000,
       pendingImpactResumeCount: 10_000,
-      generationRetentionDays: 7,
       indexShardSize: 1_000,
       linkIndexShardSize: 1_000,
       manifestShardSize: 1_000,

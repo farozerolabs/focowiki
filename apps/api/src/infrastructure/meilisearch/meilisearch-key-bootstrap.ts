@@ -20,10 +20,17 @@ const RUNTIME_ACTIONS = [
   "documents.*",
   "indexes.*",
   "indexes.swap",
+  "stats.get",
   "tasks.get",
   "settings.*"
 ] as const;
-const METRICS_ACTIONS = ["metrics.get", "tasks.get", "version"] as const;
+const METRICS_ACTIONS = [
+  "metrics.get",
+  "stats.get",
+  "tasks.delete",
+  "tasks.get",
+  "version"
+] as const;
 
 type KeyRole = "runtime" | "metrics";
 
@@ -81,6 +88,24 @@ export async function bootstrapMeilisearchKeys(input: {
         "Both Meilisearch runtime and metrics keys are required for an external service"
       );
     }
+    await verifyProvidedKey({
+      endpoint,
+      key: providedApiKey,
+      role: "runtime",
+      paths: ["/indexes?limit=1"],
+      fetch: input.fetch ?? globalThis.fetch,
+      maxAttempts: input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      retryDelayMs: input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
+    });
+    await verifyProvidedKey({
+      endpoint,
+      key: providedMetricsApiKey,
+      role: "metrics",
+      paths: ["/version", "/metrics"],
+      fetch: input.fetch ?? globalThis.fetch,
+      maxAttempts: input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      retryDelayMs: input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
+    });
     persistSecret(input.secretDirectory, API_KEY_FILE, providedApiKey);
     persistSecret(input.secretDirectory, METRICS_KEY_FILE, providedMetricsApiKey);
     return { source: "provided" };
@@ -105,6 +130,59 @@ export async function bootstrapMeilisearchKeys(input: {
   }
 
   return { source: "managed" };
+}
+
+async function verifyProvidedKey(input: {
+  endpoint: string;
+  key: string;
+  role: KeyRole;
+  paths: readonly string[];
+  fetch: typeof globalThis.fetch;
+  maxAttempts: number;
+  retryDelayMs: number;
+}): Promise<void> {
+  if (!Number.isSafeInteger(input.maxAttempts) || input.maxAttempts < 1) {
+    throw new Error("Meilisearch bootstrap max attempts must be a positive integer");
+  }
+  if (!Number.isSafeInteger(input.retryDelayMs) || input.retryDelayMs < 0) {
+    throw new Error("Meilisearch bootstrap retry delay must be a non-negative integer");
+  }
+
+  for (const path of input.paths) {
+    let verified = false;
+    let lastStatus: number | null = null;
+    for (let attempt = 1; attempt <= input.maxAttempts; attempt += 1) {
+      try {
+        const response = await input.fetch(new URL(path, `${input.endpoint}/`), {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${input.key}`
+          },
+          signal: AbortSignal.timeout(5_000)
+        });
+        if (response.ok) {
+          verified = true;
+          break;
+        }
+        lastStatus = response.status;
+        if (response.status < 500 && response.status !== 429) break;
+      } catch {
+        lastStatus = null;
+      }
+
+      if (attempt < input.maxAttempts) {
+        await wait(input.retryDelayMs * attempt);
+      }
+    }
+
+    if (verified) continue;
+    if (lastStatus !== null) {
+      throw new Error(
+        `Meilisearch ${input.role} key validation failed with status ${lastStatus}`
+      );
+    }
+    throw new Error(`Meilisearch ${input.role} key validation failed`);
+  }
 }
 
 export function createMeilisearchKeyUid(
@@ -302,7 +380,7 @@ function normalizeEndpoint(value: string): string {
 
 function validateIndexPrefix(value: string): string {
   const normalized = value.trim();
-  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/u.test(normalized)) {
+  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/u.test(normalized)) {
     throw new Error("MEILI_INDEX_PREFIX is invalid");
   }
   return normalized;

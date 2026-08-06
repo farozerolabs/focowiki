@@ -1,0 +1,618 @@
+import { createHash } from "node:crypto";
+import type { StorageVnextSourceFileFact } from "../catalog/ports.js";
+import { createStorageVnextProcessResourceScope } from
+  "../cleanup/process-resource-scope.js";
+import type { StorageVnextBoundedResult, StorageVnextLiveWork } from
+  "../workflow/ports.js";
+import type { StorageVnextSourceProcessingPorts } from "./ports.js";
+import type { WebhookDispatcher } from "../../webhooks/dispatcher.js";
+import { dispatchWebhookSafely } from "../../webhooks/safe-dispatch.js";
+
+type WorkerLimits = {
+  maximumConcurrency: number;
+  maximumSourceBytes: number;
+  maximumAttempts: number;
+  attemptDeadlineMilliseconds: number;
+  retryDelayMilliseconds: number;
+  resultRetentionMilliseconds: number;
+};
+
+type WorkOutcome = "completed" | "retried" | "terminal";
+
+type FailureObserver = (failure: {
+  operationPublicId: string;
+  knowledgeBaseId: string;
+  attempt: number;
+  code: string;
+  error: unknown;
+}) => void;
+
+export function createStorageVnextSourceProcessingWorker(
+  input: StorageVnextSourceProcessingPorts & {
+    limits: WorkerLimits;
+    clock: () => string;
+    onFailure?: FailureObserver;
+    webhooks?: Pick<WebhookDispatcher, "dispatch">;
+    onWebhookError?: (error: unknown) => void;
+  }
+) {
+  validateLimits(input.limits);
+  return {
+    async runOnce(request: {
+      owner: string;
+      limit: number;
+      leaseExpiresAt: string;
+      signal?: AbortSignal;
+    }): Promise<{ claimed: number; completed: number; retried: number; terminal: number }> {
+      assertClaim(request, input.limits.maximumConcurrency);
+      if (request.signal?.aborted) {
+        return { claimed: 0, completed: 0, retried: 0, terminal: 0 };
+      }
+      const work = await input.workflow.claim({
+        kinds: ["source"],
+        owner: request.owner,
+        limit: request.limit,
+        leaseExpiresAt: request.leaseExpiresAt
+      });
+      const outcomes = await Promise.all(work.map((item) =>
+        processWork(input, item, request.owner, request.signal)));
+      return {
+        claimed: work.length,
+        completed: outcomes.filter((outcome) => outcome === "completed").length,
+        retried: outcomes.filter((outcome) => outcome === "retried").length,
+        terminal: outcomes.filter((outcome) => outcome === "terminal").length
+      };
+    }
+  };
+}
+
+async function processWork(
+  input: StorageVnextSourceProcessingPorts & {
+    limits: WorkerLimits;
+    clock: () => string;
+    onFailure?: FailureObserver;
+    webhooks?: Pick<WebhookDispatcher, "dispatch">;
+    onWebhookError?: (error: unknown) => void;
+  },
+  work: StorageVnextLiveWork,
+  owner: string,
+  roleSignal: AbortSignal | undefined
+): Promise<WorkOutcome> {
+  assertClaimedWork(work, owner);
+  if (roleSignal?.aborted) {
+    await input.workflow.releaseForRetry({
+      publicId: work.publicId,
+      owner,
+      nextAttemptAt: addMilliseconds(input.clock(), input.limits.retryDelayMilliseconds),
+      reasonCode: "SOURCE_MODEL_TIMEOUT"
+    });
+    return "retried";
+  }
+  const sourceRevisionPublicId = checkpointRevision(work);
+  const current = await loadCurrentFacts(input, work, sourceRevisionPublicId);
+  if (current.outcome !== "current") {
+    await completeTerminal(input, work, owner, {
+      state: current.outcome,
+      resultCode: current.outcome === "deleted"
+        ? "KNOWLEDGE_BASE_DELETED"
+        : "SOURCE_REVISION_SUPERSEDED",
+      sourceRevisionPublicId
+    });
+    return "terminal";
+  }
+
+  const acceptedAt = input.clock();
+  await recordSourceEvent(input, {
+    kind: "accepted",
+    work,
+    sourceFile: current.sourceFile,
+    sourceRevisionPublicId,
+    createdAt: acceptedAt
+  });
+  await dispatchSourceWebhook(input, {
+    eventId: sourceEventIdentity("accepted", sourceRevisionPublicId),
+    eventType: "source_file.accepted",
+    payload: {
+      knowledgeBaseId: work.knowledgeBaseId,
+      sourceFileId: current.sourceFile.publicId,
+      sourceRevisionId: sourceRevisionPublicId
+    },
+    createdAt: acceptedAt
+  });
+
+  const processingFile = await input.catalog.updateSourceFileState({
+    knowledgeBaseId: work.knowledgeBaseId,
+    publicId: current.sourceFile.publicId,
+    metadata: current.sourceFile.metadata,
+    status: "processing",
+    safeErrorCode: null,
+    safeErrorMessage: null,
+    revisionCheck: { expectedRevision: current.sourceFile.revision }
+  });
+  const progressAt = input.clock();
+  await recordSourceEvent(input, {
+    kind: "progress",
+    work,
+    sourceFile: current.sourceFile,
+    sourceRevisionPublicId,
+    createdAt: progressAt
+  });
+  await dispatchSourceWebhook(input, {
+    eventId: sourceEventIdentity("progress", `${work.publicId}:model_assistance`),
+    eventType: "source_file.progress",
+    payload: {
+      knowledgeBaseId: work.knowledgeBaseId,
+      sourceFileId: current.sourceFile.publicId,
+      sourceRevisionId: sourceRevisionPublicId,
+      stage: "model_assistance",
+      status: "running"
+    },
+    createdAt: progressAt
+  });
+  const modelAttemptPublicId = createAttemptPublicId(work, sourceRevisionPublicId);
+  const controller = new AbortController();
+  const abortFromRole = () => controller.abort(
+    roleSignal?.reason ?? new DOMException("Source role shutting down", "AbortError")
+  );
+  roleSignal?.addEventListener("abort", abortFromRole, { once: true });
+  if (roleSignal?.aborted) abortFromRole();
+  const resources = createStorageVnextProcessResourceScope({ maximumResources: 3 });
+  resources.trackAbortController(`${modelAttemptPublicId}:request`, controller);
+  const deadline = setTimeout(() => {
+    const error = new Error("Storage vNext source model attempt timed out");
+    error.name = "TimeoutError";
+    controller.abort(error);
+  }, input.limits.attemptDeadlineMilliseconds);
+  deadline.unref?.();
+  resources.trackTimer(`${modelAttemptPublicId}:deadline`, deadline);
+
+  try {
+    const body = await input.bodyStore.readVerifiedStream({
+      objectId: current.sourceRevision.objectId,
+      checksum: current.sourceRevision.checksum,
+      byteCount: current.sourceRevision.byteCount,
+      contentType: current.sourceRevision.contentType,
+      maxBytes: input.limits.maximumSourceBytes,
+      signal: controller.signal
+    });
+    const trackedBody = trackBody(body);
+    resources.trackClosable({
+      publicId: `${modelAttemptPublicId}:body`,
+      kind: "stream",
+      close: trackedBody.close
+    });
+    const model = await input.model.extract({
+      knowledgeBaseId: work.knowledgeBaseId,
+      sourceFile: current.sourceFile,
+      sourceRevision: current.sourceRevision,
+      sourceRevisionPublicId,
+      attemptPublicId: modelAttemptPublicId,
+      body: trackedBody.body,
+      signal: controller.signal
+    });
+    if (!trackedBody.completed) throw workerError("incomplete_source_stream");
+    assertModelIdentity(current.sourceFile, sourceRevisionPublicId, model);
+    await input.workflow.saveCheckpoint({
+      publicId: work.publicId,
+      owner,
+      checkpoint: {
+        phase: "model_completed",
+        sourceRevisionPublicId,
+        modelAttemptPublicId
+      }
+    });
+    const handoff = await input.handoff.apply({
+      operationPublicId: work.publicId,
+      knowledgeBaseId: work.knowledgeBaseId,
+      settingsRevisionPublicId: work.settingsRevisionPublicId,
+      sourceFile: current.sourceFile,
+      sourceRevisionPublicId,
+      node: model.node,
+      edges: model.edges,
+      completedAt: input.clock()
+    });
+    await input.workflow.saveCheckpoint({
+      publicId: work.publicId,
+      owner,
+      checkpoint: {
+        phase: "release_handoff_completed",
+        sourceRevisionPublicId,
+        candidatePublicId: handoff.candidatePublicId,
+        releaseOperationPublicId: handoff.releaseOperationPublicId
+      }
+    });
+    await input.catalog.updateSourceFileState({
+      knowledgeBaseId: work.knowledgeBaseId,
+      publicId: current.sourceFile.publicId,
+      metadata: model.metadata,
+      status: "ready",
+      safeErrorCode: null,
+      safeErrorMessage: null,
+      revisionCheck: { expectedRevision: processingFile.revision }
+    });
+    const completedAt = input.clock();
+    await recordSourceEvent(input, {
+      kind: "completed",
+      work,
+      sourceFile: current.sourceFile,
+      sourceRevisionPublicId,
+      createdAt: completedAt
+    });
+    await input.workflow.complete({
+      publicId: work.publicId,
+      owner,
+      result: result(input, work, {
+        state: "completed",
+        resultCode: "SOURCE_PROCESSING_COMPLETED",
+        correlationPublicId: sourceRevisionPublicId,
+        summary: {
+          sourceFilePublicId: current.sourceFile.publicId,
+          sourceRevisionPublicId,
+          candidatePublicId: handoff.candidatePublicId,
+          releaseOperationPublicId: handoff.releaseOperationPublicId
+        }
+      })
+    });
+    await dispatchSourceWebhook(input, {
+      eventId: sourceEventIdentity("completed", sourceRevisionPublicId),
+      eventType: "source_file.completed",
+      payload: {
+        knowledgeBaseId: work.knowledgeBaseId,
+        sourceFileId: current.sourceFile.publicId,
+        sourceRevisionId: sourceRevisionPublicId
+      },
+      createdAt: completedAt
+    });
+    return "completed";
+  } catch (error) {
+    const code = safeFailureCode(error, controller.signal);
+    input.onFailure?.({
+      operationPublicId: work.publicId,
+      knowledgeBaseId: work.knowledgeBaseId,
+      attempt: work.attempt,
+      code,
+      error
+    });
+    if (isStaleFailure(error)) {
+      await completeTerminal(input, work, owner, {
+        state: "superseded",
+        resultCode: "SOURCE_REVISION_SUPERSEDED",
+        sourceRevisionPublicId
+      });
+      return "terminal";
+    }
+    if (work.attempt < input.limits.maximumAttempts) {
+      await input.workflow.releaseForRetry({
+        publicId: work.publicId,
+        owner,
+        nextAttemptAt: addMilliseconds(input.clock(), input.limits.retryDelayMilliseconds),
+        reasonCode: code
+      });
+      return "retried";
+    }
+    await input.catalog.updateSourceFileState({
+      knowledgeBaseId: work.knowledgeBaseId,
+      publicId: current.sourceFile.publicId,
+      metadata: current.sourceFile.metadata,
+      status: "failed",
+      safeErrorCode: code,
+      safeErrorMessage: null,
+      revisionCheck: { expectedRevision: processingFile.revision }
+    });
+    const failedAt = input.clock();
+    await recordSourceEvent(input, {
+      kind: "failed",
+      work,
+      sourceFile: current.sourceFile,
+      sourceRevisionPublicId,
+      createdAt: failedAt
+    });
+    await completeTerminal(input, work, owner, {
+      state: "failed",
+      resultCode: code,
+      sourceRevisionPublicId
+    });
+    await dispatchSourceWebhook(input, {
+      eventId: sourceEventIdentity("failed", sourceRevisionPublicId),
+      eventType: "source_file.failed",
+      payload: {
+        knowledgeBaseId: work.knowledgeBaseId,
+        sourceFileId: current.sourceFile.publicId,
+        sourceRevisionId: sourceRevisionPublicId,
+        stage: "model_assistance",
+        errorCode: code
+      },
+      createdAt: failedAt
+    });
+    return "terminal";
+  } finally {
+    roleSignal?.removeEventListener("abort", abortFromRole);
+    await resources.closeAll();
+    resources.assertIdle();
+  }
+}
+
+async function dispatchSourceWebhook(
+  input: {
+    webhooks?: Pick<WebhookDispatcher, "dispatch">;
+    onWebhookError?: (error: unknown) => void;
+  },
+  event: Parameters<WebhookDispatcher["dispatch"]>[0]
+): Promise<void> {
+  await dispatchWebhookSafely({
+    webhooks: input.webhooks,
+    event,
+    onError: input.onWebhookError
+  });
+}
+
+function sourceEventIdentity(kind: string, identity: string): string {
+  return `event-source-${kind}-${createHash("sha256").update(identity).digest("hex")}`;
+}
+
+type SourceEventKind = "accepted" | "progress" | "completed" | "failed";
+
+const SOURCE_EVENT_PRESENTATION = {
+  accepted: {
+    sequence: 10,
+    stageKey: "upload_storage",
+    messageKey: "sourceFiles.phase.uploadStorage",
+    severity: "info",
+    terminal: false
+  },
+  progress: {
+    sequence: 20,
+    stageKey: "metadata_resolution",
+    messageKey: "sourceFiles.phase.metadataResolution",
+    severity: "info",
+    terminal: false
+  },
+  completed: {
+    sequence: 30,
+    stageKey: "generation_activation",
+    messageKey: "sourceFiles.phase.generationActivation",
+    severity: "info",
+    terminal: true
+  },
+  failed: {
+    sequence: 30,
+    stageKey: "llm_suggestion",
+    messageKey: "sourceFiles.phase.llmSuggestion",
+    severity: "error",
+    terminal: true
+  }
+} as const;
+
+async function recordSourceEvent(
+  input: StorageVnextSourceProcessingPorts & { limits: WorkerLimits },
+  event: {
+    kind: SourceEventKind;
+    work: StorageVnextLiveWork;
+    sourceFile: StorageVnextSourceFileFact;
+    sourceRevisionPublicId: string;
+    createdAt: string;
+  }
+): Promise<void> {
+  const presentation = SOURCE_EVENT_PRESENTATION[event.kind];
+  await input.events.record({
+    publicId: `source-event-${event.kind}-${createHash("sha256")
+      .update(`${event.work.publicId}:${event.sourceRevisionPublicId}:${event.work.attempt}`)
+      .digest("hex")}`,
+    knowledgeBaseId: event.work.knowledgeBaseId,
+    sourceFilePublicId: event.sourceFile.publicId,
+    sourceRevisionPublicId: event.sourceRevisionPublicId,
+    sequence: presentation.sequence,
+    stageKey: presentation.stageKey,
+    messageKey: presentation.messageKey,
+    startedAt: event.createdAt,
+    endedAt: presentation.terminal ? event.createdAt : null,
+    severity: presentation.severity,
+    createdAt: event.createdAt,
+    expiresAt: addMilliseconds(
+      event.createdAt,
+      input.limits.resultRetentionMilliseconds
+    )
+  });
+}
+
+function trackBody(body: AsyncIterable<Uint8Array>): {
+  body: AsyncIterable<Uint8Array>;
+  close: () => Promise<void>;
+  readonly completed: boolean;
+} {
+  const iterator = body[Symbol.asyncIterator]();
+  let closed = false;
+  const tracked: AsyncIterator<Uint8Array> = {
+    async next() {
+      const value = await iterator.next();
+      if (value.done) closed = true;
+      return value;
+    },
+    async return() {
+      if (!closed && iterator.return) await iterator.return();
+      closed = true;
+      return { done: true, value: undefined };
+    },
+    async throw(error?: unknown) {
+      if (iterator.throw) return iterator.throw(error);
+      if (!closed && iterator.return) await iterator.return();
+      closed = true;
+      throw error;
+    }
+  };
+  return {
+    body: { [Symbol.asyncIterator]: () => tracked },
+    get completed() {
+      return closed;
+    },
+    async close() {
+      if (!closed && tracked.return) await tracked.return();
+    }
+  };
+}
+
+async function loadCurrentFacts(
+  input: StorageVnextSourceProcessingPorts,
+  work: StorageVnextLiveWork,
+  sourceRevisionPublicId: string
+): Promise<
+  | { outcome: "deleted" | "superseded" }
+  | {
+      outcome: "current";
+      sourceFile: NonNullable<Awaited<ReturnType<typeof input.catalog.getSourceFile>>>;
+      sourceRevision: NonNullable<Awaited<ReturnType<typeof input.catalog.getSourceRevision>>>;
+    }
+> {
+  const knowledgeBase = await input.catalog.getKnowledgeBase({
+    knowledgeBaseId: work.knowledgeBaseId,
+    visibility: "all"
+  });
+  if (!knowledgeBase || knowledgeBase.visibility === "deleted") return { outcome: "deleted" };
+  const sourceRevision = await input.catalog.getSourceRevision({
+    knowledgeBaseId: work.knowledgeBaseId,
+    publicId: sourceRevisionPublicId
+  });
+  if (!sourceRevision) return { outcome: "superseded" };
+  const sourceFile = await input.catalog.getSourceFile({
+    knowledgeBaseId: work.knowledgeBaseId,
+    publicId: sourceRevision.sourceFilePublicId,
+    visibility: "all"
+  });
+  if (!sourceFile || sourceFile.visibility === "deleted") return { outcome: "superseded" };
+  const currentRevision = await input.catalog.getCurrentSourceRevision({
+    knowledgeBaseId: work.knowledgeBaseId,
+    sourceFilePublicId: sourceFile.publicId
+  });
+  if (
+    !currentRevision
+    || currentRevision.publicId !== sourceRevisionPublicId
+    || sourceFile.currentRevisionPublicId !== sourceRevisionPublicId
+  ) return { outcome: "superseded" };
+  return { outcome: "current", sourceFile, sourceRevision };
+}
+
+async function completeTerminal(
+  input: StorageVnextSourceProcessingPorts & { limits: WorkerLimits; clock: () => string },
+  work: StorageVnextLiveWork,
+  owner: string,
+  terminal: {
+    state: "failed" | "superseded" | "deleted";
+    resultCode: string;
+    sourceRevisionPublicId: string;
+  }
+): Promise<void> {
+  await input.workflow.complete({
+    publicId: work.publicId,
+    owner,
+    result: result(input, work, {
+      state: terminal.state,
+      resultCode: terminal.resultCode,
+      correlationPublicId: terminal.sourceRevisionPublicId,
+      summary: { sourceRevisionPublicId: terminal.sourceRevisionPublicId }
+    })
+  });
+}
+
+function result(
+  input: { limits: WorkerLimits; clock: () => string },
+  work: StorageVnextLiveWork,
+  value: Pick<
+    StorageVnextBoundedResult,
+    "state" | "resultCode" | "correlationPublicId" | "summary"
+  >
+): StorageVnextBoundedResult {
+  const completedAt = input.clock();
+  return {
+    publicId: work.publicId,
+    knowledgeBaseId: work.knowledgeBaseId,
+    kind: "source",
+    ...value,
+    safeMessage: null,
+    completedAt,
+    expiresAt: addMilliseconds(completedAt, input.limits.resultRetentionMilliseconds)
+  };
+}
+
+function assertModelIdentity(
+  sourceFile: StorageVnextSourceFileFact,
+  sourceRevisionPublicId: string,
+  model: {
+    node: { knowledgeBaseId: string; sourceFilePublicId: string; sourceRevisionPublicId: string };
+    edges: readonly unknown[];
+  }
+): void {
+  if (
+    model.node.knowledgeBaseId !== sourceFile.knowledgeBaseId
+    || model.node.sourceFilePublicId !== sourceFile.publicId
+    || model.node.sourceRevisionPublicId !== sourceRevisionPublicId
+    || model.edges.length > 1_000
+  ) throw workerError("invalid_model_result");
+}
+
+function checkpointRevision(work: StorageVnextLiveWork): string {
+  const value = work.checkpoint.sourceRevisionPublicId;
+  if (typeof value !== "string" || value.length === 0) {
+    throw workerError("invalid_checkpoint");
+  }
+  return value;
+}
+
+function createAttemptPublicId(work: StorageVnextLiveWork, revisionPublicId: string): string {
+  const digest = createHash("sha256")
+    .update("storage-vnext-source-model-attempt-v1\0")
+    .update(work.publicId)
+    .update("\0")
+    .update(String(work.attempt))
+    .update("\0")
+    .update(revisionPublicId)
+    .digest("hex");
+  return `source-model-attempt-${digest}`;
+}
+
+function safeFailureCode(error: unknown, signal: AbortSignal): string {
+  const reason = signal.aborted ? signal.reason : error;
+  if (reason instanceof Error && ["AbortError", "TimeoutError"].includes(reason.name)) {
+    return "SOURCE_MODEL_TIMEOUT";
+  }
+  return "SOURCE_MODEL_FAILED";
+}
+
+function isStaleFailure(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error)) return false;
+  return ["revision_conflict", "stale_source_revision"].includes(String(error.code));
+}
+
+function addMilliseconds(timestamp: string, milliseconds: number): string {
+  return new Date(Date.parse(timestamp) + milliseconds).toISOString();
+}
+
+function assertClaimedWork(work: StorageVnextLiveWork, owner: string): void {
+  if (
+    work.kind !== "source"
+    || work.state !== "running"
+    || work.leaseOwner !== owner
+  ) throw workerError("invalid_claim");
+}
+
+function assertClaim(
+  request: { owner: string; limit: number; leaseExpiresAt: string },
+  maximumConcurrency: number
+): void {
+  if (
+    request.owner.length === 0
+    || !Number.isSafeInteger(request.limit)
+    || request.limit < 1
+    || request.limit > maximumConcurrency
+    || !Number.isFinite(Date.parse(request.leaseExpiresAt))
+  ) throw workerError("invalid_limit");
+}
+
+function validateLimits(limits: WorkerLimits): void {
+  for (const value of Object.values(limits)) {
+    if (!Number.isSafeInteger(value) || value < 1) throw workerError("invalid_limits");
+  }
+}
+
+function workerError(code: string): Error & { code: string } {
+  return Object.assign(new Error(`Storage vNext source processing error: ${code}`), { code });
+}

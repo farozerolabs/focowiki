@@ -4,609 +4,579 @@ import {
 } from "./interleaved-handoff-ledger.mjs";
 
 const TERMINAL_STATES = new Set([
-  "active",
-  "cancelled",
-  "completed",
-  "dead_letter",
-  "deleted",
-  "expired",
-  "failed",
-  "published",
-  "rejected",
-  "skipped",
-  "superseded",
-  "succeeded"
+  "completed", "failed", "cancelled", "superseded", "timed_out", "deleted"
 ]);
 
 export function buildHandoffLedgerFromEvidence(input) {
-  const snapshot = input?.postgres;
-  const knowledgeBase = snapshot?.knowledgeBase;
-  if (!knowledgeBase?.id || !input?.redactor || !input?.scenarioId) {
-    throw new Error(
-      "Handoff ledger evidence requires scenario, redactor, and knowledge base."
-    );
+  if (!input?.postgres?.knowledgeBase || !input?.redactor || !input?.scenarioId) {
+    throw new Error("Storage vNext handoff evidence is incomplete.");
   }
-
-  const alias = createIdentityAlias(input.redactor);
-  const knowledgeBaseId = alias("knowledge_base", knowledgeBase.id);
+  const snapshot = input.postgres;
+  const alias = (kind, id) => input.redactor.alias(kind, id);
+  const knowledgeBaseId = alias("knowledge_base", snapshot.knowledgeBase.id);
   const ledger = createHandoffLedger({
     scenarioId: input.scenarioId,
     knowledgeBaseId,
-    expectedKinds: input.expectedKinds,
-    expectedTerminalKinds: input.expectedTerminalKinds
+    publicOutcome: input.publicOutcome ?? null,
+    expectedKinds: expectedKinds(snapshot, input.expectedKinds),
+    expectedTerminalKinds: input.expectedTerminalKinds ?? []
   });
-  ledger.publicOutcome = input.publicOutcome ?? "pending";
 
-  add(ledger, alias, {
+  addHandoffRecord(ledger, {
     kind: "knowledge_base",
-    id: knowledgeBase.id,
+    id: knowledgeBaseId,
     knowledgeBaseId,
-    resourceRevision: knowledgeBase.resourceRevision,
-    state: knowledgeBase.deletedAt ? "deleted" : "active",
-    terminal: Boolean(knowledgeBase.deletedAt),
+    resourceRevision: integer(snapshot.knowledgeBase.resourceRevision),
+    state: snapshot.knowledgeBase.deletedAt ? "deleted" : "active",
     metadata: {
-      catalogGeneration: knowledgeBase.catalogGeneration,
-      activeGenerationId: knowledgeBase.activeGenerationId
-        ? alias("generation", knowledgeBase.activeGenerationId)
-        : null
+      activeRootId: optionalAlias(alias, "release_root", snapshot.knowledgeBase.activeRootPublicId),
+      activeRevision: nullableInteger(snapshot.knowledgeBase.activeRevision)
     }
   });
 
-  if (input.priorActiveGenerationId) {
-    add(ledger, alias, {
-      kind: "active_generation",
-      identityKind: "generation",
-      id: input.priorActiveGenerationId,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      state: "active",
-      terminal: true
-    });
-  }
-
-  addPublicRequest(ledger, alias, input.publicRequest, knowledgeBaseId);
-  addPublicOperation(ledger, alias, input.publicOperation, knowledgeBaseId);
-
-  for (const item of snapshot.uploadSessions ?? []) {
-    add(ledger, alias, {
-      kind: "upload_session",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
-      metadata: { errorCode: item.errorCode }
-    });
-  }
-  for (const item of snapshot.uploadEntries ?? []) {
-    add(ledger, alias, {
-      kind: "upload_entry",
-      id: item.id,
-      ownerKind: "upload_session",
-      ownerId: item.sessionId,
-      knowledgeBaseId,
-      state: item.transferState,
-      durable: true,
-      terminal: Boolean(item.finalizedAt || item.errorCode),
-      metadata: {
-        logicalPath: item.relativePath,
-        transferState: item.transferState,
-        disposition: item.disposition,
-        expectedResourceRevision: item.existingResourceRevision,
-        errorCode: item.errorCode
-      }
-    });
-  }
-  for (const item of snapshot.operations ?? []) {
-    add(ledger, alias, {
-      kind: "operation",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
-      metadata: {
-        mutationKind: item.operationKind,
-        expectedResourceRevision: item.expectedResourceRevision,
-        candidateCatalogGeneration: item.candidateCatalogGeneration,
-        errorCode: item.errorCode
-      }
-    });
-  }
-  for (const item of snapshot.operationTargets ?? []) {
-    add(ledger, alias, {
-      kind: "operation_target",
-      id: `${item.operationId}:${item.sequenceNumber}`,
-      ownerKind: "operation",
-      ownerId: item.operationId,
-      knowledgeBaseId,
-      durable: true,
-      metadata: {
-        expectedResourceRevision: item.expectedResourceRevision
-      }
-    });
-  }
-  for (const item of snapshot.sourceDirectories ?? []) {
-    add(ledger, alias, {
-      kind: "directory",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      resourceRevision: item.resourceRevision,
-      state: item.deletedAt ? "deleted" : "active",
-      durable: true,
-      terminal: Boolean(item.deletedAt),
-      metadata: {
-        logicalPath: item.relativePath,
-        resultingPath: item.candidateRelativePath,
-        candidateOperationId: item.candidateOperationId
-      }
-    });
-  }
-  for (const item of snapshot.sourceFiles ?? []) {
-    add(ledger, alias, {
-      kind: "source",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      resourceRevision: item.resourceRevision,
-      state: item.deletedAt
-        ? "deleted"
-        : item.processingStatus,
-      durable: true,
-      terminal: Boolean(
-        item.deletedAt ||
-        item.terminalFailureCode ||
-        ["completed", "failed"].includes(item.processingStatus)
-      ),
-      metadata: {
-        logicalPath: item.relativePath,
-        contentRevision: item.contentRevision,
-        candidateOperationId: item.candidateOperationId,
-        candidateRevisionId: item.candidateRevisionId,
-        candidateRelativePath: item.candidateRelativePath,
-        phase: item.processingStage,
-        errorCode: item.terminalFailureCode,
-        errorMessage: item.terminalFailureMessage
-      }
-    });
-  }
-  for (const item of snapshot.sourceRevisions ?? []) {
-    add(ledger, alias, {
-      kind: "source_revision",
-      id: item.id,
-      ownerKind: "source",
-      ownerId: item.sourceFileId,
-      knowledgeBaseId,
-      resourceRevision: item.revision,
-      state: item.processingStatus,
-      durable: true,
-      terminal: isTerminal(item.processingStatus)
-    });
-  }
-  for (const item of snapshot.dispatchMarkers ?? []) {
-    add(ledger, alias, {
-      kind: "dispatch_marker",
-      id: item.id,
-      ownerKind: item.sourceRevisionId ? "source_revision" : "source",
-      ownerId: item.sourceRevisionId || item.sourceFileId,
-      knowledgeBaseId,
-      state: item.status,
-      durable: true,
-      terminal: isTerminal(item.status),
-      metadata: {
-        retryAt: item.runAfter,
-        errorCode: item.lastErrorCode
-      }
-    });
-  }
-  for (const item of snapshot.sourceEvents ?? []) {
-    add(ledger, alias, {
-      kind: "source_event",
-      id: item.id,
-      ownerKind: "source",
-      ownerId: item.sourceFileId,
-      knowledgeBaseId,
-      state: item.endedAt ? "completed" : "running",
-      durable: true,
-      terminal: Boolean(item.endedAt),
-      metadata: {
-        phase: item.stageKey,
-        result: item.messageKey
-      }
-    });
-  }
-  for (const item of snapshot.deletionIntents ?? []) {
-    add(ledger, alias, {
-      kind: "deletion_intent",
-      id: item.id,
-      ownerKind: ownerKindForDeletion(item.targetKind),
-      ownerId: item.targetId,
-      knowledgeBaseId,
-      state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
-      metadata: {
-        catalogGeneration: item.catalogGeneration,
-        attemptCount: item.attemptCount,
-        errorCode: item.errorCode
-      }
-    });
-  }
-  for (const item of snapshot.roleJobs ?? []) {
-    const owner = roleJobOwner(item, knowledgeBase.id);
-    add(ledger, alias, {
-      kind: "role_job",
-      id: item.id,
-      ownerKind: owner.kind,
-      ownerId: owner.id,
-      knowledgeBaseId,
-      state: item.status,
-      durable: true,
-      terminal: isTerminal(item.status),
-      metadata: {
-        role: item.role,
-        taskKind: item.kind,
-        attemptCount: item.attemptCount,
-        maxAttempts: item.maxAttempts,
-        retryAt: item.status === "retry" ? item.runAfter : undefined,
-        errorCode: item.lastErrorCode,
-        errorMessage: item.lastErrorMessage
-      }
-    });
-  }
-  for (const item of snapshot.generations ?? []) {
-    add(ledger, alias, {
-      kind: "generation",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      predecessorId: item.predecessorGenerationId,
-      state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
-      metadata: {
-        formatVersion: item.formatVersion,
-        errorCode: item.safeErrorCode,
-        errorMessage: item.safeErrorMessage,
-        candidateGeneration: item.id === input.candidateGenerationId
-      }
-    });
-    if (item.id === knowledgeBase.activeGenerationId) {
-      add(ledger, alias, {
-        kind: "activation",
-        identityKind: "generation",
-        id: item.id,
-        ownerKind: "generation",
-        ownerId: item.id,
-        knowledgeBaseId,
-        state: "active",
-        terminal: true
-      });
-    }
-  }
-  addGenerationChildren(ledger, alias, knowledgeBaseId, snapshot);
-  addMaintenance(ledger, alias, knowledgeBaseId, knowledgeBase.id, snapshot);
-  addProjectionAndStorage(
-    ledger,
-    alias,
-    knowledgeBaseId,
-    knowledgeBase,
-    snapshot,
-    input.redis
-  );
+  addPublicEvidence(ledger, input, alias, knowledgeBaseId);
+  addOperations(ledger, snapshot, alias, knowledgeBaseId);
+  addUploads(ledger, snapshot, alias, knowledgeBaseId);
+  addSources(ledger, snapshot, alias, knowledgeBaseId);
+  addGraph(ledger, snapshot, alias, knowledgeBaseId);
+  addRelease(ledger, snapshot, alias, knowledgeBaseId);
+  addObjects(ledger, snapshot, alias, knowledgeBaseId);
+  addCleanup(ledger, snapshot, alias, knowledgeBaseId);
 
   return ledger;
 }
 
-function addGenerationChildren(ledger, alias, knowledgeBaseId, snapshot) {
-  const families = [
-    ["publication_progress", snapshot.publicationProgress, "generationId"],
-    ["publication_impact", snapshot.publicationImpacts, "generationId"],
-    ["publication_subtask", snapshot.publicationSubtasks, "generationId"],
-    ["projection_input", snapshot.projectionInputs, "generationId"],
-    ["projection_record", snapshot.generationProjections, "generationId"],
-    ["object_reference", snapshot.generationObjectRefs, "generationId"]
-  ];
-  for (const [kind, items, generationKey] of families) {
-    for (const [index, item] of (items ?? []).entries()) {
-      add(ledger, alias, {
-        kind,
-        id: item.id ?? item.recordId ?? item.refKey ?? item.inputKey ??
-          `${item[generationKey]}:${kind}:${index}`,
-        ownerKind: "generation",
-        ownerId: item[generationKey],
-        knowledgeBaseId,
-        state: item.state ?? item.status ?? item.action ?? null,
-        durable: true,
-        terminal: isTerminal(item.state ?? item.status),
-        metadata: {
-          phase: item.stage,
-          projectionKind: item.projectionKind,
-          logicalPath: item.logicalPath,
-          action: item.action,
-          attemptCount: item.attemptCount,
-          maxAttempts: item.maxAttempts,
-          retryAt: item.state === "retry" ? item.updatedAt : undefined,
-          errorCode: item.lastErrorCode ?? item.safeErrorCode,
-          errorMessage: item.lastErrorMessage ?? item.safeErrorMessage
-        }
-      });
-    }
+function addPublicEvidence(ledger, input, alias, knowledgeBaseId) {
+  if (input.publicRequest?.requestId) {
+    addHandoffRecord(ledger, {
+      kind: "public_request",
+      id: alias("public_request", input.publicRequest.requestId),
+      knowledgeBaseId,
+      ownerKind: "knowledge_base",
+      ownerId: knowledgeBaseId,
+      terminal: true,
+      metadata: { mutationKind: input.publicRequest.mutationKind ?? null }
+    });
+  }
+  if (input.publicOperation?.operationId) {
+    addHandoffRecord(ledger, {
+      kind: "public_operation",
+      id: alias("operation", input.publicOperation.operationId),
+      knowledgeBaseId,
+      ownerKind: "knowledge_base",
+      ownerId: knowledgeBaseId,
+      state: input.publicOperation.state ?? null,
+      terminal: TERMINAL_STATES.has(input.publicOperation.state),
+      metadata: {
+        mutationKind: input.publicOperation.mutationKind ?? null,
+        priorPath: input.publicOperation.priorPath ?? null,
+        resultingPath: input.publicOperation.resultingPath ?? null,
+        expectedResourceRevision: nullableInteger(
+          input.publicOperation.expectedResourceRevision
+        ),
+        resultingResourceRevision: nullableInteger(
+          input.publicOperation.resultingResourceRevision
+        )
+      }
+    });
   }
 }
 
-function addMaintenance(
-  ledger,
-  alias,
-  knowledgeBaseId,
-  rawKnowledgeBaseId,
-  snapshot
-) {
-  for (const item of snapshot.projectionRepairs ?? []) {
-    add(ledger, alias, {
-      kind: "projection_repair",
-      id: item.targetGenerationId,
+function addOperations(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.operations ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "operation",
+      id: alias("operation", item.id),
+      knowledgeBaseId,
       ownerKind: "knowledge_base",
-      ownerId: rawKnowledgeBaseId,
-      knowledgeBaseId,
+      ownerId: knowledgeBaseId,
       state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
+      terminal: TERMINAL_STATES.has(item.state),
       metadata: {
-        attemptCount: item.attemptCount,
-        retryAt: item.nextAttemptAt,
-        errorCode: item.lastErrorCode
+        operationKind: item.operationKind,
+        expectedResourceRevision: nullableInteger(item.expectedResourceRevision),
+        targetKind: item.targetKind ?? null,
+        targetId: optionalAlias(alias, targetAliasKind(item.targetKind), item.targetId),
+        candidateRelativePath: item.candidateRelativePath ?? null
       }
     });
   }
-  for (const item of snapshot.projectionRepairSubtasks ?? []) {
-    add(ledger, alias, {
-      kind: "projection_repair_subtask",
-      id: `${item.targetGenerationId}:${item.taskKind}:${item.partitionKey}`,
-      ownerKind: "projection_repair",
-      ownerId: item.targetGenerationId,
+  for (const item of snapshot.workItems ?? []) {
+    const maximum = Number(item.checkpoint?.maxAttempts);
+    addHandoffRecord(ledger, {
+      kind: "work_item",
+      id: alias("operation", item.operationId),
       knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
+      resourceRevision: integer(item.operationRevision),
       state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
       metadata: {
-        taskKind: item.taskKind,
-        attemptCount: item.attemptCount,
-        maxAttempts: item.maxAttempts,
-        retryAt: item.state === "retry" ? item.updatedAt : undefined,
-        errorCode: item.lastErrorCode
+        workKind: item.workKind,
+        attemptCount: integer(item.attemptCount),
+        maxAttempts: Number.isSafeInteger(maximum) ? maximum : null,
+        safeErrorCode: item.safeErrorCode ?? null
       }
     });
   }
-  for (const item of snapshot.lexicalRebuilds ?? []) {
-    add(ledger, alias, {
-      kind: "lexical_rebuild",
-      id: item.targetGenerationId,
-      ownerKind: "knowledge_base",
-      ownerId: rawKnowledgeBaseId,
+  for (const item of snapshot.operationResults ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "operation_result",
+      id: alias("operation_result", item.id),
       knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.id),
       state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
+      terminal: true,
       metadata: {
-        phase: item.phase,
-        attemptCount: item.attemptCount,
-        maxAttempts: item.maxAttempts,
-        errorCode: item.lastErrorCode
+        operationKind: item.operationKind,
+        resultCode: item.resultCode
       }
     });
   }
-  for (const item of snapshot.lexicalWorkItems ?? []) {
-    add(ledger, alias, {
-      kind: "lexical_work_item",
-      id: `${item.targetGenerationId}:${item.sourceFileId}`,
-      ownerKind: "lexical_rebuild",
-      ownerId: item.targetGenerationId,
+  for (const item of snapshot.operationDependencies ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "operation_dependency",
+      id: alias("operation_dependency", `${item.operationId}:${item.dependencyOperationId}`),
       knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
+      terminal: true,
+      metadata: {
+        dependencyOperationId: alias("operation", item.dependencyOperationId)
+      }
+    });
+  }
+}
+
+function addUploads(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.uploadSessions ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "upload_session",
+      id: alias("upload_session", item.id),
+      knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
       state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
+      metadata: {
+        expectedEntryCount: integer(item.expectedEntryCount),
+        receivedEntryCount: integer(item.receivedEntryCount)
+      }
+    });
+  }
+  for (const item of snapshot.uploadEntries ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "upload_entry",
+      id: alias("upload_entry", `${item.sessionId}:${item.id}`),
+      knowledgeBaseId,
+      ownerKind: "upload_session",
+      ownerId: alias("upload_session", item.sessionId),
+      state: item.state,
       metadata: {
         logicalPath: item.logicalPath,
-        phase: item.lastErrorStage,
-        attemptCount: item.attemptCount,
-        maxAttempts: item.maxAttempts,
-        retryAt: item.state === "retry" ? item.updatedAt : undefined,
-        errorCode: item.lastErrorCode
-      }
-    });
-  }
-  for (const item of snapshot.compactionJobs ?? []) {
-    add(ledger, alias, {
-      kind: "compaction_job",
-      id: item.id,
-      ownerKind: "knowledge_base",
-      ownerId: rawKnowledgeBaseId,
-      knowledgeBaseId,
-      state: item.state,
-      durable: true,
-      terminal: isTerminal(item.state),
-      metadata: {
-        projectionKind: item.projectionKind,
-        attemptCount: item.attemptCount,
-        maxAttempts: item.maxAttempts,
-        retryAt: item.state === "retry" ? item.updatedAt : undefined,
-        errorCode: item.lastErrorCode
+        sourceFileId: alias("source_file", item.sourceFileId),
+        objectId: optionalAlias(alias, "object_registration", item.objectId)
       }
     });
   }
 }
 
-function addProjectionAndStorage(
-  ledger,
-  alias,
-  knowledgeBaseId,
-  knowledgeBase,
-  snapshot,
-  redis
-) {
-  for (const item of snapshot.activeProjections ?? []) {
-    if (!knowledgeBase.activeGenerationId) continue;
-    add(ledger, alias, {
-      kind: "active_projection",
-      id: `${item.projectionKind}:${item.recordId}`,
-      ownerKind: "generation",
-      ownerId: knowledgeBase.activeGenerationId,
+function addSources(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.sourceDirectories ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "source_directory",
+      id: alias("source_directory", item.id),
       knowledgeBaseId,
-      state: "active",
+      ownerKind: item.parentId ? "source_directory" : "knowledge_base",
+      ownerId: item.parentId
+        ? alias("source_directory", item.parentId)
+        : knowledgeBaseId,
+      resourceRevision: integer(item.resourceRevision),
+      state: item.deletedAt ? "deleted" : "active",
+      durable: true,
+      metadata: { logicalPath: item.logicalPath }
+    });
+  }
+  for (const item of snapshot.sourceFiles ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "source_file",
+      id: alias("source_file", item.id),
+      knowledgeBaseId,
+      ownerKind: item.directoryId ? "source_directory" : "knowledge_base",
+      ownerId: item.directoryId
+        ? alias("source_directory", item.directoryId)
+        : knowledgeBaseId,
+      resourceRevision: integer(item.resourceRevision),
+      state: item.deletedAt ? "deleted" : item.status,
+      durable: true,
+      terminal: item.status === "ready" || item.status === "failed" || Boolean(item.deletedAt),
+      metadata: {
+        logicalPath: item.logicalPath,
+        currentRevisionId: optionalAlias(alias, "source_revision", item.currentRevisionId),
+        safeErrorCode: item.safeErrorCode ?? null
+      }
+    });
+  }
+  for (const item of snapshot.sourceRevisions ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "source_revision",
+      id: alias("source_revision", item.id),
+      knowledgeBaseId,
+      ownerKind: "source_file",
+      ownerId: alias("source_file", item.sourceFileId),
+      state: item.revisionRole,
       durable: true,
       terminal: true,
       metadata: {
-        projectionKind: item.projectionKind,
+        revisionRole: item.revisionRole,
+        objectId: alias("object_registration", item.objectId),
+        checksumSha256: alias("checksum", item.checksumSha256)
+      }
+    });
+  }
+}
+
+function addGraph(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.graphNodes ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "graph_node",
+      id: alias("graph_node", item.id),
+      knowledgeBaseId,
+      ownerKind: "source_revision",
+      ownerId: alias("source_revision", item.sourceRevisionId),
+      resourceRevision: integer(item.resourceRevision),
+      durable: true,
+      terminal: true,
+      metadata: {
+        sourceFileId: alias("source_file", item.sourceFileId),
+        logicalPath: item.logicalPath,
+        nodeKind: item.nodeKind
+      }
+    });
+  }
+  for (const item of snapshot.graphEdges ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "graph_edge",
+      id: alias("graph_edge", item.id),
+      knowledgeBaseId,
+      ownerKind: "graph_node",
+      ownerId: alias("graph_node", item.fromNodeId),
+      resourceRevision: integer(item.resourceRevision),
+      durable: true,
+      terminal: true,
+      metadata: {
+        toNodeId: alias("graph_node", item.toNodeId),
+        relation: item.relation,
+        edgeSource: item.edgeSource
+      }
+    });
+  }
+  for (const item of snapshot.graphEvidenceRefs ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "graph_evidence",
+      id: alias("graph_evidence", item.id),
+      knowledgeBaseId,
+      ownerKind: item.nodeId ? "graph_node" : "graph_edge",
+      ownerId: item.nodeId
+        ? alias("graph_node", item.nodeId)
+        : alias("graph_edge", item.edgeId),
+      durable: true,
+      terminal: true,
+      metadata: {
+        sourceFileId: alias("source_file", item.sourceFileId),
+        sourceRevisionId: alias("source_revision", item.sourceRevisionId),
         logicalPath: item.logicalPath
       }
     });
   }
-  const objectOwners = new Map();
-  for (const item of snapshot.generationObjectRefs ?? []) {
-    if (item.action === "upsert") {
-      objectOwners.set(
-        `${item.checksumSha256}:${item.formatVersion}`,
-        item.generationId
-      );
-    }
-  }
-  for (const item of snapshot.immutableObjects ?? []) {
-    const owner = objectOwners.get(
-      `${item.checksumSha256}:${item.formatVersion}`
-    );
-    if (!owner) continue;
-    add(ledger, alias, {
-      kind: "immutable_object",
-      id: `${item.checksumSha256}:${item.formatVersion}`,
-      ownerKind: "generation",
-      ownerId: owner,
+}
+
+function addRelease(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.releaseRoots ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_root",
+      id: alias("release_root", item.id),
       knowledgeBaseId,
-      state: item.lifecycleState,
+      ownerKind: item.baseRootId ? "release_root" : "knowledge_base",
+      ownerId: item.baseRootId ? alias("release_root", item.baseRootId) : knowledgeBaseId,
+      resourceRevision: integer(item.resourceRevision),
+      state: item.rootRole,
       durable: true,
-      terminal: isTerminal(item.lifecycleState),
+      terminal: item.rootRole !== "candidate",
       metadata: {
-        lifecycleState: item.lifecycleState,
-        formatVersion: item.formatVersion,
-        attemptCount: item.writeAttemptCount,
-        errorCode: item.lastWriteErrorCode ?? item.integrityErrorCode
+        rootRole: item.rootRole,
+        manifestChecksumSha256: optionalAlias(
+          alias,
+          "checksum",
+          item.manifestChecksumSha256
+        )
       }
     });
   }
-  for (const item of redis?.keys ?? []) {
+  for (const item of snapshot.releaseShards ?? []) {
     addHandoffRecord(ledger, {
-      kind: "redis_observation",
-      id: item.alias,
+      kind: "release_shard",
+      id: alias("release_shard", item.id),
       knowledgeBaseId,
-      state: item.type,
-      metadata: {}
-    });
-  }
-  for (const item of snapshot.cleanupObjectDeletions ?? []) {
-    add(ledger, alias, {
-      kind: "cleanup_candidate",
-      id: item.jobId,
       ownerKind: "knowledge_base",
-      ownerId: knowledgeBase.id,
-      knowledgeBaseId,
-      state: item.status,
+      ownerId: knowledgeBaseId,
       durable: true,
-      terminal: isTerminal(item.status)
+      terminal: true,
+      metadata: {
+        logicalKind: item.logicalKind,
+        firstLogicalPath: item.firstLogicalPath,
+        lastLogicalPath: item.lastLogicalPath,
+        objectId: alias("object_registration", item.objectId)
+      }
     });
   }
-}
-
-function addPublicRequest(ledger, alias, request, knowledgeBaseId) {
-  if (!request?.requestId) return;
-  add(ledger, alias, {
-    kind: "request",
-    id: request.requestId,
-    knowledgeBaseId,
-    state: request.state ?? "accepted",
-    terminal: request.terminal === true,
-    metadata: {
-      mutationKind: request.mutationKind
-    }
-  });
-  if (request.idempotencyKey) {
-    add(ledger, alias, {
-      kind: "idempotency",
-      id: request.idempotencyKey,
-      ownerKind: "request",
-      ownerId: request.requestId,
+  for (const item of snapshot.releaseRootShards ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_root_shard",
+      id: alias("release_root_shard", `${item.releaseRootId}:${item.releaseShardId}`),
       knowledgeBaseId,
-      terminal: true
+      ownerKind: "release_root",
+      ownerId: alias("release_root", item.releaseRootId),
+      durable: true,
+      terminal: true,
+      metadata: {
+        releaseShardId: alias("release_shard", item.releaseShardId),
+        ordinal: integer(item.ordinal)
+      }
+    });
+  }
+  for (const item of snapshot.releaseCatalogEntries ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_catalog_entry",
+      id: alias("release_catalog_entry", `${item.releaseRootId}:${item.logicalPath}`),
+      knowledgeBaseId,
+      ownerKind: "release_root",
+      ownerId: alias("release_root", item.releaseRootId),
+      durable: true,
+      terminal: true,
+      metadata: {
+        logicalPath: item.logicalPath,
+        entryKind: item.entryKind,
+        sourceFileId: optionalAlias(alias, "source_file", item.sourceFileId),
+        objectId: alias("object_registration", item.objectId)
+      }
+    });
+  }
+  for (const item of snapshot.releaseCatalogTombstones ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_catalog_tombstone",
+      id: alias("release_catalog_tombstone", `${item.releaseRootId}:${item.logicalPath}`),
+      knowledgeBaseId,
+      ownerKind: "release_root",
+      ownerId: alias("release_root", item.releaseRootId),
+      durable: true,
+      terminal: true,
+      metadata: { logicalPath: item.logicalPath }
+    });
+  }
+  for (const item of snapshot.searchProjections ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "search_projection",
+      id: alias("search_projection", item.id),
+      knowledgeBaseId,
+      ownerKind: "knowledge_base",
+      ownerId: knowledgeBaseId,
+      resourceRevision: integer(item.resourceRevision),
+      state: item.state,
+      durable: true,
+      terminal: item.state === "ready" || item.state === "failed",
+      metadata: {
+        role: item.role,
+        documentCount: integer(item.documentCount),
+        safeErrorCode: item.safeErrorCode ?? null
+      }
+    });
+  }
+  for (const item of snapshot.activeSnapshots ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "active_snapshot",
+      id: alias("active_snapshot", snapshot.knowledgeBase.id),
+      knowledgeBaseId,
+      ownerKind: "knowledge_base",
+      ownerId: knowledgeBaseId,
+      resourceRevision: integer(item.resourceRevision),
+      state: "active",
+      durable: true,
+      terminal: true,
+      metadata: {
+        releaseRootId: alias("release_root", item.releaseRootId),
+        searchProjectionId: alias("search_projection", item.searchProjectionId),
+        operationId: alias("operation", item.operationId)
+      }
+    });
+  }
+  for (const item of snapshot.releaseCandidates ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_candidate",
+      id: alias("release_candidate", item.id),
+      knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
+      state: item.state,
+      durable: true,
+      terminal: new Set(["failed", "cancelled", "superseded", "timed_out"]).has(item.state),
+      metadata: {
+        candidateRootId: alias("release_root", item.candidateRootId),
+        expectedActiveRootId: optionalAlias(
+          alias,
+          "release_root",
+          item.expectedActiveRootId
+        ),
+        expectedActiveRevision: integer(item.expectedActiveRevision),
+        reasonCode: item.reasonCode ?? null
+      }
+    });
+  }
+  for (const item of snapshot.releaseCandidateValidations ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_candidate_validation",
+      id: alias("release_candidate_validation", item.candidateId),
+      knowledgeBaseId,
+      ownerKind: "release_candidate",
+      ownerId: alias("release_candidate", item.candidateId),
+      terminal: true,
+      metadata: {
+        searchProjectionId: alias("search_projection", item.searchProjectionId),
+        objectOwnerCount: integer(item.objectOwnerCount),
+        generatedEntryCount: integer(item.generatedEntryCount)
+      }
+    });
+  }
+  for (const item of snapshot.releaseEventSummaries ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "release_event",
+      id: alias("release_event", item.id),
+      knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
+      state: item.outcome,
+      resourceRevision: integer(item.resourceRevision),
+      terminal: true,
+      metadata: {
+        candidateId: alias("release_candidate", item.candidateId),
+        releaseRootId: optionalAlias(alias, "release_root", item.releaseRootId),
+        resultCode: item.resultCode
+      }
     });
   }
 }
 
-function addPublicOperation(ledger, alias, operation, knowledgeBaseId) {
-  if (!operation?.operationId) return;
-  const ownerKind = operation.requestId ? "request" : null;
-  add(ledger, alias, {
-    kind: "public_operation",
-    id: operation.operationId,
-    ownerKind,
-    ownerId: operation.requestId,
-    knowledgeBaseId,
-    resourceRevision: operation.resultingResourceRevision,
-    state: operation.state,
-    terminal: isTerminal(operation.state),
-    metadata: {
-      mutationKind: operation.mutationKind,
-      priorPath: operation.priorPath,
-      resultingPath: operation.resultingPath,
-      expectedResourceRevision: operation.expectedResourceRevision,
-      resultingResourceRevision: operation.resultingResourceRevision,
-      errorCode: operation.errorCode
-    }
-  });
+function addObjects(ledger, snapshot, alias, knowledgeBaseId) {
+  const ownersByObject = new Map();
+  for (const item of snapshot.objectOwners ?? []) {
+    const owner = objectOwnerTarget(item, alias);
+    const id = alias("object_owner", item.id);
+    addHandoffRecord(ledger, {
+      kind: "object_owner",
+      id,
+      knowledgeBaseId,
+      ownerKind: owner.kind,
+      ownerId: owner.id,
+      durable: true,
+      terminal: true,
+      metadata: {
+        objectId: alias("object_registration", item.objectId),
+        ownerKind: item.ownerKind
+      }
+    });
+    const current = ownersByObject.get(item.objectId) ?? [];
+    current.push(id);
+    ownersByObject.set(item.objectId, current);
+  }
+  for (const item of snapshot.objectRegistrations ?? []) {
+    const ownerId = ownersByObject.get(item.id)?.[0];
+    addHandoffRecord(ledger, {
+      kind: "object_registration",
+      id: alias("object_registration", item.id),
+      knowledgeBaseId,
+      ownerKind: ownerId ? "object_owner" : "knowledge_base",
+      ownerId: ownerId ?? knowledgeBaseId,
+      state: item.state,
+      durable: item.state !== "deleted",
+      terminal: item.state === "verified" || item.state === "deleted",
+      metadata: {
+        checksumSha256: alias("checksum", item.checksumSha256),
+        objectFormat: item.objectFormat,
+        byteCount: integer(item.byteCount)
+      }
+    });
+  }
 }
 
-function add(ledger, alias, input) {
-  const kind = input.kind;
-  const knowledgeBaseId = input.knowledgeBaseId;
-  return addHandoffRecord(ledger, {
-    ...input,
-    id: alias(input.identityKind ?? kind, input.id),
-    knowledgeBaseId,
-    ownerId: input.ownerId == null
-      ? null
-      : alias(input.ownerKind, input.ownerId),
-    predecessorId: input.predecessorId == null
-      ? null
-      : alias("generation", input.predecessorId)
-  });
+function addCleanup(ledger, snapshot, alias, knowledgeBaseId) {
+  for (const item of snapshot.cleanupActions ?? []) {
+    addHandoffRecord(ledger, {
+      kind: "cleanup_action",
+      id: alias("cleanup_action", item.id),
+      knowledgeBaseId,
+      ownerKind: "operation",
+      ownerId: alias("operation", item.operationId),
+      state: item.state,
+      metadata: {
+        actionKind: item.actionKind,
+        cleanupPlane: item.cleanupPlane,
+        resourceKind: item.resourceKind,
+        resourceId: alias(item.resourceKind || "resource", item.resourceId),
+        required: item.required === true,
+        attemptCount: integer(item.attemptCount),
+        safeErrorCode: item.safeErrorCode ?? null
+      }
+    });
+  }
 }
 
-function createIdentityAlias(redactor) {
-  return (kind, value) => redactor.alias(kind, String(value));
+function objectOwnerTarget(item, alias) {
+  if (item.sourceRevisionId) {
+    return { kind: "source_revision", id: alias("source_revision", item.sourceRevisionId) };
+  }
+  if (item.releaseRootId) {
+    return { kind: "release_root", id: alias("release_root", item.releaseRootId) };
+  }
+  if (item.releaseShardId) {
+    return { kind: "release_shard", id: alias("release_shard", item.releaseShardId) };
+  }
+  if (item.operationId) {
+    return { kind: "operation", id: alias("operation", item.operationId) };
+  }
+  throw new Error("Object owner evidence has no owning identity.");
 }
 
-function ownerKindForDeletion(targetKind) {
-  if (targetKind === "source_file") return "source";
-  if (targetKind === "source_directory") return "directory";
+function expectedKinds(snapshot, configured) {
+  if (configured) return configured;
+  const kinds = ["knowledge_base"];
+  if ((snapshot.sourceFiles ?? []).length > 0) kinds.push("source_file", "source_revision");
+  if ((snapshot.activeSnapshots ?? []).length > 0) {
+    kinds.push("operation", "release_root", "search_projection", "active_snapshot");
+  }
+  if ((snapshot.objectRegistrations ?? []).length > 0) {
+    kinds.push("object_owner", "object_registration");
+  }
+  return kinds;
+}
+
+function targetAliasKind(targetKind) {
+  if (targetKind === "source_file") return "source_file";
+  if (targetKind === "source_directory") return "source_directory";
   return "knowledge_base";
 }
 
-function roleJobOwner(item, knowledgeBaseId) {
-  if (item.sourceRevisionId) {
-    return { kind: "source_revision", id: item.sourceRevisionId };
-  }
-  if (item.sourceFileId) return { kind: "source", id: item.sourceFileId };
-  if (item.generationId) return { kind: "generation", id: item.generationId };
-  return { kind: "knowledge_base", id: knowledgeBaseId };
+function optionalAlias(alias, kind, value) {
+  return value === null || value === undefined ? null : alias(kind, value);
 }
 
-function isTerminal(state) {
-  return TERMINAL_STATES.has(state);
+function integer(value) {
+  const result = Number(value);
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`Invalid bounded evidence integer: ${value}.`);
+  }
+  return result;
+}
+
+function nullableInteger(value) {
+  return value === null || value === undefined ? null : integer(value);
 }

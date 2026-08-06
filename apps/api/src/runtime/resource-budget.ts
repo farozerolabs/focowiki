@@ -1,14 +1,6 @@
 export type ResourceBudgetName =
   | "model"
-  | "sourceObjectRead"
-  | "generatedObjectWrite"
-  | "graphQuery"
-  | "databaseMutation"
-  | "directory"
-  | "projectionPartition"
-  | "generationAssembly"
-  | "migrationBackfill"
-  | "compaction";
+  | "generatedObjectWrite";
 
 export type ResourceBudgetLimits = Record<ResourceBudgetName, number>;
 
@@ -168,15 +160,7 @@ function roundMetric(value: number): number {
 function resourceBudgetNames(): ResourceBudgetName[] {
   return [
     "model",
-    "sourceObjectRead",
-    "generatedObjectWrite",
-    "graphQuery",
-    "databaseMutation",
-    "directory",
-    "projectionPartition",
-    "generationAssembly",
-    "migrationBackfill",
-    "compaction"
+    "generatedObjectWrite"
   ];
 }
 

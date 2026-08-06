@@ -6,17 +6,13 @@ const require = createRequire(
 const postgres = require("postgres");
 
 const TERMINAL_STATES = Object.freeze({
-  "projection-repair": new Set(["completed", "failed", "superseded"]),
-  "lexical-rebuild": new Set(["completed", "failed", "cancelled"]),
-  "projection-compaction": new Set(["completed", "failed", "superseded"]),
-  "storage-reconciliation": new Set(["idle", "failed"])
+  "index-maintenance": new Set([
+    "completed", "failed", "cancelled", "superseded", "timed_out"
+  ])
 });
 
 const SUCCESS_STATES = Object.freeze({
-  "projection-repair": new Set(["completed"]),
-  "lexical-rebuild": new Set(["completed"]),
-  "projection-compaction": new Set(["completed", "superseded"]),
-  "storage-reconciliation": new Set(["idle"])
+  "index-maintenance": new Set(["completed"])
 });
 
 export function createPostgresMaintenanceObserver(input) {
@@ -37,58 +33,31 @@ export function createPostgresMaintenanceObserver(input) {
 }
 
 export function maintenanceObservationQuery(input) {
-  if (input.kind === "projection-repair") {
-    return {
-      text: `
-        SELECT state, current_phase AS phase, created_at, updated_at,
-               completed_at, last_error_code
-        FROM focowiki.knowledge_base_projection_repairs
-        WHERE knowledge_base_id = $1
-        ORDER BY repair_version DESC
-        LIMIT 1
-      `,
-      parameters: [input.knowledgeBaseId]
-    };
+  if (input.kind !== "index-maintenance") {
+    throw new Error(`Unsupported maintenance observation kind: ${input.kind}.`);
   }
-  if (input.kind === "lexical-rebuild") {
-    return {
-      text: `
-        SELECT state, phase, created_at, updated_at, completed_at,
-               last_error_code
-        FROM focowiki.knowledge_base_lexical_rebuilds
-        WHERE knowledge_base_id = $1
-        LIMIT 1
-      `,
-      parameters: [input.knowledgeBaseId]
-    };
-  }
-  if (input.kind === "projection-compaction") {
-    return {
-      text: `
-        SELECT state, projection_kind AS phase, created_at, updated_at,
-               completed_at, last_error_code
-        FROM focowiki.projection_compaction_jobs
-        WHERE knowledge_base_id = $1
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 1
-      `,
-      parameters: [input.knowledgeBaseId]
-    };
-  }
-  if (input.kind === "storage-reconciliation") {
-    return {
-      text: `
-        SELECT state, state AS phase, created_at, updated_at,
-               scan_completed_at AS completed_at, scan_started_at,
-               last_error_code
-        FROM focowiki.storage_reconciliation_cycles
-        WHERE prefix = $1
-        LIMIT 1
-      `,
-      parameters: [input.prefix]
-    };
-  }
-  throw new Error(`Unsupported maintenance observation kind: ${input.kind}.`);
+  return {
+    text: `
+      SELECT operation.state,
+             coalesce(work.checkpoint ->> 'phase', result.result_summary ->> 'phase') AS phase,
+             operation.created_at, operation.updated_at, operation.completed_at,
+             coalesce(work.safe_error_code, result.result_code) AS last_error_code
+      FROM focowiki.operations AS operation
+      LEFT JOIN focowiki.operation_work_items AS work
+        ON work.knowledge_base_id = operation.knowledge_base_id
+       AND work.operation_public_id = operation.public_id
+       AND work.work_kind = 'maintenance'
+      LEFT JOIN focowiki.operation_results AS result
+        ON result.knowledge_base_id = operation.knowledge_base_id
+       AND result.public_id = operation.public_id
+       AND result.operation_kind = 'maintenance'
+      WHERE operation.knowledge_base_id = $1
+        AND operation.operation_kind = 'maintenance'
+      ORDER BY operation.created_at DESC, operation.public_id DESC
+      LIMIT 1
+    `,
+    parameters: [input.knowledgeBaseId]
+  };
 }
 
 export function classifyMaintenanceObservation(input) {
@@ -105,10 +74,7 @@ export function classifyMaintenanceObservation(input) {
       updatedAt: null
     };
   }
-  const observedStart = input.kind === "storage-reconciliation"
-    ? row.scan_started_at
-    : row.created_at;
-  const started = timestampAtOrAfter(observedStart, input.preparedAt)
+  const started = timestampAtOrAfter(row.created_at, input.preparedAt)
     || timestampAtOrAfter(row.updated_at, input.preparedAt);
   const terminal = started && TERMINAL_STATES[input.kind]?.has(row.state) === true;
   return {

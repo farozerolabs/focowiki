@@ -11,16 +11,11 @@ import {
   type RuntimeSettingsSnapshot
 } from "../runtime-settings/types.js";
 import type { RuntimeSettingsService } from "../runtime-settings/service.js";
-import type { StorageReconciliationRepository } from "../application/ports/storage-reconciliation-repository.js";
-import type { ObjectProtectionRepository } from "../application/ports/object-protection-repository.js";
 
 export function registerAdminRuntimeSettingsRoutes(
   app: Hono,
   services: {
     runtimeSettings: RuntimeSettingsService | null;
-    storageReconciliation: StorageReconciliationRepository | null;
-    objectProtection: ObjectProtectionRepository | null;
-    storagePrefix: string;
   },
   middlewares: {
     requireAuth: MiddlewareHandler;
@@ -34,17 +29,15 @@ export function registerAdminRuntimeSettingsRoutes(
       return service;
     }
 
-    const [snapshot, models, maintenanceStatus, objectProtectionStatus] = await Promise.all([
+    const [snapshot, models] = await Promise.all([
       service.getPublicSnapshot(),
-      service.listModels(),
-      services.storageReconciliation?.getStatus(`${services.storagePrefix}/generated/`) ?? null,
-      services.objectProtection?.getStatus() ?? null
+      service.listModels()
     ]);
     return context.json({
       settings: snapshot,
       models,
-      maintenanceStatus,
-      objectProtectionStatus
+      maintenanceStatus: null,
+      objectProtectionStatus: null
     });
   });
 

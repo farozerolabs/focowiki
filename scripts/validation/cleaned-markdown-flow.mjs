@@ -45,13 +45,14 @@ export {
 
 const CHANGE_ID =
   process.env.FOCOWIKI_VALIDATION_CHANGE_ID?.trim() ||
-  "implement-incremental-sharded-publication";
+  "implement-breaking-storage-vnext";
 const REPORT_DIR_ENV = "FOCOWIKI_VALIDATION_REPORT_DIR";
 const TASK_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_TASK_TIMEOUT_MS";
 const HTTP_TIMEOUT_ENV = "FOCOWIKI_VALIDATION_HTTP_TIMEOUT_MS";
 const PROJECTION_READ_CONCURRENCY_ENV = "FOCOWIKI_VALIDATION_PROJECTION_READ_CONCURRENCY";
 const REQUIRE_MODEL_ENV = "FOCOWIKI_VALIDATION_REQUIRE_MODEL";
 const KEEP_KNOWLEDGE_BASE_ENV = "FOCOWIKI_VALIDATION_KEEP_KNOWLEDGE_BASE";
+const RESUME_KNOWLEDGE_BASE_ENV = "FOCOWIKI_VALIDATION_RESUME_KNOWLEDGE_BASE_ID";
 const WHITE_BOX = "white-box";
 const BLACK_BOX = "black-box";
 const EXPECTED_UPLOAD_PHASE_KEYS = new Set([
@@ -108,6 +109,10 @@ export async function main(argv = process.argv.slice(2)) {
     return report;
   }
 
+  if (command === "api-resume") {
+    return runApiValidationResume();
+  }
+
   throw new Error(`Unknown validation command: ${command}`);
 }
 
@@ -124,6 +129,11 @@ function normalizeCommand(rawCommand) {
   if (rawCommand === "large-api") {
     process.env.FOCOWIKI_VALIDATION_PROFILE = "large-scale";
     return "api";
+  }
+
+  if (rawCommand === "large-api-resume") {
+    process.env.FOCOWIKI_VALIDATION_PROFILE = "large-scale";
+    return "api-resume";
   }
 
   return rawCommand;
@@ -280,7 +290,7 @@ export async function runApiValidation() {
     });
     validateSourceFileModelEvidence(completedSingleFiles, singleSamples, env, report, {
       checkName: "single-source-file-llm-detail",
-      message: "Single source-file rows expose LLM stage and model invocation summary."
+      message: "Single source-file rows omit per-invocation model history."
     });
     await validateSourceFileRows(
       admin,
@@ -325,7 +335,7 @@ export async function runApiValidation() {
       report,
       {
         checkName: "single-model-invocation-boundaries",
-        message: "PostgreSQL contains terminal model invocation records for the single-file upload."
+        message: "PostgreSQL retains bounded current source and graph facts without per-invocation model history."
       }
     );
     await validateS3ObjectBoundaries(env, singleStorageEvidence, singleSamples, report, {
@@ -359,7 +369,7 @@ export async function runApiValidation() {
     });
     validateSourceFileModelEvidence(completedBatchFiles, batchSamples, env, report, {
       checkName: "batch-source-file-llm-detail",
-      message: "Batch source-file rows expose LLM stage and model invocation summaries."
+      message: "Batch source-file rows omit per-invocation model history."
     });
     await validateSourceFileRows(
       admin,
@@ -426,7 +436,7 @@ export async function runApiValidation() {
       report,
       {
         checkName: "batch-model-invocation-boundaries",
-        message: "PostgreSQL contains terminal model invocation records for the batch upload."
+        message: "PostgreSQL retains bounded current source and graph facts without per-invocation model history."
       }
     );
     await validateS3ObjectBoundaries(env, batchStorageEvidence, batchSamples, report, {
@@ -518,6 +528,455 @@ export async function runApiValidation() {
     writeJson(report);
     throw error;
   }
+}
+
+export async function runApiValidationResume() {
+  const reportPath = path.join(resolveReportDir(), "validation-report.json");
+  const knowledgeBaseId = process.env[RESUME_KNOWLEDGE_BASE_ENV]?.trim();
+  if (!knowledgeBaseId) {
+    throw new Error(`${RESUME_KNOWLEDGE_BASE_ENV} is required for API validation resume.`);
+  }
+  if (!fs.existsSync(reportPath)) {
+    throw new Error("API validation resume requires an existing validation report.");
+  }
+
+  const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  const resumeCheckpoint = readResumeCheckpoint(report, knowledgeBaseId);
+
+  try {
+    const sampleSelection = selectSingleAndBatchSamplesFromEnvironment();
+    const env = readRuntimeEnv();
+    const performanceEvidence = createPerformanceEvidence(env);
+    const singleSamples = [sampleSelection.singleSample];
+    const batchSamples = sampleSelection.batchSamples;
+    const allSamples = sampleSelection.samples;
+    const currentSamples = allSamples.map(redactSampleForReport);
+    assertResumeSampleIdentity(report.samples, currentSamples);
+
+    assertEnvValue(env.ADMIN_USERNAME, "ADMIN_USERNAME");
+    assertEnvValue(env.ADMIN_PASSWORD, "ADMIN_PASSWORD");
+    assertEnvValue(env.DATABASE_URL, "DATABASE_URL");
+    assertEnvValue(env.REDIS_URL, "REDIS_URL");
+    assertEnvValue(env.S3_ENDPOINT, "S3_ENDPOINT");
+    assertEnvValue(env.S3_REGION, "S3_REGION");
+    assertEnvValue(env.S3_BUCKET, "S3_BUCKET");
+    assertEnvValue(env.S3_ACCESS_KEY_ID, "S3_ACCESS_KEY_ID");
+    assertEnvValue(env.S3_SECRET_ACCESS_KEY, "S3_SECRET_ACCESS_KEY");
+    assertEnvValue(env.S3_PREFIX, "S3_PREFIX");
+
+    const adminBaseUrl = env.ADMIN_API_BASE_URL
+      ?? `http://127.0.0.1:${env.ADMIN_API_PORT ?? "43000"}`;
+    const publicBaseUrl = env.PUBLIC_BASE_URL
+      ?? `http://127.0.0.1:${env.PUBLIC_OPENAPI_PORT ?? "43200"}`;
+    const admin = createHttpClient(adminBaseUrl, {
+      writeOrigin: env.ADMIN_PUBLIC_ORIGIN
+        || `http://localhost:${env.ADMIN_UI_PORT ?? "43100"}`,
+      onTiming: (timing) => recordEndpointTiming(performanceEvidence, timing)
+    });
+    const publicApi = createHttpClient(publicBaseUrl, {
+      onTiming: (timing) => recordEndpointTiming(performanceEvidence, timing)
+    });
+    const processingTimeoutMs = readValidationTaskTimeoutMs(env, allSamples.length);
+
+    report.finishedAt = null;
+    report.ok = false;
+    report.failures = [];
+    report.commandsRun = Array.from(new Set([
+      ...(report.commandsRun ?? []),
+      "FOCOWIKI_VALIDATION_RESUME_KNOWLEDGE_BASE_ID=<run-owned-id> node scripts/validation/cleaned-markdown-flow.mjs large-api-resume"
+    ]));
+    report.bugFixes = Array.from(new Set([
+      ...(report.bugFixes ?? []),
+      "Restored Admin file-tree directory matches while keeping file results in the per-knowledge-base unified search index."
+    ]));
+
+    logValidationStep("resume-admin-auth");
+    await loginAdmin(admin, env, report);
+    report.modelAssistance = await readRuntimeModelAssistanceMode(admin, env);
+    if (report.modelAssistance.required && !report.modelAssistance.enabled) {
+      throw new Error(`${REQUIRE_MODEL_ENV}=true requires an active model in Admin UI runtime settings.`);
+    }
+    env.PUBLIC_OPENAPI_VALIDATION_KEY = await ensureManagedPublicOpenApiKey(admin, report);
+
+    let completedSingleFiles;
+    let completedBatchFiles;
+    let deletionEvidence;
+
+    if (resumeCheckpoint === "security-audit") {
+      const recordedIds = readRecordedSourceFileIds(report);
+      completedSingleFiles = recordedIds.single.map((id) => ({ id }));
+      completedBatchFiles = recordedIds.batch.map((id) => ({ id }));
+      deletionEvidence = { deletedPagePath: readRecordedDeletedPagePath(report) };
+    } else {
+      const runOwnedFiles = await readRunOwnedSourceFiles(env.DATABASE_URL, knowledgeBaseId);
+      const validatedDeletedSourcePath = resumeCheckpoint === "source-task-deletion"
+        ? readRecordedDeletedPagePath(report).replace(/^pages\//u, "")
+        : null;
+      assertRunOwnedSourceIdentity(runOwnedFiles, allSamples, validatedDeletedSourcePath);
+      completedSingleFiles = matchAdminSourceFilesToSamples(runOwnedFiles, singleSamples);
+      completedBatchFiles = matchAdminSourceFilesToSamples(runOwnedFiles, batchSamples);
+    }
+
+    if (resumeCheckpoint === "file-tree") {
+      const sourceFiles = await listAdminSourceFiles(admin, knowledgeBaseId, 200);
+      const completedFiles = matchAdminSourceFilesToSamples(sourceFiles, allSamples);
+      if (sourceFiles.length !== allSamples.length || completedFiles.length !== allSamples.length) {
+        throw new Error("API validation resume target does not expose the exact selected source set.");
+      }
+      completedFiles.forEach(assertBoundedSourceFileLifecycle);
+      for (const file of completedFiles) recordSourceFileDuration(performanceEvidence, file);
+      report.checks.push(okCheck(
+        "api-validation-resumed",
+        "Validation resumed from the run-owned 200-file target after exact sample identity and ownership checks.",
+        { knowledgeBaseId, sourceCount: completedFiles.length },
+        WHITE_BOX
+      ));
+
+      const batchAdminFiles = await validateAdminFileSurfaces(
+        admin,
+        knowledgeBaseId,
+        report,
+        {
+          expectedSamples: allSamples,
+          checkName: "resume-batch-admin-file-surfaces",
+          message: "The preserved run-owned release still exposes the expected bounded Admin file surfaces."
+        }
+      );
+      logValidationStep("admin-file-tree-search");
+      await validateAdminTreeSearch(admin, knowledgeBaseId, batchAdminFiles.pageFile, report);
+
+      logValidationStep("batch-public-openapi");
+      await validatePublicOpenApi(publicApi, knowledgeBaseId, batchAdminFiles, env, report, {
+        sourceFileId: completedBatchFiles[0].id,
+        expectedSamples: allSamples,
+        checkName: "batch-public-openapi",
+        message:
+          "Public scoped Markdown, JSON, source-file, auth, source hiding, and error checks passed after batch upload."
+      });
+      const batchStorageEvidence = await validateDatabaseBoundaries(
+        env.DATABASE_URL,
+        knowledgeBaseId,
+        completedBatchFiles.map((file) => file.id),
+        batchSamples,
+        allSamples,
+        report,
+        {
+          checkName: "batch-database-boundaries",
+          message:
+            "PostgreSQL contains durable records, original file names, storage-backed keys, and no raw file body columns after batch upload."
+        }
+      );
+      await validateModelInvocationBoundaries(
+        env.DATABASE_URL,
+        knowledgeBaseId,
+        completedBatchFiles.map((file) => file.id),
+        batchSamples,
+        env,
+        report,
+        {
+          checkName: "batch-model-invocation-boundaries",
+          message: "PostgreSQL retains bounded current source and graph facts without per-invocation model history."
+        }
+      );
+      await validateS3ObjectBoundaries(env, batchStorageEvidence, batchSamples, report, {
+        checkName: "batch-s3-object-boundaries",
+        message:
+          "S3 contains internal source objects and generated public page objects without exposing source logical paths after batch upload."
+      });
+
+      logValidationStep("redis-boundaries");
+      await validateRedisBoundaries(env.REDIS_URL, allSamples, report);
+      logValidationStep("source-deletion");
+      deletionEvidence = await validateSourceDeletionFullFlow({
+        admin,
+        publicApi,
+        env,
+        knowledgeBaseId,
+        pageFile: batchAdminFiles.pageFile,
+        processingTimeoutMs,
+        report
+      });
+      await validateAdminSourceFileTaskDeletion({
+        admin,
+        knowledgeBaseId,
+        sourceFileId: selectTaskDeletionCandidate(
+          completedBatchFiles,
+          deletionEvidence.sourceFileId
+        ),
+        report
+      });
+    } else if (resumeCheckpoint === "source-task-deletion") {
+      logValidationStep("resume-source-task-deletion");
+      await validatePersistedSourceFileTaskDeletion({
+        admin,
+        databaseUrl: env.DATABASE_URL,
+        knowledgeBaseId,
+        report
+      });
+      deletionEvidence = {
+        deletedPagePath: readRecordedDeletedPagePath(report)
+      };
+    }
+
+    if (resumeCheckpoint === "security-audit") {
+      logValidationStep("resume-security-audit");
+    } else if (shouldKeepValidationKnowledgeBase(env)) {
+      report.checks.push(okCheck(
+        "knowledge-base-preserved",
+        "The validation knowledge base was explicitly preserved for bounded follow-up inspection.",
+        { knowledgeBaseId },
+        WHITE_BOX
+      ));
+    } else {
+      logValidationStep("knowledge-base-deletion");
+      await validateKnowledgeBaseDeletion({
+        admin,
+        publicApi,
+        env,
+        knowledgeBaseId,
+        report
+      });
+    }
+
+    logValidationStep("security-audit");
+    await validateSecurityAuditEvidence(env.DATABASE_URL, report.startedAt, report);
+    await recordOperationalPerformanceSnapshot(
+      env.DATABASE_URL,
+      knowledgeBaseId,
+      performanceEvidence,
+      report
+    );
+    recordConfiguredRuntimeResources(performanceEvidence, env);
+    logValidationStep("performance-summary");
+    report.performance = finalizePerformanceEvidence(performanceEvidence, {
+      profile: sampleSelection.profile,
+      batchSampleCount: sampleSelection.batchSampleCount,
+      largeScaleMinBatchFiles: sampleSelection.largeScaleMinBatchFiles
+    });
+    if (!report.performance.ok) {
+      throw new Error(
+        `Performance validation failed: ${report.performance.budgetFailures.join(", ")}`
+      );
+    }
+
+    report.validationRun = {
+      knowledgeBaseId,
+      singleSourceFileIds: completedSingleFiles.map((file) => file.id),
+      batchSourceFileIds: completedBatchFiles.map((file) => file.id),
+      deletedPagePath: deletionEvidence.deletedPagePath,
+      singleSourceCount: completedSingleFiles.length,
+      batchSourceCount: completedBatchFiles.length,
+      totalSourceCount: allSamples.length,
+      sampleProfile: sampleSelection.profile,
+      singleEventCount: readRecordedEventCount(report, "single-source-file-detail"),
+      batchEventCount: readRecordedEventCount(report, "batch-source-file-detail"),
+      publicBaseUrl: redactUrl(publicBaseUrl),
+      adminBaseUrl: redactUrl(adminBaseUrl)
+    };
+    report.finishedAt = new Date().toISOString();
+    report.ok = report.checks.every((check) => check.ok);
+    writeReport(report);
+    writeJson(report);
+    if (!report.ok) {
+      throw new Error("Cleaned Markdown API validation failed. See redacted validation report.");
+    }
+    return report;
+  } catch (error) {
+    report.finishedAt = new Date().toISOString();
+    report.ok = false;
+    report.failures.push(
+      redactPotentialPathText(error instanceof Error ? error.message : String(error))
+    );
+    writeReport(report);
+    writeJson(report);
+    throw error;
+  }
+}
+
+export function assertResumeSampleIdentity(expectedSamples, currentSamples) {
+  const identity = (samples) => samples.map((sample) => ({
+    basename: sample.basename,
+    checksumSha256: sample.checksumSha256
+  }));
+  if (JSON.stringify(identity(expectedSamples)) !== JSON.stringify(identity(currentSamples))) {
+    throw new Error("API validation resume sample identity changed.");
+  }
+}
+
+function readResumeCheckpoint(report, knowledgeBaseId) {
+  const checkNames = new Set((report.checks ?? []).map((check) => check.name));
+  const resumeCheck = (report.checks ?? []).find(
+    (check) => check.name === "api-validation-resumed"
+  );
+  if (
+    report.ok === true
+    && checkNames.has("admin-source-file-task-deletion")
+    && checkNames.has("knowledge-base-delete")
+    && checkNames.has("security-audit-evidence")
+    && checkNames.has("operational-performance-snapshot")
+    && resumeCheck?.details?.knowledgeBaseId === knowledgeBaseId
+  ) return "security-audit";
+
+  if (report.ok === false && checkNames.has("admin-pagination-surfaces")) {
+    if ((report.failures ?? []).includes(
+      "Admin file-tree search did not return a matching folder entry."
+    )) return "file-tree";
+
+    if (
+      (
+        (report.failures ?? []).includes(
+          "Admin source-file task deletion did not hide the completed source-file task."
+        )
+        || (report.failures ?? []).includes(
+          "API validation resume target does not own the exact selected source set."
+        )
+        || (report.failures ?? []).includes(
+          "Admin source-file task deletion did not persist a hidden terminal result."
+        )
+        || (report.failures ?? []).includes(
+          "Admin source-file task deletion left the hidden task in the source-file list."
+        )
+      )
+      && checkNames.has("source-page-delete-full-flow")
+      && resumeCheck?.details?.knowledgeBaseId === knowledgeBaseId
+    ) return "source-task-deletion";
+
+    if (
+      (report.failures ?? []).includes(
+        "Security audit validation expected at least one audit event for this run."
+      )
+      && checkNames.has("admin-source-file-task-deletion")
+      && checkNames.has("knowledge-base-delete")
+      && resumeCheck?.details?.knowledgeBaseId === knowledgeBaseId
+    ) return "security-audit";
+  }
+  throw new Error("API validation report is not at a supported resume checkpoint.");
+}
+
+function readRecordedEventCount(report, checkName) {
+  const count = report.checks?.find((check) => check.name === checkName)?.details?.eventCount;
+  return Number.isSafeInteger(count) && count >= 0 ? count : 0;
+}
+
+function readRecordedDeletedPagePath(report) {
+  const value = report.checks?.find(
+    (check) => check.name === "source-page-delete-full-flow"
+  )?.details?.deletedPagePath;
+  if (typeof value !== "string" || !value) {
+    throw new Error("API validation resume report is missing the deleted page path.");
+  }
+  return value;
+}
+
+function readRecordedSourceFileIds(report) {
+  const single = report.checks?.find(
+    (check) => check.name === "single-source-file-row"
+  )?.details?.sourceFileIds;
+  const all = report.checks?.find(
+    (check) => check.name === "single-batch-source-file-rows"
+  )?.details?.sourceFileIds;
+  if (
+    !Array.isArray(single)
+    || single.length !== 1
+    || !Array.isArray(all)
+    || all.length !== 200
+    || single.some((id) => typeof id !== "string" || !id)
+    || all.some((id) => typeof id !== "string" || !id)
+  ) {
+    throw new Error("API validation resume report is missing the run-owned source identities.");
+  }
+  const singleIds = new Set(single);
+  const batch = all.filter((id) => !singleIds.has(id));
+  if (batch.length !== 199) {
+    throw new Error("API validation resume report has inconsistent source identities.");
+  }
+  return { single, batch };
+}
+
+async function readRunOwnedSourceFiles(databaseUrl, knowledgeBaseId) {
+  const postgresModule = requireFromApiPackage("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    const rows = await sql`
+      SELECT public_id AS id, logical_path AS relative_path
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY logical_path COLLATE "C", public_id COLLATE "C"
+    `;
+    return rows.map((row) => ({
+      id: row.id,
+      relativePath: row.relative_path
+    }));
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
+export function assertRunOwnedSourceIdentity(
+  sourceFiles,
+  samples,
+  validatedDeletedSourcePath = null
+) {
+  const actualPaths = [
+    ...sourceFiles.map((file) => file.relativePath),
+    ...(validatedDeletedSourcePath ? [validatedDeletedSourcePath] : [])
+  ].sort();
+  const expectedPaths = samples
+    .map((sample) => sample.relativePath ?? sample.basename)
+    .sort();
+  if (
+    actualPaths.length !== samples.length
+    || JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)
+  ) {
+    throw new Error("API validation resume target does not own the exact selected source set.");
+  }
+}
+
+async function validatePersistedSourceFileTaskDeletion({
+  admin,
+  databaseUrl,
+  knowledgeBaseId,
+  report
+}) {
+  const postgresModule = requireFromApiPackage("postgres");
+  const postgres = postgresModule.default ?? postgresModule;
+  const sql = postgres(databaseUrl, { max: 1 });
+  let sourceFileId;
+  try {
+    const rows = await sql`
+      SELECT result.correlation_public_id AS source_file_id
+      FROM focowiki.operation_results result
+      JOIN focowiki.operations operation
+        ON operation.knowledge_base_id = result.knowledge_base_id
+       AND operation.public_id = result.public_id
+       AND operation.operation_kind = 'source_processing'
+      WHERE result.knowledge_base_id = ${knowledgeBaseId}
+        AND result.terminal_state = 'deleted'
+        AND result.result_code = 'SOURCE_TASK_HIDDEN'
+      ORDER BY result.completed_at DESC, result.public_id DESC
+      LIMIT 1
+    `;
+    sourceFileId = rows[0]?.source_file_id;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+  if (typeof sourceFileId !== "string" || !sourceFileId) {
+    throw new Error("Admin source-file task deletion did not persist a hidden terminal result.");
+  }
+
+  const afterDeletion = await readJson(
+    admin,
+    `/admin/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/source-files?limit=10&fileIdQuery=${encodeURIComponent(sourceFileId)}`
+  );
+  if (afterDeletion.items?.some((file) => file.id === sourceFileId)) {
+    throw new Error("Admin source-file task deletion left the hidden task in the source-file list.");
+  }
+  report.checks.push(okCheck(
+    "admin-source-file-task-deletion",
+    "Admin source-file task deletion hides completed task rows without deleting generated files.",
+    { sourceFileId }
+  ));
 }
 
 function createBaseReport(kind, startedAt, sampleProfile = process.env.FOCOWIKI_VALIDATION_PROFILE || "default") {
@@ -879,7 +1338,7 @@ async function validateRuntimeProcessingSettings(admin, sampleCount, report) {
       "Admin UI runtime settings persist bounded source dispatch and incremental publication work.",
       {
         sampleCount,
-        generationBatchSize: worker.generationBatchSize,
+        claimBatchSize: worker.claimBatchSize,
         sourceFileConcurrency: worker.sourceFileConcurrency,
         sourceQueueHardDepth: worker.sourceQueueHardDepth,
         impactBatchSize: publication.impactBatchSize,
@@ -895,12 +1354,6 @@ async function validateRuntimeProcessingSettings(admin, sampleCount, report) {
 }
 
 export function assertRuntimeProcessingSettingsShape({ worker, publication }) {
-  if (typeof worker.hardDeleteVersionPurgeEnabled !== "boolean") {
-    throw new Error(
-      "Runtime processing setting hardDeleteVersionPurgeEnabled must be a boolean."
-    );
-  }
-
   for (const [field, value] of [
     ...Object.entries(worker).filter(([, value]) => typeof value === "number"),
     ...Object.entries(publication).filter(([, value]) => typeof value === "number")
@@ -1431,9 +1884,10 @@ async function uploadSamples(admin, knowledgeBaseId, samples, report, options = 
 async function pollSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds, timeoutMs, report, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const expectedIds = new Set(sourceFileIds);
+  const polling = readSourceFilePollingPlan(expectedIds.size);
 
   while (Date.now() < deadline) {
-    const files = await listAdminSourceFiles(admin, knowledgeBaseId, 50);
+    const files = await listAdminSourceFiles(admin, knowledgeBaseId, polling.pageSize);
     const selectedFiles = files.filter((file) => expectedIds.has(file.id));
     const failedFile = selectedFiles.find((file) => file.state === "failed");
 
@@ -1456,13 +1910,24 @@ async function pollSourceFilesCompleted(admin, knowledgeBaseId, sourceFileIds, t
       return selectedFiles;
     }
 
-    await sleep(1_000);
+    await sleep(polling.intervalMs);
   }
 
   throw new Error(`Timed out waiting for source files to complete after ${timeoutMs}ms.`);
 }
 
-async function listAdminSourceFiles(admin, knowledgeBaseId, limit = 50) {
+export function readSourceFilePollingPlan(expectedCount) {
+  if (!Number.isSafeInteger(expectedCount) || expectedCount < 1) {
+    throw new Error("Source-file polling requires a positive expected count.");
+  }
+
+  return {
+    pageSize: Math.min(200, Math.max(50, expectedCount)),
+    intervalMs: expectedCount === 1 ? 1_000 : 5_000
+  };
+}
+
+async function listAdminSourceFiles(admin, knowledgeBaseId, limit = 200) {
   const files = [];
   let cursor = null;
 
@@ -1574,57 +2039,40 @@ async function fetchSourceFileDetail(admin, knowledgeBaseId, sourceFileId, repor
   return body;
 }
 
-function validateSourceFileModelEvidence(files, samples, env, report, options = {}) {
+export function validateSourceFileModelEvidence(files, samples, env, report, options = {}) {
   const mode = report.modelAssistance ?? readModelAssistanceMode(env);
-
-  if (!mode.enabled) {
-    report.checks.push(
-      okCheck(
-        options.checkName ?? "source-file-llm-detail",
-        "Model assistance is disabled; source-file model evidence is not required for this run.",
-        { expectedSamples: samples.length },
-        WHITE_BOX
-      )
-    );
-    return;
-  }
-
   const matchingFiles = matchAdminSourceFilesToSamples(files, samples);
 
   if (matchingFiles.length !== samples.length) {
     throw new Error(`Source-file list returned ${matchingFiles.length} model-checked files, expected ${samples.length}.`);
   }
 
-  const missingModel = matchingFiles.filter((file) => !file.modelInvocationStatus);
-  const skipped = matchingFiles.filter((file) => file.modelInvocationStatus === "skipped");
-  const failed = matchingFiles.filter((file) => file.modelInvocationStatus === "failed");
-  const completed = matchingFiles.filter((file) => file.modelInvocationStatus === "completed");
+  const invocationFields = [
+    "modelInvocationStatus",
+    "modelInvocationModelName",
+    "modelInvocationStartedAt",
+    "modelInvocationEndedAt",
+    "modelInvocationWarningCount",
+    "modelInvocationErrorCode"
+  ];
+  const retainedHistory = matchingFiles.filter((file) =>
+    invocationFields.some((field) => file[field] !== null && file[field] !== undefined)
+  );
 
-  if (failed.length > 0) {
-    report.manualReviewItems.push(
-      `Model provider returned warnings for ${failed.length} source file(s); generated files used deterministic fallback and model output quality could not be judged for those files.`
-    );
-  }
-
-  if (missingModel.length > 0 || skipped.length > 0 || completed.length + failed.length !== samples.length) {
+  if (retainedHistory.length > 0) {
     throw new Error(
-      `Source-file model evidence is incomplete: missing=${missingModel.length}, skipped=${skipped.length}, failed=${failed.length}, completed=${completed.length}.`
+      `Source-file rows retained per-invocation model history for ${retainedHistory.length} file(s).`
     );
-  }
-
-  if (matchingFiles.some((file) => file.modelInvocationModelName !== mode.modelName)) {
-    throw new Error("Source-file model evidence did not preserve the configured model name.");
   }
 
   report.checks.push(
     okCheck(
       options.checkName ?? "source-file-llm-detail",
-      options.message ?? "Source-file rows expose terminal LLM stage and model invocation summaries.",
+      options.message ?? "Source-file rows omit per-invocation model history.",
       {
         expectedSamples: samples.length,
-        completed: completed.length,
-        skipped: skipped.length,
-        failed: failed.length
+        modelAssistanceEnabled: mode.enabled,
+        retainedInvocationDetails: retainedHistory.length
       },
       WHITE_BOX
     )
@@ -1632,7 +2080,7 @@ function validateSourceFileModelEvidence(files, samples, env, report, options = 
 }
 
 async function validateSourceFileRows(admin, knowledgeBaseId, expectedFiles, report, options = {}) {
-  const sourceFiles = await listAdminSourceFiles(admin, knowledgeBaseId, 50);
+  const sourceFiles = await listAdminSourceFiles(admin, knowledgeBaseId, 200);
   const sourceFileIds = new Set(sourceFiles.map((file) => file.id));
 
   for (const expectedFile of expectedFiles) {
@@ -1642,9 +2090,7 @@ async function validateSourceFileRows(admin, knowledgeBaseId, expectedFiles, rep
       throw new Error(`Expected source-file row was missing: ${expectedFile.id}`);
     }
 
-    if (file.state !== "visible" || !file.processingStartedAt || !file.processingEndedAt) {
-      throw new Error(`Source-file row did not expose expected lifecycle data: ${expectedFile.id}`);
-    }
+    assertBoundedSourceFileLifecycle(file);
   }
 
   report.checks.push(
@@ -1652,6 +2098,16 @@ async function validateSourceFileRows(admin, knowledgeBaseId, expectedFiles, rep
       sourceFileIds: Array.from(sourceFileIds)
     })
   );
+}
+
+export function assertBoundedSourceFileLifecycle(file) {
+  if (file?.state !== "visible") {
+    throw new Error(`Source-file row did not reach the visible lifecycle state: ${file?.id ?? "unknown"}`);
+  }
+
+  if (file.processingStartedAt !== null || file.processingEndedAt !== null) {
+    throw new Error(`Source-file row retained per-stage processing history: ${file.id ?? "unknown"}`);
+  }
 }
 
 async function validateSourceFilePagination(
@@ -3044,35 +3500,38 @@ async function validateDeletionDatabaseBoundaries({
     while (Date.now() < deadline) {
       const [shape] = await sql`
         SELECT
-          (SELECT active_generation_id
-           FROM focowiki.knowledge_bases
-           WHERE id = ${knowledgeBaseId}) AS active_generation_id,
+          (SELECT release_root_public_id
+           FROM focowiki.active_snapshots
+           WHERE knowledge_base_id = ${knowledgeBaseId}) AS active_generation_id,
           (SELECT count(*)::int
            FROM focowiki.source_files
            WHERE knowledge_base_id = ${knowledgeBaseId}
-             AND id = ${sourceFileId}) AS source_rows,
+             AND public_id = ${sourceFileId}) AS source_rows,
           (SELECT count(*)::int
            FROM focowiki.source_files
            WHERE knowledge_base_id = ${knowledgeBaseId}
-             AND id = ${sourceFileId}
+             AND public_id = ${sourceFileId}
              AND deleted_at IS NOT NULL) AS deleted_sources,
           (SELECT count(*)::int
-           FROM focowiki.publication_generations generation
-           JOIN focowiki.knowledge_bases knowledge_base
-             ON knowledge_base.id = generation.knowledge_base_id
-            AND knowledge_base.active_generation_id = generation.id
-           WHERE generation.knowledge_base_id = ${knowledgeBaseId}
-             AND generation.state = 'active'
-             AND generation.activated_at IS NOT NULL) AS active_generations,
+           FROM focowiki.active_snapshots snapshot
+           JOIN focowiki.release_roots root
+             ON root.knowledge_base_id = snapshot.knowledge_base_id
+            AND root.public_id = snapshot.release_root_public_id
+           WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+             AND root.root_role = 'active') AS active_generations,
           (SELECT count(*)::int
-           FROM focowiki.source_file_events
-           WHERE knowledge_base_id = ${knowledgeBaseId}
-             AND source_file_id = ${sourceFileId}
-             AND stage_key = 'source_deletion') AS source_deletion_events,
+           FROM focowiki.operations operation
+           WHERE operation.knowledge_base_id = ${knowledgeBaseId}
+             AND operation.operation_kind = 'deletion'
+             AND operation.target_kind = 'source_file'
+             AND operation.target_public_id = ${sourceFileId}
+             AND operation.state IN ('completed', 'deleted')) AS source_deletion_events,
           (SELECT count(*)::int
-           FROM focowiki.active_object_refs file
-           WHERE file.knowledge_base_id = ${knowledgeBaseId}
-             AND file.logical_path = ${deletedPagePath}) AS stale_active_pages
+           FROM focowiki.active_snapshots snapshot
+           CROSS JOIN LATERAL
+             focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+           WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+             AND entry.logical_path = ${deletedPagePath}) AS stale_active_pages
       `;
 
       lastShape = shape;
@@ -3294,8 +3753,9 @@ async function validateSecurityAuditEvidence(databaseUrl, startedAt, report) {
 
   try {
     const rows = await sql`
-      SELECT event_type, result, error_code, username, client_ip, user_agent, origin
-      FROM focowiki.admin_audit_events
+      SELECT event_type, result, reason_code, actor_public_id, source_ip,
+             user_agent, metadata
+      FROM focowiki.security_audit_events
       WHERE created_at >= ${startedAt}
       ORDER BY created_at DESC
       LIMIT 50
@@ -3339,38 +3799,39 @@ async function recordOperationalPerformanceSnapshot(databaseUrl, knowledgeBaseId
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND deleted_at IS NULL
-           AND processing_status IN ('queued', 'running')) AS queue_depth,
+           AND status IN ('pending', 'processing')) AS queue_depth,
         (SELECT count(*)::int
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND deleted_at IS NULL
-           AND processing_status = 'running') AS running_source_files,
+           AND status = 'processing') AS running_source_files,
         (SELECT count(*)::int
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND deleted_at IS NULL
-           AND processing_status = 'completed') AS completed_source_files,
+           AND status = 'ready') AS completed_source_files,
         (SELECT count(*)::int
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
            AND deleted_at IS NULL
-           AND processing_status = 'failed') AS failed_source_files,
+           AND status = 'failed') AS failed_source_files,
         (SELECT count(*)::int
-         FROM focowiki.source_files
+         FROM focowiki.active_snapshots snapshot
+         CROSS JOIN LATERAL
+           focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+         WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+           AND entry.entry_kind = 'source') AS visible_source_files,
+        (SELECT count(*)::int
+         FROM focowiki.operations
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND deleted_at IS NULL
-           AND generated_output_status = 'visible') AS visible_source_files,
+           AND operation_kind = 'publication') AS publication_role_jobs,
         (SELECT count(*)::int
-         FROM focowiki.role_jobs
+         FROM focowiki.operation_work_items
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND role = 'publication') AS publication_role_jobs,
+           AND work_kind = 'publication'
+           AND state IN ('queued', 'running', 'retry')) AS active_publication_role_jobs,
         (SELECT count(*)::int
-         FROM focowiki.role_jobs
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND role = 'publication'
-           AND status IN ('queued', 'running')) AS active_publication_role_jobs,
-        (SELECT count(*)::int
-         FROM focowiki.publication_generations
+         FROM focowiki.release_roots
          WHERE knowledge_base_id = ${knowledgeBaseId}) AS generation_count
     `;
 
@@ -3420,115 +3881,46 @@ async function validateModelInvocationBoundaries(
     const [shape] = await sql`
       SELECT
         (SELECT count(*)::int
-         FROM focowiki.source_file_events
-         WHERE source_file_id = ANY(${sourceFileIds})
-           AND stage_key = 'llm_suggestion') AS llm_phase_events,
+         FROM focowiki.source_files
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND public_id = ANY(${sourceFileIds})) AS source_files,
         (SELECT count(*)::int
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = ANY(${sourceFileIds})) AS source_files,
+           AND public_id = ANY(${sourceFileIds})
+           AND status = 'ready') AS ready_source_files,
         (SELECT count(*)::int
-         FROM focowiki.model_invocations
+         FROM focowiki.graph_nodes
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})) AS invocations,
+           AND source_file_public_id = ANY(${sourceFileIds})) AS graph_nodes,
         (SELECT count(*)::int
-         FROM focowiki.model_invocations
+         FROM focowiki.graph_nodes
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND status = 'completed') AS completed,
-        (SELECT count(*)::int
-         FROM focowiki.model_invocations
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND status = 'failed') AS failed,
-        (SELECT count(*)::int
-         FROM focowiki.model_invocations
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND status = 'skipped') AS skipped,
-        (SELECT count(*)::int
-         FROM focowiki.model_invocations
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND ended_at IS NULL) AS non_terminal,
-        (SELECT count(*)::int
-         FROM focowiki.model_invocations
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND model_name = ${mode.modelName ?? ""}) AS matching_model_name,
-        (SELECT count(*)::int
-         FROM focowiki.model_invocations
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND source_file_id = ANY(${sourceFileIds})
-           AND api_mode = ${mode.apiMode ?? ""}) AS matching_api_mode
+           AND source_file_public_id = ANY(${sourceFileIds})
+           AND metadata ? 'presentationSuggestion') AS suggested_graph_nodes
     `;
-
-    if (shape.source_files !== samples.length) {
-      throw new Error(`Expected ${samples.length} source files for model validation, got ${shape.source_files}.`);
-    }
-
-    if (!mode.enabled) {
-      report.checks.push(
-        okCheck(
-          options.checkName ?? "model-invocation-boundaries",
-          "Model assistance is disabled; persisted skipped invocation records are optional for this validation run.",
-          shape,
-          WHITE_BOX
-        )
-      );
-      return;
-    }
-
-    const expectedLlmPhaseEvents = expectedModelStageEventCount(samples.length);
 
     if (
-      shape.llm_phase_events !== expectedLlmPhaseEvents ||
-      shape.invocations !== samples.length ||
-      shape.completed + shape.failed !== samples.length ||
-      shape.skipped !== 0 ||
-      shape.non_terminal !== 0 ||
-      shape.matching_model_name !== samples.length ||
-      shape.matching_api_mode !== samples.length
+      shape.source_files !== samples.length
+      || shape.ready_source_files !== samples.length
+      || shape.graph_nodes !== samples.length
     ) {
-      throw new Error(`Unexpected model invocation state: ${JSON.stringify(shape)}`);
-    }
-
-    if (shape.failed > 0) {
-      report.manualReviewItems.push(
-        `Model invocation failed for ${shape.failed} source file(s); review provider connectivity before using model-generated suggestions as quality evidence.`
+      throw new Error(
+        `Unexpected bounded source/model facts: ${JSON.stringify(shape)}`
       );
     }
 
-    const rows = await sql`
-      SELECT s.relative_path AS source_path, m.status, m.api_mode, m.model_name, m.warning_count, m.error_code, m.error_message
-      FROM focowiki.model_invocations m
-      JOIN focowiki.source_files s ON s.id = m.source_file_id
-      WHERE m.knowledge_base_id = ${knowledgeBaseId}
-        AND m.source_file_id = ANY(${sourceFileIds})
-      ORDER BY s.relative_path
-    `;
-    const expectedNames = new Set(samples.map((sample) => sample.relativePath ?? sample.basename));
-
-    for (const row of rows) {
-      if (!expectedNames.has(row.source_path)) {
-        throw new Error(`Model invocation was linked to an unexpected source path: ${row.source_path}`);
-      }
-
-      if (row.api_mode !== mode.apiMode) {
-        throw new Error(`Model invocation used unexpected API mode: ${row.api_mode ?? "missing"}.`);
-      }
-
-      const safeSummary = JSON.stringify({ errorCode: row.error_code, errorMessage: row.error_message });
-
-      if (hasSecretLikeAuditData([safeSummary]) || /knowledge-bases\/|uploads\/|releases\/|file:\/\//i.test(safeSummary)) {
-        throw new Error("Model invocation error summary exposed internal or secret-like data.");
-      }
+    if (mode.enabled && shape.suggested_graph_nodes === 0) {
+      report.manualReviewItems.push(
+        "Model assistance was enabled but no bounded presentation suggestions were retained in current graph facts."
+      );
     }
 
     report.checks.push(
       okCheck(
         options.checkName ?? "model-invocation-boundaries",
-        options.message ?? "PostgreSQL contains terminal model invocation records for source files.",
+        options.message
+          ?? "PostgreSQL retains bounded current source and graph facts without per-invocation model history.",
         shape,
         WHITE_BOX
       )
@@ -3536,13 +3928,6 @@ async function validateModelInvocationBoundaries(
   } finally {
     await sql.end({ timeout: 5 });
   }
-}
-
-export function expectedModelStageEventCount(sampleCount) {
-  if (!Number.isSafeInteger(sampleCount) || sampleCount < 0) {
-    throw new Error("Model stage sample count must be a non-negative integer.");
-  }
-  return sampleCount;
 }
 
 async function validateDatabaseBoundaries(
@@ -3557,48 +3942,65 @@ async function validateDatabaseBoundaries(
   const postgresModule = requireFromApiPackage("postgres");
   const postgres = postgresModule.default ?? postgresModule;
   const sql = postgres(databaseUrl, { max: 1 });
-  const internalSourceObjectPattern = `%/knowledge-bases/${knowledgeBaseId}/upload-sessions/%/entries/%/content.md`;
 
   try {
     const [recordCounts] = await sql`
       SELECT
         (SELECT count(*)::int FROM focowiki.source_files WHERE knowledge_base_id = ${knowledgeBaseId}) AS source_files,
-        (SELECT count(*)::int FROM focowiki.publication_generations WHERE knowledge_base_id = ${knowledgeBaseId}) AS generations,
-        (SELECT count(*)::int FROM focowiki.active_object_refs WHERE knowledge_base_id = ${knowledgeBaseId}) AS active_object_refs,
-        (SELECT count(*)::int FROM focowiki.active_projection_records WHERE knowledge_base_id = ${knowledgeBaseId}) AS active_projection_records
+        (SELECT count(*)::int FROM focowiki.release_roots WHERE knowledge_base_id = ${knowledgeBaseId}) AS release_roots,
+        (SELECT count(*)::int
+         FROM focowiki.active_snapshots snapshot
+         CROSS JOIN LATERAL
+           focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+         WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}) AS active_catalog_entries,
+        (SELECT count(*)::int FROM focowiki.search_projections
+         WHERE knowledge_base_id = ${knowledgeBaseId}
+           AND projection_role = 'active' AND state = 'ready') AS active_search_projections
     `;
     const storageShapeRows = await sql`
       SELECT
         (SELECT count(*)::int
+         FROM focowiki.source_file_current_revisions current
+         JOIN focowiki.source_revisions revision
+           ON revision.knowledge_base_id = current.knowledge_base_id
+          AND revision.source_file_public_id = current.source_file_public_id
+          AND revision.public_id = current.source_revision_public_id
+         JOIN focowiki.object_registrations registration
+           ON registration.object_id = revision.object_id
+          AND registration.state = 'verified'
+         WHERE current.knowledge_base_id = ${knowledgeBaseId}
+           AND current.source_file_public_id = ANY(${sourceFileIds})
+           AND registration.object_format = 'source-markdown-v1') AS internal_source_objects,
+        (SELECT count(*)::int
+         FROM focowiki.active_snapshots snapshot
+         CROSS JOIN LATERAL
+           focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+         JOIN focowiki.object_registrations registration
+           ON registration.object_id = entry.object_id
+          AND registration.state = 'verified'
+         WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+           AND entry.entry_kind = 'source'
+           AND entry.source_file_public_id IS NOT NULL
+           AND entry.logical_path LIKE 'pages/%') AS public_page_objects,
+        (SELECT count(*)::int
+         FROM focowiki.active_snapshots snapshot
+         CROSS JOIN LATERAL
+           focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+         WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+           AND entry.logical_path LIKE 'sources/%') AS exposed_source_generated_files,
+        (SELECT bool_and(jsonb_typeof(metadata) = 'object')
          FROM focowiki.source_files
          WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = ANY(${sourceFileIds})
-           AND object_key LIKE ${internalSourceObjectPattern}
-           AND object_key NOT LIKE '%/generated/objects/%') AS internal_source_objects,
-        (SELECT count(*)::int
-         FROM focowiki.active_object_refs file
-         JOIN focowiki.immutable_objects object
-           ON object.checksum_sha256 = file.checksum_sha256
-          AND object.format_version = file.format_version
-         WHERE file.knowledge_base_id = ${knowledgeBaseId}
-           AND file.ref_kind = 'page'
-           AND file.source_file_id IS NOT NULL
-           AND file.logical_path LIKE 'pages/%'
-           AND object.lifecycle_state = 'active') AS public_page_objects,
-        (SELECT count(*)::int
-         FROM focowiki.active_object_refs
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND logical_path LIKE 'sources/%') AS exposed_source_generated_files,
-        (SELECT bool_and(jsonb_typeof(metadata_json) = 'object')
-         FROM focowiki.source_files
-         WHERE knowledge_base_id = ${knowledgeBaseId}
-           AND id = ANY(${sourceFileIds})) AS source_metadata_is_object
+           AND public_id = ANY(${sourceFileIds})) AS source_metadata_is_object
     `;
     const bodyColumns = await sql`
       SELECT table_name, column_name
       FROM information_schema.columns
       WHERE table_schema = 'focowiki'
-        AND table_name IN ('source_files', 'active_object_refs', 'immutable_objects')
+        AND table_name IN (
+          'source_files', 'source_revisions', 'object_registrations',
+          'release_catalog_entries'
+        )
         AND (
           column_name IN ('body', 'content', 'raw_body', 'markdown_body', 'json_body', 'file_body')
           OR column_name LIKE '%\\_body'
@@ -3606,23 +4008,38 @@ async function validateDatabaseBoundaries(
       ORDER BY table_name, column_name
     `;
     const sourceRows = await sql`
-      SELECT name, relative_path, object_key, metadata_json
-      FROM focowiki.source_files
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND id = ANY(${sourceFileIds})
-      ORDER BY relative_path
+      SELECT regexp_replace(source.logical_path, '^.*/', '') AS name,
+             source.logical_path AS relative_path,
+             registration.storage_key AS object_key,
+             source.metadata AS metadata_json
+      FROM focowiki.source_files source
+      JOIN focowiki.source_file_current_revisions current
+        ON current.knowledge_base_id = source.knowledge_base_id
+       AND current.source_file_public_id = source.public_id
+      JOIN focowiki.source_revisions revision
+        ON revision.knowledge_base_id = current.knowledge_base_id
+       AND revision.source_file_public_id = current.source_file_public_id
+       AND revision.public_id = current.source_revision_public_id
+      JOIN focowiki.object_registrations registration
+        ON registration.object_id = revision.object_id
+       AND registration.state = 'verified'
+      WHERE source.knowledge_base_id = ${knowledgeBaseId}
+        AND source.public_id = ANY(${sourceFileIds})
+      ORDER BY source.logical_path
     `;
     const pageRows = await sql`
-      SELECT file.logical_path, object.object_key
-      FROM focowiki.active_object_refs file
-      JOIN focowiki.immutable_objects object
-        ON object.checksum_sha256 = file.checksum_sha256
-       AND object.format_version = file.format_version
-      WHERE file.knowledge_base_id = ${knowledgeBaseId}
-        AND file.ref_kind = 'page'
-        AND file.source_file_id = ANY(${sourceFileIds})
-        AND file.logical_path LIKE 'pages/%'
-      ORDER BY file.logical_path
+      SELECT entry.logical_path, registration.storage_key AS object_key
+      FROM focowiki.active_snapshots snapshot
+      CROSS JOIN LATERAL
+        focowiki.resolve_release_catalog(snapshot.release_root_public_id) entry
+      JOIN focowiki.object_registrations registration
+        ON registration.object_id = entry.object_id
+       AND registration.state = 'verified'
+      WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
+        AND entry.entry_kind = 'source'
+        AND entry.source_file_public_id = ANY(${sourceFileIds})
+        AND entry.logical_path LIKE 'pages/%'
+      ORDER BY entry.logical_path
     `;
     const storageShape = storageShapeRows[0] ?? {};
     const expectedSelectedNames = new Set(selectedSamples.map((sample) => sample.relativePath ?? sample.basename));
@@ -3631,9 +4048,9 @@ async function validateDatabaseBoundaries(
 
     if (
       recordCounts.source_files !== allSamples.length ||
-      recordCounts.generations < 1 ||
-      recordCounts.active_object_refs < 1 ||
-      recordCounts.active_projection_records < 1
+      recordCounts.release_roots < 1 ||
+      recordCounts.active_catalog_entries < 1 ||
+      recordCounts.active_search_projections !== 1
     ) {
       throw new Error(`Unexpected database record counts: ${JSON.stringify(recordCounts)}`);
     }
@@ -3659,9 +4076,12 @@ async function validateDatabaseBoundaries(
 
     const allSourceRows = await sql`
       SELECT relative_path
-      FROM focowiki.source_files
-      WHERE knowledge_base_id = ${knowledgeBaseId}
-        AND deleted_at IS NULL
+      FROM (
+        SELECT logical_path AS relative_path
+        FROM focowiki.source_files
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND deleted_at IS NULL
+      ) active_sources
       ORDER BY relative_path
     `;
     const allActualNames = new Set(allSourceRows.map((row) => row.relative_path));

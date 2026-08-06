@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createPublicationModeOverride,
   isKnowledgeBaseWorkSettled,
   resolveInterleavedScenarioDeadlineMs
 } from "../lib/interleaved-runtime-settings.mjs";
@@ -94,31 +93,6 @@ test("keeps active maintenance work visible to the settle barrier", () => {
     }, { includeMaintenance: true }),
     true
   );
-});
-
-test("temporarily switches publication to per-file and restores the full value", async () => {
-  const writes = [];
-  const original = {
-    mode: "batch",
-    batchSize: 300,
-    intervalSeconds: 300
-  };
-  const override = createPublicationModeOverride({
-    read: async () => original,
-    write: async (value) => writes.push(value)
-  });
-
-  await override.enable();
-  await override.restore();
-
-  assert.deepEqual(writes, [
-    {
-      mode: "per_file",
-      batchSize: 300,
-      intervalSeconds: 300
-    },
-    original
-  ]);
 });
 
 test("uses a maintenance-safe scenario deadline with bounded overrides", () => {

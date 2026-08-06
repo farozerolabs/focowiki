@@ -52,29 +52,26 @@ describe("Meilisearch architecture contract", () => {
   it("separates stable search responsibilities", () => {
     for (const path of [
       "apps/api/src/application/ports/search-engine-transport.ts",
-      "apps/api/src/search/content-segment-mapper.ts",
-      "apps/api/src/search/indexing-batch.ts",
-      "apps/api/src/search/search-epoch-activation.ts",
-      "apps/api/src/search/search-retrieval.ts",
-      "apps/api/src/search/search-hydration.ts",
-      "apps/api/src/search/graph-expansion.ts",
-      "apps/api/src/search/rank-fusion.ts",
-      "apps/api/src/developer-openapi/search-pagination.ts",
-      "apps/api/src/redis/search-page-cache.ts",
-      "apps/api/src/developer-openapi/search-presentation.ts"
+      "apps/api/src/storage-vnext/search/documents.ts",
+      "apps/api/src/storage-vnext/search/markdown-segmentation.ts",
+      "apps/api/src/storage-vnext/search/candidate-lifecycle.ts",
+      "apps/api/src/storage-vnext/search/candidate-validation.ts",
+      "apps/api/src/storage-vnext/search/active-search.ts",
+      "apps/api/src/storage-vnext/search/postgres-hydration.ts",
+      "apps/api/src/storage-vnext/search/graph-candidate-search.ts",
+      "apps/api/src/storage-vnext/search/search-cleanup.ts"
     ]) {
       expect(existsSync(resolve(workspaceRoot, path)), path).toBe(true);
     }
   });
 
   it("keeps Developer OpenAPI independent from search infrastructure", () => {
-    const searchErrors = read(
-      "apps/api/src/developer-openapi/search-errors.ts"
+    const searchRoutes = read(
+      "apps/api/src/developer-openapi/file-search-routes.ts"
     );
 
-    expect(searchErrors).not.toMatch(/\/infrastructure\//u);
-    expect(searchErrors).toContain(
-      'from "../application/ports/search-engine-transport.js"'
-    );
+    expect(searchRoutes).not.toMatch(/\/infrastructure\//u);
+    expect(searchRoutes).not.toContain("SearchEngineTransport");
+    expect(searchRoutes).toContain("services.api.searchFiles");
   });
 });

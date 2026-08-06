@@ -475,11 +475,11 @@ async function validateRuntimeSettingsPage(page) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("tab", { name: "Worker" }).waitFor();
   await page.getByRole("tab", { name: "Worker" }).click();
-  await page.locator("#worker-generationBatchSize").waitFor();
+  await page.locator("#worker-claimBatchSize").waitFor();
 
   const workerFields = [
     "worker-sourceFileConcurrency",
-    "worker-generationBatchSize",
+    "worker-claimBatchSize",
     "worker-sourceQueueHardDepth",
     "worker-sourceQueueResumeDepth"
   ];
@@ -494,16 +494,16 @@ async function validateRuntimeSettingsPage(page) {
     }
   }
 
-  const generationBatchSize = page.locator("#worker-generationBatchSize");
-  const originalGenerationBatchSize = await generationBatchSize.inputValue();
-  await generationBatchSize.fill("");
+  const claimBatchSize = page.locator("#worker-claimBatchSize");
+  const originalClaimBatchSize = await claimBatchSize.inputValue();
+  await claimBatchSize.fill("");
   await page.getByRole("button", { name: "Save" }).click();
   await page
     .getByRole("alert")
     .filter({ hasText: "Required numeric fields must be positive integers." })
     .first()
     .waitFor();
-  await generationBatchSize.fill(originalGenerationBatchSize);
+  await claimBatchSize.fill(originalClaimBatchSize);
 
   await page.getByRole("tab", { name: "Publication" }).click();
   for (const fieldId of [

@@ -17,18 +17,19 @@ test("full-system plan separates baseline from external runtime stages", () => {
   assert.ok(plan.some((step) => step.id === "workspace-tests"));
   assert.ok(plan.some((step) => step.id === "openapi-contract"));
   assert.ok(plan.some((step) => step.id === "admin-ui-browser"));
-  const databaseStep = plan.find((step) => step.id === "incremental-database");
+  const databaseStep = plan.find((step) => step.id === "storage-vnext-database");
   assert.ok(databaseStep);
-  assert.match(databaseStep.safeCommand, /publication-generation-repository\.integration\.test\.ts/);
-  assert.doesNotMatch(databaseStep.safeCommand, /large-nested-scale|release/i);
+  assert.match(databaseStep.safeCommand, /storage-vnext-release-repository\.integration\.test\.ts/);
+  assert.doesNotMatch(databaseStep.safeCommand, /publication-generation-repository/);
+  assert.doesNotMatch(databaseStep.safeCommand, /large-nested-scale/i);
   assert.ok(plan.filter((step) => step.touchesConfiguredExternals).length >= 3);
 });
 
-test("defaults validation evidence to the current incremental publication change", () => {
+test("defaults validation evidence to the storage vNext change", () => {
   const config = readFullSystemConfig("plan", {});
 
-  assert.equal(config.changeId, "implement-incremental-sharded-publication");
-  assert.match(config.reportDir, /implement-incremental-sharded-publication$/);
+  assert.equal(config.changeId, "implement-breaking-storage-vnext");
+  assert.match(config.reportDir, /implement-breaking-storage-vnext$/);
 });
 
 test("baseline command excludes configured external stages", () => {

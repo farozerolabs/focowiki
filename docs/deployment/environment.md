@@ -4,185 +4,166 @@ title: Environment Configuration
 
 # Environment Configuration
 
-This page describes the variables in `.env.example`. Copy the template before deployment and replace placeholders with values for your server.
+This page documents the production variables in `.env.example`. Copy the template, replace every placeholder, and keep the resulting `.env` file out of git.
 
 ```bash
 cp .env.example .env
 ```
 
-Keep the real `.env` file out of git. Use long random values for passwords, database credentials, and S3 credentials.
-
-`.env` is the startup configuration for infrastructure, ports, origins, authentication bootstrap, logs, storage, pagination guards, and database pools. Runtime values that administrators can change from the Admin UI are documented in [Admin Settings](./admin-settings.md).
-
-On first startup, Focowiki seeds Admin Settings from product defaults. Saved Admin Settings then control API rate limits, Worker execution, publication pressure, graph behavior, and model configurations.
+Use long random values for passwords and service credentials. Settings that can be changed after startup are documented in [Admin Settings](./admin-settings.md).
 
 ## Runtime
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `APP_ENV` | Yes | Use `production` for public deployments. Use `development` only for local development. |
-| `LOG_LEVEL` | Yes | Use `info` for production. Supported values are `error`, `warn`, `info`, and `debug`. |
-| `LOG_FILE_DIR` | Yes | Directory inside the API container or process working directory. Docker Compose uses `logs`, which maps to `/app/logs`. |
-| `LOG_FILE_MAX_BYTES` | Yes | Maximum bytes per runtime log file before rotation. Default: `10485760`. |
-| `LOG_FILE_MAX_FILES` | Yes | Maximum files per log stream, including the active file. Default: `5`. |
+| `APP_ENV` | Production | Use `production` for a public deployment. |
+| `LOG_LEVEL` | Optional | `error`, `warn`, `info`, or `debug`. The production default is `info`. |
+| `LOG_FILE_DIR` | Optional | Runtime log directory. The Compose template uses `logs`, mounted at `/app/logs`. |
+| `LOG_FILE_MAX_BYTES` | Optional | Maximum size of one log file. The template uses `10485760` bytes. |
+| `LOG_FILE_MAX_FILES` | Optional | Maximum number of files kept for each log output. The template uses `5`. |
+| `LOG_FILE_MAX_TOTAL_BYTES` | Optional | Maximum combined size of runtime log files. The template uses `67108864` bytes. |
+| `LOG_FILE_RETENTION_DAYS` | Optional | Maximum log retention period. The template uses `7` days. |
 
-Focowiki writes product runtime logs to files and continues writing stdout/stderr logs. Docker Compose templates also limit Docker-managed logs to `50m` and `3` files per container.
+Focowiki writes runtime logs to `./logs` and also writes container logs to stdout and stderr. Every Compose service limits Docker-managed logs to `10m` per file and keeps `3` files.
 
-Docker Compose stores runtime logs in `./logs` under the deployment directory that contains `docker-compose.yml` and `.env`. The API image creates `/app/logs` inside the container and assigns it to the runtime user before starting the server or migration process.
-
-Docker Compose stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, search data in `./data/meilisearch`, optional search backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and saved provider key protection material in `./runtime-secrets`. Keep these directories with the deployment data when moving a server. Removing `./runtime-secrets` requires re-entering saved model API keys in Admin Settings.
+The production Compose template stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, search data in `./data/meilisearch`, search backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and private deployment files in `./runtime-secrets`. Preserve these directories when moving or backing up a deployment.
 
 ## Deployment Images
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `FOCOWIKI_API_IMAGE` | Yes | API image reference. The template uses `ghcr.io/farozerolabs/focowiki-api:latest`. Pin a release with a tag such as `:0.5.1`. |
-| `FOCOWIKI_ADMIN_IMAGE` | Yes | Admin UI image reference. The template uses `ghcr.io/farozerolabs/focowiki-admin:latest`. Pin the same release tag as the API image. |
+| `FOCOWIKI_API_IMAGE` | Optional | API image. Defaults to `ghcr.io/farozerolabs/focowiki-api:latest`. Pin a release tag for production. |
+| `FOCOWIKI_ADMIN_IMAGE` | Optional | Admin UI image. Defaults to `ghcr.io/farozerolabs/focowiki-admin:latest`. Use the same release tag as the API image. |
 
 ## Admin Authentication
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `ADMIN_USERNAME` | Yes | Admin login username. |
-| `ADMIN_PASSWORD` | Yes | Admin login password. Use a strong password. |
-| `ADMIN_SESSION_TTL_SECONDS` | Yes | Session lifetime in seconds. Default: `28800`. |
-| `ADMIN_SESSION_COOKIE_SECURE` | Yes | Use `true` when serving through HTTPS. Use `false` for local HTTP development. |
-| `ADMIN_SESSION_COOKIE_SAME_SITE` | Yes | Cookie SameSite policy. Use `Lax` for standard same-site Admin UI access. |
+| `ADMIN_USERNAME` | Yes | Initial Admin UI username. |
+| `ADMIN_PASSWORD` | Yes | Initial Admin UI password. Use a strong password. |
+| `ADMIN_SESSION_TTL_SECONDS` | Optional | Login lifetime in seconds. Default: `28800`. |
+| `ADMIN_SESSION_COOKIE_SECURE` | Optional | Defaults to `true` in production and must remain `true` with HTTPS. |
+| `ADMIN_SESSION_COOKIE_SAME_SITE` | Optional | `Lax`, `Strict`, or `None`. Default: `Lax`. `None` requires a secure cookie. |
 
-Admin login uses a server-side session. The browser receives an HTTP-only session cookie, and the backend validates it through Redis. Operators do not provide a session signing secret in `.env`.
-
-## Admin API
+## Admin API and Admin UI
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `ADMIN_API_PORT` | Yes | Internal or host port for Admin API. Production template default: `43000`. |
-| `ADMIN_API_PROXY_TARGET` | Yes | Admin UI server-side proxy target for Admin API. Docker Compose uses `http://api:43000`. Local development usually uses `http://127.0.0.1:43000`. |
-| `ADMIN_PUBLIC_ORIGIN` | Yes | Public HTTPS origin for Admin UI, for example `https://admin.example.com`. |
-| `ADMIN_API_PUBLIC_ORIGIN` | Yes | Public HTTPS origin for Admin API, for example `https://admin-api.example.com`. |
-| `ADMIN_TRUSTED_ORIGINS` | Yes | Comma-separated Admin UI origins allowed to call Admin API. Include the exact browser origin. |
-| `ALLOWED_HOSTS` | Yes in production | Comma-separated hostnames accepted by API requests, including reverse-proxy hostnames and local health-check hosts. |
-| `TRUSTED_PROXY_MODE` | Yes | Use `true` behind a trusted reverse proxy. Use `false` for local direct access. |
+| `ADMIN_API_PORT` | Compose | Host and container port for Admin API. The template uses `43000`. |
+| `ADMIN_UI_PORT` | Compose | Host port for Admin UI. The template uses `43100`. |
+| `ADMIN_API_PROXY_TARGET` | Compose | Address used by the Admin UI proxy. Use `http://api:43000` with the production template. |
+| `ADMIN_PUBLIC_ORIGIN` | Production | Public HTTPS origin of Admin UI, such as `https://admin.example.com`. |
+| `ADMIN_API_PUBLIC_ORIGIN` | Production | Public HTTPS origin of Admin API, such as `https://admin-api.example.com`. |
+| `ADMIN_TRUSTED_ORIGINS` | Optional | Comma-separated browser origins allowed to call Admin API. When omitted, the configured Admin UI origin and local development origins are used. |
+| `ALLOWED_HOSTS` | Production | Comma-separated hostnames accepted by API requests. Include every hostname forwarded by the reverse proxy and the local health-check hosts. |
+| `TRUSTED_PROXY_MODE` | Optional | Use `true` when requests arrive through your trusted reverse proxy. Default: `false`. |
 
-## Admin UI
-
-| Variable | Required | How to fill |
-| --- | --- | --- |
-| `ADMIN_UI_HOST` | Yes | Host interface for Admin UI container. Docker Compose uses `0.0.0.0`. |
-| `ADMIN_UI_PORT` | Yes | Host port for Admin UI. Production template default: `43100`. |
-| `VITE_ADMIN_API_BASE_URL` | Optional | Browser API base URL override for special deployments. Leave empty for the standard Admin UI proxy flow. |
+The production template binds Admin UI, Admin API, and Developer OpenAPI to `127.0.0.1`. Publish them through an HTTPS reverse proxy.
 
 ## PostgreSQL
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `POSTGRES_DB` | Yes | Database name created by the Compose PostgreSQL service. |
-| `POSTGRES_USER` | Yes | Database user created by the Compose PostgreSQL service. |
-| `POSTGRES_PASSWORD` | Yes | Strong database password. |
-| `POSTGRES_PORT` | Yes | Host port exposed by the Compose PostgreSQL service. This can differ from the container port `5432`. |
-| `DATABASE_URL` | Yes | API database connection string. In Docker Compose, use the container host and port: `postgres://USER:PASSWORD@postgres:5432/DB`. |
-| `DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by the API and migration processes. |
+| `POSTGRES_DB` | Compose | Database created by the PostgreSQL service. |
+| `POSTGRES_USER` | Compose | Database user created by the PostgreSQL service. |
+| `POSTGRES_PASSWORD` | Compose | Strong database password. URL-encode special characters when placing the password in `DATABASE_URL`. |
+| `DATABASE_URL` | Yes | API database URL. The production Compose network uses `postgres://USER:PASSWORD@postgres:5432/DB`. |
+| `DATABASE_POOL_MAX` | Optional | Maximum PostgreSQL connections used by one API process. Default: `10`. |
 
-`POSTGRES_PORT` exposes PostgreSQL to the host. `DATABASE_URL` is used inside containers and should point to `postgres:5432` in the production Compose network.
+PostgreSQL and Redis are not published to host ports by the production template. Use `docker compose exec postgres ...` for database administration, or add an explicit loopback-only port mapping in your private Compose copy when host access is required.
 
 ## Redis
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `REDIS_PORT` | Yes | Host port exposed by the Compose Redis service. |
-| `REDIS_URL` | Yes | API Redis connection string. In Docker Compose, use `redis://redis:6379/0`. |
+| `REDIS_URL` | Yes | Redis connection URL. The production Compose network uses `redis://redis:6379/0`. |
 
-`REDIS_PORT` exposes Redis to the host. `REDIS_URL` is used by the API, Worker, migration process, sessions, cursors, coordination, and rate limits.
+Redis must be available to the API and all workers. Keep it private to the deployment network.
 
 ## Search Service
 
-The Compose template starts a private Meilisearch service for file, graph, and hybrid search. It has no host port by default. PostgreSQL and S3-compatible storage remain the durable source for rebuilding search data.
+The production template can start a private Meilisearch service. Use a different `MEILI_INDEX_PREFIX` for each Focowiki deployment that shares a search service.
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `COMPOSE_PROFILES` | Yes for bundled search | Use `bundled-search` to start the Meilisearch container included in the Compose template. Leave empty when `MEILI_HOST` points to an externally managed service. |
-| `MEILI_HOST` | Yes | Internal service URL. Bundled Compose uses `http://meilisearch:7700`. Use a private HTTPS or private-network URL for an external service. |
-| `MEILI_MASTER_KEY` | Yes for bundled search | Strong, unique bootstrap key used by Meilisearch and the startup initializer. Use at least 16 bytes of random material. The initializer automatically creates the restricted runtime keys, and Focowiki application containers do not receive this value. |
-| `MEILI_API_KEY` | External search only | Existing server-side runtime key restricted to the Focowiki index prefix and required search, document, index, settings, task, and swap operations. Leave this unset with bundled search. |
-| `MEILI_METRICS_API_KEY` | External search only | Existing server-side diagnostics key restricted to the `metrics.get`, `tasks.get`, and `version` actions and all indexes. Leave this unset with bundled search. |
-| `MEILI_INDEX_PREFIX` | Yes | Dedicated index namespace for this deployment, such as `focowiki` or `focowiki_staging`. Use a different prefix for every environment. |
-| `MEILI_MAX_INDEXING_MEMORY` | Yes for bundled search | Memory budget used by indexing. Start with `2GiB` on a 4C/8G server and measure before increasing it. |
-| `MEILI_MAX_INDEXING_THREADS` | Yes for bundled search | Threads used by indexing. Start with `2` on a 4-core server. |
-| `MEILI_SNAPSHOT_DIR` | Yes for bundled search | Container path for snapshots. The template uses `/meili_snapshots`, persisted at `./data/meilisearch-snapshots`. |
-| `MEILI_SCHEDULE_SNAPSHOT` | Yes for bundled search | Snapshot interval in seconds. The template uses `86400` for one snapshot per day. |
-| `MEILI_DUMP_DIR` | Yes for bundled search | Container path for dumps. The template uses `/meili_dumps`, persisted at `./data/meilisearch-dumps`. |
+| `COMPOSE_PROFILES` | Optional | Use `bundled-search` to start the included Meilisearch service. Leave empty when using an external service. |
+| `MEILI_HOST` | Compose | Meilisearch URL reachable from the API and workers. Included service: `http://meilisearch:7700`. |
+| `MEILI_MASTER_KEY` | Included service | Strong Meilisearch master key with at least 16 bytes of random material. |
+| `MEILI_API_KEY` | External service | Application key supplied by the external provider. Uncomment the template entry when needed. |
+| `MEILI_METRICS_API_KEY` | External service | Diagnostic key supplied by the external provider. Uncomment the template entry when needed. |
+| `MEILI_INDEX_PREFIX` | Yes | Lowercase index prefix dedicated to this deployment, for example `focowiki_prod`. |
+| `MEILI_MAX_INDEXING_MEMORY` | Included service | Meilisearch indexing memory limit. The template uses `2GiB`. |
+| `MEILI_MAX_INDEXING_THREADS` | Included service | Meilisearch indexing threads. The template uses `2`. |
+| `MEILI_SNAPSHOT_DIR` | Included service | Snapshot directory inside the container. Use `/meili_snapshots` with the template. |
+| `MEILI_SCHEDULE_SNAPSHOT` | Included service | Snapshot interval in seconds. The template uses `86400`. |
+| `MEILI_DUMP_DIR` | Included service | Dump directory inside the container. Use `/meili_dumps` with the template. |
 
-With bundled search, Focowiki creates or reuses both restricted keys during startup and stores them in the private `runtime-secrets` directory. Repeated starts keep the same key identities, and a changed permission contract is applied automatically. Keep the master key and generated runtime keys out of Admin UI, browser code, Developer OpenAPI, and logs.
-
-For an external service, set `COMPOSE_PROFILES=` and update `MEILI_HOST`, `MEILI_API_KEY`, `MEILI_METRICS_API_KEY`, and `MEILI_INDEX_PREFIX`. Create both restricted keys through the provider before startup. The endpoint must be reachable from every API and Worker container, and authenticated metrics must be enabled.
+With the included service, keep `.env` and `runtime-secrets` private and include both in deployment backups. For an external service, create the two required keys before startup and confirm the service is reachable from every Focowiki container.
 
 ## Developer OpenAPI
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `PUBLIC_OPENAPI_PORT` | Yes | Internal or host port for Developer OpenAPI. Production template default: `43200`. |
-| `PUBLIC_BASE_URL` | Yes | Public base URL returned in generated links, for example `https://openapi.example.com`. |
-| `PUBLIC_OPENAPI_PUBLIC_ORIGIN` | Yes | Public HTTPS origin for Developer OpenAPI. |
-| `CORS_ORIGINS` | Yes | Comma-separated browser origins allowed by CORS. Include Admin UI origin and any trusted developer frontend origin. |
+| `PUBLIC_OPENAPI_PORT` | Compose | Host and container port for Developer OpenAPI. The template uses `43200`. |
+| `PUBLIC_BASE_URL` | Yes | Public HTTPS base URL used in API links, such as `https://openapi.example.com`. |
+| `PUBLIC_OPENAPI_PUBLIC_ORIGIN` | Optional | Public HTTPS origin for Developer OpenAPI. Defaults to `PUBLIC_BASE_URL`. |
 
-OpenAPI keys are created in the Admin UI. They are stored in the database and should not be placed in `.env`.
+Create Developer OpenAPI keys in Admin UI. Do not place them in `.env`.
 
 ## S3-Compatible Storage
 
-| Variable | Required | How to fill |
-| --- | --- | --- |
-| `S3_ENDPOINT` | Yes | S3-compatible endpoint URL, for example an AWS S3, Backblaze B2, MinIO, or other compatible endpoint. |
-| `S3_REGION` | Yes | Storage region value required by the provider. Use a valid hostname-safe region when the SDK requires one. |
-| `S3_BUCKET` | Yes | Bucket name for source files and generated knowledge-base files. |
-| `S3_ACCESS_KEY_ID` | Yes | Storage access key ID. |
-| `S3_SECRET_ACCESS_KEY` | Yes | Storage secret access key. |
-| `S3_PREFIX` | Yes | Internal object-key namespace such as `production`. This value is not exposed in public URLs. |
-| `S3_FORCE_PATH_STYLE` | Yes | Use `true` for many S3-compatible providers. Use `false` only when your provider requires virtual-host style addressing. |
-
-Use a dedicated bucket or prefix for each environment.
-
-## Pagination and Content Read Limits
-
-These values stay in `.env` because they set API memory boundaries, Redis cursor behavior, response size, and PostgreSQL connection pools.
+The production Compose template does not start an object-storage service. Configure an AWS S3, Cloudflare R2, MinIO, or other S3-compatible bucket reachable from every Focowiki container.
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | Yes | Default page size for Admin source-file, task, generation, and generated-file lists. |
-| `ADMIN_LIST_MAX_PAGE_SIZE` | Yes | Maximum page size accepted by Admin list APIs. |
-| `TREE_CHILD_DEFAULT_PAGE_SIZE` | Yes | Default direct-child page size for generated file tree APIs. |
-| `TREE_CHILD_MAX_PAGE_SIZE` | Yes | Maximum direct-child page size accepted by generated file tree APIs. |
-| `PAGINATION_CURSOR_TTL_SECONDS` | Yes | Redis cursor token lifetime for paginated Admin and Developer OpenAPI reads. |
-| `GENERATED_CONTENT_MAX_BYTES` | Yes | Maximum generated file content bytes read into an API response. Larger files return a 413 response. |
+| `S3_ENDPOINT` | Yes | Provider endpoint URL. |
+| `S3_REGION` | Yes | Region required by the provider. |
+| `S3_BUCKET` | Yes | Bucket used by this deployment. |
+| `S3_ACCESS_KEY_ID` | Yes | Server-side storage access key ID. |
+| `S3_SECRET_ACCESS_KEY` | Yes | Server-side storage secret key. |
+| `S3_PREFIX` | Yes | Non-empty object-key prefix dedicated to this deployment, such as `production`. |
+| `S3_FORCE_PATH_STYLE` | Optional | Default: `false`. Use `true` when required by the provider; AWS S3 normally uses `false`. |
 
-## Worker Startup Settings
+The credentials need permission to list the bucket and to read, write, inspect, and delete objects under the configured prefix. Backup and restore also require the provider's object-version listing support. Use a separate bucket or prefix for each environment.
+
+## Pagination and Content Limits
+
+All values in this section are optional. The values in `.env.example` are the recommended starting values.
+
+| Variable | Purpose |
+| --- | --- |
+| `ADMIN_LIST_DEFAULT_PAGE_SIZE` | Default page size for Admin lists. |
+| `ADMIN_LIST_MAX_PAGE_SIZE` | Maximum page size accepted by Admin lists. |
+| `TREE_CHILD_DEFAULT_PAGE_SIZE` | Default page size for direct children in the generated file tree. |
+| `TREE_CHILD_MAX_PAGE_SIZE` | Maximum page size for direct children in the generated file tree. |
+| `PAGINATION_CURSOR_TTL_SECONDS` | Lifetime of paginated-read cursors. |
+| `GENERATED_CONTENT_MAX_BYTES` | Maximum generated file size returned by one API response. Larger content returns HTTP 413. |
+
+## Worker Database Pools
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `SOURCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one source-worker process. Start with `8` on an 8C/32G server. |
-| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one publication-worker process. Start with `4`. |
-| `PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one projection-repair-worker process. Start with `8`. |
-| `LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one lexical-rebuild-worker process. Start with `8`; this is startup topology, while live lexical work concurrency is managed in Admin Settings. |
-| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Yes | Maximum PostgreSQL connections used by one maintenance-worker process. Start with `2`. |
+| `SOURCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one source worker. Default: `6`; the template uses `8`. |
+| `PUBLICATION_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one publication worker. Default: `4`. |
+| `MAINTENANCE_WORKER_DATABASE_POOL_MAX` | Optional | PostgreSQL connections used by one maintenance worker. Default: `2`. |
 
-Each role creates its PostgreSQL pool during startup. Change a role pool in `.env` and restart that role. Keep the total budget within `API replicas * DATABASE_POOL_MAX + source-worker replicas * SOURCE_WORKER_DATABASE_POOL_MAX + publication-worker replicas * PUBLICATION_WORKER_DATABASE_POOL_MAX + projection-repair-worker replicas * PROJECTION_REPAIR_WORKER_DATABASE_POOL_MAX + lexical-rebuild-worker replicas * LEXICAL_REBUILD_WORKER_DATABASE_POOL_MAX + maintenance-worker replicas * MAINTENANCE_WORKER_DATABASE_POOL_MAX + migration and operational headroom`.
+When running multiple replicas, add the pool limits for every API and worker process and leave capacity for migrations and operator access.
 
 ## Security Audit
 
 | Variable | Required | How to fill |
 | --- | --- | --- |
-| `SECURITY_AUDIT_RETENTION_DAYS` | Yes | Number of days to keep security audit records. |
-
-API rate limits are managed in [Admin Settings](./admin-settings.md). Tune runtime rate limits together with your reverse proxy and Cloudflare or other edge-layer limits.
+| `SECURITY_AUDIT_RETENTION_DAYS` | Optional | Days to retain security audit records. Default: `30`. |
 
 ## Production Checklist
 
-Before running `docker compose up -d`, confirm:
+Before starting the stack, confirm:
 
-1. Every placeholder value has been replaced.
-2. `POSTGRES_PASSWORD`, `S3_SECRET_ACCESS_KEY`, `MEILI_MASTER_KEY`, and any externally supplied Meilisearch keys are private.
-3. Public origins match your reverse proxy domains.
-4. `ALLOWED_HOSTS` includes Admin UI, Admin API, Developer OpenAPI, `127.0.0.1`, and `localhost` when local health checks run inside containers.
-5. `DATABASE_URL` and `REDIS_URL` use Compose service names in Docker deployments.
-6. The deployment directory has writable `data`, `logs`, and `runtime-secrets` directories, or Docker can create them.
-7. S3 credentials can read and write the configured bucket and prefix.
-8. The search service is reachable from the API and Worker containers. Bundled search creates restricted runtime keys automatically; external search keys are restricted to this deployment's index prefix.
-9. Open Admin UI after startup and review [Admin Settings](./admin-settings.md).
+1. Every placeholder in `.env` has been replaced.
+2. Image tags are pinned to the same Focowiki release.
+3. Public origins use HTTPS and match the reverse-proxy domains.
+4. `ALLOWED_HOSTS` includes every hostname forwarded to the API.
+5. PostgreSQL, Redis, Meilisearch, and S3 are reachable from the containers.
+6. The S3 credentials can perform the required operations under the selected prefix.
+7. `data`, `logs`, `runtime-secrets`, and `backups` are writable and included in your backup plan.
+8. Admin Settings are reviewed after the first login.

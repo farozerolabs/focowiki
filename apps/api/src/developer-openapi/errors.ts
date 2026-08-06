@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { getDeveloperOpenApiRequestId } from "./diagnostic-context.js";
+import { sanitizeStorageVnextPublicRecord } from "../storage-vnext/api/public-output-sanitizer.js";
 
 export type DeveloperOpenApiErrorCode =
   | "UNAUTHORIZED"
@@ -112,7 +113,9 @@ export function writeDeveloperOpenApiError(
         code: normalized.code,
         message: normalized.message,
         httpStatus: normalized.httpStatus,
-        ...(normalized.details ? { details: normalized.details } : {})
+        ...(normalized.details
+          ? { details: sanitizeStorageVnextPublicRecord(normalized.details) }
+          : {})
       },
       requestId
     },

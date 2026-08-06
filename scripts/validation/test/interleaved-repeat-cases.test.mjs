@@ -5,14 +5,17 @@ import {
   REPEATED_CONFLICT_CASES
 } from "../lib/interleaved-repeat-cases.mjs";
 
-test("defines unique repeated-operation cases for upload, modification, and deletion", () => {
+test("defines unique repeated-operation cases for every lifecycle family", () => {
   const ids = REPEATED_CONFLICT_CASES.map((entry) => entry.id);
   assert.equal(new Set(ids).size, ids.length);
   assert.ok(ids.includes("task-delete-idempotent-overlap"));
   assert.ok(ids.includes("task-delete-after-terminal"));
+  assert.ok(ids.includes("maintenance-idempotent-replay"));
+  assert.ok(ids.includes("maintenance-concurrent-distinct-requests"));
+  assert.ok(ids.includes("maintenance-replay-after-terminal"));
   assert.deepEqual(
     [...new Set(REPEATED_CONFLICT_CASES.map((entry) => entry.family))].sort(),
-    ["deletion", "modification", "upload"]
+    ["deletion", "maintenance", "modification", "upload"]
   );
 });
 

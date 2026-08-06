@@ -13,36 +13,28 @@ describe("resource budget reporter", () => {
     });
     const budgets = createProcessResourceBudgets({
       model: 1,
-      sourceObjectRead: 1,
-      generatedObjectWrite: 1,
-      graphQuery: 1,
-      databaseMutation: 1,
-      directory: 1,
-      projectionPartition: 1,
-      generationAssembly: 1,
-      migrationBackfill: 1,
-      compaction: 1
+      generatedObjectWrite: 1
     });
-    await budgets.sourceObjectRead.run(async () => undefined);
+    await budgets.generatedObjectWrite.run(async () => undefined);
 
     expect(reporter.report(budgets)).toBe(true);
     expect(reporter.report(budgets)).toBe(false);
     now += 60_000;
     expect(reporter.report(budgets)).toBe(true);
     expect(info).toHaveBeenCalledTimes(2);
-    expect(info).toHaveBeenCalledWith("Resource budget metrics", {
-      budgets: expect.objectContaining({
-        sourceObjectRead: expect.objectContaining({ completed: 1 })
-      }),
-      process: {
-        rssBytes: expect.any(Number),
-        heapUsedBytes: expect.any(Number),
-        externalBytes: expect.any(Number),
-        userCpuMicros: expect.any(Number),
-        systemCpuMicros: expect.any(Number),
-        eventLoopUtilization: expect.any(Number)
-      }
-    });
+    expect(info).toHaveBeenCalledWith("runtime.resource_budget_metrics", expect.objectContaining({
+      generatedObjectWriteCompleted: 1,
+      modelActive: expect.any(Number),
+      rssBytes: expect.any(Number),
+      heapUsedBytes: expect.any(Number),
+      externalBytes: expect.any(Number),
+      maximumRssBytes: expect.any(Number),
+      activeResources: expect.any(Number),
+      activeResourceTypes: expect.stringMatching(/^[A-Za-z0-9_=-]+(?:,[A-Za-z0-9_=-]+)*$/u),
+      userCpuMicros: expect.any(Number),
+      systemCpuMicros: expect.any(Number),
+      eventLoopUtilization: expect.any(Number)
+    }));
     const serialized = JSON.stringify(info.mock.calls);
     expect(serialized).not.toContain("content");
     expect(serialized).not.toContain("credential");
@@ -58,15 +50,7 @@ describe("resource budget reporter", () => {
     });
     const budgets = createProcessResourceBudgets({
       model: 1,
-      sourceObjectRead: 1,
-      generatedObjectWrite: 1,
-      graphQuery: 1,
-      databaseMutation: 1,
-      directory: 1,
-      projectionPartition: 1,
-      generationAssembly: 1,
-      migrationBackfill: 1,
-      compaction: 1
+      generatedObjectWrite: 1
     });
 
     expect(reporter.report(budgets)).toBe(true);

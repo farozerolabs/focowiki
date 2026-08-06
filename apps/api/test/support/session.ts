@@ -29,6 +29,9 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
     }
 
     this.values.set(key, value);
+    if (typeof options?.EX === "number") {
+      this.expirations.set(key, Date.now() + options.EX * 1_000);
+    }
     return "OK";
   }
 
@@ -41,6 +44,33 @@ export class MemoryRedisCommandClient implements RedisCommandClient {
     const setExisted = this.sets.delete(key);
     this.expirations.delete(key);
     return valueExisted || setExisted ? 1 : 0;
+  }
+
+  public async eval(
+    script: string,
+    options: { keys: string[]; arguments: string[] }
+  ): Promise<unknown> {
+    const key = options.keys[0];
+    if (!key) throw new Error("Redis script key is required");
+
+    if (script.includes("next_count")) {
+      const windowSeconds = Number(options.arguments[0]);
+      const current = this.values.get(key) ?? "0";
+      if (!/^\d+$/u.test(current)) {
+        await this.del(key);
+      }
+      const count = await this.incr(key);
+      let ttlSeconds = await this.ttl(key);
+      if (count === 1 || ttlSeconds < 1) {
+        await this.expire(key, windowSeconds);
+        ttlSeconds = windowSeconds;
+      }
+      return [count, ttlSeconds];
+    }
+
+    const ownerId = options.arguments[0];
+    if (this.values.get(key) !== ownerId) return 0;
+    return this.del(key);
   }
 
   public async incr(key: string): Promise<number> {

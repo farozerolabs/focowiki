@@ -1,8 +1,4 @@
 import type { OkfGraphNode } from "@focowiki/okf";
-import type {
-  FileGraphRelatedRecord,
-  FileGraphRepository
-} from "../db/admin-repositories.js";
 import type { LexicalTokenizer } from "../application/ports/lexical-tokenizer.js";
 import { isUsefulTerm } from "./content-profile.js";
 import {
@@ -16,14 +12,32 @@ export function buildCandidateTerms(
   node: OkfGraphNode,
   tokenizer: LexicalTokenizer
 ): string[] {
+  return collectCandidateTerms(node, [
+    ...extractSearchTerms(node.title, tokenizer),
+    ...extractPathTerms(node.path, tokenizer)
+  ]);
+}
+
+export function buildPersistedGraphCandidateTerms(node: OkfGraphNode): string[] {
+  const pathTerms = node.path
+    .normalize("NFKC")
+    .split(/[\s/_.-]+/u)
+    .map((term) => term.trim())
+    .filter(Boolean);
+  return collectCandidateTerms(node, [node.title, ...pathTerms]);
+}
+
+function collectCandidateTerms(
+  node: OkfGraphNode,
+  identityTerms: readonly string[]
+): string[] {
   const definitions = readContentProfileStringArray(node, "definitions");
   const processHints = readContentProfileStringArray(node, "processHints");
   const versionHints = readContentProfileStringArray(node, "versionHints");
   const evidencePhrases = readContentProfileStringArray(node, "evidencePhrases");
 
   return unique([
-    ...extractSearchTerms(node.title, tokenizer),
-    ...extractPathTerms(node.path, tokenizer),
+    ...identityTerms,
     ...(node.subjects ?? []),
     ...(node.entities ?? []),
     ...(node.keywords ?? []),
@@ -37,72 +51,4 @@ export function buildCandidateTerms(
   ])
     .filter(isUsefulTerm)
     .slice(0, 100);
-}
-
-export async function listCandidateNodes(input: {
-  graph: FileGraphRepository;
-  knowledgeBaseId: string;
-  sourceFileId: string;
-  candidateTerms: string[];
-  maxCandidateNodes: number;
-  tokenizer: LexicalTokenizer;
-}): Promise<OkfGraphNode[]> {
-  const candidatesById = new Map<string, OkfGraphNode>();
-  const indexedCandidates = input.graph.listGraphCandidates
-    ? await input.graph.listGraphCandidates({
-        knowledgeBaseId: input.knowledgeBaseId,
-        sourceFileId: input.sourceFileId,
-        terms: input.candidateTerms,
-        limit: input.maxCandidateNodes
-      })
-    : [];
-
-  for (const candidate of indexedCandidates) {
-    if (candidate.fileId !== input.sourceFileId) {
-      candidatesById.set(candidate.fileId, candidate);
-    }
-  }
-
-  if (candidatesById.size < input.maxCandidateNodes) {
-    const neighborhood = await input.graph.listGraphNeighborhood({
-      knowledgeBaseId: input.knowledgeBaseId,
-      sourceFileId: input.sourceFileId,
-      limit: input.maxCandidateNodes - candidatesById.size,
-      cursor: null
-    });
-
-    for (const related of neighborhood.items) {
-      if (related.sourceFileId !== input.sourceFileId && !candidatesById.has(related.sourceFileId)) {
-        candidatesById.set(
-          related.sourceFileId,
-          graphNodeFromRelatedRecord(related, input.tokenizer)
-        );
-      }
-    }
-  }
-
-  return Array.from(candidatesById.values()).slice(0, input.maxCandidateNodes);
-}
-
-function graphNodeFromRelatedRecord(
-  record: FileGraphRelatedRecord,
-  tokenizer: LexicalTokenizer
-): OkfGraphNode {
-  return {
-    fileId: record.sourceFileId,
-    path: record.path,
-    title: record.title,
-    type: "page",
-    tags: [],
-    subjects: [],
-    entities: [],
-    keywords: extractSearchTerms(record.title, tokenizer),
-    metadata: {
-      priorGraphContext: {
-        relationType: record.relationType,
-        direction: record.direction,
-        source: record.source
-      }
-    }
-  };
 }

@@ -1,0 +1,339 @@
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+import {
+  createS3StorageVnextImmutableBodyStore
+} from "../src/storage-vnext/ownership/s3-immutable-body-store.js";
+import {
+  createStorageVnextImmutableObjectWriter
+} from "../src/storage-vnext/ownership/immutable-object-writer.js";
+import type {
+  StorageVnextObjectRegistration,
+  StorageVnextOwnershipRepository
+} from "../src/storage-vnext/ownership/ports.js";
+
+describe("storage vNext immutable object writer", () => {
+  it("reserves before PUT and verifies one content-addressed source registration", async () => {
+    const bytes = new TextEncoder().encode("# Source\n");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const events: string[] = [];
+    let stored = false;
+    let registration: StorageVnextObjectRegistration | null = null;
+    const registrations = registrationFixture({ events, get: () => registration, set: (value) => {
+      registration = value;
+    } });
+    const send = vi.fn(async (command: HeadObjectCommand | PutObjectCommand) => {
+      if (command instanceof HeadObjectCommand) {
+        events.push("head");
+        if (!stored) throw missingObject();
+        return verifiedMetadata(checksum, bytes.byteLength, "source-markdown-v1");
+      }
+      events.push("put");
+      stored = true;
+      return {};
+    });
+    const writer = createStorageVnextImmutableObjectWriter({
+      registrations,
+      compensation: { compensate: vi.fn(async () => "deleted" as const) },
+      clock: () => "2026-08-01T00:00:30.000Z",
+      bodyStore: createS3StorageVnextImmutableBodyStore({
+        client: { send } as never,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-object01"
+      })
+    });
+
+    const result = await writer.putVerified({
+      bytes,
+      objectFormat: "source-markdown-v1",
+      writeAttemptPublicId: "write-source-1",
+      createdAt: "2026-08-01T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      outcome: "stored",
+      objectId: `source-sha256:${checksum}`,
+      storageKey: `runs/svnext-object01/source-objects/sha256/${checksum.slice(0, 2)}/${checksum}.md`,
+      checksum,
+      objectFormat: "source-markdown-v1"
+    });
+    expect(events).toEqual(["reserve", "head", "put", "head", "verify"]);
+    const put = send.mock.calls
+      .map(([command]) => command)
+      .find((command) => command instanceof PutObjectCommand) as PutObjectCommand;
+    expect(put.input.ContentLength).toBe(bytes.byteLength);
+    expect(put.input.Body).toBeInstanceOf(Readable);
+    const uploaded: Buffer[] = [];
+    for await (const chunk of put.input.Body as Readable) uploaded.push(Buffer.from(chunk));
+    expect(Buffer.concat(uploaded)).toEqual(Buffer.from(bytes));
+    expect(registration).toMatchObject({
+      objectId: result.objectId,
+      state: "verified",
+      writeAttemptPublicId: "write-source-1"
+    });
+  });
+
+  it("uses format-qualified generated keys and reuses verified bytes without another PUT", async () => {
+    const bytes = new TextEncoder().encode("# Generated\n");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    let stored = false;
+    let registration: StorageVnextObjectRegistration | null = null;
+    const registrations = registrationFixture({ get: () => registration, set: (value) => {
+      registration = value;
+    } });
+    const send = vi.fn(async (command: HeadObjectCommand | PutObjectCommand) => {
+      if (command instanceof PutObjectCommand) {
+        stored = true;
+        return {};
+      }
+      if (!stored) throw missingObject();
+      return verifiedMetadata(checksum, bytes.byteLength, "okf-generated-markdown-v1");
+    });
+    const writer = createStorageVnextImmutableObjectWriter({
+      registrations,
+      compensation: { compensate: vi.fn(async () => "deleted" as const) },
+      clock: () => "2026-08-01T00:00:30.000Z",
+      bodyStore: createS3StorageVnextImmutableBodyStore({
+        client: { send } as never,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-object01"
+      })
+    });
+
+    const first = await writer.putVerified({
+      bytes,
+      objectFormat: "okf-generated-markdown-v1",
+      writeAttemptPublicId: "write-generated-1",
+      createdAt: "2026-08-01T00:00:00.000Z"
+    });
+    const second = await writer.putVerified({
+      bytes,
+      objectFormat: "okf-generated-markdown-v1",
+      writeAttemptPublicId: "write-generated-2",
+      createdAt: "2026-08-01T00:01:00.000Z"
+    });
+
+    expect(first.objectId).toBe(`generated-sha256:okf-generated-markdown-v1:${checksum}`);
+    expect(first.storageKey).toBe(
+      `runs/svnext-object01/generated-objects/okf-generated-markdown-v1/sha256/${checksum.slice(0, 2)}/${checksum}.md`
+    );
+    expect(second).toMatchObject({ outcome: "reused", objectId: first.objectId });
+    expect(send.mock.calls.filter(([command]) => command instanceof PutObjectCommand))
+      .toHaveLength(1);
+  });
+
+  it("repairs missing provider bytes for an identical verified registration", async () => {
+    const bytes = new TextEncoder().encode("# Restored generated Markdown\n");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const objectId = `generated-sha256:okf-generated-markdown-v1:${checksum}`;
+    let stored = false;
+    const registration: StorageVnextObjectRegistration = {
+      objectId,
+      storageKey:
+        `runs/svnext-object01/generated-objects/okf-generated-markdown-v1/sha256/${checksum.slice(0, 2)}/${checksum}.md`,
+      checksum,
+      byteCount: bytes.byteLength,
+      contentType: "text/markdown; charset=utf-8",
+      format: "okf-generated-markdown-v1",
+      state: "verified",
+      writeAttemptPublicId: "write-generated-original",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      verifiedAt: "2026-08-01T00:00:01.000Z",
+      zeroOwnerSince: null
+    };
+    const registrations = registrationFixture({
+      get: () => registration,
+      set: () => undefined
+    });
+    const send = vi.fn(async (command: HeadObjectCommand | PutObjectCommand) => {
+      if (command instanceof PutObjectCommand) {
+        stored = true;
+        return {};
+      }
+      if (!stored) throw missingObject();
+      return verifiedMetadata(checksum, bytes.byteLength, "okf-generated-markdown-v1");
+    });
+    const writer = createStorageVnextImmutableObjectWriter({
+      registrations,
+      compensation: { compensate: vi.fn(async () => "deleted" as const) },
+      clock: () => "2026-08-01T00:00:30.000Z",
+      bodyStore: createS3StorageVnextImmutableBodyStore({
+        client: { send } as never,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-object01"
+      })
+    });
+
+    await expect(writer.putVerified({
+      bytes,
+      objectFormat: "okf-generated-markdown-v1",
+      writeAttemptPublicId: "write-generated-repair",
+      createdAt: "2026-08-01T00:02:00.000Z"
+    })).resolves.toMatchObject({ outcome: "stored", objectId });
+    expect(send.mock.calls.filter(([command]) => command instanceof PutObjectCommand))
+      .toHaveLength(1);
+  });
+
+  it("does not verify a registration when provider metadata differs", async () => {
+    const bytes = new TextEncoder().encode("mismatch");
+    let registration: StorageVnextObjectRegistration | null = null;
+    const registrations = registrationFixture({ get: () => registration, set: (value) => {
+      registration = value;
+    } });
+    const send = vi.fn(async (command: HeadObjectCommand | PutObjectCommand) => {
+      if (command instanceof PutObjectCommand) return {};
+      return {
+        ContentLength: bytes.byteLength + 1,
+        ContentType: "text/markdown; charset=utf-8",
+        Metadata: {
+          "checksum-sha256": "f".repeat(64),
+          "object-format": "source-markdown-v1"
+        }
+      };
+    });
+    const writer = createStorageVnextImmutableObjectWriter({
+      registrations,
+      compensation: { compensate: vi.fn(async () => "deleted" as const) },
+      clock: () => "2026-08-01T00:00:30.000Z",
+      bodyStore: createS3StorageVnextImmutableBodyStore({
+        client: { send } as never,
+        bucket: "owned-bucket",
+        prefix: "runs/svnext-object01"
+      })
+    });
+
+    await expect(writer.putVerified({
+      bytes,
+      objectFormat: "source-markdown-v1",
+      writeAttemptPublicId: "write-mismatch-1",
+      createdAt: "2026-08-01T00:00:00.000Z"
+    })).rejects.toMatchObject({ code: "object_verification_failed" });
+    expect(registration).toMatchObject({ state: "reserved" });
+  });
+
+  it("reads generated bytes only after metadata, size, and checksum verification", async () => {
+    const bytes = new TextEncoder().encode("# Verified generated Markdown\n");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const store = createS3StorageVnextImmutableBodyStore({
+      client: {
+        send: vi.fn(async (command: HeadObjectCommand | GetObjectCommand) => {
+          if (command instanceof HeadObjectCommand) {
+            return verifiedMetadata(
+              checksum,
+              bytes.byteLength,
+              "okf-generated-markdown-v1"
+            );
+          }
+          return { Body: { transformToByteArray: async () => bytes } };
+        })
+      } as never,
+      bucket: "owned-bucket",
+      prefix: "runs/svnext-object01"
+    });
+    const descriptor = store.describe({
+      bytes,
+      objectFormat: "okf-generated-markdown-v1"
+    });
+    const jsonDescriptor = store.describe({
+      bytes: new TextEncoder().encode("{}\n"),
+      objectFormat: "okf-generated-json-v1"
+    });
+
+    expect(jsonDescriptor.contentType).toBe("application/json; charset=utf-8");
+    await expect(store.readVerified({
+      descriptor,
+      maximumBytes: bytes.byteLength
+    })).resolves.toEqual(bytes);
+    await expect(store.readVerified({
+      descriptor,
+      maximumBytes: bytes.byteLength - 1
+    })).rejects.toMatchObject({ code: "invalid_input" });
+  });
+});
+
+function registrationFixture(input: {
+  events?: string[];
+  get: () => StorageVnextObjectRegistration | null;
+  set: (value: StorageVnextObjectRegistration) => void;
+}): StorageVnextOwnershipRepository {
+  return {
+    async reserve(reservation) {
+      input.events?.push("reserve");
+      const current = input.get();
+      if (current) return { outcome: "reused", registration: current };
+      const created: StorageVnextObjectRegistration = {
+        ...reservation,
+        state: "reserved",
+        verifiedAt: null,
+        zeroOwnerSince: null
+      };
+      input.set(created);
+      return { outcome: "reserved", registration: created };
+    },
+    async markVerified(verification) {
+      input.events?.push("verify");
+      const current = input.get();
+      if (!current) throw new Error("Missing registration fixture");
+      const verified: StorageVnextObjectRegistration = {
+        ...current,
+        state: "verified",
+        verifiedAt: verification.verifiedAt,
+        zeroOwnerSince: verification.verifiedAt
+      };
+      input.set(verified);
+      return verified;
+    },
+    async getRegistration() {
+      return input.get();
+    },
+    async getRegistrationsByStorageKeys() {
+      return input.get() ? [input.get()!] : [];
+    },
+    async listRegistrations() {
+      return { items: input.get() ? [input.get()!] : [], nextCursor: null };
+    },
+    async getClosure() {
+      throw new Error("Unexpected owner read");
+    },
+    async listZeroOwnerObjects() {
+      throw new Error("Unexpected zero-owner read");
+    },
+    async listStaleReservations() {
+      throw new Error("Unexpected stale-reservation read");
+    },
+    async attach() {
+      throw new Error("Unexpected owner attach");
+    },
+    async release() {
+      throw new Error("Unexpected owner release");
+    },
+    async markDeleting() {
+      throw new Error("Unexpected deleting transition");
+    },
+    async markDeleted() {
+      throw new Error("Unexpected deleted transition");
+    },
+    async deleteFailedReservation() {
+      throw new Error("Unexpected failed-reservation deletion");
+    }
+  };
+}
+
+function verifiedMetadata(checksum: string, byteCount: number, objectFormat: string) {
+  return {
+    ContentLength: byteCount,
+    ContentType: "text/markdown; charset=utf-8",
+    Metadata: {
+      "checksum-sha256": checksum,
+      "object-format": objectFormat
+    }
+  };
+}
+
+function missingObject(): Error {
+  return Object.assign(new Error("missing"), {
+    name: "NotFound",
+    $metadata: { httpStatusCode: 404 }
+  });
+}
