@@ -12,6 +12,7 @@ import {
 import { insertOrderedDirectoryEntries } from
   "../src/storage-vnext/publication/ordered-directory-batch.js";
 import {
+  directoryLeafByteSize,
   insertDirectoryEntry,
   type OrderedDirectoryEntry,
   type OrderedDirectoryLeaf
@@ -479,6 +480,37 @@ describe("storage vNext ordered directory batch", () => {
 
     expect(batch.leaves).toEqual(sequentialLeaves);
     expect(batchSequence).toBe(sequentialSequence);
+  });
+
+  it("preserves exact sequential splits at the UTF-8 byte limit", () => {
+    const entries = ["alpha", "beta", "gamma", "delta"].map(directoryEntry);
+    const limits = {
+      maxEntries: 10,
+      maxBytes: directoryLeafByteSize(entries.slice(0, 2)),
+      mergeBelowEntries: 1
+    };
+    let sequentialSequence = 0;
+    let sequentialLeaves: OrderedDirectoryLeaf[] = [];
+    for (const entry of entries) {
+      sequentialLeaves = insertDirectoryEntry({
+        leaves: sequentialLeaves,
+        entry,
+        limits,
+        createLeafId: () => `leaf-${sequentialSequence++}`
+      }).leaves;
+    }
+
+    let batchSequence = 0;
+    const batch = insertOrderedDirectoryEntries({
+      leaves: [],
+      entries,
+      limits,
+      createLeafId: () => `leaf-${batchSequence++}`
+    });
+
+    expect(batch.leaves).toEqual(sequentialLeaves);
+    expect(batch.leaves.every((leaf) =>
+      directoryLeafByteSize(leaf.entries) <= limits.maxBytes)).toBe(true);
   });
 
   it("inserts a large directory within a bounded time", () => {

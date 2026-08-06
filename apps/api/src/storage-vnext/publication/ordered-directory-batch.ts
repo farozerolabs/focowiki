@@ -64,14 +64,13 @@ function chooseSplitIndex(
   entries: OrderedDirectoryEntry[],
   limits: OrderedDirectoryLeafLimits
 ): number {
+  const prefixBytes = directoryEntryPrefixBytes(entries);
   let bestIndex = Math.ceil(entries.length / 2);
   let bestDelta = Number.POSITIVE_INFINITY;
   for (let index = 1; index < entries.length; index += 1) {
-    const left = entries.slice(0, index);
-    const right = entries.slice(index);
-    if (left.length > limits.maxEntries || right.length > limits.maxEntries) continue;
-    const leftBytes = directoryLeafByteSize(left);
-    const rightBytes = directoryLeafByteSize(right);
+    if (index > limits.maxEntries || entries.length - index > limits.maxEntries) continue;
+    const leftBytes = directoryLeafRangeByteSize(prefixBytes, 0, index);
+    const rightBytes = directoryLeafRangeByteSize(prefixBytes, index, entries.length);
     if (leftBytes > limits.maxBytes || rightBytes > limits.maxBytes) continue;
     const delta = Math.abs(leftBytes - rightBytes);
     if (delta < bestDelta) {
@@ -83,6 +82,26 @@ function chooseSplitIndex(
     throw new Error("A directory entry exceeds the configured leaf byte limit");
   }
   return bestIndex;
+}
+
+function directoryEntryPrefixBytes(entries: readonly OrderedDirectoryEntry[]): number[] {
+  const prefixBytes = [0];
+  for (const entry of entries) {
+    prefixBytes.push(
+      prefixBytes[prefixBytes.length - 1]!
+      + Buffer.byteLength(JSON.stringify(entry), "utf8")
+    );
+  }
+  return prefixBytes;
+}
+
+function directoryLeafRangeByteSize(
+  prefixBytes: readonly number[],
+  start: number,
+  end: number
+): number {
+  const entryCount = end - start;
+  return 2 + prefixBytes[end]! - prefixBytes[start]! + Math.max(0, entryCount - 1);
 }
 
 function findInsertionLeaf(

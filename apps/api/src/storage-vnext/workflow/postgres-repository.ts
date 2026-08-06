@@ -232,6 +232,8 @@ export function createPostgresStorageVnextWorkflowRepository(
                 updated_at = now()
             FROM candidates
             WHERE work.operation_public_id = candidates.operation_public_id
+              AND work.state IN ('queued', 'retry')
+              AND (work.next_attempt_at IS NULL OR work.next_attempt_at <= now())
             RETURNING work.*
           )
           SELECT claimed.operation_public_id, claimed.knowledge_base_id,
