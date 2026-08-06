@@ -97,9 +97,11 @@ describeOwnedDatabase("storage vNext PostgreSQL time partitions", () => {
         '2025-01-15T00:00:00Z', '2025-02-15T00:00:00Z')
     `;
     const routed = await sql<Array<{ table_name: string }>>`
-      SELECT tableoid::regclass::text AS table_name
-      FROM focowiki.security_audit_events
-      WHERE public_id = 'audit-2025-01'
+      SELECT format('%I.%I', namespace.nspname, relation.relname) AS table_name
+      FROM focowiki.security_audit_events audit
+      JOIN pg_catalog.pg_class relation ON relation.oid = audit.tableoid
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE audit.public_id = 'audit-2025-01'
     `;
 
     expect(routed).toEqual([

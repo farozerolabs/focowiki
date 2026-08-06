@@ -1,4 +1,3 @@
-import { performance } from "node:perf_hooks";
 import type { OkfGraphNode } from "@focowiki/okf";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,8 +8,14 @@ import {
 describe("graph edge scoring", () => {
   it("scores the bounded candidate set without repeating term normalization work", () => {
     const source = graphNode("source", "Unified Storage Validation", 0);
+    let candidateProfileReads = 0;
     const candidates = Array.from({ length: 200 }, (_, index) =>
-      graphNode(`candidate-${index}`, `Unified Storage Validation ${index}`, index + 1));
+      graphNode(
+        `candidate-${index}`,
+        `Unified Storage Validation ${index}`,
+        index + 1,
+        () => { candidateProfileReads += 1; }
+      ));
     const input = {
       source,
       body: [
@@ -24,8 +29,9 @@ describe("graph edge scoring", () => {
     } as const;
 
     const expected = buildGraphEdges(input);
+    candidateProfileReads = 0;
     const scorer = createGraphEdgeScorer({ maximumCachedProfiles: 401 });
-    const startedAt = performance.now();
+    let candidateProfileReadsAfterWarmup = 0;
     for (let iteration = 0; iteration < 10; iteration += 1) {
       expect(scorer.build({
         ...input,
@@ -34,15 +40,21 @@ describe("graph edge scoring", () => {
           candidates: candidates.map((candidate) => `revision-${candidate.fileId}`)
         }
       })).toEqual(expected);
+      if (iteration === 0) candidateProfileReadsAfterWarmup = candidateProfileReads;
     }
-    const elapsedMilliseconds = performance.now() - startedAt;
 
     expect(expected.length).toBeLessThanOrEqual(50);
-    expect(elapsedMilliseconds).toBeLessThan(700);
+    expect(candidateProfileReadsAfterWarmup).toBeGreaterThan(0);
+    expect(candidateProfileReads).toBe(candidateProfileReadsAfterWarmup);
   });
 });
 
-function graphNode(fileId: string, title: string, ordinal: number): OkfGraphNode {
+function graphNode(
+  fileId: string,
+  title: string,
+  ordinal: number,
+  onProfileRead?: () => void
+): OkfGraphNode {
   const sharedSubjects = Array.from({ length: 24 }, (_, index) =>
     `atomic publication subject ${index}`);
   const sharedEntities = Array.from({ length: 40 }, (_, index) =>
@@ -54,7 +66,10 @@ function graphNode(fileId: string, title: string, ordinal: number): OkfGraphNode
     path: `pages/storage/${fileId}.md`,
     title,
     type: "guide",
-    subjects: sharedSubjects,
+    get subjects() {
+      onProfileRead?.();
+      return sharedSubjects;
+    },
     entities: sharedEntities,
     keywords: sharedKeywords,
     explicitReferences: [],

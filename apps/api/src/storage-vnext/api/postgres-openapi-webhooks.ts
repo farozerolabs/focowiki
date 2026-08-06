@@ -44,13 +44,15 @@ export function createPostgresStorageVnextOpenApiWebhooks(
       const url = normalizeWebhookUrl(input.url);
       const events = normalizeEvents(input.events);
       const rawSecret = `fwwh_${randomBytes(32).toString("base64url")}`;
+      const createdAt = clock();
       const rows = await sql<SubscriptionRow[]>`
         INSERT INTO focowiki.webhook_subscriptions (
           public_id, knowledge_base_id, label, endpoint_url, secret_reference,
-          event_types, enabled, revision
+          event_types, enabled, revision, created_at, updated_at
         ) VALUES (
           ${`webhook-${randomUUID()}`}, NULL, ${input.name?.trim() || "Webhook"},
-          ${url}, ${`inline-v1:${rawSecret}`}, ${sql.json(events)}, true, 1
+          ${url}, ${`inline-v1:${rawSecret}`}, ${sql.json(events)}, true, 1,
+          ${createdAt}, ${createdAt}
         )
         RETURNING public_id, label, endpoint_url, event_types, enabled,
                   created_at, updated_at,

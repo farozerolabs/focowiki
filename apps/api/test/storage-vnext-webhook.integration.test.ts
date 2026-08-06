@@ -54,9 +54,10 @@ describeOwnedDatabase("storage vNext webhook PostgreSQL lifecycle", () => {
 
   it("fans out idempotently, exposes released statuses, and creates a new redelivery", async () => {
     const now = new Date("2026-08-03T00:00:00.000Z");
+    let publicApiNow = now;
     const publicApi = createPostgresStorageVnextOpenApiWebhooks(database, {
       resultRetentionMilliseconds: 86_400_000,
-      clock: () => new Date("2026-08-03T00:10:00.000Z")
+      clock: () => publicApiNow
     });
     const created = await publicApi.create({
       name: "Source lifecycle",
@@ -119,6 +120,7 @@ describeOwnedDatabase("storage vNext webhook PostgreSQL lifecycle", () => {
     expect(JSON.stringify(delivered)).not.toContain(created.signingSecret);
     expect(JSON.stringify(delivered)).not.toContain("event_payload");
 
+    publicApiNow = new Date("2026-08-03T00:10:00.000Z");
     const redelivery = await publicApi.redeliver(claimed[0]!.publicId);
     expect(redelivery.delivery).toMatchObject({
       webhookId: created.webhook.webhookId,
