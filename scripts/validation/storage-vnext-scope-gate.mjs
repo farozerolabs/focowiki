@@ -149,7 +149,9 @@ export function validateStorageVnextWorktree(options = {}) {
         path,
         baselineSource: readGitFile(baselineRef, path),
         currentSource: existsSync(path) ? readFileSync(path, "utf8") : "",
-        patch: git(["diff", "--unified=0", "--no-ext-diff", baselineRef, "--", path])
+        patch: git([
+          "diff", "--full-index", "--unified=0", "--no-ext-diff", baselineRef, "--", path
+        ])
       }));
     } else if (classification.policy === "package-scripts") {
       const baseline = JSON.parse(readGitFile(baselineRef, path));

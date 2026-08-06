@@ -56,7 +56,7 @@
   ],
   "settingsFieldFiles": {
     "apps/admin/src/components/settings-panel.tsx": {
-      "approvedPatchSha256": "6803393776d03b93779269974ed5d30a9814990ad40d5e5bb5e43adf319f7caa",
+      "approvedPatchSha256": "a8aae3dc6231c5ee146719983fb6727e94516b3a0a09029245c899961dea04c4",
       "allowedSymbols": [
         "workerNumberFields",
         "workerBooleanFields",
@@ -79,7 +79,7 @@
       ]
     },
     "apps/admin/src/lib/admin-api.ts": {
-      "approvedPatchSha256": "65a7bfee088f122cba2b4bc9961cf728323dbfad02a563cbe9e0a46514736a1f",
+      "approvedPatchSha256": "4084108c175c33734430ff2b991d83ec2ba0c38a0ead72fdd38fb64bb72b2aa4",
       "allowedSymbols": [
         "WorkerSettings",
         "PublicationSettings",

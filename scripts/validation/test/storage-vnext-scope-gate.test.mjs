@@ -272,3 +272,14 @@ test("CI executes the current storage-vNext scope and release gates", async () =
   assert.match(ci, /pnpm validate:storage-vnext:scope/u);
   assert.match(ci, /pnpm validate:storage-vnext:release-gate/u);
 });
+
+test("settings patch fingerprints use stable full Git object IDs", async () => {
+  const gate = await import("node:fs/promises").then(({ readFile }) =>
+    readFile(new URL("../storage-vnext-scope-gate.mjs", import.meta.url), "utf8")
+  );
+
+  assert.match(
+    gate,
+    /"diff", "--full-index", "--unified=0", "--no-ext-diff"/u
+  );
+});
