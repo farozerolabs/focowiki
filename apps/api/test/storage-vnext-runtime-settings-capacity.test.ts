@@ -7,7 +7,13 @@ type CapacityValidator = (input: {
   capacity: Record<string, number>;
 }) => Array<{ field: string; message: string }>;
 
+type CapacityFactory = (input: {
+  config: Record<string, unknown>;
+  defaults: Record<string, unknown>;
+}) => Record<string, number>;
+
 let validateCapacity: CapacityValidator | undefined;
+let createCapacity: CapacityFactory | undefined;
 
 beforeAll(async () => {
   const modulePath = resolve(
@@ -19,6 +25,8 @@ beforeAll(async () => {
   ).catch(() => ({})) as Record<string, unknown>;
   validateCapacity = loaded.validateRuntimeSettingsResourceCapacity as
     CapacityValidator | undefined;
+  createCapacity = loaded.createRuntimeSettingsResourceCapacity as
+    CapacityFactory | undefined;
 });
 
 describe("storage vNext runtime settings aggregate capacity", () => {
@@ -60,6 +68,33 @@ describe("storage vNext runtime settings aggregate capacity", () => {
       publication: { roleConcurrency: 0 }
     });
     expect(validateCapacity({ snapshot: changed, capacity: capacity() })).toEqual([]);
+  });
+
+  it("reserves capacity for an active model when the deployment starts without one", () => {
+    expect(createCapacity).toBeTypeOf("function");
+    expect(validateCapacity).toBeTypeOf("function");
+    if (!createCapacity || !validateCapacity) return;
+
+    const defaults = snapshot();
+    delete defaults.activeModel;
+    const derived = createCapacity({
+      config: {
+        database: {
+          sourceWorkerPoolMax: 2,
+          publicationWorkerPoolMax: 1,
+          maintenanceWorkerPoolMax: 1
+        }
+      },
+      defaults
+    });
+
+    expect(validateCapacity({
+      snapshot: {
+        ...defaults,
+        activeModel: { suggestionConcurrency: 1 }
+      },
+      capacity: derived
+    })).toEqual([]);
   });
 });
 

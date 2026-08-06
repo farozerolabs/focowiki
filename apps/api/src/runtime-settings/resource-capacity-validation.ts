@@ -52,6 +52,10 @@ export function createRuntimeSettingsResourceCapacity(input: {
     activeModel: null
   };
   const demand = calculateDemand(defaultSnapshot);
+  const modelSuggestionConcurrency = Math.max(
+    input.defaults.worker.sourceFileConcurrency,
+    input.defaults.model?.suggestionConcurrency ?? 0
+  );
   const databaseConnections = sum([
       input.config.database.sourceWorkerPoolMax ?? 6,
       input.config.database.publicationWorkerPoolMax ?? 4,
@@ -70,7 +74,7 @@ export function createRuntimeSettingsResourceCapacity(input: {
     ),
     memoryBytes: demand.memoryBytes,
     cpuConcurrency: Math.max(
-      demand.cpuConcurrency + (input.defaults.model?.suggestionConcurrency ?? 0),
+      demand.cpuConcurrency + modelSuggestionConcurrency,
       databaseConnections
     )
   };
