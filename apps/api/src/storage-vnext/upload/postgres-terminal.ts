@@ -17,7 +17,6 @@ type SessionSummaryRow = {
   expected_byte_count: number | string;
   received_entry_count: number | string;
   received_byte_count: number | string;
-  skipped_existing_count: number | string;
 };
 
 export function createPostgresStorageVnextUploadTerminalPort(
@@ -40,17 +39,7 @@ export function createPostgresStorageVnextUploadTerminalPort(
         }
         const summaries = await transaction<SessionSummaryRow[]>`
           SELECT expected_entry_count, expected_byte_count,
-                 received_entry_count, received_byte_count,
-                 (SELECT count(*)
-                  FROM focowiki.upload_entries entry
-                  WHERE entry.upload_session_public_id = session.public_id
-                    AND EXISTS (
-                      SELECT 1 FROM focowiki.source_files source
-                      WHERE source.knowledge_base_id = entry.knowledge_base_id
-                        AND source.public_id = entry.source_file_public_id
-                        AND source.normalized_path = entry.normalized_path
-                        AND source.deleted_at IS NULL
-                    )) AS skipped_existing_count
+                 received_entry_count, received_byte_count
           FROM focowiki.upload_sessions session
           WHERE session.public_id = ${context.sessionPublicId}
             AND session.knowledge_base_id = ${context.knowledgeBaseId}
@@ -100,6 +89,11 @@ async function persistResult(
   expiresAt: string
 ): Promise<void> {
   const terminalState = context.outcome;
+  const expectedEntryCount = terminalCount(summary.expected_entry_count);
+  const receivedEntryCount = terminalCount(summary.received_entry_count);
+  if (receivedEntryCount > expectedEntryCount) {
+    throw terminalError("invalid_summary");
+  }
   await transaction`
     UPDATE focowiki.operations
     SET state = ${terminalState}, updated_at = ${context.completedAt},
@@ -118,11 +112,11 @@ async function persistResult(
       ${terminalState}, ${context.resultCode}, NULL,
       ${transaction.json({
         sessionPublicId: context.sessionPublicId,
-        expectedEntryCount: Number(summary.expected_entry_count),
-        expectedByteCount: Number(summary.expected_byte_count),
-        receivedEntryCount: Number(summary.received_entry_count),
-        receivedByteCount: Number(summary.received_byte_count),
-        skippedExistingCount: Number(summary.skipped_existing_count),
+        expectedEntryCount,
+        expectedByteCount: terminalCount(summary.expected_byte_count),
+        receivedEntryCount,
+        receivedByteCount: terminalCount(summary.received_byte_count),
+        skippedExistingCount: expectedEntryCount - receivedEntryCount,
         successorOperationPublicId: context.successorOperationPublicId
       })},
       ${context.sessionPublicId}, ${context.completedAt}, ${expiresAt}
@@ -219,6 +213,14 @@ function assertRetention(milliseconds: number): void {
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 1) {
     throw terminalError("invalid_input");
   }
+}
+
+function terminalCount(value: number | string): number {
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw terminalError("invalid_summary");
+  }
+  return count;
 }
 
 function terminalError(code: string): Error & { code: string } {

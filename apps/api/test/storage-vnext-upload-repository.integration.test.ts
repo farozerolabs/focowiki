@@ -118,6 +118,16 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       live_owners: "0",
       search_projections: "0"
     });
+    const terminalResults = await sql<Array<{ result_summary: unknown }>>`
+      SELECT result_summary
+      FROM focowiki.operation_results
+      WHERE knowledge_base_id = 'kb-upload-success'
+    `;
+    expect(terminalResults[0]?.result_summary).toMatchObject({
+      expectedEntryCount: 2,
+      receivedEntryCount: 2,
+      skippedExistingCount: 0
+    });
     const directories = await sql<Array<{
       logical_path: string;
       parent_path: string | null;
