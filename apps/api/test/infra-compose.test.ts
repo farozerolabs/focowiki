@@ -418,7 +418,8 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/search-init.mjs");
     expect(workflow).toContain("Validate native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
-    expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).toContain("grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).not.toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
     expect(workflow).toContain("Validate storage vNext schema contracts");
     expect(workflow).toContain("Validate current schema idempotence");
   });
@@ -480,7 +481,8 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("docker volume rm");
     expect(workflow).toContain("Validate release native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
-    expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).toContain("grep -q nodejieba apps/api/runtime/publication-worker.mjs");
+    expect(workflow).not.toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
     expect(workflow).toContain("docker/setup-qemu-action@v4.2.0");
     expect(workflow).toContain("platforms: linux/amd64,linux/arm64");
     expect(workflow).toContain("for platform in linux/amd64 linux/arm64");

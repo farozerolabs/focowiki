@@ -216,7 +216,7 @@ jobs:
           docker run --rm --entrypoint sh focowiki-api:ci -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
           docker run --rm --entrypoint sh focowiki-api:ci -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
           docker run --rm --entrypoint node focowiki-api:ci -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
-          docker run --rm --entrypoint sh focowiki-api:ci -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+          docker run --rm --entrypoint sh focowiki-api:ci -lc 'grep -q nodejieba apps/api/runtime/publication-worker.mjs'
 
       - name: Validate API image role health
         run: |
