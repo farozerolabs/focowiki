@@ -123,6 +123,7 @@
       "disposition": "implemented",
       "focusedTests": [
         "apps/api/test/storage-vnext-effective-catalog.integration.test.ts",
+        "apps/api/test/storage-vnext-extension-navigation.test.ts",
         "apps/api/test/storage-vnext-publication-directory-state.test.ts"
       ],
       "codeTrace": [{"path":"apps/api/src/storage-vnext/publication/effective-catalog.ts","symbols":["createEffectiveCatalogReader"],"action":"Builds current directory/navigation state from normalized catalog facts and bounded candidate overlays."}],
