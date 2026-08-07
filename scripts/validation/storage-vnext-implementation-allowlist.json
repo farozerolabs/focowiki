@@ -467,6 +467,41 @@
       "approvalReference": "User authorized dependency vulnerability remediation before merge",
       "reason": "Record the audited safe resolutions required for the CI vulnerability gate",
       "preservedContract": "The lockfile changes are limited to security patches and their directly changed resolution metadata"
+    },
+    {
+      "path": ".gitignore",
+      "taskId": "14.2",
+      "approvalReference": "OpenSpec add-opensearch-search-provider task 14.2 approved by the user",
+      "reason": "Keep generated bundled OpenSearch private security assets outside version control",
+      "preservedContract": "Only the run-owned generated security directory is ignored; source, templates, UI, OpenAPI, and generated knowledge-base behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/package.json",
+      "taskId": "2.1",
+      "approvalReference": "OpenSpec add-opensearch-search-provider task 2.1 approved by the user",
+      "reason": "Declare the pinned OpenSearch client, AWS credential provider, and password hashing dependencies required by the selected provider runtime",
+      "preservedContract": "Dependencies are limited to the approved search provider implementation and do not change Admin UI, OpenAPI schemas, or generated knowledge-base structure"
+    },
+    {
+      "path": "README.zh-CN.md",
+      "taskId": "10.2",
+      "approvalReference": "OpenSpec add-opensearch-search-provider task 10.2 approved by the user",
+      "reason": "Keep Chinese local startup and deployment prerequisites aligned with the shipped OpenSearch default and Meilisearch alternative",
+      "preservedContract": "The README remains limited to developer-facing startup behavior and does not expose internal provider implementation details"
+    },
+    {
+      "path": "docs/index.md",
+      "taskId": "10.2",
+      "approvalReference": "OpenSpec add-opensearch-search-provider task 10.2 approved by the user",
+      "reason": "Keep the English documentation landing page aligned with the supported search provider choices",
+      "preservedContract": "Documentation describes only developer and product-manager relevant deployment behavior without changing product UI copy or public APIs"
+    },
+    {
+      "path": "docs/zh-CN/index.md",
+      "taskId": "10.2",
+      "approvalReference": "OpenSpec add-opensearch-search-provider task 10.2 approved by the user",
+      "reason": "Keep the Chinese documentation landing page aligned with the supported search provider choices",
+      "preservedContract": "Chinese and English documentation describe the same public deployment behavior without exposing internal implementation details"
     }
   ]
 }
