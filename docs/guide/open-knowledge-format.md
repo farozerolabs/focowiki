@@ -123,29 +123,37 @@ pages/
     incident-response.md
   large-directory/
     index.md
-    index-000001.md
-    index-map-000001.md
+    index-<stable-id>.md
 _index/
   index.md
-  manifest.json
-  search.json
-  links.json
-  changes.json
+  catalog.json
+  search/
+    index.md
+    v1/
+      index.md
+      index-<stable-id>.md
+      0000.json
+  manifest/, links/, tree/
+    ...
 _graph/
   index.md
-  manifest.json
-  ...
+  graph_node/, graph_edge/
+    ...
+  by-file/
+    index.md
+    index-<stable-id>.md
+    <source-file-id>.json
 ```
 
 Source-backed concepts under `pages/` remain the final reading and citation evidence. `schema*.md`, `log-*.md`, directory continuation pages, `_index/`, and `_graph/` are Focowiki producer extensions.
 
-Generated Markdown extensions outside exact `index.md` and `log.md` use normal concept frontmatter and a descriptive `type`, such as `Schema Reference`, `Directory Index Page`, `Directory Index Map`, or `Update History Page`. Exact `_index/index.md` and `_graph/index.md` remain reserved nested indexes and contain no frontmatter.
+Generated Markdown extensions outside exact `index.md` and `log.md` use normal concept frontmatter and a descriptive `type`, such as `Schema Reference`, `Directory Index Page`, or `Update History Page`. Exact `_index/index.md` and `_graph/index.md` remain reserved nested indexes and contain no frontmatter.
 
 ## Large Directories And Histories
 
-An exact directory `index.md` remains bounded. When a direct listing exceeds the configured entry or byte budget, it links to typed `index-000001.md` continuation concepts. Each continuation exposes directory, previous, and next navigation and lists a deterministic range of direct entries.
+An exact directory `index.md` remains bounded. When a direct listing exceeds the configured entry or byte budget, it links to stable `index-<stable-id>.md` continuation concepts. Each continuation exposes directory, previous, and next navigation and lists a deterministic range of direct entries. Focowiki does not create artificial domain folders or omit source concepts. Each source-backed concept appears exactly once in its directory navigation sequence.
 
-If the continuation catalog also exceeds the budget, the exact index links to typed `index-map-000001.md` concepts. Focowiki does not create artificial domain folders or omit source concepts. Each source-backed concept appears exactly once in its directory navigation sequence.
+Root, document-directory, machine-index, and graph navigation pages link back to the same bounded global destinations. Typed projection JSON and per-file relationship JSON are discoverable through their extension directory chains. A per-file relationship entry also links to its current source-backed Markdown evidence page; `_index/catalog.json` remains bounded and does not enumerate every per-file resource.
 
 The root `log.md` retains a bounded recent window. Older retained entries move to typed `log-000001.md` concepts with root, previous, and next navigation.
 

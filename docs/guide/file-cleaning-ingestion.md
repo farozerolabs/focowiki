@@ -28,9 +28,9 @@ The Admin upload dialog accepts loose Markdown files or one selected folder with
 
 Selecting the same folder again adds paths that are absent from the knowledge base. Existing active paths are skipped and keep their source IDs and revisions. Content changes for an existing path use the explicit source-file replacement operation.
 
-Every selected item must be a `.md` file. Keep path segments stable and avoid absolute paths, `.` or `..` segments, backslashes, control characters, and case-only path duplicates. Focowiki reserves generated navigation basenames matching `index.md`, `index-<number>.md`, `index-map-<number>.md`, `log.md`, and `log-<number>.md`. Rename source files that use these basenames before upload.
+Every selected item must be a `.md` file. Keep path segments stable and avoid absolute paths, `.` or `..` segments, backslashes, control characters, and case-only path duplicates. Focowiki reserves generated navigation basenames matching `index.md`, `index-<number>.md`, `log.md`, and `log-<number>.md`. Rename source files that use these basenames before upload.
 
-Focowiki creates directory `index.md` files and numbered index or index-map pages when a direct listing exceeds its configured budgets. These generated navigation pages link to the next page and remain available through the tree and content APIs. Agents use them to discover source-backed Markdown pages and read those pages as evidence.
+Focowiki creates directory `index.md` files and bounded stable continuation pages when a direct listing exceeds its configured budgets. These generated navigation pages link to adjacent pages and remain available through the tree and content APIs. Agents use them to discover source-backed Markdown pages and read those pages as evidence.
 
 ## Cleaning Workflow
 

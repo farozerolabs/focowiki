@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
@@ -14,6 +12,8 @@ import type {
   StorageVnextMaintenancePhaseResult,
   StorageVnextMaintenanceRequest
 } from "../src/storage-vnext/maintenance/ports.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -23,11 +23,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(resolve(
-  import.meta.dirname,
-  "../migrations/001_storage_vnext.sql"
-), "utf8");
-
 describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
   const connectionUrl = databaseUrl
     ?? "postgres://unused:unused@127.0.0.1:5432/unused";
@@ -66,7 +61,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
     await sql`
       INSERT INTO focowiki.runtime_setting_revisions
         (public_id, checksum_sha256, settings_values)

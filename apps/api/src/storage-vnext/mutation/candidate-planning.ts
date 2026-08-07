@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { deriveStorageVnextReleaseDependencyClosure } from
+import {
+  deriveStorageVnextReleaseDependencyClosure,
+  includeStorageVnextNavigationProfileUpgrade
+} from
   "../release/dependency-closure.js";
 import type {
   StorageVnextCandidateChangedFact,
@@ -96,6 +99,11 @@ export function createStorageVnextMutationReleaseHandoff(releases: ReleasePort) 
       const active = await releases.getActiveRoot(request.knowledgeBaseId);
       const expectedActiveRootPublicId = active?.publicId ?? null;
       const expectedActiveRevision = active?.revision ?? 0;
+      const dependencies = includeStorageVnextNavigationProfileUpgrade({
+        knowledgeBaseId: request.knowledgeBaseId,
+        navigationProfileVersion: active?.navigationProfileVersion ?? null,
+        dependencies: request.dependencies
+      });
       const identity = candidateIdentity({
         knowledgeBaseId: request.knowledgeBaseId,
         operationPublicId: request.operationPublicId,
@@ -111,7 +119,7 @@ export function createStorageVnextMutationReleaseHandoff(releases: ReleasePort) 
           expectedActiveRootPublicId,
           expectedActiveRevision,
           changedFacts: request.changedFacts,
-          dependencies: request.dependencies,
+          dependencies,
           idempotency: request.idempotency,
           createdAt: request.createdAt
         });

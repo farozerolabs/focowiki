@@ -123,29 +123,37 @@ pages/
     incident-response.md
   large-directory/
     index.md
-    index-000001.md
-    index-map-000001.md
+    index-<stable-id>.md
 _index/
   index.md
-  manifest.json
-  search.json
-  links.json
-  changes.json
+  catalog.json
+  search/
+    index.md
+    v1/
+      index.md
+      index-<stable-id>.md
+      0000.json
+  manifest/, links/, tree/
+    ...
 _graph/
   index.md
-  manifest.json
-  ...
+  graph_node/, graph_edge/
+    ...
+  by-file/
+    index.md
+    index-<stable-id>.md
+    <source-file-id>.json
 ```
 
 `pages/` 下的来源 concept 始终是最终阅读和引用证据。`schema*.md`、`log-*.md`、目录续页、`_index/` 和 `_graph/` 属于 Focowiki 生成扩展。
 
-精确 `index.md` 和 `log.md` 之外的 Markdown 扩展使用普通 concept frontmatter 和描述性 `type`，例如 `Schema Reference`、`Directory Index Page`、`Directory Index Map` 或 `Update History Page`。精确的 `_index/index.md` 与 `_graph/index.md` 仍属于嵌套保留索引，不包含 frontmatter。
+精确 `index.md` 和 `log.md` 之外的 Markdown 扩展使用普通 concept frontmatter 和描述性 `type`，例如 `Schema Reference`、`Directory Index Page` 或 `Update History Page`。精确的 `_index/index.md` 与 `_graph/index.md` 仍属于嵌套保留索引，不包含 frontmatter。
 
 ## 大目录与历史记录
 
-精确目录 `index.md` 始终保持有界。当直接列表超过配置的条目或字节限制时，该文件会链接到 `index-000001.md` 类型续页。每个续页提供目录、上一页和下一页导航，并按确定顺序列出一段直接条目。
+精确目录 `index.md` 始终保持有界。当直接列表超过配置的条目或字节限制时，该文件会链接到稳定的 `index-<stable-id>.md` 类型续页。每个续页提供目录、上一页和下一页导航，并按确定顺序列出一段直接条目。Focowiki 不创建人工领域目录，也不会遗漏来源 concept。每个来源 concept 在所属目录导航序列中只出现一次。
 
-续页目录超过限制时，精确索引会链接到 `index-map-000001.md` 类型 concept。Focowiki 不创建人工领域目录，也不会遗漏来源 concept。每个来源 concept 在所属目录导航序列中只出现一次。
+根目录、文档目录、机器索引和关系图导航页都会链接到同一组有界的全局入口。类型化 projection JSON 和逐文件关系 JSON 可通过扩展目录链找到。逐文件关系条目还会链接到当前来源 Markdown 证据页；`_index/catalog.json` 保持有界，不逐项列出所有逐文件资源。
 
 根目录 `log.md` 保留有界的近期记录。更早的保留记录进入 `log-000001.md` 类型 concept，并提供根日志、上一页和下一页导航。
 

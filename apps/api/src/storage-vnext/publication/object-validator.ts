@@ -29,9 +29,15 @@ export function createStorageVnextPublicationObjectValidator(input: {
     }): Promise<string> {
       const descriptor = await requireDescriptor(input.registrations, request);
       if (
-        descriptor.objectFormat !== "okf-generated-markdown-v1"
-        || descriptor.contentType !== "text/markdown; charset=utf-8"
-      ) throw new Error("Storage vNext publication object is not generated Markdown");
+        !(
+          descriptor.objectFormat === "okf-generated-markdown-v1"
+          && descriptor.contentType === "text/markdown; charset=utf-8"
+        )
+        && !(
+          descriptor.objectFormat === "okf-generated-json-v1"
+          && descriptor.contentType === "application/json; charset=utf-8"
+        )
+      ) throw new Error("Storage vNext publication object is not generated text");
       const bytes = await input.bodyStore.readVerified({
         descriptor,
         maximumBytes: request.maximumBytes
@@ -39,7 +45,7 @@ export function createStorageVnextPublicationObjectValidator(input: {
       try {
         return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {
-        throw new Error("Storage vNext publication Markdown is not valid UTF-8");
+        throw new Error("Storage vNext publication text is not valid UTF-8");
       }
     }
   };

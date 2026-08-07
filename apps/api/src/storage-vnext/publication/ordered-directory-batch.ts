@@ -24,6 +24,9 @@ export function insertOrderedDirectoryEntries(input: {
 
   for (const entry of input.entries) {
     if (entryIds.has(entry.id)) continue;
+    if (directoryLeafByteSize([entry]) > input.limits.maxBytes) {
+      throw new Error("A directory entry exceeds the configured leaf byte limit");
+    }
     entryIds.add(entry.id);
 
     if (leaves.length === 0) {

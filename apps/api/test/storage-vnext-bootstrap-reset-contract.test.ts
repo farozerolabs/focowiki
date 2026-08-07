@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const migrationDirectory = resolve(workspaceRoot, "apps/api/migrations");
 const bootstrapFileName = "001_storage_vnext.sql";
+const extensionProfileMigration = "002_extension_navigation_profile.sql";
 const bootstrapPath = resolve(migrationDirectory, bootstrapFileName);
 
 function migrationFiles(): string[] {
@@ -31,16 +32,18 @@ function findIdentifiers(source: string, identifiers: readonly string[]): string
 }
 
 describe("storage vNext clean bootstrap and reset contract", () => {
-  it("replaces the compatible migration chain with one absent-only bootstrap", () => {
+  it("keeps the absent bootstrap and adds only the extension-profile upgrade", () => {
     const manifest = readFileSync(
       resolve(workspaceRoot, "apps/api/src/db/migration-manifest.ts"),
       "utf8"
     );
 
-    expect(migrationFiles()).toEqual([bootstrapFileName]);
+    expect(migrationFiles()).toEqual([bootstrapFileName, extensionProfileMigration]);
     expect(manifest).toContain(`fileName: "${bootstrapFileName}"`);
     expect(manifest).toContain('sourceGeneration: "absent"');
     expect(manifest).toContain('targetGeneration: "storage-vnext-v1"');
+    expect(manifest).toContain(`fileName: "${extensionProfileMigration}"`);
+    expect(manifest).toContain('targetGeneration: "storage-vnext-v2"');
     expect(manifest).not.toMatch(
       /incremental-sharded-publication|compatible_with_persisted_work|createMigrationPlan\(currentGeneration/u
     );

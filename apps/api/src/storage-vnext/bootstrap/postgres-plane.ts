@@ -1,5 +1,5 @@
 import type { DatabaseClient } from "../../db/client.js";
-import { readMigrationSql } from "../../db/migrations.js";
+import { MIGRATION_FILES, readMigrationSql } from "../../db/migrations.js";
 import type { TransactionSql } from "postgres";
 import type { StorageVnextOwnedScopeProof } from "../lifecycle/ports.js";
 import type {
@@ -24,7 +24,9 @@ export function createStorageVnextPostgresPlane(input: {
   sql: DatabaseClient;
   bootstrapSql?: string;
 }): StorageVnextResetBootstrapPlane {
-  const bootstrapSql = input.bootstrapSql ?? readMigrationSql("001_storage_vnext.sql");
+  const bootstrapSql = input.bootstrapSql ?? MIGRATION_FILES
+    .map((fileName) => readMigrationSql(fileName))
+    .join("\n");
 
   return {
     plane: "postgres",
@@ -110,7 +112,7 @@ async function inspectPostgres(
         FROM focowiki.runtime_generation
         WHERE singleton = true
       `;
-      bootstrapState = generationRows[0]?.generation === "storage-vnext-v1"
+      bootstrapState = generationRows[0]?.generation === "storage-vnext-v2"
         ? "current"
         : "incompatible";
     } else {

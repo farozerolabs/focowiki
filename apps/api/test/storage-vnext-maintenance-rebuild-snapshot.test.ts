@@ -55,6 +55,7 @@ function fixtureSnapshot(
   overrides: Partial<StorageVnextPublicationSnapshotPort> = {}
 ): StorageVnextPublicationSnapshotPort {
   return {
+    readBaseNavigationProfile: vi.fn(async () => 1),
     readKnowledgeBaseCounts: vi.fn(async () => ({
       sourceFileCount: 1,
       directoryCount: 1,
@@ -63,9 +64,17 @@ function fixtureSnapshot(
     })),
     readDirectoryDescendantFileCounts: vi.fn(async () => new Map([["pages", 1]])),
     readDirectoryLeaves: vi.fn(async () => []),
+    readExtensionNavigationLeaves: vi.fn(async () => []),
+    listExtensionNavigationShards: vi.fn(async () => []),
     readProjectionRecords: vi.fn(async () => [{ id: "record-one" }]),
     listAffectedObsoletePaths: vi.fn(async () => []),
     listProjectionShards: vi.fn(async () => []),
+    listExtensionCatalogPaths: vi.fn(async () => ({
+      byFileLogicalPaths: [],
+      markdownLogicalPaths: [],
+      scannedCount: 0,
+      nextCursor: null
+    })),
     summarizeCandidate: vi.fn(async () => ({
       sourceFileCount: 1,
       directoryCount: 1,

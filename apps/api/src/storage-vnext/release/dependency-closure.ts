@@ -29,6 +29,24 @@ export type StorageVnextReleaseDependencyClosure = {
   affectedDirectoryPaths: readonly string[];
 };
 
+export function includeStorageVnextNavigationProfileUpgrade(input: {
+  knowledgeBaseId: string;
+  navigationProfileVersion: number | null;
+  dependencies: readonly StorageVnextCandidateDependency[];
+}): readonly StorageVnextCandidateDependency[] {
+  if (input.navigationProfileVersion === null || input.navigationProfileVersion >= 1) {
+    return input.dependencies;
+  }
+  return [
+    ...input.dependencies,
+    {
+      kind: "scope" as const,
+      publicId: input.knowledgeBaseId,
+      reasonCode: "navigation_profile_upgrade"
+    }
+  ].sort(compareDependency);
+}
+
 export function deriveStorageVnextReleaseDependencyClosure(input: {
   knowledgeBaseId: string;
   mutationKind: StorageVnextReleaseMutationKind;

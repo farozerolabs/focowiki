@@ -316,10 +316,80 @@
     },
     {
       "path": "apps/api/src/okf/publication-files.ts",
-      "taskId": "14.7",
-      "approvalReference": "User authorized the pre-submit deletion-link fix on 2026-08-06",
-      "reason": "Apply deletion-aware link integrity through the released source-backed page renderer",
-      "preservedContract": "Released templates, logical paths, hierarchy, ordering, metadata fields, and navigation remain unchanged"
+      "taskId": "3.9",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.9 approved by the user",
+      "reason": "Remove the obsolete index-map generated-file classification from the current publication contract",
+      "preservedContract": "All current generated file classifications and released source-backed page paths remain unchanged"
+    },
+    {
+      "path": "apps/api/src/publication/directory-navigation-writer.ts",
+      "taskId": "3.3",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.3 approved by the user",
+      "reason": "Add the required reciprocal machine-index and graph destinations to generated directory navigation",
+      "preservedContract": "Existing pages paths, entry ordering, style, parent links, and stable continuation links remain unchanged"
+    },
+    {
+      "path": "apps/api/src/publication/ordered-directory-leaves.ts",
+      "taskId": "3.3",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.3 approved by the user",
+      "reason": "Carry the approved reciprocal destinations through bounded stable directory leaves",
+      "preservedContract": "Existing stable leaf identities, ordering, byte bounds, and previous and next navigation remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/concept-descriptors.ts",
+      "taskId": "3.9",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.9 approved by the user",
+      "reason": "Delete the unused index-map descriptor from the shared OKF contract",
+      "preservedContract": "All current concept descriptors and generated knowledge-base paths remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/concept-validation.ts",
+      "taskId": "3.9",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.9 approved by the user",
+      "reason": "Stop recognizing obsolete numbered index-map navigation as a generated concept",
+      "preservedContract": "Validation for every current generated concept and stable navigation leaf remains unchanged"
+    },
+    {
+      "path": "packages/okf/src/public-bundle-path.ts",
+      "taskId": "7.1",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 7.1 approved by the user",
+      "reason": "Allow only the approved machine-index and graph Markdown navigation paths through existing public file reads",
+      "preservedContract": "Existing public operations, authentication, errors, JSON paths, and content bounds remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/source-path.ts",
+      "taskId": "3.9",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 3.9 approved by the user",
+      "reason": "Remove the obsolete index-map source-name reservation",
+      "preservedContract": "All current reserved generated names and source path validation remain unchanged"
+    },
+    {
+      "path": "docs/guide/file-cleaning-ingestion.md",
+      "taskId": "7.11",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 7.11 approved by the user",
+      "reason": "Document the current generated navigation filenames and source-name rules",
+      "preservedContract": "Documentation remains limited to developer and product-manager relevant behavior"
+    },
+    {
+      "path": "docs/guide/open-knowledge-format.md",
+      "taskId": "7.11",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 7.11 approved by the user",
+      "reason": "Document reciprocal root, machine-index, graph, and stable-leaf traversal",
+      "preservedContract": "Documentation describes released paths without internal database, object-key, or release-shard details"
+    },
+    {
+      "path": "docs/zh-CN/guide/file-cleaning-ingestion.md",
+      "taskId": "7.11",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 7.11 approved by the user",
+      "reason": "Keep Chinese source-name guidance aligned with the current generated navigation contract",
+      "preservedContract": "Chinese and English documentation describe the same public behavior"
+    },
+    {
+      "path": "docs/zh-CN/guide/open-knowledge-format.md",
+      "taskId": "7.11",
+      "approvalReference": "OpenSpec complete-index-graph-progressive-navigation task 7.11 approved by the user",
+      "reason": "Keep Chinese reciprocal navigation guidance aligned with the released generated paths",
+      "preservedContract": "Chinese and English documentation describe the same public behavior"
     },
     {
       "path": "docs/.vitepress/openapi-locales.json",
@@ -387,16 +457,16 @@
     {
       "path": "pnpm-workspace.yaml",
       "taskId": "22.7",
-      "approvalReference": "User authorized the pre-submit review remediation on 2026-08-06",
-      "reason": "Pin the six vulnerable dependency resolutions to their first audited safe patch versions",
+      "approvalReference": "User authorized dependency vulnerability remediation before merge",
+      "reason": "Pin vulnerable transitive dependency resolutions to audited safe patch versions",
       "preservedContract": "No application dependency API, Admin UI, generated knowledge-base structure, or public contract is changed"
     },
     {
       "path": "pnpm-lock.yaml",
       "taskId": "22.7",
-      "approvalReference": "User authorized the pre-submit review remediation on 2026-08-06",
+      "approvalReference": "User authorized dependency vulnerability remediation before merge",
       "reason": "Record the audited safe resolutions required for the CI vulnerability gate",
-      "preservedContract": "The lockfile changes are limited to the six security patches and their directly changed resolution metadata"
+      "preservedContract": "The lockfile changes are limited to security patches and their directly changed resolution metadata"
     }
   ]
 }

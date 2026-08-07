@@ -74,6 +74,7 @@ describe("storage vNext maintenance production planner", () => {
           knowledgeBaseId: "kb-maintenance",
           role: "active" as const,
           manifestChecksum: "a".repeat(64),
+          navigationProfileVersion: 1,
           revision: 7,
           createdAt: "2026-08-01T00:00:00.000Z",
           expiresAt: null

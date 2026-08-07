@@ -21,18 +21,18 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
-  it("allows candidate-only objects within twenty percent of active objects", () => {
+  it("allows the navigation-profile overhead above twenty percent", () => {
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 200,
       activeGeneratedObjectCount: 500,
-      candidateGeneratedObjectCount: 600,
-      candidateOnlyObjectCount: 100
-    })).toMatchObject({ passed: true, maximumCandidateOnlyObjects: 100 });
+      candidateGeneratedObjectCount: 607,
+      candidateOnlyObjectCount: 107
+    })).toMatchObject({ passed: true, maximumCandidateOnlyObjects: 107 });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 200,
       activeGeneratedObjectCount: 500,
-      candidateGeneratedObjectCount: 601,
-      candidateOnlyObjectCount: 101
+      candidateGeneratedObjectCount: 608,
+      candidateOnlyObjectCount: 108
     })).toMatchObject({ passed: false, candidateRatioPassed: false });
   });
 
@@ -45,13 +45,13 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({
       passed: true,
       candidateRatioPassed: true,
-      maximumActiveObjects: 131
+      maximumActiveObjects: 140
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 10,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 132,
-      candidateOnlyObjectCount: 132
+      candidateGeneratedObjectCount: 141,
+      candidateOnlyObjectCount: 141
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -59,14 +59,14 @@ describe("storage vNext generated object fan-out budget", () => {
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 0,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 9,
-      candidateOnlyObjectCount: 9
-    })).toMatchObject({ passed: true, maximumActiveObjects: 9 });
+      candidateGeneratedObjectCount: 16,
+      candidateOnlyObjectCount: 16
+    })).toMatchObject({ passed: true, maximumActiveObjects: 16 });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 0,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 10,
-      candidateOnlyObjectCount: 10
+      candidateGeneratedObjectCount: 17,
+      candidateOnlyObjectCount: 17
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -79,8 +79,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 109
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 131,
-      maximumCandidateOnlyObjects: 131
+      maximumActiveObjects: 140,
+      maximumCandidateOnlyObjects: 140
     });
   });
 
@@ -93,8 +93,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 131,
-      maximumCandidateOnlyObjects: 22
+      maximumActiveObjects: 140,
+      maximumCandidateOnlyObjects: 29
     });
   });
 
@@ -108,8 +108,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 22
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 131,
-      fileFirstCompletenessAllowanceUsed: true,
+      maximumActiveObjects: 140,
+      fileFirstCompletenessAllowanceUsed: false,
       candidateRatioPassed: true
     });
   });
@@ -139,8 +139,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 131,
-      maximumCandidateOnlyObjects: 18
+      maximumActiveObjects: 140,
+      maximumCandidateOnlyObjects: 25
     });
   });
 
@@ -154,8 +154,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 29
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 131,
-      maximumCandidateOnlyObjects: 29,
+      maximumActiveObjects: 140,
+      maximumCandidateOnlyObjects: 36,
       candidateChangeAllowanceUsed: true
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
@@ -164,7 +164,7 @@ describe("storage vNext generated object fan-out budget", () => {
       changedSourceFileCount: 2,
       activeGeneratedObjectCount: 93,
       candidateGeneratedObjectCount: 100,
-      candidateOnlyObjectCount: 30
+      candidateOnlyObjectCount: 37
     })).toMatchObject({
       passed: false,
       candidateRatioPassed: false

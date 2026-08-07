@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { StorageVnextActiveSnapshot } from "../transactions/ports.js";
+import { STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE } from
+  "../publication/profile.js";
 import {
   MAX_STORAGE_VNEXT_RELEASE_PAGE_SIZE,
   MAX_STORAGE_VNEXT_RELEASE_WRITE_BATCH,
@@ -38,6 +40,7 @@ export type StorageVnextReleaseRootRow = {
   knowledge_base_id: string;
   root_role: "active" | "candidate" | "rollback";
   manifest_checksum_sha256: string | null;
+  navigation_profile_version: number | string;
   revision: number | string;
   created_at: Date | string;
   expires_at: Date | string | null;
@@ -210,7 +213,7 @@ export function validateStorageVnextShardBatch(
   const publicIds = new Set<string>();
   const slots = new Set<string>();
   for (const shard of shards) {
-    const slot = shard.logicalKind === "directory_navigation"
+    const slot = isPathScopedNavigationShard(shard.logicalKind)
       ? `${shard.logicalKind}\u0000${shard.firstLogicalPath}\u0000${shard.ordinal}`
       : `${shard.logicalKind}\u0000${shard.ordinal}`;
     if (
@@ -234,6 +237,11 @@ export function validateStorageVnextShardBatch(
     publicIds.add(shard.publicId);
     slots.add(slot);
   }
+}
+
+function isPathScopedNavigationShard(logicalKind: string): boolean {
+  return logicalKind === "directory_navigation"
+    || logicalKind === "extension_navigation";
 }
 
 export function validateStorageVnextCatalogBatch(
@@ -287,7 +295,10 @@ export function validateStorageVnextSummaries(
   for (const item of directories) {
     if (
       !item.logicalPath
-      || (item.directoryPublicId === null && item.logicalPath !== "pages")
+      || (
+        item.directoryPublicId === null
+        && !isStorageVnextGeneratedDirectorySummaryPath(item.logicalPath)
+      )
       || !isStorageVnextNonnegativeInteger(item.directFileCount)
       || !isStorageVnextNonnegativeInteger(item.descendantFileCount)
       || item.descendantFileCount < item.directFileCount
@@ -305,6 +316,21 @@ export function validateStorageVnextSummaries(
   if (!Object.values(knowledgeBase).every(isStorageVnextNonnegativeInteger)) {
     throw new StorageVnextReleaseRepositoryError("invalid_input");
   }
+}
+
+function isStorageVnextGeneratedDirectorySummaryPath(logicalPath: string): boolean {
+  if (logicalPath === "pages" || logicalPath === "_index" || logicalPath === "_graph") {
+    return true;
+  }
+  const segments = logicalPath.split("/");
+  if (
+    segments[0] === "_index"
+    && ["manifest", "search", "links", "tree"].includes(segments[1] ?? "")
+  ) return segments.length === 2 || (segments.length === 3 && segments[2] === "v1");
+  if (segments[0] !== "_graph") return false;
+  if (segments[1] === "by-file") return segments.length === 2;
+  if (!["graph_node", "graph_edge"].includes(segments[1] ?? "")) return false;
+  return segments.length === 2 || (segments.length === 3 && segments[2] === "v1");
 }
 
 export function validateStorageVnextActivation(input: {
@@ -346,6 +372,7 @@ export function validateStorageVnextCandidateValidationReceipt(
     !input.candidatePublicId
     || !input.searchProjectionPublicId
     || !isStorageVnextReleaseTimestamp(input.validatedAt)
+    || input.navigationProfileVersion !== STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE
     || ![
       input.objectOwnerCount,
       input.searchDocumentCount,
@@ -467,6 +494,7 @@ export function mapStorageVnextReleaseRoot(
     knowledgeBaseId: row.knowledge_base_id,
     role: row.root_role,
     manifestChecksum: row.manifest_checksum_sha256,
+    navigationProfileVersion: Number(row.navigation_profile_version),
     revision: Number(row.revision),
     createdAt: storageVnextReleaseTimestamp(row.created_at),
     expiresAt: row.expires_at ? storageVnextReleaseTimestamp(row.expires_at) : null

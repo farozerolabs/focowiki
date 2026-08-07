@@ -426,6 +426,18 @@ export function createPostgresStorageVnextMaintenanceRepository(
           checkpoint: validateCheckpoint(live.checkpoint)
         });
       }
+      const profileRows = await sql<Array<{ navigation_profile_version: number | string }>>`
+        SELECT root.navigation_profile_version
+        FROM focowiki.active_snapshots snapshot
+        JOIN focowiki.release_roots root
+          ON root.knowledge_base_id = snapshot.knowledge_base_id
+         AND root.public_id = snapshot.release_root_public_id
+        WHERE snapshot.knowledge_base_id = ${input.knowledgeBaseId}
+        LIMIT 1
+      `;
+      const profileMaintenanceRequired = Number(
+        profileRows[0]?.navigation_profile_version ?? 1
+      ) < 1;
       const terminalRows = await sql<TerminalStatusRow[]>`
         SELECT result.public_id AS operation_public_id, result.terminal_state,
                result.result_code, result.result_summary, result.completed_at
@@ -437,14 +449,19 @@ export function createPostgresStorageVnextMaintenanceRepository(
         LIMIT 1
       `;
       const terminal = terminalRows[0];
-      if (!terminal) return statusMapper.mapIdle();
-      return statusMapper.mapTerminal({
+      if (!terminal) return statusMapper.mapIdle(profileMaintenanceRequired);
+      const terminalStatus = statusMapper.mapTerminal({
         operationPublicId: terminal.operation_public_id,
         terminalState: terminal.terminal_state,
         resultCode: terminal.result_code,
         completedAt: timestamp(terminal.completed_at),
         summary: terminal.result_summary
       });
+      return {
+        ...terminalStatus,
+        maintenanceRequired: terminalStatus.maintenanceRequired
+          || profileMaintenanceRequired
+      };
     }
   };
 }

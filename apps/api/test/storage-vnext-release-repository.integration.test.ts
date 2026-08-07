@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -14,6 +12,8 @@ import {
 import {
   measureStorageVnextObjectFanout
 } from "../src/storage-vnext/ownership/object-fanout-budget.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -23,11 +23,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(
-  resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-  "utf8"
-);
-
 describeOwnedDatabase("storage vNext bounded release repository", () => {
   const connectionUrl = databaseUrl
     ?? "postgres://unused:unused@127.0.0.1:5432/unused";
@@ -42,7 +37,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
   }, 120_000);
 
   afterAll(async () => {
@@ -187,7 +182,32 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       .resolves.toBe(true);
     const summaries = {
       candidatePublicId: "candidate-release-1",
-      directories: [],
+      directories: [
+        {
+          directoryPublicId: null,
+          logicalPath: "_index",
+          firstLeafPath: null,
+          directFileCount: 2,
+          descendantFileCount: 5,
+          ordinal: 0
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "_index/search",
+          firstLeafPath: null,
+          directFileCount: 1,
+          descendantFileCount: 3,
+          ordinal: 1
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "pages",
+          firstLeafPath: null,
+          directFileCount: 0,
+          descendantFileCount: 0,
+          ordinal: 2
+        }
+      ],
       knowledgeBase: {
         sourceFileCount: 1,
         directoryCount: 0,
@@ -212,6 +232,19 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       limit: 10,
       cursor: null
     })).toMatchObject({ items: [{ logicalPath: "index.md", kind: "index" }] });
+    await expect(releases.listDirectorySummaries({
+      knowledgeBaseId: "kb-release",
+      releaseRootPublicId: "root-release-1",
+      limit: 10,
+      cursor: null
+    })).resolves.toMatchObject({
+      items: [
+        { logicalPath: "_index" },
+        { logicalPath: "_index/search" },
+        { logicalPath: "pages" }
+      ],
+      nextCursor: null
+    });
     await expect(releases.getKnowledgeBaseSummary({
       knowledgeBaseId: "kb-release",
       releaseRootPublicId: "root-release-1"
@@ -237,6 +270,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       graphEdgeCount: 0,
       linkCount: 0,
       generatedEntryCount: 2,
+      navigationProfileVersion: 1,
       objectValidationPassed: true,
       searchValidationPassed: true,
       graphValidationPassed: true,
@@ -249,6 +283,14 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       ...validation,
       pathValidationPassed: false
     })).resolves.toBe(false);
+    const unvalidatedProfile = await sql<Array<{
+      navigation_profile_version: number;
+    }>>`
+      SELECT navigation_profile_version
+      FROM focowiki.release_roots
+      WHERE public_id = 'root-release-1'
+    `;
+    expect(unvalidatedProfile[0]?.navigation_profile_version).toBe(0);
     await expect(releases.markCandidateReady({
       candidatePublicId: "candidate-release-1",
       manifestChecksum: "f".repeat(64)
@@ -293,7 +335,8 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       snapshot: {
         releaseRootPublicId: "root-release-1",
         revision: 1,
-        searchProjectionPublicId: "search-release-1"
+        searchProjectionPublicId: "search-release-1",
+        navigationProfileVersion: 1
       },
       rollbackRootPublicId: null
     });
@@ -311,7 +354,8 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     await expect(releases.getActiveRoot("kb-release")).resolves.toMatchObject({
       publicId: "root-release-1",
       role: "active",
-      manifestChecksum: "f".repeat(64)
+      manifestChecksum: "f".repeat(64),
+      navigationProfileVersion: 1
     });
     await expect(
       createPostgresStorageVnextActiveSearchProjectionRepository(sql)
@@ -654,8 +698,9 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       idempotency: { key: "fanout-key", requestHash: "7".repeat(64) },
       createdAt: "2026-08-01T03:00:00.000Z"
     });
+    const overBudgetObjectCount = 141;
     const shards = [];
-    for (let index = 0; index < 132; index += 1) {
+    for (let index = 0; index < overBudgetObjectCount; index += 1) {
       const checksum = index.toString(16).padStart(2, "0").repeat(32);
       const objectId = `object-fanout-${index}`;
       await createVerifiedObject(objectId, checksum, 10);
@@ -681,10 +726,10 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       knowledgeBase: {
         sourceFileCount: 1,
         directoryCount: 0,
-        generatedEntryCount: 132,
+        generatedEntryCount: overBudgetObjectCount,
         graphNodeCount: 0,
         graphEdgeCount: 0,
-        generatedByteCount: 1320
+        generatedByteCount: overBudgetObjectCount * 10
       }
     });
     await createSearchCandidate("kb-fanout", "search-fanout", 1);
@@ -695,12 +740,13 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       candidatePublicId: "candidate-fanout",
       manifestChecksum: "8".repeat(64),
       searchProjectionPublicId: "search-fanout",
-      objectOwnerCount: 132,
+      objectOwnerCount: overBudgetObjectCount,
       searchDocumentCount: 1,
       graphNodeCount: 0,
       graphEdgeCount: 0,
       linkCount: 0,
-      generatedEntryCount: 132,
+      generatedEntryCount: overBudgetObjectCount,
+      navigationProfileVersion: 1,
       objectValidationPassed: true,
       searchValidationPassed: true,
       graphValidationPassed: true,
@@ -847,6 +893,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
         graphEdgeCount: 0,
         linkCount: 0,
         generatedEntryCount: 0,
+        navigationProfileVersion: 1,
         objectValidationPassed: true,
         searchValidationPassed: true,
         graphValidationPassed: true,
@@ -1133,6 +1180,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
         graphEdgeCount: 0,
         linkCount: 0,
         generatedEntryCount: 0,
+        navigationProfileVersion: 1,
         objectValidationPassed: true,
         searchValidationPassed: true,
         graphValidationPassed: true,
@@ -1364,6 +1412,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       graphEdgeCount: 0,
       linkCount: 0,
       generatedEntryCount: 1,
+      navigationProfileVersion: 1,
       objectValidationPassed: true,
       searchValidationPassed: true,
       graphValidationPassed: true,

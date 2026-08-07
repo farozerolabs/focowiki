@@ -26,11 +26,18 @@ describe("directory navigation writer", () => {
     expect(leaf).toContain("[Previous](/pages/guides/index-leaf-a.md)");
     expect(leaf).toContain("[Next](/pages/guides/index-leaf-c.md)");
     expect(leaf).toContain("[Setup.md](/pages/guides/Setup.md)");
-    expect(renderDirectoryRootMarkdown({
+    expect(leaf).toContain("[Knowledge base](/index.md)");
+    expect(leaf).toContain("[Machine-readable indexes](/_index/index.md)");
+    expect(leaf).toContain("[Relationship graph](/_graph/index.md)");
+    const root = renderDirectoryRootMarkdown({
       directoryPath: "pages/guides",
       entryCount: 500,
       firstLeafId: "leaf-a"
-    })).toContain("[Browse entries](/pages/guides/index-leaf-a.md)");
+    });
+    expect(root).toContain("[Browse entries](/pages/guides/index-leaf-a.md)");
+    expect(root).toContain("[Knowledge base](/index.md)");
+    expect(root).toContain("[Machine-readable indexes](/_index/index.md)");
+    expect(root).toContain("[Relationship graph](/_graph/index.md)");
   });
 
   it("writes only touched leaves, their root, and removed leaf tombstones", async () => {

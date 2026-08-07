@@ -13,7 +13,7 @@ export const MIGRATION_FILES = MIGRATION_MANIFEST.map(
   (migration) => migration.fileName
 ) as readonly MigrationFile[];
 export const RUNTIME_SCHEMA_GENERATION =
-  MIGRATION_MANIFEST[0].targetGeneration;
+  MIGRATION_MANIFEST.at(-1)!.targetGeneration;
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {

@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -12,9 +10,15 @@ import {
 import {
   createPostgresStorageVnextPublicationSnapshot
 } from "../src/storage-vnext/publication/postgres-snapshot.js";
+import { findStorageVnextGeneratedIdentity } from
+  "../src/storage-vnext/api/postgres-openapi-read.js";
+import { createStorageVnextExtensionNavigationShards } from
+  "../src/storage-vnext/publication/extension-navigation-state.js";
 import {
   createPostgresStorageVnextReleaseRepository
 } from "../src/storage-vnext/release/postgres-repository.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -24,11 +28,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(
-  resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-  "utf8"
-);
-
 describeOwnedDatabase("storage vNext effective publication catalog", () => {
   const connectionUrl = databaseUrl
     ?? "postgres://unused:unused@127.0.0.1:5432/unused";
@@ -56,6 +55,23 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       }]
     }]
   });
+  const [extensionState] = createStorageVnextExtensionNavigationShards({
+    directoryPath: "_index/links/v1",
+    leaves: [{
+      id: "extension-leaf-existing",
+      previousLeafId: null,
+      nextLeafId: null,
+      revision: 2,
+      entries: [{
+        id: "_index/links/v1/0000.json",
+        sortKey: "_index/links/v1/0000.json",
+        name: "0000.json",
+        targetPath: "_index/links/v1/0000.json",
+        kind: "file"
+      }]
+    }],
+    maximumBytes: 65_536
+  });
   const activeProjectionBody = Buffer.from(
     `${JSON.stringify({ records: [{ id: "active-projection" }] })}\n`,
     "utf8"
@@ -69,6 +85,9 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       async readVerified(input) {
         if (input.descriptor.checksum === directoryState.publicId.slice(-64)) {
           return directoryState.bytes;
+        }
+        if (input.descriptor.checksum === extensionState!.publicId.slice(-64)) {
+          return extensionState!.bytes;
         }
         if (input.descriptor.objectId === "object-active-4") {
           return activeProjectionBody;
@@ -85,7 +104,7 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
     await seedCandidate();
   }, 120_000);
 
@@ -156,6 +175,21 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
     })).rejects.toThrow(/cursor/iu);
   });
 
+  it("resolves the stable generated file ID advertised by the public tree", async () => {
+    const fileId = `generated-${createHash("md5")
+      .update("kb-publication:index.md")
+      .digest("hex")}`;
+
+    await expect(findStorageVnextGeneratedIdentity(sql, {
+      knowledgeBaseId: "kb-publication",
+      fileId
+    })).resolves.toMatchObject({
+      logical_path: "index.md",
+      source_file_public_id: null,
+      object_id: "object-active-0"
+    });
+  });
+
   it("reads inherited directory navigation state through the candidate lineage", async () => {
     await expect(snapshot.readDirectoryLeaves({
       knowledgeBaseId: "kb-publication",
@@ -166,6 +200,30 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
     })).resolves.toEqual([expect.objectContaining({
       id: "directory-leaf-existing",
       revision: 3
+    })]);
+  });
+
+  it("reuses inherited extension navigation descriptors without reading object bodies", async () => {
+    await expect(snapshot.listExtensionNavigationShards({
+      knowledgeBaseId: "kb-publication",
+      candidatePublicId: "candidate-publication",
+      directoryPaths: ["_index/links/v1", "_graph/graph_edge/v1"],
+      limit: 10
+    })).resolves.toEqual([expect.objectContaining({
+      publicId: extensionState!.publicId,
+      logicalKind: "extension_navigation",
+      firstLogicalPath: "_index/links/v1",
+      recordCount: 1
+    })]);
+    await expect(snapshot.readExtensionNavigationLeaves({
+      knowledgeBaseId: "kb-publication",
+      candidatePublicId: "candidate-publication",
+      directoryPath: "_index/links/v1",
+      maximumBytes: 65_536,
+      signal: new AbortController().signal
+    })).resolves.toEqual([expect.objectContaining({
+      id: "extension-leaf-existing",
+      revision: 2
     })]);
   });
 
@@ -193,6 +251,89 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
       maximumBytes: 65_536,
       signal: new AbortController().signal
     })).resolves.toEqual([]);
+  });
+
+  it("pages exact extension paths and identifies a legacy base profile", async () => {
+    const paths = [
+      "_graph/by-file/source-setup.json",
+      "_index/search/index.md",
+      "_index/search/v1/index-extension-leaf-a.md",
+      "_index/search/v1/index-map-000001.md",
+      "_index/search/v1/0000.json",
+      "_index/unsupported/index.md"
+    ];
+    for (const [index, logicalPath] of paths.entries()) {
+      await createObject(
+        `object-extension-${index}`,
+        ["9", "a", "b", "c", "d", "0"][index]!.repeat(64),
+        logicalPath.endsWith(".json")
+          ? "okf-generated-json-v1"
+          : "okf-generated-markdown-v1"
+      );
+    }
+    await releases.addCandidateCatalogEntries({
+      candidatePublicId: "candidate-publication",
+      entries: paths.map((logicalPath, ordinal) => ({
+        logicalPath,
+        kind: entryKind(logicalPath),
+        sourceFilePublicId: null,
+        checksum: ["9", "a", "b", "c", "d", "0"][ordinal]!.repeat(64),
+        objectId: `object-extension-${ordinal}`,
+        byteCount: 100,
+        ordinal
+      }))
+    });
+
+    const byFileLogicalPaths: string[] = [];
+    const markdownLogicalPaths: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await snapshot.listExtensionCatalogPaths({
+        knowledgeBaseId: "kb-publication",
+        candidatePublicId: "candidate-publication",
+        limit: 2,
+        cursor
+      });
+      expect(page.scannedCount).toBeLessThanOrEqual(2);
+      byFileLogicalPaths.push(...page.byFileLogicalPaths);
+      markdownLogicalPaths.push(...page.markdownLogicalPaths);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(byFileLogicalPaths).toEqual(["_graph/by-file/source-setup.json"]);
+    expect(markdownLogicalPaths).toEqual([
+      "_graph/index.md",
+      "_index/index.md",
+      "_index/search/index.md",
+      "_index/search/v1/index-extension-leaf-a.md",
+      "_index/search/v1/index-map-000001.md"
+    ]);
+    await expect(snapshot.readBaseNavigationProfile({
+      knowledgeBaseId: "kb-publication",
+      candidatePublicId: "candidate-publication"
+    })).resolves.toBe(0);
+    await expect(snapshot.listExtensionCatalogPaths({
+      knowledgeBaseId: "kb-publication",
+      candidatePublicId: "candidate-other",
+      limit: 2,
+      cursor: Buffer.from(JSON.stringify({
+        scope: "candidate-publication",
+        logicalPath: "_index/index.md"
+      }), "utf8").toString("base64url")
+    })).rejects.toMatchObject({ code: "invalid_extension_path_cursor" });
+    await sql`
+      DELETE FROM focowiki.release_catalog_entries
+      WHERE release_root_public_id = 'root-candidate'
+        AND logical_path = ANY(${paths})
+    `;
+    await sql`
+      DELETE FROM focowiki.object_owners
+      WHERE object_id = ANY(${paths.map((_, index) => `object-extension-${index}`)})
+    `;
+    await sql`
+      DELETE FROM focowiki.object_registrations
+      WHERE object_id = ANY(${paths.map((_, index) => `object-extension-${index}`)})
+    `;
   });
 
   it("keeps inherited entries and tombstones after the candidate becomes active", async () => {
@@ -418,6 +559,38 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
         ${paths.map((_, ordinal) => `object-active-${ordinal}`)}::text[],
         ${paths.map(() => 100)}::bigint[],
         ${paths.map((_, ordinal) => ordinal)}::bigint[]
+      )
+    `;
+    const extensionStateChecksum = extensionState!.publicId.slice(-64);
+    await sql`
+      INSERT INTO focowiki.object_registrations (
+        object_id, storage_key, checksum_sha256, byte_count, content_type,
+        object_format, state, write_attempt_public_id, verified_at, created_at
+      ) VALUES (
+        'object-extension-state', 'run-owned/object-extension-state',
+        ${extensionStateChecksum}, ${extensionState!.bytes.byteLength},
+        'application/json; charset=utf-8', 'okf-generated-json-v1',
+        'verified', 'attempt-extension-state', now(), now()
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.release_shards (
+        public_id, knowledge_base_id, logical_kind, first_logical_path,
+        last_logical_path, record_count, byte_count, checksum_sha256, object_id
+      ) VALUES (
+        ${extensionState!.publicId}, 'kb-publication',
+        ${extensionState!.logicalKind}, ${extensionState!.firstLogicalPath},
+        ${extensionState!.lastLogicalPath}, ${extensionState!.recordCount},
+        ${extensionState!.bytes.byteLength}, ${extensionStateChecksum},
+        'object-extension-state'
+      )
+    `;
+    await sql`
+      INSERT INTO focowiki.release_root_shards (
+        knowledge_base_id, release_root_public_id, release_shard_public_id, ordinal
+      ) VALUES (
+        'kb-publication', 'root-active', ${extensionState!.publicId},
+        ${extensionState!.ordinal}
       )
     `;
     await releases.createCandidate({

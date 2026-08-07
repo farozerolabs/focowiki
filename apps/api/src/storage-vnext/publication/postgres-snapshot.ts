@@ -1,7 +1,10 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { EffectiveProjectionShard } from
   "../../application/ports/projection-catalog-repository.js";
+import type { PersistentDirectoryLeaf } from
+  "../../application/ports/directory-navigation-repository.js";
 import type { StorageVnextPublicationSnapshotPort } from "./projection-loader.js";
+import type { StorageVnextShardDescriptor } from "../release/ports.js";
 import type { StorageVnextImmutableBodyStore } from
   "../ownership/s3-immutable-body-store.js";
 import type { StorageVnextImmutableObjectFormat } from
@@ -10,6 +13,11 @@ import {
   parseStorageVnextDirectoryNavigationState,
   STORAGE_VNEXT_DIRECTORY_NAVIGATION_SHARD_KIND
 } from "./directory-state.js";
+import {
+  parseStorageVnextExtensionNavigationState,
+  STORAGE_VNEXT_EXTENSION_NAVIGATION_SHARD_KIND
+} from "./extension-navigation-state.js";
+import { isAllowedPublicBundleFilePath } from "@focowiki/okf";
 import { parseShard, type JsonProjectionRecord } from
   "../../publication/projection-shard-partitioning.js";
 
@@ -34,6 +42,18 @@ type DirectoryStateRow = {
   byte_count: number | string;
   content_type: string;
   object_format: StorageVnextImmutableObjectFormat;
+};
+
+type NavigationShardRow = {
+  public_id: string;
+  logical_kind: string;
+  first_logical_path: string;
+  last_logical_path: string;
+  record_count: number | string;
+  byte_count: number | string;
+  checksum_sha256: string;
+  object_id: string;
+  ordinal: number | string;
 };
 
 type GeneratedObjectRow = {
@@ -61,6 +81,28 @@ export function createPostgresStorageVnextPublicationSnapshot(
 ): StorageVnextPublicationSnapshotPort {
   const objects = input.objects;
   return {
+    async readBaseNavigationProfile(input) {
+      assertId(input.knowledgeBaseId);
+      assertId(input.candidatePublicId);
+      const rows = await sql<Array<{ navigation_profile_version: number | string }>>`
+        SELECT coalesce(root.navigation_profile_version, 1)
+                 AS navigation_profile_version
+        FROM focowiki.release_candidates candidate
+        LEFT JOIN focowiki.release_roots root
+          ON root.knowledge_base_id = candidate.knowledge_base_id
+         AND root.public_id = candidate.expected_active_root_public_id
+        WHERE candidate.public_id = ${input.candidatePublicId}
+          AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
+          AND candidate.state = 'building'
+        LIMIT 1
+      `;
+      const version = Number(requireRow(rows[0]).navigation_profile_version);
+      if (!Number.isSafeInteger(version) || version < 0 || version > 1) {
+        throw snapshotError("navigation_profile_conflict");
+      }
+      return version;
+    },
+
     async readKnowledgeBaseCounts(input) {
       assertId(input.knowledgeBaseId);
       const rows = await sql<CountRow[]>`
@@ -229,6 +271,60 @@ export function createPostgresStorageVnextPublicationSnapshot(
       return parts.flatMap((part) => part.leaves);
     },
 
+    async readExtensionNavigationLeaves(request) {
+      return readNavigationLeaves({
+        sql,
+        objects: input.objects,
+        request,
+        logicalKind: STORAGE_VNEXT_EXTENSION_NAVIGATION_SHARD_KIND,
+        parse: parseStorageVnextExtensionNavigationState
+      });
+    },
+
+    async listExtensionNavigationShards(request) {
+      assertId(request.knowledgeBaseId);
+      assertId(request.candidatePublicId);
+      assertPaths(request.directoryPaths, 64);
+      assertLimit(request.limit, 65_536);
+      if (request.directoryPaths.length === 0) return [];
+      const rows = await sql<NavigationShardRow[]>`
+        WITH candidate_scope AS MATERIALIZED (
+          SELECT candidate_root_public_id
+          FROM focowiki.release_candidates candidate
+          WHERE candidate.public_id = ${request.candidatePublicId}
+            AND candidate.knowledge_base_id = ${request.knowledgeBaseId}
+            AND candidate.state = 'building'
+        )
+        SELECT shard.public_id, shard.logical_kind, shard.first_logical_path,
+               shard.last_logical_path, shard.record_count, shard.byte_count,
+               shard.checksum_sha256, shard.object_id, shard.ordinal
+        FROM candidate_scope scope
+        CROSS JOIN LATERAL focowiki.resolve_release_shards(
+          scope.candidate_root_public_id
+        ) shard
+        WHERE shard.logical_kind = ${STORAGE_VNEXT_EXTENSION_NAVIGATION_SHARD_KIND}
+          AND shard.first_logical_path = ANY(${request.directoryPaths})
+          AND shard.last_logical_path = shard.first_logical_path
+        ORDER BY shard.first_logical_path COLLATE "C", shard.ordinal,
+                 shard.public_id COLLATE "C"
+        LIMIT ${request.limit + 1}
+      `;
+      if (rows.length > request.limit) {
+        throw snapshotError("navigation_state_limit_exceeded");
+      }
+      return rows.map((row): StorageVnextShardDescriptor => ({
+        publicId: row.public_id,
+        logicalKind: row.logical_kind,
+        firstLogicalPath: row.first_logical_path,
+        lastLogicalPath: row.last_logical_path,
+        recordCount: Number(row.record_count),
+        byteCount: Number(row.byte_count),
+        checksum: row.checksum_sha256,
+        objectId: row.object_id,
+        ordinal: Number(row.ordinal)
+      }));
+    },
+
     async readProjectionRecords(request) {
       assertId(request.knowledgeBaseId);
       assertId(request.candidatePublicId);
@@ -336,6 +432,108 @@ export function createPostgresStorageVnextPublicationSnapshot(
       return shards;
     },
 
+    async listExtensionCatalogPaths(input) {
+      assertId(input.knowledgeBaseId);
+      assertId(input.candidatePublicId);
+      assertLimit(input.limit, 1_000);
+      const cursor = decodeExtensionPathCursor(input.cursor, input.candidatePublicId);
+      const rows = await sql<PathRow[]>`
+        WITH RECURSIVE candidate_scope AS MATERIALIZED (
+          SELECT candidate_root_public_id
+          FROM focowiki.release_candidates candidate
+          WHERE candidate.public_id = ${input.candidatePublicId}
+            AND candidate.knowledge_base_id = ${input.knowledgeBaseId}
+            AND candidate.state = 'building'
+        ), lineage AS (
+          SELECT root.public_id, root.base_root_public_id, 0 AS depth,
+                 ARRAY[root.public_id]::text[] AS visited
+          FROM candidate_scope scope
+          JOIN focowiki.release_roots root
+            ON root.public_id = scope.candidate_root_public_id
+           AND root.knowledge_base_id = ${input.knowledgeBaseId}
+          UNION ALL
+          SELECT base.public_id, base.base_root_public_id, lineage.depth + 1,
+                 lineage.visited || base.public_id
+          FROM lineage
+          JOIN focowiki.release_roots base
+            ON base.public_id = lineage.base_root_public_id
+           AND base.knowledge_base_id = ${input.knowledgeBaseId}
+          WHERE lineage.depth < 63
+            AND NOT base.public_id = ANY(lineage.visited)
+        ), layered AS MATERIALIZED (
+          SELECT item.logical_path, item.deleted, lineage.depth
+          FROM lineage
+          CROSS JOIN LATERAL (
+            SELECT scoped.logical_path, scoped.deleted
+            FROM (
+              SELECT entry.logical_path, false AS deleted
+              FROM focowiki.release_catalog_entries entry
+              WHERE entry.release_root_public_id = lineage.public_id
+                AND entry.knowledge_base_id = ${input.knowledgeBaseId}
+                AND entry.logical_path COLLATE "C" >
+                    coalesce(${cursor?.logicalPath ?? null}::text, '') COLLATE "C"
+                AND (
+                  (entry.logical_path COLLATE "C" >= '_graph/' COLLATE "C"
+                   AND entry.logical_path COLLATE "C" < '_graph0' COLLATE "C")
+                  OR
+                  (entry.logical_path COLLATE "C" >= '_index/' COLLATE "C"
+                   AND entry.logical_path COLLATE "C" < '_index0' COLLATE "C")
+                )
+              UNION ALL
+              SELECT tombstone.logical_path, true AS deleted
+              FROM focowiki.release_catalog_tombstones tombstone
+              WHERE tombstone.release_root_public_id = lineage.public_id
+                AND tombstone.knowledge_base_id = ${input.knowledgeBaseId}
+                AND tombstone.logical_path COLLATE "C" >
+                    coalesce(${cursor?.logicalPath ?? null}::text, '') COLLATE "C"
+                AND (
+                  (tombstone.logical_path COLLATE "C" >= '_graph/' COLLATE "C"
+                   AND tombstone.logical_path COLLATE "C" < '_graph0' COLLATE "C")
+                  OR
+                  (tombstone.logical_path COLLATE "C" >= '_index/' COLLATE "C"
+                   AND tombstone.logical_path COLLATE "C" < '_index0' COLLATE "C")
+                )
+            ) scoped
+            WHERE scoped.logical_path ~ '^_graph/by-file/[^/]+[.]json$'
+               OR (
+                 scoped.logical_path ~ '^_(index|graph)/.+[.]md$'
+                 AND scoped.logical_path NOT LIKE '%/%/%/%/%'
+               )
+            ORDER BY scoped.logical_path COLLATE "C"
+            LIMIT ${input.limit + 1}
+          ) item
+        ), effective AS (
+          SELECT DISTINCT ON (layered.logical_path COLLATE "C") layered.*
+          FROM layered
+          ORDER BY layered.logical_path COLLATE "C", layered.depth
+        )
+        SELECT effective.logical_path
+        FROM effective
+        WHERE NOT effective.deleted
+        ORDER BY effective.logical_path COLLATE "C"
+        LIMIT ${input.limit + 1}
+      `;
+      const logicalPaths = rows.slice(0, input.limit).map((row) => row.logical_path);
+      const last = logicalPaths.at(-1);
+      return {
+        byFileLogicalPaths: logicalPaths.filter((path) =>
+          /^_graph\/by-file\/[^/]+\.json$/u.test(path)),
+        markdownLogicalPaths: logicalPaths.filter((path) =>
+          path.endsWith(".md")
+          && (
+            isAllowedPublicBundleFilePath(path)
+            || isObsoleteExtensionNavigationPath(path)
+          )),
+        scannedCount: logicalPaths.length,
+        nextCursor: rows.length > input.limit && last
+          ? encodeExtensionPathCursor({
+              scope: input.candidatePublicId,
+              logicalPath: last
+            })
+          : null
+      };
+    },
+
     async summarizeCandidate(input) {
       assertId(input.knowledgeBaseId);
       assertId(input.candidatePublicId);
@@ -411,6 +609,99 @@ export function createPostgresStorageVnextPublicationSnapshot(
       };
     }
   };
+}
+
+async function readNavigationLeaves(input: {
+  sql: DatabaseClient;
+  objects: Pick<StorageVnextImmutableBodyStore, "readVerified">;
+  request: {
+    knowledgeBaseId: string;
+    candidatePublicId: string;
+    directoryPath: string;
+    maximumBytes: number;
+    signal: AbortSignal;
+  };
+  logicalKind: string;
+  parse(request: { bytes: Uint8Array; directoryPath: string }): {
+    partIndex: number;
+    partCount: number;
+    leaves: PersistentDirectoryLeaf[];
+  };
+}): Promise<readonly PersistentDirectoryLeaf[]> {
+  assertId(input.request.knowledgeBaseId);
+  assertId(input.request.candidatePublicId);
+  assertPaths([input.request.directoryPath], 1);
+  assertLimit(input.request.maximumBytes, Number.MAX_SAFE_INTEGER);
+  const rows = await input.sql<DirectoryStateRow[]>`
+    WITH RECURSIVE candidate_scope AS (
+      SELECT candidate_root_public_id
+      FROM focowiki.release_candidates candidate
+      WHERE candidate.public_id = ${input.request.candidatePublicId}
+        AND candidate.knowledge_base_id = ${input.request.knowledgeBaseId}
+        AND candidate.state = 'building'
+    ), lineage AS (
+      SELECT root.public_id, root.base_root_public_id, 0 AS depth,
+             ARRAY[root.public_id]::text[] AS visited
+      FROM candidate_scope scope
+      JOIN focowiki.release_roots root
+        ON root.public_id = scope.candidate_root_public_id
+      UNION ALL
+      SELECT base.public_id, base.base_root_public_id, lineage.depth + 1,
+             lineage.visited || base.public_id
+      FROM lineage
+      JOIN focowiki.release_roots base
+        ON base.public_id = lineage.base_root_public_id
+      WHERE lineage.depth < 63
+        AND NOT base.public_id = ANY(lineage.visited)
+    )
+    SELECT lineage.depth, object.storage_key, shard.checksum_sha256,
+           shard.byte_count, object.content_type, object.object_format
+    FROM lineage
+    JOIN focowiki.release_root_shards attached
+      ON attached.release_root_public_id = lineage.public_id
+    JOIN focowiki.release_shards shard
+      ON shard.knowledge_base_id = ${input.request.knowledgeBaseId}
+     AND shard.public_id = attached.release_shard_public_id
+    JOIN focowiki.object_registrations object
+      ON object.object_id = shard.object_id
+     AND object.state = 'verified'
+    WHERE shard.logical_kind = ${input.logicalKind}
+      AND shard.first_logical_path = ${input.request.directoryPath}
+      AND shard.last_logical_path = ${input.request.directoryPath}
+    ORDER BY lineage.depth, attached.ordinal, shard.public_id COLLATE "C"
+    LIMIT 65537
+  `;
+  if (rows.length > 65_536) throw snapshotError("navigation_state_limit_exceeded");
+  const depth = rows[0] ? Number(rows[0].depth) : null;
+  if (depth === null) return [];
+  const parts = [];
+  for (const row of rows.filter((item) => Number(item.depth) === depth)) {
+    if (row.object_format !== "okf-generated-json-v1") {
+      throw snapshotError("navigation_state_conflict");
+    }
+    const bytes = await input.objects.readVerified({
+      descriptor: {
+        objectId: `generated-sha256:${row.object_format}:${row.checksum_sha256}`,
+        storageKey: row.storage_key,
+        checksum: row.checksum_sha256,
+        byteCount: Number(row.byte_count),
+        contentType: row.content_type,
+        objectFormat: row.object_format
+      },
+      maximumBytes: input.request.maximumBytes,
+      signal: input.request.signal
+    });
+    parts.push(input.parse({
+      bytes,
+      directoryPath: input.request.directoryPath
+    }));
+  }
+  parts.sort((left, right) => left.partIndex - right.partIndex);
+  if (parts.some((part, index) =>
+    part.partIndex !== index || part.partCount !== parts.length)) {
+    throw snapshotError("navigation_state_conflict");
+  }
+  return parts.flatMap((part) => part.leaves);
 }
 
 async function findEffectiveGeneratedObject(
@@ -555,6 +846,41 @@ function assertLimit(value: number, maximum: number): void {
 
 function assertId(value: string): void {
   if (!value || Buffer.byteLength(value) > 255) throw snapshotError("invalid_input");
+}
+
+type ExtensionPathCursor = { scope: string; logicalPath: string };
+
+function encodeExtensionPathCursor(cursor: ExtensionPathCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeExtensionPathCursor(
+  value: string | null,
+  scope: string
+): ExtensionPathCursor | null {
+  if (value === null) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      !isRecord(cursor)
+      || cursor.scope !== scope
+      || typeof cursor.logicalPath !== "string"
+      || !cursor.logicalPath
+      || Buffer.byteLength(cursor.logicalPath, "utf8") > 4_096
+    ) throw new Error("invalid");
+    return { scope, logicalPath: cursor.logicalPath };
+  } catch {
+    throw snapshotError("invalid_extension_path_cursor");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isObsoleteExtensionNavigationPath(path: string): boolean {
+  return /^_(?:index|graph)\/(?:manifest|search|links|tree|graph_node|graph_edge)\/v1\/index-map-[0-9]+\.md$/u.test(path)
+    || /^_graph\/by-file\/index-map-[0-9]+\.md$/u.test(path);
 }
 
 function requireRow<T>(row: T | undefined): T {

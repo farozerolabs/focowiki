@@ -78,22 +78,6 @@ export function directoryIndexPageDescriptor(input: {
   });
 }
 
-export function directoryIndexMapDescriptor(input: {
-  directoryPath: string;
-  directoryTitle: string;
-  page: number;
-  pageCount: number;
-}): GeneratedConceptDescriptor {
-  const pageName = `index-map-${padPage(input.page)}.md`;
-  return createGeneratedConceptDescriptor({
-    path: `${input.directoryPath}/${pageName}`,
-    type: "Directory Index Map",
-    title: `${input.directoryTitle} index map ${input.page}`,
-    description: `Index shard catalog page ${input.page} of ${input.pageCount} for ${input.directoryPath}.`,
-    manifestIdentity: `directory-index-map:${input.directoryPath}:${input.page}`
-  });
-}
-
 export function updateHistoryPageDescriptor(page: number): GeneratedConceptDescriptor {
   return createGeneratedConceptDescriptor({
     path: `log-${padPage(page)}.md`,

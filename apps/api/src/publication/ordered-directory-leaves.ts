@@ -7,6 +7,7 @@ export type OrderedDirectoryEntry = {
   sortKey: string;
   name: string;
   targetPath: string;
+  evidencePath?: string;
   kind: "file" | "directory";
 };
 
@@ -44,6 +45,9 @@ export function insertDirectoryEntry(input: {
   const leaves = cloneAndValidate(input.leaves, compareEntries);
   if (leaves.some((leaf) => leaf.entries.some((entry) => entry.id === input.entry.id))) {
     return { leaves, touchedLeafIds: [], removedLeafIds: [] };
+  }
+  if (directoryLeafByteSize([input.entry]) > input.limits.maxBytes) {
+    throw new Error("A directory entry exceeds the configured leaf byte limit");
   }
 
   if (leaves.length === 0) {

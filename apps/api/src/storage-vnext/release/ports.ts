@@ -26,6 +26,7 @@ export type StorageVnextReleaseRoot = {
   knowledgeBaseId: StorageVnextKnowledgeBaseId;
   role: StorageVnextReleaseRootRole;
   manifestChecksum: StorageVnextChecksum | null;
+  navigationProfileVersion: number;
   revision: StorageVnextRevision;
   createdAt: StorageVnextTimestamp;
   expiresAt: StorageVnextTimestamp | null;
@@ -114,6 +115,7 @@ export type StorageVnextCandidateValidationReceipt = {
   graphEdgeCount: number;
   linkCount: number;
   generatedEntryCount: number;
+  navigationProfileVersion: number;
   objectValidationPassed: boolean;
   searchValidationPassed: boolean;
   graphValidationPassed: boolean;

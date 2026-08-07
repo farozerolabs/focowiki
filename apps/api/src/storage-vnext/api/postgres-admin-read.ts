@@ -91,7 +91,13 @@ export function createPostgresStorageVnextAdminRead(input: {
       const rows = await input.sql<TreeRow[]>`
         WITH tree_entries AS (
           SELECT
-            coalesce(summary.directory_public_id, 'directory:') AS record_id,
+            coalesce(
+              summary.directory_public_id,
+              focowiki.public_generated_directory_id(
+                ${request.knowledgeBaseId},
+                summary.logical_path
+              )
+            ) AS record_id,
             summary.logical_path,
             CASE
               WHEN strpos(summary.logical_path, '/') = 0 THEN ''
@@ -122,8 +128,13 @@ export function createPostgresStorageVnextAdminRead(input: {
           UNION ALL
 
           SELECT
-            coalesce(entry.source_file_public_id,
-              'generated-' || md5(${request.knowledgeBaseId} || ':' || entry.logical_path)),
+            coalesce(
+              entry.source_file_public_id,
+              focowiki.public_generated_file_id(
+                ${request.knowledgeBaseId},
+                entry.logical_path
+              )
+            ),
             entry.logical_path,
             CASE
               WHEN strpos(entry.logical_path, '/') = 0 THEN ''
@@ -207,7 +218,9 @@ export function createPostgresStorageVnextAdminRead(input: {
           recordId: cursor.recordId
         });
         const visibleDirectories = directoryRows.slice(0, request.limit);
-        const directoryItems = visibleDirectories.map(toDirectorySearchItem);
+        const directoryItems = visibleDirectories.map((row) =>
+          toDirectorySearchItem(row, request.knowledgeBaseId)
+        );
 
         if (directoryRows.length > request.limit) {
           const last = visibleDirectories.at(-1)!;
@@ -308,7 +321,8 @@ function toTreeEntry(row: TreeRow): StorageVnextAdminTreeEntry {
 
 function toSearchItem(
   item: Awaited<ReturnType<StorageVnextSearchQueryPort["search"]>>["items"][number],
-  revision: number | null
+  revision: number | null,
+  knowledgeBaseId: string
 ): StorageVnextAdminTreeSearchItem {
   const parentPath = parentPathOf(item.logicalPath);
   const entry: StorageVnextAdminTreeEntry = {
@@ -333,7 +347,7 @@ function toSearchItem(
     entry,
     ancestors: ancestorPaths(parentPath).map((logicalPath) => ({
       ...entry,
-      id: stablePublicId("directory", logicalPath),
+      id: stableGeneratedDirectoryId(knowledgeBaseId, logicalPath),
       parentPath: parentPathOf(logicalPath),
       name: logicalPath.split("/").at(-1) ?? logicalPath,
       logicalPath,
@@ -349,13 +363,16 @@ function toSearchItem(
   };
 }
 
-function toDirectorySearchItem(row: TreeRow): StorageVnextAdminTreeSearchItem {
+function toDirectorySearchItem(
+  row: TreeRow,
+  knowledgeBaseId: string
+): StorageVnextAdminTreeSearchItem {
   const entry = toTreeEntry(row);
   return {
     entry,
     ancestors: ancestorPaths(row.parent_path).map((logicalPath) => ({
       ...entry,
-      id: stablePublicId("directory", logicalPath),
+      id: stableGeneratedDirectoryId(knowledgeBaseId, logicalPath),
       parentPath: parentPathOf(logicalPath),
       name: logicalPath.split("/").at(-1) ?? logicalPath,
       logicalPath,
@@ -386,7 +403,13 @@ async function listMatchingDirectories(input: {
 }): Promise<TreeRow[]> {
   return input.sql<TreeRow[]>`
     SELECT
-      coalesce(summary.directory_public_id, 'directory:') AS record_id,
+      coalesce(
+        summary.directory_public_id,
+        focowiki.public_generated_directory_id(
+          ${input.knowledgeBaseId},
+          summary.logical_path
+        )
+      ) AS record_id,
       summary.logical_path,
       CASE
         WHEN strpos(summary.logical_path, '/') = 0 THEN ''
@@ -416,11 +439,26 @@ async function listMatchingDirectories(input: {
       AND strpos(lower(summary.logical_path), lower(${input.query.trim()})) > 0
       AND (
         ${input.logicalPath}::text IS NULL
-        OR (summary.logical_path, coalesce(summary.directory_public_id, 'directory:')) >
+        OR (
+          summary.logical_path,
+          coalesce(
+            summary.directory_public_id,
+            focowiki.public_generated_directory_id(
+              ${input.knowledgeBaseId},
+              summary.logical_path
+            )
+          )
+        ) >
            (${input.logicalPath}::text, ${input.recordId}::text)
       )
     ORDER BY summary.logical_path COLLATE "C",
-             coalesce(summary.directory_public_id, 'directory:') COLLATE "C"
+             coalesce(
+               summary.directory_public_id,
+               focowiki.public_generated_directory_id(
+                 ${input.knowledgeBaseId},
+                 summary.logical_path
+               )
+             ) COLLATE "C"
     LIMIT ${input.limit}
   `;
 }
@@ -450,7 +488,8 @@ async function searchFilePage(input: {
   return {
     items: page.items.map((item) => toSearchItem(
       item,
-      revisions.get(item.sourceFilePublicId) ?? null
+      revisions.get(item.sourceFilePublicId) ?? null,
+      input.knowledgeBaseId
     )),
     nextCursor: page.nextCursor
       ? encodeTreeSearchCursor(filePhaseCursor(input.scope, page.nextCursor))
@@ -571,8 +610,13 @@ function ancestorPaths(path: string): string[] {
   return segments.map((_, index) => segments.slice(0, index + 1).join("/"));
 }
 
-function stablePublicId(kind: string, value: string): string {
-  return `${kind}-${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
+function stableGeneratedDirectoryId(
+  knowledgeBaseId: string,
+  logicalPath: string
+): string {
+  return `generated-directory-${createHash("md5")
+    .update(`${knowledgeBaseId}:${logicalPath}`)
+    .digest("hex")}`;
 }
 
 function toCount(value: number | string): number {

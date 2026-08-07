@@ -23,6 +23,7 @@ import type {
 import {
   STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS
 } from "./validation.js";
+import { STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES } from "./profile.js";
 import { assembleStorageVnextPageArtifact } from "./page-artifact.js";
 import { planStorageVnextPublicationBatch } from "./planning.js";
 import {
@@ -33,6 +34,11 @@ import type {
   StorageVnextInternalShard,
   StorageVnextPublicationArtifact
 } from "./types.js";
+import {
+  assembleStorageVnextExtensionNavigation,
+  type StorageVnextExtensionNavigationInput,
+  type StorageVnextExtensionNavigationSource
+} from "./extension-navigation.js";
 
 type PublicationIdentity = {
   knowledgeBaseId: string;
@@ -69,6 +75,8 @@ export type StorageVnextPublicationProjection = {
   rootEntryCount: number;
   directories: readonly StorageVnextPublicationDirectoryInput[];
   projectionShards: readonly EffectiveProjectionShard[];
+  profileUpgrade?: boolean;
+  extensionNavigation?: StorageVnextExtensionNavigationInput;
   internalShards: readonly StorageVnextInternalShard[];
   reusedInternalShards: readonly StorageVnextShardDescriptor[];
   removedSourceLogicalPaths?: readonly string[];
@@ -94,7 +102,10 @@ type PublisherResult = { artifactCount: number; [key: string]: number };
 export function createStorageVnextPublicationArtifactAssembler(input: {
   releases: Pick<
     StorageVnextReleaseReadPort & StorageVnextReleaseWritePort,
-    "listCandidateDependencies" | "replaceCandidateSummaries"
+    | "getLiveCandidate"
+    | "listCandidateDependencies"
+    | "listDirectorySummaries"
+    | "replaceCandidateSummaries"
   >;
   projection: ProjectionPort;
   publisher: {
@@ -145,14 +156,38 @@ export function createStorageVnextPublicationArtifactAssembler(input: {
       }));
       const projectionShards = new Map(projection.projectionShards.map((shard) =>
         [shard.logicalPath, shard]));
+      const byFileLogicalPaths = new Set(
+        projection.extensionNavigation?.byFileLogicalPaths ?? []
+      );
+      const affectedExtensionSources = new Map<string, {
+        publicId: string;
+        title: string;
+        pagePath: string;
+      }>();
       for await (const batch of projection.batches) {
         throwIfAborted(request.signal);
         validateBatch(request, plan, batch);
         for (const logicalPath of batch.deletedLogicalPaths) {
           projectionShards.delete(logicalPath);
+          if (logicalPath.startsWith("_graph/by-file/")) {
+            byFileLogicalPaths.delete(logicalPath);
+          }
         }
         for (const shard of batch.projectionShards) {
           projectionShards.set(shard.logicalPath, shard);
+        }
+        for (const artifact of batch.machineArtifacts) {
+          if (artifact.logicalPath.startsWith("_graph/by-file/")
+            && artifact.logicalPath.endsWith(".json")) {
+            byFileLogicalPaths.add(artifact.logicalPath);
+          }
+        }
+        for (const page of batch.pages) {
+          affectedExtensionSources.set(page.current.sourceFile.publicId, {
+            publicId: page.current.sourceFile.publicId,
+            title: page.current.sourceFile.title,
+            pagePath: page.node.logicalPath
+          });
         }
         results.push(await publishArtifacts(input, request, {
           artifacts: assembleBatchArtifacts({
@@ -165,6 +200,25 @@ export function createStorageVnextPublicationArtifactAssembler(input: {
           reusedInternalShards: []
         }));
       }
+      const extensionNavigation = await assembleStorageVnextExtensionNavigation({
+        knowledgeBaseId: request.knowledgeBaseId,
+        projectionShards: [...projectionShards.values()],
+        navigation: {
+          ...(projection.extensionNavigation ?? emptyExtensionNavigation()),
+          byFileLogicalPaths: [...byFileLogicalPaths].sort(compareUtf8),
+          sources: mergeExtensionSources(
+            projection.extensionNavigation?.sources ?? emptyExtensionNavigation().sources,
+            [...affectedExtensionSources.values()].sort((left, right) =>
+              compareUtf8(left.publicId, right.publicId))
+          )
+        }
+      });
+      results.push(await publishArtifacts(input, request, {
+        artifacts: extensionNavigation.artifacts,
+        deletedLogicalPaths: extensionNavigation.deletedLogicalPaths,
+        internalShards: extensionNavigation.internalShards,
+        reusedInternalShards: []
+      }));
       results.push(await publishArtifacts(input, request, {
         artifacts: [catalogArtifact({
           request,
@@ -177,9 +231,26 @@ export function createStorageVnextPublicationArtifactAssembler(input: {
       }));
       throwIfAborted(request.signal);
       const knowledgeBase = await input.projection.summarizeCandidate(request);
+      const inheritedExtensionDirectories = await listInheritedExtensionDirectories(
+        input,
+        request
+      );
       await input.releases.replaceCandidateSummaries({
         candidatePublicId: request.candidatePublicId,
-        directories: directorySummaries(projection.directories),
+        directories: mergeDirectorySummaries({
+          sourceDirectories: projection.directories,
+          inheritedExtensionDirectories,
+          projectionShards: [...projectionShards.values()],
+          byFileLogicalPaths: [...byFileLogicalPaths],
+          existingMarkdownPaths:
+            projection.extensionNavigation?.existingMarkdownPaths ?? [],
+          emittedArtifacts: extensionNavigation.artifacts,
+          deletedLogicalPaths: extensionNavigation.deletedLogicalPaths,
+          affectedDirectoryPaths:
+            projection.extensionNavigation?.affectedDirectoryPaths
+              ?? [...STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES],
+          completeProfile: projection.extensionNavigation?.completeProfile ?? true
+        }),
         knowledgeBase
       });
       return mergePublisherResults(results);
@@ -299,7 +370,12 @@ function assembleArtifacts(input: {
   };
 
   for (const path of STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS) {
-    if (path === "pages/index.md" || path === "_index/catalog.json") continue;
+    if (
+      path === "pages/index.md"
+      || path === "_index/catalog.json"
+      || path === "_index/index.md"
+      || path === "_graph/index.md"
+    ) continue;
     add(renderStorageVnextRootArtifact({
       path,
       knowledgeBase: input.projection.knowledgeBase,
@@ -318,13 +394,17 @@ function assembleArtifacts(input: {
     })) add(artifact);
   }
   for (const required of STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS.filter((path) =>
-    path !== "_index/catalog.json")) {
+    path !== "_index/catalog.json"
+    && path !== "_index/index.md"
+    && path !== "_graph/index.md")) {
     if (!byPath.has(required)) {
       throw artifactAssemblerError("required_navigation_conflict");
     }
   }
   const requiredPaths = STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS.filter((path) =>
-    path !== "_index/catalog.json");
+    path !== "_index/catalog.json"
+    && path !== "_index/index.md"
+    && path !== "_graph/index.md");
   const required = new Set<string>(requiredPaths);
   const ordered = [
     ...requiredPaths.map((path) => byPath.get(path)!),
@@ -332,6 +412,33 @@ function assembleArtifacts(input: {
       .filter((artifact) => !required.has(artifact.logicalPath))
   ];
   return ordered.map((artifact, ordinal) => ({ ...artifact, ordinal }));
+}
+
+function emptyExtensionNavigation(): StorageVnextExtensionNavigationInput {
+  return {
+    byFileLogicalPaths: [],
+    existingMarkdownPaths: [],
+    previousLeaves: new Map(),
+    sources: emptyExtensionSources(),
+    affectedDirectoryPaths: [],
+    previousPresentDirectoryPaths: [],
+    completeProfile: false,
+    maxEntries: 200,
+    maxLeafBytes: 65_536,
+    maxShardBytes: 1_048_576
+  };
+}
+
+async function* emptyExtensionSources(): AsyncIterable<readonly []> {
+  yield [];
+}
+
+async function* mergeExtensionSources(
+  existing: AsyncIterable<readonly StorageVnextExtensionNavigationSource[]>,
+  affected: readonly StorageVnextExtensionNavigationSource[]
+): AsyncIterable<readonly StorageVnextExtensionNavigationSource[]> {
+  for await (const page of existing) yield page;
+  if (affected.length > 0) yield affected;
 }
 
 function directorySummaries(
@@ -354,6 +461,136 @@ function directorySummaries(
     }));
 }
 
+async function listInheritedExtensionDirectories(
+  input: Parameters<typeof createStorageVnextPublicationArtifactAssembler>[0],
+  request: PublicationIdentity
+): Promise<StorageVnextDirectorySummary[]> {
+  const candidate = await input.releases.getLiveCandidate(request.knowledgeBaseId);
+  if (!candidate || candidate.publicId !== request.candidatePublicId) {
+    throw artifactAssemblerError("candidate_scope_conflict");
+  }
+  const output: StorageVnextDirectorySummary[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await input.releases.listDirectorySummaries({
+      knowledgeBaseId: request.knowledgeBaseId,
+      releaseRootPublicId: candidate.candidateRootPublicId,
+      limit: input.limits.dependencyPageSize,
+      cursor
+    });
+    for (const summary of page.items) {
+      if (
+        summary.logicalPath === "_index"
+        || summary.logicalPath.startsWith("_index/")
+        || summary.logicalPath === "_graph"
+        || summary.logicalPath.startsWith("_graph/")
+      ) output.push(summary);
+    }
+    if (output.length > input.limits.maximumDependencies) {
+      throw artifactAssemblerError("extension_directory_budget_exceeded");
+    }
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return output;
+}
+
+function mergeDirectorySummaries(input: {
+  sourceDirectories: readonly StorageVnextPublicationDirectoryInput[];
+  inheritedExtensionDirectories: readonly StorageVnextDirectorySummary[];
+  projectionShards: readonly EffectiveProjectionShard[];
+  byFileLogicalPaths: readonly string[];
+  existingMarkdownPaths: readonly string[];
+  emittedArtifacts: readonly StorageVnextPublicationArtifact[];
+  deletedLogicalPaths: readonly string[];
+  affectedDirectoryPaths: readonly string[];
+  completeProfile: boolean;
+}): StorageVnextDirectorySummary[] {
+  const inherited = new Map(input.inheritedExtensionDirectories.map((summary) =>
+    [summary.logicalPath, summary]));
+  const markdownPaths = new Set(input.existingMarkdownPaths);
+  for (const artifact of input.emittedArtifacts) {
+    if (artifact.logicalPath.endsWith(".md")) markdownPaths.add(artifact.logicalPath);
+  }
+  for (const logicalPath of input.deletedLogicalPaths) markdownPaths.delete(logicalPath);
+  const affected = new Set(input.affectedDirectoryPaths);
+  const resourcePaths = new Map<string, string[]>();
+  for (const logicalPath of [
+    ...input.projectionShards.map((shard) => shard.logicalPath),
+    ...input.byFileLogicalPaths
+  ]) {
+    const parent = parentPath(logicalPath);
+    const paths = resourcePaths.get(parent) ?? [];
+    paths.push(logicalPath);
+    resourcePaths.set(parent, paths);
+  }
+
+  const exactDirectories = new Map<string, StorageVnextDirectorySummary>();
+  for (const directoryPath of STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES) {
+    const resources = resourcePaths.get(directoryPath) ?? [];
+    if (resources.length === 0) continue;
+    const prior = inherited.get(directoryPath);
+    if (!input.completeProfile && !affected.has(directoryPath) && prior) {
+      exactDirectories.set(directoryPath, prior);
+      continue;
+    }
+    const markdown = [...markdownPaths].filter((logicalPath) =>
+      parentPath(logicalPath) === directoryPath);
+    const leaves = markdown.filter((logicalPath) =>
+      logicalPath.slice(directoryPath.length + 1).startsWith("index-")
+      && logicalPath.endsWith(".md"));
+    exactDirectories.set(directoryPath, {
+      directoryPublicId: null,
+      logicalPath: directoryPath,
+      firstLeafPath: leaves.sort(compareUtf8)[0] ?? null,
+      directFileCount: resources.length + markdown.length,
+      descendantFileCount: resources.length + markdown.length,
+      ordinal: 0
+    });
+  }
+
+  const extension = new Map<string, StorageVnextDirectorySummary>(exactDirectories);
+  for (const summary of exactDirectories.values()) {
+    if (!summary.logicalPath.endsWith("/v1")) continue;
+    const familyPath = parentPath(summary.logicalPath);
+    extension.set(familyPath, {
+      directoryPublicId: null,
+      logicalPath: familyPath,
+      firstLeafPath: null,
+      directFileCount: 1,
+      descendantFileCount: 1 + summary.descendantFileCount,
+      ordinal: 0
+    });
+  }
+  for (const rootPath of ["_graph", "_index"] as const) {
+    const children = [...extension.values()].filter((summary) =>
+      parentPath(summary.logicalPath) === rootPath);
+    const directFileCount = rootPath === "_index" ? 2 : 1;
+    extension.set(rootPath, {
+      directoryPublicId: null,
+      logicalPath: rootPath,
+      firstLeafPath: null,
+      directFileCount,
+      descendantFileCount: directFileCount + children.reduce(
+        (count, summary) => count + summary.descendantFileCount,
+        0
+      ),
+      ordinal: 0
+    });
+  }
+
+  return [
+    ...extension.values(),
+    ...directorySummaries(input.sourceDirectories)
+  ]
+    .sort((left, right) => compareUtf8(left.logicalPath, right.logicalPath))
+    .map((summary, ordinal) => ({ ...summary, ordinal }));
+}
+
+function parentPath(logicalPath: string): string {
+  const separator = logicalPath.lastIndexOf("/");
+  return separator < 0 ? "" : logicalPath.slice(0, separator);
+}
+
 function assertRequiredNavigation(rootPaths: readonly string[]): void {
   const actual = new Set(rootPaths);
   if (
@@ -373,7 +610,8 @@ function validateProjection(
     projection.knowledgeBase.id !== request.knowledgeBaseId
     || directoryPaths.size !== projection.directories.length
     || projection.directories.some((directory) =>
-      !plannedDirectoryPaths.has(directory.directoryPath))
+      !plannedDirectoryPaths.has(directory.directoryPath)
+      && !projection.profileUpgrade)
     || (plannedDirectoryPaths.has("pages") && !directoryPaths.has("pages"))
   ) throw artifactAssemblerError("projection_scope_conflict");
 }

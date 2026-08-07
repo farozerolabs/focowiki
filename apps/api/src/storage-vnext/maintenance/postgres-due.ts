@@ -24,11 +24,17 @@ export function createPostgresStorageVnextAutomaticMaintenanceDue(
           FROM focowiki.knowledge_bases knowledge_base
           JOIN focowiki.active_snapshots snapshot
             ON snapshot.knowledge_base_id = knowledge_base.public_id
+          JOIN focowiki.release_roots root
+            ON root.knowledge_base_id = snapshot.knowledge_base_id
+           AND root.public_id = snapshot.release_root_public_id
           WHERE knowledge_base.deleted_at IS NULL
-            AND greatest(
-              knowledge_base.updated_at,
-              snapshot.publicly_visible_at
-            ) <= ${input.dueBefore}
+            AND (
+              root.navigation_profile_version < 1
+              OR greatest(
+                knowledge_base.updated_at,
+                snapshot.publicly_visible_at
+              ) <= ${input.dueBefore}
+            )
             AND NOT EXISTS (
               SELECT 1
               FROM focowiki.operation_work_items work

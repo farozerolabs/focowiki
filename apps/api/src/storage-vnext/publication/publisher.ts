@@ -291,7 +291,7 @@ function validateRequest(
   const shardIds = new Set<string>();
   const shardSlots = new Set<string>();
   for (const shard of [...request.internalShards, ...request.reusedInternalShards]) {
-    const slot = shard.logicalKind === "directory_navigation"
+    const slot = isPathScopedNavigationShard(shard.logicalKind)
       ? `${shard.logicalKind}\u0000${shard.firstLogicalPath}\u0000${shard.ordinal}`
       : `${shard.logicalKind}\u0000${shard.ordinal}`;
     if (
@@ -325,6 +325,11 @@ function validateRequest(
     document.knowledgeBaseId !== request.knowledgeBaseId)) {
     throw new Error("Storage vNext publication search document is outside the knowledge base");
   }
+}
+
+function isPathScopedNavigationShard(logicalKind: string): boolean {
+  return logicalKind === "directory_navigation"
+    || logicalKind === "extension_navigation";
 }
 
 function validateLimits(limits: PublicationLimits): void {

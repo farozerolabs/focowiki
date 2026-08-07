@@ -32,12 +32,16 @@ describe("bounded root writer", () => {
   it("keeps machine-readable navigation directed at the finalized catalog", () => {
     const result = renderBoundedRootFile({ ...base, path: "_index/index.md" });
     expect(result.body).toContain("[Projection catalog](/_index/catalog.json)");
+    expect(result.body).toContain("[Knowledge base](/index.md)");
+    expect(result.body).toContain("[Relationship graph](/_graph/index.md)");
   });
 
   it("keeps graph guidance bounded, truthful, and grounded in source files", () => {
     const result = renderBoundedRootFile({ ...base, path: "_graph/index.md" });
     expect(result.body).toContain("[Machine-readable graph catalog](/_index/catalog.json)");
     expect(result.body).toContain("[Browse source-backed files](/pages/index.md)");
+    expect(result.body).toContain("[Knowledge base](/index.md)");
+    expect(result.body).toContain("[Machine-readable indexes](/_index/index.md)");
     expect(result.body).toContain("Use the graph catalog to discover related files");
     expect(result.body).toContain("Relationships are navigation hints");
     expect(result.body).toContain("verify context and evidence");

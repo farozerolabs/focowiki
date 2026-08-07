@@ -64,7 +64,7 @@ export function createStorageVnextMaintenanceStatusMapper() {
       };
     },
 
-    mapIdle(): StorageVnextMaintenanceStatus {
+    mapIdle(maintenanceRequired = false): StorageVnextMaintenanceStatus {
       return {
         requestId: null,
         state: "idle",
@@ -76,7 +76,7 @@ export function createStorageVnextMaintenanceStatusMapper() {
         retryCount: 0,
         lastProgressAt: null,
         lastCompletedAt: null,
-        maintenanceRequired: false,
+        maintenanceRequired,
         safeErrorCode: null,
         safeErrorMessage: null,
         throughputPerSecond: 0,

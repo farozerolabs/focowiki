@@ -9,6 +9,15 @@ import {
 describe("storage vNext OpenAPI search presentation", () => {
   it("rejects non-public generated paths before storage lookup", () => {
     expect(() => assertOpenApiPublicFilePath("pages/guide.md")).not.toThrow();
+    expect(() => assertOpenApiPublicFilePath(
+      "_index/search/v1/index-extension-leaf-a.md"
+    )).not.toThrow();
+    expect(() => assertOpenApiPublicFilePath(
+      "_graph/by-file/index-extension-leaf-b.md"
+    )).not.toThrow();
+    expect(() => assertOpenApiPublicFilePath(
+      "_index/search/v1/index-map-000001.md"
+    )).toThrow();
     expect(() => assertOpenApiPublicFilePath("sources/private.md")).toThrow(
       "This knowledge-base file path is not supported."
     );

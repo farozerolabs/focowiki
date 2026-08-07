@@ -58,11 +58,15 @@ describe("source path policy", () => {
     "root/%2fetc/file.md",
     "root/file.txt",
     "root/index.md",
-    "root/index-map-000001.md",
     "root/INDEX-000001.md",
     "root/log-1.md"
   ])("rejects unsafe or generated-reserved source path %s", (input) => {
     expect(() => normalizeSourceRelativePath(input)).toThrow(SourcePathValidationError);
+  });
+
+  it("treats the obsolete index-map basename as an ordinary source filename", () => {
+    expect(normalizeSourceRelativePath("root/index-map-000001.md").generatedPath)
+      .toBe("pages/root/index-map-000001.md");
   });
 
   it.each([

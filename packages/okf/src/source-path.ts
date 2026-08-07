@@ -3,7 +3,7 @@ const MAX_SEGMENT_LENGTH = 240;
 const MARKDOWN_EXTENSION = ".md";
 const GENERATED_ROOT_FILES = new Set(["index.md", "log.md", "schema.md"]);
 const GENERATED_DIRECTORY_ROOTS = new Set(["pages", "_index", "_graph", "_segments"]);
-const RESERVED_SOURCE_NAME = /^(?:index(?:-map)?|log)(?:-\d+)?\.md$/iu;
+const RESERVED_SOURCE_NAME = /^(?:index|log)(?:-\d+)?\.md$/iu;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u;
 const WINDOWS_DRIVE_PREFIX = /^[a-z]:[\\/]/iu;
 

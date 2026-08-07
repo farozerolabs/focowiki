@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -58,11 +58,7 @@ describeOwnedDatabase("storage vNext run-owned clean bootstrap integration", () 
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    const bootstrap = readFileSync(
-      resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-      "utf8"
-    );
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
   }, 120_000);
 
   afterAll(async () => {
@@ -141,7 +137,7 @@ describeOwnedDatabase("storage vNext run-owned clean bootstrap integration", () 
       WHERE singleton = true
     `;
 
-    expect(rows).toEqual([{ generation: "storage-vnext-v1" }]);
+    expect(rows).toEqual([{ generation: "storage-vnext-v2" }]);
   });
 });
 

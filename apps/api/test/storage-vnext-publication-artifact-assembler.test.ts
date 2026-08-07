@@ -104,6 +104,18 @@ describe("storage vNext publication artifact assembler", () => {
         logicalPath: "_index/search/v1/0001.json",
         recordCount: 1
       }],
+      extensionNavigation: {
+        byFileLogicalPaths: [],
+        existingMarkdownPaths: [],
+        previousLeaves: new Map(),
+        sources: projectionBatches([]),
+        affectedDirectoryPaths: ["_index/search/v1", "_graph/by-file"],
+        previousPresentDirectoryPaths: [],
+        completeProfile: false,
+        maxEntries: 200,
+        maxLeafBytes: 65_536,
+        maxShardBytes: 1_048_576
+      },
       internalShards: [],
       reusedInternalShards: [],
       batches: projectionBatches([{
@@ -114,7 +126,13 @@ describe("storage vNext publication artifact assembler", () => {
           endpointNodes: [node],
           sourceBody: "# Setup\n\nKeep the released source body."
         }],
-        machineArtifacts: [],
+        machineArtifacts: [{
+          logicalPath: "_graph/by-file/source-setup.json",
+          kind: "graph" as const,
+          sourceFilePublicId: null,
+          ordinal: 0,
+          bytes: Buffer.from("{}\n", "utf8")
+        }],
         projectionShards: [],
         deletedLogicalPaths: ["pages/old.md"]
       }])
@@ -128,7 +146,15 @@ describe("storage vNext publication artifact assembler", () => {
       generatedByteCount: 1_024
     }));
     const assembler = createStorageVnextPublicationArtifactAssembler({
-      releases: { listCandidateDependencies, replaceCandidateSummaries },
+      releases: {
+        getLiveCandidate: vi.fn(async () => ({
+          publicId: "candidate-one",
+          candidateRootPublicId: "root-candidate-one"
+        } as never)),
+        listCandidateDependencies,
+        listDirectorySummaries: vi.fn(async () => ({ items: [], nextCursor: null })),
+        replaceCandidateSummaries
+      },
       projection: { load, summarizeCandidate },
       publisher: { publish },
       schemaChecksum: checksumA,
@@ -147,7 +173,7 @@ describe("storage vNext publication artifact assembler", () => {
       operationPublicId: "operation-one",
       searchProjectionPublicId: "candidate-one",
       signal
-    })).resolves.toEqual({ artifactCount: 11 });
+    })).resolves.toEqual({ artifactCount: 17 });
 
     expect(listCandidateDependencies).toHaveBeenCalledTimes(2);
     expect(load).toHaveBeenCalledWith(expect.objectContaining({
@@ -174,12 +200,22 @@ describe("storage vNext publication artifact assembler", () => {
         "pages/index.md",
         "schema.md",
         "log.md",
-        "_index/index.md",
-        "_graph/index.md",
         "pages/index-000001.md",
         "pages/guides/index.md",
         "pages/guides/index-000001.md",
+        "_graph/by-file/source-setup.json",
         "pages/guides/setup.md",
+        "_index/index.md",
+        "_graph/index.md",
+        "_graph/by-file/index.md",
+        expect.stringMatching(
+          /^_graph\/by-file\/index-extension-leaf-[a-f0-9-]+\.md$/u
+        ),
+        "_index/search/index.md",
+        "_index/search/v1/index.md",
+        expect.stringMatching(
+          /^_index\/search\/v1\/index-extension-leaf-[a-f0-9-]+\.md$/u
+        ),
         "_index/catalog.json"
       ]);
     expect(text(artifacts[0]!)).toBe(renderBoundedRootFile({
@@ -213,17 +249,64 @@ describe("storage vNext publication artifact assembler", () => {
     expect(text(artifacts.find((artifact) =>
       artifact.logicalPath === "pages/guides/setup.md")!))
       .toContain("Keep the released source body.");
+    expect(text(artifacts.find((artifact) =>
+      artifact.logicalPath.startsWith("_graph/by-file/index-extension-leaf-"))!))
+      .toContain("[Source](/pages/guides/setup.md)");
     expect(summarizeCandidate).toHaveBeenCalledAfter(publish);
     expect(replaceCandidateSummaries).toHaveBeenCalledWith({
       candidatePublicId: "candidate-one",
       directories: [
         {
           directoryPublicId: null,
+          logicalPath: "_graph",
+          firstLeafPath: null,
+          directFileCount: 1,
+          descendantFileCount: 4,
+          ordinal: 0
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "_graph/by-file",
+          firstLeafPath: expect.stringMatching(
+            /^_graph\/by-file\/index-extension-leaf-[a-f0-9-]+\.md$/u
+          ),
+          directFileCount: 3,
+          descendantFileCount: 3,
+          ordinal: 1
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "_index",
+          firstLeafPath: null,
+          directFileCount: 2,
+          descendantFileCount: 6,
+          ordinal: 2
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "_index/search",
+          firstLeafPath: null,
+          directFileCount: 1,
+          descendantFileCount: 4,
+          ordinal: 3
+        },
+        {
+          directoryPublicId: null,
+          logicalPath: "_index/search/v1",
+          firstLeafPath: expect.stringMatching(
+            /^_index\/search\/v1\/index-extension-leaf-[a-f0-9-]+\.md$/u
+          ),
+          directFileCount: 3,
+          descendantFileCount: 3,
+          ordinal: 4
+        },
+        {
+          directoryPublicId: null,
           logicalPath: "pages",
           firstLeafPath: "pages/index-000001.md",
           directFileCount: 0,
           descendantFileCount: 1,
-          ordinal: 0
+          ordinal: 5
         },
         {
           directoryPublicId: "directory-guides",
@@ -231,7 +314,7 @@ describe("storage vNext publication artifact assembler", () => {
           firstLeafPath: "pages/guides/index-000001.md",
           directFileCount: 1,
           descendantFileCount: 1,
-          ordinal: 1
+          ordinal: 6
         }
       ],
       knowledgeBase: {
@@ -248,10 +331,12 @@ describe("storage vNext publication artifact assembler", () => {
   it("rejects a projection that changes the required root set", async () => {
     const assembler = createStorageVnextPublicationArtifactAssembler({
       releases: {
+        getLiveCandidate: vi.fn(),
         listCandidateDependencies: vi.fn(async () => ({
           items: [{ kind: "index" as const, publicId: "index.md", reasonCode: "required_navigation" }],
           nextCursor: null
         })),
+        listDirectorySummaries: vi.fn(),
         replaceCandidateSummaries: vi.fn()
       },
       projection: {

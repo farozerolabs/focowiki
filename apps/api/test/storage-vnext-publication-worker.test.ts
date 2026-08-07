@@ -436,6 +436,7 @@ function createFixture() {
         releaseRootPublicId: "root-publication",
         searchProjectionPublicId: "search-publication",
         manifestChecksum: "b".repeat(64),
+        navigationProfileVersion: 1,
         activatedByOperationPublicId: work.publicId,
         publiclyVisibleAt: "2026-08-02T00:00:00.000Z"
       },

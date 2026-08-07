@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import postgres from "postgres";
@@ -17,6 +16,8 @@ import { createPostgresStorageVnextReleaseRepository } from
   "../src/storage-vnext/release/postgres-repository.js";
 import { createPostgresStorageVnextWorkflowRepository } from
   "../src/storage-vnext/workflow/postgres-repository.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 type Scope = {
   knowledgeBaseId: string;
@@ -58,10 +59,6 @@ const hasOwnedTarget = Boolean(
   databaseUrl && runOwner && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(resolve(
-  import.meta.dirname,
-  "../migrations/001_storage_vnext.sql"
-), "utf8");
 let factory: PurgeRepositoryFactory | undefined;
 
 beforeAll(async () => {
@@ -92,7 +89,7 @@ describeOwnedDatabase("storage vNext deletion purge PostgreSQL repository", () =
     if (!factory) throw new Error("Deletion purge PostgreSQL repository is unavailable");
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
     repository = factory(sql as unknown as DatabaseClient);
     await sql`
       INSERT INTO focowiki.runtime_setting_revisions

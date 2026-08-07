@@ -156,6 +156,8 @@ export function renderBoundedRootFile(input: {
       "",
       `- [Machine-readable graph catalog](${toBundleMarkdownHref(GENERATED_GRAPH_RESOURCES.catalogPath)})`,
       `- [Browse source-backed files](${toBundleMarkdownHref("pages/index.md")})`,
+      `- [Knowledge base](${toBundleMarkdownHref("index.md")})`,
+      `- [Machine-readable indexes](${toBundleMarkdownHref("_index/index.md")})`,
       "",
       "Use the graph catalog to discover related files.",
       "Relationships are navigation hints; open the linked source Markdown files to verify context and evidence.",
@@ -167,6 +169,8 @@ export function renderBoundedRootFile(input: {
     "",
     `- [Projection catalog](${toBundleMarkdownHref("_index/catalog.json")})`,
     `- [Browse source-backed files](${toBundleMarkdownHref("pages/index.md")})`,
+    `- [Knowledge base](${toBundleMarkdownHref("index.md")})`,
+    `- [Relationship graph](${toBundleMarkdownHref("_graph/index.md")})`,
     ""
   ]);
 }

@@ -1,9 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
-  deriveStorageVnextReleaseDependencyClosure
+  deriveStorageVnextReleaseDependencyClosure,
+  includeStorageVnextNavigationProfileUpgrade
 } from "../src/storage-vnext/release/dependency-closure.js";
 
 describe("storage vNext bounded release dependency closure", () => {
+  it("adds one bounded upgrade scope only for a legacy base profile", () => {
+    const dependencies = [{
+      kind: "index" as const,
+      publicId: "index.md",
+      reasonCode: "required_navigation"
+    }];
+    expect(includeStorageVnextNavigationProfileUpgrade({
+      knowledgeBaseId: "kb-dependency",
+      navigationProfileVersion: 0,
+      dependencies
+    })).toEqual(expect.arrayContaining([{
+      kind: "scope",
+      publicId: "kb-dependency",
+      reasonCode: "navigation_profile_upgrade"
+    }]));
+    expect(includeStorageVnextNavigationProfileUpgrade({
+      knowledgeBaseId: "kb-dependency",
+      navigationProfileVersion: 1,
+      dependencies
+    })).toBe(dependencies);
+  });
+
   it("derives upload paths, ancestors, search, graph, and frozen root resources", () => {
     const closure = deriveStorageVnextReleaseDependencyClosure({
       knowledgeBaseId: "kb-dependency",

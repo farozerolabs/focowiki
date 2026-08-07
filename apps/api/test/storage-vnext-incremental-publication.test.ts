@@ -11,8 +11,13 @@ import {
   createStorageVnextGraphSeedDocument
 } from "../src/storage-vnext/search/documents.js";
 import {
-  createStorageVnextPublicationCandidateValidator
+  createStorageVnextPublicationCandidateValidator,
+  validateStorageVnextProjectionCatalogParity
 } from "../src/storage-vnext/publication/candidate-validator.js";
+import { createStorageVnextExtensionNavigationShards } from
+  "../src/storage-vnext/publication/extension-navigation-state.js";
+import { STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES } from
+  "../src/storage-vnext/publication/profile.js";
 import {
   packStorageVnextInternalShards
 } from "../src/storage-vnext/publication/internal-shards.js";
@@ -563,6 +568,24 @@ describe("storage vNext incremental publication", () => {
   });
 
   it("validates an effective candidate through bounded pages without loading a full catalog", async () => {
+    const extensionStateShards = STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES
+      .flatMap((directoryPath) => createStorageVnextExtensionNavigationShards({
+        directoryPath,
+        leaves: [],
+        maximumBytes: 65_536
+      }))
+      .map((shard, index) => ({
+        publicId: shard.publicId,
+        logicalKind: shard.logicalKind,
+        firstLogicalPath: shard.firstLogicalPath,
+        lastLogicalPath: shard.lastLogicalPath,
+        recordCount: shard.recordCount,
+        byteCount: shard.bytes.byteLength,
+        checksum: shard.publicId.slice(-64),
+        objectId: `object-extension-state-${index}`,
+        ordinal: shard.ordinal,
+        bytes: shard.bytes
+      }));
     const entries = [
       releaseEntry("index.md", "index", 0),
       releaseEntry("pages/index.md", "directory", 1),
@@ -587,12 +610,36 @@ describe("storage vNext incremental publication", () => {
     const verifyObject = vi.fn().mockResolvedValue(true);
     let activeObjectReads = 0;
     let peakObjectReads = 0;
-    const readObjectText = vi.fn(async () => {
+    const navigationBodies = new Map([
+      ["object-0", "[Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-1", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-4", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-5", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-6", `${JSON.stringify({
+        formatVersion: 1,
+        knowledgeBaseId: "kb-a",
+        generationId: "candidate-a",
+        projections: {
+          search: { shards: [] },
+          links: { shards: [] },
+          manifest: { shards: [] },
+          tree: { shards: [] },
+          graphNodes: { shards: [] },
+          graphEdges: { shards: [] },
+          relatedFiles: { pathTemplate: "_graph/by-file/{fileId}.json" }
+        }
+      })}\n`],
+      ...extensionStateShards.map((shard) => [
+        shard.objectId,
+        Buffer.from(shard.bytes).toString("utf8")
+      ] as const)
+    ]);
+    const readObjectText = vi.fn(async (request: { objectId: string }) => {
       activeObjectReads += 1;
       peakObjectReads = Math.max(peakObjectReads, activeObjectReads);
       await new Promise((resolve) => setTimeout(resolve, 1));
       activeObjectReads -= 1;
-      return "# Generated file";
+      return navigationBodies.get(request.objectId) ?? "# Generated file";
     });
     const validator = createStorageVnextPublicationCandidateValidator({
       releases: {
@@ -614,8 +661,8 @@ describe("storage vNext incremental publication", () => {
           items: [dependency("link", "edge-a", "graph_edge")],
           nextCursor: null
         }),
-        listCandidateShards: vi.fn().mockResolvedValue({
-          items: [{
+        listCandidateShards: vi.fn(async ({ limit, cursor }) => {
+          const shards = [{
             publicId: "shard-a",
             logicalKind: "tree",
             firstLogicalPath: "pages/guides/setup.md",
@@ -625,8 +672,15 @@ describe("storage vNext incremental publication", () => {
             checksum: checksumB,
             objectId: "object-shard-a",
             ordinal: 0
-          }],
-          nextCursor: null
+          }, ...extensionStateShards.map(({ bytes: _bytes, ...shard }) => shard)];
+          const start = cursor ? Number(cursor) : 0;
+          const items = shards.slice(start, start + limit);
+          return {
+            items,
+            nextCursor: start + items.length < shards.length
+              ? String(start + items.length)
+              : null
+          };
         }),
         getKnowledgeBaseSummary: vi.fn().mockResolvedValue({
           sourceFileCount: 1,
@@ -698,9 +752,56 @@ describe("storage vNext incremental publication", () => {
       manifestChecksum: result.manifestChecksum
     });
     expect(countCandidateOwnedObjects).toHaveBeenCalledWith("candidate-a");
-    expect(readObjectText).toHaveBeenCalledTimes(7);
-    expect(verifyObject).toHaveBeenCalledTimes(2);
+    expect(readObjectText).toHaveBeenCalledTimes(14);
+    expect(verifyObject).toHaveBeenCalledTimes(9);
     expect(peakObjectReads).toBe(3);
+  });
+
+  it("requires exact typed projection catalog parity and the bounded by-file template", () => {
+    const catalog = {
+      formatVersion: 1,
+      knowledgeBaseId: "kb-a",
+      generationId: "candidate-a",
+      projections: {
+        search: { shards: [{ path: "_index/search/v1/0001.json", recordCount: 2 }] },
+        links: { shards: [] },
+        manifest: { shards: [] },
+        tree: { shards: [] },
+        graphNodes: { shards: [] },
+        graphEdges: { shards: [] },
+        relatedFiles: { pathTemplate: "_graph/by-file/{fileId}.json" }
+      }
+    };
+    const input = {
+      body: `${JSON.stringify(catalog)}\n`,
+      knowledgeBaseId: "kb-a",
+      generationId: "candidate-a",
+      extensionResources: new Set([
+        "_index/search/v1/0001.json",
+        "_graph/by-file/source-a.json"
+      ])
+    };
+    expect(() => validateStorageVnextProjectionCatalogParity(input)).not.toThrow();
+    expect(() => validateStorageVnextProjectionCatalogParity({
+      ...input,
+      body: JSON.stringify({
+        ...catalog,
+        projections: {
+          ...catalog.projections,
+          search: { shards: [] }
+        }
+      })
+    })).toThrow(/parity/iu);
+    expect(() => validateStorageVnextProjectionCatalogParity({
+      ...input,
+      body: JSON.stringify({
+        ...catalog,
+        projections: {
+          ...catalog.projections,
+          relatedFiles: { pathTemplate: "_graph/by-file/{objectKey}.json" }
+        }
+      })
+    })).toThrow(/template/iu);
   });
 
   it("resolves generated-object validation through verified registrations and bytes", async () => {
@@ -738,6 +839,41 @@ describe("storage vNext incremental publication", () => {
     })).resolves.toBe("# Verified\n");
     expect(verify).toHaveBeenCalledWith({ descriptor });
     expect(readVerified).toHaveBeenCalledWith({ descriptor, maximumBytes: 1_024 });
+  });
+
+  it("reads verified generated JSON for catalog and navigation validation", async () => {
+    const bytes = Buffer.from('{"version":1}\n', "utf8");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const descriptor = {
+      objectId: `generated-sha256:okf-generated-json-v1:${checksum}`,
+      storageKey: `run-owned/generated/${checksum}.json`,
+      checksum,
+      byteCount: bytes.byteLength,
+      contentType: "application/json; charset=utf-8",
+      objectFormat: "okf-generated-json-v1" as const
+    };
+    const validator = createStorageVnextPublicationObjectValidator({
+      registrations: {
+        getRegistration: vi.fn().mockResolvedValue({
+          ...descriptor,
+          format: descriptor.objectFormat,
+          state: "verified",
+          writeAttemptPublicId: "attempt-json",
+          verifiedAt: "2026-08-01T00:00:00.000Z",
+          zeroOwnerSince: null,
+          createdAt: "2026-08-01T00:00:00.000Z"
+        })
+      },
+      bodyStore: {
+        verify: vi.fn().mockResolvedValue(undefined),
+        readVerified: vi.fn().mockResolvedValue(bytes)
+      }
+    });
+
+    await expect(validator.readText({
+      ...descriptor,
+      maximumBytes: 1_024
+    })).resolves.toBe('{"version":1}\n');
   });
 });
 

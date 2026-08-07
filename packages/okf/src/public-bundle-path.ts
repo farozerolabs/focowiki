@@ -8,13 +8,32 @@ const INDEX_ROOT_FILE = new Set([
 const GRAPH_ROOT_FILE = new Set([
   "_graph/index.md"
 ]);
+const EXTENSION_STABLE_LEAF_ID = "(?!(?:map)-)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,238}[A-Za-z0-9])?";
+const INDEX_NAVIGATION_MARKDOWN = new RegExp(
+  `^_index/(?:manifest|search|links|tree)/(?:index\\.md|v1/(?:index\\.md|index-${EXTENSION_STABLE_LEAF_ID}\\.md))$`,
+  "u"
+);
+const GRAPH_NAVIGATION_MARKDOWN = new RegExp(
+  `^_graph/(?:graph_node|graph_edge)/(?:index\\.md|v1/(?:index\\.md|index-${EXTENSION_STABLE_LEAF_ID}\\.md))$`,
+  "u"
+);
+const BY_FILE_NAVIGATION_MARKDOWN = new RegExp(
+  `^_graph/by-file/(?:index\\.md|index-${EXTENSION_STABLE_LEAF_ID}\\.md)$`,
+  "u"
+);
 const PROJECTION_SEGMENT_FILE = /^_segments\/(?:(?:search|links|manifest|tree|graph_node|graph_edge|related_files)(?:\/[a-z0-9_-]+)+\/(?:base|compacted|delta|tombstone)-\d{6}-[a-f0-9]{16}\.json|compacted\/projection-segment-[a-z0-9-]+\.json)$/u;
 
 export function isAllowedPublicBundleFilePath(path: string): boolean {
   if (!isCanonicalGeneratedPath(path)) return false;
   if (ROOT_MARKDOWN_FILE.test(path)) return true;
   if (path.startsWith("pages/") && path.endsWith(".md")) return true;
-  if (INDEX_ROOT_FILE.has(path) || GRAPH_ROOT_FILE.has(path)) return true;
+  if (
+    INDEX_ROOT_FILE.has(path)
+    || GRAPH_ROOT_FILE.has(path)
+    || INDEX_NAVIGATION_MARKDOWN.test(path)
+    || GRAPH_NAVIGATION_MARKDOWN.test(path)
+    || BY_FILE_NAVIGATION_MARKDOWN.test(path)
+  ) return true;
   if (PROJECTION_SEGMENT_FILE.test(path)) return true;
   return (
     /^_index\/(?:manifest|search|links|tree)\/v1\/[0-9]{4}\.json$/u.test(path) ||
