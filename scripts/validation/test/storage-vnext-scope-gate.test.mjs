@@ -112,6 +112,43 @@ test("requires complete task and approval metadata for a frozen-surface exceptio
   assert.equal(classifyStorageVnextPath(path, complete).policy, "allow");
 });
 
+test("allows only the approved progressive-navigation frozen surfaces", () => {
+  const approvedPaths = [
+    "apps/api/src/publication/directory-navigation-writer.ts",
+    "apps/api/src/publication/ordered-directory-leaves.ts",
+    "docs/guide/file-cleaning-ingestion.md",
+    "docs/guide/open-knowledge-format.md",
+    "docs/zh-CN/guide/file-cleaning-ingestion.md",
+    "docs/zh-CN/guide/open-knowledge-format.md",
+    "packages/okf/src/concept-descriptors.ts",
+    "packages/okf/src/concept-validation.ts",
+    "packages/okf/src/public-bundle-path.ts",
+    "packages/okf/src/source-path.ts"
+  ];
+
+  for (const path of approvedPaths) {
+    assert.deepEqual(
+      classifyStorageVnextPath(path),
+      {
+        policy: "allow",
+        category: "explicit-task-exception",
+        exception: STORAGE_VNEXT_ALLOWLIST.explicitExceptions.find(
+          (exception) => exception.path === path
+        )
+      }
+    );
+  }
+
+  assert.equal(
+    classifyStorageVnextPath("docs/guide/unrelated.md").policy,
+    "deny"
+  );
+  assert.equal(
+    classifyStorageVnextPath("packages/okf/src/unrelated.ts").policy,
+    "deny"
+  );
+});
+
 test("allows an existing settings field-list edit", () => {
   const before = [
     "const workerNumberFields = [",
