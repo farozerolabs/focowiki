@@ -87,10 +87,10 @@ describeOwnedDatabase("storage vNext cross-scope database constraints", () => {
     `;
     await sql`
       INSERT INTO focowiki.search_projections
-        (public_id, knowledge_base_id, projection_role, provider_index_uid,
+        (public_id, knowledge_base_id, projection_role, provider_kind, provider_index_uid,
          schema_checksum_sha256, settings_checksum_sha256,
          document_checksum_sha256, revision, document_count, state)
-      VALUES ('search-b', 'kb-b', 'active', 'owned-search-b',
+      VALUES ('search-b', 'kb-b', 'active', 'meilisearch', 'owned-search-b',
         ${"b".repeat(64)}, ${"c".repeat(64)}, ${"d".repeat(64)}, 1, 0, 'ready')
     `;
     await sql`
