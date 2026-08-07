@@ -105,6 +105,34 @@ describe("storage vNext deletion worker", () => {
     expect(current.workflow.releaseForRetry).not.toHaveBeenCalled();
   });
 
+  it("backs off provider-required continuation without consuming failure attempts", async () => {
+    const current = fixture({ attempt: 3 });
+    current.purge.runAttempt.mockResolvedValueOnce({
+      status: "retry",
+      receipts: [{
+        target: { resourceKind: "unified_search_scope" },
+        status: "retry",
+        reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+        checkpoint: { requiredSearchProviderKind: "opensearch" }
+      }]
+    });
+    const worker = createWorker(current);
+
+    await expect(worker.runBatch({
+      leaseExpiresAt: "2026-08-01T07:05:00.000Z"
+    })).resolves.toMatchObject([{
+      outcome: "retry",
+      reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED"
+    }]);
+    expect(current.retryDelayMilliseconds).toHaveBeenCalledWith(3);
+    expect(current.workflow.releaseForContinuation).toHaveBeenCalledWith({
+      publicId: "operation-delete-worker",
+      owner: "deletion-worker-a",
+      nextAttemptAt: "2026-08-01T07:00:02.000Z"
+    });
+    expect(current.workflow.complete).not.toHaveBeenCalled();
+  });
+
   it("prepares and checkpoints the deletion release before physical purge", async () => {
     const current = fixture();
     current.prepare.mockResolvedValueOnce({
@@ -252,7 +280,9 @@ describe("storage vNext deletion worker", () => {
         targetKind: "knowledge_base",
         targetPublicId: "kb-delete-worker",
         normalizedPath: null,
+        activeSearchProviderKind: "meilisearch",
         activeSearchProviderIndexUid: "unified-worker-active",
+        candidateSearchProviderKind: null,
         candidateSearchProviderIndexUid: null,
         cursor: null
       }
@@ -293,7 +323,9 @@ function fixture(options: { attempt?: number } = {}) {
       targetKind: "source_file",
       targetPublicId: "source-worker",
       normalizedPath: null,
+      activeSearchProviderKind: "meilisearch",
       activeSearchProviderIndexUid: "unified-worker-active",
+      candidateSearchProviderKind: null,
       candidateSearchProviderIndexUid: null,
       cursor: null
     },

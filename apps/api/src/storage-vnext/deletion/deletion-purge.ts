@@ -3,6 +3,10 @@ import type { StorageVnextTerminalContext } from
 import { createStorageVnextDeletionCleanupCoordinator } from
   "./deletion-cleanup.js";
 import type { StorageVnextDeletionKind } from "./ports.js";
+import {
+  isSearchProviderKind,
+  type SearchProviderKind
+} from "../../application/ports/search-provider-runtime.js";
 
 export type StorageVnextDeletionPurgeScopePage = {
   sourceFilePublicIds: readonly string[];
@@ -57,14 +61,21 @@ type DeletionPurgeInput = {
     deleteSourceScope(input: {
       knowledgeBaseId: string;
       operationPublicId: string;
+      activeProviderKind: SearchProviderKind | null;
       activeProviderIndexUid: string | null;
+      candidateProviderKind: SearchProviderKind | null;
       candidateProviderIndexUid: string | null;
       sourceFilePublicIds: readonly string[];
-    }): Promise<unknown>;
+    }): Promise<{
+      processedProviderKind: SearchProviderKind;
+      remainingProviderKind: SearchProviderKind | null;
+    }>;
     deleteKnowledgeBaseScope(input: {
       knowledgeBaseId: string;
       operationPublicId: string;
+      activeProviderKind: SearchProviderKind | null;
       activeProviderIndexUid: string | null;
+      candidateProviderKind: SearchProviderKind | null;
       candidateProviderIndexUid: string | null;
       finishedBefore: string;
       taskFrom: number | null;
@@ -72,6 +83,8 @@ type DeletionPurgeInput = {
       deletedIndexes: number;
       deletedTasks: number;
       nextTaskFrom: number | null;
+      processedProviderKind: SearchProviderKind;
+      remainingProviderKind: SearchProviderKind | null;
     }>;
   };
   postgres: StorageVnextDeletionPurgePostgresPort;
@@ -108,7 +121,9 @@ export function createStorageVnextDeletionPurgeCoordinator(
             const result = await input.search.deleteKnowledgeBaseScope({
               knowledgeBaseId: context.knowledgeBaseId,
               operationPublicId: context.workPublicId,
+              activeProviderKind: state.activeProviderKind,
               activeProviderIndexUid: state.activeProviderIndexUid,
+              candidateProviderKind: state.candidateProviderKind,
               candidateProviderIndexUid: state.candidateProviderIndexUid,
               finishedBefore: state.finishedBefore,
               taskFrom: state.taskFrom
@@ -120,16 +135,22 @@ export function createStorageVnextDeletionPurgeCoordinator(
                 checkpoint: { taskFrom: result.nextTaskFrom }
               };
             }
+            const continuation = providerContinuation(result, state);
+            if (continuation) return continuation;
           } else {
             const page = await requirePage();
             if (page.sourceFilePublicIds.length > 0) {
-              await input.search.deleteSourceScope({
+              const result = await input.search.deleteSourceScope({
                 knowledgeBaseId: context.knowledgeBaseId,
                 operationPublicId: context.workPublicId,
+                activeProviderKind: state.activeProviderKind,
                 activeProviderIndexUid: state.activeProviderIndexUid,
+                candidateProviderKind: state.candidateProviderKind,
                 candidateProviderIndexUid: state.candidateProviderIndexUid,
                 sourceFilePublicIds: page.sourceFilePublicIds
               });
+              const continuation = providerContinuation(result, state);
+              if (continuation) return continuation;
             }
           }
           return completed();
@@ -277,12 +298,46 @@ function readState(context: StorageVnextTerminalContext) {
     targetKind,
     targetPublicId: requiredString(value.targetPublicId),
     normalizedPath: nullableString(value.normalizedPath),
+    activeProviderKind: nullableProviderKind(value.activeSearchProviderKind),
     activeProviderIndexUid: nullableString(value.activeSearchProviderIndexUid),
+    candidateProviderKind: nullableProviderKind(value.candidateSearchProviderKind),
     candidateProviderIndexUid: nullableString(value.candidateSearchProviderIndexUid),
     finishedBefore: optionalString(value.finishedBefore) ?? context.completedAt,
     taskFrom: nullableOrdinal(value.taskFrom),
     cursor: nullableString(value.cursor)
   };
+}
+
+function providerContinuation(
+  result: {
+    processedProviderKind: SearchProviderKind;
+    remainingProviderKind: SearchProviderKind | null;
+  },
+  state: ReturnType<typeof readState>
+) {
+  if (result.remainingProviderKind === null) return null;
+  const checkpoint: Record<string, string | null> = {
+    requiredSearchProviderKind: result.remainingProviderKind
+  };
+  if (state.activeProviderKind === result.processedProviderKind) {
+    checkpoint.activeSearchProviderKind = null;
+    checkpoint.activeSearchProviderIndexUid = null;
+  }
+  if (state.candidateProviderKind === result.processedProviderKind) {
+    checkpoint.candidateSearchProviderKind = null;
+    checkpoint.candidateSearchProviderIndexUid = null;
+  }
+  return {
+    status: "retry" as const,
+    reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+    checkpoint
+  };
+}
+
+function nullableProviderKind(value: unknown): SearchProviderKind | null {
+  if (value === null || value === undefined) return null;
+  if (!isSearchProviderKind(value)) throw purgeError("invalid_input");
+  return value;
 }
 
 function purgeScope(

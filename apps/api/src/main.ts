@@ -3,7 +3,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
-import { loadRuntimeConfig } from "./config.js";
+import { loadRuntimeConfig, type RuntimeConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { assertRuntimeSchemaGeneration } from "./db/migrations.js";
 import { createS3ClientConfig } from "./storage/s3.js";
@@ -11,11 +11,12 @@ import { createAdminApiApp, createPublicOpenApiApp } from "./server.js";
 import { connectApiRedis } from "./redis/api-runtime.js";
 import { createRuntimeLogger } from "./logger.js";
 import {
-  assertNodeJiebaRuntimeAvailable
+  assertNodeJiebaRuntimeAvailable,
+  createNodeJiebaTokenizer
 } from "./infrastructure/tokenization/nodejieba-tokenizer.js";
 import {
-  createDynamicRuntimeMeilisearchSearchTransport
-} from "./infrastructure/meilisearch/runtime-meilisearch-transport.js";
+  createDynamicRuntimeSearchQueryProvider
+} from "./runtime/search-provider.js";
 import { createRuntimeSettingsService } from "./runtime-settings/service.js";
 import { createRuntimeSettingsRepository } from "./runtime-settings/repository.js";
 import { runRuntimeDeploymentHealthcheck } from "./runtime/deployment-healthcheck.js";
@@ -25,6 +26,8 @@ import { createPostgresStorageVnextAuditRepository } from "./storage-vnext/audit
 import { createPostgresStorageVnextActiveSearchProjectionRepository } from "./storage-vnext/search/postgres-active-projection.js";
 import { createPostgresStorageVnextSearchHydration } from "./storage-vnext/search/postgres-hydration.js";
 import { createStorageVnextActiveSearch } from "./storage-vnext/search/active-search.js";
+import { createStorageVnextSearchSettings } from
+  "./storage-vnext/search/settings.js";
 import { createPostgresStorageVnextAdminRead } from "./storage-vnext/api/postgres-admin-read.js";
 import { createPostgresStorageVnextApiKeyRepository } from "./storage-vnext/api/postgres-api-key.js";
 import { createPostgresStorageVnextAdminProcessing } from "./storage-vnext/api/postgres-admin-processing.js";
@@ -81,32 +84,41 @@ async function runApi(): Promise<void> {
   await runtimeSettings.ensureBootstrapped();
   const storageVnextCatalog = createPostgresStorageVnextCatalogRepository(sql);
   const storageVnextReleases = createPostgresStorageVnextReleaseRepository(sql);
+  const storageVnextActiveSearchProjections =
+    createPostgresStorageVnextActiveSearchProjectionRepository(sql);
   const initialRuntimeSettings = await runtimeSettings.getSnapshot();
+  const searchTokenizer = config.search?.provider === "opensearch"
+    ? createNodeJiebaTokenizer()
+    : undefined;
   const completedWorkRetentionMilliseconds =
     initialRuntimeSettings.worker.completedJobRetentionDays * 86_400_000;
   const storageVnextSearch = config.search
     ? createStorageVnextActiveSearch({
-        projections: createPostgresStorageVnextActiveSearchProjectionRepository(sql),
-        transport: createDynamicRuntimeMeilisearchSearchTransport(
-          config.search,
-          async () => {
+        projections: storageVnextActiveSearchProjections,
+        provider: createDynamicRuntimeSearchQueryProvider({
+          config: config.search,
+          indexDefinition: createStorageVnextSearchSettings({
+            searchCutoffMs: initialRuntimeSettings.search.engineSearchCutoffMs
+          }),
+          ...(searchTokenizer ? { tokenizer: searchTokenizer } : {}),
+          async resolveSettings() {
             const snapshot = await runtimeSettings.getSnapshot();
-            return {
-              timeoutMs: snapshot.search.requestTimeoutMs,
-              maxAttempts: snapshot.search.maxAttempts,
-              retryDelayMs: snapshot.search.retryDelayMs
-            };
+            return snapshot.search;
           }
-        ),
+        }),
         hydration: createPostgresStorageVnextSearchHydration(sql),
         maxPageSize: config.pagination.maxPageSize,
         overfetchFactor: initialRuntimeSettings.search.overfetchFactor,
         cropLength: initialRuntimeSettings.search.cropLength,
+        requestTimeoutMs: initialRuntimeSettings.search.requestTimeoutMs,
+        engineSearchCutoffMs: initialRuntimeSettings.search.engineSearchCutoffMs,
         async resolveRuntimeSettings() {
           const snapshot = await runtimeSettings.getSnapshot();
           return {
             overfetchFactor: snapshot.search.overfetchFactor,
-            cropLength: snapshot.search.cropLength
+            cropLength: snapshot.search.cropLength,
+            requestTimeoutMs: snapshot.search.requestTimeoutMs,
+            engineSearchCutoffMs: snapshot.search.engineSearchCutoffMs
           };
         }
       })
@@ -119,9 +131,14 @@ async function runApi(): Promise<void> {
   });
   const storageVnextAudit = createPostgresStorageVnextAuditRepository(sql);
   const storageVnextApiKeys = createPostgresStorageVnextApiKeyRepository(sql);
-  const storageVnextMaintenance = createPostgresStorageVnextMaintenanceRepository(sql);
+  const selectedSearchProviderKind = requireSearchProviderKind(config.search);
+  const storageVnextMaintenance = createPostgresStorageVnextMaintenanceRepository(sql, {
+    selectedSearchProviderKind
+  });
   const storageVnextMaintenanceRequests = createStorageVnextMaintenanceRequestService({
-    repository: storageVnextMaintenance
+    repository: storageVnextMaintenance,
+    searchProviderKind: selectedSearchProviderKind,
+    activeSearchProjections: storageVnextActiveSearchProjections
   });
   const storageVnextAdminProcessing = createPostgresStorageVnextAdminProcessing({
     sql,
@@ -272,10 +289,19 @@ async function runApi(): Promise<void> {
   logger.info("api.public_openapi_started");
 }
 
+function requireSearchProviderKind(
+  search: RuntimeConfig["search"]
+): NonNullable<RuntimeConfig["search"]>["provider"] {
+  if (!search) throw new Error("Search configuration is required");
+  return search.provider;
+}
+
 async function runHealthcheck(): Promise<void> {
   await runRuntimeDeploymentHealthcheck(config, {
     role: "api",
-    assertTokenizer: assertNodeJiebaRuntimeAvailable,
+    ...(config.search?.provider === "opensearch"
+      ? { assertTokenizer: assertNodeJiebaRuntimeAvailable }
+      : {}),
     httpPorts: [config.ports.adminApi, config.ports.publicOpenApi]
   });
 }

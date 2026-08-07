@@ -26,7 +26,7 @@ type GraphSample = SourceSample & {
 const CASE_LIMIT = 10;
 const MAXIMUM_QUERY_BYTES = 4_096;
 const MAXIMUM_CAPTURED_TERMS = 64;
-const HAN_TERM_PATTERN = /\p{Script=Han}+/gu;
+const HAN_TERM_PATTERN = /\p{Script=Han}+(?:[-_]\p{Number}+)?/gu;
 const LATIN_TERM_PATTERN = /[A-Za-z]+/gu;
 
 export function createStorageVnextCandidateQueryMatrix() {
@@ -150,7 +150,8 @@ function contentSample(
     anchoredHanTerm,
     anchoredLatinTerm,
     fallbackTerm,
-    score: (anchoredHanTerm || anchoredLatinTerm ? 8 : 0)
+    score: (hanTerms.some((term) => /\p{Number}/u.test(term)) ? 16 : 0)
+      + (anchoredHanTerm || anchoredLatinTerm ? 8 : 0)
       + (hanTerms.length > 0 ? 4 : 0)
       + (latinTerms.some((term) => term.length >= 5) ? 4 : 0)
       + (hanTerms.length + latinTerms.length >= 2 ? 2 : 0)

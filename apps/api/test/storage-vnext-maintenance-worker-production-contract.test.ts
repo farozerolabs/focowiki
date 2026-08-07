@@ -56,6 +56,9 @@ describe("storage vNext maintenance worker production contract", () => {
     expect(runtime).toContain("candidateObjectCleanupWorker.runBatch");
     expect(runtime).toContain("searchCleanup.cleanupFailedCandidate");
     expect(runtime).toContain("searchCleanup.cleanupOrphanIndexes");
+    expect(runtime).toContain("previousSearchProvider");
+    expect(runtime).toContain("await closeSearchProvider(previousSearchProvider)");
+    expect(runtime).toContain("await closeSearchProvider(searchProvider)");
     expect(runtime).not.toMatch(
       /LexicalRebuild|ProjectionRepairWork|PublicationGeneration|OptimizationMigration/u
     );

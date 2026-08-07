@@ -10,6 +10,8 @@ import {
   type StorageVnextMaintenanceTrigger
 } from "./ports.js";
 import { createStorageVnextMaintenanceStatusMapper } from "./status.js";
+import { isSearchProviderKind, type SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 type ReadSql = DatabaseClient | TransactionSql;
 
@@ -35,6 +37,7 @@ type ForegroundWorkRow = {
 type ClaimRow = {
   knowledge_base_id: string;
   operation_public_id: string;
+  search_provider_kind: SearchProviderKind | null;
   state: "queued" | "running" | "retry";
   attempt_count: number | string;
   lease_owner: string | null;
@@ -44,6 +47,7 @@ type ClaimRow = {
 
 type LiveStatusRow = {
   operation_public_id: string;
+  search_provider_kind: SearchProviderKind | null;
   work_state: "queued" | "running" | "retry";
   attempt_count: number | string;
   safe_error_code: string | null;
@@ -78,8 +82,10 @@ export class StorageVnextMaintenanceRepositoryError extends Error {
 }
 
 export function createPostgresStorageVnextMaintenanceRepository(
-  sql: DatabaseClient
+  sql: DatabaseClient,
+  options: { selectedSearchProviderKind: SearchProviderKind }
 ): StorageVnextMaintenanceRepository {
+  assertSearchProviderKind(options.selectedSearchProviderKind);
   const statusMapper = createStorageVnextMaintenanceStatusMapper();
   return {
     async acceptMaintenance(input) {
@@ -154,10 +160,12 @@ export function createPostgresStorageVnextMaintenanceRepository(
         await transaction`
           INSERT INTO focowiki.operation_work_items (
             operation_public_id, knowledge_base_id, work_kind, state, operation_revision,
-            settings_revision_public_id, attempt_count, next_attempt_at, checkpoint
+            settings_revision_public_id, search_provider_kind, attempt_count,
+            next_attempt_at, checkpoint
           ) VALUES (
             ${input.operationPublicId}, ${input.knowledgeBaseId}, 'maintenance',
-            'queued', 0, ${input.settingsRevisionPublicId}, 0,
+            'queued', 0, ${input.settingsRevisionPublicId},
+            ${input.searchProviderKind}, 0,
             ${input.requestedAt}, ${transaction.json(input.initialCheckpoint)}
           )
         `;
@@ -178,6 +186,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
     async claimOne(input) {
       assertId(input.workerId);
       assertTimestamp(input.leaseExpiresAt);
+      assertSearchProviderKind(input.searchProviderKind);
       return sql.begin(async (transaction) => {
         const rows = await transaction<ClaimRow[]>`
           WITH candidate AS MATERIALIZED (
@@ -187,6 +196,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
               ON operation.knowledge_base_id = work.knowledge_base_id
              AND operation.public_id = work.operation_public_id
             WHERE work.work_kind = 'maintenance'
+              AND work.search_provider_kind = ${input.searchProviderKind}
               AND work.state IN ('queued', 'retry')
               AND (work.next_attempt_at IS NULL OR work.next_attempt_at <= now())
               AND operation.operation_kind = 'maintenance'
@@ -205,6 +215,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
             FROM candidate
             WHERE work.operation_public_id = candidate.operation_public_id
             RETURNING work.knowledge_base_id, work.operation_public_id,
+                      work.search_provider_kind,
                       work.state, work.attempt_count, work.lease_owner,
                       work.safe_error_code, work.checkpoint
           )
@@ -235,6 +246,7 @@ export function createPostgresStorageVnextMaintenanceRepository(
           WHERE operation_public_id = ${input.operationPublicId}
             AND work_kind = 'maintenance' AND state = 'running'
             AND lease_owner = ${input.leaseOwner}
+            AND search_provider_kind = ${input.checkpoint.searchProviderKind}
           RETURNING operation_public_id
         `;
         if (!rows[0]) throw repositoryError("lease_lost");
@@ -403,7 +415,8 @@ export function createPostgresStorageVnextMaintenanceRepository(
       assertId(input.knowledgeBaseId);
       const liveRows = await sql<LiveStatusRow[]>`
         SELECT work.operation_public_id, work.state AS work_state,
-               work.attempt_count, work.safe_error_code, work.checkpoint
+               work.search_provider_kind, work.attempt_count,
+               work.safe_error_code, work.checkpoint
         FROM focowiki.operation_work_items AS work
         JOIN focowiki.operations AS operation
           ON operation.knowledge_base_id = work.knowledge_base_id
@@ -418,26 +431,40 @@ export function createPostgresStorageVnextMaintenanceRepository(
       `;
       const live = liveRows[0];
       if (live) {
+        const checkpoint = validateCheckpoint(live.checkpoint);
+        assertMatchingSearchProvider(
+          live.search_provider_kind,
+          checkpoint.searchProviderKind
+        );
         return statusMapper.mapLive({
           operationPublicId: live.operation_public_id,
           workState: live.work_state,
           retryCount: toSafeInteger(live.attempt_count),
           safeErrorCode: live.safe_error_code,
-          checkpoint: validateCheckpoint(live.checkpoint)
+          checkpoint
         });
       }
-      const profileRows = await sql<Array<{ navigation_profile_version: number | string }>>`
-        SELECT root.navigation_profile_version
+      const profileRows = await sql<Array<{
+        navigation_profile_version: number | string;
+        provider_kind: SearchProviderKind;
+      }>>`
+        SELECT root.navigation_profile_version, search.provider_kind
         FROM focowiki.active_snapshots snapshot
         JOIN focowiki.release_roots root
           ON root.knowledge_base_id = snapshot.knowledge_base_id
          AND root.public_id = snapshot.release_root_public_id
+        JOIN focowiki.search_projections search
+          ON search.knowledge_base_id = snapshot.knowledge_base_id
+         AND search.public_id = snapshot.search_projection_public_id
         WHERE snapshot.knowledge_base_id = ${input.knowledgeBaseId}
         LIMIT 1
       `;
       const profileMaintenanceRequired = Number(
         profileRows[0]?.navigation_profile_version ?? 1
-      ) < 1;
+      ) < 1 || (
+        profileRows[0] !== undefined
+        && profileRows[0].provider_kind !== options.selectedSearchProviderKind
+      );
       const terminalRows = await sql<TerminalStatusRow[]>`
         SELECT result.public_id AS operation_public_id, result.terminal_state,
                result.result_code, result.result_summary, result.completed_at
@@ -510,6 +537,10 @@ function acceptance(
 
 function mapClaim(row: ClaimRow): StorageVnextMaintenanceClaim {
   const checkpoint = validateCheckpoint(row.checkpoint);
+  assertMatchingSearchProvider(
+    row.search_provider_kind,
+    checkpoint.searchProviderKind
+  );
   return {
     knowledgeBaseId: row.knowledge_base_id,
     operationPublicId: row.operation_public_id,
@@ -537,7 +568,9 @@ function validateAcceptanceInput(input: StorageVnextMaintenanceRequest & {
   }
   assertTimestamp(input.requestedAt);
   assertTimestamp(input.expiresAt);
-  validateCheckpoint(input.initialCheckpoint);
+  assertSearchProviderKind(input.searchProviderKind);
+  const checkpoint = validateCheckpoint(input.initialCheckpoint);
+  assertMatchingSearchProvider(input.searchProviderKind, checkpoint.searchProviderKind);
 }
 
 function validateCheckpoint(value: unknown): StorageVnextMaintenanceCheckpoint {
@@ -547,7 +580,9 @@ function validateCheckpoint(value: unknown): StorageVnextMaintenanceCheckpoint {
   const item = value as Partial<StorageVnextMaintenanceCheckpoint>;
   if (
     item.version !== 1
+    || !isSearchProviderKind(item.searchProviderKind)
     || !isTrigger(item.trigger)
+    || !["standard", "provider_adoption"].includes(item.maintenanceKind as string)
     || !STORAGE_VNEXT_MAINTENANCE_PHASES.includes(item.phase as never)
     || (item.cursor !== null && typeof item.cursor !== "string")
     || !isNonnegativeInteger(item.batchOrdinal)
@@ -578,6 +613,19 @@ function validateCheckpoint(value: unknown): StorageVnextMaintenanceCheckpoint {
     throw repositoryError("operation_conflict");
   }
   return value as StorageVnextMaintenanceCheckpoint;
+}
+
+function assertSearchProviderKind(value: unknown): asserts value is SearchProviderKind {
+  if (!isSearchProviderKind(value)) throw repositoryError("invalid_input");
+}
+
+function assertMatchingSearchProvider(
+  persisted: unknown,
+  checkpoint: SearchProviderKind
+): asserts persisted is SearchProviderKind {
+  if (!isSearchProviderKind(persisted) || persisted !== checkpoint) {
+    throw repositoryError("operation_conflict");
+  }
 }
 
 function isTrigger(value: unknown): value is StorageVnextMaintenanceTrigger {

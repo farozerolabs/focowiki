@@ -1,15 +1,13 @@
 import type {
-  SearchEngineFinishedTaskPage,
-  SearchEngineTask,
-  SearchEngineTransport
-} from "../../application/ports/search-engine-transport.js";
+  SearchFilterExpression,
+  SearchProviderOperationReceipt,
+  SearchProviderRuntime,
+  SearchProviderKind
+} from "../../application/ports/search-provider-runtime.js";
+import { isSearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import { createStorageVnextSearchKnowledgeBaseIndexUidPrefix } from
   "../search/candidate-identity.js";
-
-type UnifiedSearchDeletionTransport = Pick<
-  SearchEngineTransport,
-  "deleteDocuments" | "deleteIndex" | "getIndex" | "getTask"
-> & Pick<SearchEngineTransport, "deleteFinishedTasks" | "listFinishedTasks">;
 
 const MAXIMUM_POLL_ATTEMPTS = 36_000;
 
@@ -28,7 +26,7 @@ export class StorageVnextUnifiedSearchDeletionError extends Error {
 }
 
 export function createStorageVnextUnifiedSearchDeletion(input: {
-  transport: UnifiedSearchDeletionTransport;
+  provider: SearchProviderRuntime;
   indexUidPrefix: string;
   maximumPollAttempts: number;
   maximumSourceFiles: number;
@@ -41,7 +39,9 @@ export function createStorageVnextUnifiedSearchDeletion(input: {
     async deleteSourceScope(request: {
       knowledgeBaseId: string;
       operationPublicId: string;
+      activeProviderKind: SearchProviderKind | null;
       activeProviderIndexUid: string | null;
+      candidateProviderKind: SearchProviderKind | null;
       candidateProviderIndexUid: string | null;
       sourceFilePublicIds: readonly string[];
     }) {
@@ -53,39 +53,45 @@ export function createStorageVnextUnifiedSearchDeletion(input: {
       ) throw deletionError("invalid_input");
       sourceFilePublicIds.forEach(assertIdentifier);
       let deletedDocuments = false;
-      const exactTaskUids: number[] = [];
       if (
-        request.activeProviderIndexUid
-        && await input.transport.getIndex({
+        request.activeProviderKind === input.provider.kind
+        && request.activeProviderIndexUid
+        && await input.provider.admin.getIndex({
           indexUid: request.activeProviderIndexUid
         })
       ) {
-        const task = await input.transport.deleteDocuments({
+        const operation = await input.provider.write.deleteDocuments({
           indexUid: request.activeProviderIndexUid,
-          filter: sourceScopeFilter(request.knowledgeBaseId, sourceFilePublicIds),
+          filters: sourceScopeFilter(request.knowledgeBaseId, sourceFilePublicIds),
           correlation: `deletion-documents:${request.operationPublicId}`
         });
-        await pollTask(task.taskUid);
-        exactTaskUids.push(task.taskUid);
+        await pollOperation(operation);
         deletedDocuments = true;
       }
-      const candidate = request.candidateProviderIndexUid;
-      const indexDeletion = candidate && candidate !== request.activeProviderIndexUid
+      const candidate = request.candidateProviderKind === input.provider.kind
+        ? request.candidateProviderIndexUid
+        : null;
+      const indexDeletion = candidate && (
+        request.activeProviderKind !== input.provider.kind
+        || candidate !== request.activeProviderIndexUid
+      )
         ? await deleteIndexes([candidate])
         : emptyIndexDeletion();
-      exactTaskUids.push(...indexDeletion.taskUids);
-      const deletedTasks = await removeFinishedTaskUids(exactTaskUids);
       return {
         deletedDocuments,
         deletedIndexes: indexDeletion.deletedIndexes,
-        deletedTasks
+        deletedTasks: 0,
+        processedProviderKind: input.provider.kind,
+        remainingProviderKind: remainingProviderKind(request)
       };
     },
 
     async deleteKnowledgeBaseScope(request: {
       knowledgeBaseId: string;
       operationPublicId: string;
+      activeProviderKind: SearchProviderKind | null;
       activeProviderIndexUid: string | null;
+      candidateProviderKind: SearchProviderKind | null;
       candidateProviderIndexUid: string | null;
       finishedBefore: string;
       taskFrom: number | null;
@@ -94,119 +100,95 @@ export function createStorageVnextUnifiedSearchDeletion(input: {
       assertTimestamp(request.finishedBefore);
       if (request.taskFrom !== null) assertOrdinal(request.taskFrom);
       const providerIndexUids = unique([
-        request.activeProviderIndexUid,
-        request.candidateProviderIndexUid
+        request.activeProviderKind === input.provider.kind
+          ? request.activeProviderIndexUid
+          : null,
+        request.candidateProviderKind === input.provider.kind
+          ? request.candidateProviderIndexUid
+          : null
       ].filter((value): value is string => Boolean(value)));
       if (providerIndexUids.length > 2) throw deletionError("invalid_input");
-      const providerIndexUidPrefix = createStorageVnextSearchKnowledgeBaseIndexUidPrefix({
+      createStorageVnextSearchKnowledgeBaseIndexUidPrefix({
         indexUidPrefix: input.indexUidPrefix,
         knowledgeBaseId: request.knowledgeBaseId
       });
       const indexDeletion = await deleteIndexes(providerIndexUids);
-      const { deletedTasks, nextTaskFrom } = await deleteFinishedTasks({
-        providerIndexUids,
-        providerIndexUidPrefix,
-        finishedBefore: request.finishedBefore,
-        taskFrom: request.taskFrom,
-        exactTaskUids: indexDeletion.taskUids
-      });
       return {
         deletedIndexes: indexDeletion.deletedIndexes,
-        deletedTasks,
-        nextTaskFrom
+        deletedTasks: 0,
+        nextTaskFrom: null,
+        processedProviderKind: input.provider.kind,
+        remainingProviderKind: remainingProviderKind(request)
       };
     }
   };
 
   async function deleteIndexes(providerIndexUids: readonly string[]): Promise<{
     deletedIndexes: number;
-    taskUids: number[];
   }> {
     let deleted = 0;
-    const taskUids: number[] = [];
     for (const providerIndexUid of providerIndexUids) {
       assertIdentifier(providerIndexUid);
-      if (!await input.transport.getIndex({ indexUid: providerIndexUid })) continue;
-      const task = await input.transport.deleteIndex(providerIndexUid);
-      await pollTask(task.taskUid);
-      taskUids.push(task.taskUid);
+      if (!await input.provider.admin.getIndex({ indexUid: providerIndexUid })) continue;
+      const operation = await input.provider.admin.deleteIndex({
+        indexUid: providerIndexUid
+      });
+      await pollOperation(operation);
       deleted += 1;
     }
-    return { deletedIndexes: deleted, taskUids };
+    return { deletedIndexes: deleted };
   }
 
-  async function deleteFinishedTasks(request: {
-    providerIndexUids: readonly string[];
-    providerIndexUidPrefix: string;
-    finishedBefore: string;
-    taskFrom: number | null;
-    exactTaskUids: readonly number[];
-  }): Promise<{ deletedTasks: number; nextTaskFrom: number | null }> {
-    const listFinishedTasks = input.transport.listFinishedTasks;
-    const removeFinishedTasks = input.transport.deleteFinishedTasks;
-    if (!listFinishedTasks || !removeFinishedTasks) {
-      throw deletionError("provider_contract_unavailable");
-    }
-    const page = await listFinishedTasks({
-      statuses: ["succeeded", "failed", "canceled"],
-      beforeFinishedAt: request.finishedBefore,
-      from: request.taskFrom,
-      limit: input.taskPageSize
-    });
-    validateTaskPage(page, request.finishedBefore);
-    const retained = new Set(request.providerIndexUids);
-    const taskUids = unique([
-      ...page.tasks
-      .filter((task) => task.indexUid !== null && (
-        retained.has(task.indexUid)
-        || task.indexUid.startsWith(request.providerIndexUidPrefix)
-      ))
-      .map((task) => task.taskUid),
-      ...request.exactTaskUids
-    ]);
-    await removeFinishedTaskUids(taskUids);
-    return { deletedTasks: taskUids.length, nextTaskFrom: page.next };
-  }
-
-  async function removeFinishedTaskUids(taskUids: readonly number[]): Promise<number> {
-    const uniqueTaskUids = unique([...taskUids]);
-    if (uniqueTaskUids.length === 0) return 0;
-    uniqueTaskUids.forEach(assertOrdinal);
-    const removeFinishedTasks = input.transport.deleteFinishedTasks;
-    if (!removeFinishedTasks) throw deletionError("provider_contract_unavailable");
-    const task = await removeFinishedTasks({ taskUids: uniqueTaskUids });
-    await pollTask(task.taskUid);
-    return uniqueTaskUids.length;
-  }
-
-  async function pollTask(taskUid: number): Promise<void> {
-    assertOrdinal(taskUid);
+  async function pollOperation(
+    receipt: SearchProviderOperationReceipt
+  ): Promise<void> {
+    if (receipt.state === "completed") return;
     for (let attempt = 1; attempt <= input.maximumPollAttempts; attempt += 1) {
-      const task = await input.transport.getTask(taskUid);
-      validateTask(task);
-      if (task.status === "succeeded") return;
-      if (task.status === "failed" || task.status === "canceled") {
+      const operation = await input.provider.operations.getOperation({
+        operationRef: receipt.operationRef
+      });
+      if (operation.state === "completed") return;
+      if (operation.state === "failed") {
         throw deletionError("provider_task_failed");
       }
       if (attempt < input.maximumPollAttempts) await sleep();
     }
     throw deletionError("provider_task_timeout");
   }
+
+  function remainingProviderKind(request: {
+    activeProviderKind: SearchProviderKind | null;
+    candidateProviderKind: SearchProviderKind | null;
+  }): SearchProviderKind | null {
+    return [request.activeProviderKind, request.candidateProviderKind]
+      .find((providerKind) => providerKind !== null
+        && providerKind !== input.provider.kind) ?? null;
+  }
 }
 
-function emptyIndexDeletion(): { deletedIndexes: number; taskUids: number[] } {
-  return { deletedIndexes: 0, taskUids: [] };
+function emptyIndexDeletion(): { deletedIndexes: number } {
+  return { deletedIndexes: 0 };
 }
 
 function sourceScopeFilter(
   knowledgeBaseId: string,
   sourceFilePublicIds: readonly string[]
-): string {
-  return [
-    `knowledgeBaseId = ${JSON.stringify(knowledgeBaseId)}`,
-    `sourceFilePublicId IN [${sourceFilePublicIds
-      .map((publicId) => JSON.stringify(publicId)).join(", ")}]`
-  ].join(" AND ");
+): SearchFilterExpression {
+  return {
+    kind: "and",
+    operands: [{
+      kind: "equals",
+      field: "knowledgeBaseId",
+      value: knowledgeBaseId
+    }, {
+      kind: "or",
+      operands: sourceFilePublicIds.map((publicId) => ({
+        kind: "equals" as const,
+        field: "sourceFilePublicId" as const,
+        value: publicId
+      }))
+    }]
+  };
 }
 
 function validateConfiguration(input: {
@@ -240,43 +222,28 @@ function validateConfiguration(input: {
 function validateBaseRequest(request: {
   knowledgeBaseId: string;
   operationPublicId: string;
+  activeProviderKind: SearchProviderKind | null;
   activeProviderIndexUid: string | null;
+  candidateProviderKind: SearchProviderKind | null;
   candidateProviderIndexUid: string | null;
 }): void {
   assertIdentifier(request.knowledgeBaseId);
   assertIdentifier(request.operationPublicId);
-  if (request.activeProviderIndexUid) assertIdentifier(request.activeProviderIndexUid);
-  if (request.candidateProviderIndexUid) {
-    assertIdentifier(request.candidateProviderIndexUid);
-  }
+  assertOwnedIndex(request.activeProviderKind, request.activeProviderIndexUid);
+  assertOwnedIndex(request.candidateProviderKind, request.candidateProviderIndexUid);
 }
 
-function validateTaskPage(
-  page: SearchEngineFinishedTaskPage,
-  finishedBefore: string
+function assertOwnedIndex(
+  providerKind: SearchProviderKind | null,
+  providerIndexUid: string | null
 ): void {
-  if (page.next !== null) assertOrdinal(page.next);
-  for (const task of page.tasks) {
-    assertOrdinal(task.taskUid);
-    const finishedAt = Date.parse(task.finishedAt);
-    if (
-      !["succeeded", "failed", "canceled"].includes(task.status)
-      || !Number.isFinite(finishedAt)
-      || finishedAt > Date.parse(finishedBefore)
-    ) throw deletionError("invalid_input");
+  if ((providerKind === null) !== (providerIndexUid === null)) {
+    throw deletionError("invalid_input");
   }
-}
-
-function validateTask(task: SearchEngineTask): void {
-  assertOrdinal(task.taskUid);
-  if (![
-    "enqueued",
-    "processing",
-    "succeeded",
-    "failed",
-    "canceled",
-    "unknown"
-  ].includes(task.status)) throw deletionError("invalid_input");
+  if (providerKind !== null && !isSearchProviderKind(providerKind)) {
+    throw deletionError("invalid_input");
+  }
+  if (providerIndexUid !== null) assertIdentifier(providerIndexUid);
 }
 
 function assertIdentifier(value: string): void {

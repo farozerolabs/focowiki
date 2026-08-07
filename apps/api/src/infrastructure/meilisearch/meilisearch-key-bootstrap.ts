@@ -381,7 +381,7 @@ function normalizeEndpoint(value: string): string {
 function validateIndexPrefix(value: string): string {
   const normalized = value.trim();
   if (!/^[a-z0-9][a-z0-9_-]{0,79}$/u.test(normalized)) {
-    throw new Error("MEILI_INDEX_PREFIX is invalid");
+    throw new Error("SEARCH_INDEX_PREFIX is invalid");
   }
   return normalized;
 }

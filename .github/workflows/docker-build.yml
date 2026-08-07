@@ -26,6 +26,9 @@ env:
   FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
   FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
   FOCOWIKI_TEST_MEILISEARCH_API_KEY: focowiki-development-master-key
+  FOCOWIKI_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
+  FOCOWIKI_TEST_OPENSEARCH_VERSION: 3.8.0
+  FOCOWIKI_TEST_OPENSEARCH_RUN_OWNER: svnext-build0001
   REDIS_URL: redis://127.0.0.1:56379/0
 
 jobs:
@@ -70,6 +73,21 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      opensearch:
+        image: opensearchproject/opensearch:3.8.0
+        env:
+          "discovery.type": single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 59200:9200
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:9200/"
+          --health-start-period 30s
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
 
     steps:
       - name: Checkout
@@ -237,7 +255,7 @@ jobs:
             docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test ! -x /usr/bin/g++ && test ! -x /usr/bin/make'
             docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'test -f apps/api/runtime/node_modules/nodejieba/LICENSE'
             docker run --rm --platform "${platform}" --entrypoint node "${image}" -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1);"
-            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc '! grep -q nodejieba apps/api/runtime/publication-worker.mjs'
+            docker run --rm --platform "${platform}" --entrypoint sh "${image}" -lc 'grep -q nodejieba apps/api/runtime/publication-worker.mjs'
           done
 
       - name: Validate published API image roles

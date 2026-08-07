@@ -29,7 +29,8 @@ const INDEX_EVIDENCE = {
   active_snapshots_search_projection_idx: "search:active projection owner",
   active_snapshots_operation_idx: "workflow:activation operation inverse",
   search_projections_failed_cleanup_idx: "search:list failed candidate cleanup",
-  search_projections_active_compaction_idx: "search:list active compaction candidates",
+  meilisearch_projection_maintenance_compaction_idx:
+    "search:Meilisearch optional compaction scheduling",
   release_candidates_operation_idx: "workflow:candidate operation inverse",
   release_candidates_candidate_root_idx: "release:candidate-root owner",
   release_candidates_expected_root_idx: "release:expected-root inverse",
@@ -104,6 +105,7 @@ describe("storage vNext minimal index contract", () => {
 
   it("uses literal partial predicates for claim and lease recovery", () => {
     for (const fragment of [
+      "search_projections_failed_cleanup_idx on focowiki.search_projections (provider_kind, updated_at, public_id) where projection_role = 'candidate' and state = 'failed'",
       "operation_work_items_claim_idx on focowiki.operation_work_items (work_kind, next_attempt_at, updated_at, operation_public_id) where state in ('queued', 'retry')",
       "operation_work_items_lease_idx on focowiki.operation_work_items (lease_expires_at, operation_public_id) where state = 'running'",
       "operation_results_scope_time_idx on focowiki.operation_results (knowledge_base_id, completed_at desc, public_id desc)",

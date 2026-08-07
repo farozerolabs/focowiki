@@ -8,8 +8,13 @@ import {
   type StorageVnextMaintenancePhaseRunner,
   type StorageVnextMaintenanceResourceGate,
   type StorageVnextMaintenanceRepository,
-  type StorageVnextMaintenanceRequest
+  type StorageVnextMaintenanceRequest,
+  type StorageVnextMaintenanceRequestInput
 } from "./ports.js";
+import { isSearchProviderKind, type SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
+import type { StorageVnextActiveSearchProjectionRepository } from
+  "../search/active-projection-repository.js";
 
 const MAX_ID_BYTES = 255;
 const MAX_CURSOR_BYTES = 2_048;
@@ -31,6 +36,7 @@ type FailureObserver = (failure: {
 
 export function createStorageVnextMaintenanceCoordinator(input: {
   repository: StorageVnextMaintenanceRepository;
+  searchProviderKind: SearchProviderKind;
   phaseRunner: StorageVnextMaintenancePhaseRunner;
   cleanup: StorageVnextMaintenanceCleanup;
   resourceGate: StorageVnextMaintenanceResourceGate;
@@ -41,7 +47,8 @@ export function createStorageVnextMaintenanceCoordinator(input: {
   validateTimeout(input.phaseTimeoutMs);
   const now = input.now ?? (() => new Date());
   const requests = createStorageVnextMaintenanceRequestService({
-    repository: input.repository
+    repository: input.repository,
+    searchProviderKind: input.searchProviderKind
   });
 
   return {
@@ -63,7 +70,10 @@ export function createStorageVnextMaintenanceCoordinator(input: {
         };
       }
       try {
-      const claim = await input.repository.claimOne(claimInput);
+      const claim = await input.repository.claimOne({
+        ...claimInput,
+        searchProviderKind: input.searchProviderKind
+      });
       if (!claim) return { outcome: "idle" as const, operationPublicId: null };
       if (claim.state === "superseded") {
         await terminate({
@@ -206,26 +216,53 @@ export function createStorageVnextMaintenanceCoordinator(input: {
 
 export function createStorageVnextMaintenanceRequestService(input: {
   repository: StorageVnextMaintenanceRepository;
+  searchProviderKind: SearchProviderKind;
+  activeSearchProjections?: StorageVnextActiveSearchProjectionRepository;
 }) {
   return {
-    async requestMaintenance(request: StorageVnextMaintenanceRequest) {
-      validateRequest(request);
-      return input.repository.acceptMaintenance({
+    async requestMaintenance(request: StorageVnextMaintenanceRequestInput) {
+      const active = input.activeSearchProjections
+        ? await input.activeSearchProjections.getActiveProjection(
+            request.knowledgeBaseId
+          )
+        : null;
+      const providerAdoption = active !== null
+        && active.providerKind !== input.searchProviderKind;
+      if (providerAdoption && request.trigger === "automatic") {
+        return {
+          outcome: "deferred" as const,
+          operationPublicId: null,
+          state: "deferred" as const,
+          reasonCode: "SEARCH_PROVIDER_ADOPTION_REQUIRES_MANUAL"
+        };
+      }
+      const providerBoundRequest: StorageVnextMaintenanceRequest = {
         ...request,
-        requestHash: createStorageVnextMaintenanceRequestHash(request),
+        searchProviderKind: input.searchProviderKind
+      };
+      validateRequest(providerBoundRequest);
+      return input.repository.acceptMaintenance({
+        ...providerBoundRequest,
+        requestHash: createStorageVnextMaintenanceRequestHash(providerBoundRequest),
         workKind: "maintenance",
-        initialCheckpoint: initialCheckpoint(request)
+        initialCheckpoint: initialCheckpoint(
+          providerBoundRequest,
+          providerAdoption ? "provider_adoption" : "standard"
+        )
       });
     }
   };
 }
 
 function initialCheckpoint(
-  request: StorageVnextMaintenanceRequest
+  request: StorageVnextMaintenanceRequest,
+  maintenanceKind: StorageVnextMaintenanceCheckpoint["maintenanceKind"]
 ): StorageVnextMaintenanceCheckpoint {
   return {
     version: 1,
+    searchProviderKind: request.searchProviderKind,
     trigger: request.trigger,
+    maintenanceKind,
     phase: "planning",
     cursor: null,
     batchOrdinal: 0,
@@ -390,6 +427,7 @@ function maintenanceFailureCode(error: unknown): string {
 }
 
 function validateRequest(request: StorageVnextMaintenanceRequest): void {
+  assertSearchProviderKind(request.searchProviderKind);
   for (const value of [
     request.knowledgeBaseId,
     request.operationPublicId,
@@ -406,6 +444,12 @@ function validateRequest(request: StorageVnextMaintenanceRequest): void {
   assertTimestamp(request.requestedAt);
   assertTimestamp(request.expiresAt);
   if (Date.parse(request.expiresAt) <= Date.parse(request.requestedAt)) {
+    throw maintenanceError("invalid_input");
+  }
+}
+
+function assertSearchProviderKind(value: unknown): asserts value is SearchProviderKind {
+  if (!isSearchProviderKind(value)) {
     throw maintenanceError("invalid_input");
   }
 }

@@ -1,4 +1,6 @@
 import type { TransactionSql } from "postgres";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextDeletionAcceptance,
   StorageVnextNormalizedDeletionRequest
@@ -18,6 +20,7 @@ export type StorageVnextDeletionVisibilityResult = {
 
 export type StorageVnextTerminatedCandidate = {
   operationPublicId: string | null;
+  providerKind: SearchProviderKind | null;
   providerIndexUid: string | null;
 };
 

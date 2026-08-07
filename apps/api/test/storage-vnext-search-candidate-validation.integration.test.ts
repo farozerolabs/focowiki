@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { SearchEngineSettings } from "../src/application/ports/search-engine-transport.js";
+import type { SearchProviderIndexDefinition } from
+  "../src/application/ports/search-provider-runtime.js";
 import {
   createMeilisearchTransport
 } from "../src/infrastructure/meilisearch/meilisearch-transport.js";
+import {
+  createMeilisearchProviderRuntime,
+  toMeilisearchSettings
+} from "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import {
   validateStorageVnextSearchCandidate
 } from "../src/storage-vnext/search/candidate-validation.js";
@@ -37,7 +42,8 @@ const hasOwnedTarget = Boolean(
 );
 const describeOwnedMeilisearch = hasOwnedTarget ? describe : describe.skip;
 
-const settings: SearchEngineSettings = {
+const settings: SearchProviderIndexDefinition = {
+  primaryKey: "id",
   searchableAttributes: [
     "title", "logicalPath", "headingAncestors", "searchText", "rankingTerms"
   ],
@@ -49,14 +55,13 @@ const settings: SearchEngineSettings = {
     "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
     "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms"
   ],
-  sortableAttributes: [],
   rankingRules: ["words", "typo", "proximity", "attribute", "sort", "exactness"],
   distinctAttribute: "sourceFilePublicId",
-  pagination: { maxTotalHits: 2_000 },
+  maximumTotalHits: 2_000,
   searchCutoffMs: 1_000,
-  localizedAttributes: [],
-  typoTolerance: { disableOnAttributes: ["logicalPath"] }
+  typoDisabledAttributes: ["logicalPath"]
 };
+const meilisearchSettings = toMeilisearchSettings(settings);
 
 describeOwnedMeilisearch("real storage vNext candidate validation", () => {
   const indexUid = [
@@ -71,6 +76,7 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
     maxAttempts: 2,
     retryDelayMs: 25
   });
+  const provider = createMeilisearchProviderRuntime(transport);
   let indexCreated = false;
 
   afterAll(async () => {
@@ -86,7 +92,10 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
     const creation = await transport.createIndex({ indexUid, primaryKey: "id" });
     indexCreated = true;
     await waitForTask(creation.taskUid);
-    const settingTask = await transport.updateSettings({ indexUid, settings });
+    const settingTask = await transport.updateSettings({
+      indexUid,
+      settings: meilisearchSettings
+    });
     await waitForTask(settingTask.taskUid);
     const addition = await transport.addDocuments({
       indexUid,
@@ -101,6 +110,7 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
     const record: StorageVnextSearchProjectionRecord = {
       publicId: "candidate-real",
       knowledgeBaseId: "kb-real",
+      providerKind: "meilisearch",
       providerIndexUid: indexUid,
       schemaChecksum: "a".repeat(64),
       settingsChecksum,
@@ -111,7 +121,7 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
       lastBatchOrdinal: 0,
       lastBatchChecksum: "b".repeat(64),
       correlationPublicId: null,
-      providerTaskUid: null,
+      providerOperationRef: null,
       revision: 1
     };
     const repository = validationRepository(record);
@@ -125,7 +135,7 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
 
     await validateStorageVnextSearchCandidate({
       repository,
-      transport,
+      provider,
       hydration,
       settings,
       documentPageSize: 2,
@@ -148,6 +158,7 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
         getActiveProjection: vi.fn(async () => ({
           publicId: record.publicId,
           knowledgeBaseId: record.knowledgeBaseId,
+          providerKind: "meilisearch" as const,
           providerIndexUid: indexUid,
           schemaChecksum: record.schemaChecksum,
           settingsChecksum,
@@ -155,11 +166,12 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
           documentCount: documents.length
         }))
       },
-      transport,
+      provider,
       hydration,
       maxPageSize: 100,
       overfetchFactor: 2,
-      cropLength: 40
+      cropLength: 40,
+      requestTimeoutMs: 5_000
     });
     const activeResult = await activeSearch.search({
       knowledgeBaseId: "kb-real",
@@ -195,6 +207,45 @@ describeOwnedMeilisearch("real storage vNext candidate validation", () => {
     expect(deletion).toBeDefined();
     await waitForTask(deletion!.taskUid);
   }, 60_000);
+
+  it("maps real authentication and unavailable-service failures without leaking details", async () => {
+    const wrongCredential = createMeilisearchTransport({
+      endpoint: endpoint ?? "http://127.0.0.1:7700",
+      apiKey: "run-owned-invalid-key",
+      timeoutMs: 1_000,
+      maxAttempts: 1,
+      retryDelayMs: 1
+    });
+    const unavailable = createMeilisearchTransport({
+      endpoint: "http://127.0.0.1:1",
+      apiKey: "run-owned-unavailable-key",
+      timeoutMs: 200,
+      maxAttempts: 1,
+      retryDelayMs: 1
+    });
+
+    const authenticationError = await wrongCredential.listIndexes?.({
+      offset: 0,
+      limit: 1
+    }).then(() => null, (error: unknown) => error);
+    expect(authenticationError).toMatchObject({
+      name: "MeilisearchClientError",
+      code: "SEARCH_ENGINE_AUTHENTICATION_FAILED",
+      retryable: false
+    });
+    expect(String(authenticationError)).not.toMatch(/run-owned-invalid-key|127\.0\.0\.1/iu);
+
+    const unavailableError = await unavailable.listIndexes?.({
+      offset: 0,
+      limit: 1
+    }).then(() => null, (error: unknown) => error);
+    expect(unavailableError).toMatchObject({
+      name: "MeilisearchClientError",
+      code: "SEARCH_ENGINE_UNAVAILABLE",
+      retryable: true
+    });
+    expect(String(unavailableError)).not.toMatch(/run-owned-unavailable-key|127\.0\.0\.1/iu);
+  }, 10_000);
 
   async function waitForTask(taskUid: number) {
     for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -336,9 +387,9 @@ function validationRepository(
   return {
     reserveCandidate: vi.fn(),
     getCandidate: vi.fn(async () => record),
-    beginProviderTask: vi.fn(),
-    recordProviderTask: vi.fn(),
-    completeProviderTask: vi.fn(),
+    beginProviderOperation: vi.fn(),
+    recordProviderOperation: vi.fn(),
+    completeProviderOperation: vi.fn(),
     markCandidateIndexing: vi.fn(),
     beginDocumentBatch: vi.fn(),
     completeDocumentBatch: vi.fn(),

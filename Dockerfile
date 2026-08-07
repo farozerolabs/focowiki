@@ -19,6 +19,9 @@ RUN pnpm install --frozen-lockfile
 FROM dependencies AS build
 COPY apps apps
 COPY packages packages
+COPY --from=dependencies /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=dependencies /app/apps/admin/node_modules ./apps/admin/node_modules
+COPY --from=dependencies /app/packages/okf/node_modules ./packages/okf/node_modules
 RUN pnpm build
 RUN pnpm --filter @focowiki/api build:runtime
 
@@ -28,20 +31,34 @@ ENV NODE_ENV=production
 ENV FOCOWIKI_RELEASE_VERSION=${FOCOWIKI_RELEASE_VERSION}
 WORKDIR /app
 
-RUN apk add --no-cache libstdc++ su-exec
+RUN apk add --no-cache libstdc++ openssl su-exec \
+    && rm -rf \
+      /opt/yarn-v1.22.22 \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/lib/node_modules/npm \
+    && rm -f \
+      /usr/local/bin/corepack \
+      /usr/local/bin/npm \
+      /usr/local/bin/npx \
+      /usr/local/bin/pnpm \
+      /usr/local/bin/pnpx \
+      /usr/local/bin/yarn \
+      /usr/local/bin/yarnpkg
 COPY --from=build /app/apps/api/runtime ./apps/api/runtime
 COPY --from=build /app/apps/api/migrations ./apps/api/runtime/migrations
 COPY deploy/docker/api-entrypoint.sh /usr/local/bin/focowiki-api-entrypoint
 RUN chmod +x /usr/local/bin/focowiki-api-entrypoint
 RUN test -f apps/api/runtime/main.mjs \
     && test -f apps/api/runtime/migration-preflight.mjs \
-    && test -f apps/api/runtime/meilisearch-bootstrap.mjs \
+    && test -f apps/api/runtime/search-init.mjs \
     && test -f apps/api/runtime/source-worker.mjs \
     && test -f apps/api/runtime/publication-worker.mjs \
     && test -f apps/api/runtime/maintenance-worker.mjs \
     && test -f apps/api/runtime/migrate.mjs \
     && test -f apps/api/runtime/node_modules/nodejieba/package.json \
     && test -f apps/api/runtime/node_modules/nodejieba/LICENSE \
+    && test ! -e /usr/local/bin/npm \
+    && test ! -e /usr/local/bin/yarn \
     && test ! -x /usr/bin/g++ \
     && test ! -x /usr/bin/make \
     && node -e "const jieba=require('./apps/api/runtime/node_modules/nodejieba'); const tokens=jieba.cutForSearch('缓存一致性需要版本校验和租约恢复'); if (!tokens.includes('缓存') || !tokens.includes('一致性')) process.exit(1)"
@@ -51,6 +68,7 @@ ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]
 CMD ["node", "apps/api/runtime/main.mjs"]
 
 FROM nginx:1.29-alpine AS admin
+RUN apk upgrade --no-cache
 COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/apps/admin/dist /usr/share/nginx/html
 EXPOSE 8080

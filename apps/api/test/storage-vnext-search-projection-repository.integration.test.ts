@@ -134,24 +134,27 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
     })).resolves.toEqual([]);
   });
 
-  it("persists provider task correlation and resumes the same task", async () => {
-    const started = await repository.beginProviderTask({
+  it("persists provider operation correlation and resumes the same operation", async () => {
+    const started = await repository.beginProviderOperation({
       candidatePublicId: "candidate-a",
       correlationPublicId: "create-candidate-a"
     });
-    await repository.recordProviderTask({
+    await repository.recordProviderOperation({
       candidatePublicId: "candidate-a",
       correlationPublicId: "create-candidate-a",
-      providerTaskUid: 41
+      providerOperationRef: "meilisearch:41"
     });
-    const resumed = await repository.beginProviderTask({
+    const resumed = await repository.beginProviderOperation({
       candidatePublicId: "candidate-a",
       correlationPublicId: "create-candidate-a"
     });
 
-    expect(started).toEqual({ outcome: "start", providerTaskUid: null });
-    expect(resumed).toEqual({ outcome: "resume", providerTaskUid: 41 });
-    await repository.completeProviderTask({
+    expect(started).toEqual({ outcome: "start", providerOperationRef: null });
+    expect(resumed).toEqual({
+      outcome: "resume",
+      providerOperationRef: "meilisearch:41"
+    });
+    await repository.completeProviderOperation({
       candidatePublicId: "candidate-a",
       correlationPublicId: "create-candidate-a"
     });
@@ -166,10 +169,10 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       payloadChecksum: checksum,
       correlationPublicId: "batch-candidate-a-0"
     });
-    await repository.recordProviderTask({
+    await repository.recordProviderOperation({
       candidatePublicId: "candidate-a",
       correlationPublicId: "batch-candidate-a-0",
-      providerTaskUid: 52
+      providerOperationRef: "meilisearch:52"
     });
     const resumed = await repository.beginDocumentBatch({
       candidatePublicId: "candidate-a",
@@ -191,9 +194,12 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       correlationPublicId: "batch-candidate-a-0"
     });
 
-    expect(started).toEqual({ outcome: "start", providerTaskUid: null });
-    expect(resumed).toEqual({ outcome: "resume", providerTaskUid: 52 });
-    expect(replay).toEqual({ outcome: "completed", providerTaskUid: null });
+    expect(started).toEqual({ outcome: "start", providerOperationRef: null });
+    expect(resumed).toEqual({
+      outcome: "resume",
+      providerOperationRef: "meilisearch:52"
+    });
+    expect(replay).toEqual({ outcome: "completed", providerOperationRef: null });
     expect(await repository.getCandidate("candidate-a")).toMatchObject({
       documentCount: 3,
       nextBatchOrdinal: 1,
@@ -244,27 +250,30 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
 
     const failed = await cleanup.claimFailedCandidate({
       failedBefore: "2021-08-01T00:00:00.000Z",
-      correlationPublicId: "cleanup-cycle-c"
+      correlationPublicId: "cleanup-cycle-c",
+      providerKind: "meilisearch"
     });
     expect(failed).toMatchObject({
       publicId: "candidate-cleanup",
       correlationPublicId: "cleanup-cycle-c",
-      providerTaskUid: null
+      providerKind: "meilisearch",
+      providerOperationRef: null
     });
-    await cleanup.recordCleanupTask({
+    await cleanup.recordCleanupOperation({
       projectionPublicId: "candidate-cleanup",
       correlationPublicId: "cleanup-cycle-c",
-      providerTaskUid: 701
+      providerOperationRef: "meilisearch:701"
     });
-    await cleanup.clearCleanupTask({
+    await cleanup.clearCleanupOperation({
       projectionPublicId: "candidate-cleanup",
       correlationPublicId: "cleanup-cycle-c",
-      providerTaskUid: 701
+      providerOperationRef: "meilisearch:701"
     });
     await expect(cleanup.claimFailedCandidate({
       failedBefore: "2021-08-01T00:00:00.000Z",
-      correlationPublicId: "cleanup-cycle-c"
-    })).resolves.toMatchObject({ providerTaskUid: null });
+      correlationPublicId: "cleanup-cycle-c",
+      providerKind: "meilisearch"
+    })).resolves.toMatchObject({ providerOperationRef: null });
     await cleanup.completeFailedCandidateCleanup({
       candidatePublicId: "candidate-cleanup",
       correlationPublicId: "cleanup-cycle-c"
@@ -289,9 +298,10 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       SET projection_role = 'active'
       WHERE public_id = 'candidate-active'
     `;
-    await expect(cleanup.listRetainedProviderIndexUids([
-      "owned_candidate-active", "owned_missing"
-    ])).resolves.toEqual(["owned_candidate-active"]);
+    await expect(cleanup.listRetainedProviderIndexUids({
+      providerKind: "meilisearch",
+      providerIndexUids: ["owned_candidate-active", "owned_missing"]
+    })).resolves.toEqual(["owned_candidate-active"]);
 
     const active = await cleanup.claimActiveCompaction({
       compactedBefore: "2099-08-01T00:00:00.000Z",
@@ -300,12 +310,13 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
     expect(active).toMatchObject({
       publicId: "candidate-active",
       correlationPublicId: "compaction-cycle-c",
-      providerTaskUid: null
+      providerKind: "meilisearch",
+      providerOperationRef: null
     });
-    await cleanup.recordCleanupTask({
+    await cleanup.recordCleanupOperation({
       projectionPublicId: "candidate-active",
       correlationPublicId: "compaction-cycle-c",
-      providerTaskUid: 702
+      providerOperationRef: "meilisearch:702"
     });
     await cleanup.completeCompaction({
       projectionPublicId: "candidate-active",
@@ -315,22 +326,26 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
     });
     const rows = await sql<Array<{
       last_compacted_at: Date | string | null;
-      last_compaction_database_size_bytes: number | string | null;
-      last_compaction_used_database_size_bytes: number | string | null;
+      last_database_size_bytes: number | string | null;
+      last_used_database_size_bytes: number | string | null;
       correlation_public_id: string | null;
-      provider_task_uid: number | string | null;
+      provider_operation_ref: string | null;
     }>>`
-      SELECT last_compacted_at, last_compaction_database_size_bytes,
-             last_compaction_used_database_size_bytes,
-             correlation_public_id, provider_task_uid
-      FROM focowiki.search_projections
-      WHERE public_id = 'candidate-active'
+      SELECT maintenance.last_compacted_at,
+             maintenance.last_database_size_bytes,
+             maintenance.last_used_database_size_bytes,
+             projection.correlation_public_id,
+             projection.provider_operation_ref
+      FROM focowiki.search_projections AS projection
+      JOIN focowiki.meilisearch_projection_maintenance AS maintenance
+        ON maintenance.projection_public_id = projection.public_id
+      WHERE projection.public_id = 'candidate-active'
     `;
     expect(rows[0]).toMatchObject({
-      last_compaction_database_size_bytes: "70",
-      last_compaction_used_database_size_bytes: "60",
+      last_database_size_bytes: "70",
+      last_used_database_size_bytes: "60",
       correlation_public_id: null,
-      provider_task_uid: null
+      provider_operation_ref: null
     });
     expect(rows[0]?.last_compacted_at).not.toBeNull();
   });
@@ -339,6 +354,7 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
     return {
       publicId,
       knowledgeBaseId,
+      providerKind: "meilisearch" as const,
       providerIndexUid: `owned_${publicId}`,
       schemaChecksum: "a".repeat(64),
       settingsChecksum: "b".repeat(64)

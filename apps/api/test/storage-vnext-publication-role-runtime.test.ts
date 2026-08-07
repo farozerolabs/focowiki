@@ -88,6 +88,33 @@ describe("storage vNext publication role runtime", () => {
     });
     expect(order).toEqual(["recover", "claim"]);
   });
+
+  it("awaits asynchronous worker replacement before claiming work", async () => {
+    const controller = new AbortController();
+    const order: string[] = [];
+    const runtime = createStorageVnextPublicationRoleRuntime({
+      owner: "publication-worker-async",
+      clock: () => "2026-08-02T00:00:00.000Z",
+      getSettings: async () => settings(),
+      recoverStale: vi.fn(async () => 0),
+      async createWorker() {
+        await Promise.resolve();
+        order.push("create");
+        return {
+          async runOnce() {
+            order.push("claim");
+            controller.abort();
+            return { claimed: 1, completed: 1, retried: 0, terminal: 0 };
+          }
+        };
+      },
+      wait: vi.fn(async () => undefined)
+    });
+
+    await runtime.run(controller.signal);
+
+    expect(order).toEqual(["create", "claim"]);
+  });
 });
 
 function settings(overrides: Partial<ReturnType<typeof settingsShape>> = {}) {

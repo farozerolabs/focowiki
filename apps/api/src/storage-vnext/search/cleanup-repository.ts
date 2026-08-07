@@ -1,31 +1,37 @@
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
+
 export type StorageVnextSearchCleanupLease = {
   publicId: string;
+  providerKind: SearchProviderKind;
   providerIndexUid: string;
   correlationPublicId: string;
-  providerTaskUid: number | null;
+  providerOperationRef: string | null;
 };
 
 export interface StorageVnextSearchCleanupRepository {
   claimFailedCandidate(input: {
     failedBefore: string;
     correlationPublicId: string;
+    providerKind: SearchProviderKind;
   }): Promise<StorageVnextSearchCleanupLease | null>;
-  listRetainedProviderIndexUids(
-    providerIndexUids: readonly string[]
-  ): Promise<string[]>;
+  listRetainedProviderIndexUids(input: {
+    providerKind: SearchProviderKind;
+    providerIndexUids: readonly string[];
+  }): Promise<string[]>;
   claimActiveCompaction(input: {
     compactedBefore: string;
     correlationPublicId: string;
   }): Promise<StorageVnextSearchCleanupLease | null>;
-  recordCleanupTask(input: {
+  recordCleanupOperation(input: {
     projectionPublicId: string;
     correlationPublicId: string;
-    providerTaskUid: number;
+    providerOperationRef: string;
   }): Promise<void>;
-  clearCleanupTask(input: {
+  clearCleanupOperation(input: {
     projectionPublicId: string;
     correlationPublicId: string;
-    providerTaskUid: number;
+    providerOperationRef: string;
   }): Promise<void>;
   completeFailedCandidateCleanup(input: {
     candidatePublicId: string;

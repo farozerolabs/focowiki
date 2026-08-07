@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextActiveSearchProjection,
   StorageVnextActiveSearchProjectionRepository
@@ -7,6 +9,7 @@ import type {
 type ActiveProjectionRow = {
   public_id: string;
   knowledge_base_id: string;
+  provider_kind: SearchProviderKind;
   provider_index_uid: string;
   schema_checksum_sha256: string;
   settings_checksum_sha256: string;
@@ -22,6 +25,7 @@ export function createPostgresStorageVnextActiveSearchProjectionRepository(
       assertId(knowledgeBaseId);
       const rows = await sql<ActiveProjectionRow[]>`
         SELECT projection.public_id, projection.knowledge_base_id,
+               projection.provider_kind,
                projection.provider_index_uid,
                projection.schema_checksum_sha256,
                projection.settings_checksum_sha256,
@@ -45,6 +49,7 @@ function mapProjection(row: ActiveProjectionRow): StorageVnextActiveSearchProjec
   return {
     publicId: row.public_id,
     knowledgeBaseId: row.knowledge_base_id,
+    providerKind: row.provider_kind,
     providerIndexUid: row.provider_index_uid,
     schemaChecksum: row.schema_checksum_sha256,
     settingsChecksum: row.settings_checksum_sha256,

@@ -929,12 +929,14 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     });
     await sql`
       INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_index_uid,
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid,
         schema_checksum_sha256, settings_checksum_sha256,
         document_checksum_sha256, revision, document_count,
         next_batch_ordinal, state, created_at, updated_at
       ) VALUES (
         ${result.candidatePublicId}, ${input.knowledgeBaseId}, 'candidate',
+        'meilisearch',
         ${`svnext_mutation_${result.candidatePublicId}`}, ${"d".repeat(64)},
         ${"e".repeat(64)}, ${"f".repeat(64)}, 1, 0, 0, 'ready',
         '2026-08-01T02:00:00.000Z', '2026-08-01T02:00:00.000Z'

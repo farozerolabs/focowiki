@@ -49,6 +49,7 @@ lerna-debug.log*
 
 # Runtime generated backend secrets
 runtime-secrets/
+opensearch-security/
 
 # Local Docker Compose persisted data and backups
 data/

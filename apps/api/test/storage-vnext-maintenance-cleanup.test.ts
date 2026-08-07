@@ -103,12 +103,12 @@ describe("storage vNext maintenance cleanup", () => {
     expect(createSearchCleanup).toBeTypeOf("function");
     if (!createSearchCleanup) return;
     const orphanPages = [
-      { deleted: 1, nextOffset: 0 },
-      { deleted: 0, nextOffset: null }
+      { deleted: 1, continuation: "orphan-page-2" },
+      { deleted: 0, continuation: null }
     ];
     const taskPages = [
-      { deleted: 2, next: 5 },
-      { deleted: 0, next: null }
+      { deleted: 2, continuation: "task-page-2" },
+      { deleted: 0, continuation: null }
     ];
     const compactHighWater = vi.fn(async () => ({ outcome: "compacted" }));
     const adapter = createSearchCleanup({

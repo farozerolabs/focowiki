@@ -249,6 +249,46 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
     expect(providerIndexes).toEqual([{ projection_role: "active" }]);
   });
 
+  it("retains failed candidate provider ownership in the deletion checkpoint", async () => {
+    await seedKnowledgeBase("kb-deletion-failed-search", 5);
+    await sql`
+      INSERT INTO focowiki.search_projections (
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid, schema_checksum_sha256, settings_checksum_sha256,
+        revision, document_count, state, safe_error_code
+      ) VALUES (
+        'search-candidate-kb-deletion-failed-search',
+        'kb-deletion-failed-search', 'candidate', 'opensearch',
+        'unified_failed_search_candidate', ${"b".repeat(64)}, ${"c".repeat(64)},
+        2, 4, 'failed', 'PUBLICATION_FAILED'
+      )
+    `;
+
+    await coordinator.acceptDeletion(deletionRequest({
+      kind: "knowledge_base",
+      knowledgeBaseId: "kb-deletion-failed-search",
+      targetPublicId: "kb-deletion-failed-search",
+      expectedResourceRevision: 5
+    }));
+
+    const works = await sql<Array<{
+      checkpoint: Record<string, string | number | boolean | null>;
+    }>>`
+      SELECT work.checkpoint
+      FROM focowiki.operation_work_items work
+      WHERE work.knowledge_base_id = 'kb-deletion-failed-search'
+        AND work.work_kind = 'deletion'
+    `;
+    expect(works[0]?.checkpoint).toMatchObject({
+      activeSearchProviderKind: null,
+      activeSearchProviderIndexUid: null,
+      candidateSearchProviderKind: "opensearch",
+      candidateSearchProviderIndexUid: "unified_failed_search_candidate"
+    });
+    expect(await scopedCount("search_projections", "kb-deletion-failed-search"))
+      .toBe(0);
+  });
+
   it("hides only a published source task and preserves active knowledge", async () => {
     await seedKnowledgeBase("kb-deletion-task-published", 1);
     await seedSource({
@@ -457,11 +497,12 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
   async function seedActiveSearch(knowledgeBaseId: string) {
     await sql`
       INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_index_uid,
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid,
         schema_checksum_sha256, settings_checksum_sha256,
         document_checksum_sha256, revision, document_count, state
       ) VALUES (
-        ${`search-active-${knowledgeBaseId}`}, ${knowledgeBaseId}, 'active',
+        ${`search-active-${knowledgeBaseId}`}, ${knowledgeBaseId}, 'active', 'meilisearch',
         ${`unified_${knowledgeBaseId}_active`}, ${"b".repeat(64)}, ${"c".repeat(64)},
         ${"d".repeat(64)}, 1, 2, 'ready'
       )
@@ -546,11 +587,12 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
     `;
     await sql`
       INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_index_uid,
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid,
         schema_checksum_sha256, settings_checksum_sha256,
         revision, document_count, state
       ) VALUES (
-        ${`search-candidate-${knowledgeBaseId}`}, ${knowledgeBaseId}, 'candidate',
+        ${`search-candidate-${knowledgeBaseId}`}, ${knowledgeBaseId}, 'candidate', 'meilisearch',
         ${`unified_${knowledgeBaseId}_candidate`}, ${"b".repeat(64)}, ${"c".repeat(64)},
         1, 0, 'preparing'
       )

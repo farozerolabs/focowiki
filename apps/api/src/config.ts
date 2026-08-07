@@ -1,6 +1,9 @@
 import { resolve } from "node:path";
 import { ValidationError, redactSecrets } from "./errors.js";
-import { readConfiguredSecret } from "./security/configured-secret.js";
+import {
+  parseSearchStartupConfig,
+  type SearchStartupConfig
+} from "./runtime/search-config.js";
 
 const DEFAULT_DATABASE_POOL_MAX = 10;
 const DEFAULT_SOURCE_WORKER_DATABASE_POOL_MAX = 6;
@@ -157,12 +160,7 @@ export type RuntimeConfig = {
     url: string;
     keyPrefix?: string;
   };
-  search?: {
-    endpoint: string;
-    apiKey: string;
-    metricsApiKey: string;
-    indexPrefix: string;
-  };
+  search?: SearchStartupConfig;
   ports: {
     adminApi: number;
     adminUi: number;
@@ -323,7 +321,11 @@ export function parseRuntimeConfig(env: RuntimeEnv): RuntimeConfig {
     issues
   );
   const logging = parseLoggingConfig(env, security.environment, issues);
-  const search = parseSearchConfig(env, security.environment, issues);
+  const search = parseSearchStartupConfig({
+    env,
+    environment: security.environment,
+    issues
+  });
 
   if (issues.length > 0) {
     throw new ConfigValidationError(issues.map((issue) => redactSecrets(issue)));
@@ -748,56 +750,6 @@ function requireRedisUrl(env: RuntimeEnv, field: string, issues: string[]): stri
     issues.push(`${field} must be a valid Redis URL`);
     return value;
   }
-}
-
-function parseSearchConfig(
-  env: RuntimeEnv,
-  environment: RuntimeSecurityConfig["environment"],
-  issues: string[]
-): NonNullable<RuntimeConfig["search"]> {
-  const endpoint = optionalString(env, "MEILI_HOST") ?? "http://127.0.0.1:7700";
-  const apiKey = readConfiguredSecret({
-    env,
-    valueField: "MEILI_API_KEY",
-    fileField: "MEILI_API_KEY_FILE",
-    issues
-  });
-  const metricsApiKey = readConfiguredSecret({
-    env,
-    valueField: "MEILI_METRICS_API_KEY",
-    fileField: "MEILI_METRICS_API_KEY_FILE",
-    issues
-  });
-  const indexPrefix = optionalString(env, "MEILI_INDEX_PREFIX") ?? "focowiki";
-
-  try {
-    const url = new URL(endpoint);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      issues.push("MEILI_HOST must use http or https");
-    }
-  } catch {
-    issues.push("MEILI_HOST must be a valid URL");
-  }
-
-  if (environment === "production" && !apiKey) {
-    issues.push("MEILI_API_KEY is required in production");
-  }
-  if (environment === "production" && !metricsApiKey) {
-    issues.push("MEILI_METRICS_API_KEY is required in production");
-  }
-
-  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/u.test(indexPrefix)) {
-    issues.push(
-      "MEILI_INDEX_PREFIX must start with a lowercase letter or number and contain at most 80 lowercase letters, numbers, underscores, or hyphens"
-    );
-  }
-
-  return {
-    endpoint: endpoint.replace(/\/+$/u, ""),
-    apiKey,
-    metricsApiKey: metricsApiKey || apiKey,
-    indexPrefix
-  };
 }
 
 function normalizePrefix(prefix: string, issues: string[]): string {

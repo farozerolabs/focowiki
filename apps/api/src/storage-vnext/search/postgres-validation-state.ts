@@ -20,7 +20,7 @@ type ValidationRow = {
   settings_checksum_sha256: string;
   document_checksum_sha256: string | null;
   correlation_public_id: string | null;
-  provider_task_uid: number | string | null;
+  provider_operation_ref: string | null;
 };
 
 export function createPostgresStorageVnextSearchValidationState(
@@ -51,7 +51,7 @@ export function createPostgresStorageVnextSearchValidationState(
         }
         if (
           candidate.correlation_public_id
-          || candidate.provider_task_uid !== null
+          || candidate.provider_operation_ref !== null
         ) throw repositoryError("invalid_state");
         if (
           candidate.document_checksum_sha256
@@ -83,7 +83,8 @@ export function createPostgresStorageVnextSearchValidationState(
           UPDATE focowiki.search_projections
           SET state = 'ready', revision = revision + 1, updated_at = now()
           WHERE public_id = ${input.candidatePublicId}
-            AND correlation_public_id IS NULL AND provider_task_uid IS NULL
+            AND correlation_public_id IS NULL
+            AND provider_operation_ref IS NULL
         `;
       });
     },
@@ -94,7 +95,7 @@ export function createPostgresStorageVnextSearchValidationState(
       const rows = await sql<Array<{ public_id: string }>>`
         UPDATE focowiki.search_projections
         SET state = 'failed', safe_error_code = ${input.safeErrorCode},
-            correlation_public_id = NULL, provider_task_uid = NULL,
+            correlation_public_id = NULL, provider_operation_ref = NULL,
             revision = revision + CASE
               WHEN state = 'failed' AND safe_error_code = ${input.safeErrorCode}
                 THEN 0 ELSE 1 END,
@@ -113,7 +114,7 @@ async function requireCandidate(sql: TransactionSql, publicId: string) {
   const rows = await sql<ValidationRow[]>`
     SELECT projection_role, state, document_count, schema_checksum_sha256,
            settings_checksum_sha256, document_checksum_sha256,
-           correlation_public_id, provider_task_uid
+           correlation_public_id, provider_operation_ref
     FROM focowiki.search_projections
     WHERE public_id = ${publicId}
     FOR UPDATE

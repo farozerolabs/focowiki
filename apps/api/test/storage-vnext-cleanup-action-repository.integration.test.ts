@@ -182,6 +182,7 @@ describeOwnedDatabase("storage vNext live cleanup PostgreSQL repository", () => 
       ...cleanupAction(now),
       publicId: "cleanup-candidate-object",
       domain: "candidate_projection",
+      searchProviderKind: null,
       target: {
         publicId: "object-candidate-cleanup",
         resourceKind: "superseded_candidate_object",
@@ -246,6 +247,7 @@ function cleanupAction(now: number): StorageVnextCleanupAction {
     operationPublicId: "operation-cleanup",
     knowledgeBaseId: "kb-cleanup",
     domain: "publication",
+    searchProviderKind: "meilisearch",
     target: {
       publicId: "candidate-one",
       resourceKind: "unified_search_candidate",

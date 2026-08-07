@@ -194,7 +194,8 @@ export function createStorageVnextScaleRuntimeEnvironment(input) {
     MAINTENANCE_WORKER_DATABASE_POOL_MAX: ISOLATED_MAINTENANCE_DATABASE_POOL_MAX,
     REDIS_KEY_PREFIX: proof.coordinationScope,
     S3_PREFIX: objectPrefix,
-    MEILI_INDEX_PREFIX: proof.searchScope,
+    SEARCH_PROVIDER: "meilisearch",
+    SEARCH_INDEX_PREFIX: proof.searchScope,
     MEILI_API_KEY: env.MEILI_API_KEY || required(env, "MEILI_MASTER_KEY"),
     MEILI_METRICS_API_KEY:
       env.MEILI_METRICS_API_KEY || env.MEILI_API_KEY || required(env, "MEILI_MASTER_KEY"),

@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { loadRuntimeConfig } from "./config.js";
 import { runRuntimeDeploymentHealthcheck } from "./runtime/deployment-healthcheck.js";
+import { assertNodeJiebaRuntimeAvailable } from
+  "./infrastructure/tokenization/nodejieba-tokenizer.js";
 import {
   runStorageVnextPublicationWorker
 } from "./storage-vnext/publication/production-runtime.js";
@@ -11,7 +13,12 @@ loadLocalEnvFile();
 const config = loadRuntimeConfig();
 
 if (process.argv.includes("--healthcheck")) {
-  await runRuntimeDeploymentHealthcheck(config, { role: "publication-worker" });
+  await runRuntimeDeploymentHealthcheck(config, {
+    role: "publication-worker",
+    ...(config.search?.provider === "opensearch"
+      ? { assertTokenizer: assertNodeJiebaRuntimeAvailable }
+      : {})
+  });
 } else {
   await runStorageVnextPublicationWorker(config);
 }

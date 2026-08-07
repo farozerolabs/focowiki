@@ -254,12 +254,14 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
     `;
     await sql`
       INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_index_uid,
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid,
         schema_checksum_sha256, settings_checksum_sha256,
         document_checksum_sha256, revision, document_count, state
       ) VALUES (
         'search-settings-revision-active', 'kb-settings-revision-isolation',
-        'active', 'focowiki_kb_settings_revision_isolation_active',
+        'active', 'meilisearch',
+        'focowiki_kb_settings_revision_isolation_active',
         ${"b".repeat(64)}, ${"c".repeat(64)}, ${"d".repeat(64)}, 1, 2, 'ready'
       )
     `;
@@ -339,6 +341,7 @@ function liveWork(input: {
     publicId: input.publicId,
     knowledgeBaseId: "kb-settings-revision-isolation",
     kind: "source" as const,
+    searchProviderKind: null,
     state: "queued" as const,
     operationRevision: 1,
     settingsRevisionPublicId: input.settingsRevisionPublicId,

@@ -51,7 +51,8 @@ describe("Meilisearch architecture contract", () => {
 
   it("separates stable search responsibilities", () => {
     for (const path of [
-      "apps/api/src/application/ports/search-engine-transport.ts",
+      "apps/api/src/application/ports/search-provider-runtime.ts",
+      "apps/api/src/infrastructure/meilisearch/meilisearch-client-port.ts",
       "apps/api/src/storage-vnext/search/documents.ts",
       "apps/api/src/storage-vnext/search/markdown-segmentation.ts",
       "apps/api/src/storage-vnext/search/candidate-lifecycle.ts",
@@ -73,5 +74,20 @@ describe("Meilisearch architecture contract", () => {
     expect(searchRoutes).not.toMatch(/\/infrastructure\//u);
     expect(searchRoutes).not.toContain("SearchEngineTransport");
     expect(searchRoutes).toContain("services.api.searchFiles");
+  });
+
+  it("keeps Meilisearch-only validation explicit while using common search configuration", () => {
+    for (const path of [
+      "apps/api/src/storage-vnext/bootstrap/main.ts",
+      "apps/api/scripts/capture-storage-vnext-before-state.ts",
+      "scripts/validation/storage-vnext-restore-rebuild.ts",
+      "scripts/validation/storage-vnext-full-restore-rebuild.ts",
+      "scripts/validation/lib/storage-vnext-scale-scope.mjs"
+    ]) {
+      const source = read(path);
+      expect(source, path).toContain("SEARCH_PROVIDER");
+      expect(source, path).toContain("SEARCH_INDEX_PREFIX");
+      expect(source, path).not.toContain("MEILI_INDEX_PREFIX");
+    }
   });
 });

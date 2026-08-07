@@ -421,7 +421,8 @@ function assertExactRuntimeScope(): void {
     decodeURIComponent(url.pathname.replace(/^\//u, "")) !== proof.postgresScope
     || `${requiredEnvironment("S3_PREFIX").replace(/^\/+|\/+$/gu, "")}/`
       !== proof.objectScope
-    || requiredEnvironment("MEILI_INDEX_PREFIX") !== proof.searchScope
+    || requiredEnvironment("SEARCH_PROVIDER") !== "meilisearch"
+    || requiredEnvironment("SEARCH_INDEX_PREFIX") !== proof.searchScope
     || !proofPath.startsWith(`${proof.filesystemScope}/`)
   ) throw new Error("Runtime environment does not match the exact owned-scope proof");
 }

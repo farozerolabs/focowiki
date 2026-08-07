@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { SearchEngineSettings } from "../../application/ports/search-engine-transport.js";
+import type { SearchProviderIndexDefinition } from
+  "../../application/ports/search-provider-runtime.js";
 
 export function createStorageVnextSearchIndexUid(input: {
   indexUidPrefix: string;
@@ -35,10 +36,13 @@ export function createStorageVnextSearchTaskCorrelation(input: {
 }
 
 export function createStorageVnextSearchSettingsChecksum(
-  settings: SearchEngineSettings
+  settings: SearchProviderIndexDefinition
 ): string {
-  const normalized = structuredClone(settings);
-  normalized.typoTolerance.disableOnAttributes.sort((left, right) =>
+  const normalized = {
+    ...structuredClone(settings),
+    typoDisabledAttributes: [...settings.typoDisabledAttributes]
+  };
+  normalized.typoDisabledAttributes.sort((left, right) =>
     left.localeCompare(right)
   );
   return digest(canonicalJson(normalized));

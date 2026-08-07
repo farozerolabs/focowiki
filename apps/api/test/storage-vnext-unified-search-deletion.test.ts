@@ -2,23 +2,35 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { MeilisearchClientPort } from
+  "../src/infrastructure/meilisearch/meilisearch-client-port.js";
+import type { SearchProviderKind } from
+  "../src/application/ports/search-provider-runtime.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 
 type SearchDeletion = {
   deleteSourceScope(input: {
     knowledgeBaseId: string;
     operationPublicId: string;
+    activeProviderKind: SearchProviderKind | null;
     activeProviderIndexUid: string | null;
+    candidateProviderKind: SearchProviderKind | null;
     candidateProviderIndexUid: string | null;
     sourceFilePublicIds: readonly string[];
   }): Promise<{
     deletedDocuments: boolean;
     deletedIndexes: number;
     deletedTasks: number;
+    processedProviderKind: SearchProviderKind;
+    remainingProviderKind: SearchProviderKind | null;
   }>;
   deleteKnowledgeBaseScope(input: {
     knowledgeBaseId: string;
     operationPublicId: string;
+    activeProviderKind: SearchProviderKind | null;
     activeProviderIndexUid: string | null;
+    candidateProviderKind: SearchProviderKind | null;
     candidateProviderIndexUid: string | null;
     finishedBefore: string;
     taskFrom: number | null;
@@ -26,11 +38,13 @@ type SearchDeletion = {
     deletedIndexes: number;
     deletedTasks: number;
     nextTaskFrom: number | null;
+    processedProviderKind: SearchProviderKind;
+    remainingProviderKind: SearchProviderKind | null;
   }>;
 };
 
 type SearchDeletionFactory = (input: {
-  transport: ReturnType<typeof createFixture>["transport"];
+  provider: ReturnType<typeof createFixture>["provider"];
   indexUidPrefix: string;
   maximumPollAttempts: number;
   maximumSourceFiles: number;
@@ -57,7 +71,7 @@ describe("storage vNext unified search deletion", () => {
     const fixture = createFixture();
     expect(factory).toBeTypeOf("function");
     expect(() => factory?.({
-      transport: fixture.transport,
+      provider: fixture.provider,
       indexUidPrefix: "unified",
       maximumPollAttempts: 1_200,
       maximumSourceFiles: 100,
@@ -73,20 +87,22 @@ describe("storage vNext unified search deletion", () => {
     await expect(deletion.deleteSourceScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: "meilisearch",
       candidateProviderIndexUid: "unified_kb_search_delete_candidate",
       sourceFilePublicIds: ["file-search-delete"]
     })).resolves.toEqual({
       deletedDocuments: true,
       deletedIndexes: 1,
-      deletedTasks: 2
+      deletedTasks: 0,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: null
     });
     expect(fixture.transport.deleteDocuments).toHaveBeenCalledTimes(1);
     expect(fixture.transport.deleteDocuments).toHaveBeenCalledWith({
       indexUid: "unified_kb_search_delete_active",
-      filter: expect.stringContaining(
-        'sourceFilePublicId IN ["file-search-delete"]'
-      ),
+      filter: expect.stringContaining('sourceFilePublicId = "file-search-delete"'),
       correlation: expect.stringMatching(/^deletion-documents:/u)
     });
     expect(fixture.transport.deleteIndex).toHaveBeenCalledWith(
@@ -95,9 +111,7 @@ describe("storage vNext unified search deletion", () => {
     expect(fixture.transport.deleteIndex).not.toHaveBeenCalledWith(
       "unified_kb_search_delete_active"
     );
-    expect(fixture.transport.deleteFinishedTasks).toHaveBeenCalledWith({
-      taskUids: [100, 101]
-    });
+    expect(fixture.transport.deleteFinishedTasks).not.toHaveBeenCalled();
   });
 
   it("deduplicates and bounds one directory source page", async () => {
@@ -107,21 +121,25 @@ describe("storage vNext unified search deletion", () => {
     await deletion.deleteSourceScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       sourceFilePublicIds: ["file-a", "file-b", "file-a"]
     });
     expect(fixture.transport.deleteDocuments).toHaveBeenCalledWith(
       expect.objectContaining({
-        filter: expect.stringContaining(
-          'sourceFilePublicId IN ["file-a", "file-b"]'
+        filter: expect.stringMatching(
+          /sourceFilePublicId = "file-a".*sourceFilePublicId = "file-b"/u
         )
       })
     );
     await expect(deletion.deleteSourceScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       sourceFilePublicIds: ["a", "b", "c", "d"]
     })).rejects.toMatchObject({ code: "invalid_input" });
@@ -134,24 +152,50 @@ describe("storage vNext unified search deletion", () => {
     await expect(deletion.deleteKnowledgeBaseScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: "meilisearch",
       candidateProviderIndexUid: "unified_kb_search_delete_candidate",
       finishedBefore: "2026-08-01T05:59:00.000Z",
       taskFrom: null
     })).resolves.toEqual({
       deletedIndexes: 2,
-      deletedTasks: 4,
-      nextTaskFrom: null
+      deletedTasks: 0,
+      nextTaskFrom: null,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: null
     });
     expect(fixture.transport.deleteIndex.mock.calls.map((call) => call[0]))
       .toEqual([
         "unified_kb_search_delete_active",
         "unified_kb_search_delete_candidate"
       ]);
-    expect(fixture.transport.deleteFinishedTasks).toHaveBeenCalledWith({
-      taskUids: [41, 42, 100, 101]
-    });
+    expect(fixture.transport.deleteFinishedTasks).not.toHaveBeenCalled();
     expect(fixture.transport.deleteDocuments).not.toHaveBeenCalled();
+  });
+
+  it("never sends an index owned by another provider to the selected provider", async () => {
+    const fixture = createFixture();
+    const deletion = createDeletion(fixture);
+
+    await expect(deletion.deleteKnowledgeBaseScope({
+      knowledgeBaseId: "kb-search-delete",
+      operationPublicId: "operation-search-delete",
+      activeProviderKind: "opensearch",
+      activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: "meilisearch",
+      candidateProviderIndexUid: "unified_kb_search_delete_candidate",
+      finishedBefore: "2026-08-01T05:59:00.000Z",
+      taskFrom: null
+    })).resolves.toEqual({
+      deletedIndexes: 1,
+      deletedTasks: 0,
+      nextTaskFrom: null,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: "opensearch"
+    });
+    expect(fixture.transport.deleteIndex.mock.calls.map((call) => call[0]))
+      .toEqual(["unified_kb_search_delete_candidate"]);
   });
 
   it("leaves unrelated indexes and finished tasks untouched", async () => {
@@ -161,7 +205,9 @@ describe("storage vNext unified search deletion", () => {
     await deletion.deleteKnowledgeBaseScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       finishedBefore: "2026-08-01T05:59:00.000Z",
       taskFrom: null
@@ -170,7 +216,7 @@ describe("storage vNext unified search deletion", () => {
     expect(fixture.tasks.has(99)).toBe(true);
   });
 
-  it("deletes knowledge-base task history after candidate identities are gone", async () => {
+  it("leaves provider task history to optional maintenance", async () => {
     const fixture = createFixture();
     const familyPrefix = `unified_${createHash("sha256")
       .update("kb-search-delete").digest("hex").slice(0, 16)}_`;
@@ -197,14 +243,17 @@ describe("storage vNext unified search deletion", () => {
     await expect(deletion.deleteKnowledgeBaseScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: null,
       activeProviderIndexUid: null,
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       finishedBefore: "2026-08-01T05:59:00.000Z",
       taskFrom: null
-    })).resolves.toMatchObject({ deletedTasks: 1, nextTaskFrom: null });
+    })).resolves.toMatchObject({ deletedTasks: 0, nextTaskFrom: null });
 
-    expect(fixture.tasks.has(43)).toBe(false);
+    expect(fixture.tasks.has(43)).toBe(true);
     expect(fixture.tasks.has(99)).toBe(true);
+    expect(fixture.transport.listFinishedTasks).not.toHaveBeenCalled();
   });
 
   it("reports a provider task failure without issuing a duplicate retry task", async () => {
@@ -215,14 +264,16 @@ describe("storage vNext unified search deletion", () => {
     await expect(deletion.deleteSourceScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       sourceFilePublicIds: ["file-search-delete"]
     })).rejects.toMatchObject({ code: "provider_task_failed" });
     expect(fixture.transport.deleteDocuments).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects malformed provider task timestamps before deleting task history", async () => {
+  it("does not inspect raw provider task timestamps during exact deletion", async () => {
     const fixture = createFixture();
     fixture.transport.listFinishedTasks.mockResolvedValueOnce({
       tasks: [{
@@ -238,11 +289,14 @@ describe("storage vNext unified search deletion", () => {
     await expect(deletion.deleteKnowledgeBaseScope({
       knowledgeBaseId: "kb-search-delete",
       operationPublicId: "operation-search-delete",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: "unified_kb_search_delete_active",
+      candidateProviderKind: null,
       candidateProviderIndexUid: null,
       finishedBefore: "2026-08-01T05:59:00.000Z",
       taskFrom: null
-    })).rejects.toMatchObject({ code: "invalid_input" });
+    })).resolves.toMatchObject({ deletedIndexes: 1, deletedTasks: 0 });
+    expect(fixture.transport.listFinishedTasks).not.toHaveBeenCalled();
     expect(fixture.transport.deleteFinishedTasks).not.toHaveBeenCalled();
   });
 });
@@ -251,7 +305,7 @@ function createDeletion(fixture: ReturnType<typeof createFixture>) {
   expect(factory).toBeTypeOf("function");
   if (!factory) throw new Error("Storage vNext unified search deletion is unavailable");
   return factory({
-    transport: fixture.transport,
+    provider: fixture.provider,
     indexUidPrefix: "unified",
     maximumPollAttempts: 2,
     maximumSourceFiles: 3,
@@ -310,8 +364,12 @@ function createFixture() {
       return { taskUid: nextTaskUid++ };
     })
   };
+  const provider = createMeilisearchProviderRuntime(
+    transport as unknown as MeilisearchClientPort
+  );
   return {
     transport,
+    provider,
     indexes,
     tasks,
     get failTask() {

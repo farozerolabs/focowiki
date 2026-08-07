@@ -1,4 +1,5 @@
-import type { SearchEngineTransport } from "../../application/ports/search-engine-transport.js";
+import type { SearchProviderQueryPort } from
+  "../../application/ports/search-provider-runtime.js";
 import {
   STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
@@ -17,7 +18,7 @@ const REQUIRED_KINDS: readonly StorageVnextSearchValidationKind[] = [
 ];
 
 export async function validateStorageVnextSearchQueries(input: {
-  transport: SearchEngineTransport;
+  query: SearchProviderQueryPort;
   hydration: StorageVnextSearchHydrationPort;
   indexUid: string;
   knowledgeBaseId: string;
@@ -29,8 +30,8 @@ export async function validateStorageVnextSearchQueries(input: {
   const processingTimes: number[] = [];
   for (const validationCase of input.cases) {
     const request = searchRequest(input, validationCase);
-    const first = await input.transport.search(request);
-    const second = await input.transport.search(request);
+    const first = await input.query.query(request);
+    const second = await input.query.query(request);
     const firstCandidates = candidateIdentities(first.hits);
     const secondCandidates = candidateIdentities(second.hits);
     if (
@@ -60,24 +61,39 @@ function searchRequest(
   return {
     indexUid: input.indexUid,
     query: validationCase.query,
-    filter: [
-      `knowledgeBaseId = ${JSON.stringify(input.knowledgeBaseId)}`,
-      `documentKind = ${JSON.stringify(validationCase.documentKind)}`,
-      `schemaVersion = ${JSON.stringify(schemaVersion)}`
-    ].join(" AND "),
+    evidenceFamilies: evidenceFamilies(validationCase.kind),
+    filters: {
+      kind: "and" as const,
+      operands: [{
+        kind: "equals" as const,
+        field: "knowledgeBaseId" as const,
+        value: input.knowledgeBaseId
+      }, {
+        kind: "equals" as const,
+        field: "documentKind" as const,
+        value: validationCase.documentKind
+      }, {
+        kind: "equals" as const,
+        field: "schemaVersion" as const,
+        value: schemaVersion
+      }]
+    },
     limit: validationCase.limit,
-    attributesToSearchOn: [...validationCase.attributesToSearchOn],
-    attributesToRetrieve: [
+    searchFields: [...validationCase.attributesToSearchOn],
+    returnFields: [
       "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath"
     ],
-    attributesToCrop: [],
+    continuation: null,
     cropLength: 1,
+    deadlineMs: input.maxP95ProcessingTimeMs,
     matchingStrategy: "all" as const,
-    distinct: "sourceFilePublicId"
+    distinctBy: "sourceFilePublicId" as const
   };
 }
 
-function candidateIdentities(hits: Array<Record<string, unknown>>) {
+function candidateIdentities(hits: Awaited<ReturnType<
+  SearchProviderQueryPort["query"]
+>>["hits"]) {
   const unique = new Map<string, {
     sourceFilePublicId: string;
     sourceRevisionPublicId: string;
@@ -93,6 +109,17 @@ function candidateIdentities(hits: Array<Record<string, unknown>>) {
     if (!unique.has(sourceFilePublicId)) unique.set(sourceFilePublicId, candidate);
   }
   return [...unique.values()];
+}
+
+function evidenceFamilies(
+  kind: StorageVnextSearchValidationKind
+): readonly ("exact" | "text" | "phrase" | "typo" | "jieba" | "graph")[] {
+  if (kind === "exact" || kind === "title" || kind === "path") return ["exact"];
+  if (kind === "phrase") return ["phrase", "text"];
+  if (kind === "typo") return ["typo", "text"];
+  if (kind === "chinese" || kind === "mixed_script") return ["jieba", "text"];
+  if (kind === "graph_seed") return ["graph", "text"];
+  return ["text"];
 }
 
 async function hydrateCandidates(

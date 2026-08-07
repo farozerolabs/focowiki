@@ -149,6 +149,36 @@ test("allows only the approved progressive-navigation frozen surfaces", () => {
   );
 });
 
+test("allows only the exact approved OpenSearch cross-scope files", () => {
+  const approvedPaths = [
+    ".gitignore",
+    "README.zh-CN.md",
+    "apps/api/package.json",
+    "docs/index.md",
+    "docs/zh-CN/index.md"
+  ];
+
+  for (const path of approvedPaths) {
+    assert.deepEqual(
+      classifyStorageVnextPath(path),
+      {
+        policy: "allow",
+        category: "explicit-task-exception",
+        exception: STORAGE_VNEXT_ALLOWLIST.explicitExceptions.find(
+          (exception) => exception.path === path
+        )
+      }
+    );
+  }
+
+  for (const path of [
+    ".gitignore.local",
+    "README.ja.md",
+    "apps/admin/package.json",
+    "docs/search-internals.md"
+  ]) assert.equal(classifyStorageVnextPath(path).policy, "deny");
+});
+
 test("allows an existing settings field-list edit", () => {
   const before = [
     "const workerNumberFields = [",

@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  createDynamicRuntimeMeilisearchSearchTransport,
   createRuntimeMeilisearchTransportConfig
 } from "../src/infrastructure/meilisearch/runtime-meilisearch-transport.js";
 
@@ -12,6 +11,7 @@ describe("runtime Meilisearch transport", () => {
   it("always includes the diagnostics key in transport configuration", () => {
     expect(createRuntimeMeilisearchTransportConfig(
       {
+        provider: "meilisearch",
         endpoint: "http://search.internal:7700",
         apiKey: "scoped-runtime-key",
         metricsApiKey: "global-diagnostics-key",
@@ -32,59 +32,32 @@ describe("runtime Meilisearch transport", () => {
     });
   });
 
-  it("recreates the live search transport only when saved settings change", async () => {
-    let options = { timeoutMs: 3_000, maxAttempts: 5, retryDelayMs: 2_000 };
-    const search = vi.fn(async () => ({
-      hits: [],
-      estimatedTotalHits: 0,
-      processingTimeMs: 1
-    }));
-    const createTransport = vi.fn(() => ({ search }) as never);
-    const transport = createDynamicRuntimeMeilisearchSearchTransport(
-      {
-        endpoint: "http://search.internal:7700",
-        apiKey: "scoped-runtime-key",
-        metricsApiKey: "global-diagnostics-key",
-        indexPrefix: "focowiki"
-      },
-      async () => options,
-      { createTransport }
-    );
-
-    await transport.search({} as never);
-    await transport.search({} as never);
-    options = { timeoutMs: 4_000, maxAttempts: 6, retryDelayMs: 3_000 };
-    await transport.search({} as never);
-
-    expect(createTransport).toHaveBeenCalledTimes(2);
-    expect(createTransport).toHaveBeenLastCalledWith(
-      expect.anything(),
-      options
-    );
-    expect(search).toHaveBeenCalledTimes(3);
-  });
-
-  it("keeps every runtime entrypoint behind the diagnostics-aware factory", () => {
+  it("keeps every runtime entrypoint behind the selected-provider factory", () => {
     const main = readFileSync(resolve(rootDir, "apps/api/src/main.ts"), "utf8");
-    expect(main).toContain("createDynamicRuntimeMeilisearchSearchTransport");
+    expect(main).toContain("createDynamicRuntimeSearchQueryProvider");
+    const selectedProvider = readFileSync(resolve(
+      rootDir,
+      "apps/api/src/runtime/search-provider.ts"
+    ), "utf8");
     for (const field of ["requestTimeoutMs", "maxAttempts", "retryDelayMs"]) {
-      expect(main).toContain(`snapshot.search.${field}`);
+      expect(selectedProvider).toContain(`input.settings.${field}`);
     }
     const sourceWorker = readFileSync(resolve(
       rootDir,
       "apps/api/src/storage-vnext/source-processing/production-runtime.ts"
     ), "utf8");
-    expect(sourceWorker).toContain("createDynamicRuntimeMeilisearchSearchTransport");
-    for (const path of [
+    expect(sourceWorker).toContain("createDynamicRuntimeSearchQueryProvider");
+    const publicationPipeline = readFileSync(resolve(
+      rootDir,
       "apps/api/src/storage-vnext/publication/production-pipeline.ts"
-    ]) {
-      const source = readFileSync(resolve(rootDir, path), "utf8");
-      expect(source).toContain("createRuntimeMeilisearchTransport");
-      expect(source).not.toContain("createMeilisearchTransport({");
-    }
+    ), "utf8");
+    expect(publicationPipeline).toContain("searchProvider: SearchProviderRuntime");
+    expect(publicationPipeline).not.toMatch(/infrastructure\/(?:meilisearch|opensearch)/u);
+    expect(selectedProvider).toContain("createRuntimeMeilisearchTransport");
+    expect(selectedProvider).toContain("createOpenSearchClient");
     expect(readFileSync(resolve(
       rootDir,
       "apps/api/src/storage-vnext/maintenance/production-runtime.ts"
-    ), "utf8")).toContain("createStorageVnextProductionPublicationPipeline");
+    ), "utf8")).toContain("createRuntimeSearchProvider");
   });
 });

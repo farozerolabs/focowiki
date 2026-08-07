@@ -39,6 +39,7 @@ describe("storage vNext database baseline", () => {
       "object_registrations",
       "object_owners",
       "search_projections",
+      "meilisearch_projection_maintenance",
       "active_snapshots",
       "release_candidates",
       "release_candidate_changed_facts",

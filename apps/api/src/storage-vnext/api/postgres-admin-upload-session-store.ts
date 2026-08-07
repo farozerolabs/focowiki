@@ -55,10 +55,15 @@ export async function findIdempotentUploadSession(
   input: { knowledgeBaseId: string; idempotencyKey: string; requestHash: string }
 ) {
   const rows = await sql<Array<{ request_hash: string; session_public_id: string | null }>>`
-    SELECT idempotency.request_hash, session.public_id AS session_public_id
+    SELECT idempotency.request_hash,
+           coalesce(session.public_id, result.correlation_public_id) AS session_public_id
     FROM focowiki.operation_idempotency idempotency
     LEFT JOIN focowiki.upload_sessions session
       ON session.operation_public_id = idempotency.operation_public_id
+    LEFT JOIN focowiki.operation_results result
+      ON result.knowledge_base_id = idempotency.knowledge_base_id
+     AND result.public_id = idempotency.operation_public_id
+     AND result.operation_kind = 'upload'
     WHERE idempotency.knowledge_base_id = ${input.knowledgeBaseId}
       AND idempotency.idempotency_key = ${input.idempotencyKey}
     FOR UPDATE OF idempotency

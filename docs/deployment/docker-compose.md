@@ -14,23 +14,54 @@ Production deployment requires:
 | --- | --- |
 | PostgreSQL | Knowledge bases, file records, processing state, settings, OpenAPI keys, and relationship data. |
 | Redis | Login sessions, rate limits, pagination, and short-lived task state. |
-| Meilisearch | One search index for each knowledge base. |
+| OpenSearch or Meilisearch | One search index for each knowledge base. OpenSearch 3.8.0 is the bundled default. |
 | S3-compatible storage | Uploaded Markdown and generated knowledge-base files. |
 | Reverse proxy | HTTPS access to Admin UI, Admin API, and Developer OpenAPI. |
 
-The template starts PostgreSQL, Redis, and an optional private Meilisearch service. Configure an external S3-compatible service in `.env`.
+The template starts PostgreSQL, Redis, and the selected private search service. Configure an external S3-compatible service in `.env`. An external OpenSearch or Meilisearch service can replace the bundled search container.
 
 ## Prepare Files
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps runtime-secrets logs backups
+mkdir -p data/postgres data/redis data/opensearch data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps opensearch-security runtime-secrets logs backups
 ```
 
 Fill `.env` before starting. See [Environment Configuration](./environment.md) for every production variable. Settings changed after startup are documented in [Admin Settings](./admin-settings.md).
 
 Keep the real `.env` and copied `docker-compose.yml` out of git.
+
+## Select a Search Provider
+
+The copied environment template starts bundled OpenSearch 3.8.0 by default:
+
+```env
+SEARCH_PROVIDER=opensearch
+COMPOSE_PROFILES=opensearch
+OPENSEARCH_URL=https://opensearch:9200
+OPENSEARCH_AUTH_MODE=basic
+```
+
+Set one strong administrator password in `.env`:
+
+```env
+OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
+```
+
+No TLS files need to be prepared. Before bundled OpenSearch starts, `search-init` creates a deployment-unique private CA and certificates, a complete OpenSearch Security configuration, and exactly two internal identities: the configured administrator and a generated runtime identity limited to `SEARCH_INDEX_PREFIX`. It stores the private security state in `./opensearch-security` and the runtime password and trusted CA in `./runtime-secrets`. A complete valid set is reused without changes on every restart. Missing, partial, corrupt, unsafe, near-expiry, or configuration-mismatched state stops startup instead of replacing the deployment identity. The OpenSearch demo security installer remains disabled for the entire startup.
+
+API and worker containers receive only the generated runtime identity and trusted CA; they do not receive the administrator password or private keys. The same `search-init` service prepares Meilisearch runtime access when the Meilisearch profile is selected.
+
+To use bundled Meilisearch instead, set:
+
+```env
+SEARCH_PROVIDER=meilisearch
+COMPOSE_PROFILES=meilisearch
+MEILI_HOST=http://meilisearch:7700
+```
+
+To use an external service, leave `COMPOSE_PROFILES` empty and set the selected provider's external endpoint and authentication fields. OpenSearch supports basic authentication with optional private CA trust and AWS SigV4 with service `es` or `aoss`. No bundled search container or init service starts in external mode.
 
 ## Services Started by the Template
 
@@ -44,10 +75,11 @@ Keep the real `.env` and copied `docker-compose.yml` out of git.
 | `migrate` | Checks and updates the database before application services start. |
 | `postgres` | PostgreSQL database. |
 | `redis` | Redis service. |
-| `meilisearch` | Optional included search service, enabled by `COMPOSE_PROFILES=bundled-search`. |
-| `meilisearch-init` | Prepares search access during startup. |
+| `search-init` | Prepares the selected bundled search service; for OpenSearch it generates or validates TLS, internal identities, and prefix-scoped authorization before OpenSearch starts. |
+| `opensearch` | Bundled OpenSearch 3.8.0, enabled by `COMPOSE_PROFILES=opensearch`. |
+| `meilisearch` | Bundled Meilisearch alternative, enabled by `COMPOSE_PROFILES=meilisearch`. |
 
-The production template publishes Admin UI, Admin API, and Developer OpenAPI only on `127.0.0.1`. PostgreSQL, Redis, and Meilisearch remain private to the Compose network.
+The production template publishes Admin UI, Admin API, and Developer OpenAPI only on `127.0.0.1`. PostgreSQL, Redis, and both bundled search services remain private to the Compose network. Only the selected search profile starts.
 
 ## Pull Images
 
@@ -88,7 +120,7 @@ docker compose -f docker-compose.yml ps
 docker compose -f docker-compose.yml logs --tail=200 api source-worker publication-worker maintenance-worker
 ```
 
-All long-running services should report healthy. If startup fails, check the first error from `migrate`, `meilisearch-init`, or the affected service. Common causes are unreachable infrastructure, incorrect credentials, invalid public origins, or an unsupported database from an older release.
+All long-running services should report healthy. If startup fails, check the first error from `migrate`, the selected provider init service, or the affected service. Common causes are unreachable infrastructure, incorrect credentials, invalid TLS trust, invalid public origins, or an unsupported database from an older release.
 
 After startup:
 
@@ -113,11 +145,11 @@ pnpm compose:clean
 
 Use `docker compose logs -f` for container output. Product log files are stored in `./logs`; limits are documented in [Environment Configuration](./environment.md#runtime).
 
-`pnpm compose:clean` removes containers, Docker-managed volumes, orphans, and local image copies for this stack. Directory data under `data`, `runtime-secrets`, and `logs` remains on disk. Delete those directories only when you intend to remove the deployment data.
+`pnpm compose:clean` removes containers, Docker-managed volumes, orphans, and local image copies for this stack. Directory data under `data`, `opensearch-security`, `runtime-secrets`, and `logs` remains on disk. Delete those directories only when you intend to remove the deployment data.
 
 ## Update an Existing Deployment
 
-Read the release notes before every update. The current storage release cannot reuse a database created by releases from before the breaking storage change. For that upgrade, keep a verified backup of the old deployment, start with empty PostgreSQL, Redis, Meilisearch, and S3 locations, and import the Markdown files again. Keep the previous deployment until file counts, paths, previews, search, relationships, and API access have been checked.
+Read the release notes before every update. This breaking search-provider release cannot reuse a database created before provider selection was introduced. Keep a verified backup of the old deployment, start with empty PostgreSQL, Redis, selected-provider, and S3 locations, and import the Markdown files again. Keep the previous deployment until file counts, paths, previews, search, relationships, and API access have been checked. There is no compatibility migration for this release.
 
 For a later release that supports the current database format:
 
@@ -154,9 +186,11 @@ docker compose -f docker-compose.yml stop api source-worker publication-worker m
 pnpm compose:backup
 ```
 
-The command refuses to continue while one of those services is running. It creates a checksum-protected archive containing the PostgreSQL backup, required S3 files, deployment settings, `.env`, the Compose file, and the private files needed by the deployment. Store the archive and its `.sha256` file outside the server.
+The command refuses to continue while one of those services is running. It creates a checksum-protected archive containing the PostgreSQL backup, required S3 files, deployment settings, `.env`, the Compose file, and `runtime-secrets`. Store the archive and its `.sha256` file outside the server.
 
-Redis and Meilisearch data can be recreated. To include a compatible Meilisearch snapshot, pass both `--meilisearch-snapshot` and `--meilisearch-snapshot-sha256`.
+For bundled OpenSearch, also copy the complete stopped `opensearch-security` directory into encrypted deployment backup storage. Keep it together with the matching `.env`, `runtime-secrets`, and OpenSearch data backup. The generated private keys are not included in the standard backup archive.
+
+Redis and search-provider indexes can be recreated. To include a compatible Meilisearch snapshot, pass both `--meilisearch-snapshot` and `--meilisearch-snapshot-sha256`. The bundled backup command does not package OpenSearch snapshots; use your OpenSearch provider's snapshot procedure if you need one, or rebuild each knowledge-base index after restore.
 
 If the deployment uses an explicit Compose project name, pass the same `--project-name <name>` option to both backup and restore commands.
 
@@ -186,18 +220,41 @@ Restore into an empty target and keep a separate backup of any existing target d
 
    Restore validates the archive and refuses a non-empty database, S3 prefix, or `runtime-secrets` target.
 
-4. Use the same API and Admin image versions recorded for the backup.
+4. If bundled OpenSearch data is being restored, restore its matching complete `opensearch-security` directory before starting OpenSearch. Do not combine its files with assets from another deployment.
 
-5. Run the database command and start the stack.
+5. Use the same API and Admin image versions recorded for the backup.
+
+6. Run the database command and start the stack.
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-6. If no compatible Meilisearch snapshot was restored, run **Maintain index** for each knowledge base.
+7. If no compatible selected-provider snapshot was restored, run **Maintain index** for each knowledge base.
 
 Before accepting new writes, verify knowledge-base counts, file paths, previews, search, relationship navigation, Admin UI login, Developer OpenAPI health, and worker health.
+
+## Switch Search Providers
+
+Switching providers does not copy or automatically rebuild indexes.
+
+1. Stop the stack and preserve the current provider data until validation finishes.
+2. Change `SEARCH_PROVIDER`, the matching endpoint and authentication fields, and `COMPOSE_PROFILES` (`opensearch`, `meilisearch`, or empty for an external service).
+3. Start the stack and verify service health.
+4. Existing knowledge bases continue to support tree, content, generated-file, graph, settings, and non-search Developer OpenAPI reads. Search reports a temporary unavailable response until adoption finishes.
+5. Use **Maintain index** once for each existing knowledge base. A new validated index is built in the selected provider before it becomes active.
+6. Verify search and normal publication, then retire the old provider data according to your backup policy.
+
+Switching back follows the same steps. An old physical index is never reactivated automatically. The Developer OpenAPI request and response schemas do not change when the provider changes.
+
+If search remains unavailable, confirm that the runtime reports the intended provider, the endpoint is reachable from every container, TLS and credentials are valid, and **Maintain index** completed for that knowledge base. Do not repeatedly restart workers while a maintenance operation is running.
+
+## Rotate Bundled OpenSearch TLS
+
+Ordinary restarts never rotate certificates. To rotate them, stop the complete stack and back up `opensearch-security`, `runtime-secrets`, and OpenSearch data. Move the existing `opensearch-security` directory, `runtime-secrets/opensearch-password`, and `runtime-secrets/opensearch-ca.pem` together to protected backup storage, then create a new empty `opensearch-security` directory. Keep every unrelated file in `runtime-secrets` unchanged. Start the stack once and verify OpenSearch health, Admin search, and Developer OpenAPI search before retiring the previous matching security backup.
+
+If startup reports `OpenSearch security assets are incomplete or invalid`, keep the failed state unchanged for diagnosis. The initializer does not repair an incomplete security-directory and runtime-password pair. Restore the matching security directory, password file, and CA file from one backup, or follow the stopped-stack rotation procedure. Do not remove only one generated file or copy certificates between deployments.
 
 ## Capacity Notes
 

@@ -272,7 +272,9 @@ test("derives runtime endpoints only inside the exact owned proof scope", () => 
     environment.S3_PREFIX,
     "focowiki-validation/svnext-20260803T120000Z-26a200000001"
   );
-  assert.equal(environment.MEILI_INDEX_PREFIX, "svnext_20260803t120000z_26a200000001_");
+  assert.equal(environment.SEARCH_PROVIDER, "meilisearch");
+  assert.equal(environment.SEARCH_INDEX_PREFIX, "svnext_20260803t120000z_26a200000001_");
+  assert.equal(environment.MEILI_INDEX_PREFIX, undefined);
   assert.equal(
     environment.REDIS_KEY_PREFIX,
     "focowiki:validation:svnext-20260803T120000Z-26a200000001:"

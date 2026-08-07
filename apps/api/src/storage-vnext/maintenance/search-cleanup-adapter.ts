@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 type SearchCleanupPort = {
   cleanupOrphanIndexes(input: {
     updatedBefore: string;
-    offset: number;
-  }): Promise<{ deleted: number; nextOffset: number | null }>;
+    continuation: string | null;
+  }): Promise<{ deleted: number; continuation: string | null }>;
   cleanupFinishedTasks(input: {
     finishedBefore: string;
-    from: number | null;
-  }): Promise<{ deleted: number; next: number | null }>;
+    continuation: string | null;
+  }): Promise<{ deleted: number; continuation: string | null }>;
   compactHighWater(input: {
     compactedBefore: string;
     correlationPublicId: string;
@@ -51,33 +51,33 @@ export function createStorageVnextMaintenanceSearchCleanupAdapter(input: {
   };
 
   async function cleanupOrphanPages(updatedBefore: string): Promise<number> {
-    let offset = 0;
+    let continuation: string | null = null;
     let deleted = 0;
     for (let page = 0; page < input.maximumPages; page += 1) {
       const result = await input.cleanup.cleanupOrphanIndexes({
         updatedBefore,
-        offset
+        continuation
       });
-      assertPageResult(result.deleted, result.nextOffset);
+      assertPageResult(result.deleted, result.continuation);
       deleted += result.deleted;
-      if (result.nextOffset === null) return deleted;
-      offset = result.nextOffset;
+      if (result.continuation === null) return deleted;
+      continuation = result.continuation;
     }
     throw adapterError("cleanup_page_limit");
   }
 
   async function cleanupTaskPages(finishedBefore: string): Promise<number> {
-    let from: number | null = null;
+    let continuation: string | null = null;
     let deleted = 0;
     for (let page = 0; page < input.maximumPages; page += 1) {
       const result = await input.cleanup.cleanupFinishedTasks({
         finishedBefore,
-        from
+        continuation
       });
-      assertPageResult(result.deleted, result.next);
+      assertPageResult(result.deleted, result.continuation);
       deleted += result.deleted;
-      if (result.next === null) return deleted;
-      from = result.next;
+      if (result.continuation === null) return deleted;
+      continuation = result.continuation;
     }
     throw adapterError("cleanup_page_limit");
   }
@@ -122,9 +122,9 @@ function validateRequest(input: {
   ) throw adapterError("invalid_input");
 }
 
-function assertPageResult(deleted: number, next: number | null): void {
+function assertPageResult(deleted: number, continuation: string | null): void {
   assertBytes(deleted);
-  if (next !== null) assertBytes(next);
+  if (continuation !== null && !continuation) throw adapterError("invalid_input");
 }
 
 function assertBytes(value: number): void {

@@ -50,6 +50,7 @@ export function createPostgresStorageVnextAdminSource(input: {
         publicId: operationPublicId,
         knowledgeBaseId: request.knowledgeBaseId,
         kind: "source",
+        searchProviderKind: null,
         state: "queued",
         operationRevision: 1,
         settingsRevisionPublicId: settingsRevision.publicId,

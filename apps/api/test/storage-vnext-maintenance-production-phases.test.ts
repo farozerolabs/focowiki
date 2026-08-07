@@ -250,6 +250,92 @@ describe("storage vNext maintenance production phases", () => {
       signal: new AbortController().signal
     })).rejects.toMatchObject({ code: "stale_plan" });
   });
+
+  it("adopts a provider by rebuilding and activating only search", async () => {
+    const planner = { plan: vi.fn() };
+    const prepareCandidate = vi.fn();
+    const graphReconcile = vi.fn();
+    const publishArtifacts = vi.fn();
+    const activateRelease = vi.fn();
+    const reconcileObjects = vi.fn();
+    const cleanupCandidateObjects = vi.fn();
+    const activateProvider = vi.fn(async () => ({ outcome: "activated" as const }));
+    const phases = createStorageVnextMaintenanceProductionPhases({
+      providerAdoption: { activate: activateProvider },
+      planner,
+      catalog: {
+        getKnowledgeBase: vi.fn(async () => ({
+          publicId: "kb-maintenance",
+          revision: 11,
+          visibility: "current" as const
+        }))
+      },
+      releases: {
+        hasCandidateCatalogEntries: vi.fn(),
+        getActiveRoot: vi.fn(),
+        getLiveCandidate: vi.fn(),
+        activateCandidate: activateRelease
+      },
+      pipeline: {
+        ...pipelineFixture(),
+        searchLifecycle: { prepareCandidate },
+        buildSearchCandidate: vi.fn(async () => ({
+          sourceCount: 2,
+          graphSeedCount: 1,
+          documentCount: 4,
+          batchCount: 1,
+          compressedBytes: 128,
+          documentChecksum: "c".repeat(64),
+          queryCases: []
+        })),
+        graphReconciler: { reconcile: graphReconcile },
+        artifacts: { publish: publishArtifacts }
+      },
+      objectReconciliation: { runPage: reconcileObjects },
+      candidateObjectCleanup: { runPage: cleanupCandidateObjects },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      rollbackRetentionMilliseconds: 86_400_000,
+      resultRetentionMilliseconds: 86_400_000
+    });
+
+    for (const phase of [
+      "planning",
+      "search_rebuild",
+      "projection_repair",
+      "object_reconciliation",
+      "catch_up",
+      "validation",
+      "activation",
+      "cleanup"
+    ] as const) {
+      await expect(phases.runPhase({
+        knowledgeBaseId: "kb-maintenance",
+        operationPublicId: "operation-maintenance",
+        checkpoint: {
+          ...checkpoint(phase),
+          maintenanceKind: "provider_adoption"
+        },
+        searchProjection: {
+          activeRole: "active",
+          candidateRole: "candidate",
+          documentKinds: ["content", "graph_seed"]
+        },
+        signal: new AbortController().signal
+      })).resolves.toMatchObject({ outcome: "phase_completed" });
+    }
+
+    expect(prepareCandidate).toHaveBeenCalledOnce();
+    expect(activateProvider).toHaveBeenCalledWith(expect.objectContaining({
+      expectedResourceRevision: 11,
+      cleanupNotBefore: "2026-08-03T00:00:00.000Z"
+    }));
+    expect(planner.plan).not.toHaveBeenCalled();
+    expect(graphReconcile).not.toHaveBeenCalled();
+    expect(publishArtifacts).not.toHaveBeenCalled();
+    expect(activateRelease).not.toHaveBeenCalled();
+    expect(reconcileObjects).not.toHaveBeenCalled();
+    expect(cleanupCandidateObjects).not.toHaveBeenCalled();
+  });
 });
 
 function checkpoint(
@@ -257,7 +343,9 @@ function checkpoint(
 ): StorageVnextMaintenanceCheckpoint {
   return {
     version: 1,
+    searchProviderKind: "meilisearch",
     trigger: "manual",
+    maintenanceKind: "standard",
     phase,
     cursor: null,
     batchOrdinal: 0,

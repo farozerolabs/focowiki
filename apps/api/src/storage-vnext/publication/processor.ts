@@ -5,6 +5,10 @@ import type {
   StorageVnextSearchProjectionPort,
   StorageVnextSearchValidationCase
 } from "../search/ports.js";
+import {
+  isSearchProviderKind,
+  type SearchProviderKind
+} from "../../application/ports/search-provider-runtime.js";
 
 type PublicationIdentity = {
   knowledgeBaseId: string;
@@ -14,6 +18,13 @@ type PublicationIdentity = {
 };
 
 type PublicationProcessorInput = {
+  selectedSearchProviderKind: SearchProviderKind;
+  activeSearchProjections: {
+    getActiveProjection(knowledgeBaseId: string): Promise<{
+      publicId: string;
+      providerKind: SearchProviderKind;
+    } | null>;
+  };
   search: Pick<
     StorageVnextSearchProjectionPort,
     "prepareCandidate" | "validateCandidate"
@@ -59,7 +70,14 @@ export function createStorageVnextPublicationProcessor(
     }> {
       validateIdentity(request);
       throwIfAborted(request.signal);
-      const searchProjectionPublicId = request.candidatePublicId;
+      const activeSearchProjection = await input.activeSearchProjections
+        .getActiveProjection(request.knowledgeBaseId);
+      throwIfAborted(request.signal);
+      const retainActiveSearch = activeSearchProjection !== null
+        && activeSearchProjection.providerKind !== input.selectedSearchProviderKind;
+      const searchProjectionPublicId = retainActiveSearch
+        ? activeSearchProjection.publicId
+        : request.candidatePublicId;
       const candidate = await input.releases.getCandidate({
         knowledgeBaseId: request.knowledgeBaseId,
         candidatePublicId: request.candidatePublicId,
@@ -75,38 +93,43 @@ export function createStorageVnextPublicationProcessor(
         });
         return { searchProjectionPublicId };
       }
-      await input.search.prepareCandidate({
-        knowledgeBaseId: request.knowledgeBaseId,
-        candidatePublicId: searchProjectionPublicId,
-        schemaChecksum: input.schemaChecksum,
-        settingsChecksum: input.settingsChecksum
-      });
-      throwIfAborted(request.signal);
-      const search = await input.searchBuilder.build(request);
-      validateBuildResult(search);
-      throwIfAborted(request.signal);
-      await input.graph.reconcile({
-        ...request,
-        searchProjectionPublicId
-      });
-      throwIfAborted(request.signal);
+      let search: StorageVnextSearchCandidateBuildResult | null = null;
+      if (!retainActiveSearch) {
+        await input.search.prepareCandidate({
+          knowledgeBaseId: request.knowledgeBaseId,
+          candidatePublicId: searchProjectionPublicId,
+          schemaChecksum: input.schemaChecksum,
+          settingsChecksum: input.settingsChecksum
+        });
+        throwIfAborted(request.signal);
+        search = await input.searchBuilder.build(request);
+        validateBuildResult(search);
+        throwIfAborted(request.signal);
+        await input.graph.reconcile({
+          ...request,
+          searchProjectionPublicId
+        });
+        throwIfAborted(request.signal);
+      }
       await input.artifacts.publish({
         ...request,
         searchProjectionPublicId
       });
       throwIfAborted(request.signal);
-      await input.search.validateCandidate({
-        candidatePublicId: searchProjectionPublicId,
-        expectedDocumentCount: search.documentCount,
-        documentChecksum: search.documentChecksum,
-        schemaChecksum: input.schemaChecksum,
-        settingsChecksum: input.settingsChecksum,
-        queryCases: input.queryCases.length > 0
-          ? input.queryCases
-          : search.queryCases,
-        maxP95ProcessingTimeMs: input.maxP95ProcessingTimeMs
-      });
-      throwIfAborted(request.signal);
+      if (search) {
+        await input.search.validateCandidate({
+          candidatePublicId: searchProjectionPublicId,
+          expectedDocumentCount: search.documentCount,
+          documentChecksum: search.documentChecksum,
+          schemaChecksum: input.schemaChecksum,
+          settingsChecksum: input.settingsChecksum,
+          queryCases: input.queryCases.length > 0
+            ? input.queryCases
+            : search.queryCases,
+          maxP95ProcessingTimeMs: input.maxP95ProcessingTimeMs
+        });
+        throwIfAborted(request.signal);
+      }
       await input.releases.validate({
         knowledgeBaseId: request.knowledgeBaseId,
         candidatePublicId: request.candidatePublicId,
@@ -119,7 +142,8 @@ export function createStorageVnextPublicationProcessor(
 
 function validateConfiguration(input: PublicationProcessorInput): void {
   if (
-    !/^[0-9a-f]{64}$/u.test(input.schemaChecksum)
+    !isSearchProviderKind(input.selectedSearchProviderKind)
+    || !/^[0-9a-f]{64}$/u.test(input.schemaChecksum)
     || !/^[0-9a-f]{64}$/u.test(input.settingsChecksum)
     || !Number.isSafeInteger(input.maxP95ProcessingTimeMs)
     || input.maxP95ProcessingTimeMs < 1

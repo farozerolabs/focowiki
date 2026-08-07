@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SearchEngineTransport } from
-  "../src/application/ports/search-engine-transport.js";
+import type { MeilisearchClientPort } from
+  "../src/infrastructure/meilisearch/meilisearch-client-port.js";
 import {
   createStorageVnextGraphCandidateSearch,
   createStorageVnextGraphCandidateSearchForProjection
 } from "../src/storage-vnext/search/graph-candidate-search.js";
 import type { StorageVnextGraphNodeFact } from
   "../src/storage-vnext/graph/ports.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 
 describe("storage vNext graph candidate search", () => {
   it("hydrates current graph nodes from the knowledge-base unified active index", async () => {
@@ -23,20 +25,22 @@ describe("storage vNext graph candidate search", () => {
         getActiveProjection: vi.fn(async () => ({
           publicId: "projection-active",
           knowledgeBaseId: "kb-1",
+          providerKind: "meilisearch" as const,
           role: "active" as const,
           providerIndexUid: "kb-1-unified-active",
           schemaChecksum: "a".repeat(64),
           settingsChecksum: "b".repeat(64),
           documentCount: 3,
           documentChecksum: "c".repeat(64),
-          providerTaskUid: null,
+          providerOperationRef: null,
           state: "active" as const,
           createdAt: "2026-08-02T00:00:00.000Z",
           activatedAt: "2026-08-02T00:00:00.000Z",
           cleanupAfter: null
         }))
       },
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
+      deadlineMs: 5_000,
       graph: { listNodesBySourceFiles }
     });
 
@@ -47,7 +51,7 @@ describe("storage vNext graph candidate search", () => {
       limit: 20
     })).resolves.toEqual([alpha]);
 
-    expect(transport.search).toHaveBeenCalledWith({
+    expect(transport.search).toHaveBeenCalledWith(expect.objectContaining({
       indexUid: "kb-1-unified-active",
       query: "atomic index swap rollback",
       filter: [
@@ -66,7 +70,7 @@ describe("storage vNext graph candidate search", () => {
       cropLength: 0,
       matchingStrategy: "last",
       distinct: "sourceFilePublicId"
-    });
+    }));
     expect(listNodesBySourceFiles).toHaveBeenCalledWith({
       knowledgeBaseId: "kb-1",
       sourceFilePublicIds: ["source-alpha", "source-stale"],
@@ -79,7 +83,8 @@ describe("storage vNext graph candidate search", () => {
     const listNodesBySourceFiles = vi.fn();
     const search = createStorageVnextGraphCandidateSearch({
       projections: { getActiveProjection: vi.fn(async () => null) },
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
+      deadlineMs: 5_000,
       graph: { listNodesBySourceFiles }
     });
 
@@ -93,6 +98,59 @@ describe("storage vNext graph candidate search", () => {
     expect(listNodesBySourceFiles).not.toHaveBeenCalled();
   });
 
+  it("resolves the active-search deadline for every candidate query", async () => {
+    const query = vi.fn(async () => ({
+      hits: [],
+      continuation: null,
+      processingTimeMs: 1
+    }));
+    let deadlineMs = 1_000;
+    const search = createStorageVnextGraphCandidateSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-active",
+          knowledgeBaseId: "kb-1",
+          providerKind: "opensearch" as const,
+          role: "active" as const,
+          providerIndexUid: "kb-1-unified-active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentCount: 0,
+          documentChecksum: "c".repeat(64),
+          providerOperationRef: null,
+          state: "active" as const,
+          createdAt: "2026-08-02T00:00:00.000Z",
+          activatedAt: "2026-08-02T00:00:00.000Z",
+          cleanupAfter: null
+        }))
+      },
+      provider: { kind: "opensearch", query: { query } },
+      resolveDeadlineMs: async () => deadlineMs,
+      graph: { listNodesBySourceFiles: vi.fn() }
+    });
+
+    await search.findCandidates({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "source-current",
+      terms: ["first"],
+      limit: 10
+    });
+    deadlineMs = 2_000;
+    await search.findCandidates({
+      knowledgeBaseId: "kb-1",
+      sourceFilePublicId: "source-current",
+      terms: ["second"],
+      limit: 10
+    });
+
+    expect(query).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      deadlineMs: 1_000
+    }));
+    expect(query).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      deadlineMs: 2_000
+    }));
+  });
+
   it("bounds long candidate terms to the Meilisearch query byte contract", async () => {
     const transport = transportWithHits([]);
     const search = createStorageVnextGraphCandidateSearch({
@@ -100,20 +158,22 @@ describe("storage vNext graph candidate search", () => {
         getActiveProjection: vi.fn(async () => ({
           publicId: "projection-active",
           knowledgeBaseId: "kb-1",
+          providerKind: "meilisearch" as const,
           role: "active" as const,
           providerIndexUid: "kb-1-unified-active",
           schemaChecksum: "a".repeat(64),
           settingsChecksum: "b".repeat(64),
           documentCount: 0,
           documentChecksum: "c".repeat(64),
-          providerTaskUid: null,
+          providerOperationRef: null,
           state: "active" as const,
           createdAt: "2026-08-02T00:00:00.000Z",
           activatedAt: "2026-08-02T00:00:00.000Z",
           cleanupAfter: null
         }))
       },
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
+      deadlineMs: 5_000,
       graph: { listNodesBySourceFiles: vi.fn() }
     });
 
@@ -138,6 +198,7 @@ describe("storage vNext graph candidate search", () => {
     const getCandidate = vi.fn(async () => ({
       publicId: "candidate-first",
       knowledgeBaseId: "kb-1",
+      providerKind: "meilisearch" as const,
       providerIndexUid: "kb-1-unified-candidate",
       schemaChecksum: "a".repeat(64),
       settingsChecksum: "b".repeat(64),
@@ -148,13 +209,14 @@ describe("storage vNext graph candidate search", () => {
       lastBatchOrdinal: 0,
       lastBatchChecksum: "c".repeat(64),
       correlationPublicId: null,
-      providerTaskUid: null,
+      providerOperationRef: null,
       revision: 3
     }));
     const search = createStorageVnextGraphCandidateSearchForProjection({
       searchProjectionPublicId: "candidate-first",
       projections: { getCandidate },
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
+      deadlineMs: 5_000,
       graph: { listNodesBySourceFiles: vi.fn(async () => [alpha]) }
     });
 
@@ -207,5 +269,5 @@ function transportWithHits(hits: Array<Record<string, unknown>>) {
       estimatedTotalHits: hits.length,
       processingTimeMs: 1
     }))
-  } as unknown as SearchEngineTransport;
+  } as unknown as MeilisearchClientPort;
 }

@@ -17,12 +17,15 @@ export const RUNTIME_SCHEMA_GENERATION =
 
 export class RuntimeSchemaGenerationError extends Error {
   public constructor(public readonly foundGeneration: string | null) {
-    super(
-      foundGeneration
-        ? `Database schema generation ${foundGeneration} cannot be upgraded automatically to ${RUNTIME_SCHEMA_GENERATION}.`
-        : "Database contains an unmarked or partially initialized Focowiki schema and cannot be upgraded automatically."
-    );
+    super("Database schema is incompatible with this Focowiki release. Perform a clean reset of the Focowiki PostgreSQL database before starting services.");
     this.name = "RuntimeSchemaGenerationError";
+  }
+}
+
+export class RuntimeSchemaSignatureError extends Error {
+  public constructor() {
+    super("Database schema is incompatible with this Focowiki release. Perform a clean reset of the Focowiki PostgreSQL database before starting services.");
+    this.name = "RuntimeSchemaSignatureError";
   }
 }
 
@@ -65,6 +68,7 @@ export async function preflightMigrations(
   if (state !== "absent" && typeof state !== "string") {
     throw new RuntimeSchemaGenerationError(state);
   }
+  if (state !== "absent") await assertProviderAwareSchemaSignature(sql);
   let plan;
   try {
     plan = createBootstrapPlan(state);
@@ -86,6 +90,63 @@ export async function assertRuntimeSchemaGeneration(sql: DatabaseClient): Promis
 
   if (state !== RUNTIME_SCHEMA_GENERATION) {
     throw new RuntimeSchemaGenerationError(state === "absent" ? null : state);
+  }
+  await assertProviderAwareSchemaSignature(sql);
+}
+
+async function assertProviderAwareSchemaSignature(
+  sql: DatabaseClient
+): Promise<void> {
+  const rows = await sql<Array<{ provider_schema_compatible: boolean }>>`
+    SELECT (
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'search_projections'
+          AND column_name = 'provider_kind'
+          AND data_type = 'text'
+          AND is_nullable = 'NO'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'search_projections'
+          AND column_name = 'provider_operation_ref'
+          AND data_type = 'text'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'search_projections'
+          AND column_name = 'provider_task_uid'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'operation_work_items'
+          AND column_name = 'search_provider_kind'
+          AND data_type = 'text'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'cleanup_actions'
+          AND column_name = 'search_provider_kind'
+          AND data_type = 'text'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'focowiki.search_projections'::regclass
+          AND conname = 'search_projections_provider_key'
+          AND regexp_replace(
+            lower(pg_get_constraintdef(oid)), '\\s+', '', 'g'
+          ) = 'unique(provider_kind,provider_index_uid)'
+      )
+    ) AS provider_schema_compatible
+  `;
+  if (rows[0]?.provider_schema_compatible !== true) {
+    throw new RuntimeSchemaSignatureError();
   }
 }
 

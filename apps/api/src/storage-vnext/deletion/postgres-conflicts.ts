@@ -5,6 +5,8 @@ import type {
   StorageVnextTerminatedCandidate
 } from "./postgres-types.js";
 import type { StorageVnextNormalizedDeletionRequest } from "./ports.js";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 type LiveDeletionRow = {
   operation_public_id: string;
@@ -71,25 +73,44 @@ export async function terminateLiveCandidate(
   transaction: StorageVnextDeletionTransaction,
   request: StorageVnextNormalizedDeletionRequest
 ): Promise<StorageVnextTerminatedCandidate> {
+  const candidateSearch = await transaction<Array<{
+    public_id: string;
+    provider_kind: SearchProviderKind;
+    provider_index_uid: string;
+  }>>`
+    SELECT public_id, provider_kind, provider_index_uid
+    FROM focowiki.search_projections
+    WHERE knowledge_base_id = ${request.knowledgeBaseId}
+      AND projection_role = 'candidate'
+    FOR UPDATE
+  `;
   const candidates = await transaction<Array<{
     public_id: string;
     operation_public_id: string;
     candidate_root_public_id: string;
-    provider_index_uid: string | null;
   }>>`
     SELECT candidate.public_id, candidate.operation_public_id,
-           candidate.candidate_root_public_id,
-           search.provider_index_uid
+           candidate.candidate_root_public_id
     FROM focowiki.release_candidates candidate
-    LEFT JOIN focowiki.search_projections search
-      ON search.knowledge_base_id = candidate.knowledge_base_id
-     AND search.projection_role = 'candidate'
     WHERE candidate.knowledge_base_id = ${request.knowledgeBaseId}
       AND candidate.state IN ('building', 'validating', 'ready')
     FOR UPDATE OF candidate
   `;
   const candidate = candidates[0];
-  if (!candidate) return { operationPublicId: null, providerIndexUid: null };
+  const search = candidateSearch[0];
+  if (!candidate) {
+    if (search) {
+      await transaction`
+        DELETE FROM focowiki.search_projections
+        WHERE public_id = ${search.public_id}
+      `;
+    }
+    return {
+      operationPublicId: null,
+      providerKind: search?.provider_kind ?? null,
+      providerIndexUid: search?.provider_index_uid ?? null
+    };
+  }
   const objectIds = await transaction<Array<{ object_id: string }>>`
     SELECT object_id
     FROM focowiki.object_owners
@@ -118,7 +139,8 @@ export async function terminateLiveCandidate(
   );
   return {
     operationPublicId: candidate.operation_public_id,
-    providerIndexUid: candidate.provider_index_uid
+    providerKind: search?.provider_kind ?? null,
+    providerIndexUid: search?.provider_index_uid ?? null
   };
 }
 

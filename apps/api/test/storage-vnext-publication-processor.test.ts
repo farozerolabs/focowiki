@@ -45,6 +45,10 @@ describe("storage vNext publication processor", () => {
       validate: vi.fn(async () => { events.push("release:validate"); })
     };
     const processor = createStorageVnextPublicationProcessor({
+      selectedSearchProviderKind: "meilisearch",
+      activeSearchProjections: {
+        getActiveProjection: vi.fn(async () => null)
+      },
       search,
       searchBuilder,
       graph,
@@ -102,6 +106,10 @@ describe("storage vNext publication processor", () => {
     const controller = new AbortController();
     const artifacts = { publish: vi.fn(async () => undefined) };
     const processor = createStorageVnextPublicationProcessor({
+      selectedSearchProviderKind: "meilisearch",
+      activeSearchProjections: {
+        getActiveProjection: vi.fn(async () => null)
+      },
       search: {
         prepareCandidate: vi.fn(async () => undefined),
         validateCandidate: vi.fn(async () => undefined)
@@ -153,6 +161,10 @@ describe("storage vNext publication processor", () => {
       validate: vi.fn(async () => undefined)
     };
     const processor = createStorageVnextPublicationProcessor({
+      selectedSearchProviderKind: "meilisearch",
+      activeSearchProjections: {
+        getActiveProjection: vi.fn(async () => null)
+      },
       search,
       searchBuilder,
       graph,
@@ -176,5 +188,64 @@ describe("storage vNext publication processor", () => {
     expect(searchBuilder.build).not.toHaveBeenCalled();
     expect(graph.reconcile).not.toHaveBeenCalled();
     expect(artifacts.publish).not.toHaveBeenCalled();
+  });
+
+  it("publishes non-search changes without adopting a mismatched active provider", async () => {
+    const search = {
+      prepareCandidate: vi.fn(),
+      validateCandidate: vi.fn()
+    };
+    const searchBuilder = { build: vi.fn() };
+    const graph = { reconcile: vi.fn() };
+    const artifacts = { publish: vi.fn(async () => undefined) };
+    const releases = {
+      getCandidate: vi.fn(async () => ({ state: "building" as const })),
+      validate: vi.fn(async () => undefined)
+    };
+    const processor = createStorageVnextPublicationProcessor({
+      selectedSearchProviderKind: "opensearch",
+      activeSearchProjections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "search-meilisearch-active",
+          providerKind: "meilisearch" as const
+        }))
+      },
+      search,
+      searchBuilder,
+      graph,
+      artifacts,
+      releases,
+      schemaChecksum: "a".repeat(64),
+      settingsChecksum: "b".repeat(64),
+      queryCases: [],
+      maxP95ProcessingTimeMs: 1_000
+    });
+    const signal = new AbortController().signal;
+
+    await expect(processor.publish({
+      knowledgeBaseId: "kb-one",
+      candidatePublicId: "candidate-one",
+      operationPublicId: "publication-one",
+      signal
+    })).resolves.toEqual({
+      searchProjectionPublicId: "search-meilisearch-active"
+    });
+
+    expect(search.prepareCandidate).not.toHaveBeenCalled();
+    expect(searchBuilder.build).not.toHaveBeenCalled();
+    expect(search.validateCandidate).not.toHaveBeenCalled();
+    expect(graph.reconcile).not.toHaveBeenCalled();
+    expect(artifacts.publish).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-one",
+      candidatePublicId: "candidate-one",
+      operationPublicId: "publication-one",
+      searchProjectionPublicId: "search-meilisearch-active",
+      signal
+    });
+    expect(releases.validate).toHaveBeenCalledWith({
+      knowledgeBaseId: "kb-one",
+      candidatePublicId: "candidate-one",
+      searchProjectionPublicId: "search-meilisearch-active"
+    });
   });
 });

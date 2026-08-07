@@ -4,6 +4,8 @@ import { loadEnvFile } from "node:process";
 import { loadRuntimeConfig } from "./config.js";
 import { runRuntimeDeploymentHealthcheck } from
   "./runtime/deployment-healthcheck.js";
+import { assertNodeJiebaRuntimeAvailable } from
+  "./infrastructure/tokenization/nodejieba-tokenizer.js";
 import { runStorageVnextMaintenanceWorker } from
   "./storage-vnext/maintenance/production-runtime.js";
 
@@ -11,7 +13,12 @@ loadLocalEnvFile();
 const config = loadRuntimeConfig();
 
 if (process.argv.includes("--healthcheck")) {
-  await runRuntimeDeploymentHealthcheck(config, { role: "maintenance-worker" });
+  await runRuntimeDeploymentHealthcheck(config, {
+    role: "maintenance-worker",
+    ...(config.search?.provider === "opensearch"
+      ? { assertTokenizer: assertNodeJiebaRuntimeAvailable }
+      : {})
+  });
 } else {
   await runStorageVnextMaintenanceWorker(config);
 }

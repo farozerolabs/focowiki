@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import type {
-  SearchEngineSearchResult,
-  SearchEngineTransport
-} from "../../application/ports/search-engine-transport.js";
+  SearchFilterExpression,
+  SearchProviderQueryResult,
+  SearchProviderRuntime
+} from "../../application/ports/search-provider-runtime.js";
 import {
-  SearchEngineTransportError
-} from "../../application/ports/search-engine-transport.js";
+  SearchProviderError
+} from "../../application/ports/search-provider-runtime.js";
 import type { StorageVnextSearchQueryPort } from "./ports.js";
 import type {
   StorageVnextActiveSearchProjectionRepository
@@ -28,7 +29,7 @@ const RESULT_ATTRIBUTES = [
 ];
 const MAX_QUERY_BYTES = 512;
 
-export class StorageVnextSearchUnavailableError extends SearchEngineTransportError {
+export class StorageVnextSearchUnavailableError extends SearchProviderError {
   public constructor() {
     super("SEARCH_ENGINE_UNAVAILABLE", true);
     this.name = "StorageVnextSearchUnavailableError";
@@ -46,30 +47,35 @@ export class StorageVnextActiveSearchInputError extends Error {
 
 type ActiveSearchConfig = {
   projections: StorageVnextActiveSearchProjectionRepository;
-  transport: Pick<SearchEngineTransport, "search">;
+  provider: Pick<SearchProviderRuntime, "kind" | "query">;
   hydration: StorageVnextSearchHydrationPort;
   maxPageSize: number;
   overfetchFactor: number;
   cropLength: number;
+  requestTimeoutMs: number;
+  engineSearchCutoffMs?: number;
   resolveRuntimeSettings?: () => Promise<{
     overfetchFactor: number;
     cropLength: number;
+    requestTimeoutMs: number;
+    engineSearchCutoffMs?: number;
   }>;
 };
 
 type SearchCursor = {
-  version: 1;
+  version: 2;
   scopeHash: string;
-  offset: number;
+  providerContinuation: string | null;
 };
 
 type ParsedHit = {
-  hitIndex: number;
   sourceFilePublicId: string;
   sourceRevisionPublicId: string;
   logicalPath: string;
   snippet: string | null;
   kind: "file" | "graph";
+  normalizedScore: number;
+  continuationAfter: string;
 };
 
 export function createStorageVnextActiveSearch(
@@ -79,16 +85,25 @@ export function createStorageVnextActiveSearch(
   return {
     async search(input) {
       const normalized = normalizeInput(input, config.maxPageSize);
-      const scopeHash = createScopeHash({
-        knowledgeBaseId: input.knowledgeBaseId,
-        query: normalized.query,
-        kinds: normalized.kinds
-      });
-      const cursor = decodeCursor(input.cursor, scopeHash);
       const projection = await config.projections.getActiveProjection(
         input.knowledgeBaseId
       );
-      if (!projection || projection.knowledgeBaseId !== input.knowledgeBaseId) {
+      if (!projection) {
+        throw new StorageVnextSearchUnavailableError();
+      }
+      const scopeHash = createScopeHash({
+        knowledgeBaseId: input.knowledgeBaseId,
+        query: normalized.query,
+        kinds: normalized.kinds,
+        providerKind: config.provider.kind,
+        projectionPublicId: projection.publicId,
+        providerIndexUid: projection.providerIndexUid
+      });
+      const cursor = decodeCursor(input.cursor, scopeHash);
+      if (
+        projection.knowledgeBaseId !== input.knowledgeBaseId
+        || projection.providerKind !== config.provider.kind
+      ) {
         throw new StorageVnextSearchUnavailableError();
       }
       const runtimeSettings = config.resolveRuntimeSettings
@@ -99,29 +114,26 @@ export function createStorageVnextActiveSearch(
         1_000,
         Math.max(input.limit + 1, input.limit * runtimeSettings.overfetchFactor + 1)
       );
-      let result: SearchEngineSearchResult;
-      try {
-        result = await config.transport.search({
+      const result: SearchProviderQueryResult = await config.provider.query.query({
           indexUid: projection.providerIndexUid,
           query: normalized.query,
-          filter: createFilter(input.knowledgeBaseId, normalized.kinds),
+          evidenceFamilies: ["exact", "text", "phrase", "typo", "jieba", "graph"],
+          filters: createFilter(input.knowledgeBaseId, normalized.kinds),
           limit: providerLimit,
-          offset: cursor.offset,
-          attributesToSearchOn: SEARCH_ATTRIBUTES,
-          attributesToRetrieve: RESULT_ATTRIBUTES,
-          attributesToCrop: ["searchText"],
+          continuation: cursor.providerContinuation,
+          searchFields: SEARCH_ATTRIBUTES,
+          returnFields: RESULT_ATTRIBUTES,
           cropLength: runtimeSettings.cropLength,
+          deadlineMs: Math.min(
+            runtimeSettings.requestTimeoutMs,
+            runtimeSettings.engineSearchCutoffMs
+              ?? runtimeSettings.requestTimeoutMs
+          ),
           matchingStrategy: "all",
-          distinct: "sourceFilePublicId"
-        });
-      } catch (error) {
-        if (error instanceof SearchEngineTransportError) {
-          throw new StorageVnextSearchUnavailableError();
-        }
-        throw error;
-      }
-      const parsed = result.hits.flatMap((hit, hitIndex) => {
-        const candidate = parseHit(hit, hitIndex);
+          distinctBy: "sourceFilePublicId"
+      });
+      const parsed = result.hits.flatMap((hit) => {
+        const candidate = parseHit(hit);
         return candidate ? [candidate] : [];
       });
       const hydrated = await config.hydration.hydrateCurrentSources({
@@ -143,16 +155,14 @@ export function createStorageVnextActiveSearch(
           logicalPath: source.logicalPath,
           title: source.title,
           snippet: candidate.snippet,
-          score: 1 / (cursor.offset + candidate.hitIndex + 1),
+          score: candidate.normalizedScore,
           kind: candidate.kind
         })),
         nextCursor: createNextCursor({
           result,
-          parsedHitCount: result.hits.length,
           visible,
           selectedCount: selected.length,
           pageLimit: input.limit,
-          currentOffset: cursor.offset,
           scopeHash
         })
       };
@@ -180,30 +190,55 @@ function normalizeInput(
   return { query, kinds: kinds as Array<"file" | "graph"> };
 }
 
-function createFilter(knowledgeBaseId: string, kinds: readonly ("file" | "graph")[]) {
+function createFilter(
+  knowledgeBaseId: string,
+  kinds: readonly ("file" | "graph")[]
+): SearchFilterExpression {
   const clauses = kinds.map((kind) => kind === "file"
-    ? `(documentKind = "content" AND schemaVersion = "${CONTENT_SCHEMA_VERSION}")`
-    : `(documentKind = "graph_seed" AND schemaVersion = "${GRAPH_SCHEMA_VERSION}")`
+    ? {
+        kind: "and" as const,
+        operands: [
+          { kind: "equals" as const, field: "documentKind" as const, value: "content" },
+          { kind: "equals" as const, field: "schemaVersion" as const, value: CONTENT_SCHEMA_VERSION }
+        ]
+      }
+    : {
+        kind: "and" as const,
+        operands: [
+          { kind: "equals" as const, field: "documentKind" as const, value: "graph_seed" },
+          { kind: "equals" as const, field: "schemaVersion" as const, value: GRAPH_SCHEMA_VERSION }
+        ]
+      }
   );
-  return `knowledgeBaseId = ${JSON.stringify(knowledgeBaseId)} AND (${clauses.join(" OR ")})`;
+  return {
+    kind: "and",
+    operands: [{
+      kind: "equals",
+      field: "knowledgeBaseId",
+      value: knowledgeBaseId
+    }, { kind: "or", operands: clauses }]
+  };
 }
 
-function parseHit(hit: Record<string, unknown>, hitIndex: number): ParsedHit | null {
-  const sourceFilePublicId = readString(hit, "sourceFilePublicId");
-  const sourceRevisionPublicId = readString(hit, "sourceRevisionPublicId");
-  const logicalPath = readString(hit, "logicalPath");
-  const documentKind = readString(hit, "documentKind");
+function parseHit(
+  hit: SearchProviderQueryResult["hits"][number]
+): ParsedHit | null {
+  const sourceFilePublicId = hit.sourceFilePublicId;
+  const sourceRevisionPublicId = hit.sourceRevisionPublicId;
+  const logicalPath = hit.logicalPath;
+  const documentKind = readString(hit.document, "documentKind");
   const kind = documentKind === "content" ? "file"
     : documentKind === "graph_seed" ? "graph"
       : null;
   if (!sourceFilePublicId || !sourceRevisionPublicId || !logicalPath || !kind) return null;
   return {
-    hitIndex,
     sourceFilePublicId,
     sourceRevisionPublicId,
     logicalPath,
-    snippet: readFormattedSearchText(hit),
-    kind
+    snippet: hit.snippets[0] ?? null,
+    kind,
+    normalizedScore: hit.normalizedScore,
+    continuationAfter: hit.continuationAfter
   };
 }
 
@@ -219,33 +254,33 @@ function isCurrent(
 }
 
 function createNextCursor(input: {
-  result: SearchEngineSearchResult;
-  parsedHitCount: number;
+  result: SearchProviderQueryResult;
   visible: Array<{ candidate: ParsedHit }>;
   selectedCount: number;
   pageLimit: number;
-  currentOffset: number;
   scopeHash: string;
 }) {
   const hasVisibleLookahead = input.visible.length > input.pageLimit;
-  const hasProviderMore = input.currentOffset + input.parsedHitCount
-    < input.result.estimatedTotalHits;
+  const hasProviderMore = input.result.continuation !== null;
   if (!hasVisibleLookahead && !hasProviderMore) return null;
-  let nextOffset: number;
-  if (hasVisibleLookahead && input.selectedCount > 0) {
-    nextOffset = input.currentOffset
-      + input.visible[input.selectedCount - 1]!.candidate.hitIndex + 1;
-  } else {
-    nextOffset = input.currentOffset + input.parsedHitCount;
-  }
-  if (nextOffset <= input.currentOffset) return null;
-  return encodeCursor({ version: 1, scopeHash: input.scopeHash, offset: nextOffset });
+  const providerContinuation = input.selectedCount > 0
+    ? input.visible[input.selectedCount - 1]!.candidate.continuationAfter
+    : input.result.continuation;
+  if (!providerContinuation) return null;
+  return encodeCursor({
+    version: 2,
+    scopeHash: input.scopeHash,
+    providerContinuation
+  });
 }
 
 function createScopeHash(input: {
   knowledgeBaseId: string;
   query: string;
   kinds: readonly string[];
+  providerKind: string;
+  projectionPublicId: string;
+  providerIndexUid: string;
 }) {
   return createHash("sha256")
     .update(JSON.stringify(input))
@@ -257,29 +292,23 @@ function encodeCursor(cursor: SearchCursor) {
 }
 
 function decodeCursor(value: string | null, scopeHash: string): SearchCursor {
-  if (!value) return { version: 1, scopeHash, offset: 0 };
+  if (!value) return { version: 2, scopeHash, providerContinuation: null };
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
       version?: unknown;
       scopeHash?: unknown;
-      offset?: unknown;
+      providerContinuation?: unknown;
     };
     if (
-      parsed.version !== 1
+      parsed.version !== 2
       || parsed.scopeHash !== scopeHash
-      || !Number.isSafeInteger(parsed.offset)
-      || Number(parsed.offset) < 0
+      || typeof parsed.providerContinuation !== "string"
+      || !parsed.providerContinuation
     ) throw new Error("invalid");
     return parsed as SearchCursor;
   } catch {
     throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR");
   }
-}
-
-function readFormattedSearchText(hit: Record<string, unknown>) {
-  const formatted = hit._formatted;
-  if (!formatted || typeof formatted !== "object" || Array.isArray(formatted)) return null;
-  return readString(formatted as Record<string, unknown>, "searchText");
 }
 
 function readString(value: Record<string, unknown>, key: string) {
@@ -298,6 +327,8 @@ function assertConfig(config: ActiveSearchConfig) {
 function assertRuntimeSearchSettings(input: {
   overfetchFactor: number;
   cropLength: number;
+  requestTimeoutMs: number;
+  engineSearchCutoffMs?: number;
 }) {
   if (
     !Number.isSafeInteger(input.overfetchFactor)
@@ -306,5 +337,16 @@ function assertRuntimeSearchSettings(input: {
     || !Number.isSafeInteger(input.cropLength)
     || input.cropLength < 1
     || input.cropLength > 5_000
+    || !Number.isSafeInteger(input.requestTimeoutMs)
+    || input.requestTimeoutMs < 100
+    || input.requestTimeoutMs > 120_000
+    || (
+      input.engineSearchCutoffMs !== undefined
+      && (
+        !Number.isSafeInteger(input.engineSearchCutoffMs)
+        || input.engineSearchCutoffMs < 100
+        || input.engineSearchCutoffMs > 120_000
+      )
+    )
   ) throw new Error("Storage vNext active search runtime settings are invalid");
 }

@@ -5,8 +5,9 @@ export function createStorageVnextMaintenanceRequestHash(
   request: StorageVnextMaintenanceRequest
 ): string {
   const identity = [
-    "storage-vnext-maintenance-v2",
+    "storage-vnext-maintenance-v3",
     request.knowledgeBaseId,
+    request.searchProviderKind,
     request.trigger,
     request.idempotencyKey
   ].join("\0");

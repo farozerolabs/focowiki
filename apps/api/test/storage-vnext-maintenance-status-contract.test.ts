@@ -103,6 +103,8 @@ describe("storage vNext maintenance status contract", () => {
 function checkpoint() {
   return {
     version: 1,
+    searchProviderKind: "meilisearch",
+    maintenanceKind: "standard",
     trigger: "manual",
     phase: "search_rebuild",
     cursor: "source-cursor-25",

@@ -7,11 +7,11 @@ export function readConfiguredSecret(input: {
   valueField: string;
   fileField: string;
   issues: string[];
+  filePrecedence?: boolean;
 }): string {
   const directValue = input.env[input.valueField]?.trim();
-  if (directValue) return directValue;
-
   const filePath = input.env[input.fileField]?.trim();
+  if (directValue && (!filePath || !input.filePrecedence)) return directValue;
   if (!filePath) return "";
 
   try {

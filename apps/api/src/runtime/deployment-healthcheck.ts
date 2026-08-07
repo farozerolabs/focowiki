@@ -4,6 +4,12 @@ import { assertRuntimeSchemaGeneration } from "../db/migrations.js";
 import {
   createRuntimeMeilisearchTransport
 } from "../infrastructure/meilisearch/runtime-meilisearch-transport.js";
+import {
+  assertOpenSearchReadiness,
+  createOpenSearchClient
+} from "../infrastructure/opensearch/opensearch-client.js";
+import type { OpenSearchClientPort } from
+  "../infrastructure/opensearch/opensearch-client-port.js";
 import { createRedisClient } from "../redis/coordination.js";
 import { assertDeploymentSecret } from "../security/runtime-secrets.js";
 import { createS3StorageAdapter } from "../storage/s3.js";
@@ -95,13 +101,26 @@ export async function runRuntimeDeploymentHealthcheck(
       if (!searchConfig) {
         throw new Error("Search service configuration is unavailable");
       }
-      const search = createRuntimeMeilisearchTransport(searchConfig, {
-        timeoutMs: 5_000,
-        maxAttempts: 1,
-        retryDelayMs: 0
-      });
-      if (!(await search.health()).available) {
-        throw new Error("Search service health check failed");
+      if (searchConfig.provider === "meilisearch") {
+        const search = createRuntimeMeilisearchTransport(searchConfig, {
+          timeoutMs: 5_000,
+          maxAttempts: 1,
+          retryDelayMs: 0
+        });
+        if (!(await search.health()).available) {
+          throw new Error("Search service health check failed");
+        }
+        return;
+      }
+      const search = createOpenSearchClient({
+        config: searchConfig,
+        requestTimeoutMs: 5_000,
+        maxAttempts: 1
+      }) as unknown as OpenSearchClientPort;
+      try {
+        await assertOpenSearchReadiness(search);
+      } finally {
+        await search.close();
       }
     },
     ...(options.httpPorts

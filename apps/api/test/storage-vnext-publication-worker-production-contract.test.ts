@@ -23,7 +23,7 @@ describe("storage vNext publication worker production contract", () => {
     ]) expect(main, legacy).not.toContain(legacy);
   });
 
-  it("wires one knowledge-base candidate across PostgreSQL, S3, graph, and Meilisearch", () => {
+  it("wires one knowledge-base candidate across PostgreSQL, S3, graph, and the selected search provider", () => {
     expect(existsSync(resolve(workspaceRoot, runtimePath)), runtimePath).toBe(true);
     if (!existsSync(resolve(workspaceRoot, runtimePath))) return;
     const runtime = read(runtimePath);
@@ -57,8 +57,12 @@ describe("storage vNext publication worker production contract", () => {
     expect(composition).toContain("createStorageVnextGraphCandidateSearchForProjection");
     expect(composition).toContain("reconcileStorageVnextGraphFacts");
     expect(composition).toContain("buildPersistedGraphCandidateTerms");
-    expect(runtime).not.toContain("nodejieba-tokenizer");
-    expect(runtime).not.toContain("createNodeJiebaTokenizer");
+    expect(runtime).toContain("nodejieba-tokenizer");
+    expect(runtime).toContain("createNodeJiebaTokenizer");
+    expect(runtime).toContain('searchConfig.provider === "opensearch"');
+    expect(runtime).toContain("previousSearchProvider");
+    expect(runtime).toContain("await closeSearchProvider(previousSearchProvider)");
+    expect(runtime).toContain("await closeSearchProvider(searchProvider)");
     expect(pipeline).not.toContain("nodejieba-tokenizer");
     expect(composition).not.toMatch(
       /PublicationGeneration|ProjectionRecord|GenerationObjectReference|PublicationSubtask/u

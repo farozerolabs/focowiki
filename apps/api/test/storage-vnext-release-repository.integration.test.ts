@@ -357,6 +357,20 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       manifestChecksum: "f".repeat(64),
       navigationProfileVersion: 1
     });
+    await sql`
+      UPDATE focowiki.active_snapshots
+      SET revision = 2
+      WHERE knowledge_base_id = 'kb-release'
+    `;
+    await expect(releases.getActiveRoot("kb-release")).resolves.toMatchObject({
+      publicId: "root-release-1",
+      revision: 2
+    });
+    await sql`
+      UPDATE focowiki.active_snapshots
+      SET revision = 1
+      WHERE knowledge_base_id = 'kb-release'
+    `;
     await expect(
       createPostgresStorageVnextActiveSearchProjectionRepository(sql)
         .getActiveProjection("kb-release")
@@ -533,6 +547,83 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     }]);
   });
 
+  it("activates a non-search release while retaining the mismatched active search", async () => {
+    const knowledgeBaseId = "kb-release-retained-search";
+    const activeSearchPublicId = "search-release-retained-active";
+    await createKnowledgeBase(knowledgeBaseId);
+    await createVerifiedObject(
+      "object-release-retained-base",
+      "1".repeat(64),
+      32
+    );
+    await createVerifiedObject(
+      "object-release-retained-next",
+      "2".repeat(64),
+      32
+    );
+
+    await createRetainedSearchRelease({
+      knowledgeBaseId,
+      sequence: 1,
+      objectId: "object-release-retained-base",
+      checksum: "1".repeat(64),
+      expectedActiveRootPublicId: null,
+      expectedActiveRevision: 0,
+      searchProjectionPublicId: activeSearchPublicId,
+      createSearchProjection: true
+    });
+    await createRetainedSearchRelease({
+      knowledgeBaseId,
+      sequence: 2,
+      objectId: "object-release-retained-next",
+      checksum: "2".repeat(64),
+      expectedActiveRootPublicId: "root-release-retained-1",
+      expectedActiveRevision: 1,
+      searchProjectionPublicId: activeSearchPublicId,
+      createSearchProjection: false
+    });
+
+    const snapshots = await sql<Array<{
+      release_root_public_id: string;
+      revision: number | string;
+      search_projection_public_id: string;
+    }>>`
+      SELECT release_root_public_id, revision, search_projection_public_id
+      FROM focowiki.active_snapshots
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+    `;
+    expect(snapshots.map((snapshot) => ({
+      ...snapshot,
+      revision: Number(snapshot.revision)
+    }))).toEqual([{
+      release_root_public_id: "root-release-retained-2",
+      revision: 2,
+      search_projection_public_id: activeSearchPublicId
+    }]);
+    const searchRows = await sql<Array<{
+      public_id: string;
+      projection_role: string;
+      provider_index_uid: string;
+    }>>`
+      SELECT public_id, projection_role, provider_index_uid
+      FROM focowiki.search_projections
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+      ORDER BY public_id
+    `;
+    expect(searchRows).toEqual([{
+      public_id: activeSearchPublicId,
+      projection_role: "active",
+      provider_index_uid: `index-${activeSearchPublicId}`
+    }]);
+    const searchCleanup = await sql<Array<{ total: number | string }>>`
+      SELECT count(*) AS total
+      FROM focowiki.cleanup_actions
+      WHERE knowledge_base_id = ${knowledgeBaseId}
+        AND resource_kind = 'search_index'
+    `;
+    expect(searchCleanup[0]?.total).toBe("0");
+  });
+
   it("keeps maintenance active and rollback roots standalone while retiring old lineage", async () => {
     const knowledgeBaseId = "kb-release-maintenance-compact";
     await createKnowledgeBase(knowledgeBaseId);
@@ -698,10 +789,10 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       idempotency: { key: "fanout-key", requestHash: "7".repeat(64) },
       createdAt: "2026-08-01T03:00:00.000Z"
     });
-    const overBudgetObjectCount = 141;
+    const overBudgetObjectCount = 465;
     const shards = [];
     for (let index = 0; index < overBudgetObjectCount; index += 1) {
-      const checksum = index.toString(16).padStart(2, "0").repeat(32);
+      const checksum = index.toString(16).padStart(64, "0");
       const objectId = `object-fanout-${index}`;
       await createVerifiedObject(objectId, checksum, 10);
       shards.push({
@@ -956,8 +1047,26 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
         attachments: "0",
         owners: "0",
         validations: "0",
-        searches: "0"
+        searches: "1"
       });
+      const retainedSearch = await sql<Array<{
+        state: string;
+        safe_error_code: string | null;
+      }>>`
+        SELECT state, safe_error_code
+        FROM focowiki.search_projections
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND projection_role = 'candidate'
+      `;
+      expect(retainedSearch).toEqual([{
+        state: "failed",
+        safe_error_code: terminalInput.reasonCode
+      }]);
+      await sql`
+        DELETE FROM focowiki.search_projections
+        WHERE knowledge_base_id = ${knowledgeBaseId}
+          AND projection_role = 'candidate'
+      `;
       const objects = await sql<Array<{ zero_owner_since: Date | null }>>`
         SELECT zero_owner_since
         FROM focowiki.object_registrations
@@ -997,7 +1106,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     })).resolves.toEqual({ items: [], nextCursor: null });
   });
 
-  it("removes a same-identity search candidate when termination precedes validation", async () => {
+  it("retains a failed search candidate until exact provider cleanup", async () => {
     const knowledgeBaseId = "kb-release-unvalidated-terminal";
     const operationPublicId = "operation-release-unvalidated-terminal";
     const candidatePublicId = "candidate-release-unvalidated-terminal";
@@ -1041,13 +1150,25 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       terminatedAt: "2026-08-20T02:00:00.000Z"
     })).resolves.toBe(true);
 
-    const candidates = await sql<Array<{ total: number | string }>>`
-      SELECT count(*) AS total
+    const candidates = await sql<Array<{
+      public_id: string;
+      provider_kind: string;
+      provider_index_uid: string;
+      state: string;
+      safe_error_code: string | null;
+    }>>`
+      SELECT public_id, provider_kind, provider_index_uid, state, safe_error_code
       FROM focowiki.search_projections
       WHERE knowledge_base_id = ${knowledgeBaseId}
         AND projection_role = 'candidate'
     `;
-    expect(candidates[0]?.total).toBe("0");
+    expect(candidates).toEqual([{
+      public_id: candidatePublicId,
+      provider_kind: "meilisearch",
+      provider_index_uid: `index-${candidatePublicId}`,
+      state: "failed",
+      safe_error_code: "release_failed"
+    }]);
   });
 
   it("bounds live shard and owner counts with periodic release-lineage compaction", async () => {
@@ -1440,6 +1561,115 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     })).resolves.toMatchObject({ outcome: "activated" });
   }
 
+  async function createRetainedSearchRelease(input: {
+    knowledgeBaseId: string;
+    sequence: number;
+    objectId: string;
+    checksum: string;
+    expectedActiveRootPublicId: string | null;
+    expectedActiveRevision: number;
+    searchProjectionPublicId: string;
+    createSearchProjection: boolean;
+  }): Promise<void> {
+    const operationPublicId = `operation-release-retained-${input.sequence}`;
+    const candidatePublicId = `candidate-release-retained-${input.sequence}`;
+    const rootPublicId = `root-release-retained-${input.sequence}`;
+    const idempotencyKey = `release-retained-key-${input.sequence}`;
+    await createOperation({
+      knowledgeBaseId: input.knowledgeBaseId,
+      operationPublicId,
+      idempotencyKey,
+      requestHash: input.checksum
+    });
+    await releases.createCandidate({
+      publicId: candidatePublicId,
+      knowledgeBaseId: input.knowledgeBaseId,
+      operationPublicId,
+      candidateRootPublicId: rootPublicId,
+      expectedActiveRootPublicId: input.expectedActiveRootPublicId,
+      expectedActiveRevision: input.expectedActiveRevision,
+      changedFacts: [{
+        kind: "knowledge_base",
+        publicId: input.knowledgeBaseId,
+        change: "updated"
+      }],
+      dependencies: [],
+      idempotency: {
+        key: idempotencyKey,
+        requestHash: input.checksum
+      },
+      createdAt: `2026-08-${String(input.sequence + 20).padStart(2, "0")}T01:00:00.000Z`
+    });
+    await releases.addCandidateCatalogEntries({
+      candidatePublicId,
+      entries: [{
+        logicalPath: "index.md",
+        kind: "index",
+        sourceFilePublicId: null,
+        checksum: input.checksum,
+        objectId: input.objectId,
+        byteCount: 32,
+        ordinal: 0
+      }]
+    });
+    await releases.replaceCandidateSummaries({
+      candidatePublicId,
+      directories: [],
+      knowledgeBase: {
+        sourceFileCount: 0,
+        directoryCount: 0,
+        generatedEntryCount: 1,
+        graphNodeCount: 0,
+        graphEdgeCount: 0,
+        generatedByteCount: 32
+      }
+    });
+    await releases.markCandidateValidating({ candidatePublicId });
+    if (input.createSearchProjection) {
+      await createSearchCandidate(
+        input.knowledgeBaseId,
+        input.searchProjectionPublicId,
+        input.sequence
+      );
+    }
+    await expect(releases.recordCandidateValidation({
+      candidatePublicId,
+      manifestChecksum: input.checksum,
+      searchProjectionPublicId: input.searchProjectionPublicId,
+      objectOwnerCount: 1,
+      searchDocumentCount: 1,
+      graphNodeCount: 0,
+      graphEdgeCount: 0,
+      linkCount: 0,
+      generatedEntryCount: 1,
+      navigationProfileVersion: 1,
+      objectValidationPassed: true,
+      searchValidationPassed: true,
+      graphValidationPassed: true,
+      linkValidationPassed: true,
+      countValidationPassed: true,
+      pathValidationPassed: true,
+      validatedAt: `2026-08-${String(input.sequence + 20).padStart(2, "0")}T02:00:00.000Z`
+    })).resolves.toBe(true);
+    await expect(releases.markCandidateReady({
+      candidatePublicId,
+      manifestChecksum: input.checksum
+    })).resolves.toBe(true);
+    await expect(releases.activateCandidate({
+      knowledgeBaseId: input.knowledgeBaseId,
+      candidatePublicId,
+      expectedActiveRootPublicId: input.expectedActiveRootPublicId,
+      expectedActiveRevision: input.expectedActiveRevision,
+      searchProjectionPublicId: input.searchProjectionPublicId,
+      rollbackExpiresAt: input.expectedActiveRootPublicId
+        ? "2026-09-01T00:00:00.000Z"
+        : null,
+      eventPublicId: `event-release-retained-${input.sequence}`,
+      eventExpiresAt: "2028-01-01T00:00:00.000Z",
+      activatedAt: `2026-08-${String(input.sequence + 20).padStart(2, "0")}T03:00:00.000Z`
+    })).resolves.toMatchObject({ outcome: "activated" });
+  }
+
   async function createVerifiedObject(
     objectId: string,
     checksum: string,
@@ -1464,12 +1694,14 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
     await sql`
       INSERT INTO focowiki.search_projections (
         public_id, knowledge_base_id, projection_role,
-        provider_index_uid, schema_checksum_sha256, settings_checksum_sha256,
+        provider_kind, provider_index_uid,
+        schema_checksum_sha256, settings_checksum_sha256,
         document_checksum_sha256,
         revision, document_count, state, created_at, updated_at
       ) VALUES (
         ${publicId}, ${knowledgeBaseId}, 'candidate',
-        ${`index-${publicId}`}, ${"b".repeat(64)}, ${"c".repeat(64)},
+        'meilisearch', ${`index-${publicId}`},
+        ${"b".repeat(64)}, ${"c".repeat(64)},
         ${"d".repeat(64)}, ${revision}, 1, 'ready', now(), now()
       )
     `;

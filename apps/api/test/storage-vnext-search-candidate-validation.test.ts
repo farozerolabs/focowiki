@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  SearchEngineSettings,
-  SearchEngineTransport
-} from "../src/application/ports/search-engine-transport.js";
+  MeilisearchClientPort
+} from "../src/infrastructure/meilisearch/meilisearch-client-port.js";
+import type { SearchProviderIndexDefinition } from
+  "../src/application/ports/search-provider-runtime.js";
+import {
+  createMeilisearchProviderRuntime,
+  toMeilisearchSettings
+} from "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import {
   validateStorageVnextSearchCandidate
 } from "../src/storage-vnext/search/candidate-validation.js";
@@ -25,7 +30,8 @@ import type {
   StorageVnextSearchProjectionRepository
 } from "../src/storage-vnext/search/projection-repository.js";
 
-const settings: SearchEngineSettings = {
+const settings: SearchProviderIndexDefinition = {
+  primaryKey: "id",
   searchableAttributes: [
     "title", "logicalPath", "headingAncestors", "searchText", "rankingTerms"
   ],
@@ -38,14 +44,13 @@ const settings: SearchEngineSettings = {
     "contentKind", "fileKind", "segmentOrdinal", "headingAncestors",
     "searchText", "rankingTerms"
   ],
-  sortableAttributes: [],
   rankingRules: ["words", "typo", "proximity", "attribute", "sort", "exactness"],
   distinctAttribute: "sourceFilePublicId",
-  pagination: { maxTotalHits: 2_000 },
+  maximumTotalHits: 2_000,
   searchCutoffMs: 1_000,
-  localizedAttributes: [],
-  typoTolerance: { disableOnAttributes: ["logicalPath"] }
+  typoDisabledAttributes: ["logicalPath"]
 };
+const meilisearchSettings = toMeilisearchSettings(settings);
 const settingsChecksum = createStorageVnextSearchSettingsChecksum(settings);
 
 const documents: StorageVnextSearchDocument[] = [
@@ -84,10 +89,11 @@ const documents: StorageVnextSearchDocument[] = [
 describe("storage vNext search candidate validation", () => {
   it("validates counts, checksums, paths, query parity, ranking, and hydration", async () => {
     const fixture = createFixture();
+    const refreshIndex = vi.spyOn(fixture.provider.write, "refreshIndex");
 
     await validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -95,6 +101,13 @@ describe("storage vNext search candidate validation", () => {
     });
 
     expect(fixture.record.state).toBe("ready");
+    expect(refreshIndex).toHaveBeenCalledOnce();
+    expect(refreshIndex).toHaveBeenCalledWith({
+      indexUid: fixture.record.providerIndexUid
+    });
+    expect(refreshIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(fixture.transport.getIndexStats!).mock.invocationCallOrder[0]!
+    );
     expect(fixture.transport.listDocuments).toHaveBeenCalledTimes(2);
     expect(fixture.transport.search).toHaveBeenCalledTimes(22);
     expect(fixture.hydration.hydrateCurrentSources).toHaveBeenCalled();
@@ -109,7 +122,7 @@ describe("storage vNext search candidate validation", () => {
 
     await expect(validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -129,7 +142,7 @@ describe("storage vNext search candidate validation", () => {
 
     await expect(validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -144,7 +157,7 @@ describe("storage vNext search candidate validation", () => {
 
     await expect(validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -160,7 +173,7 @@ describe("storage vNext search candidate validation", () => {
 
     await validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -212,7 +225,7 @@ describe("storage vNext search candidate validation", () => {
 
     await expect(validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -233,7 +246,7 @@ describe("storage vNext search candidate validation", () => {
 
     await expect(validateStorageVnextSearchCandidate({
       repository: fixture.repository,
-      transport: fixture.transport,
+      provider: fixture.provider,
       hydration: fixture.hydration,
       settings,
       documentPageSize: 2,
@@ -289,6 +302,7 @@ function createFixture() {
   const record: StorageVnextSearchProjectionRecord = {
     publicId: "candidate-a",
     knowledgeBaseId: "kb-a",
+    providerKind: "meilisearch",
     providerIndexUid: "owned_candidate_a",
     schemaChecksum: "a".repeat(64),
     settingsChecksum,
@@ -299,15 +313,15 @@ function createFixture() {
     lastBatchOrdinal: 0,
     lastBatchChecksum: "d".repeat(64),
     correlationPublicId: null,
-    providerTaskUid: null,
+    providerOperationRef: null,
     revision: 1
   };
   const repository: StorageVnextSearchProjectionRepository = {
     reserveCandidate: vi.fn(),
     getCandidate: vi.fn(async () => record),
-    beginProviderTask: vi.fn(),
-    recordProviderTask: vi.fn(),
-    completeProviderTask: vi.fn(),
+    beginProviderOperation: vi.fn(),
+    recordProviderOperation: vi.fn(),
+    completeProviderOperation: vi.fn(),
     markCandidateIndexing: vi.fn(),
     beginDocumentBatch: vi.fn(),
     completeDocumentBatch: vi.fn(),
@@ -340,13 +354,14 @@ function createFixture() {
   const transport = {
     getIndex: vi.fn(async () => ({ uid: record.providerIndexUid, primaryKey: "id" })),
     getIndexStats: vi.fn(async () => ({ numberOfDocuments: documents.length })),
-    getSettings: vi.fn(async () => settings),
+    getSettings: vi.fn(async () => meilisearchSettings),
     listDocuments,
     search
-  } as unknown as SearchEngineTransport & {
+  } as unknown as MeilisearchClientPort & {
     listDocuments: typeof listDocuments;
     search: typeof search;
   };
+  const provider = createMeilisearchProviderRuntime(transport);
   const hydration = {
     hydrateCurrentSources: vi.fn(async () => [{
       sourceFilePublicId: "file-a",
@@ -355,5 +370,5 @@ function createFixture() {
       title: "Employment 合同 Guide"
     }])
   };
-  return { record, repository, transport, hydration };
+  return { record, repository, transport, provider, hydration };
 }

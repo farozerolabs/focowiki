@@ -169,7 +169,7 @@ describe("lightweight architecture boundaries", () => {
     ).toBe(false);
   });
 
-  it("packages the native tokenizer only for source-derived lexical facts", () => {
+  it("packages one shared tokenizer for source facts and OpenSearch roles", () => {
     const runtimeBuild = readWorkspaceFile("apps/api/scripts/build-runtime.mjs");
     const dockerfile = readWorkspaceFile("Dockerfile");
     const sourceMain = readWorkspaceFile("apps/api/src/source-worker-main.ts");
@@ -188,13 +188,15 @@ describe("lightweight architecture boundaries", () => {
     expect(runtimeBuild).toContain('resolve(runtimeDir, "node_modules/nodejieba")');
     expect(dockerfile).toContain("apk add --no-cache --virtual .native-build-dependencies");
     expect(dockerfile).toContain("ENV npm_config_build_from_source=true");
-    expect(dockerfile).toContain("apk add --no-cache libstdc++ su-exec");
+    expect(dockerfile).toContain("apk add --no-cache libstdc++ openssl su-exec");
     expect(dockerfile).toContain("test ! -x /usr/bin/g++");
     expect(sourceRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
     expect(sourceMain).toContain("assertTokenizer: assertNodeJiebaRuntimeAvailable");
     expect(sourceRuntime).toContain("assertNodeJiebaRuntimeAvailable()");
-    expect(maintenanceRuntime).not.toContain("nodejieba-tokenizer");
-    expect(publicationRuntime).not.toContain("nodejieba-tokenizer");
+    expect(maintenanceRuntime).toContain('searchConfig.provider === "opensearch"');
+    expect(maintenanceRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
+    expect(publicationRuntime).toContain('searchConfig.provider === "opensearch"');
+    expect(publicationRuntime.match(/createNodeJiebaTokenizer\(\)/gu)).toHaveLength(1);
   });
 
   it("cleans package build directories before compiling", () => {

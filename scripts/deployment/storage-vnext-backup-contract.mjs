@@ -4,7 +4,7 @@ const WRITE_CAPABLE_SERVICES = [
   "publication-worker",
   "maintenance-worker",
   "migrate",
-  "meilisearch-init"
+  "search-init"
 ];
 
 const COMPOSE_PROJECT_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]*$/u;

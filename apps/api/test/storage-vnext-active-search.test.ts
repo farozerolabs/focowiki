@@ -2,19 +2,22 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  SearchEngineTransportError,
-  type SearchEngineTransport
-} from "../src/application/ports/search-engine-transport.js";
+  MeilisearchClientError,
+  type MeilisearchClientPort
+} from "../src/infrastructure/meilisearch/meilisearch-client-port.js";
 import type {
   StorageVnextActiveSearchProjectionRepository
 } from "../src/storage-vnext/search/active-projection-repository.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import {
-  createStorageVnextActiveSearch,
-  StorageVnextSearchUnavailableError
+  createStorageVnextActiveSearch
 } from "../src/storage-vnext/search/active-search.js";
 import type {
   StorageVnextSearchHydrationPort
 } from "../src/storage-vnext/search/search-hydration.js";
+import { SearchProviderError } from
+  "../src/application/ports/search-provider-runtime.js";
 
 describe("storage vNext active unified search", () => {
   it("queries one active index for content and graph seeds then hydrates current paths", async () => {
@@ -106,6 +109,7 @@ describe("storage vNext active unified search", () => {
         getActiveProjection: vi.fn(async () => ({
           publicId: "projection-active",
           knowledgeBaseId: "kb-a",
+          providerKind: "meilisearch" as const,
           providerIndexUid: "owned_vnext_kb_active",
           schemaChecksum: "a".repeat(64),
           settingsChecksum: "b".repeat(64),
@@ -113,14 +117,18 @@ describe("storage vNext active unified search", () => {
           documentCount: 1
         }))
       },
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
       hydration: createHydration([
         current("file-a", "revision-a", "pages/a.md", "Alpha")
       ]),
       maxPageSize: 100,
       overfetchFactor: runtimeSettings.overfetchFactor,
       cropLength: runtimeSettings.cropLength,
-      resolveRuntimeSettings: vi.fn(async () => runtimeSettings)
+      requestTimeoutMs: 5_000,
+      resolveRuntimeSettings: vi.fn(async () => ({
+        ...runtimeSettings,
+        requestTimeoutMs: 5_000
+      }))
     });
 
     await search.search({
@@ -146,6 +154,60 @@ describe("storage vNext active unified search", () => {
     expect(transport.search).toHaveBeenNthCalledWith(2, expect.objectContaining({
       limit: 41,
       cropLength: 80
+    }));
+  });
+
+  it("applies the refreshed engine cutoff to the next provider request", async () => {
+    const providerQuery = vi.fn(async () => ({
+      hits: [],
+      continuation: null,
+      processingTimeMs: 1
+    }));
+    let engineSearchCutoffMs = 1_000;
+    const search = createStorageVnextActiveSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-active",
+          knowledgeBaseId: "kb-a",
+          providerKind: "opensearch" as const,
+          providerIndexUid: "focowiki_opensearch_active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentChecksum: "c".repeat(64),
+          documentCount: 0
+        }))
+      },
+      provider: { kind: "opensearch", query: { query: providerQuery } },
+      hydration: createHydration([]),
+      maxPageSize: 100,
+      overfetchFactor: 2,
+      cropLength: 40,
+      requestTimeoutMs: 5_000,
+      engineSearchCutoffMs,
+      resolveRuntimeSettings: async () => ({
+        overfetchFactor: 2,
+        cropLength: 40,
+        requestTimeoutMs: 5_000,
+        engineSearchCutoffMs
+      })
+    });
+    const request = {
+      knowledgeBaseId: "kb-a",
+      query: "alpha",
+      kinds: ["file"] as const,
+      limit: 10,
+      cursor: null
+    };
+
+    await search.search(request);
+    engineSearchCutoffMs = 700;
+    await search.search(request);
+
+    expect(providerQuery).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      deadlineMs: 1_000
+    }));
+    expect(providerQuery).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      deadlineMs: 700
     }));
   });
 
@@ -201,7 +263,7 @@ describe("storage vNext active unified search", () => {
   });
 
   it("returns one stable safe error and leaves file-first reads independent", async () => {
-    const rawError = new SearchEngineTransportError("SEARCH_ENGINE_UNAVAILABLE", true);
+    const rawError = new MeilisearchClientError("SEARCH_ENGINE_UNAVAILABLE", true);
     const transport = createTransport({
       search: vi.fn(async () => { throw rawError; })
     });
@@ -216,7 +278,7 @@ describe("storage vNext active unified search", () => {
       cursor: null
     }).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(StorageVnextSearchUnavailableError);
+    expect(error).toBeInstanceOf(SearchProviderError);
     expect(error).toMatchObject({
       code: "SEARCH_ENGINE_UNAVAILABLE",
       retryable: true,
@@ -227,6 +289,45 @@ describe("storage vNext active unified search", () => {
     expect(readMarkdown).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "SEARCH_ENGINE_TIMEOUT",
+    "SEARCH_ENGINE_OVERLOADED",
+    "SEARCH_ENGINE_UNAVAILABLE"
+  ] as const)("preserves the real provider error classification %s", async (code) => {
+    const failure = new SearchProviderError(code, true);
+    const search = createStorageVnextActiveSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-active",
+          knowledgeBaseId: "kb-a",
+          providerKind: "opensearch" as const,
+          providerIndexUid: "owned_vnext_kb_active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentChecksum: "c".repeat(64),
+          documentCount: 2
+        }))
+      },
+      provider: {
+        kind: "opensearch",
+        query: { query: vi.fn(async () => { throw failure; }) }
+      },
+      hydration: createHydration([]),
+      maxPageSize: 100,
+      overfetchFactor: 2,
+      cropLength: 40,
+      requestTimeoutMs: 5_000
+    });
+
+    await expect(search.search({
+      knowledgeBaseId: "kb-a",
+      query: "alpha",
+      kinds: ["file"],
+      limit: 10,
+      cursor: null
+    })).rejects.toMatchObject({ code });
+  });
+
   it("fails safely when no active projection exists without querying any corpus", async () => {
     const transport = createTransport();
     const projections: StorageVnextActiveSearchProjectionRepository = {
@@ -234,11 +335,12 @@ describe("storage vNext active unified search", () => {
     };
     const search = createStorageVnextActiveSearch({
       projections,
-      transport,
+      provider: createMeilisearchProviderRuntime(transport),
       hydration: createHydration([]),
       maxPageSize: 100,
       overfetchFactor: 2,
-      cropLength: 40
+      cropLength: 40,
+      requestTimeoutMs: 5_000
     });
 
     await expect(search.search({
@@ -251,16 +353,80 @@ describe("storage vNext active unified search", () => {
     expect(transport.search).not.toHaveBeenCalled();
   });
 
+  it("rejects a provider-mismatched projection before contacting the selected provider", async () => {
+    const transport = createTransport();
+    const providerQuery = vi.fn();
+    const search = createStorageVnextActiveSearch({
+      projections: {
+        getActiveProjection: vi.fn(async () => ({
+          publicId: "projection-meilisearch-active",
+          knowledgeBaseId: "kb-a",
+          providerKind: "meilisearch" as const,
+          providerIndexUid: "owned_vnext_meilisearch_active",
+          schemaChecksum: "a".repeat(64),
+          settingsChecksum: "b".repeat(64),
+          documentChecksum: "c".repeat(64),
+          documentCount: 1
+        }))
+      },
+      provider: { kind: "opensearch", query: { query: providerQuery } },
+      hydration: createHydration([]),
+      maxPageSize: 100,
+      overfetchFactor: 2,
+      cropLength: 40,
+      requestTimeoutMs: 5_000
+    });
+
+    await expect(search.search({
+      knowledgeBaseId: "kb-a",
+      query: "alpha",
+      kinds: ["file"],
+      limit: 10,
+      cursor: null
+    })).rejects.toMatchObject({
+      code: "SEARCH_ENGINE_UNAVAILABLE",
+      retryable: true
+    });
+    expect(transport.search).not.toHaveBeenCalled();
+    expect(providerQuery).not.toHaveBeenCalled();
+  });
+
+  it("does not cache successful search responses in process memory", async () => {
+    const transport = createTransport({
+      search: vi.fn(async () => ({
+        hits: [hit("file-a", "revision-a", "pages/a.md", "Alpha", "snippet")],
+        estimatedTotalHits: 1,
+        processingTimeMs: 1
+      }))
+    });
+    const search = createSearch(transport, createHydration([
+      current("file-a", "revision-a", "pages/a.md", "Alpha")
+    ]));
+    const request = {
+      knowledgeBaseId: "kb-a",
+      query: "alpha",
+      kinds: ["file"] as const,
+      limit: 10,
+      cursor: null
+    };
+
+    await search.search(request);
+    await search.search(request);
+
+    expect(transport.search).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts the validated runtime search crop-length range", () => {
     expect(() => createStorageVnextActiveSearch({
       projections: {
         getActiveProjection: vi.fn(async () => null)
       },
-      transport: createTransport(),
+      provider: createMeilisearchProviderRuntime(createTransport()),
       hydration: createHydration([]),
       maxPageSize: 200,
       overfetchFactor: 3,
-      cropLength: 5_000
+      cropLength: 5_000,
+      requestTimeoutMs: 5_000
     })).not.toThrow();
   });
 
@@ -279,7 +445,7 @@ describe("storage vNext active unified search", () => {
 });
 
 function createSearch(
-  transport: SearchEngineTransport,
+  transport: MeilisearchClientPort,
   hydration: StorageVnextSearchHydrationPort
 ) {
   return createStorageVnextActiveSearch({
@@ -287,6 +453,7 @@ function createSearch(
       getActiveProjection: vi.fn(async () => ({
         publicId: "projection-active",
         knowledgeBaseId: "kb-a",
+        providerKind: "meilisearch" as const,
         providerIndexUid: "owned_vnext_kb_active",
         schemaChecksum: "a".repeat(64),
         settingsChecksum: "b".repeat(64),
@@ -294,11 +461,12 @@ function createSearch(
         documentCount: 2
       }))
     },
-    transport,
+    provider: createMeilisearchProviderRuntime(transport),
     hydration,
     maxPageSize: 100,
     overfetchFactor: 2,
-    cropLength: 40
+    cropLength: 40,
+    requestTimeoutMs: 5_000
   });
 }
 
@@ -312,7 +480,9 @@ function createHydration(
   };
 }
 
-function createTransport(overrides: Partial<SearchEngineTransport> = {}): SearchEngineTransport {
+function createTransport(
+  overrides: Partial<MeilisearchClientPort> = {}
+): MeilisearchClientPort {
   return {
     health: vi.fn(async () => ({ available: true })),
     getPressure: vi.fn(async () => ({
@@ -329,7 +499,6 @@ function createTransport(overrides: Partial<SearchEngineTransport> = {}): Search
     addDocuments: vi.fn(async () => ({ taskUid: 3 })),
     deleteDocuments: vi.fn(async () => ({ taskUid: 4 })),
     deleteIndex: vi.fn(async () => ({ taskUid: 5 })),
-    swapIndexes: vi.fn(async () => ({ taskUid: 6 })),
     getTask: vi.fn(async (taskUid) => ({
       taskUid,
       status: "succeeded" as const,

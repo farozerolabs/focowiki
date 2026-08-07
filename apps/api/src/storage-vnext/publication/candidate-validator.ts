@@ -15,8 +15,7 @@ import type {
   StorageVnextReleaseWritePort
 } from "../release/ports.js";
 import type {
-  StorageVnextSearchProjectionRecord,
-  StorageVnextSearchProjectionRepository
+  StorageVnextSearchProjectionState
 } from "../search/projection-repository.js";
 import {
   STORAGE_VNEXT_RELEASED_NAVIGATION_PATHS,
@@ -57,7 +56,16 @@ export function createStorageVnextPublicationCandidateValidator(input: {
   releases: ReleasePort;
   effectiveCatalog: StorageVnextEffectiveCatalogPort;
   objects: ObjectValidationPort;
-  search: Pick<StorageVnextSearchProjectionRepository, "getCandidate">;
+  search: {
+    getProjection(input: {
+      knowledgeBaseId: string;
+      publicId: string;
+    }): Promise<{
+      knowledgeBaseId: string;
+      state: StorageVnextSearchProjectionState;
+      documentCount: number;
+    } | null>;
+  };
   clock: () => string;
   limits: {
     maximumPageSize: number;
@@ -667,13 +675,20 @@ async function requireCandidate(
 }
 
 async function requireSearch(
-  search: Pick<StorageVnextSearchProjectionRepository, "getCandidate">,
+  search: Parameters<typeof createStorageVnextPublicationCandidateValidator>[0]["search"],
   request: {
     knowledgeBaseId: string;
     searchProjectionPublicId: string;
   }
-): Promise<StorageVnextSearchProjectionRecord> {
-  const candidate = await search.getCandidate(request.searchProjectionPublicId);
+): Promise<{
+  knowledgeBaseId: string;
+  state: StorageVnextSearchProjectionState;
+  documentCount: number;
+}> {
+  const candidate = await search.getProjection({
+    knowledgeBaseId: request.knowledgeBaseId,
+    publicId: request.searchProjectionPublicId
+  });
   if (
     !candidate
     || candidate.knowledgeBaseId !== request.knowledgeBaseId

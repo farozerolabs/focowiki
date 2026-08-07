@@ -1140,8 +1140,12 @@ function validateLimits(limits: Parameters<
 
 function validateRequest(request: ProjectionRequest): void {
   if (
-    request.candidatePublicId !== request.searchProjectionPublicId
-    || [request.knowledgeBaseId, request.candidatePublicId, request.operationPublicId]
+    [
+      request.knowledgeBaseId,
+      request.candidatePublicId,
+      request.operationPublicId,
+      request.searchProjectionPublicId
+    ]
       .some((value) => !value || Buffer.byteLength(value) > 255)
   ) throw projectionLoaderError("invalid_request");
 }

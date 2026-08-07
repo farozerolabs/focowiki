@@ -3,16 +3,20 @@ import { graphRefForFile } from "@focowiki/okf";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   conflict,
+  createDeveloperOpenApiError,
   notFound,
   payloadTooLarge,
   repositoryUnavailable,
   validationError
 } from "../../developer-openapi/errors.js";
+import { SearchProviderError } from
+  "../../application/ports/search-provider-runtime.js";
 import { GENERATED_GRAPH_RESOURCES } from "../../okf/generated-graph-resources.js";
 import type { StorageVnextCatalogRepository } from "../catalog/ports.js";
 import { StorageVnextCatalogRepositoryError } from "../catalog/postgres-repository.js";
 import type { StorageVnextReleaseReadPort } from "../release/ports.js";
 import type { StorageVnextSearchQueryPort } from "../search/ports.js";
+import { StorageVnextActiveSearchInputError } from "../search/active-search.js";
 import type { StorageVnextSourceEventReadPort } from "../source-events/ports.js";
 import { StorageVnextSourceEventRepositoryError } from
   "../source-events/postgres-repository.js";
@@ -183,8 +187,8 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
           limit: request.limit,
           cursor: request.cursor
         });
-      } catch {
-        throw repositoryUnavailable();
+      } catch (error) {
+        throw mapSearchError(error);
       }
       const graphContexts = request.mode === "file"
         ? new Map<string, StorageVnextOpenApiSearchGraphContext>()
@@ -446,4 +450,37 @@ function safeCount(value: number | string) {
   const count = Number(value);
   if (!Number.isSafeInteger(count) || count < 0) throw new Error("Invalid graph count");
   return count;
+}
+
+function mapSearchError(error: unknown) {
+  if (error instanceof StorageVnextActiveSearchInputError) {
+    return validationError(
+      error.code === "INVALID_SEARCH_CURSOR"
+        ? "Pagination cursor is invalid."
+        : "File search query is invalid.",
+      { field: error.code === "INVALID_SEARCH_CURSOR" ? "cursor" : "query" }
+    );
+  }
+  if (error instanceof SearchProviderError) {
+    if (error.code === "SEARCH_ENGINE_TIMEOUT") {
+      return createDeveloperOpenApiError(
+        "SEARCH_TIMEOUT",
+        504,
+        "Search exceeded the configured response deadline."
+      );
+    }
+    if (error.code === "SEARCH_ENGINE_OVERLOADED") {
+      return createDeveloperOpenApiError(
+        "SEARCH_OVERLOADED",
+        503,
+        "Search is temporarily overloaded. Retry after a short delay."
+      );
+    }
+    return createDeveloperOpenApiError(
+      "SEARCH_UNAVAILABLE",
+      503,
+      "Search is temporarily unavailable. Retry after the service recovers."
+    );
+  }
+  return repositoryUnavailable();
 }

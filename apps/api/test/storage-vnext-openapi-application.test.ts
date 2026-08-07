@@ -7,6 +7,10 @@ import type { StorageVnextSourceEventSummary } from
   "../src/storage-vnext/source-events/ports.js";
 import { StorageVnextSourceEventRepositoryError } from
   "../src/storage-vnext/source-events/postgres-repository.js";
+import { SearchProviderError } from
+  "../src/application/ports/search-provider-runtime.js";
+import { StorageVnextActiveSearchInputError } from
+  "../src/storage-vnext/search/active-search.js";
 
 describe("storage vNext Developer OpenAPI application", () => {
   it("maps an invalid knowledge-base cursor to the public validation error", async () => {
@@ -126,6 +130,61 @@ describe("storage vNext Developer OpenAPI application", () => {
       details: { field: "cursor" }
     });
   });
+
+  it.each([
+    [new SearchProviderError("SEARCH_ENGINE_UNAVAILABLE", true),
+      "SEARCH_UNAVAILABLE", 503],
+    [new SearchProviderError("SEARCH_ENGINE_OVERLOADED", true),
+      "SEARCH_OVERLOADED", 503],
+    [new SearchProviderError("SEARCH_ENGINE_TIMEOUT", true),
+      "SEARCH_TIMEOUT", 504],
+    [new StorageVnextActiveSearchInputError("INVALID_SEARCH_CURSOR"),
+      "VALIDATION_ERROR", 422]
+  ] as const)(
+    "maps search failure %s to %s",
+    async (failure, code, httpStatus) => {
+      const application = createPostgresStorageVnextOpenApiApplication({
+        sql: null as never,
+        catalog: null as never,
+        releases: {
+          async getActiveRoot() {
+            return {
+              publicId: "root-search-errors",
+              knowledgeBaseId: "knowledge-base-search-errors",
+              role: "active",
+              manifestChecksum: "a".repeat(64),
+              revision: 1,
+              createdAt: "2026-08-07T00:00:00.000Z",
+              expiresAt: null
+            };
+          }
+        } as never,
+        adminRead: null as never,
+        adminCore: null as never,
+        resources: null as never,
+        sourceEvents: null as never,
+        source: null as never,
+        search: {
+          async search() {
+            throw failure;
+          }
+        },
+        webhooks: null as never
+      });
+
+      await expect(application.searchFiles({
+        knowledgeBaseId: "knowledge-base-search-errors",
+        query: "evidence",
+        scope: "all",
+        fileKind: null,
+        mode: "hybrid",
+        graphDepth: 1,
+        graphFanout: 10,
+        limit: 20,
+        cursor: null
+      })).rejects.toMatchObject({ code, httpStatus });
+    }
+  );
 });
 
 function sourceEvent(

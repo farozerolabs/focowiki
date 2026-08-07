@@ -1,9 +1,17 @@
 import { S3Client } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import type { RuntimeConfig } from "../../config.js";
+import type { SearchProviderRuntime } from
+  "../../application/ports/search-provider-runtime.js";
 import { closeDatabaseClient, createDatabaseClient } from "../../db/client.js";
 import { assertRuntimeSchemaGeneration } from "../../db/migrations.js";
 import { createRuntimeLogger } from "../../logger.js";
+import {
+  assertNodeJiebaRuntimeAvailable,
+  createNodeJiebaTokenizer
+} from "../../infrastructure/tokenization/nodejieba-tokenizer.js";
+import { createRuntimeSearchProvider } from
+  "../../runtime/search-provider.js";
 import {
   createRedisClient,
   createRedisCoordinator
@@ -59,6 +67,10 @@ import {
   createPostgresStorageVnextSearchProjectionRepository
 } from "../search/postgres-repository.js";
 import {
+  createPostgresStorageVnextActiveSearchProjectionRepository
+} from "../search/postgres-active-projection.js";
+import { createStorageVnextSearchSettings } from "../search/settings.js";
+import {
   createPostgresStorageVnextWorkflowRepository
 } from "../workflow/postgres-repository.js";
 import { createStorageVnextWebhookOutbox } from "../webhook/outbox.js";
@@ -88,7 +100,7 @@ export async function runStorageVnextPublicationWorker(
 ): Promise<void> {
   const searchConfig = config.search;
   if (!searchConfig) {
-    throw new Error("Meilisearch configuration is required for the publication worker");
+    throw new Error("Search configuration is required for the publication worker");
   }
   const productionConfig = { ...config, search: searchConfig };
   const logger = createRuntimeLogger(config, console, { streamName: "publication-worker" });
@@ -121,6 +133,11 @@ export async function runStorageVnextPublicationWorker(
     });
     await runtimeSettings.ensureBootstrapped();
     const initialSnapshot = await runtimeSettings.getSnapshot();
+    const tokenizer = searchConfig.provider === "opensearch"
+      ? (assertNodeJiebaRuntimeAvailable(), createNodeJiebaTokenizer())
+      : undefined;
+    let searchProvider: SearchProviderRuntime | null = null;
+    let searchProviderSettingsKey = "";
     const resourceBudgets = createProcessResourceBudgets(
       resolveResourceBudgetLimits(initialSnapshot)
     );
@@ -134,6 +151,8 @@ export async function runStorageVnextPublicationWorker(
     const webhookRepository = createPostgresStorageVnextWebhookRepository(sql);
     const ownership = createPostgresStorageVnextOwnershipRepository(sql);
     const searchRepository = createPostgresStorageVnextSearchProjectionRepository(sql);
+    const activeSearchProjections =
+      createPostgresStorageVnextActiveSearchProjectionRepository(sql);
     const sourceBodies = createS3StorageVnextSourceBodyStore({
       client: s3,
       bucket: config.storage.bucket,
@@ -202,7 +221,24 @@ export async function runStorageVnextPublicationWorker(
           limit: request.limit
         });
       },
-      createWorker({ snapshot, ...settings }) {
+      async createWorker({ snapshot, ...settings }) {
+        const nextSearchProviderSettingsKey = JSON.stringify(snapshot.search);
+        if (
+          !searchProvider
+          || searchProviderSettingsKey !== nextSearchProviderSettingsKey
+        ) {
+          const previousSearchProvider = searchProvider;
+          searchProvider = createRuntimeSearchProvider({
+            config: searchConfig,
+            settings: snapshot.search,
+            indexDefinition: createStorageVnextSearchSettings({
+              searchCutoffMs: snapshot.search.engineSearchCutoffMs
+            }),
+            ...(tokenizer ? { tokenizer } : {})
+          });
+          searchProviderSettingsKey = nextSearchProviderSettingsKey;
+          await closeSearchProvider(previousSearchProvider);
+        }
         const pipeline = createStorageVnextProductionPublicationPipeline({
           config: productionConfig,
           sql,
@@ -212,12 +248,14 @@ export async function runStorageVnextPublicationWorker(
           releases,
           ownership,
           searchRepository,
+          activeSearchProjections,
           sourceBodies,
           generatedBodies,
           objects,
           objectValidator,
           effectiveCatalog,
-          publicationSnapshot
+          publicationSnapshot,
+          searchProvider
         });
         const processor = pipeline.createProcessor();
         return createStorageVnextPublicationWorker({
@@ -290,6 +328,7 @@ export async function runStorageVnextPublicationWorker(
     try {
       await role.run(abort.signal);
     } finally {
+      await closeSearchProvider(searchProvider);
       resourceBudgetReporter.report(resourceBudgets, { force: true });
       logger.info("publication_worker.stopped");
     }
@@ -306,4 +345,10 @@ export async function runStorageVnextPublicationWorker(
 
 function now(): string {
   return new Date().toISOString();
+}
+
+async function closeSearchProvider(
+  provider: SearchProviderRuntime | null
+): Promise<void> {
+  if (provider) await provider.close();
 }

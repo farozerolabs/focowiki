@@ -92,12 +92,14 @@ export function createPostgresStorageVnextWorkflowRepository(
 
         await transaction`
           INSERT INTO focowiki.operation_work_items
-            (operation_public_id, knowledge_base_id, work_kind, state,
+            (operation_public_id, knowledge_base_id, work_kind,
+             search_provider_kind, state,
              operation_revision, settings_revision_public_id, attempt_count,
              lease_owner, lease_expires_at, next_attempt_at, safe_error_code,
              checkpoint)
           VALUES
-            (${work.publicId}, ${work.knowledgeBaseId}, ${work.kind}, ${work.state},
+            (${work.publicId}, ${work.knowledgeBaseId}, ${work.kind},
+              ${work.searchProviderKind}, ${work.state},
               ${work.operationRevision}, ${work.settingsRevisionPublicId}, ${work.attempt},
               ${work.leaseOwner}, ${work.leaseExpiresAt}, ${work.nextAttemptAt},
               ${work.safeErrorCode},
@@ -237,7 +239,8 @@ export function createPostgresStorageVnextWorkflowRepository(
             RETURNING work.*
           )
           SELECT claimed.operation_public_id, claimed.knowledge_base_id,
-                 claimed.work_kind, claimed.state, claimed.operation_revision,
+                 claimed.work_kind, claimed.search_provider_kind,
+                 claimed.state, claimed.operation_revision,
                  claimed.settings_revision_public_id, claimed.attempt_count,
                  claimed.lease_owner, claimed.lease_expires_at,
                  claimed.next_attempt_at, claimed.safe_error_code, claimed.checkpoint,
@@ -509,7 +512,8 @@ async function readOutcome(
 ): Promise<StorageVnextWorkflowOutcome | null> {
   const liveRows = await sql<StorageVnextLiveWorkRow[]>`
     SELECT work.operation_public_id, work.knowledge_base_id, work.work_kind,
-           work.state, work.operation_revision, work.settings_revision_public_id,
+           work.search_provider_kind, work.state, work.operation_revision,
+           work.settings_revision_public_id,
            work.attempt_count, work.lease_owner, work.lease_expires_at,
            work.next_attempt_at, work.safe_error_code, work.checkpoint,
            idempotency.idempotency_key,

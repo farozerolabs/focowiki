@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type {
-  SearchEngineSettings,
-  SearchEngineTask,
-  SearchEngineTransport
-} from "../../application/ports/search-engine-transport.js";
+  SearchProviderIndexDefinition,
+  SearchProviderOperationReceipt,
+  SearchProviderRuntime
+} from "../../application/ports/search-provider-runtime.js";
 import type { StorageVnextSearchProjectionPort } from "./ports.js";
 import type {
   StorageVnextSearchProjectionRecord,
@@ -37,8 +37,8 @@ export class StorageVnextSearchCandidateLifecycleError extends Error {
 
 type LifecycleConfig = {
   repository: StorageVnextSearchProjectionRepository;
-  transport: SearchEngineTransport;
-  settings: SearchEngineSettings;
+  provider: SearchProviderRuntime;
+  settings: SearchProviderIndexDefinition;
   indexUidPrefix: string;
   maxPollAttempts: number;
   pollIntervalMs: number;
@@ -72,6 +72,7 @@ export function createStorageVnextSearchCandidateLifecycle(
       const reservation = await config.repository.reserveCandidate({
         publicId: input.candidatePublicId,
         knowledgeBaseId: input.knowledgeBaseId,
+        providerKind: config.provider.kind,
         providerIndexUid,
         schemaChecksum: input.schemaChecksum,
         settingsChecksum: input.settingsChecksum
@@ -79,6 +80,7 @@ export function createStorageVnextSearchCandidateLifecycle(
       if (reservation.projection.state === "failed") {
         throw lifecycleError("provider_task_failed");
       }
+      assertProviderOwnership(reservation.projection);
       await ensureIndex(reservation.projection);
       await ensureSettings(input.candidatePublicId, input.settingsChecksum);
       const candidate = await requireCandidate(input.candidatePublicId);
@@ -91,6 +93,7 @@ export function createStorageVnextSearchCandidateLifecycle(
       assertBatch(input);
       const candidate = await requireCandidate(input.candidatePublicId);
       if (candidate.state !== "indexing") throw lifecycleError("invalid_input");
+      assertProviderOwnership(candidate);
       await assertProviderIndex(candidate.providerIndexUid);
       const correlationPublicId = createStorageVnextSearchTaskCorrelation({
         taskKind: "documents",
@@ -106,30 +109,33 @@ export function createStorageVnextSearchCandidateLifecycle(
         correlationPublicId
       });
       if (continuation.outcome === "completed") return;
-      let taskUid = continuation.providerTaskUid;
-      if (taskUid === null) {
-        const findTask = config.transport.findTaskByCorrelation;
-        if (!findTask) throw lifecycleError("task_correlation_unavailable");
-        const recovered = await findTask({
+      let receipt: SearchProviderOperationReceipt | null = null;
+      if (continuation.providerOperationRef) {
+        receipt = {
+          state: "pending",
+          operationRef: continuation.providerOperationRef
+        };
+      } else {
+        receipt = await config.provider.operations.findOperationByCorrelation({
           indexUid: candidate.providerIndexUid,
           correlation: correlationPublicId
         });
-        taskUid = recovered?.taskUid ?? null;
-        if (taskUid === null) {
-          taskUid = (await config.transport.addDocuments({
+        if (!receipt) {
+          receipt = await config.provider.write.writeDocuments({
             indexUid: candidate.providerIndexUid,
-            primaryKey: "id",
             documents: [...input.documents],
             correlation: correlationPublicId
-          })).taskUid;
+          });
         }
-        await config.repository.recordProviderTask({
+      }
+      if (receipt.state === "pending") {
+        await config.repository.recordProviderOperation({
           candidatePublicId: input.candidatePublicId,
           correlationPublicId,
-          providerTaskUid: taskUid
+          providerOperationRef: receipt.operationRef
         });
       }
-      await pollTask(taskUid);
+      await pollOperation(receipt);
       await config.repository.completeDocumentBatch({
         candidatePublicId: input.candidatePublicId,
         batchOrdinal: input.batchOrdinal,
@@ -145,49 +151,57 @@ export function createStorageVnextSearchCandidateLifecycle(
       taskKind: "create",
       candidatePublicId: candidate.publicId
     });
-    const provider = await config.transport.getIndex({
+    assertProviderOwnership(candidate);
+    const provider = await config.provider.admin.getIndex({
       indexUid: candidate.providerIndexUid
     });
     if (provider) {
       assertPrimaryKey(provider.primaryKey);
       if (candidate.correlationPublicId === correlationPublicId) {
-        await config.repository.completeProviderTask({
+        await config.repository.completeProviderOperation({
           candidatePublicId: candidate.publicId,
           correlationPublicId
         });
       }
       return;
     }
-    const continuation = await config.repository.beginProviderTask({
+    const continuation = await config.repository.beginProviderOperation({
       candidatePublicId: candidate.publicId,
       correlationPublicId
     });
-    let taskUid = continuation.providerTaskUid;
-    if (taskUid === null) {
-      const recovered = await config.transport.getIndex({
+    let receipt: SearchProviderOperationReceipt;
+    if (continuation.providerOperationRef) {
+      receipt = {
+        state: "pending",
+        operationRef: continuation.providerOperationRef
+      };
+    } else {
+      const recovered = await config.provider.admin.getIndex({
         indexUid: candidate.providerIndexUid
       });
       if (recovered) {
         assertPrimaryKey(recovered.primaryKey);
-        await config.repository.completeProviderTask({
+        await config.repository.completeProviderOperation({
           candidatePublicId: candidate.publicId,
           correlationPublicId
         });
         return;
       }
-      taskUid = (await config.transport.createIndex({
+      receipt = await config.provider.admin.createIndex({
         indexUid: candidate.providerIndexUid,
-        primaryKey: "id"
-      })).taskUid;
-      await config.repository.recordProviderTask({
-        candidatePublicId: candidate.publicId,
-        correlationPublicId,
-        providerTaskUid: taskUid
+        definition: config.settings
       });
+      if (receipt.state === "pending") {
+        await config.repository.recordProviderOperation({
+          candidatePublicId: candidate.publicId,
+          correlationPublicId,
+          providerOperationRef: receipt.operationRef
+        });
+      }
     }
-    await pollTask(taskUid);
+    await pollOperation(receipt);
     await assertProviderIndex(candidate.providerIndexUid);
-    await config.repository.completeProviderTask({
+    await config.repository.completeProviderOperation({
       candidatePublicId: candidate.publicId,
       correlationPublicId
     });
@@ -195,15 +209,21 @@ export function createStorageVnextSearchCandidateLifecycle(
 
   async function ensureSettings(candidatePublicId: string, expectedChecksum: string) {
     const candidate = await requireCandidate(candidatePublicId);
+    assertProviderOwnership(candidate);
     const correlationPublicId = createStorageVnextSearchTaskCorrelation({
       taskKind: "settings",
       candidatePublicId,
       settingsChecksum: expectedChecksum
     });
-    const current = await config.transport.getSettings(candidate.providerIndexUid);
-    if (createStorageVnextSearchSettingsChecksum(current) === expectedChecksum) {
+    const current = await config.provider.admin.getIndexDefinition({
+      indexUid: candidate.providerIndexUid
+    });
+    if (
+      current
+      && createStorageVnextSearchSettingsChecksum(current) === expectedChecksum
+    ) {
       if (candidate.correlationPublicId === correlationPublicId) {
-        await config.repository.completeProviderTask({
+        await config.repository.completeProviderOperation({
           candidatePublicId,
           correlationPublicId
         });
@@ -211,45 +231,60 @@ export function createStorageVnextSearchCandidateLifecycle(
       return;
     }
     if (candidate.state !== "preparing") throw lifecycleError("settings_mismatch");
-    const continuation = await config.repository.beginProviderTask({
+    const continuation = await config.repository.beginProviderOperation({
       candidatePublicId,
       correlationPublicId
     });
-    let taskUid = continuation.providerTaskUid;
-    if (taskUid === null) {
-      taskUid = (await config.transport.updateSettings({
+    let receipt: SearchProviderOperationReceipt;
+    if (continuation.providerOperationRef) {
+      receipt = {
+        state: "pending",
+        operationRef: continuation.providerOperationRef
+      };
+    } else {
+      receipt = await config.provider.admin.updateIndexDefinition({
         indexUid: candidate.providerIndexUid,
-        settings: config.settings
-      })).taskUid;
-      await config.repository.recordProviderTask({
-        candidatePublicId,
-        correlationPublicId,
-        providerTaskUid: taskUid
+        definition: config.settings
       });
+      if (receipt.state === "pending") {
+        await config.repository.recordProviderOperation({
+          candidatePublicId,
+          correlationPublicId,
+          providerOperationRef: receipt.operationRef
+        });
+      }
     }
-    await pollTask(taskUid);
-    const applied = await config.transport.getSettings(candidate.providerIndexUid);
-    if (createStorageVnextSearchSettingsChecksum(applied) !== expectedChecksum) {
+    await pollOperation(receipt);
+    const applied = await config.provider.admin.getIndexDefinition({
+      indexUid: candidate.providerIndexUid
+    });
+    if (
+      !applied
+      || createStorageVnextSearchSettingsChecksum(applied) !== expectedChecksum
+    ) {
       throw lifecycleError("settings_mismatch");
     }
-    await config.repository.completeProviderTask({
+    await config.repository.completeProviderOperation({
       candidatePublicId,
       correlationPublicId
     });
   }
 
-  async function pollTask(taskUid: number) {
+  async function pollOperation(receipt: SearchProviderOperationReceipt) {
+    if (receipt.state === "completed") return;
     for (let attempt = 1; attempt <= config.maxPollAttempts; attempt += 1) {
-      const task = await config.transport.getTask(taskUid);
-      if (task.status === "succeeded") return;
-      if (isTerminalFailure(task)) throw lifecycleError("provider_task_failed");
+      const operation = await config.provider.operations.getOperation({
+        operationRef: receipt.operationRef
+      });
+      if (operation.state === "completed") return;
+      if (operation.state === "failed") throw lifecycleError("provider_task_failed");
       if (attempt < config.maxPollAttempts) await sleep(config.pollIntervalMs);
     }
     throw lifecycleError("provider_task_timeout");
   }
 
   async function assertProviderIndex(indexUid: string) {
-    const provider = await config.transport.getIndex({ indexUid });
+    const provider = await config.provider.admin.getIndex({ indexUid });
     if (!provider) throw lifecycleError("provider_index_conflict");
     assertPrimaryKey(provider.primaryKey);
   }
@@ -258,6 +293,12 @@ export function createStorageVnextSearchCandidateLifecycle(
     const candidate = await config.repository.getCandidate(candidatePublicId);
     if (!candidate) throw lifecycleError("invalid_input");
     return candidate;
+  }
+
+  function assertProviderOwnership(candidate: StorageVnextSearchProjectionRecord) {
+    if (candidate.providerKind !== config.provider.kind) {
+      throw lifecycleError("provider_index_conflict");
+    }
   }
 }
 
@@ -294,10 +335,6 @@ function assertId(value: string) {
 
 function assertPrimaryKey(primaryKey: string | null) {
   if (primaryKey !== "id") throw lifecycleError("provider_index_conflict");
-}
-
-function isTerminalFailure(task: SearchEngineTask) {
-  return task.status === "failed" || task.status === "canceled" || task.status === "unknown";
 }
 
 function lifecycleError(code: StorageVnextSearchCandidateLifecycleErrorCode) {

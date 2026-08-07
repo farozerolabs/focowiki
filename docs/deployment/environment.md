@@ -26,7 +26,7 @@ Use long random values for passwords and service credentials. Settings that can 
 
 Focowiki writes runtime logs to `./logs` and also writes container logs to stdout and stderr. Every Compose service limits Docker-managed logs to `10m` per file and keeps `3` files.
 
-The production Compose template stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, search data in `./data/meilisearch`, search backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and private deployment files in `./runtime-secrets`. Preserve these directories when moving or backing up a deployment.
+The production Compose template stores PostgreSQL data in `./data/postgres`, Redis data in `./data/redis`, bundled OpenSearch data in `./data/opensearch`, bundled OpenSearch TLS state in `./opensearch-security`, bundled Meilisearch data in `./data/meilisearch`, Meilisearch backups in `./data/meilisearch-snapshots` and `./data/meilisearch-dumps`, and runtime credentials in `./runtime-secrets`. Preserve the directories used by your selected provider when moving or backing up a deployment.
 
 ## Deployment Images
 
@@ -82,23 +82,143 @@ Redis must be available to the API and all workers. Keep it private to the deplo
 
 ## Search Service
 
-The production template can start a private Meilisearch service. Use a different `MEILI_INDEX_PREFIX` for each Focowiki deployment that shares a search service.
+Each Focowiki deployment uses one search service. Choose a deployment mode first, then copy the matching configuration below. `SEARCH_PROVIDER` selects the protocol used by Focowiki. `COMPOSE_PROFILES` controls whether Docker Compose also starts a bundled search container.
 
-| Variable | Required | How to fill |
+| Deployment mode | `SEARCH_PROVIDER` | `COMPOSE_PROFILES` |
 | --- | --- | --- |
-| `COMPOSE_PROFILES` | Optional | Use `bundled-search` to start the included Meilisearch service. Leave empty when using an external service. |
-| `MEILI_HOST` | Compose | Meilisearch URL reachable from the API and workers. Included service: `http://meilisearch:7700`. |
-| `MEILI_MASTER_KEY` | Included service | Strong Meilisearch master key with at least 16 bytes of random material. |
-| `MEILI_API_KEY` | External service | Application key supplied by the external provider. Uncomment the template entry when needed. |
-| `MEILI_METRICS_API_KEY` | External service | Diagnostic key supplied by the external provider. Uncomment the template entry when needed. |
-| `MEILI_INDEX_PREFIX` | Yes | Lowercase index prefix dedicated to this deployment, for example `focowiki_prod`. |
-| `MEILI_MAX_INDEXING_MEMORY` | Included service | Meilisearch indexing memory limit. The template uses `2GiB`. |
-| `MEILI_MAX_INDEXING_THREADS` | Included service | Meilisearch indexing threads. The template uses `2`. |
-| `MEILI_SNAPSHOT_DIR` | Included service | Snapshot directory inside the container. Use `/meili_snapshots` with the template. |
-| `MEILI_SCHEDULE_SNAPSHOT` | Included service | Snapshot interval in seconds. The template uses `86400`. |
-| `MEILI_DUMP_DIR` | Included service | Dump directory inside the container. Use `/meili_dumps` with the template. |
+| Bundled OpenSearch 3.8.0, the default | `opensearch` | `opensearch` |
+| Bundled Meilisearch | `meilisearch` | `meilisearch` |
+| External or managed OpenSearch | `opensearch` | Empty |
+| External or managed Meilisearch | `meilisearch` | Empty |
 
-With the included service, keep `.env` and `runtime-secrets` private and include both in deployment backups. For an external service, create the two required keys before startup and confirm the service is reachable from every Focowiki container.
+Every mode requires `SEARCH_INDEX_PREFIX`. It can contain lowercase letters, numbers, underscores, and hyphens and has a maximum length of 80 characters. Give every Focowiki deployment a distinct prefix when deployments share an external search service. Avoid changing it after deployment. After changing the provider or prefix, manually maintain the search index for existing knowledge bases in Admin.
+
+| Field group | Purpose |
+| --- | --- |
+| `OPENSEARCH_URL`, `OPENSEARCH_AUTH_MODE`, `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`, `OPENSEARCH_PASSWORD_FILE`, `OPENSEARCH_CA_FILE` | OpenSearch endpoint, authentication, and CA. Use either a direct Basic password or a password file. |
+| `OPENSEARCH_AWS_REGION`, `OPENSEARCH_AWS_SERVICE` | Used only for AWS SigV4 authentication with an external OpenSearch service. |
+| `OPENSEARCH_ADMIN_PASSWORD`, `OPENSEARCH_JAVA_OPTS` | Used only by bundled OpenSearch. |
+| `MEILI_HOST`, `MEILI_MASTER_KEY`, `MEILI_API_KEY`, `MEILI_METRICS_API_KEY`, `MEILI_API_KEY_FILE`, `MEILI_METRICS_API_KEY_FILE` | Meilisearch endpoint and authentication. The bundled service uses a master key and generates two runtime key files; an external service supplies direct keys or key files. |
+| `MEILI_MAX_INDEXING_MEMORY`, `MEILI_MAX_INDEXING_THREADS`, `MEILI_SNAPSHOT_DIR`, `MEILI_SCHEDULE_SNAPSHOT`, `MEILI_DUMP_DIR` | Used only by bundled Meilisearch. |
+
+### Bundled OpenSearch
+
+This is the default in `.env.example`. Keep the URL, username, password-file path, and CA-file path below. Replace the administrator password. You may keep `SEARCH_INDEX_PREFIX` or replace it with a name dedicated to this deployment.
+
+```env
+SEARCH_PROVIDER=opensearch
+SEARCH_INDEX_PREFIX=focowiki
+COMPOSE_PROFILES=opensearch
+
+OPENSEARCH_URL=https://opensearch:9200
+OPENSEARCH_AUTH_MODE=basic
+OPENSEARCH_USERNAME=focowiki-runtime
+OPENSEARCH_PASSWORD=
+OPENSEARCH_PASSWORD_FILE=/app/runtime-secrets/opensearch-password
+OPENSEARCH_CA_FILE=/app/runtime-secrets/opensearch-ca.pem
+OPENSEARCH_AWS_REGION=
+OPENSEARCH_AWS_SERVICE=es
+OPENSEARCH_ADMIN_PASSWORD=<replace-with-a-strong-administrator-password>
+OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+```
+
+On first start, the Docker template automatically generates TLS assets and a random runtime password for `focowiki-runtime`, storing them under `opensearch-security` and `runtime-secrets`. Do not prepare certificates manually, put the administrator password in `OPENSEARCH_PASSWORD`, or change the password-file and CA-file paths above. `OPENSEARCH_JAVA_OPTS` bounds the OpenSearch heap at 512 MiB by default; change it only after measuring the deployment workload and available memory.
+
+### Bundled Meilisearch
+
+Switch both the provider and Compose profile. Generate a master key containing at least 16 bytes of random material. The template generates the runtime and diagnostics keys, so leave their direct values empty and keep the template file paths.
+
+```env
+SEARCH_PROVIDER=meilisearch
+SEARCH_INDEX_PREFIX=focowiki
+COMPOSE_PROFILES=meilisearch
+
+MEILI_HOST=http://meilisearch:7700
+MEILI_MASTER_KEY=<replace-with-a-random-master-key>
+MEILI_API_KEY=
+MEILI_METRICS_API_KEY=
+MEILI_API_KEY_FILE=/app/runtime-secrets/meilisearch-api-key
+MEILI_METRICS_API_KEY_FILE=/app/runtime-secrets/meilisearch-metrics-key
+MEILI_MAX_INDEXING_MEMORY=2GiB
+MEILI_MAX_INDEXING_THREADS=2
+MEILI_SNAPSHOT_DIR=/meili_snapshots
+MEILI_SCHEDULE_SNAPSHOT=86400
+MEILI_DUMP_DIR=/meili_dumps
+```
+
+Inactive `OPENSEARCH_*` fields may be empty. The memory, thread, snapshot, and dump fields configure only the bundled Meilisearch container and are not used with an external Meilisearch service.
+
+### External OpenSearch
+
+Leave `COMPOSE_PROFILES` empty so Compose does not start the bundled OpenSearch container. `OPENSEARCH_URL` must be an HTTPS endpoint reachable from every Focowiki container. Do not use a container's own `127.0.0.1` or `localhost`.
+
+For Basic authentication:
+
+```env
+SEARCH_PROVIDER=opensearch
+SEARCH_INDEX_PREFIX=focowiki_prod
+COMPOSE_PROFILES=
+
+OPENSEARCH_URL=https://search.example.com
+OPENSEARCH_AUTH_MODE=basic
+OPENSEARCH_USERNAME=<external-runtime-username>
+OPENSEARCH_PASSWORD=<external-runtime-password>
+OPENSEARCH_PASSWORD_FILE=
+OPENSEARCH_CA_FILE=
+OPENSEARCH_AWS_REGION=
+OPENSEARCH_AWS_SERVICE=es
+OPENSEARCH_ADMIN_PASSWORD=
+OPENSEARCH_JAVA_OPTS=
+```
+
+To keep the Basic password out of `.env`, store it in the host `runtime-secrets` directory, leave `OPENSEARCH_PASSWORD` empty, and set `OPENSEARCH_PASSWORD_FILE` to the matching container path, such as `/app/runtime-secrets/opensearch-password`. For a private CA, also place the CA file in `runtime-secrets` and set `OPENSEARCH_CA_FILE` to its container path. Leave the CA field empty when the endpoint uses a publicly trusted certificate.
+
+For Amazon OpenSearch Service or OpenSearch Serverless with SigV4:
+
+```env
+SEARCH_PROVIDER=opensearch
+SEARCH_INDEX_PREFIX=focowiki_prod
+COMPOSE_PROFILES=
+
+OPENSEARCH_URL=https://<external-opensearch-endpoint>
+OPENSEARCH_AUTH_MODE=aws_sigv4
+OPENSEARCH_USERNAME=
+OPENSEARCH_PASSWORD=
+OPENSEARCH_PASSWORD_FILE=
+OPENSEARCH_CA_FILE=
+OPENSEARCH_AWS_REGION=<aws-region>
+OPENSEARCH_AWS_SERVICE=es
+OPENSEARCH_ADMIN_PASSWORD=
+OPENSEARCH_JAVA_OPTS=
+```
+
+Use `es` for Amazon OpenSearch Service and `aoss` for OpenSearch Serverless. Credentials can come from standard AWS environment variables, workload identity, shared configuration, ECS, or EC2 credentials. Do not add Focowiki-specific static AWS key fields.
+
+### External Meilisearch
+
+Leave `COMPOSE_PROFILES` empty. Supply the external endpoint, runtime application key, and diagnostics key. Leave `MEILI_MASTER_KEY` and bundled-container resource fields empty.
+
+```env
+SEARCH_PROVIDER=meilisearch
+SEARCH_INDEX_PREFIX=focowiki_prod
+COMPOSE_PROFILES=
+
+MEILI_HOST=https://search.example.com
+MEILI_MASTER_KEY=
+MEILI_API_KEY=<external-runtime-key>
+MEILI_METRICS_API_KEY=<external-diagnostics-key>
+MEILI_API_KEY_FILE=
+MEILI_METRICS_API_KEY_FILE=
+MEILI_MAX_INDEXING_MEMORY=
+MEILI_MAX_INDEXING_THREADS=
+MEILI_SNAPSHOT_DIR=
+MEILI_SCHEDULE_SNAPSHOT=
+MEILI_DUMP_DIR=
+```
+
+You may instead store both keys in the host `runtime-secrets` directory and set `MEILI_API_KEY_FILE` and `MEILI_METRICS_API_KEY_FILE` to their container paths. Production requires both the runtime and diagnostics keys.
+
+Focowiki ignores fields for the inactive provider. Keep `.env`, `runtime-secrets`, and the `opensearch-security` directory generated for bundled OpenSearch private and include them in deployment backups.
 
 ## Developer OpenAPI
 
@@ -163,7 +283,7 @@ Before starting the stack, confirm:
 2. Image tags are pinned to the same Focowiki release.
 3. Public origins use HTTPS and match the reverse-proxy domains.
 4. `ALLOWED_HOSTS` includes every hostname forwarded to the API.
-5. PostgreSQL, Redis, Meilisearch, and S3 are reachable from the containers.
+5. PostgreSQL, Redis, the selected search provider, and S3 are reachable from the containers.
 6. The S3 credentials can perform the required operations under the selected prefix.
-7. `data`, `logs`, `runtime-secrets`, and `backups` are writable and included in your backup plan.
+7. `data`, `logs`, `opensearch-security`, `runtime-secrets`, and `backups` are writable and included in your backup plan.
 8. Admin Settings are reviewed after the first login.

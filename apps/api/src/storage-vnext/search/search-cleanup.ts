@@ -1,8 +1,7 @@
 import type {
-  SearchEngineDatabaseStats,
-  SearchEngineTask,
-  SearchEngineTransport
-} from "../../application/ports/search-engine-transport.js";
+  SearchProviderOperationReceipt,
+  SearchProviderRuntime
+} from "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextSearchCleanupLease,
   StorageVnextSearchCleanupRepository
@@ -27,7 +26,7 @@ export class StorageVnextSearchCleanupError extends Error {
 
 type CleanupConfig = {
   repository: StorageVnextSearchCleanupRepository;
-  transport: SearchEngineTransport;
+  provider: SearchProviderRuntime;
   indexUidPrefix: string;
   indexPageSize: number;
   taskPageSize: number;
@@ -51,7 +50,10 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
     }) {
       assertTimestamp(input.failedBefore);
       assertId(input.correlationPublicId);
-      const lease = await config.repository.claimFailedCandidate(input);
+      const lease = await config.repository.claimFailedCandidate({
+        ...input,
+        providerKind: config.provider.kind
+      });
       if (!lease) return { outcome: "none" as const, candidatePublicId: null };
       await deleteLeasedIndex(lease);
       await config.repository.completeFailedCandidateCleanup({
@@ -63,57 +65,53 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
 
     async cleanupOrphanIndexes(input: {
       updatedBefore: string;
-      offset: number;
+      continuation: string | null;
     }) {
       assertTimestamp(input.updatedBefore);
-      assertOffset(input.offset);
-      const listIndexes = requireProvider(config.transport.listIndexes);
+      const listIndexes = config.provider.maintenance?.listOwnedIndexes;
+      if (!listIndexes) return { deleted: 0, continuation: null };
       const page = await listIndexes({
-        offset: input.offset,
+        indexUidPrefix: ownedPrefix,
+        continuation: input.continuation,
         limit: config.indexPageSize
       });
-      assertIndexPage(page, input.offset);
-      const owned = page.indexes.filter((item) => item.uid.startsWith(ownedPrefix));
-      const retained = new Set(await config.repository.listRetainedProviderIndexUids(
-        owned.map((item) => item.uid)
-      ));
+      const owned = page.indexes;
+      const retained = new Set(await config.repository.listRetainedProviderIndexUids({
+        providerKind: config.provider.kind,
+        providerIndexUids: owned.map((item) => item.indexUid)
+      }));
       const eligible = owned.filter((item) =>
-        !retained.has(item.uid)
+        !retained.has(item.indexUid)
         && timestampAtOrBefore(item.updatedAt, input.updatedBefore)
       ).slice(0, config.maxDeletesPerRun);
-      for (const item of eligible) await deleteUnleasedIndex(item.uid);
+      for (const item of eligible) await deleteUnleasedIndex(item.indexUid);
       return {
         deleted: eligible.length,
-        nextOffset: eligible.length > 0
-          ? 0
-          : nextIndexOffset(page.offset, page.indexes.length, page.total)
+        continuation: eligible.length > 0
+          ? page.restartContinuation
+          : page.continuation
       };
     },
 
     async cleanupFinishedTasks(input: {
       finishedBefore: string;
-      from: number | null;
+      continuation: string | null;
     }) {
       assertTimestamp(input.finishedBefore);
-      if (input.from !== null) assertOrdinal(input.from);
-      const listFinishedTasks = requireProvider(config.transport.listFinishedTasks);
-      const deleteFinishedTasks = requireProvider(config.transport.deleteFinishedTasks);
-      const page = await listFinishedTasks({
-        statuses: ["succeeded", "failed", "canceled"],
+      const deleteFinished = config.provider.maintenance
+        ?.deleteOwnedFinishedOperations;
+      if (!deleteFinished) return { deleted: 0, continuation: null };
+      const result = await deleteFinished({
+        indexUidPrefix: ownedPrefix,
         beforeFinishedAt: input.finishedBefore,
-        from: input.from,
-        limit: config.taskPageSize
+        continuation: input.continuation,
+        limit: Math.min(config.taskPageSize, config.maxDeletesPerRun)
       });
-      assertFinishedTaskPage(page, input.finishedBefore);
-      const taskUids = page.tasks
-        .filter((task) => task.indexUid?.startsWith(ownedPrefix))
-        .slice(0, config.maxDeletesPerRun)
-        .map((task) => task.taskUid);
-      if (taskUids.length > 0) {
-        const deletion = await deleteFinishedTasks({ taskUids });
-        await pollTask(deletion.taskUid);
-      }
-      return { deleted: taskUids.length, next: page.next };
+      await pollOperation(result.operation);
+      return {
+        deleted: Math.min(result.deleted, config.maxDeletesPerRun),
+        continuation: result.continuation
+      };
     },
 
     async compactHighWater(input: {
@@ -124,8 +122,11 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
       assertTimestamp(input.compactedBefore);
       assertId(input.correlationPublicId);
       assertOrdinal(input.availableDiskBytes);
-      const getDatabaseStats = requireProvider(config.transport.getDatabaseStats);
-      const compactIndex = requireProvider(config.transport.compactIndex);
+      const getDatabaseStats = config.provider.maintenance?.getStorageStats;
+      const compactIndex = config.provider.maintenance?.compactIndex;
+      if (!getDatabaseStats || !compactIndex) {
+        return { outcome: "not_supported" as const };
+      }
       const before = await getDatabaseStats();
       assertStats(before);
       const reclaimableBytes = before.databaseSizeBytes - before.usedDatabaseSizeBytes;
@@ -144,16 +145,26 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
         correlationPublicId: input.correlationPublicId
       });
       if (!lease) return { outcome: "deferred" as const, before };
-      let taskUid = lease.providerTaskUid;
-      if (taskUid === null) {
-        taskUid = (await compactIndex(lease.providerIndexUid)).taskUid;
-        await config.repository.recordCleanupTask({
+      if (lease.providerKind !== config.provider.kind) {
+        throw cleanupError("invalid_input");
+      }
+      let receipt: SearchProviderOperationReceipt;
+      if (lease.providerOperationRef) {
+        receipt = {
+          state: "pending",
+          operationRef: lease.providerOperationRef
+        };
+      } else {
+        receipt = await compactIndex({ indexUid: lease.providerIndexUid });
+        if (receipt.state === "pending") {
+        await config.repository.recordCleanupOperation({
           projectionPublicId: lease.publicId,
           correlationPublicId: lease.correlationPublicId,
-          providerTaskUid: taskUid
+            providerOperationRef: receipt.operationRef
         });
+        }
       }
-      await pollCleanupTask(lease, taskUid);
+      await pollCleanupOperation(lease, receipt);
       const after = await getDatabaseStats();
       assertStats(after);
       await config.repository.completeCompaction({
@@ -172,69 +183,80 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
   };
 
   async function deleteLeasedIndex(lease: StorageVnextSearchCleanupLease) {
-    let taskUid = lease.providerTaskUid;
-    if (taskUid === null) {
-      const current = await config.transport.getIndex({
+    if (lease.providerKind !== config.provider.kind) {
+      throw cleanupError("invalid_input");
+    }
+    let receipt: SearchProviderOperationReceipt;
+    if (lease.providerOperationRef) {
+      receipt = {
+        state: "pending",
+        operationRef: lease.providerOperationRef
+      };
+    } else {
+      const current = await config.provider.admin.getIndex({
         indexUid: lease.providerIndexUid
       });
       if (!current) return;
-      taskUid = (await config.transport.deleteIndex(lease.providerIndexUid)).taskUid;
-      await config.repository.recordCleanupTask({
+      receipt = await config.provider.admin.deleteIndex({
+        indexUid: lease.providerIndexUid
+      });
+      if (receipt.state === "pending") {
+      await config.repository.recordCleanupOperation({
         projectionPublicId: lease.publicId,
         correlationPublicId: lease.correlationPublicId,
-        providerTaskUid: taskUid
+          providerOperationRef: receipt.operationRef
       });
+      }
     }
-    await pollCleanupTask(lease, taskUid);
-    if (await config.transport.getIndex({ indexUid: lease.providerIndexUid })) {
+    await pollCleanupOperation(lease, receipt);
+    if (await config.provider.admin.getIndex({ indexUid: lease.providerIndexUid })) {
       throw cleanupError("provider_index_not_deleted");
     }
   }
 
   async function deleteUnleasedIndex(indexUid: string) {
-    const current = await config.transport.getIndex({ indexUid });
+    const current = await config.provider.admin.getIndex({ indexUid });
     if (!current) return;
-    const task = await config.transport.deleteIndex(indexUid);
-    await pollTask(task.taskUid);
-    if (await config.transport.getIndex({ indexUid })) {
+    const receipt = await config.provider.admin.deleteIndex({ indexUid });
+    await pollOperation(receipt);
+    if (await config.provider.admin.getIndex({ indexUid })) {
       throw cleanupError("provider_index_not_deleted");
     }
   }
 
-  async function pollCleanupTask(
+  async function pollCleanupOperation(
     lease: StorageVnextSearchCleanupLease,
-    taskUid: number
+    receipt: SearchProviderOperationReceipt
   ) {
     try {
-      await pollTask(taskUid);
+      await pollOperation(receipt);
     } catch (error) {
       if (error instanceof StorageVnextSearchCleanupError
         && error.code === "provider_task_failed") {
-        await config.repository.clearCleanupTask({
+        await config.repository.clearCleanupOperation({
           projectionPublicId: lease.publicId,
           correlationPublicId: lease.correlationPublicId,
-          providerTaskUid: taskUid
+          providerOperationRef: receipt.state === "pending"
+            ? receipt.operationRef
+            : ""
         });
       }
       throw error;
     }
   }
 
-  async function pollTask(taskUid: number) {
-    assertOrdinal(taskUid);
+  async function pollOperation(receipt: SearchProviderOperationReceipt) {
+    if (receipt.state === "completed") return;
     for (let attempt = 1; attempt <= config.maxPollAttempts; attempt += 1) {
-      const task = await config.transport.getTask(taskUid);
-      if (task.status === "succeeded") return;
-      if (isTerminalFailure(task)) throw cleanupError("provider_task_failed");
+      const operation = await config.provider.operations.getOperation({
+        operationRef: receipt.operationRef
+      });
+      if (operation.state === "completed") return;
+      if (operation.state === "failed") throw cleanupError("provider_task_failed");
       if (attempt < config.maxPollAttempts) await sleep(config.pollIntervalMs);
     }
     throw cleanupError("provider_task_timeout");
   }
-}
-
-function requireProvider<T>(value: T | undefined): T {
-  if (!value) throw cleanupError("provider_contract_unavailable");
-  return value;
 }
 
 function assertConfig(config: CleanupConfig) {
@@ -265,57 +287,15 @@ function assertConfig(config: CleanupConfig) {
   ) throw cleanupError("invalid_configuration");
 }
 
-function assertIndexPage(
-  page: { indexes: Array<{ uid: string; updatedAt: string }>; total: number; offset: number },
-  expectedOffset: number
-) {
-  assertOffset(page.offset);
-  assertOrdinal(page.total);
-  if (page.offset !== expectedOffset || page.indexes.length > page.total) {
-    throw cleanupError("invalid_input");
-  }
-  if (
-    page.offset + page.indexes.length > page.total
-    || (page.indexes.length === 0 && page.offset < page.total)
-  ) throw cleanupError("invalid_input");
-  for (const item of page.indexes) {
-    assertId(item.uid);
-    assertTimestamp(item.updatedAt);
-  }
-}
-
-function assertFinishedTaskPage(
-  page: {
-    tasks: Array<{
-      taskUid: number;
-      status: string;
-      finishedAt: string;
-    }>;
-    next: number | null;
-  },
-  finishedBefore: string
-) {
-  if (page.next !== null) assertOrdinal(page.next);
-  for (const task of page.tasks) {
-    assertOrdinal(task.taskUid);
-    assertTimestamp(task.finishedAt);
-    if (
-      !["succeeded", "failed", "canceled"].includes(task.status)
-      || !timestampAtOrBefore(task.finishedAt, finishedBefore)
-    ) throw cleanupError("invalid_input");
-  }
-}
-
-function assertStats(stats: SearchEngineDatabaseStats) {
+function assertStats(stats: {
+  databaseSizeBytes: number;
+  usedDatabaseSizeBytes: number;
+}) {
   assertOrdinal(stats.databaseSizeBytes);
   assertOrdinal(stats.usedDatabaseSizeBytes);
   if (stats.usedDatabaseSizeBytes > stats.databaseSizeBytes) {
     throw cleanupError("invalid_input");
   }
-}
-
-function nextIndexOffset(offset: number, count: number, total: number) {
-  return offset + count < total ? offset + count : null;
 }
 
 function timestampAtOrBefore(value: string, boundary: string) {
@@ -326,20 +306,12 @@ function assertTimestamp(value: string) {
   if (!value || !Number.isFinite(Date.parse(value))) throw cleanupError("invalid_input");
 }
 
-function assertOffset(value: number) {
-  assertOrdinal(value);
-}
-
 function assertOrdinal(value: number) {
   if (!Number.isSafeInteger(value) || value < 0) throw cleanupError("invalid_input");
 }
 
 function assertId(value: string) {
   if (!value || Buffer.byteLength(value) > 255) throw cleanupError("invalid_input");
-}
-
-function isTerminalFailure(task: SearchEngineTask) {
-  return task.status === "failed" || task.status === "canceled";
 }
 
 function cleanupError(code: StorageVnextSearchCleanupErrorCode) {
