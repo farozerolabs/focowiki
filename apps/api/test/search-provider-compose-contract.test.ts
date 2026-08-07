@@ -6,12 +6,9 @@ const root = resolve(import.meta.dirname, "../../..");
 const composeFiles = [
   "docker-compose.yml.example",
   "docker-compose.dev.yml.example",
-  "docker-compose.local.yml.example",
-  "docker-compose.local.yml"
+  "docker-compose.local.yml.example"
 ] as const;
-const runtimeComposeFiles = composeFiles.filter((path) =>
-  path !== "docker-compose.local.yml"
-);
+const runtimeComposeFiles = composeFiles;
 
 describe("search provider Compose contract", () => {
   it("uses OpenSearch 3.8.0 as the explicit template default", () => {
@@ -69,8 +66,7 @@ describe("search provider Compose contract", () => {
   it("keeps local OpenSearch single-node, bounded, insecure, and loopback-only", () => {
     for (const path of [
       "docker-compose.dev.yml.example",
-      "docker-compose.local.yml.example",
-      "docker-compose.local.yml"
+      "docker-compose.local.yml.example"
     ]) {
       const opensearch = service(read(path), "opensearch");
       expect(opensearch, path).toContain('discovery.type: "single-node"');

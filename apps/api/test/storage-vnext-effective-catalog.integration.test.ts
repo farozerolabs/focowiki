@@ -507,12 +507,14 @@ describeOwnedDatabase("storage vNext effective publication catalog", () => {
     `;
     await sql`
       INSERT INTO focowiki.search_projections (
-        public_id, knowledge_base_id, projection_role, provider_index_uid,
+        public_id, knowledge_base_id, projection_role, provider_kind,
+        provider_index_uid,
         schema_checksum_sha256, settings_checksum_sha256,
         document_checksum_sha256, revision, document_count, state,
         created_at, updated_at
       ) VALUES (
-        'search-active', 'kb-publication', 'active', 'run_owned_active',
+        'search-active', 'kb-publication', 'active', 'meilisearch',
+        'run_owned_active',
         ${"b".repeat(64)}, ${"c".repeat(64)}, ${"d".repeat(64)},
         1, 1, 'ready', now(), now()
       )

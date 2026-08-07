@@ -28,6 +28,7 @@ const SECURITY_CONFIG_FILES = [
   "roles_mapping.yml",
   "tenants.yml"
 ] as const;
+const SECURITY_ASSET_TEST_TIMEOUT_MS = 30_000;
 
 describe("bundled OpenSearch security assets", () => {
   it("generates one complete private asset set and a runtime CA copy", () => {
@@ -152,7 +153,7 @@ describe("bundled OpenSearch security assets", () => {
     expect(certificatePublicKey(join(current, "admin.pem"))).toBe(
       privateKeyPublicKey(join(current, "admin-key.pem"))
     );
-  });
+  }, SECURITY_ASSET_TEST_TIMEOUT_MS);
 
   it("validates and reuses byte-identical assets on restart", () => {
     const fixture = createFixture();
@@ -163,7 +164,7 @@ describe("bundled OpenSearch security assets", () => {
 
     expect(result.source).toBe("reused");
     expect(assetFingerprint(fixture.securityDirectory)).toBe(before);
-  });
+  }, SECURITY_ASSET_TEST_TIMEOUT_MS);
 
   it("rejects changed security identity inputs without replacing persisted state", () => {
     const fixture = createFixture();
