@@ -3,7 +3,7 @@ import type { OkfBundleFile } from "./bundle-file.js";
 import type { OkfConformanceIssue, OkfValidationProfile } from "./conformance-types.js";
 import { createConformanceIssue } from "./conformance-types.js";
 
-const NUMBERED_NAVIGATION_FILE = /^(?:index|index-map|log)-\d{6}\.md$/u;
+const NUMBERED_NAVIGATION_FILE = /^(?:index|log)-\d{6}\.md$/u;
 
 export function validateConceptFile(
   file: OkfBundleFile,

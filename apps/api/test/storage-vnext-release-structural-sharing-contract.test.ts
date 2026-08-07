@@ -23,6 +23,14 @@ const migration = readFileSync(
   .replace(/\(\s+/gu, "(")
   .replace(/\s+\)/gu, ")")
   .toLowerCase();
+const extensionMigration = readFileSync(
+  resolve(workspaceRoot, "apps/api/migrations/002_extension_navigation_profile.sql"),
+  "utf8"
+)
+  .replace(/\s+/gu, " ")
+  .replace(/\(\s+/gu, "(")
+  .replace(/\s+\)/gu, ")")
+  .toLowerCase();
 
 describe("storage vNext release structural sharing contract", () => {
   it("reports created, reused, and newly attached shard descriptors", () => {
@@ -90,10 +98,13 @@ describe("storage vNext release structural sharing contract", () => {
   });
 
   it("shadows moved directory summaries by stable identity before logical path", () => {
-    expect(migration).toContain(
-      "identity_effective as (select distinct on (summary.directory_public_id)"
+    expect(extensionMigration).toContain(
+      "create or replace function focowiki.public_generated_file_id("
     );
-    expect(migration).toContain("from identity_effective summary");
+    expect(extensionMigration).toContain(
+      "identity_effective as (select distinct on (coalesce(summary.directory_public_id, 'generated:' || summary.logical_path))"
+    );
+    expect(extensionMigration).toContain("from identity_effective summary");
     expect(migration).toContain(
       "directory_summaries_directory_identity_key unique (release_root_public_id, directory_public_id)"
     );

@@ -3,6 +3,8 @@ import type { DatabaseClient } from "../../db/client.js";
 import { enqueueStorageVnextCandidateObjectCleanupActions } from
   "../cleanup/postgres-candidate-object-actions.js";
 import type { StorageVnextActiveSnapshot } from "../transactions/ports.js";
+import { STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE } from
+  "../publication/profile.js";
 import {
   evaluateStorageVnextObjectFanoutBudget,
   measureStorageVnextObjectFanout
@@ -72,6 +74,7 @@ export type StorageVnextReleaseRepository =
 
 const MAX_STORAGE_VNEXT_RELEASE_LINEAGE_DEPTH = 8;
 const STORAGE_VNEXT_DIRECTORY_NAVIGATION_SHARD_KIND = "directory_navigation";
+const STORAGE_VNEXT_EXTENSION_NAVIGATION_SHARD_KIND = "extension_navigation";
 
 export type StorageVnextReleaseLifecycleHooks = {
   beforeActivate?(input: {
@@ -129,7 +132,8 @@ export function createPostgresStorageVnextReleaseRepository(
     async getRollbackRoot(knowledgeBaseId) {
       const rows = await sql<StorageVnextReleaseRootRow[]>`
         SELECT public_id, knowledge_base_id, root_role,
-               manifest_checksum_sha256, revision, created_at, expires_at
+               manifest_checksum_sha256, navigation_profile_version,
+               revision, created_at, expires_at
         FROM focowiki.release_roots
         WHERE knowledge_base_id = ${knowledgeBaseId}
           AND root_role = 'rollback'
@@ -544,7 +548,10 @@ export function createPostgresStorageVnextReleaseRepository(
                 AND incoming.logical_kind = existing.logical_kind
                 AND incoming.ordinal = attached.ordinal
                 AND (
-                  incoming.logical_kind <> ${STORAGE_VNEXT_DIRECTORY_NAVIGATION_SHARD_KIND}
+                  incoming.logical_kind NOT IN (
+                    ${STORAGE_VNEXT_DIRECTORY_NAVIGATION_SHARD_KIND},
+                    ${STORAGE_VNEXT_EXTENSION_NAVIGATION_SHARD_KIND}
+                  )
                   OR incoming.first_logical_path = existing.first_logical_path
                 )
             )
@@ -792,7 +799,8 @@ export function createPostgresStorageVnextReleaseRepository(
         if (!objectFanout.passed) return false;
         const roots = await transaction<Array<{ public_id: string }>>`
           UPDATE focowiki.release_roots
-          SET manifest_checksum_sha256 = ${input.manifestChecksum}
+          SET manifest_checksum_sha256 = ${input.manifestChecksum},
+              navigation_profile_version = ${input.navigationProfileVersion}
           WHERE knowledge_base_id = ${candidate.knowledge_base_id}
             AND public_id = ${candidate.candidate_root_public_id}
             AND root_role = 'candidate'
@@ -807,7 +815,8 @@ export function createPostgresStorageVnextReleaseRepository(
             manifest_checksum_sha256, search_projection_public_id,
             object_owner_count, search_document_count,
             graph_node_count, graph_edge_count, link_count,
-            generated_entry_count, object_validation_passed,
+            generated_entry_count, navigation_profile_version,
+            object_validation_passed,
             search_validation_passed, graph_validation_passed,
             link_validation_passed, count_validation_passed,
             path_validation_passed, validated_at
@@ -816,7 +825,8 @@ export function createPostgresStorageVnextReleaseRepository(
             ${input.manifestChecksum}, ${input.searchProjectionPublicId},
             ${input.objectOwnerCount}, ${input.searchDocumentCount},
             ${input.graphNodeCount}, ${input.graphEdgeCount}, ${input.linkCount},
-            ${input.generatedEntryCount}, ${input.objectValidationPassed},
+            ${input.generatedEntryCount}, ${input.navigationProfileVersion},
+            ${input.objectValidationPassed},
             ${input.searchValidationPassed}, ${input.graphValidationPassed},
             ${input.linkValidationPassed}, ${input.countValidationPassed},
             ${input.pathValidationPassed}, ${input.validatedAt}
@@ -830,6 +840,7 @@ export function createPostgresStorageVnextReleaseRepository(
               graph_edge_count = EXCLUDED.graph_edge_count,
               link_count = EXCLUDED.link_count,
               generated_entry_count = EXCLUDED.generated_entry_count,
+              navigation_profile_version = EXCLUDED.navigation_profile_version,
               object_validation_passed = EXCLUDED.object_validation_passed,
               search_validation_passed = EXCLUDED.search_validation_passed,
               graph_validation_passed = EXCLUDED.graph_validation_passed,
@@ -857,6 +868,7 @@ export function createPostgresStorageVnextReleaseRepository(
           WHERE candidate_public_id = ${candidate.public_id}
             AND knowledge_base_id = ${candidate.knowledge_base_id}
             AND manifest_checksum_sha256 = ${input.manifestChecksum}
+            AND navigation_profile_version = ${STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE}
           FOR UPDATE
         `;
         if (validations.length !== 1) return false;
@@ -873,6 +885,7 @@ export function createPostgresStorageVnextReleaseRepository(
           WHERE knowledge_base_id = ${candidate.knowledge_base_id}
             AND public_id = ${candidate.candidate_root_public_id}
             AND root_role = 'candidate'
+            AND navigation_profile_version = ${STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE}
         `;
         const rows = await transaction<Array<{ public_id: string }>>`
           UPDATE focowiki.release_candidates
@@ -941,8 +954,10 @@ export function createPostgresStorageVnextReleaseRepository(
             AND validation.knowledge_base_id = ${input.knowledgeBaseId}
             AND validation.manifest_checksum_sha256 = ${candidate.manifest_checksum_sha256}
             AND validation.search_projection_public_id = ${input.searchProjectionPublicId}
+            AND validation.navigation_profile_version = ${STORAGE_VNEXT_CURRENT_NAVIGATION_PROFILE}
             AND root.root_role = 'candidate'
             AND root.manifest_checksum_sha256 = validation.manifest_checksum_sha256
+            AND root.navigation_profile_version = validation.navigation_profile_version
           FOR UPDATE OF validation, root
         `;
         const validation = validations[0];
@@ -1228,7 +1243,8 @@ export function createPostgresStorageVnextReleaseRepository(
         await lockRelease(transaction, input.knowledgeBaseId);
         const rows = await transaction<StorageVnextReleaseRootRow[]>`
           SELECT public_id, knowledge_base_id, root_role,
-                 manifest_checksum_sha256, revision, created_at, expires_at
+                 manifest_checksum_sha256, navigation_profile_version,
+                 revision, created_at, expires_at
           FROM focowiki.release_roots
           WHERE knowledge_base_id = ${input.knowledgeBaseId}
             AND root_role = 'rollback'
@@ -1308,7 +1324,8 @@ async function readRootByRole(
 ): Promise<StorageVnextReleaseRoot | null> {
   const rows = await sql<StorageVnextReleaseRootRow[]>`
     SELECT public_id, knowledge_base_id, root_role,
-           manifest_checksum_sha256, revision, created_at, expires_at
+           manifest_checksum_sha256, navigation_profile_version,
+           revision, created_at, expires_at
     FROM focowiki.release_roots
     WHERE knowledge_base_id = ${knowledgeBaseId}
       AND root_role = ${role}
@@ -1400,15 +1417,22 @@ async function readActiveSnapshot(
     release_root_public_id: string;
     search_projection_public_id: string;
     manifest_checksum_sha256: string;
+    navigation_profile_version: number | string;
     revision: number | string;
     activated_by_operation_public_id: string;
     publicly_visible_at: Date | string;
   }>>`
-    SELECT knowledge_base_id, release_root_public_id,
-           search_projection_public_id, manifest_checksum_sha256,
-           revision, activated_by_operation_public_id, publicly_visible_at
-    FROM focowiki.active_snapshots
-    WHERE knowledge_base_id = ${knowledgeBaseId}
+    SELECT snapshot.knowledge_base_id, snapshot.release_root_public_id,
+           snapshot.search_projection_public_id,
+           snapshot.manifest_checksum_sha256,
+           root.navigation_profile_version,
+           snapshot.revision, snapshot.activated_by_operation_public_id,
+           snapshot.publicly_visible_at
+    FROM focowiki.active_snapshots snapshot
+    JOIN focowiki.release_roots root
+      ON root.knowledge_base_id = snapshot.knowledge_base_id
+     AND root.public_id = snapshot.release_root_public_id
+    WHERE snapshot.knowledge_base_id = ${knowledgeBaseId}
     ${lock ? sql`FOR UPDATE` : sql``}
   `;
   const row = rows[0];
@@ -1417,6 +1441,7 @@ async function readActiveSnapshot(
     releaseRootPublicId: row.release_root_public_id,
     searchProjectionPublicId: row.search_projection_public_id,
     manifestChecksum: row.manifest_checksum_sha256,
+    navigationProfileVersion: Number(row.navigation_profile_version),
     revision: Number(row.revision),
     activatedByOperationPublicId: row.activated_by_operation_public_id,
     publiclyVisibleAt: storageVnextReleaseTimestamp(row.publicly_visible_at)

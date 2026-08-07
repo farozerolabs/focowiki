@@ -145,6 +145,72 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       }
     });
   });
+
+  it("derives distinct stable ids for generated directories in tree and search queries", async () => {
+    const queries: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      queries.push(strings.join("?"));
+      return Promise.resolve([]);
+    }) as unknown as DatabaseClient;
+    const application = createPostgresStorageVnextAdminRead({
+      sql,
+      catalog: {
+        async getKnowledgeBase() {
+          return {
+            publicId: "kb-generated-directories",
+            name: "Generated directories",
+            description: null,
+            revision: 1,
+            visibility: "current",
+            createdAt: "2026-08-07T00:00:00.000Z",
+            updatedAt: "2026-08-07T00:00:00.000Z"
+          };
+        },
+        async listSourceFilesByPublicIds() {
+          return [];
+        }
+      } as unknown as StorageVnextCatalogReadPort,
+      releases: {
+        async getActiveRoot() {
+          return {
+            publicId: "root-generated-directories",
+            knowledgeBaseId: "kb-generated-directories",
+            role: "active",
+            manifestChecksum: "checksum",
+            revision: 1,
+            createdAt: "2026-08-07T00:00:00.000Z",
+            expiresAt: null
+          };
+        }
+      } as unknown as StorageVnextReleaseReadPort,
+      search: {
+        async search() {
+          return { items: [], nextCursor: null };
+        }
+      } as StorageVnextSearchQueryPort
+    });
+
+    await application.listTree({
+      knowledgeBaseId: "kb-generated-directories",
+      parentPath: "",
+      entryType: null,
+      query: null,
+      limit: 20,
+      cursor: null
+    });
+    await application.searchFiles({
+      knowledgeBaseId: "kb-generated-directories",
+      query: "index",
+      limit: 20,
+      cursor: null
+    });
+
+    expect(queries).toHaveLength(2);
+    for (const query of queries) {
+      expect(query).toContain("focowiki.public_generated_directory_id");
+      expect(query).not.toContain("coalesce(summary.directory_public_id, 'directory:')");
+    }
+  });
 });
 
 function directoryRow(logicalPath: string) {

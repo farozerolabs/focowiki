@@ -46,6 +46,7 @@ export type StorageVnextActiveSnapshot = {
   releaseRootPublicId: StorageVnextPublicId;
   searchProjectionPublicId: StorageVnextPublicId;
   manifestChecksum: StorageVnextChecksum;
+  navigationProfileVersion: number;
   activatedByOperationPublicId: StorageVnextPublicId;
   publiclyVisibleAt: StorageVnextTimestamp;
 };

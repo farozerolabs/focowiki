@@ -6,12 +6,18 @@ export function createStorageVnextMaintenanceRebuildSnapshot(
   snapshot: StorageVnextPublicationSnapshotPort
 ): StorageVnextPublicationSnapshotPort {
   return {
+    readBaseNavigationProfile: snapshot.readBaseNavigationProfile.bind(snapshot),
     readKnowledgeBaseCounts: snapshot.readKnowledgeBaseCounts.bind(snapshot),
     readDirectoryDescendantFileCounts:
       snapshot.readDirectoryDescendantFileCounts.bind(snapshot),
     async readDirectoryLeaves(input) {
       return emptyWhenObjectMissing(() => snapshot.readDirectoryLeaves(input));
     },
+    async readExtensionNavigationLeaves(input) {
+      return emptyWhenObjectMissing(() => snapshot.readExtensionNavigationLeaves(input));
+    },
+    listExtensionNavigationShards:
+      snapshot.listExtensionNavigationShards.bind(snapshot),
     async readProjectionRecords(input) {
       return emptyWhenObjectMissing(() => snapshot.readProjectionRecords(input));
     },
@@ -19,6 +25,7 @@ export function createStorageVnextMaintenanceRebuildSnapshot(
     async listProjectionShards(input) {
       return emptyWhenObjectMissing(() => snapshot.listProjectionShards(input));
     },
+    listExtensionCatalogPaths: snapshot.listExtensionCatalogPaths.bind(snapshot),
     summarizeCandidate: snapshot.summarizeCandidate.bind(snapshot)
   };
 }

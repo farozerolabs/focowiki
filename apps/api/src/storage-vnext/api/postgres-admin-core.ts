@@ -29,6 +29,7 @@ type GeneratedRow = {
   object_format: string;
   source_title: string | null;
   source_metadata: Record<string, boolean | number | string | null> | null;
+  generated_file_public_id: string;
 };
 
 type MetadataRow = {
@@ -211,7 +212,11 @@ async function readGeneratedRow(
            entry.checksum_sha256, entry.object_id, entry.byte_count,
            registration.storage_key, registration.content_type,
            registration.object_format, source.title AS source_title,
-           source.metadata AS source_metadata
+           source.metadata AS source_metadata,
+           focowiki.public_generated_file_id(
+             root.knowledge_base_id,
+             entry.logical_path
+           ) AS generated_file_public_id
     FROM focowiki.release_roots root
     CROSS JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) entry
     JOIN focowiki.object_registrations registration
@@ -315,7 +320,7 @@ function generatedDescriptor(row: GeneratedRow): StorageVnextImmutableBodyWriteR
 function generatedFile(row: GeneratedRow) {
   const metadata = row.source_metadata ?? {};
   return {
-    id: row.source_file_public_id ?? row.object_id,
+    id: row.source_file_public_id ?? row.generated_file_public_id,
     sourceFileId: row.source_file_public_id,
     fileKind: generatedKind(row.entry_kind, row.logical_path),
     logicalPath: row.logical_path,

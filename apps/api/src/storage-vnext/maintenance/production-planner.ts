@@ -1,6 +1,9 @@
 import type { StorageVnextCatalogReadPort } from "../catalog/ports.js";
 import type { DatabaseClient } from "../../db/client.js";
-import { deriveStorageVnextReleaseDependencyClosure } from
+import {
+  deriveStorageVnextReleaseDependencyClosure,
+  includeStorageVnextNavigationProfileUpgrade
+} from
   "../release/dependency-closure.js";
 import type {
   StorageVnextCandidateDependency,
@@ -106,10 +109,14 @@ export function createStorageVnextMaintenanceProductionPlanner(input: {
           operationPublicId: request.operationPublicId
         });
         if (!operationIdentity) throw planningError("operation_identity_missing");
-        const required = dependencyClosure(request.knowledgeBaseId, {
+        const required = includeStorageVnextNavigationProfileUpgrade({
+          knowledgeBaseId: request.knowledgeBaseId,
+          navigationProfileVersion: active?.navigationProfileVersion ?? null,
+          dependencies: dependencyClosure(request.knowledgeBaseId, {
           sourceFilePublicIds: [],
           sourceLogicalPaths: [],
           directoryLogicalPaths: []
+          })
         });
         try {
           await input.releases.createCandidate({

@@ -34,8 +34,8 @@ describe("storage vNext runtime schema guard", () => {
 
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
     await expect(applyMigrations(database.sql)).resolves.toBeUndefined();
-    expect(database.unsafeCalls).toBe(1);
-    expect(database.beginCalls).toBe(1);
+    expect(database.unsafeCalls).toBe(MIGRATION_FILES.length);
+    expect(database.beginCalls).toBe(MIGRATION_FILES.length);
   });
 
   it("rejects unmarked, historical, and unknown schemas without writing", async () => {

@@ -344,7 +344,7 @@ async function assertRestoredPostgresTarget(
     "SELECT generation FROM focowiki.runtime_generation WHERE singleton = true;",
     "verify restored PostgreSQL schema"
   );
-  if (result !== "storage-vnext-v1") {
+  if (result !== "storage-vnext-v2") {
     throw new Error("Restored PostgreSQL schema generation is invalid");
   }
 }

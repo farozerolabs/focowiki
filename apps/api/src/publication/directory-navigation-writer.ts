@@ -155,6 +155,8 @@ export function renderDirectoryRootMarkdown(input: {
     `# ${renderMarkdownIdentityLabel(title)}`,
     "",
     ...(parent ? [`[Parent directory](${toBundleMarkdownHref(parent)})`, ""] : []),
+    globalNavigation(),
+    "",
     input.firstLeafId
       ? `[Browse entries](${toBundleMarkdownHref(directoryLeafPath(input.directoryPath, input.firstLeafId))})`
       : "This directory has no published Markdown files.",
@@ -190,9 +192,20 @@ export function renderDirectoryLeafMarkdown(input: {
     "",
     navigation,
     "",
+    globalNavigation(),
+    "",
     ...entries,
     ""
   ].join("\n");
+}
+
+function globalNavigation(): string {
+  return [
+    `[Knowledge base](${toBundleMarkdownHref("index.md")})`,
+    `[Documents](${toBundleMarkdownHref("pages/index.md")})`,
+    `[Machine-readable indexes](${toBundleMarkdownHref("_index/index.md")})`,
+    `[Relationship graph](${toBundleMarkdownHref("_graph/index.md")})`
+  ].join(" · ");
 }
 
 function requireNavigationInput(

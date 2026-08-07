@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
 import type { SourceResourceFileRecord } from "../src/domain/source-resource.js";
@@ -20,6 +21,57 @@ import type { StorageVnextSourceEventSummary } from
   "../src/storage-vnext/source-events/ports.js";
 
 describe("PostgreSQL storage vNext Admin core", () => {
+  it("returns the stable public generated file ID instead of the object ID", async () => {
+    const logicalPath = "_index/search/v1/index-extension-leaf-a.md";
+    const application = createPostgresStorageVnextAdminCore({
+      sql: (async () => [{
+        logical_path: logicalPath,
+        entry_kind: "index",
+        source_file_public_id: null,
+        checksum_sha256: "a".repeat(64),
+        object_id: "generated-sha256:okf-generated-markdown-v1:internal",
+        byte_count: 10,
+        storage_key: "internal/generated.md",
+        content_type: "text/markdown; charset=utf-8",
+        object_format: "okf-generated-markdown-v1",
+        source_title: null,
+        source_metadata: null,
+        generated_file_public_id: `generated-${createHash("md5")
+          .update(`kb-public:${logicalPath}`)
+          .digest("hex")}`
+      }]) as unknown as DatabaseClient,
+      catalog: {} as StorageVnextCatalogRepository,
+      releases: {} as StorageVnextReleaseReadPort,
+      resources: {} as StorageVnextAdminResourceRead,
+      sourceEvents: {} as never,
+      mutations: {} as StorageVnextAdminMutationApplication,
+      bodies: {
+        async readVerified() {
+          return Buffer.from("# Index\n", "utf8");
+        }
+      } as unknown as StorageVnextImmutableBodyStore,
+      maximumGeneratedBytes: 1_048_576
+    });
+    const expectedId = `generated-${createHash("md5")
+      .update(`kb-public:${logicalPath}`)
+      .digest("hex")}`;
+
+    await expect(application.readGeneratedContent({
+      knowledgeBaseId: "kb-public",
+      logicalPath,
+      includeRelationships: false
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        file: {
+          id: expectedId,
+          sourceFileId: null,
+          logicalPath
+        }
+      }
+    });
+  });
+
   it.each([
     ["model invocation", { modelInvocationStatus: "not_recorded" }],
     ["started time", { startedFrom: "2026-08-01T00:00:00.000Z" }],

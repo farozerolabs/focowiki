@@ -23,7 +23,14 @@ export async function findStorageVnextGeneratedIdentity(
     CROSS JOIN LATERAL focowiki.resolve_release_catalog(root.public_id) entry
     WHERE root.knowledge_base_id = ${input.knowledgeBaseId}
       AND root.root_role = 'active'
-      AND (entry.source_file_public_id = ${input.fileId} OR entry.object_id = ${input.fileId})
+      AND (
+        entry.source_file_public_id = ${input.fileId}
+        OR entry.object_id = ${input.fileId}
+        OR focowiki.public_generated_file_id(
+          ${input.knowledgeBaseId},
+          entry.logical_path
+        ) = ${input.fileId}
+      )
     ORDER BY entry.ordinal
     LIMIT 1
   `;

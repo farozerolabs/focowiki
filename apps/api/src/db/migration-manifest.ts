@@ -1,10 +1,10 @@
-export const MIGRATION_SAFETY_CLASSES = ["clean_bootstrap"] as const;
+export const MIGRATION_SAFETY_CLASSES = ["clean_bootstrap", "compatible"] as const;
 
 export type MigrationSafety = (typeof MIGRATION_SAFETY_CLASSES)[number];
 
 export type MigrationDescriptor = {
   readonly fileName: string;
-  readonly sourceGeneration: "absent";
+  readonly sourceGeneration: string | "absent";
   readonly targetGeneration: string;
   readonly safety: MigrationSafety;
 };
@@ -15,6 +15,12 @@ export const MIGRATION_MANIFEST = [
     sourceGeneration: "absent",
     targetGeneration: "storage-vnext-v1",
     safety: "clean_bootstrap"
+  },
+  {
+    fileName: "002_extension_navigation_profile.sql",
+    sourceGeneration: "storage-vnext-v1",
+    targetGeneration: "storage-vnext-v2",
+    safety: "compatible"
   }
 ] as const satisfies readonly MigrationDescriptor[];
 
@@ -50,12 +56,9 @@ export function validateMigrationManifest(
   manifest: readonly MigrationDescriptor[],
   options: MigrationManifestValidationOptions = {}
 ): void {
-  if (manifest.length !== 1) {
-    throw new MigrationManifestValidationError(
-      "the destructive reset supports exactly one clean bootstrap"
-    );
+  if (manifest.length === 0) {
+    throw new MigrationManifestValidationError("the manifest must not be empty");
   }
-
   const [bootstrap] = manifest;
   if (
     !bootstrap
@@ -67,24 +70,39 @@ export function validateMigrationManifest(
       "the bootstrap must initialize storage vNext from an absent schema"
     );
   }
-
-  if (!/^\d{3}_.+\.sql$/u.test(bootstrap.fileName)) {
-    throw new MigrationManifestValidationError(
-      `migration ${bootstrap.fileName} has an invalid file name`
-    );
-  }
-
-  if (!MIGRATION_SAFETY_CLASSES.includes(bootstrap.safety)) {
-    throw new MigrationManifestValidationError(
-      `migration ${bootstrap.fileName} has an unsupported safety class`
-    );
+  const fileNames = new Set<string>();
+  for (let index = 0; index < manifest.length; index += 1) {
+    const migration = manifest[index]!;
+    if (
+      !/^\d{3}_.+\.sql$/u.test(migration.fileName)
+      || Number(migration.fileName.slice(0, 3)) !== index + 1
+      || fileNames.has(migration.fileName)
+    ) {
+      throw new MigrationManifestValidationError(
+        `migration ${migration.fileName} has an invalid sequence or file name`
+      );
+    }
+    fileNames.add(migration.fileName);
+    if (!MIGRATION_SAFETY_CLASSES.includes(migration.safety)) {
+      throw new MigrationManifestValidationError(
+        `migration ${migration.fileName} has an unsupported safety class`
+      );
+    }
+    if (index > 0 && (
+      migration.sourceGeneration !== manifest[index - 1]!.targetGeneration
+      || migration.safety !== "compatible"
+    )) {
+      throw new MigrationManifestValidationError(
+        `migration ${migration.fileName} does not continue the compatible generation chain`
+      );
+    }
   }
 
   if (options.availableFiles) {
     const availableFiles = [...options.availableFiles].sort();
     if (
-      availableFiles.length !== 1
-      || availableFiles[0] !== bootstrap.fileName
+      availableFiles.length !== manifest.length
+      || availableFiles.some((fileName, index) => fileName !== manifest[index]!.fileName)
     ) {
       throw new MigrationManifestValidationError(
         "migration files and manifest entries do not match"
@@ -92,18 +110,22 @@ export function validateMigrationManifest(
     }
   }
 
-  if (options.fileExists && !options.fileExists(bootstrap.fileName)) {
-    throw new MigrationManifestValidationError(
-      `migration file ${bootstrap.fileName} is missing`
-    );
+  if (options.fileExists) {
+    for (const migration of manifest) {
+      if (!options.fileExists(migration.fileName as MigrationFile)) {
+        throw new MigrationManifestValidationError(
+          `migration file ${migration.fileName} is missing`
+        );
+      }
+    }
   }
 
   if (
     options.expectedRuntimeGeneration
-    && options.expectedRuntimeGeneration !== bootstrap.targetGeneration
+    && options.expectedRuntimeGeneration !== manifest.at(-1)!.targetGeneration
   ) {
     throw new MigrationManifestValidationError(
-      `runtime generation ${options.expectedRuntimeGeneration} does not match ${bootstrap.targetGeneration}`
+      `runtime generation ${options.expectedRuntimeGeneration} does not match ${manifest.at(-1)!.targetGeneration}`
     );
   }
 }
@@ -111,11 +133,11 @@ export function validateMigrationManifest(
 export function createBootstrapPlan(
   currentState: string | "absent"
 ): MigrationPlan {
-  const targetGeneration = MIGRATION_MANIFEST[0].targetGeneration;
+  const targetGeneration = MIGRATION_MANIFEST.at(-1)!.targetGeneration;
   if (currentState === "absent") {
     return {
       pendingMigrations: MIGRATION_MANIFEST,
-      pendingFiles: [MIGRATION_MANIFEST[0].fileName],
+      pendingFiles: MIGRATION_MANIFEST.map((migration) => migration.fileName),
       targetGeneration
     };
   }
@@ -124,6 +146,17 @@ export function createBootstrapPlan(
     return {
       pendingMigrations: [],
       pendingFiles: [],
+      targetGeneration
+    };
+  }
+
+  const nextMigrationIndex = MIGRATION_MANIFEST.findIndex((migration) =>
+    migration.sourceGeneration === currentState);
+  if (nextMigrationIndex >= 0) {
+    const pendingMigrations = MIGRATION_MANIFEST.slice(nextMigrationIndex);
+    return {
+      pendingMigrations,
+      pendingFiles: pendingMigrations.map((migration) => migration.fileName),
       targetGeneration
     };
   }

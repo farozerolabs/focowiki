@@ -353,7 +353,7 @@ if (args.includes("ps")) {
   if (sql.includes("information_schema.tables")) {
     process.stdout.write("0\\n");
   } else if (sql.includes("runtime_generation")) {
-    process.stdout.write("storage-vnext-v1\\n");
+    process.stdout.write("storage-vnext-v2\\n");
   } else if (sql.includes("runtime_setting_revisions")) {
     process.stdout.write(JSON.stringify({ publicId: "settings-1", isCurrent: true }) + "\\n");
   } else {

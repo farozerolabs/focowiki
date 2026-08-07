@@ -1,5 +1,8 @@
 import type { StorageVnextGraphWritePort } from "../graph/ports.js";
-import { deriveStorageVnextReleaseDependencyClosure } from
+import {
+  deriveStorageVnextReleaseDependencyClosure,
+  includeStorageVnextNavigationProfileUpgrade
+} from
   "../release/dependency-closure.js";
 import type {
   StorageVnextCandidateChangedFact,
@@ -60,6 +63,11 @@ export function createStorageVnextSourceReleaseHandoff(input: {
       const active = await input.releases.getActiveRoot(request.knowledgeBaseId);
       const expectedActiveRootPublicId = active?.publicId ?? null;
       const expectedActiveRevision = active?.revision ?? 0;
+      const candidateDependencies = includeStorageVnextNavigationProfileUpgrade({
+        knowledgeBaseId: request.knowledgeBaseId,
+        navigationProfileVersion: active?.navigationProfileVersion ?? null,
+        dependencies
+      });
       const identity = createStorageVnextReleaseCandidateIdentity({
         knowledgeBaseId: request.knowledgeBaseId,
         activeRootPublicId: expectedActiveRootPublicId,
@@ -110,7 +118,7 @@ export function createStorageVnextSourceReleaseHandoff(input: {
           expectedActiveRootPublicId,
           expectedActiveRevision,
           changedFacts,
-          dependencies,
+          dependencies: candidateDependencies,
           idempotency: publication.idempotency,
           createdAt: request.completedAt
         });

@@ -28,9 +28,9 @@ Admin 上传弹窗支持选择零散 Markdown 文件，也支持选择包含多�
 
 再次选择同一个文件夹时，系统只添加知识库中尚不存在的路径。已有 active path 会被跳过，并保留原 source ID 和 revision。已有路径的内容变更通过明确的 source-file replacement 操作完成。
 
-选择内容中的每一项都必须是 `.md` 文件。路径 segment 应保持稳定，并避开绝对路径、`.`、`..`、反斜杠、控制字符和只有大小写差异的重复路径。Focowiki 保留符合 `index.md`、`index-<number>.md`、`index-map-<number>.md`、`log.md` 和 `log-<number>.md` 形式的生成导航文件名。上传前需要重命名使用这些 basename 的来源文件。
+选择内容中的每一项都必须是 `.md` 文件。路径 segment 应保持稳定，并避开绝对路径、`.`、`..`、反斜杠、控制字符和只有大小写差异的重复路径。Focowiki 保留符合 `index.md`、`index-<number>.md`、`log.md` 和 `log-<number>.md` 形式的生成导航文件名。上传前需要重命名使用这些 basename 的来源文件。
 
-当一个目录的直接列表超过配置预算时，Focowiki 会生成目录 `index.md`、编号 index 页面和 index-map 页面。这些导航页面互相链接，并继续通过文件树和内容接口提供。Agent 使用它们寻找 source-backed Markdown 页面，再读取这些页面作为证据。
+当一个目录的直接列表超过配置预算时，Focowiki 会生成目录 `index.md` 和有界的稳定续页。这些导航页面会链接相邻页面，并继续通过文件树和内容接口提供。Agent 使用它们寻找 source-backed Markdown 页面，再读取这些页面作为证据。
 
 ## 清洗流程
 

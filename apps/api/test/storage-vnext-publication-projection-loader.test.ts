@@ -48,6 +48,35 @@ describe("storage vNext publication projection loader", () => {
       graphEdgeCount: 0,
       generatedByteCount: 1_024
     }));
+    const readExtensionNavigationLeaves = vi.fn(async (_request: {
+      directoryPath: string;
+    }) => []);
+    const listExtensionNavigationShards = vi.fn(async (request: {
+      directoryPaths: readonly string[];
+    }) => request.directoryPaths.map((directoryPath, ordinal) => ({
+      publicId: `release-shard-${ordinal}`,
+      logicalKind: "extension_navigation" as const,
+      firstLogicalPath: directoryPath,
+      lastLogicalPath: directoryPath,
+      recordCount: 0,
+      byteCount: 64,
+      checksum: `${ordinal}`.padStart(64, "0"),
+      objectId: `generated-${ordinal}`,
+      ordinal: 0
+    })));
+    const listExtensionCatalogPaths = vi.fn(async (request: {
+      cursor: string | null;
+    }) => request.cursor === null ? {
+      byFileLogicalPaths: ["_graph/by-file/source-setup.json"],
+      markdownLogicalPaths: [],
+      scannedCount: 1,
+      nextCursor: "extension-page-two"
+    } : {
+      byFileLogicalPaths: [],
+      markdownLogicalPaths: ["_index/search/index.md"],
+      scannedCount: 1,
+      nextCursor: null
+    });
     const loader = createStorageVnextPublicationProjectionLoader({
       catalog: {
         getKnowledgeBase: vi.fn(async () => ({
@@ -74,6 +103,7 @@ describe("storage vNext publication projection loader", () => {
         readVerifiedStream: vi.fn(async () => bytes("# Setup\n\nSource body."))
       },
       snapshot: {
+        readBaseNavigationProfile: vi.fn(async () => 1),
         readKnowledgeBaseCounts: vi.fn(async () => ({
           sourceFileCount: 1,
           directoryCount: 2,
@@ -98,12 +128,15 @@ describe("storage vNext publication projection loader", () => {
               kind: "file" as const
             }]
           }] : []),
+        readExtensionNavigationLeaves,
         readProjectionRecords: vi.fn(async ({ logicalPath }: { logicalPath: string }) =>
           logicalPath.includes("/search/")
             ? [{ id: "source-existing", path: "pages/existing.md" }]
             : []),
         listAffectedObsoletePaths,
         listProjectionShards: vi.fn(async () => []),
+        listExtensionNavigationShards,
+        listExtensionCatalogPaths,
         summarizeCandidate
       },
       limits: {
@@ -183,6 +216,24 @@ describe("storage vNext publication projection loader", () => {
       "pages/old.md"
     ]);
     expect(projection.internalShards).toHaveLength(2);
+    expect(projection.extensionNavigation).toMatchObject({
+      byFileLogicalPaths: [],
+      existingMarkdownPaths: []
+    });
+    expect(listExtensionCatalogPaths).not.toHaveBeenCalled();
+    expect(readExtensionNavigationLeaves.mock.calls.map(([request]) =>
+      request.directoryPath)).toEqual([
+      "_index/manifest/v1",
+      "_index/search/v1",
+      "_index/tree/v1",
+      "_graph/graph_node/v1",
+      "_graph/by-file"
+    ]);
+    expect(listExtensionNavigationShards).toHaveBeenCalledWith(expect.objectContaining({
+      directoryPaths: ["_index/links/v1", "_graph/graph_edge/v1"]
+    }));
+    expect(projection.reusedInternalShards.map((shard) => shard.firstLogicalPath))
+      .toEqual(["_index/links/v1", "_graph/graph_edge/v1"]);
     expect(projection.internalShards.map((shard) => [
       shard.logicalKind,
       shard.firstLogicalPath,
@@ -244,6 +295,19 @@ describe("storage vNext publication projection loader", () => {
       graphNodeWithId(source.publicId)
     ]));
     const readProjectionRecords = vi.fn(async (_input: { logicalPath: string }) => []);
+    const listExtensionCatalogPaths = vi.fn(async (request: {
+      cursor: string | null;
+    }) => request.cursor === null ? {
+      byFileLogicalPaths: ["_graph/by-file/a.json"],
+      markdownLogicalPaths: [],
+      scannedCount: 1,
+      nextCursor: "extension-page-two"
+    } : {
+      byFileLogicalPaths: [],
+      markdownLogicalPaths: ["_index/search/index.md"],
+      scannedCount: 1,
+      nextCursor: null
+    });
     const loader = createStorageVnextPublicationProjectionLoader({
       catalog: {
         getKnowledgeBase: vi.fn(async () => ({
@@ -276,6 +340,7 @@ describe("storage vNext publication projection loader", () => {
         readVerifiedStream: vi.fn(async () => bytes("# Source\n\nBody."))
       },
       snapshot: {
+        readBaseNavigationProfile: vi.fn(async () => 0),
         readKnowledgeBaseCounts: vi.fn(async () => ({
           sourceFileCount: 3,
           directoryCount: 1,
@@ -284,9 +349,12 @@ describe("storage vNext publication projection loader", () => {
         })),
         readDirectoryDescendantFileCounts: vi.fn(async () => new Map([["pages", 3]])),
         readDirectoryLeaves: vi.fn(async () => []),
+        readExtensionNavigationLeaves: vi.fn(async () => []),
         readProjectionRecords,
         listAffectedObsoletePaths: vi.fn(async () => []),
         listProjectionShards: vi.fn(async () => []),
+        listExtensionNavigationShards: vi.fn(async () => []),
+        listExtensionCatalogPaths,
         summarizeCandidate: vi.fn(async () => ({
           sourceFileCount: 3,
           directoryCount: 1,
@@ -339,6 +407,16 @@ describe("storage vNext publication projection loader", () => {
     const machineArtifacts = batches.flatMap((batch) => batch.machineArtifacts);
     const finalShards = machineArtifacts.filter((artifact) =>
       !artifact.logicalPath.startsWith("_graph/by-file/"));
+
+    expect(projection.profileUpgrade).toBe(true);
+    expect(projection.extensionNavigation).toMatchObject({
+      byFileLogicalPaths: ["_graph/by-file/a.json"],
+      existingMarkdownPaths: ["_index/search/index.md"]
+    });
+    expect(listExtensionCatalogPaths).toHaveBeenNthCalledWith(1,
+      expect.objectContaining({ cursor: null, limit: 1 }));
+    expect(listExtensionCatalogPaths).toHaveBeenNthCalledWith(2,
+      expect.objectContaining({ cursor: "extension-page-two", limit: 1 }));
 
     expect(readProjectionRecords).toHaveBeenCalledTimes(4);
     expect(new Set(readProjectionRecords.mock.calls.map((call) =>

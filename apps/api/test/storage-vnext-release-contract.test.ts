@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { validateStorageVnextSummaries } from
+  "../src/storage-vnext/release/postgres-contract.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const portsPath = resolve(
@@ -110,5 +112,39 @@ describe("storage vNext bounded release contract", () => {
     expect(ports).not.toMatch(
       /listGenerations|getGenerationHistory|historicalProjection|historicalObject/u
     );
+  });
+
+  it("accepts only the fixed generated navigation directory summaries without source IDs", () => {
+    const knowledgeBase = {
+      sourceFileCount: 1,
+      directoryCount: 1,
+      generatedEntryCount: 10,
+      graphNodeCount: 1,
+      graphEdgeCount: 0,
+      generatedByteCount: 100
+    };
+    const summary = (logicalPath: string, ordinal: number) => ({
+      directoryPublicId: null,
+      logicalPath,
+      firstLeafPath: null,
+      directFileCount: 1,
+      descendantFileCount: 1,
+      ordinal
+    });
+
+    expect(() => validateStorageVnextSummaries([
+      summary("_index", 0),
+      summary("_index/search", 1),
+      summary("_index/search/v1", 2),
+      summary("_graph", 3),
+      summary("_graph/by-file", 4),
+      summary("pages", 5)
+    ], knowledgeBase)).not.toThrow();
+    expect(() => validateStorageVnextSummaries([
+      summary("_index/custom", 0)
+    ], knowledgeBase)).toThrow(/invalid_input/iu);
+    expect(() => validateStorageVnextSummaries([
+      summary("_graph/graph_node/v2", 0)
+    ], knowledgeBase)).toThrow(/invalid_input/iu);
   });
 });

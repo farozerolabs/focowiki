@@ -4,11 +4,14 @@ import { REQUIRED_GENERATED_NAVIGATION_PATHS } from
   "../../okf/generated-graph-resources.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from
   "../../publication/incremental-defaults.js";
+import { STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT } from
+  "../publication/profile.js";
 
 export const MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE = 5;
 export const MAX_STORAGE_VNEXT_CANDIDATE_ONLY_RATIO = 0.2;
 const MIN_STORAGE_VNEXT_RELEASED_OBJECTS =
-  REQUIRED_GENERATED_NAVIGATION_PATHS.length + 2;
+  REQUIRED_GENERATED_NAVIGATION_PATHS.length + 2
+  + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT;
 const MIN_STORAGE_VNEXT_FANOUT_SAMPLE_SOURCE_COUNT =
   REQUIRED_GENERATED_NAVIGATION_PATHS.length
   + Object.keys(INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner).length
@@ -84,7 +87,8 @@ export function evaluateStorageVnextObjectFanoutBudget(
             + addedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
         )
       : ratioBudget
-        + changedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE;
+        + changedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
+        + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT;
   const candidateChangeAllowanceUsed = measurement.activeGeneratedObjectCount > 0
     && addedSourceFileCount === 0
     && changedSourceFileCount > 0;

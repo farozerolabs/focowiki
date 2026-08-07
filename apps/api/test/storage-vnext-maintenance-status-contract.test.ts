@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 type StatusMapper = {
   mapLive(input: Record<string, unknown>): Record<string, unknown>;
   mapTerminal(input: Record<string, unknown>): Record<string, unknown>;
+  mapIdle(maintenanceRequired?: boolean): Record<string, unknown>;
 };
 
 let createMapper: (() => StatusMapper) | undefined;
@@ -85,6 +86,16 @@ describe("storage vNext maintenance status contract", () => {
       safeErrorMessage: null,
       throughputPerSecond: 10,
       estimatedCompletionAt: null
+    });
+  });
+
+  it("reports a legacy active navigation profile through the existing field", () => {
+    expect(createMapper).toBeTypeOf("function");
+    if (!createMapper) return;
+    expect(createMapper().mapIdle(true)).toMatchObject({
+      state: "idle",
+      active: false,
+      maintenanceRequired: true
     });
   });
 });

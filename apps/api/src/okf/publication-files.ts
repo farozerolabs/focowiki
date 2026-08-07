@@ -33,7 +33,6 @@ export type GeneratedFileKind =
   | "schema"
   | "directory_index"
   | "directory_index_page"
-  | "directory_index_map"
   | "index_catalog"
   | "manifest_index"
   | "manifest_index_shard"
@@ -399,7 +398,7 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
         "",
         "Index entries use generated concept titles and include concise descriptions when safe evidence is available.",
         "",
-        "Large direct listings use linked `index-000001.md` pages and, when needed, `index-map-000001.md` pages.",
+        "Large direct listings use linked bounded `index-<stable-id>.md` pages.",
         "",
         "Navigation pages help readers discover source-backed Markdown files and do not represent source evidence."
       ].join("\n")
