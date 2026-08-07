@@ -6,7 +6,7 @@ title: Admin Settings
 
 Open **Settings** from a knowledge-base page in Admin UI. Saved values remain available after a restart. Changes affect new requests and newly started jobs; a job that is already running may finish with the values it started with.
 
-The values below match the fields currently shown in Admin UI. Start with the defaults and increase concurrency only after checking CPU, memory, PostgreSQL, Meilisearch, and S3 latency.
+The values below match the fields currently shown in Admin UI. Start with the defaults and increase concurrency only after checking CPU, memory, PostgreSQL, the selected search provider, and S3 latency.
 
 ## API Rate Limits
 
@@ -91,27 +91,29 @@ Default depth and fanout must not exceed their maximum values. Model review is o
 | Search rebuild source-read concurrency | Source Markdown files read at the same time during rebuild. | `2`; maximum `32`. |
 | Search rebuild memory limit bytes | Maximum source Markdown bytes held during active rebuild reads. | `67108864`; range 1 MiB to 512 MiB. |
 
-Use **Maintain index** on a knowledge-base page to repair navigation, search, relationships, and generated content for that knowledge base. Existing readable files remain available while maintenance runs. The status panel shows progress, retries, recent activity, and any failure that needs attention.
+Use **Maintain index** on a knowledge-base page to repair navigation, search, relationships, and generated content for that knowledge base. It is also the required action for adopting an existing knowledge base after `SEARCH_PROVIDER` changes; automatic maintenance does not adopt a different provider. Existing readable files remain available while maintenance runs. The status panel shows progress, retries, recent activity, and any failure that needs attention.
 
 ## Search
 
-| Setting | Purpose | Default |
-| --- | --- | --- |
-| Search request timeout milliseconds | Maximum total time for one search request. | `3000` |
-| Search service timeout milliseconds | Maximum time for one search-service request. It must be lower than the total timeout. | `1000` |
-| Result refill factor | Extra results requested when unavailable files are removed before returning a page. | `3` |
-| Index update document count | Maximum documents sent in one search update. | `10000` |
-| Index update compressed bytes | Maximum compressed size of one search update. | `8388608` |
-| In-flight search tasks | Search updates waiting for completion at the same time. | `8` |
-| Search task poll interval milliseconds | Delay between task-status checks. | `500` |
-| Search task timeout milliseconds | Maximum time allowed for one search update before retry handling. | `600000` |
-| Search task maximum attempts | Attempts allowed for a search update or cleanup action. | `5` |
-| Search retry delay milliseconds | Delay before retrying a temporary search failure. | `2000` |
-| Search cleanup batch size | Old search records removed in one cleanup batch. | `1000` |
-| Incomplete index retention hours | Time to retain an unsuccessful or replaced index before cleanup. | `24` |
-| Search result excerpt length | Maximum excerpt characters requested for one search result. | `1200` |
+The same settings remain visible for both providers; changing `SEARCH_PROVIDER` does not add, remove, or rename a field.
 
-Keep the search-service timeout below the total request timeout. Reduce update size or in-flight tasks when Meilisearch memory or disk latency rises.
+| Setting | Meilisearch behavior | OpenSearch behavior | Default |
+| --- | --- | --- | --- |
+| Search request timeout milliseconds | Bounds the complete application search request. | Bounds the complete application search request. | `3000` |
+| Search service timeout milliseconds | Native search cutoff and client deadline. | Provider request/query deadline and application cutoff. | `1000` |
+| Result refill factor | Overfetches candidates before hydration. | Overfetches collapsed candidates before hydration. | `3` |
+| Index update document count | Maximum documents in one indexing task. | Maximum documents in one Bulk request. | `10000` |
+| Index update compressed bytes | Maximum serialized indexing batch bytes. | Maximum serialized Bulk request bytes. | `8388608` |
+| In-flight search tasks | Concurrent pending indexing tasks. | Concurrent Bulk or provider operations. | `8` |
+| Search task poll interval milliseconds | Delay between task-status checks. | Delay between retry or final visibility checks. | `500` |
+| Search task timeout milliseconds | Total indexing-task deadline. | Total Bulk, indexing, and visibility deadline. | `600000` |
+| Search task maximum attempts | Maximum task and request retries. | Maximum transient request and item retries. | `5` |
+| Search retry delay milliseconds | Delay before a task or request retry. | Delay before a transient retry, with a limited random adjustment. | `2000` |
+| Search cleanup batch size | Durable old-index cleanup claim size. | Durable exact-index cleanup claim size. | `1000` |
+| Incomplete index retention hours | Failed or replaced candidate retention. | Failed or replaced candidate retention. | `24` |
+| Search result excerpt length | Native crop length. | Maximum highlighted fragment and normalized excerpt length. | `1200` |
+
+Keep the search-service timeout below the total request timeout. Reduce update size or in-flight tasks when the selected provider's memory or disk latency rises.
 
 ## Models
 

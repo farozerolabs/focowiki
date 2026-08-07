@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { DatabaseClient } from "../src/db/client.js";
+import { assertRuntimeSchemaGeneration } from "../src/db/migrations.js";
 import { applyStorageVnextTestMigrations } from
   "./helpers/storage-vnext-test-migrations.js";
 
@@ -138,6 +140,28 @@ describeOwnedDatabase("storage vNext run-owned clean bootstrap integration", () 
     `;
 
     expect(rows).toEqual([{ generation: "storage-vnext-v2" }]);
+  });
+
+  it("accepts the provider-aware signature and rejects the prior shape", async () => {
+    const database = sql as unknown as DatabaseClient;
+    await expect(assertRuntimeSchemaGeneration(database)).resolves.toBeUndefined();
+    const rollback = new Error("rollback provider-unaware fixture");
+
+    await expect(sql.begin(async (transaction) => {
+      await transaction`
+        ALTER TABLE focowiki.search_projections
+        DROP COLUMN provider_kind CASCADE
+      `;
+      await expect(assertRuntimeSchemaGeneration(
+        transaction as unknown as DatabaseClient
+      )).rejects.toMatchObject({
+        name: "RuntimeSchemaSignatureError",
+        message: expect.stringMatching(/clean reset/iu)
+      });
+      throw rollback;
+    })).rejects.toBe(rollback);
+
+    await expect(assertRuntimeSchemaGeneration(database)).resolves.toBeUndefined();
   });
 });
 

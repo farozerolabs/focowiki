@@ -8,13 +8,21 @@ x-runtime-environment: &runtime-environment
   DATABASE_URL: postgres://${POSTGRES_USER:?Set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?Set POSTGRES_DB in .env}
   REDIS_URL: redis://redis:6379/0
   S3_ENDPOINT: http://minio:9000
+  SEARCH_PROVIDER: ${SEARCH_PROVIDER}
+  SEARCH_INDEX_PREFIX: ${SEARCH_INDEX_PREFIX}
+  OPENSEARCH_URL: http://opensearch:9200
+  OPENSEARCH_AUTH_MODE: ${OPENSEARCH_AUTH_MODE-}
+  OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME-}
+  OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD-}
+  OPENSEARCH_PASSWORD_FILE: ${OPENSEARCH_PASSWORD_FILE-}
+  OPENSEARCH_CA_FILE: ${OPENSEARCH_CA_FILE-}
+  OPENSEARCH_AWS_REGION: ${OPENSEARCH_AWS_REGION-}
+  OPENSEARCH_AWS_SERVICE: ${OPENSEARCH_AWS_SERVICE-}
   MEILI_HOST: http://meilisearch:7700
-  MEILI_MASTER_KEY: ""
-  MEILI_API_KEY: ""
-  MEILI_METRICS_API_KEY: ""
-  MEILI_API_KEY_FILE: /app/runtime-secrets/meilisearch-api-key
-  MEILI_METRICS_API_KEY_FILE: /app/runtime-secrets/meilisearch-metrics-key
-  MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
+  MEILI_API_KEY: ${MEILI_API_KEY-}
+  MEILI_METRICS_API_KEY: ${MEILI_METRICS_API_KEY-}
+  MEILI_API_KEY_FILE: ${MEILI_API_KEY_FILE-}
+  MEILI_METRICS_API_KEY_FILE: ${MEILI_METRICS_API_KEY_FILE-}
 
 services:
   admin:
@@ -160,16 +168,19 @@ services:
     logging: *docker-logging
     restart: unless-stopped
 
-  meilisearch-init:
+  search-init:
+    profiles: ["opensearch", "meilisearch"]
     image: focowiki-api:dev
-    command: ["node", "apps/api/runtime/meilisearch-bootstrap.mjs"]
+    command: ["node", "apps/api/runtime/search-init.mjs"]
     environment:
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER}
+      SEARCH_INDEX_PREFIX: ${SEARCH_INDEX_PREFIX}
       MEILI_HOST: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
       MEILI_API_KEY: ""
       MEILI_METRICS_API_KEY: ""
-      MEILI_INDEX_PREFIX: ${MEILI_INDEX_PREFIX:?Set MEILI_INDEX_PREFIX in .env}
       MEILI_SECRET_DIR: /app/runtime-secrets
+      BUNDLED_OPENSEARCH_SECURITY_ENABLED: "false"
     volumes:
       - ./runtime-secrets:/app/runtime-secrets
     depends_on:
@@ -195,8 +206,15 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
-      meilisearch-init:
+      search-init:
         condition: service_completed_successfully
+        required: false
+      meilisearch:
+        condition: service_healthy
+        required: false
+      opensearch:
+        condition: service_healthy
+        required: false
       postgres:
         condition: service_healthy
       redis:
@@ -274,16 +292,16 @@ services:
     restart: "no"
 
   meilisearch:
+    profiles: ["meilisearch"]
     image: getmeili/meilisearch:v1.51.0
-    profiles: ["bundled-search"]
     environment:
       MEILI_ENV: production
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}
-      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY:?Set MEILI_MAX_INDEXING_MEMORY in .env}
-      MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS:?Set MEILI_MAX_INDEXING_THREADS in .env}
-      MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:?Set MEILI_SNAPSHOT_DIR in .env}
-      MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:?Set MEILI_SCHEDULE_SNAPSHOT in .env}
-      MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:?Set MEILI_DUMP_DIR in .env}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}
+      MEILI_MAX_INDEXING_MEMORY: ${MEILI_MAX_INDEXING_MEMORY-}
+      MEILI_MAX_INDEXING_THREADS: ${MEILI_MAX_INDEXING_THREADS-}
+      MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}
+      MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}
+      MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}
       TMPDIR: /meili_data/tmp
       MEILI_NO_ANALYTICS: "true"
       MEILI_EXPERIMENTAL_ENABLE_METRICS: "true"
@@ -298,4 +316,26 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    logging: *docker-logging
+
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    profiles: ["opensearch"]
+    environment:
+      discovery.type: "single-node"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS--Xms512m -Xmx512m}
+    ports:
+      - "127.0.0.1:${OPENSEARCH_PORT-59200}:9200"
+    volumes:
+      - ./data/opensearch:/usr/share/opensearch/data
+    depends_on:
+      search-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9200/_cluster/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 45s
     logging: *docker-logging

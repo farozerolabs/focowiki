@@ -5,8 +5,8 @@ import type { RuntimeConfig } from "../../config.js";
 import { closeDatabaseClient, createDatabaseClient } from "../../db/client.js";
 import { assertRuntimeSchemaGeneration } from "../../db/migrations.js";
 import {
-  createDynamicRuntimeMeilisearchSearchTransport
-} from "../../infrastructure/meilisearch/runtime-meilisearch-transport.js";
+  createDynamicRuntimeSearchQueryProvider
+} from "../../runtime/search-provider.js";
 import {
   assertNodeJiebaRuntimeAvailable,
   createNodeJiebaTokenizer
@@ -48,6 +48,7 @@ import {
 import {
   createStorageVnextGraphCandidateSearch
 } from "../search/graph-candidate-search.js";
+import { createStorageVnextSearchSettings } from "../search/settings.js";
 import {
   createPostgresStorageVnextWorkflowRepository
 } from "../workflow/postgres-repository.js";
@@ -66,7 +67,7 @@ const MILLISECONDS_PER_DAY = 86_400_000;
 
 export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promise<void> {
   if (!config.search) {
-    throw new Error("Meilisearch configuration is required for the source worker");
+    throw new Error("Search configuration is required for the source worker");
   }
   const logger = createRuntimeLogger(config, console, { streamName: "source-worker" });
   const sql = createDatabaseClient(config, { role: "source-worker" });
@@ -115,20 +116,24 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
       bucket: config.storage.bucket,
       prefix: config.storage.prefix
     });
-    const searchTransport = createDynamicRuntimeMeilisearchSearchTransport(
-      config.search,
-      async () => {
+    const searchProvider = createDynamicRuntimeSearchQueryProvider({
+      config: config.search,
+      tokenizer,
+      indexDefinition: createStorageVnextSearchSettings({
+        searchCutoffMs: initialSnapshot.search.engineSearchCutoffMs
+      }),
+      async resolveSettings() {
         const snapshot = await runtimeSettings.getSnapshot();
-        return {
-          timeoutMs: snapshot.search.requestTimeoutMs,
-          maxAttempts: snapshot.search.maxAttempts,
-          retryDelayMs: snapshot.search.retryDelayMs
-        };
+        return snapshot.search;
       }
-    );
+    });
     const candidates = createStorageVnextGraphCandidateSearch({
       projections: createPostgresStorageVnextActiveSearchProjectionRepository(sql),
-      transport: searchTransport,
+      provider: searchProvider,
+      async resolveDeadlineMs() {
+        const snapshot = await runtimeSettings.getSnapshot();
+        return snapshot.search.requestTimeoutMs;
+      },
       graph
     });
     const role = createStorageVnextSourceRoleRuntime({
@@ -243,6 +248,7 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
     try {
       await role.run(abort.signal);
     } finally {
+      await searchProvider.close();
       resourceBudgetReporter.report(resourceBudgets, { force: true });
       logger.info("source_worker.stopped");
     }

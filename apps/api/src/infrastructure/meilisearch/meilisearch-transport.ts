@@ -1,15 +1,15 @@
 import { gzipSync } from "node:zlib";
 import { Meilisearch } from "meilisearch";
 import type {
-  SearchEngineDocument,
-  SearchEnginePressure,
-  SearchEngineSettings,
-  SearchEngineTask,
-  SearchEngineTransport
-} from "../../application/ports/search-engine-transport.js";
+  MeilisearchClientPort,
+  MeilisearchDocument,
+  MeilisearchPressure,
+  MeilisearchSettings,
+  MeilisearchTask
+} from "./meilisearch-client-port.js";
 import {
-  SearchEngineTransportError
-} from "../../application/ports/search-engine-transport.js";
+  MeilisearchClientError
+} from "./meilisearch-client-port.js";
 
 type TransportConfig = {
   endpoint: string;
@@ -35,7 +35,7 @@ type TransportDependencies = {
 export function createMeilisearchTransport(
   config: TransportConfig,
   dependencies: TransportDependencies = {}
-): SearchEngineTransport {
+): MeilisearchClientPort {
   const client = dependencies.client ?? new Meilisearch({
     host: config.endpoint,
     ...(config.apiKey ? { apiKey: config.apiKey } : {}),
@@ -60,10 +60,10 @@ export function createMeilisearchTransport(
     async health() {
       return execute(async () => {
         const result = await client.health();
-        if (result.status !== "available") return { available: false };
+        if (result.status !== "available") return { available: false, version: "" };
         const version = await diagnosticsClient.getVersion();
         assertSupportedVersion(version.pkgVersion);
-        return { available: true };
+        return { available: true, version: version.pkgVersion };
       });
     },
 
@@ -187,7 +187,7 @@ export function createMeilisearchTransport(
         return await response.json() as { taskUid: number };
       });
       if (!Number.isSafeInteger(task.taskUid) || task.taskUid < 0) {
-        throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+        throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
       }
       return { taskUid: task.taskUid };
     },
@@ -230,7 +230,7 @@ export function createMeilisearchTransport(
 
     async deleteDocuments(input) {
       if ((!input.ids || input.ids.length === 0) && !input.filter) {
-        throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+        throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
       }
       const task = await execute(() =>
         client.index(input.indexUid).deleteDocuments(
@@ -246,19 +246,6 @@ export function createMeilisearchTransport(
       return { taskUid: task.taskUid };
     },
 
-    async swapIndexes(input) {
-      if (input.pairs.length === 0) {
-        throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
-      }
-      const task = await execute(() =>
-        client.swapIndexes(input.pairs.map((pair) => ({
-          indexes: [pair.left, pair.right],
-          rename: false
-        })))
-      );
-      return { taskUid: task.taskUid };
-    },
-
     async findTaskByCorrelation(input) {
       const tasks = await execute(() => client.tasks.getTasks({
         indexUids: [input.indexUid],
@@ -269,25 +256,6 @@ export function createMeilisearchTransport(
       const task = tasks.results.find(
         (candidate) => candidate.customMetadata === input.correlation
       );
-      return task ? normalizeTask(task) : null;
-    },
-
-    async findIndexSwapTask(input) {
-      const tasks = await execute(() => diagnosticsClient.tasks.getTasks({
-        types: ["indexSwap"],
-        statuses: ["enqueued", "processing", "succeeded"],
-        limit: 100
-      }));
-      const expected = normalizedPairs(input.pairs);
-      const task = tasks.results.find((candidate) => {
-        const swaps = candidate.details && "swaps" in candidate.details
-          ? candidate.details.swaps
-          : [];
-        return normalizedPairs(swaps.map((swap) => ({
-          left: swap.indexes[0] ?? "",
-          right: swap.indexes[1] ?? ""
-        }))) === expected;
-      });
       return task ? normalizeTask(task) : null;
     },
 
@@ -327,7 +295,7 @@ export function createMeilisearchTransport(
     method: "POST";
     indexUid: string;
     query: Record<string, string>;
-    documents: SearchEngineDocument[];
+    documents: MeilisearchDocument[];
   }): Promise<{ taskUid: number }> {
     const url = new URL(
       `/indexes/${encodeURIComponent(input.indexUid)}/documents`,
@@ -353,7 +321,7 @@ export function createMeilisearchTransport(
       return await response.json() as { taskUid: number };
     });
     if (!Number.isSafeInteger(result.taskUid)) {
-      throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+      throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
     }
     return { taskUid: result.taskUid };
   }
@@ -386,7 +354,7 @@ export function createMeilisearchTransport(
 function normalizeTask(task: {
   uid: number;
   status: string;
-}): SearchEngineTask {
+}): MeilisearchTask {
   return {
     taskUid: task.uid,
     status: normalizeTaskStatus(task.status),
@@ -407,7 +375,7 @@ function normalizeFinishedTask(task: {
     || task.uid < 0
     || !task.finishedAt
     || !["succeeded", "failed", "canceled"].includes(task.status)
-  ) throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+  ) throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
   return {
     taskUid: task.uid,
     indexUid: task.indexUid,
@@ -422,26 +390,17 @@ function assertTaskUids(taskUids: readonly number[]) {
     || taskUids.length > 1_000
     || new Set(taskUids).size !== taskUids.length
     || taskUids.some((value) => !Number.isSafeInteger(value) || value < 0)
-  ) throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+  ) throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
 }
 
 function safeMetric(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+    throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
   }
   return value;
 }
 
-function normalizedPairs(
-  pairs: Array<{ left: string; right: string }>
-): string {
-  return pairs
-    .map((pair) => [pair.left, pair.right].sort().join("\u0000"))
-    .sort()
-    .join("\u0001");
-}
-
-function parsePressureMetrics(value: string): SearchEnginePressure {
+function parsePressureMetrics(value: string): MeilisearchPressure {
   const metrics = new Map<string, number[]>();
   for (const line of value.split(/\r?\n/u)) {
     if (!line || line.startsWith("#")) continue;
@@ -472,7 +431,7 @@ function parsePressureMetrics(value: string): SearchEnginePressure {
 function requiredMetric(metrics: Map<string, number[]>, name: string): number {
   const samples = metrics.get(name);
   if (!samples || samples.length === 0) {
-    throw new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+    throw new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
   }
   return Math.max(...samples);
 }
@@ -484,14 +443,14 @@ function assertSupportedVersion(value: string): void {
     || Number(match[1]) !== SUPPORTED_MEILISEARCH_MAJOR
     || Number(match[2]) !== SUPPORTED_MEILISEARCH_MINOR
   ) {
-    throw new SearchEngineTransportError(
+    throw new MeilisearchClientError(
       "SEARCH_ENGINE_VERSION_INCOMPATIBLE",
       false
     );
   }
 }
 
-function normalizeSettings(settings: Record<string, unknown>): SearchEngineSettings {
+function normalizeSettings(settings: Record<string, unknown>): MeilisearchSettings {
   return {
     searchableAttributes: stringArray(settings.searchableAttributes),
     filterableAttributes: filterableAttributeArray(settings.filterableAttributes),
@@ -508,7 +467,7 @@ function normalizeSettings(settings: Record<string, unknown>): SearchEngineSetti
     },
     searchCutoffMs: positiveInteger(settings.searchCutoffMs, 500),
     localizedAttributes: Array.isArray(settings.localizedAttributes)
-      ? settings.localizedAttributes as SearchEngineSettings["localizedAttributes"]
+      ? settings.localizedAttributes as MeilisearchSettings["localizedAttributes"]
       : [],
     typoTolerance: {
       disableOnAttributes: stringArray(
@@ -519,7 +478,7 @@ function normalizeSettings(settings: Record<string, unknown>): SearchEngineSetti
   };
 }
 
-function normalizeTaskStatus(status: string): SearchEngineTask["status"] {
+function normalizeTaskStatus(status: string): MeilisearchTask["status"] {
   if (
     status === "enqueued"
     || status === "processing"
@@ -532,30 +491,42 @@ function normalizeTaskStatus(status: string): SearchEngineTask["status"] {
   return "unknown";
 }
 
-function mapTransportError(error: unknown): SearchEngineTransportError {
-  if (error instanceof SearchEngineTransportError) return error;
+function mapTransportError(error: unknown): MeilisearchClientError {
+  if (error instanceof MeilisearchClientError) return error;
   if (isIndexNotFound(error)) {
-    return new SearchEngineTransportError("SEARCH_ENGINE_UNAVAILABLE", true);
+    return new MeilisearchClientError("SEARCH_ENGINE_UNAVAILABLE", true);
   }
   const status = extractStatus(error);
   if (status === 401 || status === 403) {
-    return new SearchEngineTransportError(
+    return new MeilisearchClientError(
       "SEARCH_ENGINE_AUTHENTICATION_FAILED",
       false
     );
   }
   if (status === 429) {
-    return new SearchEngineTransportError("SEARCH_ENGINE_OVERLOADED", true);
+    return new MeilisearchClientError("SEARCH_ENGINE_OVERLOADED", true);
   }
   if (
     status === 408
     || (status !== null && status >= 500)
-    || error instanceof TypeError
-    || error instanceof Error && /timeout|timed out|ECONN|fetch failed/iu.test(error.message)
+    || isUnavailableTransportError(error)
   ) {
-    return new SearchEngineTransportError("SEARCH_ENGINE_UNAVAILABLE", true);
+    return new MeilisearchClientError("SEARCH_ENGINE_UNAVAILABLE", true);
   }
-  return new SearchEngineTransportError("SEARCH_ENGINE_REQUEST_FAILED", false);
+  return new MeilisearchClientError("SEARCH_ENGINE_REQUEST_FAILED", false);
+}
+
+function isUnavailableTransportError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (error instanceof Error && /timeout|timed out|ECONN|fetch failed/iu.test(error.message)) {
+    return true;
+  }
+  if (!error || typeof error !== "object" || !("cause" in error)) return false;
+  const cause = error.cause;
+  return cause !== error && (
+    cause instanceof TypeError
+    || cause instanceof Error && /timeout|timed out|ECONN|fetch failed/iu.test(cause.message)
+  );
 }
 
 async function createHttpError(response: Response): Promise<Error & { status: number }> {
@@ -606,9 +577,9 @@ function stringArray(value: unknown): string[] {
 
 function filterableAttributeArray(
   value: unknown
-): SearchEngineSettings["filterableAttributes"] {
+): MeilisearchSettings["filterableAttributes"] {
   if (!Array.isArray(value)) return [];
-  const attributes: SearchEngineSettings["filterableAttributes"] = [];
+  const attributes: MeilisearchSettings["filterableAttributes"] = [];
   for (const item of value) {
     if (typeof item === "string") {
       attributes.push(item);

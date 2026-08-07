@@ -12,6 +12,8 @@ import { createPostgresStorageVnextUploadTerminalPort } from
   "../src/storage-vnext/upload/postgres-terminal.js";
 import { createPostgresStorageVnextWorkflowRepository } from
   "../src/storage-vnext/workflow/postgres-repository.js";
+import { findIdempotentUploadSession } from
+  "../src/storage-vnext/api/postgres-admin-upload-session-store.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -674,6 +676,52 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
       { terminal_state: "deleted", result_code: "KNOWLEDGE_BASE_DELETED" },
       { terminal_state: "deleted", result_code: "KNOWLEDGE_BASE_DELETED" }
     ]);
+  });
+
+  it("replays a terminal upload session after live upload rows are retired", async () => {
+    const knowledgeBaseId = "kb-upload-terminal-replay";
+    const requestHash = "d".repeat(64);
+    await seedKnowledgeBase(knowledgeBaseId);
+    await sql.begin(async (transaction) => {
+      await transaction`
+        INSERT INTO focowiki.operations (
+          public_id, knowledge_base_id, operation_kind, state,
+          target_kind, target_public_id, completed_at
+        ) VALUES (
+          'operation-upload-terminal-replay', ${knowledgeBaseId}, 'upload', 'completed',
+          'knowledge_base', ${knowledgeBaseId}, '2026-08-01T00:10:00.000Z'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.operation_idempotency (
+          public_id, knowledge_base_id, idempotency_key, request_hash,
+          operation_public_id, expires_at, created_at
+        ) VALUES (
+          'idempotency-upload-terminal-replay', ${knowledgeBaseId},
+          'request-upload-terminal-replay', ${requestHash},
+          'operation-upload-terminal-replay', '2026-08-02T00:10:00.000Z',
+          '2026-08-01T00:00:00.000Z'
+        )
+      `;
+      await transaction`
+        INSERT INTO focowiki.operation_results (
+          public_id, knowledge_base_id, operation_kind, terminal_state,
+          result_code, result_summary, correlation_public_id,
+          completed_at, expires_at
+        ) VALUES (
+          'operation-upload-terminal-replay', ${knowledgeBaseId}, 'upload', 'completed',
+          'UPLOAD_COMPLETED', ${transaction.json({ expectedEntryCount: 1 })},
+          'upload-terminal-replay', '2026-08-01T00:10:00.000Z',
+          '2026-08-02T00:10:00.000Z'
+        )
+      `;
+    });
+
+    await expect(sql.begin((transaction) => findIdempotentUploadSession(transaction, {
+      knowledgeBaseId,
+      idempotencyKey: "request-upload-terminal-replay",
+      requestHash
+    }))).resolves.toBe("upload-terminal-replay");
   });
 
   async function seedKnowledgeBase(knowledgeBaseId: string): Promise<void> {

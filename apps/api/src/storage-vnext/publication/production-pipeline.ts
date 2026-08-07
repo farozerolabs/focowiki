@@ -1,7 +1,7 @@
 import type { RuntimeConfig } from "../../config.js";
 import type { DatabaseClient } from "../../db/client.js";
-import { createRuntimeMeilisearchTransport } from
-  "../../infrastructure/meilisearch/runtime-meilisearch-transport.js";
+import type { SearchProviderRuntime } from
+  "../../application/ports/search-provider-runtime.js";
 import { buildPersistedGraphCandidateTerms } from
   "../../graph/graph-candidates.js";
 import { createGraphEdgeScorer } from
@@ -46,6 +46,8 @@ import {
 } from "../search/candidate-lifecycle.js";
 import { createStorageVnextSearchCandidateValidator } from
   "../search/candidate-validation.js";
+import type { StorageVnextActiveSearchProjectionRepository } from
+  "../search/active-projection-repository.js";
 import { createStorageVnextGraphCandidateSearchForProjection } from
   "../search/graph-candidate-search.js";
 import { createPostgresStorageVnextSearchHydration } from
@@ -120,26 +122,27 @@ export function createStorageVnextProductionPublicationPipeline(input: {
   releases: Releases;
   ownership: Ownership;
   searchRepository: SearchRepository;
+  activeSearchProjections: StorageVnextActiveSearchProjectionRepository;
   sourceBodies: SourceBodies;
   generatedBodies: GeneratedBodies;
   objects: Pick<ObjectWriter, "putVerified">;
   objectValidator: ObjectValidator;
   effectiveCatalog: EffectiveCatalog;
   publicationSnapshot: PublicationSnapshot;
+  searchProvider: SearchProviderRuntime;
 }) {
   const searchSettings = createStorageVnextSearchSettings({
     searchCutoffMs: input.snapshot.search.engineSearchCutoffMs
   });
   const schemaChecksum = createStorageVnextSearchSchemaChecksum();
   const settingsChecksum = createStorageVnextSearchSettingsChecksum(searchSettings);
-  const searchTransport = createRuntimeMeilisearchTransport(input.config.search, {
-    timeoutMs: input.snapshot.search.requestTimeoutMs,
-    maxAttempts: input.snapshot.search.maxAttempts,
-    retryDelayMs: input.snapshot.search.retryDelayMs
-  });
+  const searchProvider = input.searchProvider;
+  if (searchProvider.kind !== input.config.search.provider) {
+    throw new Error("Selected search provider does not match runtime configuration");
+  }
   const searchLifecycle = createStorageVnextSearchCandidateLifecycle({
     repository: input.searchRepository,
-    transport: searchTransport,
+    provider: searchProvider,
     settings: searchSettings,
     indexUidPrefix: input.config.search.indexPrefix,
     maxPollAttempts: Math.max(1, Math.ceil(
@@ -150,7 +153,7 @@ export function createStorageVnextProductionPublicationPipeline(input: {
   });
   const searchValidation = createStorageVnextSearchCandidateValidator({
     repository: input.searchRepository,
-    transport: searchTransport,
+    provider: searchProvider,
     hydration: createPostgresStorageVnextSearchHydration(input.sql),
     settings: searchSettings,
     documentPageSize: pageSize(input.config)
@@ -173,7 +176,18 @@ export function createStorageVnextProductionPublicationPipeline(input: {
     releases: input.releases,
     effectiveCatalog: input.effectiveCatalog,
     objects: input.objectValidator,
-    search: input.searchRepository,
+    search: {
+      async getProjection(request) {
+        const candidate = await input.searchRepository.getCandidate(request.publicId);
+        if (candidate) return candidate;
+        const active = await input.activeSearchProjections.getActiveProjection(
+          request.knowledgeBaseId
+        );
+        return active?.publicId === request.publicId
+          ? { ...active, state: "ready" as const }
+          : null;
+      }
+    },
     clock: now,
     limits: {
       maximumPageSize: pageSize(input.config),
@@ -238,7 +252,8 @@ export function createStorageVnextProductionPublicationPipeline(input: {
         const candidates = createStorageVnextGraphCandidateSearchForProjection({
           searchProjectionPublicId: request.searchProjectionPublicId,
           projections: input.searchRepository,
-          transport: searchTransport,
+          provider: searchProvider,
+          deadlineMs: input.snapshot.search.requestTimeoutMs,
           graph
         });
         return reconcileStorageVnextGraphFacts({
@@ -301,6 +316,8 @@ export function createStorageVnextProductionPublicationPipeline(input: {
       maxP95ProcessingTimeMs?: number;
     } = {}) {
       return createStorageVnextPublicationProcessor({
+        selectedSearchProviderKind: input.config.search.provider,
+        activeSearchProjections: input.activeSearchProjections,
         search: { ...searchLifecycle, ...searchValidation },
         searchBuilder: { build: buildSearchCandidate },
         graph: {
@@ -342,7 +359,7 @@ export function createStorageVnextProductionPublicationPipeline(input: {
   return {
     schemaChecksum,
     settingsChecksum,
-    searchTransport,
+    searchProvider,
     searchLifecycle,
     searchValidation,
     graphReconciler: base.graphReconciler,

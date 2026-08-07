@@ -1,10 +1,18 @@
 import { S3Client } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import { getHeapStatistics } from "node:v8";
+import type { SearchProviderRuntime } from
+  "../../application/ports/search-provider-runtime.js";
 import { resolveSecurityConfig, type RuntimeConfig } from "../../config.js";
 import { closeDatabaseClient, createDatabaseClient } from "../../db/client.js";
 import { assertRuntimeSchemaGeneration } from "../../db/migrations.js";
 import { createRuntimeLogger } from "../../logger.js";
+import {
+  assertNodeJiebaRuntimeAvailable,
+  createNodeJiebaTokenizer
+} from "../../infrastructure/tokenization/nodejieba-tokenizer.js";
+import { createRuntimeSearchProvider } from
+  "../../runtime/search-provider.js";
 import {
   createRedisClient,
   createRedisCoordinator
@@ -77,8 +85,15 @@ import { createPostgresStorageVnextSearchProjectionRepository } from
   "../search/postgres-repository.js";
 import { createPostgresStorageVnextSearchTerminalCleanup } from
   "../search/postgres-terminal-cleanup.js";
+import { createPostgresStorageVnextActiveSearchProjectionRepository } from
+  "../search/postgres-active-projection.js";
+import { createPostgresStorageVnextSearchProviderAdoption } from
+  "../search/postgres-provider-adoption.js";
+import { createStorageVnextProviderIndexCleanupWorker } from
+  "../search/provider-index-cleanup-worker.js";
 import { createStorageVnextSearchCleanup } from
   "../search/search-cleanup.js";
+import { createStorageVnextSearchSettings } from "../search/settings.js";
 import {
   runStorageVnextRetentionSlice,
   STORAGE_VNEXT_RETENTION_INTERVAL_MS
@@ -132,7 +147,7 @@ export async function runStorageVnextMaintenanceWorker(
 ): Promise<void> {
   const searchConfig = config.search;
   if (!searchConfig) {
-    throw new Error("Meilisearch configuration is required for the maintenance worker");
+    throw new Error("Search configuration is required for the maintenance worker");
   }
   const productionConfig = { ...config, search: searchConfig };
   const logger = createRuntimeLogger(config, console, {
@@ -146,6 +161,8 @@ export async function runStorageVnextMaintenanceWorker(
     new DOMException("Maintenance worker shutting down", "AbortError")
   );
   let redisConnected = false;
+  let searchProvider: SearchProviderRuntime | null = null;
+  let searchProviderSettingsKey = "";
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, stop);
   registerWorkerRedisRuntimeEvents({ client: redisClient, logger, role: "maintenance" });
 
@@ -167,6 +184,9 @@ export async function runStorageVnextMaintenanceWorker(
     });
     await runtimeSettings.ensureBootstrapped();
     const initialSnapshot = await runtimeSettings.getSnapshot();
+    const tokenizer = searchConfig.provider === "opensearch"
+      ? (assertNodeJiebaRuntimeAvailable(), createNodeJiebaTokenizer())
+      : undefined;
     let quarantineGraceMilliseconds =
       initialSnapshot.maintenance.quarantineGracePeriodSeconds * 1_000;
     const resourceBudgets = createProcessResourceBudgets(
@@ -180,9 +200,16 @@ export async function runStorageVnextMaintenanceWorker(
       zeroOwnerGraceMilliseconds: () => quarantineGraceMilliseconds
     });
     const searchRepository = createPostgresStorageVnextSearchProjectionRepository(sql);
+    const activeSearchProjections =
+      createPostgresStorageVnextActiveSearchProjectionRepository(sql);
+    const providerAdoption = createPostgresStorageVnextSearchProviderAdoption(sql, {
+      selectedProviderKind: searchConfig.provider
+    });
     const workflow = createPostgresStorageVnextWorkflowRepository(sql);
     const webhookRepository = createPostgresStorageVnextWebhookRepository(sql);
-    const maintenanceRepository = createPostgresStorageVnextMaintenanceRepository(sql);
+    const maintenanceRepository = createPostgresStorageVnextMaintenanceRepository(sql, {
+      selectedSearchProviderKind: searchConfig.provider
+    });
     const sourceBodies = createS3StorageVnextSourceBodyStore({
       client: s3,
       bucket: config.storage.bucket,
@@ -259,9 +286,10 @@ export async function runStorageVnextMaintenanceWorker(
           purgePostgresStorageVnextDeletedRegistrations(sql, request),
         pageSize: deletionBatchSize(initialSnapshot)
       });
+    const cleanupActions = createPostgresStorageVnextCleanupActionRepository(sql);
     const candidateObjectCleanupWorker =
       createStorageVnextCandidateObjectCleanupWorker({
-        actions: createPostgresStorageVnextCleanupActionRepository(sql),
+        actions: cleanupActions,
         objects: objectDeletion,
         purgeDeletedRegistrations: (request) =>
           purgePostgresStorageVnextDeletedRegistrations(sql, request)
@@ -270,14 +298,20 @@ export async function runStorageVnextMaintenanceWorker(
     const deletionPurgeRepository =
       createPostgresStorageVnextDeletionPurgeRepository(sql);
     const automaticMaintenance = createStorageVnextAutomaticMaintenanceScheduler({
-      due: createPostgresStorageVnextAutomaticMaintenanceDue(sql),
+      due: createPostgresStorageVnextAutomaticMaintenanceDue(sql, {
+        selectedSearchProviderKind: searchConfig.provider
+      }),
       requests: createStorageVnextMaintenanceRequestService({
-        repository: maintenanceRepository
+        repository: maintenanceRepository,
+        searchProviderKind: searchConfig.provider,
+        activeSearchProjections
       })
     });
     const workerId = `maintenance-worker-${randomUUID()}`;
     const candidateObjectCleanupWorkerId =
       `candidate-object-cleanup-worker-${randomUUID()}`;
+    const providerIndexCleanupWorkerId =
+      `provider-index-cleanup-worker-${randomUUID()}`;
     const deletionWorkerId = `deletion-worker-${randomUUID()}`;
     const webhookWorkerId = `webhook-worker-${randomUUID()}`;
     let lastRetentionAt = 0;
@@ -290,6 +324,23 @@ export async function runStorageVnextMaintenanceWorker(
         snapshot.maintenance.quarantineGracePeriodSeconds * 1_000;
       resourceBudgets.update(resolveResourceBudgetLimits(snapshot));
       resourceBudgetReporter.report(resourceBudgets);
+      const nextSearchProviderSettingsKey = JSON.stringify(snapshot.search);
+      if (
+        !searchProvider
+        || searchProviderSettingsKey !== nextSearchProviderSettingsKey
+      ) {
+        const previousSearchProvider = searchProvider;
+        searchProvider = createRuntimeSearchProvider({
+          config: searchConfig,
+          settings: snapshot.search,
+          indexDefinition: createStorageVnextSearchSettings({
+            searchCutoffMs: snapshot.search.engineSearchCutoffMs
+          }),
+          ...(tokenizer ? { tokenizer } : {})
+        });
+        searchProviderSettingsKey = nextSearchProviderSettingsKey;
+        await closeSearchProvider(previousSearchProvider);
+      }
       const pipeline = createStorageVnextProductionPublicationPipeline({
         config: productionConfig,
         sql,
@@ -299,12 +350,14 @@ export async function runStorageVnextMaintenanceWorker(
         releases,
         ownership,
         searchRepository,
+        activeSearchProjections,
         sourceBodies,
         generatedBodies,
         objects,
         objectValidator,
         effectiveCatalog,
-        publicationSnapshot
+        publicationSnapshot,
+        searchProvider
       });
       const maintenancePipeline = createStorageVnextProductionPublicationPipeline({
         config: productionConfig,
@@ -315,12 +368,14 @@ export async function runStorageVnextMaintenanceWorker(
         releases,
         ownership,
         searchRepository,
+        activeSearchProjections,
         sourceBodies,
         generatedBodies,
         objects,
         objectValidator,
         effectiveCatalog,
-        publicationSnapshot: maintenanceRebuildSnapshot
+        publicationSnapshot: maintenanceRebuildSnapshot,
+        searchProvider
       });
       const deletionRelease = createStorageVnextDeletionProductionRelease({
         scope: deletionScope,
@@ -341,7 +396,7 @@ export async function runStorageVnextMaintenanceWorker(
           },
           coordination: redis,
           search: createStorageVnextUnifiedSearchDeletion({
-            transport: pipeline.searchTransport,
+            provider: pipeline.searchProvider,
             indexUidPrefix: searchConfig.indexPrefix,
             maximumPollAttempts: Math.max(1, Math.ceil(
               snapshot.search.taskTimeoutMs
@@ -388,7 +443,7 @@ export async function runStorageVnextMaintenanceWorker(
       });
       const searchCleanup = createStorageVnextSearchCleanup({
         repository: createPostgresStorageVnextSearchCleanupRepository(sql),
-        transport: pipeline.searchTransport,
+        provider: pipeline.searchProvider,
         indexUidPrefix: searchConfig.indexPrefix,
         indexPageSize: cleanupPageSize(snapshot),
         taskPageSize: cleanupPageSize(snapshot),
@@ -399,6 +454,15 @@ export async function runStorageVnextMaintenanceWorker(
         pollIntervalMs: snapshot.search.taskPollIntervalMs,
         highWaterRatio: 0.25,
         minimumReclaimableBytes: snapshot.search.indexBatchCompressedBytes
+      });
+      const providerIndexCleanup = createStorageVnextProviderIndexCleanupWorker({
+        actions: cleanupActions,
+        provider: pipeline.searchProvider,
+        maxPollAttempts: Math.max(1, Math.ceil(
+          snapshot.search.taskTimeoutMs / snapshot.search.taskPollIntervalMs
+        )),
+        pollIntervalMs: snapshot.search.taskPollIntervalMs,
+        retryDelayMs: snapshot.search.retryDelayMs
       });
       const cleanup = createStorageVnextMaintenanceProductionCleanup({
         releases,
@@ -418,6 +482,7 @@ export async function runStorageVnextMaintenanceWorker(
         ).toISOString()
       });
       const phaseRunner = createStorageVnextMaintenanceProductionPhases({
+        providerAdoption,
         planner,
         catalog,
         releases,
@@ -432,6 +497,7 @@ export async function runStorageVnextMaintenanceWorker(
       const concurrency = maintenanceConcurrency(config, snapshot);
       const coordinator = createStorageVnextMaintenanceCoordinator({
         repository: maintenanceRepository,
+        searchProviderKind: searchConfig.provider,
         phaseRunner,
         cleanup,
         resourceGate: createStorageVnextMaintenanceResourceGate({
@@ -497,7 +563,7 @@ export async function runStorageVnextMaintenanceWorker(
       }
       const orphanSearchIndexes = await searchCleanup.cleanupOrphanIndexes({
         updatedBefore: stagingRetentionCutoff,
-        offset: 0
+        continuation: null
       });
       if (orphanSearchIndexes.deleted > 0) {
         logger.info("maintenance_worker.orphan_search_indexes_cleaned", {
@@ -534,6 +600,16 @@ export async function runStorageVnextMaintenanceWorker(
         cycleAt,
         snapshot.worker.lockTtlSeconds * 1_000
       );
+      const providerIndexCleanupOutcome = await providerIndexCleanup.runBatch({
+        owner: providerIndexCleanupWorkerId,
+        limit: cleanupPageSize(snapshot),
+        leaseExpiresAt
+      });
+      if (providerIndexCleanupOutcome.claimed > 0) {
+        logger[
+          providerIndexCleanupOutcome.retried > 0 ? "warn" : "info"
+        ]("maintenance_worker.provider_index_cleanup", providerIndexCleanupOutcome);
+      }
       const deletionOutcomes = await deletionWorker.runBatch({ leaseExpiresAt });
       for (const outcome of deletionOutcomes) {
         logger.info("deletion_worker.cycle", outcome);
@@ -637,6 +713,7 @@ export async function runStorageVnextMaintenanceWorker(
     if (redisConnected) await redisClient.close();
     s3.destroy();
     await closeDatabaseClient(sql);
+    await closeSearchProvider(searchProvider);
   }
 }
 
@@ -649,6 +726,12 @@ export function shouldWaitForStorageVnextMaintenancePoll(
     && candidateObjectCleanupOutcome?.outcome !== "progress"
     && !results.some((result) =>
       result.outcome === "progress" || result.outcome === "phase_completed");
+}
+
+async function closeSearchProvider(
+  provider: SearchProviderRuntime | null
+): Promise<void> {
+  if (provider) await provider.close();
 }
 
 export function storageVnextStagingRetentionCutoff(

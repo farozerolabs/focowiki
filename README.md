@@ -96,7 +96,7 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 - **Find relevant documents.** Search file content, browse directory indexes, follow related documents, and explore relationships through the knowledge graph.
 - **Connect applications and AI agents.** Use the Developer OpenAPI to upload content, browse the file tree, read full Markdown files, search, follow graph relationships, and manage document changes.
 - **Manage the system from the Admin UI.** Create knowledge bases, monitor file processing, configure models and runtime settings, and manage API keys.
-- **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, Meilisearch, and S3-compatible storage.
+- **Deploy on your own infrastructure.** Run Focowiki with Docker Compose, PostgreSQL, Redis, OpenSearch or Meilisearch, and S3-compatible storage.
 
 ## Admin UI Preview
 
@@ -149,7 +149,7 @@ Focowiki uses pnpm, TypeScript, Vite, React, Hono, PostgreSQL, Redis, and S3-com
 pnpm install
 cp .env.dev.example .env
 cp docker-compose.local.yml.example docker-compose.local.yml
-docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init meilisearch
+docker compose -f docker-compose.local.yml up -d postgres redis minio minio-init opensearch
 pnpm --filter @focowiki/api db:migrate
 pnpm dev
 ```
@@ -160,7 +160,7 @@ Local service URLs:
 - Admin API: `http://127.0.0.1:43000`
 - Developer OpenAPI: `http://127.0.0.1:43200`
 
-The local Compose template starts PostgreSQL, Redis, MinIO, and Meilisearch with the values from `.env`.
+The local environment template selects OpenSearch by default. Set both `SEARCH_PROVIDER` and `COMPOSE_PROFILES` to `meilisearch` to use Meilisearch instead.
 
 ## License
 

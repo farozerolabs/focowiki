@@ -33,12 +33,12 @@ export function createStorageVnextMaintenanceProductionCleanup(input: {
     }>;
     cleanupOrphanIndexes(input: {
       updatedBefore: string;
-      offset: number;
-    }): Promise<{ deleted: number; nextOffset: number | null }>;
+      continuation: string | null;
+    }): Promise<{ deleted: number; continuation: string | null }>;
     cleanupFinishedTasks(input: {
       finishedBefore: string;
-      from: number | null;
-    }): Promise<{ deleted: number; next: number | null }>;
+      continuation: string | null;
+    }): Promise<{ deleted: number; continuation: string | null }>;
   };
   clock(): string;
   resultRetentionMilliseconds: number;
@@ -133,17 +133,17 @@ async function cleanupOrphanIndexes(
   input: Parameters<typeof createStorageVnextMaintenanceProductionCleanup>[0],
   updatedBefore: string
 ): Promise<number> {
-  let offset = 0;
+  let continuation: string | null = null;
   let deleted = 0;
   for (let page = 0; page < input.maximumCleanupPages; page += 1) {
     const result = await input.searchCleanup.cleanupOrphanIndexes({
       updatedBefore,
-      offset
+      continuation
     });
-    validatePage(result.deleted, result.nextOffset);
+    validatePage(result.deleted, result.continuation);
     deleted += result.deleted;
-    if (result.nextOffset === null) return deleted;
-    offset = result.nextOffset;
+    if (result.continuation === null) return deleted;
+    continuation = result.continuation;
   }
   throw cleanupError("orphan_page_limit");
 }
@@ -152,17 +152,17 @@ async function cleanupFinishedTasks(
   input: Parameters<typeof createStorageVnextMaintenanceProductionCleanup>[0],
   finishedBefore: string
 ): Promise<number> {
-  let from: number | null = null;
+  let continuation: string | null = null;
   let deleted = 0;
   for (let page = 0; page < input.maximumCleanupPages; page += 1) {
     const result = await input.searchCleanup.cleanupFinishedTasks({
       finishedBefore,
-      from
+      continuation
     });
-    validatePage(result.deleted, result.next);
+    validatePage(result.deleted, result.continuation);
     deleted += result.deleted;
-    if (result.next === null) return deleted;
-    from = result.next;
+    if (result.continuation === null) return deleted;
+    continuation = result.continuation;
   }
   throw cleanupError("task_page_limit");
 }
@@ -194,11 +194,11 @@ function validateRequest(input: {
   ) throw cleanupError("invalid_input");
 }
 
-function validatePage(count: number, next: number | null): void {
+function validatePage(count: number, continuation: string | null): void {
   if (
     !Number.isSafeInteger(count)
     || count < 0
-    || (next !== null && (!Number.isSafeInteger(next) || next < 0))
+    || (continuation !== null && !continuation)
   ) throw cleanupError("invalid_page");
 }
 

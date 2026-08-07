@@ -1,3 +1,5 @@
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextBoundedMetadata,
   StorageVnextIdempotency,
@@ -35,6 +37,7 @@ export type StorageVnextLiveWork = {
   publicId: StorageVnextPublicId;
   knowledgeBaseId: StorageVnextKnowledgeBaseId;
   kind: StorageVnextWorkKind;
+  searchProviderKind: SearchProviderKind | null;
   state: "queued" | "running" | "retry";
   operationRevision: number;
   settingsRevisionPublicId: StorageVnextPublicId;

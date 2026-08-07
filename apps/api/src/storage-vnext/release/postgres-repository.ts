@@ -779,7 +779,8 @@ export function createPostgresStorageVnextReleaseRepository(
         });
         if (
           !actuals
-          || actuals.searchRole !== "candidate"
+          || (actuals.searchRole !== "candidate"
+            && (actuals.searchRole !== "active" || !actuals.activeSnapshotSearch))
           || actuals.searchState !== "ready"
           || actuals.objectOwnerCount !== input.objectOwnerCount
           || actuals.searchDocumentCount !== input.searchDocumentCount
@@ -974,8 +975,11 @@ export function createPostgresStorageVnextReleaseRepository(
             AND public_id = ${input.searchProjectionPublicId}
           FOR UPDATE
         `;
+        const retainingActiveSearch = search[0]?.projection_role === "active";
         if (
-          search[0]?.projection_role !== "candidate"
+          (search[0]?.projection_role !== "candidate"
+            && (search[0]?.projection_role !== "active"
+              || active?.searchProjectionPublicId !== input.searchProjectionPublicId))
           || search[0]?.state !== "ready"
           || Number(search[0]?.document_count) !== Number(validation.search_document_count)
         ) {
@@ -1110,6 +1114,8 @@ export function createPostgresStorageVnextReleaseRepository(
           throw new StorageVnextReleaseRepositoryError("stale_active_root");
         }
         if (
+          !retainingActiveSearch
+          &&
           active?.searchProjectionPublicId
           && active.searchProjectionPublicId !== input.searchProjectionPublicId
         ) {
@@ -1120,14 +1126,16 @@ export function createPostgresStorageVnextReleaseRepository(
               AND projection_role = 'active'
           `;
         }
-        await transaction`
-          UPDATE focowiki.search_projections
-          SET projection_role = 'active', updated_at = ${input.activatedAt}
-          WHERE knowledge_base_id = ${input.knowledgeBaseId}
-            AND public_id = ${input.searchProjectionPublicId}
-            AND projection_role = 'candidate'
-            AND state = 'ready'
-        `;
+        if (!retainingActiveSearch) {
+          await transaction`
+            UPDATE focowiki.search_projections
+            SET projection_role = 'active', updated_at = ${input.activatedAt}
+            WHERE knowledge_base_id = ${input.knowledgeBaseId}
+              AND public_id = ${input.searchProjectionPublicId}
+              AND projection_role = 'candidate'
+              AND state = 'ready'
+          `;
+        }
         await writeReleaseEvent(transaction, {
           publicId: input.eventPublicId,
           knowledgeBaseId: input.knowledgeBaseId,
@@ -1224,7 +1232,13 @@ export function createPostgresStorageVnextReleaseRepository(
           ...searches.map((search) => search.search_projection_public_id)
         ]);
         await transaction`
-          DELETE FROM focowiki.search_projections
+          UPDATE focowiki.search_projections
+          SET state = 'failed',
+              safe_error_code = COALESCE(safe_error_code, ${input.reasonCode}),
+              correlation_public_id = NULL,
+              provider_operation_ref = NULL,
+              revision = revision + 1,
+              updated_at = ${input.terminatedAt}
           WHERE knowledge_base_id = ${input.knowledgeBaseId}
             AND public_id = ANY(${searchProjectionPublicIds})
             AND projection_role = 'candidate'
@@ -1325,7 +1339,16 @@ async function readRootByRole(
   const rows = await sql<StorageVnextReleaseRootRow[]>`
     SELECT public_id, knowledge_base_id, root_role,
            manifest_checksum_sha256, navigation_profile_version,
-           revision, created_at, expires_at
+           CASE
+             WHEN root_role = 'active' THEN COALESCE((
+               SELECT snapshot.revision
+               FROM focowiki.active_snapshots snapshot
+               WHERE snapshot.knowledge_base_id = release_roots.knowledge_base_id
+                 AND snapshot.release_root_public_id = release_roots.public_id
+             ), revision)
+             ELSE revision
+           END AS revision,
+           created_at, expires_at
     FROM focowiki.release_roots
     WHERE knowledge_base_id = ${knowledgeBaseId}
       AND root_role = ${role}
@@ -1689,6 +1712,7 @@ async function readCandidateValidationActuals(
   searchDocumentCount: number;
   searchRole: string;
   searchState: string;
+  activeSnapshotSearch: boolean;
   graphNodeCount: number;
   graphEdgeCount: number;
   linkCount: number;
@@ -1699,6 +1723,7 @@ async function readCandidateValidationActuals(
     search_document_count: number | string;
     projection_role: string;
     state: string;
+    active_snapshot_search: boolean;
     graph_node_count: number | string | null;
     graph_edge_count: number | string | null;
     link_count: number | string;
@@ -1713,6 +1738,12 @@ async function readCandidateValidationActuals(
       search.document_count AS search_document_count,
       search.projection_role,
       search.state,
+      EXISTS (
+        SELECT 1
+        FROM focowiki.active_snapshots active
+        WHERE active.knowledge_base_id = ${input.knowledgeBaseId}
+          AND active.search_projection_public_id = search.public_id
+      ) AS active_snapshot_search,
       summary.graph_node_count,
       summary.graph_edge_count,
       (SELECT count(*)
@@ -1734,6 +1765,7 @@ async function readCandidateValidationActuals(
     searchDocumentCount: Number(row.search_document_count),
     searchRole: row.projection_role,
     searchState: row.state,
+    activeSnapshotSearch: row.active_snapshot_search,
     graphNodeCount: Number(row.graph_node_count ?? 0),
     graphEdgeCount: Number(row.graph_edge_count ?? 0),
     linkCount: Number(row.link_count),

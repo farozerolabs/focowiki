@@ -311,6 +311,8 @@ describe("storage vNext maintenance authority contract", () => {
     });
     const baseCheckpoint = {
       version: 1,
+      searchProviderKind: "meilisearch" as const,
+      maintenanceKind: "standard" as const,
       trigger: "manual",
       cursor: null,
       batchOrdinal: 0,

@@ -54,10 +54,31 @@ describe("storage vNext runtime schema guard", () => {
       expect(database.beginCalls).toBe(0);
     }
   });
+
+  it("rejects the provider-unaware schema before mutation with clean-reset guidance", async () => {
+    const database = createGenerationDatabase(
+      RUNTIME_SCHEMA_GENERATION,
+      { providerSchemaCompatible: false }
+    );
+
+    await expect(preflightMigrations(database.sql)).rejects.toMatchObject({
+      name: "RuntimeSchemaSignatureError",
+      message: expect.stringMatching(/clean reset/iu)
+    });
+    await expect(assertRuntimeSchemaGeneration(database.sql)).rejects.toMatchObject({
+      name: "RuntimeSchemaSignatureError"
+    });
+    await expect(applyMigrations(database.sql)).rejects.toMatchObject({
+      name: "RuntimeSchemaSignatureError"
+    });
+    expect(database.unsafeCalls).toBe(0);
+    expect(database.beginCalls).toBe(0);
+  });
 });
 
 function createGenerationDatabase(
-  initialGeneration: string | "absent" | null
+  initialGeneration: string | "absent" | null,
+  options: { providerSchemaCompatible?: boolean } = {}
 ) {
   let generation = initialGeneration;
   let unsafeCalls = 0;
@@ -72,6 +93,11 @@ function createGenerationDatabase(
     }
     if (statement.includes("FROM focowiki.runtime_generation")) {
       return generation && generation !== "absent" ? [{ generation }] : [];
+    }
+    if (statement.includes("provider_schema_compatible")) {
+      return [{
+        provider_schema_compatible: options.providerSchemaCompatible ?? true
+      }];
     }
     throw new Error(`Unexpected SQL in generation test: ${statement}`);
   };

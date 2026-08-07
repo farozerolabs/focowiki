@@ -32,7 +32,9 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
   const admin = postgres(databaseConnectionUrl(connectionUrl, "postgres"), { max: 1 });
   const sql = postgres(databaseConnectionUrl(connectionUrl, databaseName), { max: 8 });
   const database = sql as unknown as DatabaseClient;
-  const repository = createPostgresStorageVnextMaintenanceRepository(database);
+  const repository = createPostgresStorageVnextMaintenanceRepository(database, {
+    selectedSearchProviderKind: "meilisearch"
+  });
   const resourceGate = createStorageVnextMaintenanceResourceGate({
     limits: {
       maxMaintenanceConcurrency: 1,
@@ -270,6 +272,7 @@ describeOwnedDatabase("storage vNext maintenance PostgreSQL repository", () => {
   function createCoordinator(phaseResults: StorageVnextMaintenancePhaseResult[]) {
     return createStorageVnextMaintenanceCoordinator({
       repository,
+      searchProviderKind: "meilisearch",
       phaseRunner: {
         async runPhase() {
           return phaseResults.shift() ?? {
@@ -335,6 +338,7 @@ function request(
   return {
     knowledgeBaseId,
     operationPublicId: `maintenance-${suffix}`,
+    searchProviderKind: "meilisearch",
     trigger: "manual",
     idempotencyKey: `maintenance-${suffix}`,
     expectedResourceRevision,
@@ -348,6 +352,7 @@ function request(
 function workerClaim(workerId: string) {
   return {
     workerId,
+    searchProviderKind: "meilisearch" as const,
     leaseExpiresAt: new Date(Date.now() + 60_000).toISOString()
   };
 }

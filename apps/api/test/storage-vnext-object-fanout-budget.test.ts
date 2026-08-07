@@ -45,13 +45,32 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({
       passed: true,
       candidateRatioPassed: true,
-      maximumActiveObjects: 140
+      maximumActiveObjects: 464
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 10,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 141,
-      candidateOnlyObjectCount: 141
+      candidateGeneratedObjectCount: 465,
+      candidateOnlyObjectCount: 465
+    })).toMatchObject({ passed: false, activeFanoutPassed: false });
+  });
+
+  it("allows the bounded sparse projection topology for a thirty-six-file rebuild", () => {
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 36,
+      activeGeneratedObjectCount: 0,
+      candidateGeneratedObjectCount: 278,
+      candidateOnlyObjectCount: 278
+    })).toMatchObject({
+      passed: true,
+      maximumActiveObjects: 464,
+      fileFirstCompletenessAllowanceUsed: true
+    });
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 36,
+      activeGeneratedObjectCount: 0,
+      candidateGeneratedObjectCount: 465,
+      candidateOnlyObjectCount: 465
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -79,8 +98,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 109
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 140,
-      maximumCandidateOnlyObjects: 140
+      maximumActiveObjects: 464,
+      maximumCandidateOnlyObjects: 464
     });
   });
 
@@ -93,7 +112,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 140,
+      maximumActiveObjects: 464,
       maximumCandidateOnlyObjects: 29
     });
   });
@@ -108,7 +127,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 22
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 140,
+      maximumActiveObjects: 464,
       fileFirstCompletenessAllowanceUsed: false,
       candidateRatioPassed: true
     });
@@ -139,7 +158,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 140,
+      maximumActiveObjects: 464,
       maximumCandidateOnlyObjects: 25
     });
   });
@@ -154,7 +173,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 29
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 140,
+      maximumActiveObjects: 464,
       maximumCandidateOnlyObjects: 36,
       candidateChangeAllowanceUsed: true
     });

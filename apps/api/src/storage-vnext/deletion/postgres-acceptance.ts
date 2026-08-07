@@ -11,6 +11,8 @@ import {
   supersedeConflictingWork,
   terminateLiveCandidate
 } from "./postgres-conflicts.js";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 export async function acceptStorageVnextDeletion(input: {
   transaction: StorageVnextDeletionTransaction;
@@ -35,8 +37,11 @@ export async function acceptStorageVnextDeletion(input: {
     throw repositoryError("revision_conflict");
   }
   await assertDeletionPriority(transaction, request, target);
-  const activeSearch = await transaction<Array<{ provider_index_uid: string }>>`
-    SELECT provider_index_uid
+  const activeSearch = await transaction<Array<{
+    provider_kind: SearchProviderKind;
+    provider_index_uid: string;
+  }>>`
+    SELECT provider_kind, provider_index_uid
     FROM focowiki.search_projections
     WHERE knowledge_base_id = ${request.knowledgeBaseId}
       AND projection_role = 'active'
@@ -51,7 +56,9 @@ export async function acceptStorageVnextDeletion(input: {
   });
   const visibility = await commitVisibility(transaction, request, target);
   await insertDeletionWork(transaction, request, target, visibility, {
+    activeSearchProviderKind: activeSearch[0]?.provider_kind ?? null,
     activeSearchProviderIndexUid: activeSearch[0]?.provider_index_uid ?? null,
+    candidateSearchProviderKind: candidate.providerKind,
     candidateSearchProviderIndexUid: candidate.providerIndexUid,
     supersededWorkCount
   });
@@ -203,7 +210,9 @@ async function insertDeletionWork(
   target: StorageVnextDeletionTarget,
   visibility: StorageVnextDeletionVisibilityResult,
   state: {
+    activeSearchProviderKind: SearchProviderKind | null;
     activeSearchProviderIndexUid: string | null;
+    candidateSearchProviderKind: SearchProviderKind | null;
     candidateSearchProviderIndexUid: string | null;
     supersededWorkCount: number;
   }
@@ -216,7 +225,9 @@ async function insertDeletionWork(
     normalizedPath: target.normalizedPath,
     sourceFileCount: visibility.sourceFileCount,
     directoryCount: visibility.directoryCount,
+    activeSearchProviderKind: state.activeSearchProviderKind,
     activeSearchProviderIndexUid: state.activeSearchProviderIndexUid,
+    candidateSearchProviderKind: state.candidateSearchProviderKind,
     candidateSearchProviderIndexUid: state.candidateSearchProviderIndexUid,
     supersededWorkCount: state.supersededWorkCount,
     cursor: null

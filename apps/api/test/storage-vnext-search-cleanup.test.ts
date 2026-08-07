@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  SearchEngineTransport
-} from "../src/application/ports/search-engine-transport.js";
+  MeilisearchClientPort
+} from "../src/infrastructure/meilisearch/meilisearch-client-port.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import type {
   StorageVnextSearchCleanupRepository
 } from "../src/storage-vnext/search/cleanup-repository.js";
@@ -22,9 +24,10 @@ describe("storage vNext unified search cleanup", () => {
     const repository = createRepository({
       failedCandidate: {
         publicId: "candidate-failed",
+        providerKind: "meilisearch",
         providerIndexUid: "owned_vnext_kb_candidate_failed",
         correlationPublicId: "cleanup-cycle-a",
-        providerTaskUid: null
+        providerOperationRef: null
       }
     });
     const transport = createTransport();
@@ -38,10 +41,10 @@ describe("storage vNext unified search cleanup", () => {
     expect(transport.deleteIndex).toHaveBeenCalledWith(
       "owned_vnext_kb_candidate_failed"
     );
-    expect(repository.recordCleanupTask).toHaveBeenCalledWith({
+    expect(repository.recordCleanupOperation).toHaveBeenCalledWith({
       projectionPublicId: "candidate-failed",
       correlationPublicId: "cleanup-cycle-a",
-      providerTaskUid: 11
+      providerOperationRef: "meilisearch:11"
     });
     expect(repository.completeFailedCandidateCleanup).toHaveBeenCalledOnce();
   });
@@ -50,9 +53,10 @@ describe("storage vNext unified search cleanup", () => {
     const repository = createRepository({
       failedCandidate: {
         publicId: "candidate-failed",
+        providerKind: "meilisearch",
         providerIndexUid: "owned_vnext_kb_candidate_failed",
         correlationPublicId: "cleanup-cycle-b",
-        providerTaskUid: null
+        providerOperationRef: null
       }
     });
     const transport = createTransport({
@@ -87,8 +91,11 @@ describe("storage vNext unified search cleanup", () => {
 
     await expect(createCleanup(repository, transport).cleanupOrphanIndexes({
       updatedBefore: "2026-08-01T00:00:00.000Z",
-      offset: 0
-    })).resolves.toEqual({ deleted: 1, nextOffset: 0 });
+      continuation: null
+    })).resolves.toEqual({
+      deleted: 1,
+      continuation: "meilisearch-index-offset:0"
+    });
 
     expect(transport.deleteIndex).toHaveBeenCalledTimes(1);
     expect(transport.deleteIndex).toHaveBeenCalledWith("owned_vnext_old_staging");
@@ -109,14 +116,17 @@ describe("storage vNext unified search cleanup", () => {
 
     await expect(createCleanup(repository, transport).cleanupFinishedTasks({
       finishedBefore: "2026-08-01T00:00:00.000Z",
-      from: null
-    })).resolves.toEqual({ deleted: 1, next: 17 });
+      continuation: null
+    })).resolves.toEqual({
+      deleted: 1,
+      continuation: "meilisearch-task-from:17"
+    });
 
     expect(transport.listFinishedTasks).toHaveBeenCalledWith({
       statuses: ["succeeded", "failed", "canceled"],
       beforeFinishedAt: "2026-08-01T00:00:00.000Z",
       from: null,
-      limit: 100
+      limit: 10
     });
     expect(transport.deleteFinishedTasks).toHaveBeenCalledWith({ taskUids: [20] });
   });
@@ -125,9 +135,10 @@ describe("storage vNext unified search cleanup", () => {
     const repository = createRepository({
       compactionTarget: {
         publicId: "projection-active",
+        providerKind: "meilisearch",
         providerIndexUid: "owned_vnext_active",
         correlationPublicId: "compaction-cycle-a",
-        providerTaskUid: null
+        providerOperationRef: null
       }
     });
     const getDatabaseStats = vi
@@ -179,12 +190,12 @@ describe("storage vNext unified search cleanup", () => {
 
 function createCleanup(
   repository: StorageVnextSearchCleanupRepository,
-  transport: SearchEngineTransport,
+  transport: MeilisearchClientPort,
   overrides: { maxPollAttempts?: number } = {}
 ) {
   return createStorageVnextSearchCleanup({
     repository,
-    transport,
+    provider: createMeilisearchProviderRuntime(transport),
     indexUidPrefix: "owned_vnext",
     indexPageSize: 100,
     taskPageSize: 100,
@@ -207,14 +218,16 @@ function createRepository(overrides: {
     listRetainedProviderIndexUids: vi.fn(async () =>
       overrides.retainedProviderIndexUids ?? []),
     claimActiveCompaction: vi.fn(async () => overrides.compactionTarget ?? null),
-    recordCleanupTask: vi.fn(async () => undefined),
-    clearCleanupTask: vi.fn(async () => undefined),
+    recordCleanupOperation: vi.fn(async () => undefined),
+    clearCleanupOperation: vi.fn(async () => undefined),
     completeFailedCandidateCleanup: vi.fn(async () => undefined),
     completeCompaction: vi.fn(async () => undefined)
   };
 }
 
-function createTransport(overrides: Partial<SearchEngineTransport> = {}): SearchEngineTransport {
+function createTransport(
+  overrides: Partial<MeilisearchClientPort> = {}
+): MeilisearchClientPort {
   const deletedIndexes = new Set<string>();
   return {
     health: vi.fn(async () => ({ available: true })),
@@ -245,7 +258,6 @@ function createTransport(overrides: Partial<SearchEngineTransport> = {}): Search
       usedDatabaseSizeBytes: 0
     })),
     compactIndex: vi.fn(async () => ({ taskUid: 13 })),
-    swapIndexes: vi.fn(async () => ({ taskUid: 6 })),
     getTask: vi.fn(async (taskUid) => ({
       taskUid,
       status: "succeeded" as const,

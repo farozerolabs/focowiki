@@ -1,8 +1,8 @@
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
-  SearchEngineTransportError
-} from "../src/application/ports/search-engine-transport.js";
+  MeilisearchClientError
+} from "../src/infrastructure/meilisearch/meilisearch-client-port.js";
 import {
   createMeilisearchTransport
 } from "../src/infrastructure/meilisearch/meilisearch-transport.js";
@@ -56,7 +56,10 @@ describe("Meilisearch transport", () => {
       }
     );
 
-    await expect(supported.health()).resolves.toEqual({ available: true });
+    await expect(supported.health()).resolves.toEqual({
+      available: true,
+      version: "1.51.9"
+    });
     await expect(incompatible.health()).rejects.toMatchObject({
       code: "SEARCH_ENGINE_VERSION_INCOMPATIBLE",
       retryable: false,
@@ -90,7 +93,10 @@ describe("Meilisearch transport", () => {
       }
     );
 
-    await expect(transport.health()).resolves.toEqual({ available: true });
+    await expect(transport.health()).resolves.toEqual({
+      available: true,
+      version: "1.51.0"
+    });
     expect(runtimeClient.health).toHaveBeenCalledOnce();
     expect(diagnosticsClient.getVersion).toHaveBeenCalledOnce();
   });
@@ -165,7 +171,7 @@ describe("Meilisearch transport", () => {
       documents: [{ id: "segment-1" }],
       correlation: "search-work-42"
     })).rejects.toMatchObject({
-      name: "SearchEngineTransportError",
+      name: "MeilisearchClientError",
       code: "SEARCH_ENGINE_UNAVAILABLE",
       retryable: true,
       message: "Search service is temporarily unavailable"
@@ -177,6 +183,36 @@ describe("Meilisearch transport", () => {
       correlation: "search-work-43"
     })).rejects.not.toThrow(/server-secret|search\.internal/u);
     expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("maps the official client wrapped fetch failure as unavailable", async () => {
+    const wrapped = Object.assign(
+      new Error("Request to http://search.internal:7700/indexes has failed"),
+      {
+        name: "MeilisearchRequestError",
+        cause: new TypeError("fetch failed")
+      }
+    );
+    const client = {
+      getRawIndexes: vi.fn(async () => { throw wrapped; })
+    };
+    const transport = createMeilisearchTransport({
+      endpoint: "http://search.internal:7700",
+      apiKey: "server-secret",
+      timeoutMs: 100,
+      maxAttempts: 1,
+      retryDelayMs: 1
+    }, { client: client as never });
+
+    await expect(transport.listIndexes?.({ offset: 0, limit: 1 }))
+      .rejects.toMatchObject({
+        name: "MeilisearchClientError",
+        code: "SEARCH_ENGINE_UNAVAILABLE",
+        retryable: true,
+        message: "Search service is temporarily unavailable"
+      });
+    await expect(transport.listIndexes?.({ offset: 0, limit: 1 }))
+      .rejects.not.toThrow(/server-secret|search\.internal/iu);
   });
 
   it("maps task terminal states without treating enqueue as completion", async () => {
@@ -211,7 +247,7 @@ describe("Meilisearch transport", () => {
       status: "failed",
       errorCode: "SEARCH_INDEX_TASK_FAILED"
     });
-    expect(SearchEngineTransportError).toBeDefined();
+    expect(MeilisearchClientError).toBeDefined();
   });
 
   it("recovers failed document tasks by durable correlation", async () => {
@@ -246,56 +282,6 @@ describe("Meilisearch transport", () => {
       indexUids: ["candidate-index"],
       statuses: ["enqueued", "processing", "succeeded", "failed", "canceled"]
     }));
-  });
-
-  it("reads global index-swap tasks through the diagnostics client", async () => {
-    const runtimeClient = {
-      tasks: {
-        getTasks: vi.fn()
-      }
-    };
-    const diagnosticsClient = {
-      tasks: {
-        getTasks: vi.fn(async () => ({
-          results: [{
-            uid: 29,
-            status: "succeeded",
-            details: {
-              swaps: [{
-                indexes: ["focowiki_content_active", "focowiki_content_staging"]
-              }]
-            }
-          }]
-        }))
-      }
-    };
-    const transport = createMeilisearchTransport(
-      {
-        endpoint: "http://search.internal:7700",
-        apiKey: "prefix-scoped-runtime-key",
-        metricsApiKey: "global-diagnostics-key",
-        timeoutMs: 100,
-        maxAttempts: 1,
-        retryDelayMs: 1
-      },
-      {
-        client: runtimeClient as never,
-        diagnosticsClient: diagnosticsClient as never
-      }
-    );
-
-    await expect(transport.findIndexSwapTask?.({
-      pairs: [{
-        left: "focowiki_content_active",
-        right: "focowiki_content_staging"
-      }]
-    })).resolves.toEqual({
-      taskUid: 29,
-      status: "succeeded",
-      errorCode: null
-    });
-    expect(runtimeClient.tasks.getTasks).not.toHaveBeenCalled();
-    expect(diagnosticsClient.tasks.getTasks).toHaveBeenCalledOnce();
   });
 
   it("keeps missing indexes and documents available to idempotent lifecycle logic", async () => {

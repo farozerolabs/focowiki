@@ -740,6 +740,7 @@ function liveWork(
     publicId,
     knowledgeBaseId: "kb-workflow",
     kind: "source",
+    searchProviderKind: null,
     state: "queued",
     operationRevision: 0,
     settingsRevisionPublicId: "settings-workflow",

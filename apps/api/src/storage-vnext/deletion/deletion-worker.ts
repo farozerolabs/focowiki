@@ -181,10 +181,16 @@ export function createStorageVnextDeletionWorker(input: {
       owner: input.owner,
       checkpoint: request.checkpoint
     });
+    const continuationAt = request.reasonCode === "DELETION_SEARCH_PROVIDER_REQUIRED"
+      ? nextAttemptAt(
+          request.completedAt,
+          retryDelay(request.work.attempt)
+        )
+      : request.completedAt;
     await input.workflow.releaseForContinuation({
       publicId: request.work.publicId,
       owner: input.owner,
-      nextAttemptAt: request.completedAt
+      nextAttemptAt: continuationAt
     });
     return {
       workPublicId: request.work.publicId,
@@ -259,7 +265,8 @@ export function createStorageVnextDeletionWorker(input: {
 
 function isContinuationReason(reasonCode: string | null): reasonCode is string {
   return reasonCode === "DELETION_SCOPE_PAGE_REMAINING"
-    || reasonCode === "DELETION_SEARCH_TASK_PAGE_REMAINING";
+    || reasonCode === "DELETION_SEARCH_TASK_PAGE_REMAINING"
+    || reasonCode === "DELETION_SEARCH_PROVIDER_REQUIRED";
 }
 
 function nextAttemptAt(completedAt: string, delay: number): string {

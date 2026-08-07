@@ -61,8 +61,11 @@ const objectPrefix = normalizeObjectPrefix(requireEnvironment("S3_PREFIX"));
 if (`${objectPrefix}/` !== proof.objectScope) {
   throw new Error("S3_PREFIX does not match the exact run-owned object scope");
 }
-if (requireEnvironment("MEILI_INDEX_PREFIX") !== proof.searchScope) {
-  throw new Error("MEILI_INDEX_PREFIX does not match the exact run-owned search scope");
+if (requireEnvironment("SEARCH_PROVIDER") !== "meilisearch") {
+  throw new Error("Storage vNext owned-scope validation requires SEARCH_PROVIDER=meilisearch");
+}
+if (requireEnvironment("SEARCH_INDEX_PREFIX") !== proof.searchScope) {
+  throw new Error("SEARCH_INDEX_PREFIX does not match the exact run-owned search scope");
 }
 
 const postgresClient = postgres(databaseUrl, {

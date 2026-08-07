@@ -14,23 +14,54 @@ title: Docker Compose 部署
 | --- | --- |
 | PostgreSQL | 保存知识库、文件记录、处理状态、设置、OpenAPI key 和关系数据。 |
 | Redis | 保存登录 session、限流计数、分页和短期任务状态。 |
-| Meilisearch | 为每个知识库保存一个搜索索引。 |
+| OpenSearch 或 Meilisearch | 为每个知识库保存一个搜索索引。模板默认使用 OpenSearch 3.8.0。 |
 | S3 兼容存储 | 保存上传的 Markdown 和生成后的知识库文件。 |
 | 反向代理 | 为 Admin UI、Admin API 和 Developer OpenAPI 提供 HTTPS 访问。 |
 
-模板会启动 PostgreSQL、Redis 和可选的私有 Meilisearch。外部 S3 兼容服务需要在 `.env` 中配置。
+模板会启动 PostgreSQL、Redis 和选中的私有搜索服务。外部 S3 兼容服务需要在 `.env` 中配置。也可以用外部 OpenSearch 或 Meilisearch 替代模板附带的搜索容器。
 
 ## 准备文件
 
 ```bash
 cp .env.example .env
 cp docker-compose.yml.example docker-compose.yml
-mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps runtime-secrets logs backups
+mkdir -p data/postgres data/redis data/opensearch data/meilisearch data/meilisearch-snapshots data/meilisearch-dumps opensearch-security runtime-secrets logs backups
 ```
 
 启动前填写 `.env`。所有生产变量见 [环境变量配置](./environment.md)，启动后可以修改的配置见 [Admin 配置](./admin-settings.md)。
 
 真实 `.env` 和复制后的 `docker-compose.yml` 不要提交到 git。
+
+## 选择搜索服务
+
+复制后的环境模板默认启动 OpenSearch 3.8.0：
+
+```env
+SEARCH_PROVIDER=opensearch
+COMPOSE_PROFILES=opensearch
+OPENSEARCH_URL=https://opensearch:9200
+OPENSEARCH_AUTH_MODE=basic
+```
+
+在 `.env` 中只设置一个强管理员密码：
+
+```env
+OPENSEARCH_ADMIN_PASSWORD=<generate-an-opensearch-admin-password>
+```
+
+无需手工准备 TLS 文件。模板附带的 OpenSearch 启动前，`search-init` 会创建当前部署独有的私有 CA 和证书、完整的 OpenSearch Security 配置，以及恰好两个内部身份：配置的管理员和一个只允许访问 `SEARCH_INDEX_PREFIX` 的随机运行身份。私有安全状态保存在 `./opensearch-security`，运行密码和可信 CA 保存在 `./runtime-secrets`。以后每次重启都会原样复用完整且有效的文件。文件缺失、残缺、损坏、权限不安全、接近到期或与当前配置不匹配时，服务会拒绝启动，不会替换部署身份。OpenSearch 的 demo 安装程序在整个启动过程中始终关闭。
+
+API 和 Worker 只会收到生成的运行身份和可信 CA，不会收到管理员密码或私钥。选择 Meilisearch profile 时，同一个 `search-init` 服务会准备 Meilisearch 的运行访问。
+
+改用模板附带的 Meilisearch 时设置：
+
+```env
+SEARCH_PROVIDER=meilisearch
+COMPOSE_PROFILES=meilisearch
+MEILI_HOST=http://meilisearch:7700
+```
+
+使用外部服务时，将 `COMPOSE_PROFILES` 留空，并填写所选服务的外部 endpoint 和认证字段。OpenSearch 支持 Basic 认证、可选的私有 CA，以及服务名为 `es` 或 `aoss` 的 AWS SigV4。外部模式不会启动模板附带的搜索容器或初始化服务。
 
 ## 模板启动的服务
 
@@ -44,10 +75,11 @@ mkdir -p data/postgres data/redis data/meilisearch data/meilisearch-snapshots da
 | `migrate` | 在应用服务启动前检查并更新数据库。 |
 | `postgres` | PostgreSQL 数据库。 |
 | `redis` | Redis 服务。 |
-| `meilisearch` | 可选的模板附带搜索服务，通过 `COMPOSE_PROFILES=bundled-search` 启用。 |
-| `meilisearch-init` | 在启动期间准备搜索服务访问。 |
+| `search-init` | 准备选中的模板附带搜索服务；使用 OpenSearch 时，会在其启动前生成或校验 TLS、内部身份和受前缀限制的权限。 |
+| `opensearch` | 模板附带的 OpenSearch 3.8.0，通过 `COMPOSE_PROFILES=opensearch` 启用。 |
+| `meilisearch` | 模板附带的 Meilisearch 备选服务，通过 `COMPOSE_PROFILES=meilisearch` 启用。 |
 
-生产模板只把 Admin UI、Admin API 和 Developer OpenAPI 发布到 `127.0.0.1`。PostgreSQL、Redis 和 Meilisearch 保持在 Compose 私有网络内。
+生产模板只把 Admin UI、Admin API 和 Developer OpenAPI 发布到 `127.0.0.1`。PostgreSQL、Redis 和两种模板附带的搜索服务都保持在 Compose 私有网络内，并且只会启动选中的搜索 profile。
 
 ## 拉取镜像
 
@@ -88,7 +120,7 @@ docker compose -f docker-compose.yml ps
 docker compose -f docker-compose.yml logs --tail=200 api source-worker publication-worker maintenance-worker
 ```
 
-所有长期运行的服务都应显示 healthy。启动失败时，先检查 `migrate`、`meilisearch-init` 或异常服务的第一条错误。常见原因包括基础设施不可访问、凭据错误、公网 origin 无效，或者数据库来自不受支持的旧版本。
+所有长期运行的服务都应显示 healthy。启动失败时，先检查 `migrate`、所选搜索服务的初始化服务或异常服务的第一条错误。常见原因包括基础设施不可访问、凭据错误、TLS 信任无效、公网 origin 无效，或者数据库来自不受支持的旧版本。
 
 启动后：
 
@@ -113,11 +145,11 @@ pnpm compose:clean
 
 `docker compose logs -f` 用于查看容器输出。产品日志文件保存在 `./logs`，限制见 [环境变量配置](./environment.md#运行模式)。
 
-`pnpm compose:clean` 会删除当前服务使用的容器、Docker 管理的卷、孤立容器和本地镜像副本。`data`、`runtime-secrets` 和 `logs` 目录仍会保留。只有确定要删除部署数据时才删除这些目录。
+`pnpm compose:clean` 会删除当前服务使用的容器、Docker 管理的卷、孤立容器和本地镜像副本。`data`、`opensearch-security`、`runtime-secrets` 和 `logs` 目录仍会保留。只有确定要删除部署数据时才删除这些目录。
 
 ## 更新现有部署
 
-每次更新前都要阅读发行说明。当前存储版本无法直接使用破坏性存储更新之前的数据库。执行这次升级时，需要保留旧部署的有效备份，使用空的 PostgreSQL、Redis、Meilisearch 和 S3 位置，并重新导入 Markdown 文件。完成知识库数量、文件路径、预览、搜索、关系和 API 访问检查前，保留旧部署。
+每次更新前都要阅读发行说明。本次破坏性搜索服务版本不能使用引入搜索服务选择之前创建的数据库。需要保留旧部署的有效备份，使用空的 PostgreSQL、Redis、所选搜索服务和 S3 位置，并重新导入 Markdown 文件。完成知识库数量、文件路径、预览、搜索、关系和 API 访问检查前，保留旧部署。本次版本不提供兼容迁移。
 
 更新到继续支持当前数据库格式的后续版本时：
 
@@ -154,9 +186,11 @@ docker compose -f docker-compose.yml stop api source-worker publication-worker m
 pnpm compose:backup
 ```
 
-上述服务仍在运行时，备份命令会拒绝继续。命令会生成带 checksum 的归档，其中包含 PostgreSQL 备份、所需 S3 文件、部署设置、`.env`、Compose 文件和部署所需的私密文件。归档及其 `.sha256` 文件应保存在当前服务器之外。
+上述服务仍在运行时，备份命令会拒绝继续。命令会生成带 checksum 的归档，其中包含 PostgreSQL 备份、所需 S3 文件、部署设置、`.env`、Compose 文件和 `runtime-secrets`。归档及其 `.sha256` 文件应保存在当前服务器之外。
 
-Redis 和 Meilisearch 数据可以重新生成。需要包含兼容的 Meilisearch snapshot 时，同时传入 `--meilisearch-snapshot` 和 `--meilisearch-snapshot-sha256`。
+使用模板附带的 OpenSearch 时，还要把已停止服务的完整 `opensearch-security` 目录复制到加密的部署备份存储中，并与匹配的 `.env`、`runtime-secrets` 和 OpenSearch 数据备份一起保存。标准备份归档不包含生成的私钥。
+
+Redis 和搜索索引都可以重新生成。需要包含兼容的 Meilisearch snapshot 时，同时传入 `--meilisearch-snapshot` 和 `--meilisearch-snapshot-sha256`。备份命令不会打包 OpenSearch snapshot；需要 snapshot 时使用 OpenSearch 服务商提供的流程，也可以在还原后逐个重建知识库索引。
 
 部署使用显式 Compose project name 时，备份和还原命令都需要传入相同的 `--project-name <name>`。
 
@@ -186,18 +220,41 @@ Redis 和 Meilisearch 数据可以重新生成。需要包含兼容的 Meilisear
 
    还原命令会校验归档，并拒绝非空的数据库、S3 前缀或 `runtime-secrets` 目标。
 
-4. 使用备份对应的 API 和 Admin 镜像版本。
+4. 还原模板附带的 OpenSearch 数据时，启动 OpenSearch 前还原与其匹配的完整 `opensearch-security` 目录。不要混入其他部署的文件。
 
-5. 执行数据库命令并启动服务。
+5. 使用备份对应的 API 和 Admin 镜像版本。
+
+6. 执行数据库命令并启动服务。
 
    ```bash
    docker compose -f docker-compose.yml run --rm migrate
    docker compose -f docker-compose.yml up -d
    ```
 
-6. 未还原兼容的 Meilisearch snapshot 时，对每个知识库执行**维护索引**。
+7. 未还原所选搜索服务的兼容 snapshot 时，对每个知识库执行**维护索引**。
 
 允许新写入前，检查知识库数量、文件路径、预览、搜索、关系导航、Admin UI 登录、Developer OpenAPI health 和 Worker health。
+
+## 切换搜索服务
+
+切换搜索服务不会复制或自动重建索引。
+
+1. 停止全部服务，并在验证完成前保留当前搜索服务的数据。
+2. 修改 `SEARCH_PROVIDER`、对应的 endpoint 和认证字段，以及 `COMPOSE_PROFILES`（`opensearch`、`meilisearch`，外部服务则留空）。
+3. 启动服务并检查健康状态。
+4. 已有知识库的树、正文、生成文件、图关系、设置和 Developer OpenAPI 非搜索读取继续可用。完成接入前，搜索会返回可重试的暂不可用响应。
+5. 对每个已有知识库执行一次**维护索引**。系统会在所选搜索服务中完整构建并验证新索引，再将其设为生效索引。
+6. 验证搜索和常规发布后，再按照备份策略处理旧搜索服务数据。
+
+切换回原来的服务也执行相同步骤。旧的物理索引不会被自动重新启用。搜索服务变化不会修改 Developer OpenAPI 的请求和响应 schema。
+
+搜索持续不可用时，确认运行日志中的搜索服务符合预期、所有容器都能访问 endpoint、TLS 和凭据有效，并确认该知识库的**维护索引**已经完成。维护操作运行期间不要反复重启 Worker。
+
+## 轮换模板附带 OpenSearch 的 TLS
+
+普通重启不会轮换证书。需要轮换时，先停止全部服务，并备份 `opensearch-security`、`runtime-secrets` 和 OpenSearch 数据。把现有 `opensearch-security` 目录、`runtime-secrets/opensearch-password` 和 `runtime-secrets/opensearch-ca.pem` 一起移动到受保护的备份存储，再创建一个空的 `opensearch-security` 目录；`runtime-secrets` 中其他无关文件保持不变。启动一次全部服务，确认 OpenSearch 健康、Admin 搜索和 Developer OpenAPI 搜索正常后，才能处理之前匹配的安全文件备份。
+
+启动报告 `OpenSearch security assets are incomplete or invalid` 时，保留失败状态原样用于诊断；初始化程序不会修复不完整的安全目录与运行时密码组合。应从同一份备份还原匹配的安全目录、密码文件和 CA 文件，或者执行停止全部服务后的轮换流程。不要只删除一个生成文件，也不要在不同部署之间复制证书。
 
 ## 容量说明
 

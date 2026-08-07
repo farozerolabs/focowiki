@@ -4,6 +4,8 @@ import type { StorageVnextSearchCleanupRepository } from
   "../src/storage-vnext/search/cleanup-repository.js";
 import { createMeilisearchTransport } from
   "../src/infrastructure/meilisearch/meilisearch-transport.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import { createStorageVnextMaintenanceSearchCleanupAdapter } from
   "../src/storage-vnext/maintenance/search-cleanup-adapter.js";
 import { createStorageVnextSearchCleanup } from
@@ -32,7 +34,7 @@ describeOwnedMeilisearch("storage vNext maintenance against real Meilisearch", (
   const repository = createCleanupRepository(unifiedIndexUid);
   const cleanup = createStorageVnextSearchCleanup({
     repository,
-    transport,
+    provider: createMeilisearchProviderRuntime(transport),
     indexUidPrefix: prefix,
     indexPageSize: 100,
     taskPageSize: 1_000,
@@ -170,12 +172,12 @@ function createCleanupRepository(
 ): StorageVnextSearchCleanupRepository {
   return {
     async claimFailedCandidate() { return null; },
-    async listRetainedProviderIndexUids(providerIndexUids) {
-      return providerIndexUids.filter((value) => value === retainedIndexUid);
+    async listRetainedProviderIndexUids(input) {
+      return input.providerIndexUids.filter((value) => value === retainedIndexUid);
     },
     async claimActiveCompaction() { return null; },
-    async recordCleanupTask() {},
-    async clearCleanupTask() {},
+    async recordCleanupOperation() {},
+    async clearCleanupOperation() {},
     async completeFailedCandidateCleanup() {},
     async completeCompaction() {}
   };

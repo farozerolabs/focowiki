@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
-  SearchEngineSettings
-} from "../../application/ports/search-engine-transport.js";
+  SearchProviderIndexDefinition
+} from "../../application/ports/search-provider-runtime.js";
 import {
   STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
@@ -9,13 +9,14 @@ import {
 
 export function createStorageVnextSearchSettings(input: {
   searchCutoffMs: number;
-}): SearchEngineSettings {
+}): SearchProviderIndexDefinition {
   if (
     !Number.isSafeInteger(input.searchCutoffMs)
     || input.searchCutoffMs < 50
     || input.searchCutoffMs > 10_000
   ) throw new Error("Storage vNext search cutoff is invalid");
   return {
+    primaryKey: "id",
     searchableAttributes: [
       "title",
       "logicalPath",
@@ -23,21 +24,10 @@ export function createStorageVnextSearchSettings(input: {
       "rankingTerms"
     ],
     filterableAttributes: [
-      {
-        attributePatterns: [
-          "knowledgeBaseId",
-          "documentKind",
-          "schemaVersion",
-          "sourceFilePublicId"
-        ],
-        features: {
-          facetSearch: false,
-          filter: {
-            equality: true,
-            comparison: false
-          }
-        }
-      }
+      "knowledgeBaseId",
+      "documentKind",
+      "schemaVersion",
+      "sourceFilePublicId"
     ],
     displayedAttributes: [
       "id",
@@ -55,7 +45,6 @@ export function createStorageVnextSearchSettings(input: {
       "searchText",
       "rankingTerms"
     ],
-    sortableAttributes: [],
     rankingRules: [
       "words",
       "typo",
@@ -65,10 +54,9 @@ export function createStorageVnextSearchSettings(input: {
       "exactness"
     ],
     distinctAttribute: "sourceFilePublicId",
-    pagination: { maxTotalHits: 2_000 },
+    maximumTotalHits: 2_000,
     searchCutoffMs: input.searchCutoffMs,
-    localizedAttributes: [],
-    typoTolerance: { disableOnAttributes: ["logicalPath"] }
+    typoDisabledAttributes: ["logicalPath"]
   };
 }
 

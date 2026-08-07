@@ -13,7 +13,7 @@ export function createPostgresStorageVnextSearchTerminalCleanup(
       const rows = await sql<Array<{ public_id: string }>>`
         UPDATE focowiki.search_projections
         SET state = 'failed', safe_error_code = ${input.safeErrorCode},
-            correlation_public_id = NULL, provider_task_uid = NULL,
+            correlation_public_id = NULL, provider_operation_ref = NULL,
             revision = revision + CASE
               WHEN state = 'failed' AND safe_error_code = ${input.safeErrorCode}
                 THEN 0 ELSE 1 END,

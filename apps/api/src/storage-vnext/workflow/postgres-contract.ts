@@ -3,6 +3,8 @@ import type {
   StorageVnextLiveWork,
   StorageVnextWorkKind
 } from "./ports.js";
+import { isSearchProviderKind, type SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 export type StorageVnextWorkflowRepositoryErrorCode =
   | "invalid_input"
@@ -22,6 +24,7 @@ export type StorageVnextLiveWorkRow = {
   operation_public_id: string;
   knowledge_base_id: string;
   work_kind: StorageVnextWorkKind;
+  search_provider_kind: SearchProviderKind | null;
   state: "queued" | "running" | "retry";
   operation_revision: number | string;
   settings_revision_public_id: string;
@@ -90,10 +93,16 @@ export function mapStorageVnextLiveWork(
   if (!STORAGE_VNEXT_WORK_KINDS.includes(row.work_kind) || !LIVE_STATES.includes(row.state)) {
     throw storageVnextWorkflowRepositoryError("operation_conflict");
   }
+  assertSearchProviderOwnership(
+    row.work_kind,
+    row.search_provider_kind,
+    "operation_conflict"
+  );
   return {
     publicId: row.operation_public_id,
     knowledgeBaseId: row.knowledge_base_id,
     kind: row.work_kind,
+    searchProviderKind: row.search_provider_kind,
     state: row.state,
     operationRevision: toSafeInteger(row.operation_revision),
     settingsRevisionPublicId: row.settings_revision_public_id,
@@ -141,6 +150,7 @@ export function assertStorageVnextLiveWork(work: StorageVnextLiveWork): void {
   if (!STORAGE_VNEXT_WORK_KINDS.includes(work.kind) || !LIVE_STATES.includes(work.state)) {
     throw storageVnextWorkflowRepositoryError("invalid_input");
   }
+  assertSearchProviderOwnership(work.kind, work.searchProviderKind, "invalid_input");
   if (!Number.isSafeInteger(work.operationRevision) || work.operationRevision < 0) {
     throw storageVnextWorkflowRepositoryError("invalid_input");
   }
@@ -161,6 +171,18 @@ export function assertStorageVnextLiveWork(work: StorageVnextLiveWork): void {
   const expiresAt = assertStorageVnextTimestamp(work.idempotency.expiresAt);
   if (expiresAt.getTime() <= Date.now()) {
     throw storageVnextWorkflowRepositoryError("invalid_input");
+  }
+}
+
+function assertSearchProviderOwnership(
+  workKind: StorageVnextWorkKind,
+  providerKind: SearchProviderKind | null,
+  errorCode: StorageVnextWorkflowRepositoryErrorCode
+): void {
+  const needsProvider = workKind === "search" || workKind === "maintenance";
+  const validProvider = isSearchProviderKind(providerKind);
+  if (needsProvider !== validProvider) {
+    throw storageVnextWorkflowRepositoryError(errorCode);
   }
 }
 

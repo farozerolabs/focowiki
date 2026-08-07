@@ -1,5 +1,7 @@
 import type { TransactionSql } from "postgres";
 import type { DatabaseClient } from "../../db/client.js";
+import { isSearchProviderKind, type SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextSearchProjectionRecord,
   StorageVnextSearchProjectionRepository
@@ -23,6 +25,7 @@ type ReadSql = DatabaseClient | TransactionSql;
 type ProjectionRow = {
   public_id: string;
   knowledge_base_id: string;
+  provider_kind: SearchProviderKind;
   provider_index_uid: string;
   schema_checksum_sha256: string;
   settings_checksum_sha256: string;
@@ -33,7 +36,7 @@ type ProjectionRow = {
   last_batch_ordinal: number | string | null;
   last_batch_checksum_sha256: string | null;
   correlation_public_id: string | null;
-  provider_task_uid: number | string | null;
+  provider_operation_ref: string | null;
   revision: number | string;
 };
 
@@ -45,6 +48,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
     async reserveCandidate(input) {
       assertId(input.publicId);
       assertId(input.knowledgeBaseId);
+      assertProviderKind(input.providerKind);
       assertId(input.providerIndexUid);
       assertChecksum(input.schemaChecksum);
       assertChecksum(input.settingsChecksum);
@@ -62,11 +66,13 @@ export function createPostgresStorageVnextSearchProjectionRepository(
           if (live[0]) throw repositoryError("candidate_exists");
           const rows = await transaction<ProjectionRow[]>`
             INSERT INTO focowiki.search_projections (
-              public_id, knowledge_base_id, projection_role, provider_index_uid,
+              public_id, knowledge_base_id, projection_role, provider_kind,
+              provider_index_uid,
               schema_checksum_sha256, settings_checksum_sha256, revision,
               document_count, state
             ) VALUES (
               ${input.publicId}, ${input.knowledgeBaseId}, 'candidate',
+              ${input.providerKind},
               ${input.providerIndexUid}, ${input.schemaChecksum},
               ${input.settingsChecksum}, 0, 0, 'preparing'
             )
@@ -91,7 +97,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
       return projection?.role === "candidate" ? projection.record : null;
     },
 
-    async beginProviderTask(input) {
+    async beginProviderOperation(input) {
       assertId(input.candidatePublicId);
       assertId(input.correlationPublicId);
       return sql.begin(async (transaction) => {
@@ -101,24 +107,26 @@ export function createPostgresStorageVnextSearchProjectionRepository(
       });
     },
 
-    async recordProviderTask(input) {
+    async recordProviderOperation(input) {
       assertId(input.candidatePublicId);
       assertId(input.correlationPublicId);
-      assertOrdinal(input.providerTaskUid);
+      assertOperationRef(input.providerOperationRef);
       const rows = await sql<Array<{ public_id: string }>>`
         UPDATE focowiki.search_projections
-        SET provider_task_uid = ${input.providerTaskUid}, revision = revision + 1,
+        SET provider_operation_ref = ${input.providerOperationRef},
+            revision = revision + 1,
             updated_at = now()
         WHERE public_id = ${input.candidatePublicId}
           AND projection_role = 'candidate'
           AND correlation_public_id = ${input.correlationPublicId}
-          AND (provider_task_uid IS NULL OR provider_task_uid = ${input.providerTaskUid})
+          AND (provider_operation_ref IS NULL
+            OR provider_operation_ref = ${input.providerOperationRef})
         RETURNING public_id
       `;
       if (!rows[0]) throw repositoryError("task_conflict");
     },
 
-    async completeProviderTask(input) {
+    async completeProviderOperation(input) {
       assertId(input.candidatePublicId);
       assertId(input.correlationPublicId);
       const rows = await clearTask(sql, input);
@@ -136,7 +144,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
           AND projection_role = 'candidate'
           AND state IN ('preparing', 'indexing')
           AND correlation_public_id IS NULL
-          AND provider_task_uid IS NULL
+          AND provider_operation_ref IS NULL
         RETURNING public_id
       `;
       if (!rows[0]) throw repositoryError("invalid_state");
@@ -154,7 +162,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
           if (candidate.lastBatchChecksum !== input.payloadChecksum) {
             throw repositoryError("batch_conflict");
           }
-          return { outcome: "completed" as const, providerTaskUid: null };
+          return { outcome: "completed" as const, providerOperationRef: null };
         }
         if (input.batchOrdinal !== candidate.nextBatchOrdinal) {
           throw repositoryError("batch_conflict");
@@ -172,7 +180,7 @@ export function createPostgresStorageVnextSearchProjectionRepository(
             next_batch_ordinal = next_batch_ordinal + 1,
             last_batch_ordinal = ${input.batchOrdinal},
             last_batch_checksum_sha256 = ${input.payloadChecksum},
-            correlation_public_id = NULL, provider_task_uid = NULL,
+            correlation_public_id = NULL, provider_operation_ref = NULL,
             revision = revision + 1, updated_at = now()
         WHERE public_id = ${input.candidatePublicId}
           AND projection_role = 'candidate' AND state = 'indexing'
@@ -187,12 +195,12 @@ export function createPostgresStorageVnextSearchProjectionRepository(
 }
 
 const projectionColumnNames = [
-  "public_id", "knowledge_base_id", "provider_index_uid",
+  "public_id", "knowledge_base_id", "provider_kind", "provider_index_uid",
   "schema_checksum_sha256", "settings_checksum_sha256",
   "document_checksum_sha256", "state",
   "document_count", "next_batch_ordinal", "last_batch_ordinal",
   "last_batch_checksum_sha256", "correlation_public_id",
-  "provider_task_uid", "revision"
+  "provider_operation_ref", "revision"
 ];
 
 async function beginTask(
@@ -211,11 +219,12 @@ async function beginTask(
           updated_at = now()
       WHERE public_id = ${candidate.publicId}
     `;
-    return { outcome: "start" as const, providerTaskUid: null };
+    return { outcome: "start" as const, providerOperationRef: null };
   }
   return {
-    outcome: candidate.providerTaskUid === null ? "start" as const : "resume" as const,
-    providerTaskUid: candidate.providerTaskUid
+    outcome: candidate.providerOperationRef === null
+      ? "start" as const : "resume" as const,
+    providerOperationRef: candidate.providerOperationRef
   };
 }
 
@@ -225,7 +234,7 @@ async function clearTask(sql: ReadSql, input: {
 }) {
   return sql<Array<{ public_id: string }>>`
     UPDATE focowiki.search_projections
-    SET correlation_public_id = NULL, provider_task_uid = NULL,
+    SET correlation_public_id = NULL, provider_operation_ref = NULL,
         revision = revision + 1, updated_at = now()
     WHERE public_id = ${input.candidatePublicId}
       AND projection_role = 'candidate'
@@ -267,7 +276,8 @@ function exactReservation(
   existing: { role: string; record: StorageVnextSearchProjectionRecord }
     | StorageVnextSearchProjectionRecord,
   input: {
-    publicId: string; knowledgeBaseId: string; providerIndexUid: string;
+    publicId: string; knowledgeBaseId: string; providerKind: SearchProviderKind;
+    providerIndexUid: string;
     schemaChecksum: string; settingsChecksum: string;
   }
 ) {
@@ -275,6 +285,7 @@ function exactReservation(
   const record = "record" in existing ? existing.record : existing;
   if (
     role !== "candidate" || record.knowledgeBaseId !== input.knowledgeBaseId
+    || record.providerKind !== input.providerKind
     || record.schemaChecksum !== input.schemaChecksum
     || record.settingsChecksum !== input.settingsChecksum
   ) throw repositoryError("projection_conflict");
@@ -282,8 +293,10 @@ function exactReservation(
 }
 
 function mapProjection(row: ProjectionRow): StorageVnextSearchProjectionRecord {
+  assertProviderKind(row.provider_kind);
   return {
     publicId: row.public_id, knowledgeBaseId: row.knowledge_base_id,
+    providerKind: row.provider_kind,
     providerIndexUid: row.provider_index_uid,
     schemaChecksum: row.schema_checksum_sha256,
     settingsChecksum: row.settings_checksum_sha256,
@@ -294,8 +307,7 @@ function mapProjection(row: ProjectionRow): StorageVnextSearchProjectionRecord {
       ? null : toSafeNumber(row.last_batch_ordinal),
     lastBatchChecksum: row.last_batch_checksum_sha256,
     correlationPublicId: row.correlation_public_id,
-    providerTaskUid: row.provider_task_uid === null
-      ? null : toSafeNumber(row.provider_task_uid),
+    providerOperationRef: row.provider_operation_ref,
     revision: toSafeNumber(row.revision)
   };
 }
@@ -318,6 +330,18 @@ function assertChecksum(value: string) {
 
 function assertOrdinal(value: number) {
   if (!Number.isSafeInteger(value) || value < 0) throw repositoryError("invalid_input");
+}
+
+function assertProviderKind(value: SearchProviderKind) {
+  if (!isSearchProviderKind(value)) {
+    throw repositoryError("invalid_input");
+  }
+}
+
+function assertOperationRef(value: string) {
+  if (!value || Buffer.byteLength(value) > 2_048) {
+    throw repositoryError("invalid_input");
+  }
 }
 
 function toSafeNumber(value: number | string): number {

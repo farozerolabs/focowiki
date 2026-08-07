@@ -33,9 +33,12 @@ describe("storage vNext maintenance production cleanup", () => {
         cleanupFailedCandidate,
         cleanupOrphanIndexes: vi.fn(async () => {
           events.push("orphan-indexes");
-          return { deleted: 0, nextOffset: null };
+          return { deleted: 0, continuation: null };
         }),
-        cleanupFinishedTasks: vi.fn(async () => ({ deleted: 0, next: null }))
+        cleanupFinishedTasks: vi.fn(async () => ({
+          deleted: 0,
+          continuation: null
+        }))
       },
       clock,
       resultRetentionMilliseconds: 86_400_000,
@@ -64,7 +67,7 @@ describe("storage vNext maintenance production cleanup", () => {
     const terminateCandidate = vi.fn();
     const cleanupOrphanIndexes = vi.fn(async () => ({
       deleted: 1,
-      nextOffset: null
+      continuation: null
     }));
     const cleanup = createStorageVnextMaintenanceProductionCleanup({
       releases: { terminateCandidate },
@@ -72,7 +75,10 @@ describe("storage vNext maintenance production cleanup", () => {
       searchCleanup: {
         cleanupFailedCandidate: vi.fn(),
         cleanupOrphanIndexes,
-        cleanupFinishedTasks: vi.fn(async () => ({ deleted: 2, next: null }))
+        cleanupFinishedTasks: vi.fn(async () => ({
+          deleted: 2,
+          continuation: null
+        }))
       },
       clock: () => "2026-08-02T00:00:00.000Z",
       resultRetentionMilliseconds: 86_400_000,

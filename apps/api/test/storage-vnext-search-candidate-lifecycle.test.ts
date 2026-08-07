@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  SearchEngineSettings,
-  SearchEngineTransport
-} from "../src/application/ports/search-engine-transport.js";
+  MeilisearchClientPort
+} from "../src/infrastructure/meilisearch/meilisearch-client-port.js";
+import type { SearchProviderIndexDefinition } from
+  "../src/application/ports/search-provider-runtime.js";
+import {
+  createMeilisearchProviderRuntime,
+  toMeilisearchSettings
+} from "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import {
   createStorageVnextSearchCandidateLifecycle,
   createStorageVnextSearchSettingsChecksum
@@ -12,18 +17,18 @@ import type {
   StorageVnextSearchProjectionRepository
 } from "../src/storage-vnext/search/projection-repository.js";
 
-const settings: SearchEngineSettings = {
+const settings: SearchProviderIndexDefinition = {
+  primaryKey: "id",
   searchableAttributes: ["title", "searchText", "rankingTerms"],
   filterableAttributes: ["knowledgeBaseId", "documentKind"],
   displayedAttributes: ["id", "logicalPath", "title"],
-  sortableAttributes: [],
   rankingRules: ["words", "typo", "proximity", "attribute", "sort", "exactness"],
-  distinctAttribute: null,
-  pagination: { maxTotalHits: 2_000 },
+  distinctAttribute: "sourceFilePublicId",
+  maximumTotalHits: 2_000,
   searchCutoffMs: 1_000,
-  localizedAttributes: [],
-  typoTolerance: { disableOnAttributes: ["logicalPath"] }
+  typoDisabledAttributes: ["logicalPath"]
 };
+const meilisearchSettings = toMeilisearchSettings(settings);
 
 describe("storage vNext search candidate lifecycle", () => {
   it("finishes and verifies settings before accepting unified documents", async () => {
@@ -43,7 +48,9 @@ describe("storage vNext search candidate lifecycle", () => {
       }),
       getSettings: vi.fn(async () => {
         events.push("get-settings");
-        return settingsApplied ? settings : { ...settings, searchCutoffMs: 900 };
+        return settingsApplied
+          ? meilisearchSettings
+          : { ...meilisearchSettings, searchCutoffMs: 900 };
       }),
       updateSettings: vi.fn(async () => {
         events.push("update-settings");
@@ -72,7 +79,6 @@ describe("storage vNext search candidate lifecycle", () => {
 
     expect(events.indexOf("create-index")).toBeLessThan(events.indexOf("update-settings"));
     expect(events.indexOf("update-settings")).toBeLessThan(events.indexOf("add-documents"));
-    expect(transport.swapIndexes).not.toHaveBeenCalled();
     expect(transport.addDocuments).toHaveBeenCalledWith(expect.objectContaining({
       indexUid: repository.record.providerIndexUid,
       documents: [
@@ -86,7 +92,10 @@ describe("storage vNext search candidate lifecycle", () => {
 
   it("resumes a durably recorded document task without submitting it twice", async () => {
     const repository = createRepository({ state: "indexing" });
-    repository.beginOutcome = { outcome: "resume", providerTaskUid: 77 };
+    repository.beginOutcome = {
+      outcome: "resume",
+      providerOperationRef: "meilisearch:77"
+    };
     const addDocuments = vi.fn(async () => ({ taskUid: 78 }));
     const transport = createTransport({
       addDocuments,
@@ -125,8 +134,8 @@ describe("storage vNext search candidate lifecycle", () => {
 
     expect(findTaskByCorrelation).toHaveBeenCalledOnce();
     expect(addDocuments).not.toHaveBeenCalled();
-    expect(repository.recordProviderTask).toHaveBeenCalledWith(
-      expect.objectContaining({ providerTaskUid: 90 })
+    expect(repository.recordProviderOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ providerOperationRef: "meilisearch:90" })
     );
   });
 
@@ -192,7 +201,10 @@ describe("storage vNext search candidate lifecycle", () => {
 
   it("stops polling at the configured bound and leaves the task resumable", async () => {
     const repository = createRepository({ state: "indexing" });
-    repository.beginOutcome = { outcome: "resume", providerTaskUid: 101 };
+    repository.beginOutcome = {
+      outcome: "resume",
+      providerOperationRef: "meilisearch:101"
+    };
     const sleep = vi.fn(async () => undefined);
     const transport = createTransport({
       getTask: vi.fn(async () => ({
@@ -215,7 +227,7 @@ describe("storage vNext search candidate lifecycle", () => {
 
 function createLifecycle(
   repository: StorageVnextSearchProjectionRepository,
-  transport: SearchEngineTransport,
+  transport: MeilisearchClientPort,
   overrides: {
     maxPollAttempts?: number;
     sleep?: (milliseconds: number) => Promise<void>;
@@ -223,7 +235,7 @@ function createLifecycle(
 ) {
   return createStorageVnextSearchCandidateLifecycle({
     repository,
-    transport,
+    provider: createMeilisearchProviderRuntime(transport),
     settings,
     indexUidPrefix: "owned_vnext",
     maxPollAttempts: overrides.maxPollAttempts ?? 3,
@@ -272,6 +284,7 @@ function createRepository(overrides: Partial<StorageVnextSearchProjectionRecord>
   const record: StorageVnextSearchProjectionRecord = {
     publicId: "candidate-a",
     knowledgeBaseId: "kb-a",
+    providerKind: "meilisearch",
     providerIndexUid: "owned_vnext_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbb",
     schemaChecksum: "a".repeat(64),
     settingsChecksum: createStorageVnextSearchSettingsChecksum(settings),
@@ -282,30 +295,30 @@ function createRepository(overrides: Partial<StorageVnextSearchProjectionRecord>
     lastBatchOrdinal: null,
     lastBatchChecksum: null,
     correlationPublicId: null,
-    providerTaskUid: null,
+    providerOperationRef: null,
     revision: 0,
     ...overrides
   };
-  const recordProviderTask = vi.fn(async (input: {
+  const recordProviderOperation = vi.fn(async (input: {
     correlationPublicId: string;
-    providerTaskUid: number;
+    providerOperationRef: string;
   }) => {
     record.correlationPublicId = input.correlationPublicId;
-    record.providerTaskUid = input.providerTaskUid;
+    record.providerOperationRef = input.providerOperationRef;
   });
   const completeDocumentBatch = vi.fn(async (input: { documentCount: number }) => {
     record.documentCount += input.documentCount;
     record.nextBatchOrdinal += 1;
     record.correlationPublicId = null;
-    record.providerTaskUid = null;
+    record.providerOperationRef = null;
   });
   const repository = {
     record,
-    beginOutcome: { outcome: "start", providerTaskUid: null } as {
+    beginOutcome: { outcome: "start", providerOperationRef: null } as {
       outcome: "resume" | "start";
-      providerTaskUid: number | null;
+      providerOperationRef: string | null;
     },
-    recordProviderTask,
+    recordProviderOperation,
     completeDocumentBatch,
     port: {} as StorageVnextSearchProjectionRepository
   };
@@ -315,14 +328,14 @@ function createRepository(overrides: Partial<StorageVnextSearchProjectionRecord>
       projection: record
     })),
     getCandidate: vi.fn(async () => record),
-    beginProviderTask: vi.fn(async ({ correlationPublicId }) => {
+    beginProviderOperation: vi.fn(async ({ correlationPublicId }) => {
       record.correlationPublicId = correlationPublicId;
-      return { outcome: "start" as const, providerTaskUid: null };
+      return { outcome: "start" as const, providerOperationRef: null };
     }),
-    recordProviderTask,
-    completeProviderTask: vi.fn(async () => {
+    recordProviderOperation,
+    completeProviderOperation: vi.fn(async () => {
       record.correlationPublicId = null;
-      record.providerTaskUid = null;
+      record.providerOperationRef = null;
     }),
     markCandidateIndexing: vi.fn(async () => {
       record.state = "indexing";
@@ -340,8 +353,8 @@ function createRepository(overrides: Partial<StorageVnextSearchProjectionRecord>
 }
 
 function createTransport(
-  overrides: Partial<SearchEngineTransport> = {}
-): SearchEngineTransport {
+  overrides: Partial<MeilisearchClientPort> = {}
+): MeilisearchClientPort {
   return {
     health: vi.fn(async () => ({ available: true })),
     getPressure: vi.fn(async () => ({
@@ -353,12 +366,11 @@ function createTransport(
     createIndex: vi.fn(async () => ({ taskUid: 1 })),
     getIndex: vi.fn(async ({ indexUid }) => ({ uid: indexUid, primaryKey: "id" })),
     getDocument: vi.fn(async () => null),
-    getSettings: vi.fn(async () => settings),
+    getSettings: vi.fn(async () => meilisearchSettings),
     updateSettings: vi.fn(async () => ({ taskUid: 2 })),
     addDocuments: vi.fn(async () => ({ taskUid: 3 })),
     deleteDocuments: vi.fn(async () => ({ taskUid: 4 })),
     deleteIndex: vi.fn(async () => ({ taskUid: 5 })),
-    swapIndexes: vi.fn(async () => ({ taskUid: 6 })),
     findTaskByCorrelation: vi.fn(async () => null),
     getTask: vi.fn(async (taskUid) => ({
       taskUid,
@@ -385,6 +397,7 @@ function createIncarnationRepository(state: {
       state.record = {
         publicId: input.publicId,
         knowledgeBaseId: input.knowledgeBaseId,
+        providerKind: input.providerKind,
         providerIndexUid: input.providerIndexUid,
         schemaChecksum: input.schemaChecksum,
         settingsChecksum: input.settingsChecksum,
@@ -395,35 +408,35 @@ function createIncarnationRepository(state: {
         lastBatchOrdinal: null,
         lastBatchChecksum: null,
         correlationPublicId: null,
-        providerTaskUid: null,
+        providerOperationRef: null,
         revision: 0
       };
       return { outcome: "created" as const, projection: state.record };
     }),
     getCandidate: vi.fn(async () => state.record),
-    beginProviderTask: vi.fn(async ({ correlationPublicId }) => {
+    beginProviderOperation: vi.fn(async ({ correlationPublicId }) => {
       state.record!.correlationPublicId = correlationPublicId;
-      return { outcome: "start" as const, providerTaskUid: null };
+      return { outcome: "start" as const, providerOperationRef: null };
     }),
-    recordProviderTask: vi.fn(async ({ providerTaskUid }) => {
-      state.record!.providerTaskUid = providerTaskUid;
+    recordProviderOperation: vi.fn(async ({ providerOperationRef }) => {
+      state.record!.providerOperationRef = providerOperationRef;
     }),
-    completeProviderTask: vi.fn(async () => {
+    completeProviderOperation: vi.fn(async () => {
       state.record!.correlationPublicId = null;
-      state.record!.providerTaskUid = null;
+      state.record!.providerOperationRef = null;
     }),
     markCandidateIndexing: vi.fn(async () => {
       state.record!.state = "indexing";
     }),
     beginDocumentBatch: vi.fn(async ({ correlationPublicId }) => {
       state.record!.correlationPublicId = correlationPublicId;
-      return { outcome: "start" as const, providerTaskUid: null };
+      return { outcome: "start" as const, providerOperationRef: null };
     }),
     completeDocumentBatch: vi.fn(async ({ documentCount }) => {
       state.record!.documentCount += documentCount;
       state.record!.nextBatchOrdinal += 1;
       state.record!.correlationPublicId = null;
-      state.record!.providerTaskUid = null;
+      state.record!.providerOperationRef = null;
     }),
     beginCandidateValidation: vi.fn(),
     completeCandidateValidation: vi.fn(),

@@ -26,7 +26,7 @@ await build({
     main: "src/main.ts",
     migrate: "src/db/migrate.ts",
     "migration-preflight": "src/db/migration-preflight-main.ts",
-    "meilisearch-bootstrap": "src/meilisearch-bootstrap-main.ts",
+    "search-init": "src/search-init-main.ts",
     "source-worker": "src/source-worker-main.ts",
     "publication-worker": "src/publication-worker-main.ts",
     "maintenance-worker": "src/maintenance-worker-main.ts"
@@ -66,10 +66,14 @@ for (const relativePath of nodeJiebaRuntimeFiles) {
   await cp(resolve(nodeJiebaPackageRoot, relativePath), target);
 }
 
-const publicationRuntime = await readFile(
-  resolve(runtimeDir, "publication-worker.mjs"),
-  "utf8"
-);
-if (publicationRuntime.includes("nodejieba")) {
-  throw new Error("Publication worker must not load the native tokenizer");
+for (const runtime of [
+  "main.mjs",
+  "source-worker.mjs",
+  "publication-worker.mjs",
+  "maintenance-worker.mjs"
+]) {
+  const source = await readFile(resolve(runtimeDir, runtime), "utf8");
+  if (!source.includes("nodejieba")) {
+    throw new Error(`${runtime} must load the shared native tokenizer`);
+  }
 }

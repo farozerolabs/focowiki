@@ -24,9 +24,9 @@ const deploymentHealthcheckSourcePath = resolve(
   rootDir,
   "apps/api/src/runtime/deployment-healthcheck.ts"
 );
-const meilisearchBootstrapMainSourcePath = resolve(
+const searchInitMainSourcePath = resolve(
   rootDir,
-  "apps/api/src/meilisearch-bootstrap-main.ts"
+  "apps/api/src/search-init-main.ts"
 );
 const workerMainSourcePaths = [
   "source-worker-main.ts",
@@ -44,13 +44,14 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "maintenance-worker:",
-      "meilisearch-init:",
+      "search-init:",
       "migrate:",
       "postgres:",
       "redis:",
       "minio:",
       "minio-init:",
-      "meilisearch:"
+      "meilisearch:",
+      "opensearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -73,18 +74,18 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
-    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}");
     expect(compose).toContain(
-      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}"
     );
-    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}");
     expect(compose).toContain("TMPDIR: /meili_data/tmp");
     expect(compose).not.toContain("7700:7700");
     expect(compose).not.toContain("MEILI_PORT");
     expect(compose).toContain("x-docker-logging: &docker-logging");
     expect(compose).toContain('max-size: "10m"');
     expect(compose).toContain('max-file: "3"');
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(13);
     expect(compose).not.toMatch(/\$\{[A-Z][A-Z0-9_]*:-/);
   });
 
@@ -159,13 +160,14 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "maintenance-worker:",
-      "meilisearch-init:",
+      "search-init:",
       "migrate:",
       "postgres:",
       "redis:",
       "minio:",
       "minio-init:",
-      "meilisearch:"
+      "meilisearch:",
+      "opensearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -191,16 +193,16 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
-    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}");
     expect(compose).toContain(
-      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}"
     );
-    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}");
     expect(compose).toContain("TMPDIR: /meili_data/tmp");
     expect(compose).toContain("getmeili/meilisearch:v1.51.0");
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
     expect(compose).not.toMatch(/^volumes:\n[\s\S]*^\s{2}runtime-secrets:/m);
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(12);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(13);
     expect(compose).not.toMatch(/ghcr\.io\/farozerolabs\/focowiki-/);
   });
 
@@ -213,11 +215,12 @@ describe("Docker Compose infrastructure", () => {
       "source-worker:",
       "publication-worker:",
       "maintenance-worker:",
-      "meilisearch-init:",
+      "search-init:",
       "migrate:",
       "postgres:",
       "redis:",
-      "meilisearch:"
+      "meilisearch:",
+      "opensearch:"
     ]) {
       expect(compose).toContain(service);
     }
@@ -244,11 +247,11 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain("./data/meilisearch/tmp:/meili_data/tmp");
     expect(compose).toContain("./data/meilisearch-snapshots:/meili_snapshots");
     expect(compose).toContain("./data/meilisearch-dumps:/meili_dumps");
-    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR:");
+    expect(compose).toContain("MEILI_SNAPSHOT_DIR: ${MEILI_SNAPSHOT_DIR-}");
     expect(compose).toContain(
-      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT:"
+      "MEILI_SCHEDULE_SNAPSHOT: ${MEILI_SCHEDULE_SNAPSHOT-}"
     );
-    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR:");
+    expect(compose).toContain("MEILI_DUMP_DIR: ${MEILI_DUMP_DIR-}");
     expect(compose).toContain("TMPDIR: /meili_data/tmp");
     expect(compose).toContain("getmeili/meilisearch:v1.51.0");
     expect(compose).toContain("./logs:/app/logs");
@@ -264,7 +267,7 @@ describe("Docker Compose infrastructure", () => {
     expect(compose).toContain('max-size: "10m"');
     expect(compose).toContain('max-file: "3"');
     expect(compose).not.toContain("LOG_FILE_HOST_DIR");
-    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(10);
+    expect(compose.match(/logging: \*docker-logging/g)).toHaveLength(11);
     expect(compose).not.toContain("x-api-environment");
     expect(compose).not.toContain("S3_ENDPOINT:");
     expect(compose).not.toMatch(/(^|\n)\s+s3:|(^|\n)\s+s3-init:|minio|minio\/mc|s3-data:/i);
@@ -345,9 +348,9 @@ describe("Docker Compose infrastructure", () => {
   });
 
   it("orders provider health, runtime secrets, migration, and runtime roles", () => {
-    const bootstrapMain = readFileSync(meilisearchBootstrapMainSourcePath, "utf8");
-    expect(bootstrapMain.indexOf("loadDeploymentSecret({"))
-      .toBeLessThan(bootstrapMain.indexOf("await bootstrapMeilisearchKeys({"));
+    const searchInitMain = readFileSync(searchInitMainSourcePath, "utf8");
+    expect(searchInitMain).toContain("bootstrapMeilisearchKeys");
+    expect(searchInitMain).toContain("ensureBundledOpenSearchSecurityAssets");
 
     for (const composePath of [
       deploymentComposeTemplatePath,
@@ -355,13 +358,13 @@ describe("Docker Compose infrastructure", () => {
       localComposeTemplatePath
     ]) {
       const compose = readFileSync(composePath, "utf8");
-      const meilisearchInit = composeServiceSection(compose, "meilisearch-init");
+      const searchInit = composeServiceSection(compose, "search-init");
       const migrate = composeServiceSection(compose, "migrate");
 
-      expect(meilisearchInit).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
-      expect(meilisearchInit).toContain("meilisearch:\n        condition: service_healthy");
+      expect(searchInit).toContain("apps/api/runtime/search-init.mjs");
+      expect(searchInit).toContain("meilisearch:\n        condition: service_healthy");
       expect(migrate).toContain(
-        "meilisearch-init:\n        condition: service_completed_successfully"
+        "search-init:\n        condition: service_completed_successfully"
       );
       expect(migrate).toContain("postgres:\n        condition: service_healthy");
       expect(migrate).toContain("redis:\n        condition: service_healthy");
@@ -389,11 +392,11 @@ describe("Docker Compose infrastructure", () => {
     expect(dockerfile).toContain("pnpm build");
     expect(dockerfile).toContain("pnpm --filter @focowiki/api build:runtime");
     expect(dockerfile).toContain("node");
-    expect(dockerfile).toContain("apk add --no-cache libstdc++ su-exec");
+    expect(dockerfile).toContain("apk add --no-cache libstdc++ openssl su-exec");
     expect(dockerfile).toContain("deploy/docker/api-entrypoint.sh");
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/focowiki-api-entrypoint"]');
     expect(dockerfile).toContain("apps/api/runtime/main.mjs");
-    expect(dockerfile).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
+    expect(dockerfile).toContain("apps/api/runtime/search-init.mjs");
     expect(dockerfile).toContain("apps/api/runtime/source-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/publication-worker.mjs");
     expect(dockerfile).toContain("apps/api/runtime/maintenance-worker.mjs");
@@ -412,7 +415,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
     expect(workflow).toContain("apps/api/runtime/migration-preflight.mjs");
     expect(workflow).toContain("apps/api/runtime/main.mjs");
-    expect(workflow).toContain("apps/api/runtime/meilisearch-bootstrap.mjs");
+    expect(workflow).toContain("apps/api/runtime/search-init.mjs");
     expect(workflow).toContain("Validate native tokenizer runtime");
     expect(workflow).toContain("runtime/node_modules/nodejieba");
     expect(workflow).toContain("! grep -q nodejieba apps/api/runtime/publication-worker.mjs");
@@ -427,9 +430,21 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("postgres:18-alpine");
     expect(workflow).toContain("redis:8-alpine");
     expect(workflow).toContain("getmeili/meilisearch:v1.51.0");
+    expect(workflow).toContain("opensearchproject/opensearch:3.8.0");
+    expect(workflow).toContain("opensearchproject/opensearch:2.19.6");
     expect(workflow).toContain("FOCOWIKI_TEST_DATABASE_URL");
     expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_URL");
     expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_API_KEY");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_URL");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_VERSION");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_RUN_OWNER");
+    expect(workflow).toContain("59200:9200");
+    expect(workflow).toContain("59219:9200");
+    expect(workflow).toContain("Start maintained OpenSearch 2.19 compatibility fixture");
+    expect(workflow).toContain("Validate maintained OpenSearch 2.19 compatibility");
+    expect(workflow).toContain("Stop maintained OpenSearch 2.19 compatibility fixture");
+    expect(workflow).toContain("docker rm --force focowiki-opensearch-2-19-ci");
+    expect(workflow).toContain("docker image rm opensearchproject/opensearch:2.19.6");
     expect(workflow).toContain("Migrate CI database with API image");
     expect(workflow).toContain("Start S3 health fixture");
     expect(workflow).toContain("Validate API image role health");
@@ -446,8 +461,13 @@ describe("Docker Compose infrastructure", () => {
     const workflow = readFileSync(dockerBuildWorkflowPath, "utf8");
 
     expect(workflow).toContain("getmeili/meilisearch:v1.51.0");
+    expect(workflow).toContain("opensearchproject/opensearch:3.8.0");
     expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_URL");
     expect(workflow).toContain("FOCOWIKI_TEST_MEILISEARCH_API_KEY");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_URL");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_VERSION");
+    expect(workflow).toContain("FOCOWIKI_TEST_OPENSEARCH_RUN_OWNER");
+    expect(workflow).toContain("59200:9200");
     expect(workflow).toContain("Validate published API image roles");
     expect(workflow).toContain("Start S3 health fixture");
     expect(workflow).toContain("apps/api/runtime/migrate.mjs");
@@ -477,7 +497,7 @@ describe("Docker Compose infrastructure", () => {
     expect(workflow).toContain("http://127.0.0.1:43200/healthz");
   });
 
-  it("keeps the Meilisearch master key out of application runtimes", () => {
+  it("keeps provider bootstrap credentials out of application runtimes", () => {
     for (const composePath of [
       deploymentComposeTemplatePath,
       devComposeTemplatePath,
@@ -486,16 +506,12 @@ describe("Docker Compose infrastructure", () => {
       const compose = readFileSync(composePath, "utf8");
 
       expect(compose).toContain("x-runtime-environment: &runtime-environment");
-      expect(compose).toContain('MEILI_MASTER_KEY: ""');
-      expect(compose).toContain('MEILI_API_KEY: ""');
+      const runtimeEnvironment = compose.split("services:")[0] ?? "";
+      expect(runtimeEnvironment).not.toContain("MEILI_MASTER_KEY");
+      expect(runtimeEnvironment).not.toContain("OPENSEARCH_BOOTSTRAP_USERNAME");
+      expect(runtimeEnvironment).not.toContain("OPENSEARCH_BOOTSTRAP_PASSWORD");
       expect(compose).toContain(
-        "MEILI_API_KEY_FILE: /app/runtime-secrets/meilisearch-api-key"
-      );
-      expect(compose).toContain(
-        "MEILI_METRICS_API_KEY_FILE: /app/runtime-secrets/meilisearch-metrics-key"
-      );
-      expect(compose).toContain(
-        'command: ["node", "apps/api/runtime/meilisearch-bootstrap.mjs"]'
+        'command: ["node", "apps/api/runtime/search-init.mjs"]'
       );
       expect(compose).toContain(
         "condition: service_completed_successfully"
@@ -505,25 +521,27 @@ describe("Docker Compose infrastructure", () => {
     }
 
     expect(readFileSync(deploymentComposeTemplatePath, "utf8")).toContain(
-      "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}"
+      "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}"
     );
     for (const composePath of [devComposeTemplatePath, localComposeTemplatePath]) {
       expect(readFileSync(composePath, "utf8")).toContain(
-        "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?Set MEILI_MASTER_KEY in .env}"
+        "MEILI_MASTER_KEY: ${MEILI_MASTER_KEY-}"
       );
     }
   });
 
-  it("allows an external Meilisearch service without starting the bundled container", () => {
+  it("allows external search providers without starting bundled containers", () => {
     const deploymentCompose = readFileSync(deploymentComposeTemplatePath, "utf8");
     const deploymentEnv = readFileSync(deploymentEnvTemplatePath, "utf8");
 
-    expect(deploymentCompose).toContain('profiles: ["bundled-search"]');
+    expect(deploymentCompose).toContain('profiles: ["opensearch"]');
+    expect(deploymentCompose).toContain('profiles: ["meilisearch"]');
     expect(deploymentCompose).toContain("required: false");
-    expect(deploymentEnv).toContain("COMPOSE_PROFILES=bundled-search");
+    expect(deploymentEnv).toContain("COMPOSE_PROFILES=opensearch");
+    expect(deploymentEnv).toContain("OPENSEARCH_URL=https://opensearch:9200");
     expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
-    expect(deploymentEnv).not.toMatch(/^MEILI_API_KEY=/mu);
-    expect(deploymentEnv).not.toMatch(/^MEILI_METRICS_API_KEY=/mu);
+    expect(deploymentEnv).toContain("MEILI_API_KEY=");
+    expect(deploymentEnv).toContain("MEILI_METRICS_API_KEY=");
   });
 
   it("keeps startup config from requiring Admin UI managed upload-generation env fields", () => {
@@ -545,9 +563,15 @@ describe("Docker Compose infrastructure", () => {
     expect(apiRuntime).not.toContain("COPY --from=build /app/node_modules");
     expect(apiRuntime).not.toContain("COPY --from=build /app/apps/api/node_modules");
     expect(apiRuntime).not.toContain("production-dependencies");
+    expect(apiRuntime).toContain("/usr/local/lib/node_modules/npm");
+    expect(apiRuntime).toContain("/opt/yarn-v1.22.22");
+    expect(apiRuntime).toContain("test ! -e /usr/local/bin/npm");
     expect(apiRuntime).toContain("apps/api/runtime/node_modules/nodejieba");
     expect(apiRuntime).toContain("apps/api/runtime");
     expect(apiRuntime).toContain("focowiki-api-entrypoint");
+
+    const adminRuntime = dockerfile.split("FROM nginx:1.29-alpine AS admin")[1] ?? "";
+    expect(adminRuntime).toContain("RUN apk upgrade --no-cache");
   });
 
   it("initializes mounted API log directories before dropping privileges", () => {
@@ -670,11 +694,13 @@ describe("Docker Compose infrastructure", () => {
     expect(deploymentEnv).toContain("REDIS_URL=redis://redis:6379/0");
     expect(deploymentEnv).toContain("MEILI_HOST=http://meilisearch:7700");
     expect(deploymentEnv).toContain("MEILI_MASTER_KEY=");
-    expect(deploymentEnv).not.toMatch(/^MEILI_API_KEY=/mu);
-    expect(deploymentEnv).not.toMatch(/^MEILI_METRICS_API_KEY=/mu);
-    expect(deploymentEnv).toContain("# MEILI_API_KEY=<provider-runtime-key>");
+    expect(deploymentEnv).toContain("MEILI_API_KEY=");
+    expect(deploymentEnv).toContain("MEILI_METRICS_API_KEY=");
     expect(deploymentEnv).toContain(
-      "# MEILI_METRICS_API_KEY=<provider-metrics-key>"
+      "MEILI_API_KEY_FILE=/app/runtime-secrets/meilisearch-api-key"
+    );
+    expect(deploymentEnv).toContain(
+      "MEILI_METRICS_API_KEY_FILE=/app/runtime-secrets/meilisearch-metrics-key"
     );
     expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_MEMORY=2GiB");
     expect(deploymentEnv).toContain("MEILI_MAX_INDEXING_THREADS=2");
@@ -797,11 +823,14 @@ describe("Docker Compose infrastructure", () => {
     const deploymentComposeRefs = parseComposeEnvRefs(readFileSync(deploymentComposeTemplatePath, "utf8"));
     const devComposeRefs = parseComposeEnvRefs(readFileSync(devComposeTemplatePath, "utf8"));
     const localComposeRefs = parseComposeEnvRefs(readFileSync(localComposeTemplatePath, "utf8"));
-    const deploymentOnlyKeys = new Set(["FOCOWIKI_ADMIN_IMAGE", "FOCOWIKI_API_IMAGE"]);
+    const deploymentOnlyKeys = new Set([
+      "FOCOWIKI_ADMIN_IMAGE",
+      "FOCOWIKI_API_IMAGE",
+      "OPENSEARCH_ADMIN_PASSWORD"
+    ]);
     const developmentOnlyKeys = new Set([
       "ADMIN_UI_HOST",
-      "MEILI_API_KEY",
-      "MEILI_METRICS_API_KEY",
+      "OPENSEARCH_PORT",
       "POSTGRES_PORT",
       "REDIS_PORT",
       "S3_PORT",

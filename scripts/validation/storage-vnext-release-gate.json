@@ -192,6 +192,7 @@
         "apps/api/test/storage-vnext-index.integration.test.ts",
         "apps/api/test/storage-vnext-owned-reset-bootstrap.integration.test.ts",
         "apps/api/test/storage-vnext-owned-reset-bootstrap.test.ts",
+        "apps/api/test/storage-vnext-search-provider-schema-contract.test.ts",
         "apps/api/test/storage-vnext-schema-constraints-contract.test.ts",
         "apps/api/test/storage-vnext-schema-constraints.integration.test.ts"
       ],
@@ -325,8 +326,12 @@
       "focusedTests": [
         "apps/api/test/storage-vnext-deletion-meilisearch.integration.test.ts",
         "apps/api/test/storage-vnext-maintenance-meilisearch.integration.test.ts",
+        "apps/api/test/storage-vnext-maintenance-provider-gate.test.ts",
+        "apps/api/test/storage-vnext-provider-adoption-activation.test.ts",
+        "apps/api/test/storage-vnext-provider-index-cleanup-worker.test.ts",
         "apps/api/test/storage-vnext-search-candidate-lifecycle.test.ts",
         "apps/api/test/storage-vnext-search-cleanup.test.ts",
+        "apps/api/test/storage-vnext-search-provider-lifecycle-policy.test.ts",
         "apps/api/test/storage-vnext-search-projection-repository.integration.test.ts",
         "apps/api/test/storage-vnext-unified-search-deletion.test.ts"
       ],

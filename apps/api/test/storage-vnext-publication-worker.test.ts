@@ -387,6 +387,7 @@ function createFixture() {
     publicId: "publication-operation-one",
     knowledgeBaseId: "kb-publication",
     kind: "publication" as const,
+    searchProviderKind: null,
     state: "running" as const,
     operationRevision: 1,
     settingsRevisionPublicId: "settings-publication",

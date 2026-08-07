@@ -1,4 +1,4 @@
-export type SearchEngineTaskStatus =
+export type MeilisearchTaskStatus =
   | "enqueued"
   | "processing"
   | "succeeded"
@@ -6,13 +6,13 @@ export type SearchEngineTaskStatus =
   | "canceled"
   | "unknown";
 
-export type SearchEngineTask = {
+export type MeilisearchTask = {
   taskUid: number;
-  status: SearchEngineTaskStatus;
+  status: MeilisearchTaskStatus;
   errorCode: string | null;
 };
 
-export type SearchEngineSettings = {
+export type MeilisearchSettings = {
   searchableAttributes: string[];
   filterableAttributes: Array<
     | string
@@ -31,30 +31,24 @@ export type SearchEngineSettings = {
   sortableAttributes: string[];
   rankingRules: string[];
   distinctAttribute: string | null;
-  pagination: {
-    maxTotalHits: number;
-  };
+  pagination: { maxTotalHits: number };
   searchCutoffMs: number;
   localizedAttributes: Array<{
     attributePatterns: string[];
     locales: string[];
   }>;
-  typoTolerance: {
-    disableOnAttributes: string[];
-  };
+  typoTolerance: { disableOnAttributes: string[] };
 };
 
-export type SearchEngineDocument = Record<string, unknown> & {
-  id: string;
-};
+export type MeilisearchDocument = Record<string, unknown> & { id: string };
 
-export type SearchEngineDocumentPage = {
+export type MeilisearchDocumentPage = {
   documents: Array<Record<string, unknown>>;
   total: number;
   offset: number;
 };
 
-export type SearchEngineIndexPage = {
+export type MeilisearchIndexPage = {
   indexes: Array<{
     uid: string;
     createdAt: string;
@@ -64,7 +58,7 @@ export type SearchEngineIndexPage = {
   offset: number;
 };
 
-export type SearchEngineFinishedTaskPage = {
+export type MeilisearchFinishedTaskPage = {
   tasks: Array<{
     taskUid: number;
     indexUid: string | null;
@@ -74,12 +68,12 @@ export type SearchEngineFinishedTaskPage = {
   next: number | null;
 };
 
-export type SearchEngineDatabaseStats = {
+export type MeilisearchDatabaseStats = {
   databaseSizeBytes: number;
   usedDatabaseSizeBytes: number;
 };
 
-export type SearchEngineSearchRequest = {
+export type MeilisearchSearchRequest = {
   indexUid: string;
   query: string;
   filter: string;
@@ -94,29 +88,29 @@ export type SearchEngineSearchRequest = {
   distinct?: string;
 };
 
-export type SearchEngineSearchResult = {
+export type MeilisearchSearchResult = {
   hits: Array<Record<string, unknown>>;
   estimatedTotalHits: number;
   processingTimeMs: number;
 };
 
-export type SearchEnginePressure = {
+export type MeilisearchPressure = {
   queueLatencyMs: number;
   residentMemoryBytes: number;
   databaseSizeBytes: number;
   taskQueueSizeBytes: number;
 };
 
-export type SearchEngineErrorCode =
+export type MeilisearchClientErrorCode =
   | "SEARCH_ENGINE_UNAVAILABLE"
   | "SEARCH_ENGINE_AUTHENTICATION_FAILED"
   | "SEARCH_ENGINE_OVERLOADED"
   | "SEARCH_ENGINE_VERSION_INCOMPATIBLE"
   | "SEARCH_ENGINE_REQUEST_FAILED";
 
-export class SearchEngineTransportError extends Error {
+export class MeilisearchClientError extends Error {
   public constructor(
-    public readonly code: SearchEngineErrorCode,
+    public readonly code: MeilisearchClientErrorCode,
     public readonly retryable: boolean
   ) {
     super(
@@ -124,19 +118,19 @@ export class SearchEngineTransportError extends Error {
         ? "Search service authentication failed"
         : code === "SEARCH_ENGINE_VERSION_INCOMPATIBLE"
           ? "Search service version is incompatible"
-        : code === "SEARCH_ENGINE_OVERLOADED"
-          ? "Search service is temporarily overloaded"
-        : code === "SEARCH_ENGINE_UNAVAILABLE"
-          ? "Search service is temporarily unavailable"
-          : "Search service request failed"
+          : code === "SEARCH_ENGINE_OVERLOADED"
+            ? "Search service is temporarily overloaded"
+            : code === "SEARCH_ENGINE_UNAVAILABLE"
+              ? "Search service is temporarily unavailable"
+              : "Search service request failed"
     );
-    this.name = "SearchEngineTransportError";
+    this.name = "MeilisearchClientError";
   }
 }
 
-export interface SearchEngineTransport {
-  health(): Promise<{ available: boolean }>;
-  getPressure(): Promise<SearchEnginePressure>;
+export interface MeilisearchClientPort {
+  health(): Promise<{ available: boolean; version?: string }>;
+  getPressure(): Promise<MeilisearchPressure>;
   createIndex(input: {
     indexUid: string;
     primaryKey: string;
@@ -152,35 +146,35 @@ export interface SearchEngineTransport {
     offset: number;
     limit: number;
     fields: readonly string[];
-  }): Promise<SearchEngineDocumentPage>;
+  }): Promise<MeilisearchDocumentPage>;
   listIndexes?(input: {
     offset: number;
     limit: number;
-  }): Promise<SearchEngineIndexPage>;
+  }): Promise<MeilisearchIndexPage>;
   listFinishedTasks?(input: {
     statuses: readonly ["succeeded", "failed", "canceled"];
     beforeFinishedAt: string;
     from: number | null;
     limit: number;
-  }): Promise<SearchEngineFinishedTaskPage>;
+  }): Promise<MeilisearchFinishedTaskPage>;
   deleteFinishedTasks?(input: {
     taskUids: readonly number[];
   }): Promise<{ taskUid: number }>;
-  getDatabaseStats?(): Promise<SearchEngineDatabaseStats>;
+  getDatabaseStats?(): Promise<MeilisearchDatabaseStats>;
   compactIndex?(indexUid: string): Promise<{ taskUid: number }>;
   getDocument(input: {
     indexUid: string;
     documentId: string;
   }): Promise<Record<string, unknown> | null>;
-  getSettings(indexUid: string): Promise<SearchEngineSettings>;
+  getSettings(indexUid: string): Promise<MeilisearchSettings>;
   updateSettings(input: {
     indexUid: string;
-    settings: SearchEngineSettings;
+    settings: MeilisearchSettings;
   }): Promise<{ taskUid: number }>;
   addDocuments(input: {
     indexUid: string;
     primaryKey: string;
-    documents: SearchEngineDocument[];
+    documents: MeilisearchDocument[];
     correlation: string;
   }): Promise<{ taskUid: number }>;
   deleteDocuments(input: {
@@ -190,22 +184,10 @@ export interface SearchEngineTransport {
     correlation: string;
   }): Promise<{ taskUid: number }>;
   deleteIndex(indexUid: string): Promise<{ taskUid: number }>;
-  swapIndexes(input: {
-    pairs: Array<{
-      left: string;
-      right: string;
-    }>;
-  }): Promise<{ taskUid: number }>;
   findTaskByCorrelation?(input: {
     indexUid: string;
     correlation: string;
-  }): Promise<SearchEngineTask | null>;
-  findIndexSwapTask?(input: {
-    pairs: Array<{
-      left: string;
-      right: string;
-    }>;
-  }): Promise<SearchEngineTask | null>;
-  getTask(taskUid: number): Promise<SearchEngineTask>;
-  search(input: SearchEngineSearchRequest): Promise<SearchEngineSearchResult>;
+  }): Promise<MeilisearchTask | null>;
+  getTask(taskUid: number): Promise<MeilisearchTask>;
+  search(input: MeilisearchSearchRequest): Promise<MeilisearchSearchResult>;
 }

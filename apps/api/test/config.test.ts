@@ -11,10 +11,11 @@ const validEnv = {
   ADMIN_PASSWORD: "admin-password",
   DATABASE_URL: "postgres://focowiki:focowiki@127.0.0.1:5432/focowiki",
   REDIS_URL: "redis://127.0.0.1:6379/0",
+  SEARCH_PROVIDER: "meilisearch",
+  SEARCH_INDEX_PREFIX: "focowiki_test",
   MEILI_HOST: "http://127.0.0.1:7700",
   MEILI_API_KEY: "development-search-key",
   MEILI_METRICS_API_KEY: "development-search-metrics-key",
-  MEILI_INDEX_PREFIX: "focowiki_test",
   ADMIN_API_PORT: "43000",
   ADMIN_UI_PORT: "43100",
   PUBLIC_OPENAPI_PORT: "43200",
@@ -29,6 +30,223 @@ const validEnv = {
 };
 
 describe("parseRuntimeConfig", () => {
+  describe("search provider startup configuration", () => {
+    it("requires an explicit supported provider and common index prefix", () => {
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: ""
+        })
+      ).toThrow(/SEARCH_PROVIDER/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: "elasticsearch"
+        })
+      ).toThrow(/SEARCH_PROVIDER/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_INDEX_PREFIX: ""
+        })
+      ).toThrow(/SEARCH_INDEX_PREFIX/);
+
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_INDEX_PREFIX: "Invalid Prefix"
+        })
+      ).toThrow(/SEARCH_INDEX_PREFIX/);
+    });
+
+    it("validates and exposes only the selected Meilisearch configuration", () => {
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "meilisearch",
+        SEARCH_INDEX_PREFIX: "shared_search",
+        MEILI_INDEX_PREFIX: undefined,
+        OPENSEARCH_URL: "not-a-url",
+        OPENSEARCH_AUTH_MODE: "invalid"
+      });
+
+      expect(config.search).toEqual({
+        provider: "meilisearch",
+        endpoint: "http://127.0.0.1:7700",
+        apiKey: "development-search-key",
+        metricsApiKey: "development-search-metrics-key",
+        indexPrefix: "shared_search"
+      });
+    });
+
+    it("validates and exposes only the selected OpenSearch configuration", () => {
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        SEARCH_INDEX_PREFIX: "shared_search",
+        MEILI_HOST: undefined,
+        MEILI_API_KEY: undefined,
+        MEILI_METRICS_API_KEY: undefined,
+        MEILI_INDEX_PREFIX: undefined,
+        OPENSEARCH_URL: "http://127.0.0.1:9200",
+        OPENSEARCH_AUTH_MODE: "none"
+      });
+
+      expect(config.search).toEqual({
+        provider: "opensearch",
+        endpoint: "http://127.0.0.1:9200",
+        indexPrefix: "shared_search",
+        auth: {
+          mode: "none"
+        },
+        tls: {}
+      });
+    });
+
+    it("rejects unauthenticated OpenSearch in production", () => {
+      expect(() =>
+        parseRuntimeConfig({
+          ...validEnv,
+          APP_ENV: "production",
+          ADMIN_PASSWORD: "production-admin-password",
+          ADMIN_PUBLIC_ORIGIN: "https://admin.example.com",
+          ADMIN_API_PUBLIC_ORIGIN: "https://api.example.com",
+          PUBLIC_OPENAPI_PUBLIC_ORIGIN: "https://openapi.example.com",
+          ALLOWED_HOSTS: "admin.example.com,api.example.com,openapi.example.com",
+          S3_ACCESS_KEY_ID: "production-storage-access",
+          S3_SECRET_ACCESS_KEY: "production-storage-secret",
+          SEARCH_PROVIDER: "opensearch",
+          OPENSEARCH_URL: "https://search.example.com",
+          OPENSEARCH_AUTH_MODE: "none"
+        })
+      ).toThrow(/OPENSEARCH_AUTH_MODE/);
+    });
+
+    it("loads OpenSearch basic auth and private CA with secret-file precedence", () => {
+      const directory = mkdtempSync(join(tmpdir(), "focowiki-opensearch-secrets-"));
+      const passwordFile = join(directory, "runtime-password");
+      const caFile = join(directory, "root-ca.pem");
+      writeFileSync(passwordFile, "file-password\n", { mode: 0o600 });
+      writeFileSync(caFile, "test-ca\n", { mode: 0o600 });
+
+      const config = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "runtime-user",
+        OPENSEARCH_PASSWORD: "ignored-direct-password",
+        OPENSEARCH_PASSWORD_FILE: passwordFile,
+        OPENSEARCH_CA_FILE: caFile
+      });
+
+      expect(config.search).toEqual({
+        provider: "opensearch",
+        endpoint: "https://search.example.com",
+        indexPrefix: "focowiki_test",
+        auth: {
+          mode: "basic",
+          username: "runtime-user",
+          password: "file-password"
+        },
+        tls: { caFile }
+      });
+      expect(config.search).not.toHaveProperty("bootstrap");
+
+      writeFileSync(passwordFile, "rotated-file-password\n", { mode: 0o600 });
+      const rotated = parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "runtime-user",
+        OPENSEARCH_PASSWORD_FILE: passwordFile,
+        OPENSEARCH_CA_FILE: caFile
+      });
+      expect(rotated.search).toMatchObject({
+        auth: {
+          mode: "basic",
+          username: "runtime-user",
+          password: "rotated-file-password"
+        }
+      });
+    });
+
+    it.each(["es", "aoss"] as const)(
+      "loads renewable AWS SigV4 metadata for %s",
+      (service) => {
+        const config = parseRuntimeConfig({
+          ...validEnv,
+          SEARCH_PROVIDER: "opensearch",
+          OPENSEARCH_URL: "https://search.us-east-1.amazonaws.com",
+          OPENSEARCH_AUTH_MODE: "aws_sigv4",
+          OPENSEARCH_AWS_REGION: "us-east-1",
+          OPENSEARCH_AWS_SERVICE: service
+        });
+
+        expect(config.search).toMatchObject({
+          provider: "opensearch",
+          auth: {
+            mode: "aws_sigv4",
+            region: "us-east-1",
+            service
+          }
+        });
+      }
+    );
+
+    it("validates only fields required by the selected OpenSearch auth mode", () => {
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "",
+        OPENSEARCH_AUTH_MODE: "basic",
+        OPENSEARCH_USERNAME: "",
+        OPENSEARCH_PASSWORD: ""
+      })).toThrow(/OPENSEARCH_URL.*OPENSEARCH_USERNAME.*OPENSEARCH_PASSWORD/su);
+
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://search.example.com",
+        OPENSEARCH_AUTH_MODE: "aws_sigv4",
+        OPENSEARCH_AWS_REGION: "",
+        OPENSEARCH_AWS_SERVICE: "execute-api"
+      })).toThrow(/OPENSEARCH_AWS_REGION.*OPENSEARCH_AWS_SERVICE/su);
+
+      expect(() => parseRuntimeConfig({
+        ...validEnv,
+        SEARCH_PROVIDER: "opensearch",
+        OPENSEARCH_URL: "https://runtime-user:runtime-password@search.example.com",
+        OPENSEARCH_AUTH_MODE: "none"
+      })).toThrow(/OPENSEARCH_URL/);
+    });
+
+    it("resolves an identical provider descriptor for every runtime role", () => {
+      const roles = [
+        "api",
+        "source-worker",
+        "publication-worker",
+        "maintenance-worker",
+        "migration",
+        "validation"
+      ];
+      const descriptors = roles.map((role) =>
+        parseRuntimeConfig({
+          ...validEnv,
+          FOCOWIKI_RUNTIME_ROLE: role
+        }).search
+      );
+
+      expect(descriptors).toEqual(roles.map(() => descriptors[0]));
+      expect(descriptors[0]).toMatchObject({
+        provider: "meilisearch",
+        indexPrefix: "focowiki_test"
+      });
+    });
+  });
+
   it("parses required runtime settings", () => {
     const config = parseRuntimeConfig(validEnv);
 
@@ -48,6 +266,7 @@ describe("parseRuntimeConfig", () => {
       keyPrefix: "focowiki"
     });
     expect(config.search).toEqual({
+      provider: "meilisearch",
       endpoint: "http://127.0.0.1:7700",
       apiKey: "development-search-key",
       metricsApiKey: "development-search-metrics-key",
@@ -269,7 +488,7 @@ describe("parseRuntimeConfig", () => {
 
     expect(() => parseRuntimeConfig({
       ...validEnv,
-      MEILI_INDEX_PREFIX: proof.searchScope
+      SEARCH_INDEX_PREFIX: proof.searchScope
     })).not.toThrow();
   });
 

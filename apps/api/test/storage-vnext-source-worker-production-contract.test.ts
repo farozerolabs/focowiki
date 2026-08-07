@@ -22,7 +22,7 @@ describe("storage vNext source worker production contract", () => {
     ]) expect(main, legacy).not.toContain(legacy);
   });
 
-  it("wires PostgreSQL facts, S3 source bodies, and the knowledge-base unified Meili index", () => {
+  it("wires PostgreSQL facts, S3 source bodies, and the selected search provider", () => {
     expect(existsSync(resolve(workspaceRoot, runtimePath)), runtimePath).toBe(true);
     if (!existsSync(resolve(workspaceRoot, runtimePath))) return;
     const runtime = read(runtimePath);
@@ -40,7 +40,9 @@ describe("storage vNext source worker production contract", () => {
       "createStorageVnextSourceRoleRuntime"
     ]) expect(runtime, dependency).toContain(dependency);
     expect(runtime).toContain("createPostgresStorageVnextActiveSearchProjectionRepository");
-    expect(runtime).toContain("createDynamicRuntimeMeilisearchSearchTransport");
+    expect(runtime).toContain("createDynamicRuntimeSearchQueryProvider");
+    expect(runtime).toContain("async resolveDeadlineMs()");
+    expect(runtime).toContain("await searchProvider.close()");
     expect(runtime).not.toMatch(
       /PostgresSearchProjection|body-search-projection|graph-term-document|source_file_graph_term/u
     );

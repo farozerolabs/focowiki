@@ -79,6 +79,7 @@ type MaintenanceCoordinator = {
 
 type MaintenanceCoordinatorFactory = (input: {
   repository: ReturnType<typeof createFixture>["repository"];
+  searchProviderKind: "meilisearch" | "opensearch";
   phaseRunner: ReturnType<typeof createFixture>["phaseRunner"];
   cleanup: ReturnType<typeof createFixture>["cleanup"];
   resourceGate: ReturnType<typeof createFixture>["resourceGate"];
@@ -451,6 +452,10 @@ describe("storage vNext maintenance lifecycle contract", () => {
       outcome: "idle",
       operationPublicId: null
     });
+    expect(fixture.repository.claimOne).toHaveBeenLastCalledWith({
+      ...workerClaim("worker-idle"),
+      searchProviderKind: "meilisearch"
+    });
     await coordinator.requestMaintenance(request());
     await expect(coordinator.runOne(workerClaim("worker-phase"))).resolves.toMatchObject({
       outcome: "phase_completed"
@@ -470,6 +475,7 @@ function createCoordinator(
   if (!factory) throw new Error("Storage vNext maintenance coordinator is unavailable");
   return factory({
     repository: fixture.repository,
+    searchProviderKind: "meilisearch",
     phaseRunner: fixture.phaseRunner,
     cleanup: fixture.cleanup,
     resourceGate: fixture.resourceGate,

@@ -29,7 +29,7 @@ export function createStorageVnextPublicationRoleRuntime<
     retryAt: string;
     limit: number;
   }): Promise<number>;
-  createWorker(settings: TSettings): PublicationWorker;
+  createWorker(settings: TSettings): PublicationWorker | Promise<PublicationWorker>;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }) {
   if (!input.owner) throw roleRuntimeError("invalid_owner");
@@ -47,7 +47,7 @@ export function createStorageVnextPublicationRoleRuntime<
             retryAt: recoveredAt,
             limit
           });
-          const worker = input.createWorker(settings);
+          const worker = await input.createWorker(settings);
           await worker.runOnce({
             owner: input.owner,
             limit,

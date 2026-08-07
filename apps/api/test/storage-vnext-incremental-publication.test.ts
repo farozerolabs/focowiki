@@ -704,9 +704,10 @@ describe("storage vNext incremental publication", () => {
         readText: readObjectText
       },
       search: {
-        getCandidate: vi.fn().mockResolvedValue({
+        getProjection: vi.fn().mockResolvedValue({
           publicId: "search-candidate-a",
           knowledgeBaseId: "kb-a",
+          providerKind: "meilisearch",
           providerIndexUid: "run-owned-kb-a-candidate",
           schemaChecksum: checksumA,
           settingsChecksum: checksumB,
@@ -717,7 +718,7 @@ describe("storage vNext incremental publication", () => {
           lastBatchOrdinal: 0,
           lastBatchChecksum: checksumA,
           correlationPublicId: null,
-          providerTaskUid: null,
+          providerOperationRef: null,
           revision: 2
         })
       },

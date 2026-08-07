@@ -1,5 +1,5 @@
-import type { SearchEngineTransport } from
-  "../../application/ports/search-engine-transport.js";
+import type { SearchProviderRuntime } from
+  "../../application/ports/search-provider-runtime.js";
 import type { StorageVnextGraphNodeFact } from "../graph/ports.js";
 import {
   STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
@@ -28,9 +28,13 @@ export type StorageVnextGraphCandidateSearchPort = {
   }): Promise<readonly StorageVnextGraphNodeFact[]>;
 };
 
+type CandidateSearchDeadline =
+  | { deadlineMs: number; resolveDeadlineMs?: never }
+  | { deadlineMs?: never; resolveDeadlineMs(): Promise<number> };
+
 export function createStorageVnextGraphCandidateSearch(input: {
   projections: StorageVnextActiveSearchProjectionRepository;
-  transport: Pick<SearchEngineTransport, "search">;
+  provider: Pick<SearchProviderRuntime, "kind" | "query">;
   graph: {
     listNodesBySourceFiles(request: {
       knowledgeBaseId: string;
@@ -38,9 +42,10 @@ export function createStorageVnextGraphCandidateSearch(input: {
       limit: number;
     }): Promise<readonly StorageVnextGraphNodeFact[]>;
   };
-}): StorageVnextGraphCandidateSearchPort {
+} & CandidateSearchDeadline): StorageVnextGraphCandidateSearchPort {
   return createGraphCandidateSearch({
-    transport: input.transport,
+    provider: input.provider,
+    resolveDeadlineMs: deadlineResolver(input),
     graph: input.graph,
     resolveProjection: (knowledgeBaseId) =>
       input.projections.getActiveProjection(knowledgeBaseId)
@@ -50,7 +55,8 @@ export function createStorageVnextGraphCandidateSearch(input: {
 export function createStorageVnextGraphCandidateSearchForProjection(input: {
   searchProjectionPublicId: string;
   projections: Pick<StorageVnextSearchProjectionRepository, "getCandidate">;
-  transport: Pick<SearchEngineTransport, "search">;
+  provider: Pick<SearchProviderRuntime, "kind" | "query">;
+  deadlineMs: number;
   graph: {
     listNodesBySourceFiles(request: {
       knowledgeBaseId: string;
@@ -61,7 +67,8 @@ export function createStorageVnextGraphCandidateSearchForProjection(input: {
 }): StorageVnextGraphCandidateSearchPort {
   if (!input.searchProjectionPublicId) throw candidateSearchError("invalid_input");
   return createGraphCandidateSearch({
-    transport: input.transport,
+    provider: input.provider,
+    resolveDeadlineMs: async () => input.deadlineMs,
     graph: input.graph,
     async resolveProjection(knowledgeBaseId) {
       const projection = await input.projections.getCandidate(
@@ -81,9 +88,11 @@ export function createStorageVnextGraphCandidateSearchForProjection(input: {
 function createGraphCandidateSearch(input: {
   resolveProjection(knowledgeBaseId: string): Promise<{
     knowledgeBaseId: string;
+    providerKind: "meilisearch" | "opensearch";
     providerIndexUid: string;
   } | null>;
-  transport: Pick<SearchEngineTransport, "search">;
+  provider: Pick<SearchProviderRuntime, "kind" | "query">;
+  resolveDeadlineMs(): Promise<number>;
   graph: {
     listNodesBySourceFiles(request: {
       knowledgeBaseId: string;
@@ -101,21 +110,37 @@ function createGraphCandidateSearch(input: {
       if (projection.knowledgeBaseId !== request.knowledgeBaseId) {
         throw candidateSearchError("projection_scope_conflict");
       }
-      const result = await input.transport.search({
+      if (projection.providerKind !== input.provider.kind) {
+        throw candidateSearchError("projection_provider_conflict");
+      }
+      const result = await input.provider.query.query({
         indexUid: projection.providerIndexUid,
         query,
-        filter: [
-          `knowledgeBaseId = ${JSON.stringify(request.knowledgeBaseId)}`,
-          'documentKind = "graph_seed"',
-          `schemaVersion = ${JSON.stringify(STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION)}`
-        ].join(" AND "),
+        evidenceFamilies: ["graph", "text", "jieba"],
+        filters: {
+          kind: "and",
+          operands: [{
+            kind: "equals",
+            field: "knowledgeBaseId",
+            value: request.knowledgeBaseId
+          }, {
+            kind: "equals",
+            field: "documentKind",
+            value: "graph_seed"
+          }, {
+            kind: "equals",
+            field: "schemaVersion",
+            value: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
+          }]
+        },
         limit: Math.min(1_000, request.limit + 1),
-        attributesToSearchOn: SEARCH_ATTRIBUTES,
-        attributesToRetrieve: RESULT_ATTRIBUTES,
-        attributesToCrop: [],
+        searchFields: SEARCH_ATTRIBUTES,
+        returnFields: RESULT_ATTRIBUTES,
+        continuation: null,
         cropLength: 0,
+        deadlineMs: await input.resolveDeadlineMs(),
         matchingStrategy: "last",
-        distinct: "sourceFilePublicId"
+        distinctBy: "sourceFilePublicId"
       });
       const candidates = uniqueHits(result.hits, request.sourceFilePublicId)
         .slice(0, request.limit);
@@ -137,6 +162,10 @@ function createGraphCandidateSearch(input: {
       });
     }
   };
+}
+
+function deadlineResolver(input: CandidateSearchDeadline): () => Promise<number> {
+  return input.resolveDeadlineMs ?? (async () => input.deadlineMs);
 }
 
 function normalizeQuery(input: {
@@ -167,7 +196,7 @@ function normalizeQuery(input: {
 }
 
 function uniqueHits(
-  hits: readonly Record<string, unknown>[],
+  hits: Awaited<ReturnType<SearchProviderRuntime["query"]["query"]>>["hits"],
   excludedSourceFilePublicId: string
 ): Array<{
   sourceFilePublicId: string;

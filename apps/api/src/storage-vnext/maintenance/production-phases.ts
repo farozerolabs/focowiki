@@ -26,6 +26,16 @@ type CompletePage = {
 };
 
 export function createStorageVnextMaintenanceProductionPhases(input: {
+  providerAdoption?: {
+    activate(input: {
+      knowledgeBaseId: string;
+      operationPublicId: string;
+      candidatePublicId: string;
+      expectedResourceRevision: number;
+      activatedAt: string;
+      cleanupNotBefore: string;
+    }): Promise<{ outcome: "activated" | "stale" | "not_ready" }>;
+  };
   planner: {
     plan(request: {
       knowledgeBaseId: string;
@@ -152,9 +162,15 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
         searchProjectionPublicId: candidatePublicId,
         signal: request.signal
       };
+      const providerAdoption =
+        request.checkpoint.maintenanceKind === "provider_adoption";
 
       switch (request.checkpoint.phase) {
         case "planning": {
+          if (providerAdoption) {
+            await prepareSearchCandidate(input, request.knowledgeBaseId, candidatePublicId);
+            return completed(0, 0, 0);
+          }
           const plan = await input.planner.plan({
             knowledgeBaseId: request.knowledgeBaseId,
             operationPublicId: request.operationPublicId,
@@ -164,12 +180,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
           if (plan.candidatePublicId !== candidatePublicId) {
             throw phaseError("candidate_identity_conflict");
           }
-          await input.pipeline.searchLifecycle.prepareCandidate({
-            knowledgeBaseId: request.knowledgeBaseId,
-            candidatePublicId,
-            schemaChecksum: input.pipeline.schemaChecksum,
-            settingsChecksum: input.pipeline.settingsChecksum
-          });
+          await prepareSearchCandidate(input, request.knowledgeBaseId, candidatePublicId);
           const count = plan.sourceCount + plan.directoryCount;
           return completed(count, count, 0);
         }
@@ -192,6 +203,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
           );
         }
         case "projection_repair": {
+          if (providerAdoption) return completed(0, 0, 0);
           const graphAlreadyReconciled = await input.releases
             .hasCandidateCatalogEntries(candidatePublicId);
           const graph = graphAlreadyReconciled
@@ -202,6 +214,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
           return completed(count, count, 0);
         }
         case "object_reconciliation": {
+          if (providerAdoption) return completed(0, 0, 0);
           const page = await input.objectReconciliation.runPage({
             cursor: request.checkpoint.cursor
           });
@@ -219,6 +232,7 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
           return completed(0, 0, 0);
         }
         case "validation":
+          if (providerAdoption) return completed(1, 1, 0);
           await input.pipeline.releaseValidation.validate({
             knowledgeBaseId: request.knowledgeBaseId,
             candidatePublicId,
@@ -226,9 +240,14 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
           });
           return completed(1, 1, 0);
         case "activation":
+          if (providerAdoption) {
+            await activateProviderAdoption(input, request);
+            return completed(1, 1, 0);
+          }
           await activate(input, request.knowledgeBaseId, request.operationPublicId);
           return completed(1, 1, 0);
         case "cleanup":
+          if (providerAdoption) return completed(0, 0, 0);
           return normalizePage(await input.candidateObjectCleanup.runPage({
             knowledgeBaseId: request.knowledgeBaseId,
             operationPublicId: request.operationPublicId,
@@ -237,6 +256,42 @@ export function createStorageVnextMaintenanceProductionPhases(input: {
       }
     }
   };
+}
+
+async function prepareSearchCandidate(
+  input: Parameters<typeof createStorageVnextMaintenanceProductionPhases>[0],
+  knowledgeBaseId: string,
+  candidatePublicId: string
+): Promise<void> {
+  await input.pipeline.searchLifecycle.prepareCandidate({
+    knowledgeBaseId,
+    candidatePublicId,
+    schemaChecksum: input.pipeline.schemaChecksum,
+    settingsChecksum: input.pipeline.settingsChecksum
+  });
+}
+
+async function activateProviderAdoption(
+  input: Parameters<typeof createStorageVnextMaintenanceProductionPhases>[0],
+  request: Parameters<StorageVnextMaintenancePhaseRunner["runPhase"]>[0]
+): Promise<void> {
+  if (!input.providerAdoption) throw phaseError("provider_adoption_unavailable");
+  const activatedAt = input.clock();
+  assertTimestamp(activatedAt);
+  const activation = await input.providerAdoption.activate({
+    knowledgeBaseId: request.knowledgeBaseId,
+    operationPublicId: request.operationPublicId,
+    candidatePublicId: createStorageVnextMaintenanceCandidatePublicId(request),
+    expectedResourceRevision: request.checkpoint.baseResourceRevision,
+    activatedAt,
+    cleanupNotBefore: addMilliseconds(
+      activatedAt,
+      input.rollbackRetentionMilliseconds
+    )
+  });
+  if (activation.outcome === "activated") return;
+  if (activation.outcome === "stale") throw phaseError("stale_plan");
+  throw phaseError("candidate_not_ready");
 }
 
 async function activate(

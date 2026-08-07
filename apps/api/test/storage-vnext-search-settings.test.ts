@@ -18,18 +18,10 @@ describe("storage vNext unified search settings", () => {
       "rankingTerms"
     ]);
     expect(settings.filterableAttributes).toEqual([
-      {
-        attributePatterns: [
-          "knowledgeBaseId",
-          "documentKind",
-          "schemaVersion",
-          "sourceFilePublicId"
-        ],
-        features: {
-          facetSearch: false,
-          filter: { equality: true, comparison: false }
-        }
-      }
+      "knowledgeBaseId",
+      "documentKind",
+      "schemaVersion",
+      "sourceFilePublicId"
     ]);
     expect(settings.displayedAttributes).toEqual(expect.arrayContaining([
       "sourceFilePublicId",

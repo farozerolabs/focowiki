@@ -84,6 +84,7 @@ export function createStorageVnextSourceReleaseHandoff(input: {
         publicId: publication.operationPublicId,
         knowledgeBaseId: request.knowledgeBaseId,
         kind: "publication",
+        searchProviderKind: null,
         state: "queued",
         operationRevision: 1,
         settingsRevisionPublicId: request.settingsRevisionPublicId,

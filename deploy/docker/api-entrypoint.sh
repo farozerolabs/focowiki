@@ -20,4 +20,10 @@ mkdir -p "${runtime_secret_dir}"
 chown -R node:node "${runtime_secret_dir}"
 chmod 700 "${runtime_secret_dir}"
 
+if [ -n "${OPENSEARCH_SECURITY_DIR:-}" ]; then
+  mkdir -p "${OPENSEARCH_SECURITY_DIR}"
+  chown -R node:node "${OPENSEARCH_SECURITY_DIR}"
+  chmod 700 "${OPENSEARCH_SECURITY_DIR}"
+fi
+
 exec su-exec node:node "$@"

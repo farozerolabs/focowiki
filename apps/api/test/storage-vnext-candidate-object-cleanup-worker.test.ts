@@ -13,6 +13,7 @@ describe("storage vNext candidate object cleanup worker", () => {
         operationPublicId: "publication-operation-a",
         knowledgeBaseId: "knowledge-base-a",
         domain: "candidate_projection",
+        searchProviderKind: null,
         target: {
           publicId: "object-a",
           resourceKind: "superseded_candidate_object",

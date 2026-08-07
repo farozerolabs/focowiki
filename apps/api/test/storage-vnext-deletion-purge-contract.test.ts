@@ -117,7 +117,9 @@ describe("storage vNext deletion physical purge", () => {
     current.search.deleteKnowledgeBaseScope.mockResolvedValueOnce({
       deletedIndexes: 0,
       deletedTasks: 2,
-      nextTaskFrom: 70
+      nextTaskFrom: 70,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: null
     });
     const coordinator = createCoordinator(current);
 
@@ -131,6 +133,36 @@ describe("storage vNext deletion physical purge", () => {
       status: "retry",
       reasonCode: "DELETION_SEARCH_TASK_PAGE_REMAINING",
       checkpoint: { taskFrom: 70 }
+    });
+    expect(current.postgres.purgeKnowledgeBaseGraph).not.toHaveBeenCalled();
+  });
+
+  it("continues without cross-wiring an index owned by another provider", async () => {
+    const current = fixture({ knowledgeBase: true });
+    current.search.deleteKnowledgeBaseScope.mockResolvedValueOnce({
+      deletedIndexes: 1,
+      deletedTasks: 0,
+      nextTaskFrom: null,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: "opensearch"
+    });
+    const coordinator = createCoordinator(current);
+
+    const result = await coordinator.runAttempt(context({
+      targetKind: "knowledge_base",
+      targetPublicId: "kb-purge",
+      activeSearchProviderKind: "opensearch",
+      candidateSearchProviderKind: "meilisearch"
+    }));
+
+    expect(result).toMatchObject({ status: "retry" });
+    expect(result.receipts.at(-1)).toMatchObject({
+      reasonCode: "DELETION_SEARCH_PROVIDER_REQUIRED",
+      checkpoint: {
+        requiredSearchProviderKind: "opensearch",
+        candidateSearchProviderKind: null,
+        candidateSearchProviderIndexUid: null
+      }
     });
     expect(current.postgres.purgeKnowledgeBaseGraph).not.toHaveBeenCalled();
   });
@@ -266,15 +298,28 @@ function fixture(options: { knowledgeBase?: boolean; paged?: boolean } = {}) {
     search: {
       deleteSourceScope: vi.fn(async () => {
         calls.push("search-source");
-        return { deletedDocuments: true, deletedIndexes: 1 };
+        return {
+          deletedDocuments: true,
+          deletedIndexes: 1,
+          processedProviderKind: "meilisearch" as const,
+          remainingProviderKind: null
+        };
       }),
       deleteKnowledgeBaseScope: vi.fn(async (): Promise<{
         deletedIndexes: number;
         deletedTasks: number;
         nextTaskFrom: number | null;
+        processedProviderKind: "meilisearch" | "opensearch";
+        remainingProviderKind: "meilisearch" | "opensearch" | null;
       }> => {
         calls.push("search-kb");
-        return { deletedIndexes: 2, deletedTasks: 2, nextTaskFrom: null };
+        return {
+          deletedIndexes: 2,
+          deletedTasks: 2,
+          nextTaskFrom: null,
+          processedProviderKind: "meilisearch",
+          remainingProviderKind: null
+        };
       })
     },
     postgres,
@@ -293,6 +338,8 @@ function context(overrides: Partial<{
   targetKind: TargetKind;
   targetPublicId: string;
   cursor: string | null;
+  activeSearchProviderKind: "meilisearch" | "opensearch" | null;
+  candidateSearchProviderKind: "meilisearch" | "opensearch" | null;
 }> = {}) {
   return {
     workPublicId: "operation-purge",
@@ -305,7 +352,10 @@ function context(overrides: Partial<{
       targetKind: overrides.targetKind ?? "source_file",
       targetPublicId: overrides.targetPublicId ?? "source-a",
       normalizedPath: "guides",
+      activeSearchProviderKind: overrides.activeSearchProviderKind ?? "meilisearch",
       activeSearchProviderIndexUid: "unified-kb-purge-active",
+      candidateSearchProviderKind:
+        overrides.candidateSearchProviderKind ?? "meilisearch",
       candidateSearchProviderIndexUid: "unified-kb-purge-candidate",
       finishedBefore: "2026-08-01T06:00:00.000Z",
       taskFrom: null,

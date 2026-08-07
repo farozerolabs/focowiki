@@ -408,6 +408,41 @@ describe("storage vNext streamed search candidate builder", () => {
       });
   });
 
+  it("prefers a source-specific numbered Han term over shared corpus text", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    matrix.observe(createStorageVnextContentDocument({
+      knowledgeBaseId: "kb-stream",
+      sourceFilePublicId: "file-source",
+      sourceRevisionPublicId: "revision-source",
+      logicalPath: "pages/repeat/source.md",
+      fileKind: "page",
+      title: "Provider validation 01",
+      contentKind: "segment",
+      segmentOrdinal: 0,
+      headingAncestors: [],
+      searchText: "shared corpus text 统一搜索需要支持中文分词"
+    }));
+    matrix.observe(createStorageVnextContentDocument({
+      knowledgeBaseId: "kb-stream",
+      sourceFilePublicId: "file-source",
+      sourceRevisionPublicId: "revision-source",
+      logicalPath: "pages/repeat/source.md",
+      fileKind: "page",
+      title: "Provider validation 01",
+      contentKind: "segment",
+      segmentOrdinal: 1,
+      headingAncestors: ["Late body evidence"],
+      searchText: "late marker 搜索尾部证据-01"
+    }));
+
+    expect(matrix.finish().find((item) => item.kind === "chinese"))
+      .toMatchObject({
+        query: "搜索尾部证据-01",
+        minimumRecall: 1,
+        minimumNdcg: 1
+      });
+  });
+
   it("does not build validation probes from truncated provider tokens", () => {
     const matrix = createStorageVnextCandidateQueryMatrix();
     matrix.observe(createStorageVnextContentDocument({

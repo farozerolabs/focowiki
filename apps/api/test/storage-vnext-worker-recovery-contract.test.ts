@@ -44,9 +44,9 @@ describe("storage vNext worker recovery contract", () => {
   });
 
   it("resumes provider work by stable correlation after provider restart", () => {
-    expect(search).toContain("findTaskByCorrelation");
+    expect(search).toContain("findOperationByCorrelation");
     expect(search).toContain("correlationPublicId");
-    expect(search).toContain("providerTaskUid");
+    expect(search).toContain("providerOperationRef");
   });
 
   it("uses one transaction so a crash before commit exposes no partial workflow", () => {
@@ -76,8 +76,8 @@ describe("storage vNext worker recovery contract", () => {
       search.indexOf("async writeDocumentBatch(input)"),
       search.indexOf("async function ensureIndex")
     );
-    expect(acceptedWindow.indexOf("findTaskByCorrelation"))
-      .toBeLessThan(acceptedWindow.indexOf("addDocuments"));
+    expect(acceptedWindow.indexOf("findOperationByCorrelation"))
+      .toBeLessThan(acceptedWindow.indexOf("writeDocuments"));
   });
 
   it("recognizes an operation-owned active snapshot after an activation crash", () => {

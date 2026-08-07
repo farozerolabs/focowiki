@@ -1,3 +1,6 @@
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
+
 export type StorageVnextSearchProjectionState =
   | "preparing"
   | "indexing"
@@ -8,6 +11,7 @@ export type StorageVnextSearchProjectionState =
 export type StorageVnextSearchProjectionRecord = {
   publicId: string;
   knowledgeBaseId: string;
+  providerKind: SearchProviderKind;
   providerIndexUid: string;
   schemaChecksum: string;
   settingsChecksum: string;
@@ -18,24 +22,25 @@ export type StorageVnextSearchProjectionRecord = {
   lastBatchOrdinal: number | null;
   lastBatchChecksum: string | null;
   correlationPublicId: string | null;
-  providerTaskUid: number | null;
+  providerOperationRef: string | null;
   revision: number;
 };
 
-export type StorageVnextSearchTaskResume = {
+export type StorageVnextSearchOperationResume = {
   outcome: "resume" | "start";
-  providerTaskUid: number | null;
+  providerOperationRef: string | null;
 };
 
 export type StorageVnextSearchBatchResume = {
   outcome: "completed" | "resume" | "start";
-  providerTaskUid: number | null;
+  providerOperationRef: string | null;
 };
 
 export interface StorageVnextSearchProjectionRepository {
   reserveCandidate(input: {
     publicId: string;
     knowledgeBaseId: string;
+    providerKind: SearchProviderKind;
     providerIndexUid: string;
     schemaChecksum: string;
     settingsChecksum: string;
@@ -46,16 +51,16 @@ export interface StorageVnextSearchProjectionRepository {
   getCandidate(
     candidatePublicId: string
   ): Promise<StorageVnextSearchProjectionRecord | null>;
-  beginProviderTask(input: {
+  beginProviderOperation(input: {
     candidatePublicId: string;
     correlationPublicId: string;
-  }): Promise<StorageVnextSearchTaskResume>;
-  recordProviderTask(input: {
+  }): Promise<StorageVnextSearchOperationResume>;
+  recordProviderOperation(input: {
     candidatePublicId: string;
     correlationPublicId: string;
-    providerTaskUid: number;
+    providerOperationRef: string;
   }): Promise<void>;
-  completeProviderTask(input: {
+  completeProviderOperation(input: {
     candidatePublicId: string;
     correlationPublicId: string;
   }): Promise<void>;

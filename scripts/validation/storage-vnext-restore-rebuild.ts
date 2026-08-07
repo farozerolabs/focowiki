@@ -79,6 +79,7 @@ const fixtures: readonly Fixture[] = [
 async function main() {
   const args = parseArguments(process.argv.slice(2));
   loadEnvFile(resolve(args.envFile));
+  assertMeilisearchValidationProvider(requiredEnv("SEARCH_PROVIDER"));
   assertLocalEndpoint(requiredEnv("S3_ENDPOINT"), "S3_ENDPOINT");
   const meiliEndpoint = normalizeMeilisearchEndpoint(requiredEnv("MEILI_HOST"));
   assertLocalEndpoint(meiliEndpoint, "MEILI_HOST");
@@ -137,7 +138,7 @@ async function main() {
 
 function createContext(runId: string, sql: any, s3Client: any, transport: any) {
   const knowledgeBaseId = `kb-restore-${runId}`;
-  const indexPrefix = requiredEnv("MEILI_INDEX_PREFIX");
+  const indexPrefix = requiredEnv("SEARCH_INDEX_PREFIX");
   const indexUid = `${indexPrefix}_restore_${checksum(runId).slice(0, 16)}`;
   return {
     runId,
@@ -588,6 +589,12 @@ function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required for restore rebuild validation`);
   return value;
+}
+
+function assertMeilisearchValidationProvider(provider: string): void {
+  if (provider !== "meilisearch") {
+    throw new Error("Restore rebuild validation requires SEARCH_PROVIDER=meilisearch");
+  }
 }
 
 function requiredBoolean(name: string): boolean {

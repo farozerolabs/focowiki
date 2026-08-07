@@ -408,6 +408,7 @@ CREATE TABLE focowiki.operation_work_items (
   operation_public_id text PRIMARY KEY,
   knowledge_base_id text NOT NULL,
   work_kind text NOT NULL,
+  search_provider_kind text,
   state text NOT NULL,
   operation_revision bigint NOT NULL,
   settings_revision_public_id text NOT NULL,
@@ -427,6 +428,15 @@ CREATE TABLE focowiki.operation_work_items (
     work_kind IN (
       'upload', 'source', 'graph', 'publication', 'search', 'mutation',
       'deletion', 'maintenance', 'reconciliation', 'webhook'
+    )
+  ),
+  CONSTRAINT operation_work_items_search_provider_check CHECK (
+    (
+      work_kind IN ('search', 'maintenance')
+      AND search_provider_kind IN ('meilisearch', 'opensearch')
+    ) OR (
+      work_kind NOT IN ('search', 'maintenance')
+      AND search_provider_kind IS NULL
     )
   ),
   CONSTRAINT operation_work_items_state_check CHECK (
@@ -1028,6 +1038,7 @@ CREATE TABLE focowiki.search_projections (
   public_id text PRIMARY KEY,
   knowledge_base_id text NOT NULL,
   projection_role text NOT NULL,
+  provider_kind text NOT NULL,
   provider_index_uid text NOT NULL,
   schema_checksum_sha256 text NOT NULL,
   settings_checksum_sha256 text NOT NULL,
@@ -1039,16 +1050,13 @@ CREATE TABLE focowiki.search_projections (
   last_batch_checksum_sha256 text,
   state text NOT NULL,
   correlation_public_id text,
-  provider_task_uid bigint,
+  provider_operation_ref text,
   safe_error_code text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
-  last_compacted_at timestamp with time zone,
-  last_compaction_database_size_bytes bigint,
-  last_compaction_used_database_size_bytes bigint,
   CONSTRAINT search_projections_scope_key UNIQUE (knowledge_base_id, public_id),
   CONSTRAINT search_projections_role_key UNIQUE (knowledge_base_id, projection_role),
-  CONSTRAINT search_projections_provider_key UNIQUE (provider_index_uid),
+  CONSTRAINT search_projections_provider_key UNIQUE (provider_kind, provider_index_uid),
   CONSTRAINT search_projections_knowledge_base_fkey FOREIGN KEY (knowledge_base_id)
     REFERENCES focowiki.knowledge_bases (public_id) ON DELETE CASCADE,
   CONSTRAINT search_projections_identity_check CHECK (
@@ -1061,6 +1069,9 @@ CREATE TABLE focowiki.search_projections (
   ),
   CONSTRAINT search_projections_role_check CHECK (
     projection_role IN ('active', 'candidate')
+  ),
+  CONSTRAINT search_projections_provider_kind_check CHECK (
+    provider_kind IN ('meilisearch', 'opensearch')
   ),
   CONSTRAINT search_projections_checksum_check CHECK (
     schema_checksum_sha256 ~ '^[0-9a-f]{64}$'
@@ -1080,9 +1091,11 @@ CREATE TABLE focowiki.search_projections (
       )
     )
   ),
-  CONSTRAINT search_projections_provider_task_check CHECK (
-    provider_task_uid IS NULL OR (
-      provider_task_uid >= 0 AND correlation_public_id IS NOT NULL
+  CONSTRAINT search_projections_provider_operation_check CHECK (
+    provider_operation_ref IS NULL OR (
+      provider_operation_ref <> ''
+      AND octet_length(provider_operation_ref) <= 2048
+      AND correlation_public_id IS NOT NULL
     )
   ),
   CONSTRAINT search_projections_state_check CHECK (
@@ -1094,20 +1107,29 @@ CREATE TABLE focowiki.search_projections (
   CONSTRAINT search_projections_error_check CHECK (
     (state = 'failed' AND safe_error_code IS NOT NULL)
     OR (state <> 'failed' AND safe_error_code IS NULL)
-  ),
-  CONSTRAINT search_projections_compaction_check CHECK (
+  )
+);
+
+CREATE TABLE focowiki.meilisearch_projection_maintenance (
+  projection_public_id text PRIMARY KEY,
+  last_compacted_at timestamp with time zone,
+  last_database_size_bytes bigint,
+  last_used_database_size_bytes bigint,
+  CONSTRAINT meilisearch_projection_maintenance_projection_fkey
+    FOREIGN KEY (projection_public_id)
+    REFERENCES focowiki.search_projections (public_id) ON DELETE CASCADE,
+  CONSTRAINT meilisearch_projection_maintenance_compaction_check CHECK (
     (
       last_compacted_at IS NULL
-      AND last_compaction_database_size_bytes IS NULL
-      AND last_compaction_used_database_size_bytes IS NULL
+      AND last_database_size_bytes IS NULL
+      AND last_used_database_size_bytes IS NULL
     ) OR (
       last_compacted_at IS NOT NULL
-      AND last_compaction_database_size_bytes IS NOT NULL
-      AND last_compaction_used_database_size_bytes IS NOT NULL
-      AND last_compaction_database_size_bytes >= 0
-      AND last_compaction_used_database_size_bytes >= 0
-      AND last_compaction_used_database_size_bytes
-        <= last_compaction_database_size_bytes
+      AND last_database_size_bytes IS NOT NULL
+      AND last_used_database_size_bytes IS NOT NULL
+      AND last_database_size_bytes >= 0
+      AND last_used_database_size_bytes >= 0
+      AND last_used_database_size_bytes <= last_database_size_bytes
     )
   )
 );
@@ -1507,6 +1529,7 @@ CREATE TABLE focowiki.cleanup_actions (
   knowledge_base_id text NOT NULL,
   action_kind text NOT NULL,
   cleanup_plane text NOT NULL,
+  search_provider_kind text,
   resource_kind text NOT NULL,
   resource_public_id text NOT NULL,
   required boolean NOT NULL,
@@ -1521,8 +1544,9 @@ CREATE TABLE focowiki.cleanup_actions (
   safe_error_code text,
   not_before timestamp with time zone NOT NULL,
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT cleanup_actions_idempotency_key UNIQUE (
-    operation_public_id, action_kind, cleanup_plane, resource_kind,
+  CONSTRAINT cleanup_actions_idempotency_key UNIQUE NULLS NOT DISTINCT (
+    operation_public_id, action_kind, cleanup_plane, search_provider_kind,
+    resource_kind,
     resource_public_id, idempotency_key
   ),
   CONSTRAINT cleanup_actions_operation_fkey FOREIGN KEY (
@@ -1536,6 +1560,15 @@ CREATE TABLE focowiki.cleanup_actions (
     AND resource_public_id <> '' AND octet_length(resource_public_id) <= 255
     AND idempotency_key <> '' AND octet_length(idempotency_key) <= 255
     AND request_hash ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT cleanup_actions_search_provider_check CHECK (
+    (
+      cleanup_plane = 'search'
+      AND search_provider_kind IN ('meilisearch', 'opensearch')
+    ) OR (
+      cleanup_plane <> 'search'
+      AND search_provider_kind IS NULL
+    )
   ),
   CONSTRAINT cleanup_actions_checkpoint_check CHECK (
     jsonb_typeof(checkpoint) = 'object' AND octet_length(checkpoint::text) <= 32768
@@ -2052,8 +2085,8 @@ CREATE INDEX directory_summaries_directory_idx ON focowiki.directory_summaries (
 CREATE INDEX active_snapshots_release_root_idx ON focowiki.active_snapshots (knowledge_base_id, release_root_public_id);
 CREATE INDEX active_snapshots_search_projection_idx ON focowiki.active_snapshots (knowledge_base_id, search_projection_public_id);
 CREATE INDEX active_snapshots_operation_idx ON focowiki.active_snapshots (knowledge_base_id, activated_by_operation_public_id);
-CREATE INDEX search_projections_failed_cleanup_idx ON focowiki.search_projections (updated_at, public_id) WHERE projection_role = 'candidate' AND state = 'failed';
-CREATE INDEX search_projections_active_compaction_idx ON focowiki.search_projections (last_compacted_at, public_id) WHERE projection_role = 'active' AND state = 'ready';
+CREATE INDEX search_projections_failed_cleanup_idx ON focowiki.search_projections (provider_kind, updated_at, public_id) WHERE projection_role = 'candidate' AND state = 'failed';
+CREATE INDEX meilisearch_projection_maintenance_compaction_idx ON focowiki.meilisearch_projection_maintenance (last_compacted_at, projection_public_id);
 CREATE INDEX release_candidates_operation_idx ON focowiki.release_candidates (knowledge_base_id, operation_public_id);
 CREATE INDEX release_candidates_candidate_root_idx ON focowiki.release_candidates (knowledge_base_id, candidate_root_public_id);
 CREATE INDEX release_candidates_expected_root_idx ON focowiki.release_candidates (knowledge_base_id, expected_active_root_public_id) WHERE expected_active_root_public_id IS NOT NULL;

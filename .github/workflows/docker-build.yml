@@ -26,6 +26,9 @@ env:
   FOCOWIKI_TEST_DATABASE_URL: postgres://focowiki:focowiki@127.0.0.1:55432/focowiki
   FOCOWIKI_TEST_MEILISEARCH_URL: http://127.0.0.1:57700
   FOCOWIKI_TEST_MEILISEARCH_API_KEY: focowiki-development-master-key
+  FOCOWIKI_TEST_OPENSEARCH_URL: http://127.0.0.1:59200
+  FOCOWIKI_TEST_OPENSEARCH_VERSION: 3.8.0
+  FOCOWIKI_TEST_OPENSEARCH_RUN_OWNER: svnext-build0001
   REDIS_URL: redis://127.0.0.1:56379/0
 
 jobs:
@@ -70,6 +73,21 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      opensearch:
+        image: opensearchproject/opensearch:3.8.0
+        env:
+          "discovery.type": single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+        ports:
+          - 59200:9200
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:9200/"
+          --health-start-period 30s
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
 
     steps:
       - name: Checkout

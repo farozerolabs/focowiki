@@ -80,10 +80,7 @@ export async function enqueueStorageVnextCandidateObjectCleanupActions(
       "state", "attempt_count", "lease_owner", "lease_expires_at",
       "safe_error_code", "not_before"
     )}
-    ON CONFLICT (
-      operation_public_id, action_kind, cleanup_plane, resource_kind,
-      resource_public_id, idempotency_key
-    ) DO NOTHING
+    ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
     RETURNING public_id
   `;
   return inserted.length;

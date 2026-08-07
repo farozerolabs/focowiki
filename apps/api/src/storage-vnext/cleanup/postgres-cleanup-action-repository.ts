@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../../db/client.js";
+import { isSearchProviderKind, type SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 import type {
   StorageVnextBoundedMetadata,
   StorageVnextIdempotency,
@@ -13,6 +15,7 @@ export type StorageVnextCleanupAction = {
   operationPublicId: StorageVnextPublicId;
   knowledgeBaseId: StorageVnextKnowledgeBaseId;
   domain: string;
+  searchProviderKind: SearchProviderKind | null;
   target: StorageVnextCleanupTarget;
   state: "queued" | "running" | "retry";
   attempt: number;
@@ -28,6 +31,7 @@ export type StorageVnextCleanupActionSelector = {
   domain: string;
   plane: StorageVnextCleanupTarget["plane"];
   resourceKind: string;
+  searchProviderKind?: SearchProviderKind;
 };
 
 export type StorageVnextCleanupActionRepository = {
@@ -86,6 +90,7 @@ type CleanupActionRow = {
   knowledge_base_id: string;
   action_kind: string;
   cleanup_plane: StorageVnextCleanupTarget["plane"];
+  search_provider_kind: SearchProviderKind | null;
   resource_kind: string;
   resource_public_id: string;
   required: boolean;
@@ -103,7 +108,8 @@ type CleanupActionRow = {
 
 const ACTION_COLUMNS = `
   public_id, operation_public_id, knowledge_base_id, action_kind,
-  cleanup_plane, resource_kind, resource_public_id, required, sequence_number,
+  cleanup_plane, search_provider_kind, resource_kind, resource_public_id,
+  required, sequence_number,
   idempotency_key, request_hash, checkpoint, state, attempt_count,
   lease_owner, lease_expires_at, safe_error_code, not_before
 `;
@@ -134,20 +140,19 @@ export function createPostgresStorageVnextCleanupActionRepository(
         INSERT INTO focowiki.cleanup_actions
           (public_id, operation_public_id, knowledge_base_id, action_kind,
            cleanup_plane, resource_kind, resource_public_id, required, sequence_number,
+           search_provider_kind,
            idempotency_key, request_hash, checkpoint, state, attempt_count,
            lease_owner, lease_expires_at, safe_error_code, not_before)
         VALUES
           (${action.publicId}, ${action.operationPublicId}, ${action.knowledgeBaseId},
            ${action.domain}, ${action.target.plane}, ${action.target.resourceKind},
            ${action.target.publicId}, ${action.target.required}, ${action.target.sequence},
+           ${action.searchProviderKind},
            ${action.idempotency.key}, ${action.idempotency.requestHash},
            ${sql.json(action.checkpoint)}, ${action.state}, ${action.attempt},
            ${action.leaseOwner}, ${action.leaseExpiresAt}, ${action.safeErrorCode},
            ${action.notBefore})
-        ON CONFLICT (
-          operation_public_id, action_kind, cleanup_plane, resource_kind,
-          resource_public_id, idempotency_key
-        ) DO NOTHING
+        ON CONFLICT ON CONSTRAINT cleanup_actions_idempotency_key DO NOTHING
       `;
       const rows = await sql<CleanupActionRow[]>`
         SELECT ${sql.unsafe(ACTION_COLUMNS)}
@@ -155,6 +160,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
         WHERE operation_public_id = ${action.operationPublicId}
           AND action_kind = ${action.domain}
           AND cleanup_plane = ${action.target.plane}
+          AND search_provider_kind IS NOT DISTINCT FROM ${action.searchProviderKind}
           AND resource_kind = ${action.target.resourceKind}
           AND resource_public_id = ${action.target.publicId}
           AND idempotency_key = ${action.idempotency.key}
@@ -180,6 +186,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
             ${selector ? sql`
               AND action_kind = ${selector.domain}
               AND cleanup_plane = ${selector.plane}
+              AND search_provider_kind IS NOT DISTINCT FROM ${selector.searchProviderKind ?? null}
               AND resource_kind = ${selector.resourceKind}
             ` : sql``}
           ORDER BY not_before, sequence_number, updated_at, public_id
@@ -212,6 +219,7 @@ export function createPostgresStorageVnextCleanupActionRepository(
             ${selector ? sql`
               AND action_kind = ${selector.domain}
               AND cleanup_plane = ${selector.plane}
+              AND search_provider_kind IS NOT DISTINCT FROM ${selector.searchProviderKind ?? null}
               AND resource_kind = ${selector.resourceKind}
             ` : sql``}
           ORDER BY lease_expires_at, public_id
@@ -307,6 +315,7 @@ function mapAction(row: CleanupActionRow): StorageVnextCleanupAction {
     operationPublicId: row.operation_public_id,
     knowledgeBaseId: row.knowledge_base_id,
     domain: row.action_kind,
+    searchProviderKind: row.search_provider_kind,
     target: {
       publicId: row.resource_public_id,
       resourceKind: row.resource_kind,
@@ -339,6 +348,7 @@ function assertAction(action: StorageVnextCleanupAction): void {
   ) {
     throw repositoryError("invalid_input");
   }
+  assertSearchProviderOwnership(action.target.plane, action.searchProviderKind);
   assertIdentifier(action.idempotency.key, 255);
   assertChecksum(action.idempotency.requestHash);
   if (!Number.isSafeInteger(action.target.sequence) || action.target.sequence < 0) {
@@ -364,12 +374,27 @@ function assertSelector(
   if (!CLEANUP_PLANES.includes(selector.plane)) {
     throw repositoryError("invalid_input");
   }
+  assertSearchProviderOwnership(
+    selector.plane,
+    selector.searchProviderKind ?? null
+  );
   return selector;
 }
 
 function sameAction(left: StorageVnextCleanupAction, right: StorageVnextCleanupAction): boolean {
   return left.knowledgeBaseId === right.knowledgeBaseId
+    && left.searchProviderKind === right.searchProviderKind
     && left.idempotency.requestHash === right.idempotency.requestHash;
+}
+
+function assertSearchProviderOwnership(
+  plane: StorageVnextCleanupTarget["plane"],
+  providerKind: SearchProviderKind | null
+): void {
+  const validProvider = isSearchProviderKind(providerKind);
+  if ((plane === "search") !== validProvider) {
+    throw repositoryError("invalid_input");
+  }
 }
 
 function assertMetadata(value: object): void {

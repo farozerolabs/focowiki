@@ -30,6 +30,7 @@ const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,64}$/u;
 async function main(): Promise<void> {
   const args = parseArguments(process.argv.slice(2));
   loadEnvFile(resolve(args.envFile));
+  assertMeilisearchValidationProvider(requiredEnvironment("SEARCH_PROVIDER"));
   assertLocalEndpoint(requiredEnvironment("DATABASE_URL"), "DATABASE_URL");
   assertLocalEndpoint(requiredEnvironment("S3_ENDPOINT"), "S3_ENDPOINT");
   const meilisearchEndpoint = normalizeMeilisearchEndpoint(
@@ -110,7 +111,7 @@ async function main(): Promise<void> {
     if (!counts || !settings) throw new Error("Full restore authority is incomplete");
     const plan = resolveFullRestoreRebuildPlan({
       expectedKnowledgeBaseId: args.knowledgeBaseId,
-      expectedIndexPrefix: requiredEnvironment("MEILI_INDEX_PREFIX"),
+      expectedIndexPrefix: requiredEnvironment("SEARCH_INDEX_PREFIX"),
       projections: projectionRows,
       sourceCount: counts.sourceCount,
       graphNodeCount: counts.graphNodeCount,
@@ -282,6 +283,12 @@ function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required for full restore rebuild`);
   return value;
+}
+
+function assertMeilisearchValidationProvider(provider: string): void {
+  if (provider !== "meilisearch") {
+    throw new Error("Full restore rebuild requires SEARCH_PROVIDER=meilisearch");
+  }
 }
 
 function requiredBoolean(name: string): boolean {

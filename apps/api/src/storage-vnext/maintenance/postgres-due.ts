@@ -1,6 +1,8 @@
 import type { DatabaseClient } from "../../db/client.js";
 import type { StorageVnextAutomaticMaintenanceDuePort } from
   "./automatic-scheduler.js";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 type DueRow = {
   public_id: string;
@@ -8,7 +10,8 @@ type DueRow = {
 };
 
 export function createPostgresStorageVnextAutomaticMaintenanceDue(
-  sql: DatabaseClient
+  sql: DatabaseClient,
+  options: { selectedSearchProviderKind: SearchProviderKind }
 ): StorageVnextAutomaticMaintenanceDuePort {
   return {
     async list(input) {
@@ -27,7 +30,11 @@ export function createPostgresStorageVnextAutomaticMaintenanceDue(
           JOIN focowiki.release_roots root
             ON root.knowledge_base_id = snapshot.knowledge_base_id
            AND root.public_id = snapshot.release_root_public_id
+          JOIN focowiki.search_projections search
+            ON search.knowledge_base_id = snapshot.knowledge_base_id
+           AND search.public_id = snapshot.search_projection_public_id
           WHERE knowledge_base.deleted_at IS NULL
+            AND search.provider_kind = ${options.selectedSearchProviderKind}
             AND (
               root.navigation_profile_version < 1
               OR greatest(

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import type { SearchEngineSettings } from
-  "../src/application/ports/search-engine-transport.js";
+import type { MeilisearchSettings } from
+  "../src/infrastructure/meilisearch/meilisearch-client-port.js";
 import { createMeilisearchTransport } from
   "../src/infrastructure/meilisearch/meilisearch-transport.js";
+import { createMeilisearchProviderRuntime } from
+  "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 import { createStorageVnextUnifiedSearchDeletion } from
   "../src/storage-vnext/deletion/unified-search-deletion.js";
 
@@ -15,7 +17,7 @@ const hasOwnedTarget = Boolean(
 );
 const describeOwnedMeilisearch = hasOwnedTarget ? describe : describe.skip;
 
-const settings: SearchEngineSettings = {
+const settings: MeilisearchSettings = {
   searchableAttributes: ["searchText"],
   filterableAttributes: [
     "knowledgeBaseId", "sourceFilePublicId", "documentKind"
@@ -43,7 +45,7 @@ describeOwnedMeilisearch("storage vNext deletion against real unified Meilisearc
     retryDelayMs: 20
   });
   const deletion = createStorageVnextUnifiedSearchDeletion({
-    transport,
+    provider: createMeilisearchProviderRuntime(transport),
     indexUidPrefix: prefix,
     maximumPollAttempts: 200,
     maximumSourceFiles: 100,
@@ -84,13 +86,17 @@ describeOwnedMeilisearch("storage vNext deletion against real unified Meilisearc
     await expect(deletion.deleteSourceScope({
       knowledgeBaseId: "kb-unified-source",
       operationPublicId: "operation-unified-source",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: active,
+      candidateProviderKind: "meilisearch",
       candidateProviderIndexUid: candidate,
       sourceFilePublicIds: ["source-delete"]
     })).resolves.toEqual({
       deletedDocuments: true,
       deletedIndexes: 1,
-      deletedTasks: 2
+      deletedTasks: 0,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: null
     });
 
     expect(await transport.listDocuments?.({
@@ -111,7 +117,7 @@ describeOwnedMeilisearch("storage vNext deletion against real unified Meilisearc
       .toHaveLength(1);
   }, 30_000);
 
-  it("removes both unified index roles and their finished tasks for knowledge-base deletion", async () => {
+  it("removes both unified index roles without depending on task-history cleanup", async () => {
     const active = `${prefix}_active_whole`;
     const candidate = `${prefix}_candidate_whole`;
     await createUnifiedIndex(active);
@@ -122,13 +128,20 @@ describeOwnedMeilisearch("storage vNext deletion against real unified Meilisearc
     const result = await deletion.deleteKnowledgeBaseScope({
       knowledgeBaseId: "kb-unified-whole",
       operationPublicId: "operation-unified-whole",
+      activeProviderKind: "meilisearch",
       activeProviderIndexUid: active,
+      candidateProviderKind: "meilisearch",
       candidateProviderIndexUid: candidate,
       finishedBefore: "2099-08-01T00:00:00.000Z",
       taskFrom: null
     });
 
-    expect(result).toMatchObject({ deletedIndexes: 2, nextTaskFrom: null });
+    expect(result).toMatchObject({
+      deletedIndexes: 2,
+      nextTaskFrom: null,
+      processedProviderKind: "meilisearch",
+      remainingProviderKind: null
+    });
     await expect(transport.getIndex({ indexUid: active })).resolves.toBeNull();
     await expect(transport.getIndex({ indexUid: candidate })).resolves.toBeNull();
     const tasks = await transport.listFinishedTasks?.({
@@ -139,7 +152,7 @@ describeOwnedMeilisearch("storage vNext deletion against real unified Meilisearc
     });
     expect(tasks?.tasks.filter((task) =>
       task.indexUid === active || task.indexUid === candidate
-    )).toEqual([]);
+    ).length).toBeGreaterThan(0);
   }, 30_000);
 
   async function createUnifiedIndex(indexUid: string): Promise<void> {

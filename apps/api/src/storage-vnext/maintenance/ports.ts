@@ -1,4 +1,6 @@
 import type { StorageVnextBoundedMetadata } from "../shared/types.js";
+import type { SearchProviderKind } from
+  "../../application/ports/search-provider-runtime.js";
 
 export const STORAGE_VNEXT_MAINTENANCE_PHASES = [
   "planning",
@@ -15,10 +17,13 @@ export type StorageVnextMaintenancePhase =
   typeof STORAGE_VNEXT_MAINTENANCE_PHASES[number];
 
 export type StorageVnextMaintenanceTrigger = "manual" | "automatic";
+export type StorageVnextMaintenanceKind = "standard" | "provider_adoption";
 
 export type StorageVnextMaintenanceCheckpoint = {
   version: 1;
+  searchProviderKind: SearchProviderKind;
   trigger: StorageVnextMaintenanceTrigger;
+  maintenanceKind: StorageVnextMaintenanceKind;
   phase: StorageVnextMaintenancePhase;
   cursor: string | null;
   batchOrdinal: number;
@@ -38,6 +43,7 @@ export type StorageVnextMaintenanceCheckpoint = {
 export type StorageVnextMaintenanceRequest = {
   knowledgeBaseId: string;
   operationPublicId: string;
+  searchProviderKind: SearchProviderKind;
   trigger: StorageVnextMaintenanceTrigger;
   idempotencyKey: string;
   expectedResourceRevision: number;
@@ -46,6 +52,11 @@ export type StorageVnextMaintenanceRequest = {
   expiresAt: string;
   maxAttempts: number;
 };
+
+export type StorageVnextMaintenanceRequestInput = Omit<
+  StorageVnextMaintenanceRequest,
+  "searchProviderKind"
+>;
 
 export type StorageVnextMaintenanceAcceptance = {
   outcome: "queued" | "replayed" | "already_active" | "deferred";
@@ -126,6 +137,7 @@ export interface StorageVnextMaintenanceRepository {
   claimOne(input: {
     workerId: string;
     leaseExpiresAt: string;
+    searchProviderKind: SearchProviderKind;
   }): Promise<StorageVnextMaintenanceClaim | null>;
   saveProgress(input: {
     operationPublicId: string;

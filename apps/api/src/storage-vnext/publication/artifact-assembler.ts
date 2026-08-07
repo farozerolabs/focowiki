@@ -646,11 +646,11 @@ function validateConfiguration(
 
 function validateRequest(request: PublicationIdentity): void {
   if (
-    request.candidatePublicId !== request.searchProjectionPublicId
-    || [
+    [
       request.knowledgeBaseId,
       request.candidatePublicId,
-      request.operationPublicId
+      request.operationPublicId,
+      request.searchProjectionPublicId
     ].some((value) => !value || Buffer.byteLength(value) > 255)
   ) throw artifactAssemblerError("invalid_request");
 }
