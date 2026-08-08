@@ -48,6 +48,7 @@ export type StorageVnextExtensionNavigationInput = {
   byFileLogicalPaths: readonly string[];
   existingMarkdownPaths: readonly string[];
   previousLeaves: ReadonlyMap<string, readonly PersistentDirectoryLeaf[]>;
+  changedAt?: string;
   sources: AsyncIterable<readonly StorageVnextExtensionNavigationSource[]>;
   affectedDirectoryPaths: readonly string[];
   previousPresentDirectoryPaths: readonly string[];
@@ -185,6 +186,9 @@ export async function assembleStorageVnextExtensionNavigation(input: {
       directoryPath,
       entries,
       previousLeaves,
+      ...(input.navigation.changedAt
+        ? { changedAt: input.navigation.changedAt }
+        : {}),
       maxEntries: input.navigation.maxEntries,
       maxBytes: input.navigation.maxLeafBytes
     });
@@ -251,6 +255,7 @@ function reconcileLeaves(input: {
   directoryPath: string;
   entries: readonly OrderedDirectoryEntry[];
   previousLeaves: readonly PersistentDirectoryLeaf[];
+  changedAt?: string;
   maxEntries: number;
   maxBytes: number;
 }): PersistentDirectoryLeaf[] {
@@ -288,17 +293,25 @@ function reconcileLeaves(input: {
     }
   }).leaves;
   const previousById = new Map(input.previousLeaves.map((leaf) => [leaf.id, leaf]));
-  return leaves.map((leaf, index) => ({
-    ...leaf,
-    previousLeafId: leaves[index - 1]?.id ?? null,
-    nextLeafId: leaves[index + 1]?.id ?? null,
-    revision: nextLeafRevision({
+  return leaves.map((leaf, index) => {
+    const previous = previousById.get(leaf.id) ?? null;
+    const revision = nextLeafRevision({
       leaf,
-      previous: previousById.get(leaf.id) ?? null,
+      previous,
       previousLeafId: leaves[index - 1]?.id ?? null,
       nextLeafId: leaves[index + 1]?.id ?? null
-    })
-  }));
+    });
+    const changedAt = previous && revision === previous.revision && previous.changedAt
+      ? previous.changedAt
+      : input.changedAt;
+    return {
+      ...leaf,
+      previousLeafId: leaves[index - 1]?.id ?? null,
+      nextLeafId: leaves[index + 1]?.id ?? null,
+      revision,
+      ...(changedAt ? { changedAt } : {})
+    };
+  });
 }
 
 function nextLeafRevision(input: {

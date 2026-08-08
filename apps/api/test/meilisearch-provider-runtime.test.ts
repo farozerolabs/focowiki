@@ -2,10 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import type { MeilisearchClientPort } from
   "../src/infrastructure/meilisearch/meilisearch-client-port.js";
 import {
-  createMeilisearchProviderRuntime
+  createMeilisearchProviderRuntime,
+  toMeilisearchSettings
 } from "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
 
 describe("Meilisearch provider runtime", () => {
+  it("enables native comparison filters for OKF epoch-day fields", () => {
+    expect(toMeilisearchSettings(definition()).filterableAttributes)
+      .toEqual([expect.objectContaining({
+        features: {
+          facetSearch: false,
+          filter: { equality: true, comparison: true }
+        }
+      })]);
+  });
+
   it("keeps numeric task identifiers inside tagged opaque receipts", async () => {
     const transport = legacyTransport();
     const runtime = createMeilisearchProviderRuntime(transport);
@@ -61,6 +72,11 @@ describe("Meilisearch provider runtime", () => {
             field: "visible",
             value: true
           }]
+        }, {
+          kind: "range",
+          field: "okfSignals.staleAfterEpochDay",
+          operator: "gt",
+          value: 20_719
         }]
       },
       searchFields: ["title", "searchText"],
@@ -76,7 +92,7 @@ describe("Meilisearch provider runtime", () => {
     });
 
     expect(transport.search).toHaveBeenCalledWith(expect.objectContaining({
-      filter: 'knowledgeBaseId = "kb-a" AND (documentKind = "content" OR visible = true)'
+      filter: 'knowledgeBaseId = "kb-a" AND (documentKind = "content" OR visible = true) AND okfSignals.staleAfterEpochDay > 20719'
     }));
     expect(result).toMatchObject({
       hits: [{

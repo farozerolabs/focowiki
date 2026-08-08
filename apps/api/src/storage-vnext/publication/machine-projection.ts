@@ -262,7 +262,7 @@ function sourceRecord(
       headings: readStringList(profile?.headingOutline),
       keywords: readStringList(profile?.keywords),
       language: readString(profile?.language),
-      metadata
+      metadata: source.metadata
     };
   }
   if (projectionKind === "manifest") {
@@ -272,7 +272,7 @@ function sourceRecord(
       sourceRevisionId: revision.publicId,
       resourceRevision: source.revision,
       checksumSha256: revision.checksum,
-      metadata
+      metadata: source.metadata
     };
   }
   if (projectionKind === "tree") {

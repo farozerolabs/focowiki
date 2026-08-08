@@ -9,6 +9,7 @@ export type PersistentDirectoryLeaf = {
   nextLeafId: string | null;
   entries: OrderedDirectoryEntry[];
   revision: number;
+  changedAt?: string;
 };
 
 export type DirectoryNavigationSummary = {

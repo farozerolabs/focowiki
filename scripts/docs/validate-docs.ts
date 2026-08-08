@@ -358,12 +358,12 @@ async function validateOpenApiContractExamples(document: OpenApiDocument) {
     }
     for (const [contentType, mediaValue] of Object.entries(readRecord(requestBody.content))) {
       const media = readRecord(mediaValue);
-      if (media.example !== undefined) {
+      for (const [exampleName, example] of readMediaExamples(media)) {
         validateSchemaValue(
           document,
           readRecord(media.schema),
-          media.example,
-          `${method.toUpperCase()} ${apiPath} request body (${contentType})`
+          example,
+          `${method.toUpperCase()} ${apiPath} request body (${contentType}, ${exampleName})`
         );
       }
     }
@@ -861,7 +861,20 @@ function extractMarkdownTables(content: string): string[][] {
 
 function hasAnyContentExample(requestBody: Record<string, unknown>): boolean {
   const content = readRecord(requestBody.content);
-  return Object.values(content).some((entry) => readRecord(entry).example !== undefined);
+  return Object.values(content).some((entry) =>
+    readMediaExamples(readRecord(entry)).length > 0
+  );
+}
+
+function readMediaExamples(media: Record<string, unknown>): Array<[string, unknown]> {
+  if (media.example !== undefined) {
+    return [["example", media.example]];
+  }
+  return Object.entries(readRecord(media.examples))
+    .flatMap(([name, exampleValue]) => {
+      const example = readRecord(exampleValue).value;
+      return example === undefined ? [] : [[name, example] as [string, unknown]];
+    });
 }
 
 function readJsonContentExample(response: Record<string, unknown>): unknown {

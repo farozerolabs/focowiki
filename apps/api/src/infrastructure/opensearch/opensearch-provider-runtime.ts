@@ -25,7 +25,8 @@ const MAXIMUM_DELETE_IDS = 10_000;
 const CANONICAL_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
-  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms"
+  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms",
+  "okfSignals"
 ]);
 
 export function createOpenSearchProviderRuntime(input: {
@@ -303,6 +304,10 @@ function idsQuery(ids: readonly string[]) {
 function renderFilter(filter: SearchFilterExpression): Record<string, unknown> {
   if (filter.kind === "equals" || filter.kind === "boolean") {
     return { term: { [filter.field]: filter.value } };
+  }
+  if (filter.kind === "range") {
+    if (!Number.isSafeInteger(filter.value)) throw requestError();
+    return { range: { [filter.field]: { [filter.operator]: filter.value } } };
   }
   if (filter.operands.length === 0 || filter.operands.length > 100) {
     throw requestError();

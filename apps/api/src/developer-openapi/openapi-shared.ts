@@ -385,6 +385,18 @@ export function fileSearchParameters(): ParameterObject[] {
       type: "integer",
       minimum: 0
     }),
+    queryParameter("okfStatus", "Return only files whose normalized OKF document status matches this value. Files with an invalid status are excluded.", {
+      type: "string",
+      enum: ["draft", "stable", "deprecated"]
+    }),
+    queryParameter("okfTrustTier", "Return only files whose normalized OKF verification tier matches this value. Files with invalid verification metadata are excluded.", {
+      type: "string",
+      enum: ["unverified", "machine-confirmed", "human-reviewed"]
+    }),
+    queryParameter("okfFreshness", "Return only files whose valid `stale_after` date is fresh or stale on the request date. Files without a valid stale date are excluded.", {
+      type: "string",
+      enum: ["fresh", "stale"]
+    }),
     ...paginationParameters()
   ];
 }

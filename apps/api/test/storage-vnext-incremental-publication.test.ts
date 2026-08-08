@@ -611,10 +611,19 @@ describe("storage vNext incremental publication", () => {
     let activeObjectReads = 0;
     let peakObjectReads = 0;
     const navigationBodies = new Map([
-      ["object-0", "[Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
-      ["object-1", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
-      ["object-4", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
-      ["object-5", "[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-0", "---\nokf_version: \"0.2\"\n---\n# Knowledge base\n\n[Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-1", "# Documents\n\n[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-2", [
+        "---",
+        'type: "Schema Reference"',
+        'title: "Metadata and navigation schema"',
+        'generated: {"by":"process:focowiki-publication","at":"2026-08-01T00:00:00.000Z"}',
+        "---",
+        "# Schema"
+      ].join("\n")],
+      ["object-3", "# Directory Update Log\n\n## 2026-08-01\n\n* **Publication**: Published one file."],
+      ["object-4", "# Machine-readable indexes\n\n[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
+      ["object-5", "# Relationship graph\n\n[Root](/index.md) [Documents](/pages/index.md) [Indexes](/_index/index.md) [Graph](/_graph/index.md)"],
       ["object-6", `${JSON.stringify({
         formatVersion: 1,
         knowledgeBaseId: "kb-a",
@@ -754,6 +763,13 @@ describe("storage vNext incremental publication", () => {
     });
     expect(countCandidateOwnedObjects).toHaveBeenCalledWith("candidate-a");
     expect(readObjectText).toHaveBeenCalledTimes(14);
+    expect(readObjectText.mock.calls.filter(([request]) =>
+      request.objectId === "object-0"
+    )).toHaveLength(1);
+    expect(verifyObject).toHaveBeenCalledWith(expect.objectContaining({
+      logicalPath: "pages/guides/setup.md",
+      kind: "source"
+    }));
     expect(verifyObject).toHaveBeenCalledTimes(9);
     expect(peakObjectReads).toBe(3);
   });

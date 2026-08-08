@@ -9,6 +9,10 @@ import {
   type SchemaObject
 } from "./openapi-shared.js";
 import { WEBHOOK_EVENT_TYPES } from "../webhooks/events.js";
+import {
+  okfFrontmatterExamples,
+  okfSignalExamples
+} from "./openapi-examples.js";
 
 const SOURCE_FILE_PROCESSING_STATE_DESCRIPTION =
   "Current processing status. `pending_publication` means file processing is complete and the result is waiting to become readable. `visible` means the published file can be read. `failed` includes error details and available recovery actions.";
@@ -403,6 +407,7 @@ export function createDeveloperOpenApiSchemas(): Record<string, SchemaObject> {
     SourceFileEventListResponse: pageSchema(ref("SourceFileEvent")),
     GeneratedTreeEntry: generatedTreeEntrySchema(),
     TreeResponse: generationPageSchema(ref("GeneratedTreeEntry")),
+    OkfSignals: okfSignalsSchema(),
     GeneratedFile: generatedFileSchema(),
     FileSearchResult: fileSearchResultSchema(),
     FileSearchQueryContext: fileSearchQueryContextSchema(),
@@ -1064,7 +1069,12 @@ function generatedFileSchema(): SchemaObject {
       title: nullableString("Resolved title when available."),
       description: nullableString("Resolved description when available."),
       tags: { type: "array", items: { type: "string" } },
-      frontmatter: { type: "object", additionalProperties: true },
+      frontmatter: {
+        type: "object",
+        additionalProperties: true,
+        examples: Object.values(okfFrontmatterExamples)
+      },
+      okfSignals: ref("OkfSignals"),
       deletable: { type: "boolean" },
       contentAvailable: { type: "boolean" },
       readActions: fileReadActionsSchema()
@@ -1083,11 +1093,88 @@ function generatedFileSchema(): SchemaObject {
       "description",
       "tags",
       "frontmatter",
+      "okfSignals",
       "deletable",
       "contentAvailable",
       "readActions"
     ]
   );
+}
+
+function okfSignalsSchema(): SchemaObject {
+  return {
+    ...objectSchema(
+    {
+      effectiveStatus: {
+        anyOf: [
+          { type: "string", enum: ["draft", "stable", "deprecated"] },
+          { type: "null" }
+        ],
+        description:
+          "Normalized OKF document status. An omitted status is `stable`; an invalid supplied status is null."
+      },
+      trustTier: {
+        anyOf: [
+          {
+            type: "string",
+            enum: ["unverified", "machine-confirmed", "human-reviewed"]
+          },
+          { type: "null" }
+        ],
+        description:
+          "Normalized OKF verification tier. Omitted verification is `unverified`; malformed supplied verification is null."
+      },
+      isStale: {
+        anyOf: [{ type: "boolean" }, { type: "null" }],
+        description:
+          "Whether `stale_after` is on or before the current request date. It is null without a valid stale date."
+      },
+      staleAfter: {
+        anyOf: [
+          { type: "string", format: "date" },
+          { type: "null" }
+        ],
+        description: "Normalized OKF stale date, or null when absent or invalid."
+      },
+      generatedAt: {
+        ...nullableTimestampSchema(),
+        description:
+          "Normalized `generated.at`, or the legacy `timestamp` fallback when available."
+      },
+      generatedAtSource: {
+        anyOf: [
+          { type: "string", enum: ["generated", "legacy_timestamp"] },
+          { type: "null" }
+        ],
+        description:
+          "Field that supplied `generatedAt`, distinguishing native OKF 0.2 metadata from the legacy fallback."
+      },
+      latestVerifiedAt: {
+        ...nullableTimestampSchema(),
+        description: "Latest valid OKF verification event time, or null when unavailable."
+      },
+      sourceCount: {
+        anyOf: [
+          { type: "integer", minimum: 0 },
+          { type: "null" }
+        ],
+        description:
+          "Number of normalized OKF sources. Omitted sources produce zero; malformed supplied sources produce null."
+      }
+    },
+    [
+      "effectiveStatus",
+      "trustTier",
+      "isStale",
+      "staleAfter",
+      "generatedAt",
+      "generatedAtSource",
+      "latestVerifiedAt",
+      "sourceCount"
+      ]
+    ),
+    examples: okfSignalExamples
+  };
 }
 
 function fileSearchResultSchema(): SchemaObject {
@@ -1112,7 +1199,12 @@ function fileSearchResultSchema(): SchemaObject {
       title: nullableString("Resolved title when available."),
       description: nullableString("Resolved description when available."),
       tags: { type: "array", items: { type: "string" } },
-      frontmatter: { type: "object", additionalProperties: true },
+      frontmatter: {
+        type: "object",
+        additionalProperties: true,
+        examples: Object.values(okfFrontmatterExamples)
+      },
+      okfSignals: ref("OkfSignals"),
       matchedFields: {
         type: "array",
         items: { type: "string", enum: ["path", "title", "description", "metadata"] }
@@ -1146,6 +1238,7 @@ function fileSearchResultSchema(): SchemaObject {
       "description",
       "tags",
       "frontmatter",
+      "okfSignals",
       "matchedFields",
       "score",
       "contentAvailable",
@@ -1263,6 +1356,15 @@ function fileSearchQueryContextSchema(): SchemaObject {
         minimum: 0,
         description: "Maximum relationship records returned per graph item."
       },
+      okfStatus: nullableString(
+        "Normalized OKF document-status filter applied to this response."
+      ),
+      okfTrustTier: nullableString(
+        "Normalized OKF verification-tier filter applied to this response."
+      ),
+      okfFreshness: nullableString(
+        "Normalized OKF freshness filter applied to this response."
+      ),
       limit: { type: "integer", minimum: 1, description: "Maximum number of results applied to this request." },
       cursorProvided: {
         type: "boolean",
@@ -1277,6 +1379,9 @@ function fileSearchQueryContextSchema(): SchemaObject {
       "mode",
       "graphDepth",
       "graphFanout",
+      "okfStatus",
+      "okfTrustTier",
+      "okfFreshness",
       "limit",
       "cursorProvided"
     ]

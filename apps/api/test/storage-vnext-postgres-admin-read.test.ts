@@ -73,6 +73,13 @@ describe("PostgreSQL storage vNext Admin reads", () => {
     expect(queries[0]?.text).toContain("source.created_at >=");
     expect(queries[0]?.text).toContain("source.updated_at <=");
     expect(queries[0]?.text).toContain("source.safe_error_code");
+    expect(queries[0]?.text).toContain("source.model_invocation_status");
+    expect(queries[0]?.text).toContain(
+      "source.model_invocation_source_revision_public_id = revision.public_id"
+    );
+    expect(queries[0]?.text).toContain(
+      "source.model_invocation_source_revision_public_id IS DISTINCT FROM revision.public_id"
+    );
     expect(queries[0]?.values).toEqual(expect.arrayContaining([
       ["pending", "processing", "failed"],
       "not_recorded",
@@ -82,6 +89,67 @@ describe("PostgreSQL storage vNext Admin reads", () => {
       "SOURCE",
       "none"
     ]));
+  });
+
+  it("returns the durable model invocation used for the current source revision", async () => {
+    const application = createPostgresStorageVnextAdminResourceRead(
+      (async () => [{
+        public_id: "source-file-model",
+        knowledge_base_id: "kb-model",
+        directory_public_id: null,
+        logical_path: "model.md",
+        status: "ready",
+        safe_error_code: null,
+        safe_error_message: null,
+        revision: 3,
+        created_at: new Date("2026-08-01T00:00:00.000Z"),
+        updated_at: new Date("2026-08-01T00:00:02.000Z"),
+        source_revision_public_id: "source-revision-model",
+        checksum_sha256: "a".repeat(64),
+        byte_count: 12,
+        content_type: "text/markdown; charset=utf-8",
+        generated_path: "pages/model.md",
+        model_invocation_status: "completed",
+        model_invocation_model_name: "deepseek-v4-flash",
+        model_invocation_started_at: new Date("2026-08-01T00:00:00.000Z"),
+        model_invocation_ended_at: new Date("2026-08-01T00:00:02.000Z"),
+        model_invocation_warning_count: 1,
+        model_invocation_error_code: null
+      }]) as unknown as DatabaseClient
+    );
+
+    const result = await application.listSourceFiles({
+      knowledgeBaseId: "kb-model",
+      directoryId: undefined,
+      filters: {
+        pathQuery: null,
+        sourceFileIdPrefix: null,
+        state: null,
+        currentStage: null,
+        modelInvocationStatus: "completed",
+        generatedOutputStatus: null,
+        startedFrom: null,
+        startedTo: null,
+        endedFrom: null,
+        endedTo: null,
+        errorState: null,
+        errorCodeQuery: null,
+        actionState: null
+      },
+      limit: 20,
+      cursor: null
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        modelInvocationStatus: "completed",
+        modelInvocationModelName: "deepseek-v4-flash",
+        modelInvocationStartedAt: "2026-08-01T00:00:00.000Z",
+        modelInvocationEndedAt: "2026-08-01T00:00:02.000Z",
+        modelInvocationWarningCount: 1,
+        modelInvocationErrorCode: null
+      })
+    ]);
   });
 
   it("returns matching directory entries before unified-index file matches", async () => {

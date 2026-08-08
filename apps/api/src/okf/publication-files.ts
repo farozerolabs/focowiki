@@ -1,5 +1,6 @@
 import {
   buildSearchIndex,
+  buildOkfPublicationMetadata,
   applyPresentationSuggestions,
   bundleSchemaDescriptor,
   schemaReferenceDescriptor,
@@ -11,7 +12,6 @@ import {
   renderMarkdownIdentityLabel,
   rewriteSourceMarkdownLinks,
   renderOkfLog,
-  renderGeneratedCitations,
   toBundleMarkdownHref,
   updateHistoryPageDescriptor,
   type IndexMetadata,
@@ -20,6 +20,7 @@ import {
   type OkfLogMonthlySummary,
   type OkfGraphRelationship,
   type SourceMetadata,
+  type SourceMetadataDefaults,
   type SourceModelSuggestions
 } from "@focowiki/okf";
 import { GENERATED_GRAPH_RESOURCES } from "./generated-graph-resources.js";
@@ -52,6 +53,7 @@ export type GeneratedPageSummary = {
   fileId: string;
   graphRef?: string;
   metadata: SourceMetadata;
+  sourceMetadata?: SourceMetadataDefaults;
   suggestions: SourceModelSuggestions | null;
   graphLinks?: OkfGraphRelationship[];
 };
@@ -113,15 +115,19 @@ export function renderPageFile(
     prepared.content,
     page.metadata.title
   );
+  const metadata = buildOkfPublicationMetadata({
+    ownership: "source",
+    metadata: page.sourceMetadata ?? page.metadata
+  });
   return renderConceptFile(
-    page.metadata,
+    metadata,
     [
       canonicalBody,
       "",
       ...renderRelatedLinks(page.graphLinks ?? []),
       ...(prepared.trailingCitations
         ? ["", prepared.trailingCitations]
-        : renderCitations(page.metadata))
+        : [])
     ].join("\n")
   );
 }
@@ -152,6 +158,12 @@ export function renderIndexFile(
   options: { includeGraph?: boolean; description?: string | null } = {}
 ): GeneratedOkfFile {
   const schema = bundleSchemaDescriptor(title);
+  const metadata = buildOkfPublicationMetadata({
+    ownership: "focowiki",
+    artifactKind: "bundle_root",
+    metadata: {},
+    changedAt: generatedAt
+  });
   return {
     logicalPath: "index.md",
     sourceFileId: null,
@@ -159,13 +171,11 @@ export function renderIndexFile(
     metadata: null,
     content: [
       "---",
-      'okf_version: "0.1"',
+      ...serializeYamlRecord(metadata),
       "---",
       `# ${renderMarkdownIdentityLabel(knowledgeBaseTitle(title))}`,
       "",
       ...(options.description ? [options.description, ""] : []),
-      `Generated at: ${generatedAt}`,
-      "",
       "## Explore",
       "",
       "- [Browse documents](/pages/index.md) - Explore source-backed Markdown files by directory.",
@@ -230,10 +240,14 @@ export function renderLogFiles(
   const historyPages = partitionLogEntries(history.entries, limits).map((entries, index, all) => {
     const page = index + 1;
     const descriptor = updateHistoryPageDescriptor(page);
-    const metadata = {
-      ...generatedConceptFrontmatter(descriptor),
-      navigation_only: true
-    };
+    const metadata = buildOkfPublicationMetadata({
+      ownership: "focowiki",
+      metadata: {
+        ...generatedConceptFrontmatter(descriptor),
+        navigation_only: true
+      },
+      changedAt: generatedAt
+    }) as SourceMetadata;
     const navigation = [
       "[Update history root](/log.md)",
       index > 0 ? `[Previous page](/log-${String(page - 1).padStart(6, "0")}.md)` : null,
@@ -313,9 +327,16 @@ function stripLogHeading(content: string): string {
   return content.replace(/^# Directory Update Log\s*/u, "").trim();
 }
 
-export function renderSchemaFile(title: string): GeneratedOkfFile {
+export function renderSchemaFile(title: string, changedAt?: string): GeneratedOkfFile {
   const descriptor = bundleSchemaDescriptor(title);
-  const metadata = generatedConceptFrontmatter(descriptor);
+  const baseMetadata = generatedConceptFrontmatter(descriptor);
+  const metadata = changedAt
+    ? buildOkfPublicationMetadata({
+        ownership: "focowiki",
+        metadata: baseMetadata,
+        changedAt
+      }) as SourceMetadata
+    : baseMetadata;
 
   return {
     logicalPath: "schema.md",
@@ -327,17 +348,19 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
       [
         `# ${descriptor.heading}`,
         "",
-        "## Normative OKF 0.1",
+        "## Normative OKF 0.2",
         "",
-        "Every concept file includes parseable YAML frontmatter.",
-        "",
-        "Required fields:",
-        "",
-        "- type",
+        "OKF concept metadata is guidance for interoperable user-authored Markdown. Safe Markdown remains readable when standard fields are omitted, incomplete, or irregular.",
         "",
         "## Recommended OKF",
         "",
-        "Recommended fields include `title`, `description`, `resource`, `tags`, and `timestamp`.",
+        "Recommended fields include `type`, `title`, `description`, `resource`, `tags`, `sources`, `usage_window`, `generated`, `verified`, `status`, and `stale_after` when the corresponding facts are known.",
+        "",
+        "Safe raw frontmatter remains readable. Only valid normalized values contribute to status, trust, freshness, generated-time, verification-time, and source-count signals; unavailable values remain null.",
+        "",
+        "Search can optionally filter normalized status, trust tier, or freshness. A filtered field excludes concepts whose corresponding normalized signal is null, while direct reads and unfiltered search remain available.",
+        "",
+        "An `Attested Computation` can describe runtime, parameters, computation content, executor, and attester resources. These files remain ordinary readable concepts and are not executed by Focowiki.",
         "",
         "## Producer Metadata",
         "",
@@ -364,9 +387,9 @@ export function renderSchemaFile(title: string): GeneratedOkfFile {
   };
 }
 
-export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
+export function renderSchemaFiles(title: string, changedAt?: string): GeneratedOkfFile[] {
   return [
-    renderSchemaFile(title),
+    renderSchemaFile(title, changedAt),
     schemaConceptFile(
       "schema-frontmatter.md",
       "Frontmatter",
@@ -374,18 +397,21 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
       [
         "# Frontmatter",
         "",
-        "## Normative OKF 0.1",
+        "## Normative OKF 0.2",
         "",
-        "The `type` field is required for every concept document.",
+        "The `type` field identifies a conforming OKF concept. User upload does not require OKF standard fields and preserves safely serializable producer metadata. Focowiki-owned generated concepts remain strict before publication.",
         "",
         "## Recommended OKF",
         "",
-        "The `title`, `description`, `resource`, `tags`, and `timestamp` fields are recommended when known.",
+        "The `type`, `title`, `description`, `resource`, `tags`, provenance, generation, verification, lifecycle, and Attested Computation fields are recommended when known.",
+        "",
+        "Raw safe values remain available even when their normalized decision signal is null. Valid signal values can participate in search filters and are returned with raw frontmatter through Developer OpenAPI.",
         "",
         "## Producer Metadata",
         "",
         "Additional producer-defined fields remain available to consumers."
-      ].join("\n")
+      ].join("\n"),
+      changedAt
     ),
     schemaConceptFile(
       "schema-navigation.md",
@@ -401,7 +427,8 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
         "Large direct listings use linked bounded `index-<stable-id>.md` pages.",
         "",
         "Navigation pages help readers discover source-backed Markdown files and do not represent source evidence."
-      ].join("\n")
+      ].join("\n"),
+      changedAt
     ),
     schemaConceptFile(
       "schema-extensions.md",
@@ -419,7 +446,8 @@ export function renderSchemaFiles(title: string): GeneratedOkfFile[] {
         `The knowledge-base root \`index.md\` links to \`${GENERATED_GRAPH_RESOURCES.index.path}\` whenever graph output is available.`,
         "",
         "These files extend the knowledge base while preserving ordinary OKF concept and link semantics and real Markdown evidence paths."
-      ].join("\n")
+      ].join("\n"),
+      changedAt
     )
   ];
 }
@@ -446,10 +474,18 @@ function schemaConceptFile(
   logicalPath: string,
   title: string,
   description: string,
-  body: string
+  body: string,
+  changedAt?: string
 ): GeneratedOkfFile {
   const descriptor = schemaReferenceDescriptor({ path: logicalPath, title, description });
-  const metadata = generatedConceptFrontmatter(descriptor);
+  const baseMetadata = generatedConceptFrontmatter(descriptor);
+  const metadata = changedAt
+    ? buildOkfPublicationMetadata({
+        ownership: "focowiki",
+        metadata: baseMetadata,
+        changedAt
+      }) as SourceMetadata
+    : baseMetadata;
   return {
     logicalPath: descriptor.path,
     sourceFileId: null,
@@ -474,7 +510,7 @@ export function pageToSearchIndexItem(page: GeneratedPageSummary): SearchIndexIt
         : {}),
       tags: Array.isArray(page.metadata.tags) ? page.metadata.tags : [],
       keywords: readSuggestedStrings(page.suggestions?.keywords),
-      metadata: page.metadata
+      metadata: page.sourceMetadata ?? page.metadata
     }],
     ""
   ).items[0];
@@ -559,13 +595,6 @@ export function normalizeLogLimits(limits: Partial<OkfLogLimits> | undefined): O
   };
 }
 
-function renderCitations(metadata: SourceMetadata): string[] {
-  const resource = typeof metadata.resource === "string" ? metadata.resource.trim() : "";
-  return resource
-    ? renderGeneratedCitations([{ label: "Source", target: resource }])
-    : [];
-}
-
 function renderRelatedLinks(graphLinks: OkfGraphRelationship[]): string[] {
   const graphRelated = graphLinks
     .map((link) => {
@@ -597,7 +626,7 @@ function canonicalizeFirstHeading(body: string, title: string): string {
   return `${heading}\n\n${body}`.trimEnd();
 }
 
-function renderConceptFile(metadata: SourceMetadata, body: string): string {
+function renderConceptFile(metadata: Record<string, unknown>, body: string): string {
   return ["---", ...serializeYamlRecord(metadata), "---", body.trim()].join("\n").trimEnd();
 }
 

@@ -12,6 +12,8 @@ import type { StorageVnextReleaseReadPort } from "../release/ports.js";
 import type { StorageVnextAdminMutationApplication } from "./admin-mutation-application.js";
 import type { StorageVnextAdminResourceRead } from "./postgres-admin-resources.js";
 import type { StorageVnextOperationRead } from "./postgres-operation-read.js";
+import { analyzeStorageVnextSourceMarkdown } from
+  "../source-processing/source-metadata.js";
 
 const MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8";
 const DAY_MILLISECONDS = 86_400_000;
@@ -49,7 +51,7 @@ export function createPostgresStorageVnextAdminMutation(input: {
           ...await workflowContext(input.runtimeSettings)
         });
       } catch (error) {
-        throw mapMutationError(error);
+      throw mapStorageVnextMutationError(error);
       }
       const active = await input.releases.getActiveRoot(request.knowledgeBaseId);
       return {
@@ -182,6 +184,13 @@ export function createPostgresStorageVnextAdminMutation(input: {
     },
 
     async replaceSourceFileContent(request) {
+      const current = await input.resources.getSourceFile({
+        knowledgeBaseId: request.knowledgeBaseId,
+        sourceFileId: request.sourceFileId
+      });
+      if (!current) throw new SourceResourceError("RESOURCE_NOT_FOUND");
+      const relativePath = request.relativePath ?? current.relativePath;
+      const analyzed = analyzeReplacementSource(relativePath, request.bytes);
       const createdAt = new Date().toISOString();
       const stored = await input.objectWriter.putVerified({
         bytes: request.bytes,
@@ -189,11 +198,6 @@ export function createPostgresStorageVnextAdminMutation(input: {
         writeAttemptPublicId: operationIdentity("write"),
         createdAt
       });
-      const current = await input.resources.getSourceFile({
-        knowledgeBaseId: request.knowledgeBaseId,
-        sourceFileId: request.sourceFileId
-      });
-      if (!current) throw new SourceResourceError("RESOURCE_NOT_FOUND");
       const destinationDirectoryPublicId = request.relativePath
         ? await resolveParentDirectory(input.sql, {
             knowledgeBaseId: request.knowledgeBaseId,
@@ -212,6 +216,8 @@ export function createPostgresStorageVnextAdminMutation(input: {
           checksumSha256: stored.checksum,
           byteCount: stored.byteCount,
           contentType: MARKDOWN_CONTENT_TYPE,
+          candidateTitle: analyzed.resolvedMetadata.title,
+          candidateMetadata: analyzed.metadata,
           ...(request.relativePath ? {
               destinationDirectoryPublicId,
               destinationLogicalPath: request.relativePath
@@ -237,6 +243,18 @@ export function createPostgresStorageVnextAdminMutation(input: {
   };
 }
 
+function analyzeReplacementSource(relativePath: string, bytes: Uint8Array) {
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return analyzeStorageVnextSourceMarkdown({
+      fileName: relativePath.split("/").at(-1) ?? relativePath,
+      content
+    });
+  } catch {
+    throw new SourceResourceError("INVALID_RESOURCE_MUTATION");
+  }
+}
+
 async function acceptMutation(
   input: Parameters<typeof createPostgresStorageVnextAdminMutation>[0],
   request: PendingMutationRequest
@@ -255,7 +273,7 @@ async function acceptMutation(
     if (!operation) throw new Error("Accepted storage vNext mutation is missing");
     return operation;
   } catch (error) {
-    throw mapMutationError(error);
+      throw mapStorageVnextMutationError(error);
   }
 }
 
@@ -289,7 +307,7 @@ async function acceptDeletion(
     if (!operation) throw new Error("Accepted storage vNext deletion is missing");
     return operation;
   } catch (error) {
-    throw mapMutationError(error);
+    throw mapStorageVnextMutationError(error);
   }
 }
 
@@ -395,7 +413,7 @@ function operationIdentity(kind: string): string {
   return `${kind}-${randomUUID()}`;
 }
 
-function mapMutationError(error: unknown): Error {
+export function mapStorageVnextMutationError(error: unknown): Error {
   const code = error && typeof error === "object" && "code" in error
     ? error.code
     : null;
@@ -405,6 +423,7 @@ function mapMutationError(error: unknown): Error {
     code === "path_conflict"
     || code === "scope_conflict"
     || code === "destination_unchanged"
+    || code === "content_unchanged"
   ) {
     return new SourceResourceError("RESOURCE_PATH_CONFLICT");
   }

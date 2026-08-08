@@ -85,8 +85,10 @@ export function createPostgresStorageVnextPublicationSnapshot(
       assertId(input.knowledgeBaseId);
       assertId(input.candidatePublicId);
       const rows = await sql<Array<{ navigation_profile_version: number | string }>>`
-        SELECT coalesce(root.navigation_profile_version, 1)
-                 AS navigation_profile_version
+        SELECT CASE
+                 WHEN candidate.expected_active_root_public_id IS NULL THEN 0
+                 ELSE root.navigation_profile_version
+               END AS navigation_profile_version
         FROM focowiki.release_candidates candidate
         LEFT JOIN focowiki.release_roots root
           ON root.knowledge_base_id = candidate.knowledge_base_id

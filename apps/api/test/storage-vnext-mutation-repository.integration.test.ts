@@ -683,7 +683,8 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
       sourceFilePublicId: "file-mutation-replace",
       sourceRevisionPublicId: "revision-replace-next",
       logicalPath: "pages/Replace.md",
-      title: "Replace"
+      title: "Replacement guide",
+      metadata: { okf_version: "0.2", status: "draft" }
     }]);
     await candidateGraph.replaceSourceFileGraph({
       knowledgeBaseId: "kb-mutation-replace",
@@ -735,6 +736,19 @@ describeOwnedDatabase("storage vNext mutation PostgreSQL repository", () => {
     expect(await revisionRoles("kb-mutation-replace")).toEqual([
       { public_id: "revision-replace-next", revision_role: "current" }
     ]);
+    const activatedSource = await sql<Array<{
+      title: string;
+      metadata: Record<string, unknown>;
+    }>>`
+      SELECT title, metadata
+      FROM focowiki.source_files
+      WHERE knowledge_base_id = 'kb-mutation-replace'
+        AND public_id = 'file-mutation-replace'
+    `;
+    expect(activatedSource).toEqual([{
+      title: "Replacement guide",
+      metadata: { okf_version: "0.2", status: "draft" }
+    }]);
     const activatedGraph = await sql<Array<{
       source_revision_public_id: string;
       checksum_sha256: string;
@@ -1245,6 +1259,11 @@ function replaceRequest(suffix: string, knowledgeBaseId: string) {
     checksumSha256: "c".repeat(64),
     byteCount: 14,
     contentType: "text/markdown; charset=utf-8" as const,
+    candidateTitle: "Replacement guide",
+    candidateMetadata: {
+      okf_version: "0.2",
+      status: "draft"
+    },
     settingsRevisionPublicId: "settings-mutation-integration",
     createdAt: "2026-08-01T01:00:00.000Z",
     expiresAt: "2026-08-02T01:00:00.000Z"

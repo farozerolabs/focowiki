@@ -7,6 +7,17 @@ import {
 } from "../src/storage-vnext/mutation/candidate-planning.js";
 
 describe("storage vNext mutation changed-set candidate", () => {
+  it("treats a candidate without an active root as requiring a full navigation profile", () => {
+    const source = readFileSync(resolve(
+      import.meta.dirname,
+      "../src/storage-vnext/publication/postgres-snapshot.ts"
+    ), "utf8");
+
+    expect(source).toMatch(
+      /CASE\s+WHEN candidate\.expected_active_root_public_id IS NULL\s+THEN 0\s+ELSE root\.navigation_profile_version\s+END/u
+    );
+  });
+
   it("deduplicates graph-edge identities before applying collated ordering", () => {
     const source = readFileSync(resolve(
       import.meta.dirname,

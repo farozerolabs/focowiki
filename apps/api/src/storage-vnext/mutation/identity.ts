@@ -46,6 +46,10 @@ function mutationPayload(request: StorageVnextMutationRequest) {
         checksumSha256: request.checksumSha256,
         byteCount: request.byteCount,
         contentType: request.contentType,
+        candidateTitle: request.candidateTitle,
+        candidateMetadata: Object.fromEntries(
+          Object.entries(request.candidateMetadata).sort()
+        ),
         destinationDirectoryPublicId: request.destinationDirectoryPublicId ?? null
       };
   }

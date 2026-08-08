@@ -82,6 +82,23 @@ describe("storage vNext database baseline", () => {
     expect(sql).toContain("checksum_sha256 text not null");
   });
 
+  it("stores the bounded LLM summary on the current source fact", () => {
+    const sql = readNormalized();
+
+    for (const column of [
+      "model_invocation_source_revision_public_id text",
+      "model_invocation_status text",
+      "model_invocation_model_name text",
+      "model_invocation_started_at timestamp with time zone",
+      "model_invocation_ended_at timestamp with time zone",
+      "model_invocation_warning_count integer",
+      "model_invocation_error_code text"
+    ]) {
+      expect(sql, column).toContain(column);
+    }
+    expect(sql).toContain("constraint source_files_model_invocation_check check");
+  });
+
   it("writes the schema marker only after all vNext relations", () => {
     const sql = readNormalized();
     const markerTable = sql.indexOf("create table focowiki.runtime_generation");

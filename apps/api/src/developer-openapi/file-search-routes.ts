@@ -28,6 +28,10 @@ export function registerDeveloperOpenApiFileSearchRoutes(
         mode: context.req.query("mode"),
         graphDepth: context.req.query("graphDepth"),
         graphFanout: context.req.query("graphFanout"),
+        okfStatus: context.req.query("okfStatus"),
+        okfTrustTier: context.req.query("okfTrustTier"),
+        okfFreshness: context.req.query("okfFreshness"),
+        requestDate: new Date().toISOString().slice(0, 10),
         graphSettings
       });
 
@@ -45,6 +49,7 @@ export function registerDeveloperOpenApiFileSearchRoutes(
         mode: filters.mode,
         graphDepth: filters.graphDepth,
         graphFanout: filters.graphFanout,
+        okfFilters: filters.okfFilters,
         limit: readLimit(context.req.query("limit"), services.config),
         cursor: context.req.query("cursor") ?? null
       });

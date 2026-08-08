@@ -114,24 +114,31 @@ See the [Agent demo result documentation](https://docs.focowiki.com/agent-integr
 
 ## Why File-First
 
-[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes a portable way to represent knowledge as Markdown files with YAML frontmatter. The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines metadata, Markdown pages, links, indexes, and update logs.
+[Google's OKF 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) describes portable provenance, verification, lifecycle, and Attested Computation signals for Markdown knowledge. Focowiki pins the [OKF 0.2 specification at revision `930b65fc`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md).
 
 Focowiki turns this model into an open-source product workflow. Teams upload cleaned Markdown files, Focowiki parses document signals, generates an OKF-style knowledge base, stores every generated file, and exposes the result through the Admin UI and Developer OpenAPI.
 
 ## Markdown Input
 
-Uploads accept `.md` files only. A Markdown file can include YAML frontmatter followed by Markdown body content.
+Uploads accept `.md` files only. A file can be plain Markdown or include YAML frontmatter. OKF 0.2 standard fields are optional product inputs; safe missing or malformed standard fields do not by themselves block upload or reading.
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -139,7 +146,7 @@ timestamp: "2026-06-16T00:00:00Z"
 Use this playbook when a priority customer request arrives.
 ```
 
-Additional safe frontmatter fields can be preserved as pass-through metadata. Detailed input guidance is documented in the [project introduction](https://docs.focowiki.com/).
+Additional safe frontmatter fields are preserved as pass-through metadata. Developer OpenAPI exposes raw frontmatter plus nullable derived `okfSignals`, and file search can optionally filter by normalized status, trust tier, or freshness. Detailed input guidance is documented in the [project introduction](https://docs.focowiki.com/).
 
 ## Local Development
 
@@ -168,8 +175,8 @@ Focowiki is distributed under a modified Apache License 2.0. See [LICENSE](./LIC
 
 ## References
 
-- [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 specification, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
+- [Open Knowledge Format 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+- [OKF 0.2 specification, pinned revision](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
 
 <p><sub><small>Related links: <a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>

@@ -27,26 +27,34 @@ Focowiki 将 Markdown 文件和文件夹生成可供用户、应用和 AI Agent 
 
 ## Open Knowledge Format
 
-[Google 的 Open Knowledge Format 公告](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) 将 OKF 描述为一种开放、可移植、适合人类阅读和 Agent 读取的知识表示方式，基于 Markdown 文件和 YAML frontmatter。
+[Google 的 OKF 0.2 公告](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) 将 OKF 描述为一种开放、可移植、适合人类阅读和 Agent 读取的知识表示方式，基于 Markdown 文件和可选 YAML frontmatter。
 
-[固定版本的 OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) 定义了字段约定和可移植目录结构。Focowiki 使用相同的实用模型：Markdown pages、YAML frontmatter、links、indexes 和稳定的文件树。
+[固定版本的 OKF 0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md) 增加了结构化来源、生成、验证、生命周期和 Attested Computation metadata。Focowiki 保持相同的实用文件模型：Markdown pages、YAML frontmatter、links、indexes 和稳定的文件树。
 
 ## Markdown 上传格式
 
-上传文件必须是 `.md`。每个文件可以包含 YAML frontmatter，后面跟 Markdown 正文。
+上传文件必须是 `.md`。每个文件可以是普通 Markdown，也可以包含 YAML frontmatter，后面跟 Markdown 正文。下面所有 OKF 0.2 字段均为可选上传字段。
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
-owner: "Support Operations"
-sourceSystem: "company-wiki"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+generated:
+  by: "publisher:docs"
+  at: "2026-06-16T00:00:00Z"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -67,14 +75,17 @@ Record the customer, request summary, severity, and expected response time.
 
 | 字段 | 用途 |
 | --- | --- |
-| `type` | 内容类型，例如 `page`。 |
+| `type` | 内容类型，例如 `Guide` 或 `Attested Computation`。 |
 | `title` | 生成页面的展示标题。 |
 | `description` | 面向读者和搜索的简短摘要。 |
-| `resource` | 存在源 URL 或规范引用时使用。 |
 | `tags` | 可搜索标签。 |
-| `timestamp` | 源文件、发布或更新时间。 |
+| `sources` | 结构化来源 ID、resource 和可选使用时间范围。 |
+| `generated` | 存在可靠生成证据时记录生产方和事件时间。 |
+| `verified` | 一个或多个机器或人工验证事件。 |
+| `status` | 生命周期值：`draft`、`stable` 或 `deprecated`。 |
+| `stale_after` | 内容被视为过期的日期。 |
 
-额外的安全 frontmatter 字段可以被保留。上传 Markdown 中存在 owner、region、product、version、source system、official identifier、status、category 等领域字段时，Focowiki 可以作为源元数据透传这些字段。
+额外的安全 frontmatter 字段可以被保留。缺失、不完整、类型错误或格式错误的 OKF 字段本身不会阻止上传。原始 frontmatter 保持可读；无法规范化的值返回 `null`，仅在使用对应 OKF 搜索过滤时被排除。旧版 `timestamp` 仍可读取，并会被明确标识为回退来源。
 
 Markdown links 是主要关系机制。正文中的链接帮助读者和 Agent 从一个生成页面移动到相关页面。
 

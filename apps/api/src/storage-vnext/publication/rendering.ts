@@ -58,7 +58,10 @@ export function renderStorageVnextDirectoryArtifacts(input: {
       kind: "directory",
       sourceFilePublicId: null,
       ordinal: input.ordinalStart + index + 1,
-      body: renderDirectoryLeafMarkdown({ directoryPath: input.directoryPath, leaf })
+      body: renderDirectoryLeafMarkdown({
+        directoryPath: input.directoryPath,
+        leaf
+      })
     }))
   ];
 }
@@ -71,6 +74,7 @@ export function renderStorageVnextRootArtifact(input: {
     description: string | null;
     sourceFileCount: number;
     graphEdgeCount: number;
+    changedAt?: string;
   };
   rootEntryCount: number;
   generationId: string;

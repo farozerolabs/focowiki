@@ -176,6 +176,87 @@ describeOwnedDatabase("storage vNext current graph repository", () => {
     });
   });
 
+  it("replaces mutually linked source graphs concurrently without deadlock", async () => {
+    const knowledgeBaseId = "kb-graph-concurrent-cycle";
+    await createKnowledgeBase(knowledgeBaseId);
+    await createCurrentSource({
+      knowledgeBaseId,
+      sourceFilePublicId: "file-concurrent-a",
+      sourceRevisionPublicId: "revision-concurrent-a",
+      logicalPath: "Concurrent-A.md",
+      checksum: "a".repeat(64)
+    });
+    await createCurrentSource({
+      knowledgeBaseId,
+      sourceFilePublicId: "file-concurrent-b",
+      sourceRevisionPublicId: "revision-concurrent-b",
+      logicalPath: "Concurrent-B.md",
+      checksum: "b".repeat(64)
+    });
+    const nodeA = nodeFact({
+      knowledgeBaseId,
+      sourceFilePublicId: "file-concurrent-a",
+      sourceRevisionPublicId: "revision-concurrent-a",
+      logicalPath: "pages/Concurrent-A.md",
+      checksum: "a".repeat(64),
+      label: "Concurrent A"
+    });
+    const nodeB = nodeFact({
+      knowledgeBaseId,
+      sourceFilePublicId: "file-concurrent-b",
+      sourceRevisionPublicId: "revision-concurrent-b",
+      logicalPath: "pages/Concurrent-B.md",
+      checksum: "b".repeat(64),
+      label: "Concurrent B"
+    });
+    await Promise.all([
+      graph.replaceSourceFileGraph({
+        knowledgeBaseId,
+        sourceFilePublicId: nodeA.sourceFilePublicId,
+        sourceRevisionPublicId: nodeA.sourceRevisionPublicId,
+        node: nodeA,
+        edges: []
+      }),
+      graph.replaceSourceFileGraph({
+        knowledgeBaseId,
+        sourceFilePublicId: nodeB.sourceFilePublicId,
+        sourceRevisionPublicId: nodeB.sourceRevisionPublicId,
+        node: nodeB,
+        edges: []
+      })
+    ]);
+    const replacementA = {
+      knowledgeBaseId,
+      sourceFilePublicId: nodeA.sourceFilePublicId,
+      sourceRevisionPublicId: nodeA.sourceRevisionPublicId,
+      node: nodeA,
+      edges: [edgeFact(nodeA, nodeB)]
+    };
+    const replacementB = {
+      knowledgeBaseId,
+      sourceFilePublicId: nodeB.sourceFilePublicId,
+      sourceRevisionPublicId: nodeB.sourceRevisionPublicId,
+      node: nodeB,
+      edges: [edgeFact(nodeB, nodeA)]
+    };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await Promise.all([
+        graph.replaceSourceFileGraph(replacementA),
+        graph.replaceSourceFileGraph(replacementB)
+      ]);
+    }
+
+    await expect(graph.getEdge({
+      knowledgeBaseId,
+      publicId: replacementA.edges[0]!.publicId
+    })).resolves.toEqual(replacementA.edges[0]);
+    await expect(graph.getEdge({
+      knowledgeBaseId,
+      publicId: replacementB.edges[0]!.publicId
+    })).resolves.toEqual(replacementB.edges[0]);
+  });
+
   it("persists Markdown-first domain-neutral relationships across directories", async () => {
     await createKnowledgeBase("kb-graph-markdown");
     const targetBody = "# Runtime system\n\nRuntime components.";

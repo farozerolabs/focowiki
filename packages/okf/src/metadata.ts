@@ -1,7 +1,7 @@
 import matter from "gray-matter";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
-  GeneratedTextIdentityError,
   canonicalizeGeneratedTextIdentity,
   canonicalizeOptionalGeneratedTextIdentity
 } from "./text-identity.js";
@@ -9,19 +9,23 @@ import {
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
+export const MAXIMUM_SOURCE_METADATA_BYTES = 8_192;
+
+export function measureSourceMetadataBytes(metadata: Record<string, unknown>): number {
+  return Buffer.byteLength(JSON.stringify(metadata), "utf8");
+}
+
 export type SourceMetadataRecord = {
-  type?: string;
-  title?: string;
-  description?: string;
-  tags?: string[];
-  resource?: string;
-  timestamp?: string;
   [key: string]: JsonValue | undefined;
 };
 
 export type SourceMetadata = SourceMetadataRecord & {
   type: string;
   title: string;
+  description?: string;
+  tags?: string[];
+  resource?: string;
+  timestamp?: string;
 };
 
 export type SourceMetadataDefaults = SourceMetadataRecord;
@@ -79,16 +83,7 @@ const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
   ])
 );
 
-const metadataRecordSchema = z
-  .object({
-    type: z.string().optional(),
-    title: z.string().optional(),
-    description: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    resource: z.string().optional(),
-    timestamp: z.string().optional()
-  })
-  .catchall(jsonValueSchema);
+const metadataRecordSchema = z.record(z.string(), jsonValueSchema);
 
 export function parseUploadedMarkdownSource(input: {
   fileName: string;
@@ -124,35 +119,25 @@ export function resolveSourceMetadata(source: UploadedMarkdownSource): ResolvedS
   let tags: string[];
   let timestamp: string | null;
   let version: string | null;
-  try {
-    const type = canonicalizeOptionalGeneratedTextIdentity(metadata.type, "type");
-    const title = canonicalizeOptionalGeneratedTextIdentity(metadata.title, "title");
-    resolvedType = canonicalizeGeneratedTextIdentity(
-      type ?? cleanSuggestedString(source.suggestions?.type) ?? "document",
-      "type"
-    );
-    resolvedTitle = canonicalizeGeneratedTextIdentity(
-      title
-        ?? findFirstHeading(parsed.content)
-        ?? fileNameStem(source.fileName)
-        ?? cleanSuggestedString(source.suggestions?.title)
-        ?? "Untitled",
-      "title"
-    );
-    description = canonicalizeOptionalGeneratedTextIdentity(metadata.description, "description")
-      ?? canonicalizeOptionalGeneratedTextIdentity(
-        source.suggestions?.description,
-        "suggested description"
-      );
-    tags = readResolvedTags(metadata.tags, source.suggestions?.tags);
-    timestamp = canonicalizeOptionalGeneratedTextIdentity(metadata.timestamp, "timestamp");
-    version = canonicalizeOptionalGeneratedTextIdentity(metadata.version, "version");
-  } catch (error) {
-    if (error instanceof GeneratedTextIdentityError) {
-      throw new MetadataValidationError([error.message]);
-    }
-    throw error;
-  }
+  const type = safeOptionalIdentity(metadata.type, "type");
+  const title = safeOptionalIdentity(metadata.title, "title");
+  resolvedType = canonicalizeGeneratedTextIdentity(
+    type ?? cleanSuggestedString(source.suggestions?.type) ?? "document",
+    "type"
+  );
+  resolvedTitle = canonicalizeGeneratedTextIdentity(
+    title
+      ?? safeOptionalIdentity(findFirstHeading(parsed.content), "heading")
+      ?? safeOptionalIdentity(fileNameStem(source.fileName), "file name")
+      ?? cleanSuggestedString(source.suggestions?.title)
+      ?? "Untitled",
+    "title"
+  );
+  description = safeOptionalIdentity(metadata.description, "description")
+    ?? safeOptionalIdentity(source.suggestions?.description, "suggested description");
+  tags = readResolvedTags(metadata.tags, source.suggestions?.tags);
+  timestamp = safeOptionalIdentity(metadata.timestamp, "timestamp");
+  version = safeOptionalIdentity(metadata.version, "version");
 
   const {
     type: _type,
@@ -192,7 +177,11 @@ function parseMarkdown(content: string): matter.GrayMatterFile<string> {
     // gray-matter caches every unique source body when called without options.
     // Source processing parses unbounded user content, so pass explicit options
     // to keep parsing request-scoped while preserving the default syntax.
-    return matter(content, {});
+    return matter(content, {
+      engines: {
+        yaml: (source) => parseYaml(source, { schema: "core" })
+      }
+    });
   } catch (error) {
     if (error instanceof Error) {
       throw new MetadataValidationError([`frontmatter is invalid: ${error.message}`]);
@@ -203,7 +192,7 @@ function parseMarkdown(content: string): matter.GrayMatterFile<string> {
 }
 
 function parseMetadataRecord(value: unknown, sourceName: string): SourceMetadataDefaults {
-  const result = metadataRecordSchema.safeParse(normalizeYamlValue(value ?? {}));
+  const result = metadataRecordSchema.safeParse(value ?? {});
 
   if (!result.success) {
     const issues = result.error.issues.map(
@@ -215,35 +204,16 @@ function parseMetadataRecord(value: unknown, sourceName: string): SourceMetadata
   return removeUndefinedValues(result.data) as SourceMetadataDefaults;
 }
 
-function normalizeYamlValue(value: unknown): unknown {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? value : value.toISOString();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(normalizeYamlValue);
-  }
-
-  if (isPlainRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entryValue]) => [key, normalizeYamlValue(entryValue)])
-    );
-  }
-
-  return value;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 function cleanSuggestedString(value: unknown): string | null {
-  return canonicalizeOptionalGeneratedTextIdentity(value);
+  return safeOptionalIdentity(value);
+}
+
+function safeOptionalIdentity(value: unknown, field: string | null = null): string | null {
+  try {
+    return canonicalizeOptionalGeneratedTextIdentity(value, field);
+  } catch {
+    return null;
+  }
 }
 
 function readResolvedTags(metadataTags: unknown, suggestedTags: unknown): string[] {
@@ -259,7 +229,7 @@ function readResolvedTags(metadataTags: unknown, suggestedTags: unknown): string
 function readStringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.flatMap((item) => {
-        const canonical = canonicalizeOptionalGeneratedTextIdentity(item, "tag");
+        const canonical = safeOptionalIdentity(item, "tag");
         return canonical ? [canonical] : [];
       })
     : [];

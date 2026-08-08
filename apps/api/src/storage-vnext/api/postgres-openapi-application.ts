@@ -175,6 +175,9 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
       if (!root) return emptyOpenApiSearchResponse(request, null);
       const normalizedQuery = request.query.trim();
       if (!normalizedQuery) throw validationError("Search query is required.", { field: "query" });
+      if (request.fileKind !== null && request.fileKind !== "page") {
+        return emptyOpenApiSearchResponse(request, root.publicId);
+      }
       const kinds = request.mode === "file" ? ["file" as const]
         : request.mode === "graph" ? ["graph" as const]
           : ["file" as const, "graph" as const];
@@ -185,7 +188,10 @@ export function createPostgresStorageVnextOpenApiApplication(input: {
           query: normalizedQuery,
           kinds,
           limit: request.limit,
-          cursor: request.cursor
+          cursor: request.cursor,
+          ...(request.okfFilters === undefined
+            ? {}
+            : { okfFilters: request.okfFilters })
         });
       } catch (error) {
         throw mapSearchError(error);

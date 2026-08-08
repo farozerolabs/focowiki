@@ -5,11 +5,25 @@ import { loadEnvFile } from "node:process";
 import {
   createOpenApiOperationCoverage
 } from "./lib/openapi-real-operation-coverage.mjs";
+import {
+  createOpenApiRuntimeResponseValidator
+} from "./lib/openapi-runtime-response-validator.mjs";
 import { selectClosedMarkdownSample } from "./lib/storage-vnext-linked-corpus-samples.mjs";
 import { uploadMarkdownFilesWithSession } from "./lib/upload-session-client.mjs";
+import { inspectOkfV02CorpusBaseline } from
+  "./lib/okf-v02-corpus-inspection.mjs";
+import { createOkfV02MutationScope } from
+  "./lib/okf-v02-lifecycle-selection.mjs";
 
 const OPERATION_POLL_INTERVAL_MS = 5_000;
 const MAXIMUM_RATE_LIMIT_RETRIES = 4;
+const exactOkfCorpus = process.env.FOCOWIKI_RESOURCE_LIFECYCLE_EXACT_OKF_CORPUS === "1";
+const validationSampleCount = exactOkfCorpus ? 200 : 8;
+const mutationScope = createOkfV02MutationScope(
+  exactOkfCorpus
+    ? process.env.FOCOWIKI_RESOURCE_LIFECYCLE_MUTATION_PREFIX || "legacy/"
+    : ""
+);
 
 const reportPath = path.resolve(
   process.env.FOCOWIKI_RESOURCE_LIFECYCLE_REPORT
@@ -23,6 +37,7 @@ const openApiDocument = JSON.parse(
   fs.readFileSync("docs/public/openapi/focowiki-openapi.json", "utf8")
 );
 const operationCoverage = createOpenApiOperationCoverage(openApiDocument);
+const responseValidator = createOpenApiRuntimeResponseValidator(openApiDocument);
 const report = {
   kind: "folder-aware-resource-lifecycle",
   startedAt: new Date().toISOString(),
@@ -40,11 +55,13 @@ const admin = createClient(`http://127.0.0.1:${process.env.ADMIN_API_PORT || "43
 const publicOpenApiBaseUrl = `http://127.0.0.1:${process.env.PUBLIC_OPENAPI_PORT || "43200"}`;
 const developer = createClient(publicOpenApiBaseUrl, {
   authorization: "authenticated",
-  coverage: operationCoverage
+  coverage: operationCoverage,
+  responseValidator
 });
 const unauthenticatedDeveloper = createClient(publicOpenApiBaseUrl, {
   authorization: "unauthenticated",
-  coverage: operationCoverage
+  coverage: operationCoverage,
+  responseValidator
 });
 let keyId = null;
 let knowledgeBaseId = null;
@@ -62,6 +79,7 @@ try {
   keyId = credential.id;
   developer.authorization = `Bearer ${credential.rawKey}`;
   await checkReadOnlyRootOperations();
+  await checkTemporaryKnowledgeBaseDeletion();
 
   const created = await developer.json("/openapi/v2/knowledge-bases", {
     method: "POST",
@@ -92,32 +110,70 @@ try {
   await waitForKnowledgeBaseRevision(knowledgeBaseRevision);
   pass("knowledge-base-update", { resourceRevision: knowledgeBaseRevision });
 
-  const samples = selectSamples(8);
+  const samples = selectSamples(validationSampleCount);
   assert(
-    samples.length === 8,
-    `Expected eight Markdown validation samples under ${sampleRoot}, found ${samples.length}.`
+    samples.length === validationSampleCount,
+    `Expected ${validationSampleCount} Markdown validation samples, found ${samples.length}.`
   );
   const initial = await upload(samples);
   assert(initial.files.length === samples.length, "Initial upload did not return every source file.");
   await waitForFiles(initial.files.map((file) => file.sourceFileId));
   const initialFiles = await listSourceFiles();
   const initialByPath = new Map(initialFiles.map((file) => [file.relativePath, file]));
+  if (exactOkfCorpus) {
+    const { analyzeOkfMetadata } = await import("../../packages/okf/src/index.ts");
+    report.okfV02Baseline = await inspectOkfV02CorpusBaseline({
+      samples,
+      sourceFiles: initialFiles,
+      readSourceContent: (file) => developer.text(
+        `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+          + `/source-files/${encodeURIComponent(file.sourceFileId)}/content`
+      ),
+      readGeneratedContent: (generatedPath) => developer.text(
+        `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+          + `/files/content?path=${encodeURIComponent(generatedPath)}`
+      ),
+      readRootContent: () => developer.text(
+        `/openapi/v2/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`
+          + "/files/content?path=index.md"
+      ),
+      normalizeSourceMetadata: (metadata, body) => analyzeOkfMetadata(metadata, {
+        ownership: "source",
+        markdownBody: body
+      }).metadata
+    });
+    assert(
+      report.okfV02Baseline.officialCompared === 53
+        && report.okfV02Baseline.legacyCompared === 147,
+      "The OKF 0.2 baseline comparison did not close the exact 200-file corpus."
+    );
+  }
   pass("nested-upload", { fileCount: initialFiles.length });
 
-  const addition = {
-    relativePath: "collection-extra/appendix/new-evidence.md",
-    bytes: Buffer.from("---\ntitle: Added evidence\ntype: reference\n---\n\n# Added evidence\n\nA real overlap validation document.\n")
-  };
+  const addition = exactOkfCorpus
+    ? null
+    : {
+        relativePath: "collection-extra/appendix/new-evidence.md",
+        bytes: Buffer.from("---\ntitle: Added evidence\ntype: reference\n---\n\n# Added evidence\n\nA real overlap validation document.\n")
+      };
+  const overlapFiles = addition ? [...samples, addition] : samples;
   const sourceBodyByPath = new Map(
-    [...samples, addition].map((file) => [file.relativePath, file.bytes])
+    overlapFiles.map((file) => [file.relativePath, file.bytes])
   );
-  const overlap = await upload([...samples, addition]);
+  const overlap = await upload(overlapFiles);
   const dispositionCounts = Object.groupBy(overlap.entries, (entry) => entry.disposition);
   assert((dispositionCounts.skipped_existing?.length ?? 0) === samples.length, "Overlap upload did not skip every existing path.");
-  assert((dispositionCounts.upload_required?.length ?? 0) === 1, "Overlap upload did not transfer only the new path.");
-  const additionFile = overlap.files.find((file) => file.relativePath === addition.relativePath);
-  assert(additionFile?.sourceFileId, "Overlap upload did not expose the new source-file ID.");
-  await waitForFiles([additionFile.sourceFileId]);
+  const expectedAdditionalUploads = addition ? 1 : 0;
+  assert(
+    (dispositionCounts.upload_required?.length ?? 0) === expectedAdditionalUploads,
+    "Overlap upload transferred an unexpected number of paths."
+  );
+  const deletionFixture = addition ?? samples.filter(mutationScope).at(-1);
+  const additionFile = overlap.files.find((file) =>
+    file.relativePath === deletionFixture.relativePath
+  );
+  assert(additionFile?.sourceFileId, "Overlap upload did not expose the deletion fixture ID.");
+  if (addition) await waitForFiles([additionFile.sourceFileId]);
   let afterOverlap = await listSourceFiles();
   for (const sample of samples) {
     const before = initialByPath.get(sample.relativePath);
@@ -125,15 +181,20 @@ try {
     assert(before?.sourceFileId === after?.sourceFileId, `Overlap upload changed source identity for ${sample.relativePath}.`);
     assert(before?.resourceRevision === after?.resourceRevision, `Overlap upload changed revision for ${sample.relativePath}.`);
   }
-  pass("overlap-upload", { skippedExisting: samples.length, uploaded: 1 });
+  pass("overlap-upload", {
+    skippedExisting: samples.length,
+    uploaded: expectedAdditionalUploads
+  });
 
   await checkConcurrentMutationBurst(afterOverlap, sourceBodyByPath);
   afterOverlap = await listSourceFiles();
 
-  const replaceTarget = afterOverlap.find((file) => file.relativePath === samples[0].relativePath);
+  const replaceTarget = afterOverlap.find(mutationScope);
   assert(replaceTarget, "Replacement target was not returned by the source-file list.");
+  const replaceTargetBytes = sourceBodyByPath.get(replaceTarget.relativePath);
+  assert(replaceTargetBytes, "Replacement target did not resolve to its source Markdown body.");
   const replacement = Buffer.concat([
-    samples[0].bytes,
+    replaceTargetBytes,
     Buffer.from("\n\n## Lifecycle validation revision\n\nThis complete Markdown revision was applied through OpenAPI.\n")
   ]);
   const replaceOperation = await acceptOperation(
@@ -157,13 +218,16 @@ try {
   assert(replacementContent.includes("Lifecycle validation revision"), "Replacement content is absent from the generated page.");
   pass("source-file-replace", { sourceFileId: replaced.sourceFileId });
 
-  const moveTarget = afterOverlap.find((file) => file.sourceFileId !== replaceTarget.sourceFileId);
+  const moveTarget = afterOverlap.find((file) =>
+    mutationScope(file) && file.sourceFileId !== replaceTarget.sourceFileId);
   const moveTargetBytes = sourceBodyByPath.get(moveTarget.relativePath);
   assert(moveTargetBytes, "File move target did not resolve to its original Markdown body.");
   const previousGeneratedPath = moveTarget.generatedPath ?? `pages/${moveTarget.relativePath}`;
   const directoriesBeforeMove = await listAllDirectories();
   const fileTargetDirectory = directoriesBeforeMove.find(
-    (directory) => directory.depth >= 2 && directory.directoryId !== moveTarget.directoryId
+    (directory) => mutationScope(directory)
+      && directory.depth >= 2
+      && directory.directoryId !== moveTarget.directoryId
   );
   assert(fileTargetDirectory, "No existing target directory was available for file move validation.");
   const rejectedMove = await acceptOperation(
@@ -204,6 +268,7 @@ try {
   const directoryTarget = directoriesBeforeMove.find(
     (directory) =>
       directory.depth >= 2
+      && mutationScope(directory)
       && directory.directoryId !== fileTargetDirectory.directoryId
       && directory.descendantFileCount >= 2
   );
@@ -234,7 +299,7 @@ try {
 
   await checkConnectedReadOperations(await getSourceFile(replaced.sourceFileId));
   await checkUploadSessionCancellation();
-  await checkWebhooks();
+  if (!exactOkfCorpus) await checkWebhooks();
 
   const deleteTarget = (await listSourceFiles()).find((file) => file.sourceFileId === additionFile.sourceFileId);
   const fileDelete = await acceptOperation(
@@ -269,6 +334,9 @@ try {
     fileOperationId: fileDelete.operationId,
     directoryOperationId: directoryDelete.operationId
   });
+  const recreateWebhookId = exactOkfCorpus
+    ? await createWebhookSubscription()
+    : null;
   const recreated = await uploadAfterDeletion([{
     relativePath: movedRelativePath,
     bytes: moveTargetBytes
@@ -276,6 +344,7 @@ try {
   const recreatedFile = recreated.files.find((file) => file.relativePath === movedRelativePath);
   assert(recreatedFile?.sourceFileId && recreatedFile.sourceFileId !== moved.sourceFileId, "Recreated path did not receive a new source identity.");
   await waitForFiles([recreatedFile.sourceFileId]);
+  if (recreateWebhookId) await verifyWebhookOperations(recreateWebhookId);
   await sleep(1500);
   await getSourceFile(recreatedFile.sourceFileId);
   pass("directory-delete-and-recreate", {
@@ -384,6 +453,11 @@ function createClient(baseUrl, tracking = null) {
         });
         const cookie = response.headers.get("set-cookie");
         if (cookie) this.cookie = cookie.split(";")[0] ?? "";
+        await tracking?.responseValidator.validateFetchResponse({
+          method: options.method ?? "GET",
+          pathname,
+          response
+        });
         tracking?.coverage.record({
           method: options.method ?? "GET",
           pathname,
@@ -545,18 +619,52 @@ async function checkReadOnlyRootOperations() {
   pass("openapi-root-reads");
 }
 
+async function checkTemporaryKnowledgeBaseDeletion() {
+  const created = await developer.json("/openapi/v2/knowledge-bases", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: `Deletion fixture ${new Date().toISOString()}`,
+      description: "Isolated knowledge-base deletion validation"
+    }),
+    expectedStatus: 201
+  });
+  const temporary = created.knowledgeBase ?? created;
+  assert(
+    temporary.knowledgeBaseId && Number.isInteger(temporary.resourceRevision),
+    "Temporary deletion fixture identity is incomplete."
+  );
+  const pathname = `/openapi/v2/knowledge-bases/${encodeURIComponent(temporary.knowledgeBaseId)}`;
+  const deleted = await developer.json(pathname, {
+    method: "DELETE",
+    headers: {
+      "idempotency-key": `delete-fixture-${temporary.knowledgeBaseId}`,
+      "if-match": `"${temporary.resourceRevision}"`
+    },
+    expectedStatus: 202
+  });
+  assert(deleted.deletion?.accepted === true, "Temporary knowledge-base deletion was not accepted.");
+  await waitUntilMissing(pathname);
+  pass("knowledge-base-delete", { knowledgeBaseId: temporary.knowledgeBaseId });
+}
+
 function selectSamples(limit) {
   const files = [];
   walk(sampleRoot, files);
   const markdownFiles = files
     .filter((filePath) => filePath.toLowerCase().endsWith(".md"))
     .sort((left, right) => left.localeCompare(right));
-  return selectClosedMarkdownSample({
-    filePaths: markdownFiles,
-    limit,
-    readText: (filePath) => fs.readFileSync(filePath, "utf8")
-  }).map((filePath) => ({
-    relativePath: `real-corpus/${path.relative(sampleRoot, filePath).split(path.sep).join("/")}`,
+  const selectedPaths = exactOkfCorpus
+    ? markdownFiles
+    : selectClosedMarkdownSample({
+        filePaths: markdownFiles,
+        limit,
+        readText: (filePath) => fs.readFileSync(filePath, "utf8")
+      });
+  return selectedPaths.map((filePath) => ({
+    relativePath: exactOkfCorpus
+      ? path.relative(sampleRoot, filePath).split(path.sep).join("/")
+      : `real-corpus/${path.relative(sampleRoot, filePath).split(path.sep).join("/")}`,
     bytes: fs.readFileSync(filePath)
   }));
 }
@@ -755,7 +863,7 @@ async function checkConnectedReadOperations(sourceFile) {
 
 async function checkConcurrentMutationBurst(sourceFiles, sourceBodyByPath) {
   const targets = sourceFiles
-    .filter((file) => sourceBodyByPath.has(file.relativePath))
+    .filter((file) => mutationScope(file) && sourceBodyByPath.has(file.relativePath))
     .slice(0, 8);
   assert(targets.length === 8, "Concurrent mutation validation requires eight source files.");
 
@@ -820,7 +928,7 @@ async function checkUploadSessionCancellation() {
   pass("upload-session-cancel", { sessionId });
 }
 
-async function checkWebhooks() {
+async function createWebhookSubscription() {
   const created = await developer.json("/openapi/v2/webhooks", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -831,10 +939,12 @@ async function checkWebhooks() {
     }),
     expectedStatus: 201
   });
-  const webhookId = created.webhook.webhookId;
+  return created.webhook.webhookId;
+}
+
+async function checkWebhooks() {
+  const webhookId = await createWebhookSubscription();
   try {
-    const listed = await developer.json("/openapi/v2/webhooks?limit=100");
-    assert(listed.items.some((item) => item.webhookId === webhookId), "Webhook list omitted the created subscription.");
     const sample = selectSamples(8)[0];
     assert(sample, "Webhook validation Markdown sample is unavailable.");
     const uploaded = await upload([{
@@ -844,6 +954,17 @@ async function checkWebhooks() {
     const target = uploaded.files[0];
     assert(target?.sourceFileId, "Webhook validation upload omitted its source-file ID.");
     await waitForFiles([target.sourceFileId]);
+    await verifyWebhookOperations(webhookId);
+  } catch (error) {
+    await deleteWebhookSubscription(webhookId);
+    throw error;
+  }
+}
+
+async function verifyWebhookOperations(webhookId) {
+  try {
+    const listed = await developer.json("/openapi/v2/webhooks?limit=100");
+    assert(listed.items.some((item) => item.webhookId === webhookId), "Webhook list omitted the created subscription.");
     const delivery = await waitForWebhookDelivery(webhookId, "source_file.completed");
     assert(
       ["pending", "success", "failed"].includes(delivery.status),
@@ -877,15 +998,19 @@ async function checkWebhooks() {
       eventId: delivery.eventId
     });
   } finally {
-    const response = await developer.request(
-      `/openapi/v2/webhooks/${encodeURIComponent(webhookId)}`,
-      { method: "DELETE" }
-    );
-    if (response.status !== 200 && response.status !== 404) {
-      throw new Error(`Webhook cleanup returned HTTP ${response.status}.`);
-    }
-    await response.text();
+    await deleteWebhookSubscription(webhookId);
   }
+}
+
+async function deleteWebhookSubscription(webhookId) {
+  const response = await developer.request(
+    `/openapi/v2/webhooks/${encodeURIComponent(webhookId)}`,
+    { method: "DELETE" }
+  );
+  if (response.status !== 200 && response.status !== 404) {
+    throw new Error(`Webhook cleanup returned HTTP ${response.status}.`);
+  }
+  await response.text();
 }
 
 async function waitForWebhookDelivery(webhookId, eventType, timeoutMs = 120_000) {

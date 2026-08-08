@@ -20,14 +20,18 @@ test("recognizes reserved OKF index and log files at every directory depth", () 
 
 test("validates current reserved Markdown frontmatter contracts", () => {
   assert.equal(
-    validateReservedMarkdownFrontmatter("index.md", { okf_version: "0.1" }),
+    validateReservedMarkdownFrontmatter("index.md", { okf_version: "0.2" }),
     true
   );
   assert.equal(
     validateReservedMarkdownFrontmatter("index.md", {
-      okf_version: "0.1",
+      okf_version: "0.2",
       knowledge_base_id: "internal"
     }),
+    false
+  );
+  assert.equal(
+    validateReservedMarkdownFrontmatter("index.md", { okf_version: "0.1" }),
     false
   );
   assert.equal(

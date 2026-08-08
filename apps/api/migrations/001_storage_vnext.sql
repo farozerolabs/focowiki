@@ -100,6 +100,13 @@ CREATE TABLE focowiki.source_files (
   revision bigint NOT NULL,
   safe_error_code text,
   safe_error_message text,
+  model_invocation_source_revision_public_id text,
+  model_invocation_status text,
+  model_invocation_model_name text,
+  model_invocation_started_at timestamp with time zone,
+  model_invocation_ended_at timestamp with time zone,
+  model_invocation_warning_count integer,
+  model_invocation_error_code text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   deleted_at timestamp with time zone,
@@ -134,6 +141,54 @@ CREATE TABLE focowiki.source_files (
   CONSTRAINT source_files_error_payload_check CHECK (
     (safe_error_code IS NULL OR octet_length(safe_error_code) <= 128)
     AND (safe_error_message IS NULL OR octet_length(safe_error_message) <= 2048)
+  ),
+  CONSTRAINT source_files_model_invocation_check CHECK (
+    (
+      model_invocation_status IS NULL
+      AND model_invocation_source_revision_public_id IS NULL
+      AND model_invocation_model_name IS NULL
+      AND model_invocation_started_at IS NULL
+      AND model_invocation_ended_at IS NULL
+      AND model_invocation_warning_count IS NULL
+      AND model_invocation_error_code IS NULL
+    ) OR (
+      model_invocation_status IN ('running', 'completed', 'failed', 'skipped')
+      AND model_invocation_source_revision_public_id <> ''
+      AND octet_length(model_invocation_source_revision_public_id) <= 255
+      AND model_invocation_warning_count BETWEEN 0 AND 1000
+      AND (
+        model_invocation_status = 'skipped'
+        AND model_invocation_model_name IS NULL
+        AND model_invocation_started_at IS NULL
+        AND model_invocation_ended_at IS NOT NULL
+        AND model_invocation_error_code IS NULL
+        OR model_invocation_status = 'running'
+        AND model_invocation_model_name IS NOT NULL
+        AND model_invocation_started_at IS NOT NULL
+        AND model_invocation_ended_at IS NULL
+        AND model_invocation_error_code IS NULL
+        OR model_invocation_status = 'completed'
+        AND model_invocation_model_name IS NOT NULL
+        AND model_invocation_started_at IS NOT NULL
+        AND model_invocation_ended_at >= model_invocation_started_at
+        AND model_invocation_error_code IS NULL
+        OR model_invocation_status = 'failed'
+        AND model_invocation_model_name IS NOT NULL
+        AND model_invocation_started_at IS NOT NULL
+        AND model_invocation_ended_at >= model_invocation_started_at
+        AND model_invocation_error_code IS NOT NULL
+      )
+      AND (
+        model_invocation_model_name IS NULL
+        OR model_invocation_model_name <> ''
+          AND octet_length(model_invocation_model_name) <= 255
+      )
+      AND (
+        model_invocation_error_code IS NULL
+        OR model_invocation_error_code <> ''
+          AND octet_length(model_invocation_error_code) <= 128
+      )
+    )
   )
 );
 
@@ -2064,6 +2119,7 @@ $storage_vnext_partitions$;
 
 CREATE INDEX source_directories_active_parent_path_idx ON focowiki.source_directories (knowledge_base_id, parent_public_id, normalized_path, public_id) WHERE deleted_at IS NULL;
 CREATE INDEX source_files_active_directory_path_idx ON focowiki.source_files (knowledge_base_id, directory_public_id, normalized_path, public_id) WHERE deleted_at IS NULL;
+CREATE INDEX source_files_active_model_invocation_idx ON focowiki.source_files (knowledge_base_id, model_invocation_status, logical_path, public_id) WHERE deleted_at IS NULL;
 CREATE INDEX source_file_current_revisions_revision_idx ON focowiki.source_file_current_revisions (knowledge_base_id, source_revision_public_id, source_file_public_id);
 CREATE INDEX source_revisions_object_idx ON focowiki.source_revisions (object_id, knowledge_base_id, public_id);
 CREATE INDEX source_event_summaries_scope_time_idx ON focowiki.source_event_summaries (knowledge_base_id, source_file_public_id, created_at, sequence_number, public_id);

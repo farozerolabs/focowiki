@@ -45,13 +45,13 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({
       passed: true,
       candidateRatioPassed: true,
-      maximumActiveObjects: 464
+      maximumActiveObjects: 467
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 10,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 465,
-      candidateOnlyObjectCount: 465
+      candidateGeneratedObjectCount: 468,
+      candidateOnlyObjectCount: 468
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -63,14 +63,14 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 278
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
+      maximumActiveObjects: 467,
       fileFirstCompletenessAllowanceUsed: true
     });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 36,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 465,
-      candidateOnlyObjectCount: 465
+      candidateGeneratedObjectCount: 468,
+      candidateOnlyObjectCount: 468
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -78,14 +78,14 @@ describe("storage vNext generated object fan-out budget", () => {
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 0,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 16,
-      candidateOnlyObjectCount: 16
-    })).toMatchObject({ passed: true, maximumActiveObjects: 16 });
+      candidateGeneratedObjectCount: 19,
+      candidateOnlyObjectCount: 19
+    })).toMatchObject({ passed: true, maximumActiveObjects: 19 });
     expect(evaluateStorageVnextObjectFanoutBudget({
       sourceFileCount: 0,
       activeGeneratedObjectCount: 0,
-      candidateGeneratedObjectCount: 17,
-      candidateOnlyObjectCount: 17
+      candidateGeneratedObjectCount: 20,
+      candidateOnlyObjectCount: 20
     })).toMatchObject({ passed: false, activeFanoutPassed: false });
   });
 
@@ -98,8 +98,8 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 109
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
-      maximumCandidateOnlyObjects: 464
+      maximumActiveObjects: 467,
+      maximumCandidateOnlyObjects: 467
     });
   });
 
@@ -112,7 +112,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
+      maximumActiveObjects: 467,
       maximumCandidateOnlyObjects: 29
     });
   });
@@ -127,7 +127,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 22
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
+      maximumActiveObjects: 467,
       fileFirstCompletenessAllowanceUsed: false,
       candidateRatioPassed: true
     });
@@ -158,7 +158,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 2
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
+      maximumActiveObjects: 467,
       maximumCandidateOnlyObjects: 25
     });
   });
@@ -173,7 +173,7 @@ describe("storage vNext generated object fan-out budget", () => {
       candidateOnlyObjectCount: 29
     })).toMatchObject({
       passed: true,
-      maximumActiveObjects: 464,
+      maximumActiveObjects: 467,
       maximumCandidateOnlyObjects: 36,
       candidateChangeAllowanceUsed: true
     });
@@ -187,6 +187,66 @@ describe("storage vNext generated object fan-out budget", () => {
     })).toMatchObject({
       passed: false,
       candidateRatioPassed: false
+    });
+  });
+
+  it("allows a bounded maintenance candidate that adds missing file-first entries", () => {
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 3,
+      activeSourceFileCount: 3,
+      activeGeneratedObjectCount: 49,
+      candidateGeneratedObjectCount: 47,
+      candidateOnlyObjectCount: 47,
+      activeGeneratedEntryCount: 41,
+      candidateGeneratedEntryCount: 53,
+      maintenanceRebuild: true
+    })).toMatchObject({
+      passed: true,
+      maximumActiveObjects: 467,
+      maximumCandidateOnlyObjects: 467,
+      candidateCompletenessAllowanceUsed: true
+    });
+  });
+
+  it("keeps the candidate-only ratio for ordinary or unchanged maintenance work", () => {
+    const measured = {
+      sourceFileCount: 3,
+      activeSourceFileCount: 3,
+      activeGeneratedObjectCount: 49,
+      candidateGeneratedObjectCount: 47,
+      candidateOnlyObjectCount: 47,
+      activeGeneratedEntryCount: 41,
+      candidateGeneratedEntryCount: 53
+    };
+    expect(evaluateStorageVnextObjectFanoutBudget(measured)).toMatchObject({
+      passed: false,
+      candidateRatioPassed: false,
+      candidateCompletenessAllowanceUsed: false
+    });
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      ...measured,
+      activeGeneratedEntryCount: 53,
+      maintenanceRebuild: true
+    })).toMatchObject({
+      passed: false,
+      candidateRatioPassed: false,
+      candidateCompletenessAllowanceUsed: false
+    });
+  });
+
+  it("keeps the absolute fan-out ceiling during completeness maintenance", () => {
+    expect(evaluateStorageVnextObjectFanoutBudget({
+      sourceFileCount: 3,
+      activeSourceFileCount: 3,
+      activeGeneratedObjectCount: 49,
+      candidateGeneratedObjectCount: 468,
+      candidateOnlyObjectCount: 468,
+      activeGeneratedEntryCount: 41,
+      candidateGeneratedEntryCount: 53,
+      maintenanceRebuild: true
+    })).toMatchObject({
+      passed: false,
+      activeFanoutPassed: false
     });
   });
 

@@ -14,7 +14,11 @@ import {
   webhookIdParameter,
   type PathItemObject
 } from "./openapi-shared.js";
-import { createDeveloperOpenApiResponseExamples, requestExamples } from "./openapi-examples.js";
+import {
+  createDeveloperOpenApiResponseExamples,
+  okfMarkdownExamples,
+  requestExamples
+} from "./openapi-examples.js";
 
 export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
   const responseExamples = createDeveloperOpenApiResponseExamples();
@@ -203,7 +207,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
           required: true,
           content: {
             "text/markdown": {
-              example: requestExamples.uploadSessionEntryContent.body,
+              examples: okfMarkdownExamples,
               schema: {
                 type: "string",
                 description: "Complete Markdown content for the selected upload entry."
@@ -400,7 +404,7 @@ export function createDeveloperOpenApiPaths(): Record<string, PathItemObject> {
                 type: "string",
                 description: "Complete Markdown content that will replace the current file."
               },
-              example: requestExamples.replaceSourceFileContent.body
+              examples: okfMarkdownExamples
             }
           }
         },

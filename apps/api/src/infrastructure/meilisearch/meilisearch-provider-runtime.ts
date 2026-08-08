@@ -256,7 +256,7 @@ export function toMeilisearchSettings(
       attributePatterns: [...definition.filterableAttributes],
       features: {
         facetSearch: false,
-        filter: { equality: true, comparison: false }
+        filter: { equality: true, comparison: true }
       }
     }],
     displayedAttributes: [...definition.displayedAttributes],
@@ -306,6 +306,10 @@ function renderFilterNode(filter: SearchFilterExpression): string {
   }
   if (filter.kind === "boolean") {
     return `${filter.field} = ${filter.value ? "true" : "false"}`;
+  }
+  if (filter.kind === "range") {
+    if (!Number.isSafeInteger(filter.value)) throw requestError();
+    return `${filter.field} ${filter.operator === "lte" ? "<=" : ">"} ${filter.value}`;
   }
   if (filter.operands.length === 0) throw requestError();
   const rendered = filter.operands.map((operand) => renderFilterNode(operand));

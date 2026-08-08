@@ -76,6 +76,7 @@ export function createPostgresStorageVnextAdminSource(input: {
         status: "pending",
         safeErrorCode: null,
         safeErrorMessage: null,
+        modelInvocation: null,
         revisionCheck: { expectedRevision: file.revision }
       });
       return success({
@@ -150,12 +151,19 @@ function toAdminFile(
     processingStartedAt: null,
     processingEndedAt: null,
     retryCount,
-    modelInvocationStatus: null,
-    modelInvocationModelName: null,
-    modelInvocationStartedAt: null,
-    modelInvocationEndedAt: null,
-    modelInvocationWarningCount: null,
-    modelInvocationErrorCode: null,
+    modelInvocationStatus: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+      ? file.modelInvocation.status : null,
+    modelInvocationModelName: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+      ? file.modelInvocation.modelName : null,
+    modelInvocationStartedAt: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+      ? file.modelInvocation.startedAt : null,
+    modelInvocationEndedAt: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+      ? file.modelInvocation.endedAt : null,
+    modelInvocationWarningCount:
+      file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+        ? file.modelInvocation.warningCount : null,
+    modelInvocationErrorCode: file.modelInvocation?.sourceRevisionPublicId === revision.publicId
+      ? file.modelInvocation.errorCode : null,
     generatedOutputStatus: "pending",
     generatedFileAvailable: false,
     generatedFilePath: null,

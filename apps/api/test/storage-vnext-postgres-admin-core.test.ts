@@ -127,6 +127,35 @@ describe("PostgreSQL storage vNext Admin core", () => {
     });
   });
 
+  it("preserves the source processing model invocation in the Admin list response", async () => {
+    const fixture = createFixture({
+      modelInvocationStatus: "completed",
+      modelInvocationModelName: "deepseek-v4-flash",
+      modelInvocationStartedAt: "2026-08-01T00:00:00.000Z",
+      modelInvocationEndedAt: "2026-08-01T00:00:02.000Z",
+      modelInvocationWarningCount: 1,
+      modelInvocationErrorCode: null
+    });
+
+    const result = await fixture.application.listFiles({
+      knowledgeBaseId: "kb-filter",
+      limit: 20,
+      cursor: null,
+      filters: {}
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        items: [{
+          modelInvocationStatus: "completed",
+          modelInvocationModelName: "deepseek-v4-flash",
+          modelInvocationWarningCount: 1
+        }]
+      }
+    });
+  });
+
   it("returns the requested bounded source event page in file detail", async () => {
     const fixture = createFixture();
 

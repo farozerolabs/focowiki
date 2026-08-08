@@ -7,8 +7,12 @@ import {
 
 describe("directory navigation writer", () => {
   it("renders stable progressive links without a corpus-wide index", () => {
-    const leaf = renderDirectoryLeafMarkdown({
+    const renderLeafWithProvenance = renderDirectoryLeafMarkdown as (
+      input: Parameters<typeof renderDirectoryLeafMarkdown>[0] & { changedAt: string }
+    ) => string;
+    const leaf = renderLeafWithProvenance({
       directoryPath: "pages/guides",
+      changedAt: "2026-07-13T00:00:00Z",
       leaf: {
         id: "leaf-b",
         previousLeafId: "leaf-a",
@@ -29,6 +33,9 @@ describe("directory navigation writer", () => {
     expect(leaf).toContain("[Knowledge base](/index.md)");
     expect(leaf).toContain("[Machine-readable indexes](/_index/index.md)");
     expect(leaf).toContain("[Relationship graph](/_graph/index.md)");
+    expect(leaf).toContain(
+      'generated: {"by":"process:focowiki-publication","at":"2026-07-13T00:00:00.000Z"}'
+    );
     const root = renderDirectoryRootMarkdown({
       directoryPath: "pages/guides",
       entryCount: 500,

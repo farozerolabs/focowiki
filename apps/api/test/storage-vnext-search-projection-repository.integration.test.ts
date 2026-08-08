@@ -126,7 +126,8 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       sourceFilePublicId: "source-a",
       sourceRevisionPublicId: "revision-source-a",
       logicalPath: "pages/guides/a.md",
-      title: "Guide A"
+      title: "Guide A",
+      metadata: {}
     }]);
     await expect(hydration.hydrateCurrentSources({
       knowledgeBaseId: "kb-b",
@@ -279,6 +280,25 @@ describeOwnedDatabase("storage vNext search projection repository", () => {
       correlationPublicId: "cleanup-cycle-c"
     });
     await expect(repository.getCandidate("candidate-cleanup")).resolves.toBeNull();
+
+    await repository.reserveCandidate(candidate("candidate-targeted", "kb-c"));
+    await repository.failCandidateValidation({
+      candidatePublicId: "candidate-targeted",
+      safeErrorCode: "candidate_checksum_mismatch"
+    });
+    await expect(cleanup.claimFailedCandidate({
+      failedBefore: "2020-01-01T00:00:00.000Z",
+      correlationPublicId: "cleanup-cycle-targeted",
+      providerKind: "meilisearch",
+      candidatePublicId: "candidate-targeted"
+    })).resolves.toMatchObject({
+      publicId: "candidate-targeted",
+      correlationPublicId: "cleanup-cycle-targeted"
+    });
+    await cleanup.completeFailedCandidateCleanup({
+      candidatePublicId: "candidate-targeted",
+      correlationPublicId: "cleanup-cycle-targeted"
+    });
 
     await repository.reserveCandidate(candidate("candidate-active", "kb-c"));
     await repository.markCandidateIndexing("candidate-active");

@@ -1,8 +1,11 @@
+import type { StorageVnextStructuredMetadata } from "../shared/types.js";
+
 export type StorageVnextSearchHydrationRecord = {
   sourceFilePublicId: string;
   sourceRevisionPublicId: string;
   logicalPath: string;
   title: string;
+  metadata: StorageVnextStructuredMetadata;
 };
 
 export interface StorageVnextSearchHydrationPort {

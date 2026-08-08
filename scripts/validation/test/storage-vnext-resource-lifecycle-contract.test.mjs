@@ -61,8 +61,29 @@ test("resource lifecycle selects a link-closed sample with corpus-relative paths
   const source = await readFile(sourcePath, "utf8");
 
   assert.match(source, /selectClosedMarkdownSample\(\{/u);
+  assert.match(source, /const selectedPaths = exactOkfCorpus\s+\? markdownFiles/u);
   assert.match(source, /path\.relative\(sampleRoot, filePath\)/u);
   assert.doesNotMatch(source, /real-corpus\/group-/u);
+});
+
+test("exact corpus webhook coverage observes the delete-and-recreate source event", async () => {
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(
+    source,
+    /const recreateWebhookId = exactOkfCorpus[\s\S]*?uploadAfterDeletion[\s\S]*?verifyWebhookOperations\(recreateWebhookId\)/u
+  );
+  assert.doesNotMatch(source, /webhook-replace/u);
+});
+
+test("retained lifecycle validates knowledge-base deletion on an isolated fixture", async () => {
+  const source = await readFile(sourcePath, "utf8");
+
+  assert.match(source, /await checkTemporaryKnowledgeBaseDeletion\(\);/u);
+  assert.match(
+    source,
+    /async function checkTemporaryKnowledgeBaseDeletion\(\)[\s\S]*?method: "DELETE"[\s\S]*?waitUntilMissing/u
+  );
 });
 
 test("interleaved lifecycle preserves linked corpus basenames and mutates controls", async () => {

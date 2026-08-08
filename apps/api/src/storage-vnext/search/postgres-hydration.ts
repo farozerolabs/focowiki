@@ -11,12 +11,14 @@ import type {
   StorageVnextSearchHydrationPort,
   StorageVnextSearchHydrationRecord
 } from "./search-hydration.js";
+import type { StorageVnextStructuredMetadata } from "../shared/types.js";
 
 type HydrationRow = {
   public_id: string;
   source_revision_public_id: string;
   logical_path: string;
   title: string;
+  metadata: StorageVnextStructuredMetadata;
 };
 
 type CandidateRow = {
@@ -69,7 +71,8 @@ export function createPostgresStorageVnextSearchHydration(
                   sourceFilePublicId: source.publicId,
                   sourceRevisionPublicId: source.currentRevisionPublicId,
                   logicalPath: generatedPagePath(source.logicalPath),
-                  title: source.title
+                  title: source.title,
+                  metadata: structuredClone(source.metadata)
                 }]
               : []);
           }
@@ -82,7 +85,7 @@ export function createPostgresStorageVnextSearchHydration(
             WITH ORDINALITY AS item(public_id, ordinal)
         )
         SELECT source.public_id, current_revision.source_revision_public_id,
-               source.logical_path, source.title
+               source.logical_path, source.title, source.metadata
         FROM requested
         JOIN focowiki.source_files source
           ON source.public_id = requested.public_id
@@ -106,6 +109,7 @@ function mapHydration(row: HydrationRow): StorageVnextSearchHydrationRecord {
     sourceFilePublicId: row.public_id,
     sourceRevisionPublicId: row.source_revision_public_id,
     logicalPath: generatedPagePath(row.logical_path),
-    title: row.title
+    title: row.title,
+    metadata: structuredClone(row.metadata)
   };
 }

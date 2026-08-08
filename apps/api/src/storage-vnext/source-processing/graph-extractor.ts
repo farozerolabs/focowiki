@@ -79,6 +79,7 @@ export function createStorageVnextSourceGraphExtractor(input: {
   return async (request: GraphExtractionRequest): Promise<{
     node: StorageVnextGraphNodeFact;
     edges: StorageVnextGraphEdgeFact[];
+    modelWarningCount: number;
   }> => {
     throwIfAborted(request.signal);
     const source = createGraphNode({
@@ -144,6 +145,7 @@ export function createStorageVnextSourceGraphExtractor(input: {
     };
     return {
       node,
+      modelWarningCount: confirmed.warnings.length,
       edges: mergeEdges(
         markdown.edges,
         confirmed.edges.map((edge) => mapSemanticEdge({

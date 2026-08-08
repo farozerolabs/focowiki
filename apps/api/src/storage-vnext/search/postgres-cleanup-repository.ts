@@ -25,6 +25,7 @@ export function createPostgresStorageVnextSearchCleanupRepository(
       assertTimestamp(input.failedBefore);
       assertId(input.correlationPublicId);
       assertProviderKind(input.providerKind);
+      if (input.candidatePublicId !== undefined) assertId(input.candidatePublicId);
       const rows = await sql<CleanupLeaseRow[]>`
         WITH eligible AS (
           SELECT public_id
@@ -33,9 +34,16 @@ export function createPostgresStorageVnextSearchCleanupRepository(
             AND provider_kind = ${input.providerKind}
             AND state = 'failed'
             AND (
+              ${input.candidatePublicId ?? null}::text IS NULL
+              OR public_id = ${input.candidatePublicId ?? null}
+            )
+            AND (
               (
                 correlation_public_id IS NULL
-                AND updated_at <= ${input.failedBefore}
+                AND (
+                  ${input.candidatePublicId ?? null}::text IS NOT NULL
+                  OR updated_at <= ${input.failedBefore}
+                )
               )
               OR correlation_public_id = ${input.correlationPublicId}
             )

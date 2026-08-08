@@ -54,6 +54,7 @@ export type PublicationKnowledgeBaseSnapshot = {
   description: string | null;
   sourceFileCount: number;
   graphEdgeCount: number;
+  changedAt?: string;
 };
 
 export type PublicationNavigationTarget = {

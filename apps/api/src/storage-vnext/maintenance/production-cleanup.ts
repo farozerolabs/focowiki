@@ -27,6 +27,7 @@ export function createStorageVnextMaintenanceProductionCleanup(input: {
     cleanupFailedCandidate(input: {
       failedBefore: string;
       correlationPublicId: string;
+      candidatePublicId?: string;
     }): Promise<{
       outcome: "none" | "deleted";
       candidatePublicId: string | null;
@@ -115,18 +116,16 @@ async function cleanupFailedCandidate(
   failedBefore: string,
   correlationPublicId: string
 ): Promise<void> {
-  for (let page = 0; page < input.maximumCleanupPages; page += 1) {
-    const result = await input.searchCleanup.cleanupFailedCandidate({
-      failedBefore,
-      correlationPublicId
-    });
-    if (
-      result.outcome === "deleted"
-      && result.candidatePublicId === candidatePublicId
-    ) return;
-    if (result.outcome === "none") break;
-  }
-  throw cleanupError("failed_candidate_page_limit");
+  const result = await input.searchCleanup.cleanupFailedCandidate({
+    failedBefore,
+    correlationPublicId,
+    candidatePublicId
+  });
+  if (
+    result.outcome === "none"
+    || result.candidatePublicId === candidatePublicId
+  ) return;
+  throw cleanupError("failed_candidate_mismatch");
 }
 
 async function cleanupOrphanIndexes(

@@ -27,7 +27,10 @@ export function createStorageVnextSearchSettings(input: {
       "knowledgeBaseId",
       "documentKind",
       "schemaVersion",
-      "sourceFilePublicId"
+      "sourceFilePublicId",
+      "okfSignals.status",
+      "okfSignals.trustTier",
+      "okfSignals.staleAfterEpochDay"
     ],
     displayedAttributes: [
       "id",
@@ -43,7 +46,8 @@ export function createStorageVnextSearchSettings(input: {
       "segmentOrdinal",
       "headingAncestors",
       "searchText",
-      "rankingTerms"
+      "rankingTerms",
+      "okfSignals"
     ],
     rankingRules: [
       "words",

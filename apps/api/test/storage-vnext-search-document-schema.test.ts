@@ -5,8 +5,19 @@ import {
   createStorageVnextContentDocument,
   createStorageVnextGraphSeedDocument
 } from "../src/storage-vnext/search/documents.js";
+import { parseStorageVnextSearchDocument } from
+  "../src/storage-vnext/search/document-codec.js";
 
 describe("storage vNext minimal search document schemas", () => {
+  const emptyOkfSignals = {
+    status: null,
+    trustTier: null,
+    staleAfterEpochDay: null,
+    generatedAtEpochMs: null,
+    latestVerifiedAtEpochMs: null,
+    sourceCount: null
+  };
+
   it("keeps one file-level content document for title, path, and metadata search", () => {
     const document = createStorageVnextContentDocument({
       knowledgeBaseId: "kb-a",
@@ -18,7 +29,8 @@ describe("storage vNext minimal search document schemas", () => {
       contentKind: "file",
       segmentOrdinal: null,
       headingAncestors: [],
-      searchText: '{"owner":"platform"}'
+      searchText: '{"owner":"platform"}',
+      okfSignals: emptyOkfSignals
     });
 
     expect(document).toEqual({
@@ -34,8 +46,33 @@ describe("storage vNext minimal search document schemas", () => {
       title: "Cache recovery",
       segmentOrdinal: null,
       headingAncestors: [],
-      searchText: '{"owner":"platform"}'
+      searchText: '{"owner":"platform"}',
+      okfSignals: emptyOkfSignals
     });
+  });
+
+  it("round-trips a file-level document when optional metadata search text is empty", () => {
+    const document = createStorageVnextContentDocument({
+      knowledgeBaseId: "kb-a",
+      sourceFilePublicId: "source-a",
+      sourceRevisionPublicId: "revision-a",
+      logicalPath: "pages/guides/no-frontmatter.md",
+      fileKind: "page",
+      title: "No frontmatter",
+      contentKind: "file",
+      segmentOrdinal: null,
+      headingAncestors: [],
+      searchText: "",
+      okfSignals: {
+        ...emptyOkfSignals,
+        status: "stable",
+        trustTier: "unverified",
+        sourceCount: 0
+      }
+    });
+
+    expect(parseStorageVnextSearchDocument(structuredClone(document)))
+      .toEqual(document);
   });
 
   it("keeps a body segment limited to search, snippet, identity, revision, and path fields", () => {
@@ -60,6 +97,7 @@ describe("storage vNext minimal search document schemas", () => {
       "id",
       "knowledgeBaseId",
       "logicalPath",
+      "okfSignals",
       "schemaVersion",
       "searchText",
       "segmentOrdinal",
@@ -93,7 +131,8 @@ describe("storage vNext minimal search document schemas", () => {
       logicalPath: "pages/guides/cache.md",
       title: "Cache recovery",
       searchText: "cache restore dependency",
-      rankingTerms: ["cache", "dependency", "restore"]
+      rankingTerms: ["cache", "dependency", "restore"],
+      okfSignals: emptyOkfSignals
     });
     expect(JSON.stringify(document)).not.toMatch(
       /lexicalText|exactTerms|phraseTerms|explicitReferences|fingerprint|checksum/u

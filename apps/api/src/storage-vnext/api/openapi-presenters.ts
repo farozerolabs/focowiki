@@ -14,6 +14,7 @@ import type { StorageVnextSearchResult } from "../search/ports.js";
 import type { StorageVnextSourceEventSummary } from "../source-events/ports.js";
 import type { StorageVnextAdminTreeEntry } from "./admin-ports.js";
 import type { DeveloperOpenApiApplication } from "./openapi-application.js";
+import { presentOkfSignals } from "./okf-signal-presentation.js";
 
 export type StorageVnextOpenApiRelationship = {
   public_id: string;
@@ -91,6 +92,7 @@ export function presentOpenApiGeneratedFile(
   const fileId = readString(file.id) ?? readString(file.sourceFileId);
   const path = readString(file.logicalPath);
   if (!fileId || !path) throw repositoryUnavailable();
+  const frontmatter = readRecord(file.frontmatter) ?? {};
   return {
     generationId,
     fileId,
@@ -103,10 +105,9 @@ export function presentOpenApiGeneratedFile(
     okfType: readString(file.okfType),
     title: readString(file.title) ?? path.split("/").at(-1) ?? path,
     description: readString(file.description),
-    tags: Array.isArray(file.tags)
-      ? file.tags.filter((value): value is string => typeof value === "string")
-      : [],
-    frontmatter: readRecord(file.frontmatter) ?? {},
+    tags: readStringArray(frontmatter.tags) ?? readStringArray(file.tags) ?? [],
+    frontmatter,
+    okfSignals: presentOkfSignals(frontmatter),
     deletable: file.deletable === true,
     contentAvailable: true,
     readActions: openApiReadActions(
@@ -174,6 +175,7 @@ export function presentOpenApiSearchResult(input: {
       ...input.relationships.map((row) => row.source_file_public_id)
     ])].map(graphRefForFile)
   };
+  const frontmatter = input.item.metadata;
   return {
     generationId: input.generationId,
     nodeId: input.item.kind === "graph" ? input.nodePublicId : null,
@@ -187,8 +189,9 @@ export function presentOpenApiSearchResult(input: {
     fileKind: "page",
     title: input.item.title,
     description: input.item.snippet,
-    tags: [],
-    frontmatter: {},
+    tags: readStringArray(frontmatter.tags) ?? [],
+    frontmatter,
+    okfSignals: presentOkfSignals(frontmatter),
     matchedFields: input.item.snippet ? ["description"] : ["title"],
     score: input.item.score,
     contentAvailable: true,
@@ -301,6 +304,9 @@ export function openApiSearchQuery(
     mode: input.mode,
     graphDepth: input.graphDepth,
     graphFanout: input.graphFanout,
+    okfStatus: input.okfFilters?.status ?? null,
+    okfTrustTier: input.okfFilters?.trustTier ?? null,
+    okfFreshness: input.okfFilters?.freshness ?? null,
     limit: input.limit,
     cursorProvided: Boolean(input.cursor)
   };
@@ -387,6 +393,11 @@ function openApiReadActions(
     sourceFileStatusById: sourceFileId ? `${base}/source-files/${sourceFileId}` : null,
     sourceFileEventsById: sourceFileId ? `${base}/source-files/${sourceFileId}/events` : null
   };
+}
+
+function readStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {

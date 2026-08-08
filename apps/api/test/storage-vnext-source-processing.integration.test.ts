@@ -167,6 +167,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
       catalog,
       bodyStore: bodyPlane.reader,
       model,
+      modelInvocation: null,
       handoff,
       events,
       limits: {
@@ -297,6 +298,7 @@ describeOwnedDatabase("storage vNext source processing PostgreSQL handoff", () =
       catalog,
       bodyStore: bodyPlane.reader,
       model: pressuredModel,
+      modelInvocation: null,
       handoff,
       events,
       limits: {

@@ -9,8 +9,14 @@ import {
   createFullCodebaseReport,
   writeFullCodebaseReport
 } from "./lib/full-codebase-validation.mjs";
+export {
+  buildOkfV02FixtureManifest,
+  selectOkfV01CompatibilityFiles,
+  summarizeOkfV02FixtureRun,
+  verifyOkfV02OfficialCheckout
+} from "./lib/okf-v02-fixtures.mjs";
 
-const DEFAULT_CHANGE_ID = "implement-incremental-sharded-publication";
+const DEFAULT_CHANGE_ID = "align-google-okf-v0-2-trust-signals";
 
 loadLocalEnv();
 
@@ -37,7 +43,8 @@ export function readFullFlowConfig(command = "all", env = process.env) {
     includeRepositoryChecks: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_REPOSITORY, true),
     includeDocker: readBoolean(env.FOCOWIKI_FULL_FLOW_INCLUDE_DOCKER, false),
     requireModel: readBoolean(env.FOCOWIKI_VALIDATION_REQUIRE_MODEL, false),
-    sampleSourceEnv: "FOCOWIKI_VALIDATION_MARKDOWN_DIR"
+    sampleSourceEnv: "FOCOWIKI_VALIDATION_MARKDOWN_DIR",
+    okfV01CompatCorpusEnv: "OKF_V01_COMPAT_CORPUS_DIR"
   };
 }
 
@@ -57,6 +64,11 @@ export function buildFullFlowPlan(config) {
     validationEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS = "10000";
   }
   const steps = [
+    validationStep("okf-v02-200-file-e2e", [
+      process.execPath,
+      ["--import", "tsx", "scripts/validation/run-okf-v02-e2e.mjs"],
+      validationEnv
+    ]),
     validationStep("sample-selection", [
       process.execPath,
       ["scripts/validation/cleaned-markdown-flow.mjs", sampleCommand],

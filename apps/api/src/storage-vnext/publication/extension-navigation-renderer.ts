@@ -1,4 +1,5 @@
 import {
+  buildOkfPublicationMetadata,
   renderMarkdownIdentityLabel,
   toBundleMarkdownHref
 } from "@focowiki/okf";
@@ -47,6 +48,7 @@ export function renderExtensionFamilyMarkdown(input: {
 }): string {
   const title = extensionTitle(input.directoryPath);
   return navigationMarkdown({
+    reserved: true,
     type: "extension-family-index",
     title: `${title} index`,
     heading: title,
@@ -64,6 +66,7 @@ export function renderExtensionResourceRootMarkdown(input: {
 }): string {
   const title = extensionTitle(input.directoryPath);
   return navigationMarkdown({
+    reserved: true,
     type: "extension-resource-index",
     title: `${title} resources`,
     heading: `${title} resources`,
@@ -114,6 +117,7 @@ export function renderExtensionLeafMarkdown(input: {
     heading: `${title} resources`,
     leafId: input.leaf.id,
     entryCount: input.leaf.entries.length,
+    ...(input.leaf.changedAt ? { changedAt: input.leaf.changedAt } : {}),
     navigation,
     entries
   });
@@ -124,22 +128,32 @@ export function extensionLeafPath(directoryPath: string, leafId: string): string
 }
 
 function navigationMarkdown(input: {
+  reserved?: boolean;
   type: string;
   title: string;
   heading: string;
   leafId?: string;
   entryCount?: number;
+  changedAt?: string;
   navigation: readonly string[];
   entries?: readonly string[];
 }): string {
+  const baseMetadata = {
+    type: input.type,
+    title: input.title,
+    navigation_only: true,
+    ...(input.leafId ? { leaf_id: input.leafId } : {}),
+    ...(input.entryCount === undefined ? {} : { entry_count: input.entryCount })
+  };
+  const metadata = input.changedAt
+    ? buildOkfPublicationMetadata({
+        ownership: "focowiki",
+        metadata: baseMetadata,
+        changedAt: input.changedAt
+      })
+    : baseMetadata;
   return [
-    "---",
-    `type: ${JSON.stringify(input.type)}`,
-    `title: ${JSON.stringify(input.title)}`,
-    "navigation_only: true",
-    ...(input.leafId ? [`leaf_id: ${JSON.stringify(input.leafId)}`] : []),
-    ...(input.entryCount === undefined ? [] : [`entry_count: ${input.entryCount}`]),
-    "---",
+    ...(input.reserved ? [] : ["---", ...frontmatterLines(metadata), "---"]),
     `# ${renderMarkdownIdentityLabel(input.heading)}`,
     "",
     input.navigation.join(" · "),
@@ -149,6 +163,11 @@ function navigationMarkdown(input: {
     ...(input.entries ?? []),
     ""
   ].join("\n");
+}
+
+function frontmatterLines(metadata: Record<string, unknown>): string[] {
+  return Object.entries(metadata).flatMap(([key, value]) =>
+    value === undefined ? [] : [`${key}: ${JSON.stringify(value)}`]);
 }
 
 function globalNavigation(): string {

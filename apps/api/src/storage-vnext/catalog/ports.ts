@@ -15,6 +15,16 @@ export type StorageVnextCatalogVisibility = "current" | "deleted";
 export type StorageVnextCatalogReadVisibility = StorageVnextCatalogVisibility | "all";
 export type StorageVnextSourceFileStatus = "pending" | "processing" | "ready" | "failed";
 
+export type StorageVnextModelInvocationFact = {
+  sourceRevisionPublicId: StorageVnextPublicId;
+  status: "running" | "completed" | "failed" | "skipped";
+  modelName: string | null;
+  startedAt: StorageVnextTimestamp | null;
+  endedAt: StorageVnextTimestamp | null;
+  warningCount: number;
+  errorCode: string | null;
+};
+
 export type StorageVnextKnowledgeBaseFact = {
   publicId: StorageVnextKnowledgeBaseId;
   name: string;
@@ -48,6 +58,7 @@ export type StorageVnextSourceFileFact = {
   status: StorageVnextSourceFileStatus;
   safeErrorCode: string | null;
   safeErrorMessage: string | null;
+  modelInvocation?: StorageVnextModelInvocationFact | null;
   revision: StorageVnextRevision;
   visibility: StorageVnextCatalogVisibility;
 };
@@ -179,6 +190,7 @@ export type StorageVnextCatalogWritePort = {
     status: StorageVnextSourceFileStatus;
     safeErrorCode: string | null;
     safeErrorMessage: string | null;
+    modelInvocation?: StorageVnextModelInvocationFact | null;
     revisionCheck: StorageVnextRevisionCheck;
   }): Promise<StorageVnextSourceFileFact>;
   updateLogicalPath(input: {

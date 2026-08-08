@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import type { StorageVnextSourceFileFact } from "../catalog/ports.js";
+import type {
+  StorageVnextModelInvocationFact,
+  StorageVnextSourceFileFact
+} from "../catalog/ports.js";
 import { createStorageVnextProcessResourceScope } from
   "../cleanup/process-resource-scope.js";
 import type { StorageVnextBoundedResult, StorageVnextLiveWork } from
@@ -29,6 +32,7 @@ type FailureObserver = (failure: {
 
 export function createStorageVnextSourceProcessingWorker(
   input: StorageVnextSourceProcessingPorts & {
+    modelInvocation: { modelName: string } | null;
     limits: WorkerLimits;
     clock: () => string;
     onFailure?: FailureObserver;
@@ -68,6 +72,7 @@ export function createStorageVnextSourceProcessingWorker(
 
 async function processWork(
   input: StorageVnextSourceProcessingPorts & {
+    modelInvocation: { modelName: string } | null;
     limits: WorkerLimits;
     clock: () => string;
     onFailure?: FailureObserver;
@@ -102,6 +107,11 @@ async function processWork(
   }
 
   const acceptedAt = input.clock();
+  let modelInvocation = createInitialModelInvocation(
+    input.modelInvocation,
+    sourceRevisionPublicId,
+    acceptedAt
+  );
   await recordSourceEvent(input, {
     kind: "accepted",
     work,
@@ -120,13 +130,14 @@ async function processWork(
     createdAt: acceptedAt
   });
 
-  const processingFile = await input.catalog.updateSourceFileState({
+  let processingFile = await input.catalog.updateSourceFileState({
     knowledgeBaseId: work.knowledgeBaseId,
     publicId: current.sourceFile.publicId,
     metadata: current.sourceFile.metadata,
     status: "processing",
     safeErrorCode: null,
     safeErrorMessage: null,
+    modelInvocation,
     revisionCheck: { expectedRevision: current.sourceFile.revision }
   });
   const progressAt = input.clock();
@@ -181,6 +192,24 @@ async function processWork(
       kind: "stream",
       close: trackedBody.close
     });
+    if (modelInvocation === null) {
+      if (!input.modelInvocation) throw workerError("invalid_model_invocation");
+      modelInvocation = createRunningModelInvocation(
+        input.modelInvocation,
+        sourceRevisionPublicId,
+        input.clock()
+      );
+      processingFile = await input.catalog.updateSourceFileState({
+        knowledgeBaseId: work.knowledgeBaseId,
+        publicId: current.sourceFile.publicId,
+        metadata: current.sourceFile.metadata,
+        status: "processing",
+        safeErrorCode: null,
+        safeErrorMessage: null,
+        modelInvocation,
+        revisionCheck: { expectedRevision: processingFile.revision }
+      });
+    }
     const model = await input.model.extract({
       knowledgeBaseId: work.knowledgeBaseId,
       sourceFile: current.sourceFile,
@@ -192,13 +221,19 @@ async function processWork(
     });
     if (!trackedBody.completed) throw workerError("incomplete_source_stream");
     assertModelIdentity(current.sourceFile, sourceRevisionPublicId, model);
+    modelInvocation = completeModelInvocation(
+      modelInvocation,
+      input.clock(),
+      model.modelWarningCount ?? 0
+    );
     await input.workflow.saveCheckpoint({
       publicId: work.publicId,
       owner,
       checkpoint: {
         phase: "model_completed",
         sourceRevisionPublicId,
-        modelAttemptPublicId
+        modelAttemptPublicId,
+        ...modelInvocationSummary(modelInvocation)
       }
     });
     const handoff = await input.handoff.apply({
@@ -228,6 +263,7 @@ async function processWork(
       status: "ready",
       safeErrorCode: null,
       safeErrorMessage: null,
+      modelInvocation,
       revisionCheck: { expectedRevision: processingFile.revision }
     });
     const completedAt = input.clock();
@@ -249,7 +285,8 @@ async function processWork(
           sourceFilePublicId: current.sourceFile.publicId,
           sourceRevisionPublicId,
           candidatePublicId: handoff.candidatePublicId,
-          releaseOperationPublicId: handoff.releaseOperationPublicId
+          releaseOperationPublicId: handoff.releaseOperationPublicId,
+          ...modelInvocationSummary(modelInvocation)
         }
       })
     });
@@ -290,6 +327,7 @@ async function processWork(
       });
       return "retried";
     }
+    modelInvocation = failModelInvocation(modelInvocation, input.clock(), code);
     await input.catalog.updateSourceFileState({
       knowledgeBaseId: work.knowledgeBaseId,
       publicId: current.sourceFile.publicId,
@@ -297,6 +335,7 @@ async function processWork(
       status: "failed",
       safeErrorCode: code,
       safeErrorMessage: null,
+      modelInvocation,
       revisionCheck: { expectedRevision: processingFile.revision }
     });
     const failedAt = input.clock();
@@ -310,7 +349,8 @@ async function processWork(
     await completeTerminal(input, work, owner, {
       state: "failed",
       resultCode: code,
-      sourceRevisionPublicId
+      sourceRevisionPublicId,
+      ...(modelInvocation ? { modelInvocation } : {})
     });
     await dispatchSourceWebhook(input, {
       eventId: sourceEventIdentity("failed", sourceRevisionPublicId),
@@ -499,6 +539,7 @@ async function completeTerminal(
     state: "failed" | "superseded" | "deleted";
     resultCode: string;
     sourceRevisionPublicId: string;
+    modelInvocation?: StorageVnextModelInvocationFact;
   }
 ): Promise<void> {
   await input.workflow.complete({
@@ -508,9 +549,80 @@ async function completeTerminal(
       state: terminal.state,
       resultCode: terminal.resultCode,
       correlationPublicId: terminal.sourceRevisionPublicId,
-      summary: { sourceRevisionPublicId: terminal.sourceRevisionPublicId }
+      summary: {
+        sourceRevisionPublicId: terminal.sourceRevisionPublicId,
+        ...(terminal.modelInvocation
+          ? modelInvocationSummary(terminal.modelInvocation)
+          : {})
+      }
     })
   });
+}
+
+function createInitialModelInvocation(
+  configured: { modelName: string } | null,
+  sourceRevisionPublicId: string,
+  skippedAt: string
+): StorageVnextModelInvocationFact | null {
+  if (configured) return null;
+  return {
+    sourceRevisionPublicId,
+    status: "skipped",
+    modelName: null,
+    startedAt: null,
+    endedAt: skippedAt,
+    warningCount: 0,
+    errorCode: null
+  };
+}
+
+function createRunningModelInvocation(
+  configured: { modelName: string },
+  sourceRevisionPublicId: string,
+  startedAt: string
+): StorageVnextModelInvocationFact {
+  return {
+    sourceRevisionPublicId,
+    status: "running",
+    modelName: configured.modelName,
+    startedAt,
+    endedAt: null,
+    warningCount: 0,
+    errorCode: null
+  };
+}
+
+function completeModelInvocation(
+  invocation: StorageVnextModelInvocationFact,
+  endedAt: string,
+  warningCount: number
+): StorageVnextModelInvocationFact {
+  if (invocation.status === "skipped") return invocation;
+  if (!Number.isSafeInteger(warningCount) || warningCount < 0 || warningCount > 1_000) {
+    throw workerError("invalid_model_result");
+  }
+  return { ...invocation, status: "completed", endedAt, warningCount };
+}
+
+function failModelInvocation(
+  invocation: StorageVnextModelInvocationFact | null,
+  endedAt: string,
+  errorCode: string
+): StorageVnextModelInvocationFact | null {
+  if (!invocation) return null;
+  if (invocation.status === "skipped" || invocation.status === "completed") return invocation;
+  return { ...invocation, status: "failed", endedAt, errorCode };
+}
+
+function modelInvocationSummary(invocation: StorageVnextModelInvocationFact) {
+  return {
+    modelInvocationStatus: invocation.status,
+    modelInvocationModelName: invocation.modelName,
+    modelInvocationStartedAt: invocation.startedAt,
+    modelInvocationEndedAt: invocation.endedAt,
+    modelInvocationWarningCount: invocation.warningCount,
+    modelInvocationErrorCode: invocation.errorCode
+  };
 }
 
 function result(

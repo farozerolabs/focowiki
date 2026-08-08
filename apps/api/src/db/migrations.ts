@@ -135,6 +135,13 @@ async function assertProviderAwareSchemaSignature(
           AND data_type = 'text'
       )
       AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'focowiki'
+          AND table_name = 'source_files'
+          AND column_name = 'model_invocation_status'
+          AND data_type = 'text'
+      )
+      AND EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conrelid = 'focowiki.search_projections'::regclass

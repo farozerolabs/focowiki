@@ -13,6 +13,9 @@ export type SearchFilterField =
   | "schemaVersion"
   | "sourceFilePublicId"
   | "sourceRevisionPublicId"
+  | "okfSignals.status"
+  | "okfSignals.trustTier"
+  | "okfSignals.staleAfterEpochDay"
   | "visible";
 
 export type SearchFilterExpression =
@@ -25,6 +28,12 @@ export type SearchFilterExpression =
       kind: "boolean";
       field: "visible";
       value: boolean;
+    }
+  | {
+      kind: "range";
+      field: "okfSignals.staleAfterEpochDay";
+      operator: "lte" | "gt";
+      value: number;
     }
   | {
       kind: "and";

@@ -103,6 +103,56 @@ describe("OpenSearch query runtime", () => {
     }), { requestTimeout: 750 });
   });
 
+  it("renders nullable OKF equality and calendar-boundary filters without scripts", async () => {
+    const client = createClient();
+    const query = createOpenSearchQueryPort({
+      client,
+      tokenizer: createTokenizer(),
+      maximumResultWindow: 2_000,
+      engineSearchCutoffMs: 1_000
+    });
+
+    await query.query(request({
+      filters: {
+        kind: "and",
+        operands: [{
+          kind: "equals",
+          field: "okfSignals.status",
+          value: "stable"
+        }, {
+          kind: "equals",
+          field: "okfSignals.trustTier",
+          value: "human-reviewed"
+        }, {
+          kind: "range",
+          field: "okfSignals.staleAfterEpochDay",
+          operator: "lte",
+          value: 20_672
+        }]
+      }
+    }));
+
+    const sent = vi.mocked(client.search).mock.calls[0]![0];
+    expect(sent).toMatchObject({
+      body: {
+        query: {
+          bool: {
+            filter: [{
+              bool: {
+                filter: [
+                  { term: { "okfSignals.status": "stable" } },
+                  { term: { "okfSignals.trustTier": "human-reviewed" } },
+                  { range: { "okfSignals.staleAfterEpochDay": { lte: 20_672 } } }
+                ]
+              }
+            }]
+          }
+        }
+      }
+    });
+    expect(JSON.stringify(sent)).not.toContain("script");
+  });
+
   it("rejects stale provider cursors after index, query, or filter changes", async () => {
     const client = createClient();
     const query = createOpenSearchQueryPort({

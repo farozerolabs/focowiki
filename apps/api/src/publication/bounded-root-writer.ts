@@ -1,4 +1,5 @@
 import {
+  buildOkfPublicationMetadata,
   renderMarkdownIdentityLabel,
   toBundleMarkdownHref
 } from "@focowiki/okf";
@@ -53,7 +54,10 @@ export function createBoundedRootWriter(input: {
       path: impact.projectionKey,
       knowledgeBase: projectionInput.descriptor,
       rootEntryCount: projectionInput.rootEntryCount,
-      generationId: impact.generationId
+      generationId: impact.generationId,
+      ...(projectionInput.descriptor.changedAt
+        ? { changedAt: projectionInput.descriptor.changedAt }
+        : {})
     });
     const object = await input.immutableObjects.write({
       body: rendered.body,
@@ -102,15 +106,23 @@ export function renderBoundedRootFile(input: {
     description: string | null;
     sourceFileCount: number;
     graphEdgeCount: number;
+    changedAt?: string;
   };
   rootEntryCount: number;
   generationId: string;
+  changedAt?: string;
 }): { body: string; contentType: string } {
   const title = renderMarkdownIdentityLabel(input.knowledgeBase.name);
   if (input.path === "index.md") {
+    const rootMetadata = buildOkfPublicationMetadata({
+      ownership: "focowiki",
+      artifactKind: "bundle_root",
+      metadata: {},
+      ...(input.changedAt ? { changedAt: input.changedAt } : {})
+    });
     return markdown([
       "---",
-      'okf_version: "0.1"',
+      ...frontmatterLines(rootMetadata),
       "---",
       `# ${title}`,
       "",
@@ -126,25 +138,49 @@ export function renderBoundedRootFile(input: {
     ]);
   }
   if (input.path === "schema.md") {
+    const baseMetadata = {
+      type: "Schema Reference",
+      title: "Metadata and navigation schema",
+      description: "Metadata and navigation conventions for the generated knowledge base."
+    };
+    const metadata = input.changedAt
+      ? buildOkfPublicationMetadata({
+          ownership: "focowiki",
+          metadata: baseMetadata,
+          changedAt: input.changedAt
+        })
+      : baseMetadata;
     return markdown([
       "---",
-      'type: "Schema Reference"',
-      'title: "Metadata and navigation schema"',
-      'description: "Metadata and navigation conventions for the generated knowledge base."',
+      ...frontmatterLines(metadata),
       "---",
       "# Metadata and navigation schema",
       "",
-      "Source-backed Markdown files retain safe frontmatter fields and stable file identity.",
+      "This knowledge base publishes native OKF 0.2 while retaining safe legacy and partially conforming metadata.",
+      "Optional provenance, trust, lifecycle, and computation fields remain readable when omitted or irregular.",
+      "",
+      "## Recommended user metadata",
+      "",
+      "OKF 0.2 fields are recommended and optional for upload. Safe irregular values remain readable, while unavailable normalized signals remain null.",
+      "",
+      "## Focowiki-owned artifacts",
+      "",
+      "Generated root, navigation, index, graph, schema, log, and extension artifacts are strictly validated before publication.",
+      "",
+      "## Navigation",
+      "",
       "Directory indexes provide parent, previous, and next links for progressive exploration.",
       "Machine-readable records include file IDs, logical paths, and direct content paths.",
       ""
     ]);
   }
   if (input.path === "log.md") {
+    const changedDate = input.changedAt?.slice(0, 10);
     return markdown([
       "# Directory Update Log",
       "",
-      `- Published ${input.knowledgeBase.sourceFileCount} source-backed Markdown files.`,
+      ...(changedDate ? [`## ${changedDate}`, ""] : []),
+      `* **Publication**: Published ${input.knowledgeBase.sourceFileCount} source-backed Markdown files.`,
       ""
     ]);
   }
@@ -180,4 +216,9 @@ function markdown(lines: string[]): { body: string; contentType: string } {
     body: lines.join("\n"),
     contentType: "text/markdown; charset=utf-8"
   };
+}
+
+function frontmatterLines(metadata: Record<string, unknown>): string[] {
+  return Object.entries(metadata).flatMap(([key, value]) =>
+    value === undefined ? [] : [`${key}: ${JSON.stringify(value)}`]);
 }

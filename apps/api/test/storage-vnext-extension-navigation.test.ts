@@ -47,6 +47,9 @@ describe("storage vNext extension navigation", () => {
     const body = Buffer.from(byFileLeaf!.bytes).toString("utf8");
     expect(body).toContain("[Setup](/_graph/by-file/source-1.json)");
     expect(body).toContain("[Source](/pages/guides/setup.md)");
+    expect(body).toContain(
+      'generated: {"by":"process:focowiki-publication","at":"2026-08-01T00:00:00.000Z"}'
+    );
     expect(result.internalShards.every((shard) =>
       shard.logicalKind === "extension_navigation")).toBe(true);
 
@@ -107,6 +110,7 @@ describe("storage vNext extension navigation", () => {
       })),
       navigation: navigation({
         maxEntries: 2,
+        changedAt: "2026-08-02T00:00:00.000Z",
         previousLeaves: new Map([["_index/search/v1", previousLeaves]])
       })
     });
@@ -269,11 +273,13 @@ function navigation(overrides: Partial<{
   affectedDirectoryPaths: string[];
   previousPresentDirectoryPaths: string[];
   completeProfile: boolean;
+  changedAt: string;
 }> = {}) {
   return {
     byFileLogicalPaths: overrides.byFileLogicalPaths ?? [],
     existingMarkdownPaths: overrides.existingMarkdownPaths ?? [],
     previousLeaves: overrides.previousLeaves ?? new Map(),
+    changedAt: overrides.changedAt ?? "2026-08-01T00:00:00.000Z",
     sources: sourcePages(overrides.sources ?? []),
     affectedDirectoryPaths: overrides.affectedDirectoryPaths
       ?? [...STORAGE_VNEXT_EXTENSION_NAVIGATION_DIRECTORIES],

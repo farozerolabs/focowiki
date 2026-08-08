@@ -1,6 +1,7 @@
 import type {
   StorageVnextCatalogReadPort,
   StorageVnextCurrentSourceFact,
+  StorageVnextSourceFileFact,
   StorageVnextSourceRevisionFact
 } from "../catalog/ports.js";
 import type {
@@ -40,6 +41,32 @@ export function overlayStorageVnextMutationCurrentSource(
 ): StorageVnextCurrentSourceFact {
   assertScope(mutation, current.sourceFile.knowledgeBaseId);
   const source = current.sourceFile;
+  const replacement = mutation.kind === "source_replace"
+    && source.publicId === mutation.targetPublicId;
+  if (replacement && (
+    !candidateRevision
+    || candidateRevision.publicId !== mutation.candidateRevisionPublicId
+    || candidateRevision.knowledgeBaseId !== mutation.knowledgeBaseId
+    || candidateRevision.sourceFilePublicId !== source.publicId
+  )) throw overlayError("candidate_revision_missing");
+  const sourceFile = overlayStorageVnextMutationSourceFile(
+    mutation,
+    source,
+    candidateRevision?.publicId
+  );
+  if (sourceFile === source && !replacement) return current;
+  return {
+    sourceFile,
+    sourceRevision: replacement ? candidateRevision! : current.sourceRevision
+  };
+}
+
+export function overlayStorageVnextMutationSourceFile(
+  mutation: StorageVnextMutationCandidateOverlay,
+  source: StorageVnextSourceFileFact,
+  candidateRevisionPublicId = mutation.candidateRevisionPublicId
+): StorageVnextSourceFileFact {
+  assertScope(mutation, source.knowledgeBaseId);
   const path = candidateSourcePath(mutation, source.publicId, source.logicalPath);
   const normalizedPath = candidateNormalizedSourcePath(
     mutation,
@@ -47,42 +74,36 @@ export function overlayStorageVnextMutationCurrentSource(
     source.normalizedPath
   );
   const targeted = source.publicId === mutation.targetPublicId;
-  const metadataChanged = mutation.kind === "source_file_metadata" && targeted;
+  const metadataChanged = (
+    mutation.kind === "source_file_metadata"
+    || mutation.kind === "source_replace"
+  ) && targeted;
   const replacement = mutation.kind === "source_replace" && targeted;
   const changed = path !== source.logicalPath
     || normalizedPath !== source.normalizedPath
     || metadataChanged
     || replacement;
-  if (!changed) return current;
-  if (replacement && (
-    !candidateRevision
-    || candidateRevision.publicId !== mutation.candidateRevisionPublicId
-    || candidateRevision.knowledgeBaseId !== mutation.knowledgeBaseId
-    || candidateRevision.sourceFilePublicId !== source.publicId
-  )) throw overlayError("candidate_revision_missing");
+  if (!changed) return source;
   return {
-    sourceFile: {
-      ...source,
-      logicalPath: path,
-      normalizedPath,
-      directoryPublicId: targeted && (
-        mutation.kind === "source_file_move"
-        || mutation.kind === "source_replace"
-      ) && mutation.candidateLogicalPath
-        ? mutation.candidateDirectoryPublicId ?? null
-        : source.directoryPublicId,
-      title: metadataChanged
-        ? mutation.candidateTitle ?? source.title
-        : source.title,
-      metadata: metadataChanged
-        ? mutation.candidateMetadata ?? source.metadata
-        : source.metadata,
-      currentRevisionPublicId: replacement
-        ? candidateRevision!.publicId
-        : source.currentRevisionPublicId,
-      revision: source.revision + 1
-    },
-    sourceRevision: replacement ? candidateRevision! : current.sourceRevision
+    ...source,
+    logicalPath: path,
+    normalizedPath,
+    directoryPublicId: targeted && (
+      mutation.kind === "source_file_move"
+      || mutation.kind === "source_replace"
+    ) && mutation.candidateLogicalPath
+      ? mutation.candidateDirectoryPublicId ?? null
+      : source.directoryPublicId,
+    title: metadataChanged
+      ? mutation.candidateTitle ?? source.title
+      : source.title,
+    metadata: metadataChanged
+      ? mutation.candidateMetadata ?? source.metadata
+      : source.metadata,
+    currentRevisionPublicId: replacement
+      ? requiredString(candidateRevisionPublicId)
+      : source.currentRevisionPublicId,
+    revision: source.revision + 1
   };
 }
 
@@ -101,6 +122,9 @@ export function overlayStorageVnextMutationGraphNode(
   return {
     ...node,
     logicalPath: path,
+    label: replacement
+      ? mutation.candidateTitle ?? node.label
+      : node.label,
     sourceRevisionPublicId,
     evidence: node.evidence.map((evidence) => ({
       ...evidence,
@@ -149,9 +173,12 @@ export function createStorageVnextMutationCandidateCatalog(input: {
   mutation: StorageVnextMutationCandidateOverlay;
   catalog: Pick<
     StorageVnextCatalogReadPort,
-    "listCurrentSources" | "getSourceRevision"
+    "listCurrentSources" | "listSourceFilesByPublicIds" | "getSourceRevision"
   >;
-}): Pick<StorageVnextCatalogReadPort, "listCurrentSources"> {
+}): Pick<
+  StorageVnextCatalogReadPort,
+  "listCurrentSources" | "listSourceFilesByPublicIds"
+> {
   return {
     async listCurrentSources(request) {
       assertScope(input.mutation, request.knowledgeBaseId);
@@ -176,6 +203,13 @@ export function createStorageVnextMutationCandidateCatalog(input: {
           )),
         nextCursor: page.nextCursor
       };
+    },
+    async listSourceFilesByPublicIds(request) {
+      assertScope(input.mutation, request.knowledgeBaseId);
+      const sourceFiles = await input.catalog.listSourceFilesByPublicIds(request);
+      return sourceFiles.map((sourceFile) =>
+        overlayStorageVnextMutationSourceFile(input.mutation, sourceFile)
+      );
     }
   };
 }

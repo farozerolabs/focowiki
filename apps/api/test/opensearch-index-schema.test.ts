@@ -33,6 +33,18 @@ describe("OpenSearch index schema", () => {
         documentKind: { type: "keyword" },
         schemaVersion: { type: "keyword" },
         segmentOrdinal: { type: "integer" },
+        okfSignals: {
+          type: "object",
+          dynamic: "strict",
+          properties: {
+            status: { type: "keyword" },
+            trustTier: { type: "keyword" },
+            staleAfterEpochDay: { type: "long" },
+            generatedAtEpochMs: { type: "long" },
+            latestVerifiedAtEpochMs: { type: "long" },
+            sourceCount: { type: "integer" }
+          }
+        },
         searchText: { type: "text", analyzer: "standard" },
         _focowikiJiebaText: {
           type: "text",

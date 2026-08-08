@@ -58,8 +58,41 @@ describe("storage vNext maintenance production cleanup", () => {
       "orphan-indexes"
     ]);
     expect(cleanupFailedCandidate).toHaveBeenCalledWith(expect.objectContaining({
-      failedBefore: "2026-08-02T00:00:00.001Z"
+      failedBefore: "2026-08-02T00:00:00.001Z",
+      candidatePublicId
     }));
+  });
+
+  it("converges terminal state when the exact failed candidate is already claimed", async () => {
+    const terminateCandidate = vi.fn(async () => true);
+    const cleanup = createStorageVnextMaintenanceProductionCleanup({
+      releases: { terminateCandidate },
+      searchTerminal: { abandonCandidate: vi.fn(async () => true) },
+      searchCleanup: {
+        cleanupFailedCandidate: vi.fn(async () => ({
+          outcome: "none" as const,
+          candidatePublicId: null
+        })),
+        cleanupOrphanIndexes: vi.fn(async () => ({
+          deleted: 0,
+          continuation: null
+        })),
+        cleanupFinishedTasks: vi.fn(async () => ({
+          deleted: 0,
+          continuation: null
+        }))
+      },
+      clock: () => "2026-08-02T00:00:00.000Z",
+      resultRetentionMilliseconds: 86_400_000,
+      maximumCleanupPages: 4
+    });
+
+    await expect(cleanup.terminate({
+      knowledgeBaseId: "kb-maintenance",
+      operationPublicId: "operation-maintenance",
+      outcome: "failed"
+    })).resolves.toMatchObject({ outcome: "failed" });
+    expect(terminateCandidate).toHaveBeenCalledOnce();
   });
 
   it("keeps the promoted candidate and removes only orphan provider state after completion", async () => {

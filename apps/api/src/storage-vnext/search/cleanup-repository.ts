@@ -14,6 +14,7 @@ export interface StorageVnextSearchCleanupRepository {
     failedBefore: string;
     correlationPublicId: string;
     providerKind: SearchProviderKind;
+    candidatePublicId?: string;
   }): Promise<StorageVnextSearchCleanupLease | null>;
   listRetainedProviderIndexUids(input: {
     providerKind: SearchProviderKind;

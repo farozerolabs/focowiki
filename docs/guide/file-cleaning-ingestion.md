@@ -49,7 +49,7 @@ Use the same workflow for every source format. The tools can differ by format, b
 
 ## Markdown Structure
 
-A cleaned Markdown file should start with YAML frontmatter.
+A cleaned Markdown file can start with YAML frontmatter when reliable metadata is available. Plain Markdown remains uploadable.
 
 ```md
 ---
@@ -94,6 +94,8 @@ Use one clear document title. Keep heading levels stable. Preserve tables as Mar
 Common metadata fields:
 
 These fields are recommended examples for interoperable Markdown files. Uploads can also include domain-specific metadata. Focowiki preserves safe and valid frontmatter fields and passes them through to generated outputs.
+
+OKF 0.2 also defines optional `sources`, `usage_window`, `generated`, `verified`, `status`, `stale_after`, and Attested Computation fields. Preserve them when source evidence exists. Do not invent missing provenance or verification. A safe value that does not conform to the recommended OKF shape remains uploadable and readable, but its derived signal may be `null`.
 
 | Field | Use |
 | --- | --- |

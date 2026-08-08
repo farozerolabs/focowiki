@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  analyzeOkfMetadata,
+  inspectOkfMarkdownFile,
+  parseUploadedMarkdownSource,
+  type OkfDiagnostic
+} from "@focowiki/okf";
 import type { PersistentDirectoryLeaf } from
   "../../application/ports/directory-navigation-repository.js";
 import {
@@ -207,7 +213,7 @@ async function validateCatalog(
             byteCount: entry.byteCount,
             maximumBytes: input.limits.maximumMarkdownBytes
           })
-        : await verifyNonMarkdownEntry(input.objects, entry)
+        : await verifyUnreadEntry(input.objects, entry)
     );
     for (const [index, entry] of page.items.entries()) {
       const readableBody = readableBodies[index] ?? null;
@@ -228,25 +234,32 @@ async function validateCatalog(
         }
         projectionCatalogBody = readableBody;
       } else if (readableBody !== null) {
-        const targets = resolveStorageVnextMarkdownTargets(
-          entry.logicalPath,
-          readableBody
-        );
-        linkTargets.push(...targets);
-        validateNavigationGlobals(entry.logicalPath, targets);
-        if (isExtensionNavigationMarkdown(entry.logicalPath)) {
-          extensionDocuments.set(entry.logicalPath, targets);
-        }
-        for (const target of targets) {
-          if (isExtensionResourcePath(target)) {
-            extensionResourceLinks.set(
-              target,
-              (extensionResourceLinks.get(target) ?? 0) + 1
-            );
+        validateStorageVnextOkfMarkdownMetadata({
+          logicalPath: entry.logicalPath,
+          kind: entry.kind,
+          body: readableBody
+        });
+        if (entry.kind !== "source") {
+          const targets = resolveStorageVnextMarkdownTargets(
+            entry.logicalPath,
+            readableBody
+          );
+          linkTargets.push(...targets);
+          validateNavigationGlobals(entry.logicalPath, targets);
+          if (isExtensionNavigationMarkdown(entry.logicalPath)) {
+            extensionDocuments.set(entry.logicalPath, targets);
           }
-        }
-        if (entry.logicalPath.startsWith("_graph/by-file/index-")) {
-          byFileEvidencePairs.push(...parseByFileEvidencePairs(readableBody));
+          for (const target of targets) {
+            if (isExtensionResourcePath(target)) {
+              extensionResourceLinks.set(
+                target,
+                (extensionResourceLinks.get(target) ?? 0) + 1
+              );
+            }
+          }
+          if (entry.logicalPath.startsWith("_graph/by-file/index-")) {
+            byFileEvidencePairs.push(...parseByFileEvidencePairs(readableBody));
+          }
         }
       }
       entryCount += 1;
@@ -289,6 +302,43 @@ async function validateCatalog(
   }
   manifest.update(`root:${candidateRootPublicId}\nentries:${entryCount}\n`);
   return { manifest, entryCount, extensionDocuments, extensionResources };
+}
+
+export function validateStorageVnextOkfMarkdownMetadata(input: {
+  logicalPath: string;
+  kind: string;
+  body: string;
+}): readonly OkfDiagnostic[] {
+  const profiles = input.kind === "source"
+    ? ["normative", "recommended"] as const
+    : ["normative", "recommended", "focowiki_quality", "focowiki_extension"] as const;
+  const conformanceIssues = profiles.flatMap((profile) => inspectOkfMarkdownFile(
+    { path: input.logicalPath, content: input.body },
+    profile
+  ));
+  const blockingConformance = conformanceIssues.find((issue) =>
+    issue.disposition === "blocking");
+  if (blockingConformance) {
+    throw new Error(
+      `Storage vNext publication OKF 0.2 metadata is invalid: ${input.logicalPath} (${blockingConformance.ruleId})`
+    );
+  }
+  const basename = input.logicalPath.split("/").at(-1) ?? "";
+  if (basename === "index.md" || basename === "log.md") return [];
+  const parsed = parseUploadedMarkdownSource({
+    fileName: basename,
+    content: input.body
+  });
+  const ownership = input.kind === "source" ? "source" : "focowiki";
+  const analysis = analyzeOkfMetadata(parsed.metadata, {
+    ownership,
+    markdownBody: parsed.body
+  });
+  if (analysis.diagnostics.some((diagnostic) =>
+    diagnostic.disposition === "blocking")) {
+    throw new Error(`Storage vNext publication OKF 0.2 metadata is invalid: ${input.logicalPath}`);
+  }
+  return analysis.diagnostics;
 }
 
 const PROJECTION_CATALOG_FAMILIES = [
@@ -721,7 +771,7 @@ function validateLimits(limits: {
   ) throw new Error("Storage vNext publication validation limits are invalid");
 }
 
-async function verifyNonMarkdownEntry(
+async function verifyUnreadEntry(
   objects: ObjectValidationPort,
   entry: Parameters<ObjectValidationPort["verify"]>[0]
 ): Promise<null> {

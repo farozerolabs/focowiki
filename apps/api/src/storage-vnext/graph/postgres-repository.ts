@@ -445,6 +445,15 @@ export function createPostgresStorageVnextGraphRepository(
           sources
         );
 
+        await lockReplacementNodes(
+          transaction,
+          input.knowledgeBaseId,
+          [
+            input.node.publicId,
+            ...input.edges.map((edge) => edge.toNodePublicId)
+          ]
+        );
+
         const existingNodes = await transaction<Array<{ public_id: string }>>`
           SELECT public_id
           FROM focowiki.graph_nodes
@@ -847,6 +856,23 @@ async function assertTargetNodes(
   if (rows.length !== publicIds.length) {
     throw new StorageVnextGraphRepositoryError("scope_conflict");
   }
+}
+
+async function lockReplacementNodes(
+  sql: ReadSql,
+  knowledgeBaseId: string,
+  nodePublicIds: string[]
+): Promise<void> {
+  const publicIds = unique(nodePublicIds).sort(compareText);
+  if (publicIds.length === 0) return;
+  await sql`
+    SELECT node.public_id
+    FROM focowiki.graph_nodes node
+    WHERE node.knowledge_base_id = ${knowledgeBaseId}
+      AND node.public_id = ANY(${publicIds})
+    ORDER BY node.public_id COLLATE "C"
+    FOR UPDATE
+  `;
 }
 
 async function insertNodeEvidence(

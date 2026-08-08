@@ -71,6 +71,7 @@ export type StorageVnextPublicationProjection = {
     description: string | null;
     sourceFileCount: number;
     graphEdgeCount: number;
+    changedAt?: string;
   };
   rootEntryCount: number;
   directories: readonly StorageVnextPublicationDirectoryInput[];
@@ -381,6 +382,9 @@ function assembleArtifacts(input: {
       knowledgeBase: input.projection.knowledgeBase,
       rootEntryCount: input.projection.rootEntryCount,
       generationId: input.request.candidatePublicId,
+      ...(input.projection.knowledgeBase.changedAt
+        ? { changedAt: input.projection.knowledgeBase.changedAt }
+        : {}),
       ordinal: 0
     }));
   }

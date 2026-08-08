@@ -30,6 +30,12 @@ export type SourceResourceFileRecord = {
   terminalFailure: SourceFileTerminalFailure | null;
   generatedOutputStatus: "pending" | "visible" | "unavailable";
   generatedPath: string | null;
+  modelInvocationStatus?: "running" | "completed" | "failed" | "skipped" | null;
+  modelInvocationModelName?: string | null;
+  modelInvocationStartedAt?: string | null;
+  modelInvocationEndedAt?: string | null;
+  modelInvocationWarningCount?: number | null;
+  modelInvocationErrorCode?: string | null;
   deleting: boolean;
   createdAt: string;
   updatedAt?: string;

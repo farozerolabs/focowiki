@@ -25,7 +25,8 @@ const SEARCH_FIELDS = new Set([
 const RETURN_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
-  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms"
+  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms",
+  "okfSignals"
 ]);
 const REQUIRED_RETURN_FIELDS = [
   "id", "documentKind", "sourceFilePublicId", "sourceRevisionPublicId",
@@ -343,6 +344,10 @@ function resultFields(fields: readonly string[]): string[] {
 function renderFilter(filter: SearchFilterExpression): Record<string, unknown> {
   if (filter.kind === "equals" || filter.kind === "boolean") {
     return { term: { [filter.field]: filter.value } };
+  }
+  if (filter.kind === "range") {
+    if (!Number.isSafeInteger(filter.value)) throw requestError();
+    return { range: { [filter.field]: { [filter.operator]: filter.value } } };
   }
   if (filter.operands.length === 0 || filter.operands.length > 100) {
     throw requestError();
