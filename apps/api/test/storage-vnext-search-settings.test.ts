@@ -21,13 +21,17 @@ describe("storage vNext unified search settings", () => {
       "knowledgeBaseId",
       "documentKind",
       "schemaVersion",
-      "sourceFilePublicId"
+      "sourceFilePublicId",
+      "okfSignals.status",
+      "okfSignals.trustTier",
+      "okfSignals.staleAfterEpochDay"
     ]);
     expect(settings.displayedAttributes).toEqual(expect.arrayContaining([
       "sourceFilePublicId",
       "sourceRevisionPublicId",
       "logicalPath",
-      "searchText"
+      "searchText",
+      "okfSignals"
     ]));
     expect(settings.distinctAttribute).toBe("sourceFilePublicId");
     expect(settings.searchCutoffMs).toBe(750);

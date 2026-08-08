@@ -1,6 +1,4 @@
 import {
-  parseUploadedMarkdownSource,
-  resolveSourceMetadata,
   type SourceMetadata,
   type SourceMetadataDefaults,
   type SourceModelSuggestions
@@ -9,10 +7,8 @@ import type {
   StorageVnextGraphEdgeFact,
   StorageVnextGraphNodeFact
 } from "../graph/ports.js";
-import type { StorageVnextStructuredMetadata } from "../shared/types.js";
 import type { StorageVnextSourceModelPort } from "./ports.js";
-
-const MAXIMUM_METADATA_BYTES = 8_192;
+import { analyzeStorageVnextSourceMarkdown } from "./source-metadata.js";
 
 type SourceSuggestionInput = {
   knowledgeBaseId: string;
@@ -25,6 +21,11 @@ type SourceSuggestionInput = {
   tags: string[];
   body: string;
   signal: AbortSignal;
+};
+
+type SourceSuggestionResult = {
+  suggestions: SourceModelSuggestions | null;
+  warningCount: number;
 };
 
 type SourceGraphExtractionInput = {
@@ -43,10 +44,11 @@ type SourceGraphExtractionInput = {
 };
 
 export function createStorageVnextSourceModelAdapter(input: {
-  suggest?: (request: SourceSuggestionInput) => Promise<SourceModelSuggestions | null>;
+  suggest?: (request: SourceSuggestionInput) => Promise<SourceSuggestionResult>;
   extractGraph(request: SourceGraphExtractionInput): Promise<{
     node: StorageVnextGraphNodeFact;
     edges: readonly StorageVnextGraphEdgeFact[];
+    modelWarningCount?: number;
   }>;
 }): StorageVnextSourceModelPort {
   return {
@@ -55,28 +57,26 @@ export function createStorageVnextSourceModelAdapter(input: {
       assertRequestIdentity(request);
       const source = await readSourceBody(request.body, request.signal);
       const fileName = request.sourceFile.logicalPath.split("/").at(-1) ?? "";
-      const parsed = parseUploadedMarkdownSource({ fileName, content: source });
-      const resolved = resolveSourceMetadata({
+      const analyzed = analyzeStorageVnextSourceMarkdown({
         fileName,
-        content: source,
-        metadata: parsed.metadata
+        content: source
       });
-      const metadata = toBoundedMetadata(resolved.metadata);
       throwIfAborted(request.signal);
-      const suggestions = input.suggest
+      const suggestionResult = input.suggest
         ? await input.suggest({
             knowledgeBaseId: request.knowledgeBaseId,
             sourceFilePublicId: request.sourceFile.publicId,
             sourceRevisionPublicId: request.sourceRevisionPublicId,
             attemptPublicId: request.attemptPublicId,
             fileName,
-            title: resolved.metadata.title,
-            type: resolved.metadata.type,
-            tags: resolved.metadata.tags ?? [],
-            body: resolved.body,
+            title: analyzed.resolvedMetadata.title,
+            type: analyzed.resolvedMetadata.type,
+            tags: analyzed.resolvedMetadata.tags ?? [],
+            body: analyzed.body,
             signal: request.signal
           })
-        : null;
+        : { suggestions: null, warningCount: 0 };
+      assertWarningCount(suggestionResult.warningCount);
       throwIfAborted(request.signal);
       const graph = await input.extractGraph({
         knowledgeBaseId: request.knowledgeBaseId,
@@ -85,16 +85,29 @@ export function createStorageVnextSourceModelAdapter(input: {
         sourceLogicalPath: request.sourceFile.logicalPath,
         checksum: request.sourceRevision.checksum,
         revision: request.sourceFile.revision,
-        parsedMetadata: parsed.metadata,
-        resolvedMetadata: resolved.metadata,
-        suggestions,
-        body: resolved.body,
+        parsedMetadata: analyzed.parsedMetadata,
+        resolvedMetadata: analyzed.resolvedMetadata,
+        suggestions: suggestionResult.suggestions,
+        body: analyzed.body,
         sourceBody: source,
         signal: request.signal
       });
-      return { metadata, node: graph.node, edges: graph.edges };
+      const graphWarningCount = graph.modelWarningCount ?? 0;
+      assertWarningCount(graphWarningCount);
+      return {
+        metadata: analyzed.metadata,
+        node: graph.node,
+        edges: graph.edges,
+        modelWarningCount: Math.min(1_000, suggestionResult.warningCount + graphWarningCount)
+      };
     }
   };
+}
+
+function assertWarningCount(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 1_000) {
+    throw sourceModelError("invalid_model_warning_count");
+  }
 }
 
 async function readSourceBody(
@@ -110,14 +123,6 @@ async function readSourceBody(
   parts.push(decoder.decode());
   throwIfAborted(signal);
   return parts.join("");
-}
-
-function toBoundedMetadata(metadata: SourceMetadata): StorageVnextStructuredMetadata {
-  const serialized = JSON.stringify(metadata);
-  if (Buffer.byteLength(serialized, "utf8") > MAXIMUM_METADATA_BYTES) {
-    throw sourceModelError("metadata_too_large");
-  }
-  return metadata as StorageVnextStructuredMetadata;
 }
 
 function assertRequestIdentity(

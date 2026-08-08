@@ -134,6 +134,7 @@
       "id": "PG-08",
       "disposition": "implemented",
       "focusedTests": [
+        "apps/api/test/storage-vnext-admin-mutation-error.test.ts",
         "apps/api/test/storage-vnext-mutation-lifecycle-contract.test.ts",
         "apps/api/test/storage-vnext-mutation-repository.integration.test.ts",
         "apps/api/test/storage-vnext-mutation-schema-contract.test.ts",

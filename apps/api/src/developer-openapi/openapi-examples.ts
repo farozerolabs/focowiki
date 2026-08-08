@@ -193,6 +193,140 @@ const sourceFileEvent = {
   createdAt: exampleTimestamp
 };
 
+export const okfFrontmatterExamples = {
+  nativeV02: {
+    okf_version: "0.2",
+    type: "Guide",
+    title: "Verified guide",
+    tags: ["guide", "policy"],
+    sources: [{ id: "source-a", resource: "references/source-a.md" }],
+    generated: { by: "publisher:example", at: "2026-06-17T00:00:00Z" },
+    verified: [{ by: "human:reviewer", at: "2026-06-17T01:00:00Z" }],
+    status: "stable",
+    stale_after: "2026-12-31"
+  },
+  legacyFallback: {
+    type: "Guide",
+    title: "Legacy guide",
+    timestamp: "2026-06-17T00:00:00Z"
+  },
+  noFrontmatter: {},
+  missingOptionalSignals: { type: "Guide", title: "Minimal guide" },
+  malformedStatus: {
+    type: "Guide",
+    status: ["stable"],
+    stale_after: "next quarter"
+  },
+  malformedVerification: {
+    type: "Guide",
+    verified: [{ by: 42, at: "today" }]
+  },
+  malformedSources: {
+    type: "Guide",
+    sources: { resource: "references/source-a.md" }
+  },
+  malformedGenerated: {
+    type: "Guide",
+    generated: { by: "publisher:example", at: "today" }
+  },
+  completeAttestedComputation: {
+    okf_version: "0.2",
+    type: "Attested Computation",
+    title: "Risk score",
+    runtime: "python",
+    parameters: [{ name: "amount", type: "number", required: true }],
+    computation: { resource: "references/risk-score.py" },
+    executor: { resource: "executor.md", receipt: ["receipt.md"] },
+    attester: { resource: "attester.md" }
+  },
+  incompleteAttestedComputation: {
+    type: "Attested Computation",
+    title: "Incomplete risk score",
+    runtime: ["python"],
+    parameters: "unknown",
+    executor: 42,
+    attester: false
+  }
+} as const;
+
+export const okfSignalExamples = [
+  {
+    effectiveStatus: "stable",
+    trustTier: "human-reviewed",
+    isStale: false,
+    staleAfter: "2026-12-31",
+    generatedAt: "2026-06-17T00:00:00.000Z",
+    generatedAtSource: "generated",
+    latestVerifiedAt: "2026-06-17T01:00:00.000Z",
+    sourceCount: 1
+  },
+  {
+    effectiveStatus: "stable",
+    trustTier: "unverified",
+    isStale: null,
+    staleAfter: null,
+    generatedAt: "2026-06-17T00:00:00.000Z",
+    generatedAtSource: "legacy_timestamp",
+    latestVerifiedAt: null,
+    sourceCount: 0
+  },
+  {
+    effectiveStatus: null,
+    trustTier: null,
+    isStale: null,
+    staleAfter: null,
+    generatedAt: null,
+    generatedAtSource: null,
+    latestVerifiedAt: null,
+    sourceCount: null
+  }
+] as const;
+
+export const okfMarkdownExamples = {
+  nativeV02: {
+    summary: "Native OKF 0.2 metadata",
+    value: "---\nokf_version: '0.2'\ntype: Guide\ntitle: Verified guide\nsources:\n  - id: source-a\n    resource: references/source-a.md\ngenerated:\n  by: publisher:example\n  at: '2026-06-17T00:00:00Z'\nverified:\n  - by: human:reviewer\n    at: '2026-06-17T01:00:00Z'\nstatus: stable\nstale_after: '2026-12-31'\n---\n# Verified guide"
+  },
+  legacyFallback: {
+    summary: "Legacy generated-time fallback",
+    value: "---\ntype: Guide\ntimestamp: '2026-06-17T00:00:00Z'\n---\n# Legacy guide"
+  },
+  noFrontmatter: {
+    summary: "Markdown without frontmatter",
+    value: "# Plain Markdown guide\n\nFrontmatter is optional."
+  },
+  missingOptionalSignals: {
+    summary: "Missing optional OKF signals",
+    value: "---\ntype: Guide\ntitle: Minimal guide\n---\n# Minimal guide"
+  },
+  malformedStatus: {
+    summary: "Safely stored malformed document-status fields",
+    value: "---\ntype: Guide\nstatus: [stable]\nstale_after: next quarter\n---\n# Document status example"
+  },
+  malformedVerification: {
+    summary: "Safely stored malformed verification fields",
+    value: "---\ntype: Guide\nverified:\n  - by: 42\n    at: today\n---\n# Verification example"
+  },
+  malformedSources: {
+    summary: "Safely stored malformed sources",
+    value: "---\ntype: Guide\nsources:\n  resource: references/source-a.md\n---\n# Sources example"
+  },
+  malformedGenerated: {
+    summary: "Safely stored malformed generation event",
+    value: "---\ntype: Guide\ngenerated:\n  by: publisher:example\n  at: today\n---\n# Generation example"
+  },
+  completeAttestedComputation: {
+    summary: "Complete Attested Computation file contract",
+    value: "---\nokf_version: '0.2'\ntype: Attested Computation\ntitle: Risk score\nruntime: python\nparameters:\n  - name: amount\n    type: number\n    required: true\ncomputation:\n  resource: references/risk-score.py\nexecutor:\n  resource: executor.md\n  receipt: [receipt.md]\nattester:\n  resource: attester.md\n---\n# Risk score"
+  },
+  incompleteAttestedComputation: {
+    summary: "Safely stored incomplete Attested Computation metadata",
+    value: "---\ntype: Attested Computation\nruntime: [python]\nparameters: unknown\nexecutor: 42\nattester: false\n---\n# Incomplete risk score"
+  }
+} as const;
+
+const nativeOkfSignals = okfSignalExamples[0];
+
 const generatedFile = {
   generationId,
   fileId,
@@ -202,14 +336,12 @@ const generatedFile = {
   fileKind: "page",
   contentType: "text/markdown; charset=utf-8",
   sizeBytes: 2048,
-  okfType: "page",
-  title: "Guide",
-  description: "Short summary.",
-  tags: ["guide"],
-  frontmatter: {
-    type: "page",
-    title: "Guide"
-  },
+  okfType: "Guide",
+  title: "Verified guide",
+  description: null,
+  tags: ["guide", "policy"],
+  frontmatter: okfFrontmatterExamples.nativeV02,
+  okfSignals: nativeOkfSignals,
   deletable: true,
   contentAvailable: true,
   readActions: {
@@ -234,13 +366,11 @@ const fileSearchResultBase = {
   path: "pages/guide.md",
   generatedFilePath: "pages/guide.md",
   fileKind: "page",
-  title: "Guide",
-  description: "Short summary.",
-  tags: ["guide"],
-  frontmatter: {
-    type: "page",
-    title: "Guide"
-  },
+  title: "Verified guide",
+  description: null,
+  tags: ["guide", "policy"],
+  frontmatter: okfFrontmatterExamples.nativeV02,
+  okfSignals: nativeOkfSignals,
   matchedFields: ["path", "title"],
   score: 9,
   contentAvailable: true,
@@ -264,6 +394,9 @@ const fileSearchQueryContext = {
   mode: "hybrid",
   graphDepth: 1,
   graphFanout: 10,
+  okfStatus: "stable",
+  okfTrustTier: "human-reviewed",
+  okfFreshness: "fresh",
   limit: 10,
   cursorProvided: false
 };
@@ -550,6 +683,9 @@ export const requestExamples = {
       mode: "hybrid",
       graphDepth: 1,
       graphFanout: 10,
+      okfStatus: "stable",
+      okfTrustTier: "human-reviewed",
+      okfFreshness: "fresh",
       limit: 10
     }
   },

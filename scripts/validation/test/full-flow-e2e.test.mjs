@@ -22,10 +22,15 @@ test("full-flow plan composes bounded API validation without optional layers", (
 
   assert.deepEqual(
     plan.map((step) => step.id),
-    ["sample-selection", "api-whitebox-blackbox"]
+    ["okf-v02-200-file-e2e", "sample-selection", "api-whitebox-blackbox"]
   );
-  assert.deepEqual(plan[0].args, ["scripts/validation/cleaned-markdown-flow.mjs", "samples"]);
-  assert.deepEqual(plan[1].args, ["scripts/validation/cleaned-markdown-flow.mjs", "api"]);
+  assert.deepEqual(plan[0].args, [
+    "--import",
+    "tsx",
+    "scripts/validation/run-okf-v02-e2e.mjs"
+  ]);
+  assert.deepEqual(plan[1].args, ["scripts/validation/cleaned-markdown-flow.mjs", "samples"]);
+  assert.deepEqual(plan[2].args, ["scripts/validation/cleaned-markdown-flow.mjs", "api"]);
 });
 
 test("full-flow plan names codebase regression commands explicitly", () => {
@@ -38,6 +43,7 @@ test("full-flow plan names codebase regression commands explicitly", () => {
   assert.deepEqual(
     plan.map((step) => step.id),
     [
+      "okf-v02-200-file-e2e",
       "sample-selection",
       "api-whitebox-blackbox",
       "workspace-typecheck",
@@ -86,7 +92,14 @@ test("full-flow plan keeps Docker checks optional", () => {
   assert.equal(buildFullFlowPlan(disabled).some((step) => step.id.startsWith("compose-")), false);
   assert.deepEqual(
     buildFullFlowPlan(enabled).map((step) => step.id),
-    ["sample-selection", "api-whitebox-blackbox", "compose-example-config", "compose-dev-example-config", "compose-local-example-config"]
+    [
+      "okf-v02-200-file-e2e",
+      "sample-selection",
+      "api-whitebox-blackbox",
+      "compose-example-config",
+      "compose-dev-example-config",
+      "compose-local-example-config"
+    ]
   );
 });
 
@@ -101,9 +114,14 @@ test("full-flow plan switches to large profile commands without reading fixture 
   assert.equal(config.largeProfile, true);
   assert.deepEqual(
     plan.map((step) => step.args.at(-1)),
-    ["large-samples", "large-api", "large-browser"]
+    [
+      "scripts/validation/run-okf-v02-e2e.mjs",
+      "large-samples",
+      "large-api",
+      "large-browser"
+    ]
   );
-  assert.equal(plan[1].extraEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, "10000");
+  assert.equal(plan[2].extraEnv.FOCOWIKI_VALIDATION_MAX_ENDPOINT_MS, "10000");
 });
 
 test("full-flow report stores only redacted runtime source hints", () => {

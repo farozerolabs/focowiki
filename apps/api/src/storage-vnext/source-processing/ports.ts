@@ -34,6 +34,7 @@ export type StorageVnextSourceModelResult = {
   metadata: StorageVnextStructuredMetadata;
   node: StorageVnextGraphNodeFact;
   edges: readonly StorageVnextGraphEdgeFact[];
+  modelWarningCount?: number;
 };
 
 export type StorageVnextSourceModelPort = {

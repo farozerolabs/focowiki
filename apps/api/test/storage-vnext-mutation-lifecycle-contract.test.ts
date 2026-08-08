@@ -29,6 +29,8 @@ type ReplacementMutationRequest = {
   checksumSha256: string;
   byteCount: number;
   contentType: "text/markdown; charset=utf-8";
+  candidateTitle: string;
+  candidateMetadata: Record<string, unknown>;
   settingsRevisionPublicId: string;
   createdAt: string;
   expiresAt: string;
@@ -345,6 +347,8 @@ function replacementRequest(
     checksumSha256,
     byteCount: 14,
     contentType: "text/markdown; charset=utf-8",
+    candidateTitle: "Replacement",
+    candidateMetadata: { okf_version: "0.2" },
     settingsRevisionPublicId: "settings-mutation-contract",
     createdAt: "2026-08-01T01:00:00.000Z",
     expiresAt: "2026-08-02T01:00:00.000Z",

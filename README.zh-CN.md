@@ -114,24 +114,31 @@ Demo Agent 运行结果展示了第三方 Agent 通过 demo 后端和 Skill 读�
 
 ## 为什么文件优先
 
-[Google 的 Open Knowledge Format 公告](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) 描述了一种基于 Markdown 文件和 YAML frontmatter 的可移植知识表示方式。[固定版本的 OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) 定义了 metadata、Markdown pages、links、indexes 和 update logs。
+[Google 的 OKF 0.2 公告](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) 描述了用于 Markdown 知识的可移植来源、验证、生命周期和 Attested Computation 信号。Focowiki 固定使用 [revision `930b65fc` 的 OKF 0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)。
 
 Focowiki 把这个模型实现为开源产品流程。团队上传清洗后的 Markdown 文件，Focowiki 解析文档信号，生成 OKF-style 知识库，保存每一个生成文件，并通过 Admin UI 和 Developer OpenAPI 暴露结果。
 
 ## Markdown 输入
 
-上传只接受 `.md` 文件。Markdown 文件可以包含 YAML frontmatter，后面跟 Markdown 正文。
+上传只接受 `.md` 文件。文件可以是普通 Markdown，也可以包含 YAML frontmatter。OKF 0.2 标准字段都是可选的产品输入；安全但缺失或格式错误的标准字段本身不会阻止上传或读取。
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -139,7 +146,7 @@ timestamp: "2026-06-16T00:00:00Z"
 Use this playbook when a priority customer request arrives.
 ```
 
-额外的安全 frontmatter 字段可以作为 pass-through metadata 保留。详细输入说明见 [项目介绍](https://docs.focowiki.com/zh-CN/)。
+额外的安全 frontmatter 字段会作为 pass-through metadata 保留。Developer OpenAPI 会暴露原始 frontmatter 和可为空的派生 `okfSignals`；文件搜索可以选择按规范化后的状态、可信等级或新鲜度筛选。详细输入说明见 [项目介绍](https://docs.focowiki.com/zh-CN/)。
 
 ## 本地开发
 
@@ -168,8 +175,8 @@ Focowiki 使用 modified Apache License 2.0 发布。见 [LICENSE](./LICENSE)。
 
 ## References
 
-- [Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/)
-- [OKF v0.1 specification 固定版本](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md)
+- [Open Knowledge Format 0.2 公告](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals)
+- [OKF 0.2 specification 固定版本](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md)
 - [Focowiki documentation](https://docs.focowiki.com)
 
 <p><sub><small>友情链接：<a href="https://linux.do/">linux.do</a> · <a href="https://www.v2ex.com/">V2EX</a></small></sub></p>

@@ -34,6 +34,12 @@ type SourceRow = {
   byte_count: number | string | null;
   content_type: string | null;
   generated_path: string | null;
+  model_invocation_status: "running" | "completed" | "failed" | "skipped" | null;
+  model_invocation_model_name: string | null;
+  model_invocation_started_at: Date | null;
+  model_invocation_ended_at: Date | null;
+  model_invocation_warning_count: number | string | null;
+  model_invocation_error_code: string | null;
 };
 
 type ResourceCursor = {
@@ -188,7 +194,15 @@ async function readSourceFiles(
            source.created_at, source.updated_at,
            revision.public_id AS source_revision_public_id,
            revision.checksum_sha256, revision.byte_count, revision.content_type,
-           generated.logical_path AS generated_path
+           generated.logical_path AS generated_path,
+           CASE
+             WHEN source.model_invocation_source_revision_public_id = revision.public_id
+               THEN source.model_invocation_status
+             ELSE NULL
+           END AS model_invocation_status,
+           source.model_invocation_model_name,
+           source.model_invocation_started_at, source.model_invocation_ended_at,
+           source.model_invocation_warning_count, source.model_invocation_error_code
     FROM focowiki.source_files source
     JOIN focowiki.knowledge_bases knowledge_base
       ON knowledge_base.public_id = source.knowledge_base_id
@@ -234,7 +248,15 @@ async function readSourceFiles(
       AND (${lifecycleStatuses}::text[] IS NULL OR source.status = ANY(${lifecycleStatuses}))
       AND (${stageStatuses}::text[] IS NULL OR source.status = ANY(${stageStatuses}))
       AND (${input.filters.modelInvocationStatus ?? null}::text IS NULL
-        OR ${input.filters.modelInvocationStatus ?? null} = 'not_recorded')
+        OR (${input.filters.modelInvocationStatus ?? null} = 'not_recorded'
+          AND (
+            source.model_invocation_status IS NULL
+            OR source.model_invocation_source_revision_public_id IS DISTINCT FROM revision.public_id
+          ))
+        OR (
+          source.model_invocation_source_revision_public_id = revision.public_id
+          AND source.model_invocation_status = ${input.filters.modelInvocationStatus ?? null}
+        ))
       AND (${generatedStatus}::text IS NULL OR
         (${generatedStatus} = 'visible' AND generated.logical_path IS NOT NULL) OR
         (${generatedStatus} = 'unavailable' AND source.status = 'failed') OR
@@ -294,6 +316,7 @@ function mapDirectory(row: DirectoryRow): SourceDirectoryRecord {
 }
 
 function mapSourceFile(row: SourceRow): SourceResourceFileRecord {
+  const modelInvocationCurrent = row.model_invocation_status !== null;
   const failure = row.status === "failed" ? {
     stage: "metadata_resolution" as const,
     code: row.safe_error_code ?? "SOURCE_PROCESSING_FAILED",
@@ -321,6 +344,16 @@ function mapSourceFile(row: SourceRow): SourceResourceFileRecord {
       ? "visible"
       : row.status === "failed" ? "unavailable" : "pending",
     generatedPath: row.generated_path,
+    modelInvocationStatus: row.model_invocation_status,
+    modelInvocationModelName: modelInvocationCurrent ? row.model_invocation_model_name : null,
+    modelInvocationStartedAt: modelInvocationCurrent
+      ? row.model_invocation_started_at?.toISOString() ?? null : null,
+    modelInvocationEndedAt: modelInvocationCurrent
+      ? row.model_invocation_ended_at?.toISOString() ?? null : null,
+    modelInvocationWarningCount: !modelInvocationCurrent
+      || row.model_invocation_warning_count === null
+      ? null : count(row.model_invocation_warning_count),
+    modelInvocationErrorCode: modelInvocationCurrent ? row.model_invocation_error_code : null,
     deleting: false,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString()

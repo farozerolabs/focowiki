@@ -116,6 +116,48 @@ describe("storage vNext search candidate validation", () => {
     );
   });
 
+  it("translates candidate OKF matrix cases through the shared provider filter contract", async () => {
+    const fixture = createFixture();
+    const input = validationInput();
+    input.queryCases.push({
+      kind: "okf_combined",
+      query: "pages/guides/a.md",
+      attributesToSearchOn: ["logicalPath"],
+      documentKind: "content",
+      limit: 10,
+      relevantSources: [{ sourceFilePublicId: "file-a", relevance: 3 }],
+      minimumRecall: 1,
+      minimumNdcg: 1,
+      okfFilters: {
+        status: "stable",
+        trustTier: "human-reviewed",
+        freshness: "stale",
+        requestEpochDay: 20_672
+      }
+    });
+
+    await validateStorageVnextSearchCandidate({
+      repository: fixture.repository,
+      provider: fixture.provider,
+      hydration: fixture.hydration,
+      settings,
+      documentPageSize: 2,
+      input
+    });
+
+    expect(fixture.transport.search).toHaveBeenCalledTimes(24);
+    const calls = fixture.transport.search.mock.calls as unknown as Array<[
+      { filter?: string }
+    ]>;
+    const filters = calls.map(([request]) => request.filter ?? "");
+    expect(filters.some((filter) =>
+      filter.includes('okfSignals.status = "stable"'))).toBe(true);
+    expect(filters.some((filter) =>
+      filter.includes('okfSignals.trustTier = "human-reviewed"'))).toBe(true);
+    expect(filters.some((filter) =>
+      filter.includes("okfSignals.staleAfterEpochDay <= 20672"))).toBe(true);
+  });
+
   it("fails a candidate containing a deleted or stale hydration identity", async () => {
     const fixture = createFixture();
     fixture.hydration.hydrateCurrentSources.mockResolvedValue([]);
@@ -205,12 +247,14 @@ describe("storage vNext search candidate validation", () => {
       sourceFilePublicId: "file-b",
       sourceRevisionPublicId: "revision-b",
       logicalPath: "pages/guides/b.md",
-      title: "B"
+      title: "B",
+      metadata: {}
     }, {
       sourceFilePublicId: "file-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "pages/guides/a.md",
-      title: "A"
+      title: "A",
+      metadata: {}
     }]);
     const input = validationInput();
     const queryCases = input.queryCases.map((item) => item.kind === "ranking"
@@ -233,6 +277,32 @@ describe("storage vNext search candidate validation", () => {
     })).rejects.toMatchObject({
       code: "candidate_ndcg_below_minimum",
       validationKind: "ranking"
+    });
+  });
+
+  it("rejects duplicate-title recall when only one relevant source is returned", async () => {
+    const fixture = createFixture();
+    const input = validationInput();
+    const queryCases = input.queryCases.map((item) => item.kind === "exact"
+      ? {
+          ...item,
+          relevantSources: [
+            { sourceFilePublicId: "file-a", relevance: 3 },
+            { sourceFilePublicId: "file-b", relevance: 3 }
+          ]
+        }
+      : { ...item, minimumRecall: 0, minimumNdcg: 0 });
+
+    await expect(validateStorageVnextSearchCandidate({
+      repository: fixture.repository,
+      provider: fixture.provider,
+      hydration: fixture.hydration,
+      settings,
+      documentPageSize: 2,
+      input: { ...input, queryCases }
+    })).rejects.toMatchObject({
+      code: "candidate_recall_below_minimum",
+      validationKind: "exact"
     });
   });
 
@@ -367,7 +437,8 @@ function createFixture() {
       sourceFilePublicId: "file-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "pages/guides/a.md",
-      title: "Employment 合同 Guide"
+      title: "Employment 合同 Guide",
+      metadata: {}
     }])
   };
   return { record, repository, transport, provider, hydration };

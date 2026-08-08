@@ -78,6 +78,11 @@ describe("storage vNext mutation candidate overlay", () => {
 
     expect(overlaid.sourceFile).toMatchObject({
       currentRevisionPublicId: "revision-replace-candidate",
+      title: "Replacement",
+      metadata: {
+        okf_version: "0.2",
+        status: "draft"
+      },
       revision: 8
     });
     expect(overlaid.sourceRevision).toBe(candidate);
@@ -139,6 +144,10 @@ describe("storage vNext mutation candidate overlay", () => {
           items: [moved, unchanged],
           nextCursor: null
         })),
+        listSourceFilesByPublicIds: vi.fn(async () => [
+          moved.sourceFile,
+          unchanged.sourceFile
+        ]),
         getSourceRevision: vi.fn(async () => null)
       }
     });
@@ -157,6 +166,7 @@ describe("storage vNext mutation candidate overlay", () => {
       sourceFilePublicId: string;
       sourceRevisionPublicId: string;
       logicalPath: string;
+      okfSignals: unknown;
     }[] }> = [];
 
     await buildStorageVnextSearchCandidate({
@@ -197,6 +207,16 @@ describe("storage vNext mutation candidate overlay", () => {
     ).every((document) =>
       document.logicalPath === "pages/Archive/Renamed.md"
     )).toBe(true);
+    expect(documents.filter((document) =>
+      document.sourceFilePublicId === "file-move"
+    ).every((document) => JSON.stringify(document.okfSignals) === JSON.stringify({
+      status: "stable",
+      trustTier: "unverified",
+      staleAfterEpochDay: null,
+      generatedAtEpochMs: null,
+      latestVerifiedAtEpochMs: null,
+      sourceCount: 0
+    }))).toBe(true);
     expect(documents.some((document) =>
       document.logicalPath.includes("Guides/Current.md"))).toBe(false);
     expect(batches).toHaveLength(1);
@@ -296,6 +316,11 @@ function replacementMutation() {
     currentNormalizedPath: "replace.md",
     candidateLogicalPath: null,
     normalizedCandidatePath: null,
-    candidateRevisionPublicId: "revision-replace-candidate"
+    candidateRevisionPublicId: "revision-replace-candidate",
+    candidateTitle: "Replacement",
+    candidateMetadata: {
+      okf_version: "0.2",
+      status: "draft"
+    }
   };
 }

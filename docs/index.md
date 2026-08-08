@@ -27,26 +27,34 @@ Focowiki takes Markdown files and folders and turns them into a knowledge base t
 
 ## Open Knowledge Format
 
-[Google's Open Knowledge Format announcement](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/) describes OKF as an open, portable, human-readable, and agent-readable way to represent knowledge with Markdown files and YAML frontmatter.
+[Google's OKF 0.2 announcement](https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals) describes OKF as an open, portable, human-readable, and agent-readable way to represent knowledge with Markdown files and optional YAML frontmatter.
 
-The [pinned OKF v0.1 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md) defines field conventions and a portable directory structure. Focowiki uses the same practical model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
+The [pinned OKF 0.2 specification](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md) adds structured provenance, generation, verification, lifecycle, and Attested Computation metadata. Focowiki keeps the same practical file model: Markdown pages, YAML frontmatter, links, indexes, and a stable file tree.
 
 ## Markdown Upload Format
 
-Uploads accept `.md` files. Each file can include YAML frontmatter followed by Markdown body content.
+Uploads accept `.md` files. Each file can be plain Markdown or include YAML frontmatter followed by Markdown body content. Every OKF 0.2 field below is optional for upload.
 
 ```md
 ---
-type: "page"
+okf_version: "0.2"
+type: "Guide"
 title: "Customer Support Playbook"
 description: "How the support team handles priority customer requests."
-resource: "https://example.com/docs/support-playbook"
 tags:
   - support
   - operations
-timestamp: "2026-06-16T00:00:00Z"
-owner: "Support Operations"
-sourceSystem: "company-wiki"
+sources:
+  - id: "support-handbook"
+    resource: "references/support-handbook.md"
+generated:
+  by: "publisher:docs"
+  at: "2026-06-16T00:00:00Z"
+verified:
+  - by: "human:support-reviewer"
+    at: "2026-06-16T01:00:00Z"
+status: "stable"
+stale_after: "2026-12-16"
 ---
 
 # Customer Support Playbook
@@ -67,14 +75,17 @@ Common OKF-style fields:
 
 | Field | Purpose |
 | --- | --- |
-| `type` | Content kind, such as `page`. |
+| `type` | Content kind, such as `Guide` or `Attested Computation`. |
 | `title` | Display title for the generated page. |
 | `description` | Short summary for readers and search. |
-| `resource` | Source URL or canonical reference when one exists. |
 | `tags` | Searchable tags. |
-| `timestamp` | Source, publication, or update timestamp. |
+| `sources` | Structured source IDs, resources, and optional usage windows. |
+| `generated` | Producer and event time when reliable generation evidence exists. |
+| `verified` | One or more machine or human verification events. |
+| `status` | Lifecycle value: `draft`, `stable`, or `deprecated`. |
+| `stale_after` | Date after which the content is considered stale. |
 
-Additional safe frontmatter fields can be preserved. Domain-specific fields such as owner, region, product, version, source system, official identifier, status, or category can pass through when they are present in the uploaded Markdown.
+Additional safe frontmatter fields can be preserved. Missing, incomplete, wrong-type, or wrong-format OKF fields do not by themselves block upload. Raw frontmatter stays readable; unavailable normalized values are returned as `null` and are excluded only when a corresponding OKF search filter is used. Legacy `timestamp` remains readable as an explicitly identified fallback.
 
 Markdown links are the primary relationship mechanism. Links in body content help readers and agents move from one generated page to related pages.
 

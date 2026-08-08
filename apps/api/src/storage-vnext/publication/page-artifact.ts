@@ -76,10 +76,11 @@ export function assembleStorageVnextPageArtifact(input: {
       pagePath: input.node.logicalPath,
       fileId: input.current.sourceFile.publicId,
       metadata,
+      sourceMetadata: input.current.sourceFile.metadata as unknown as SourceMetadataDefaults,
       suggestions: null,
       graphLinks
     },
-    sourceBody: input.sourceBody,
+    sourceBody: resolved.body,
     removedSourceLogicalPaths: input.removedSourceLogicalPaths,
     ordinal: input.ordinal
   });

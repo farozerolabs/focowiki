@@ -69,6 +69,8 @@ export type StorageVnextSourceReplaceMutationRequest =
     checksumSha256: string;
     byteCount: number;
     contentType: "text/markdown; charset=utf-8";
+    candidateTitle: string;
+    candidateMetadata: StorageVnextStructuredMetadata;
     destinationDirectoryPublicId?: StorageVnextPublicId | null;
     destinationLogicalPath?: string;
   };

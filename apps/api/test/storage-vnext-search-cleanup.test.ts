@@ -35,8 +35,16 @@ describe("storage vNext unified search cleanup", () => {
 
     await expect(cleanup.cleanupFailedCandidate({
       failedBefore: "2026-08-01T00:00:00.000Z",
-      correlationPublicId: "cleanup-cycle-a"
+      correlationPublicId: "cleanup-cycle-a",
+      candidatePublicId: "candidate-failed"
     })).resolves.toEqual({ outcome: "deleted", candidatePublicId: "candidate-failed" });
+
+    expect(repository.claimFailedCandidate).toHaveBeenCalledWith({
+      failedBefore: "2026-08-01T00:00:00.000Z",
+      correlationPublicId: "cleanup-cycle-a",
+      providerKind: "meilisearch",
+      candidatePublicId: "candidate-failed"
+    });
 
     expect(transport.deleteIndex).toHaveBeenCalledWith(
       "owned_vnext_kb_candidate_failed"

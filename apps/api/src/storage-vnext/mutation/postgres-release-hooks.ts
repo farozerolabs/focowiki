@@ -1,6 +1,7 @@
 import type { TransactionSql } from "postgres";
 import type { StorageVnextReleaseLifecycleHooks } from
   "../release/postgres-repository.js";
+import type { StorageVnextStructuredMetadata } from "../shared/types.js";
 
 type MutationOperationRow = {
   operation_kind: string;
@@ -23,7 +24,7 @@ type MutationCheckpoint = {
   currentName?: string;
   currentDescription?: string | null;
   currentTitle?: string;
-  currentMetadata?: Record<string, boolean | number | string | null>;
+  currentMetadata?: StorageVnextStructuredMetadata;
   candidateLogicalPath?: string | null;
   normalizedCandidatePath?: string | null;
   candidateDirectoryPublicId?: string | null;
@@ -32,7 +33,7 @@ type MutationCheckpoint = {
   candidateName?: string;
   candidateDescription?: string | null;
   candidateTitle?: string;
-  candidateMetadata?: Record<string, boolean | number | string | null>;
+  candidateMetadata?: StorageVnextStructuredMetadata;
 };
 
 const MUTATION_KINDS = new Set([
@@ -424,6 +425,18 @@ async function activateSourceReplacement(
     `;
     requireOne(rows);
   }
+  const metadataRows = await transaction<Array<{ public_id: string }>>`
+    UPDATE focowiki.source_files
+    SET title = ${requiredString(input.checkpoint.candidateTitle)},
+        metadata = ${transaction.json(input.checkpoint.candidateMetadata as never)},
+        updated_at = ${input.completedAt}
+    WHERE knowledge_base_id = ${input.knowledgeBaseId}
+      AND public_id = ${input.checkpoint.targetPublicId}
+      AND revision = ${input.checkpoint.expectedResourceRevision + 1}
+      AND deleted_at IS NULL
+    RETURNING public_id
+  `;
+  requireOne(metadataRows);
   const revisions = await transaction<Array<{ public_id: string }>>`
     UPDATE focowiki.source_revisions
     SET revision_role = 'current', expires_at = NULL

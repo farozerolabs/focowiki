@@ -1,4 +1,5 @@
 import {
+  buildOkfPublicationMetadata,
   renderMarkdownIdentityLabel,
   toBundleMarkdownHref
 } from "@focowiki/okf";
@@ -33,6 +34,7 @@ export function createDirectoryNavigationWriter(input: {
       entryId: string;
       desiredEntry: PersistentDirectoryLeaf["entries"][number] | null;
     }>;
+    changedAt?: string;
     writeRootWhenUnchanged?: boolean;
   }): Promise<{ handled: true; touchedShardCount: number }> => {
     const mutation = await input.navigation.applyEntries({
@@ -60,7 +62,11 @@ export function createDirectoryNavigationWriter(input: {
         refKind: "directory_leaf",
         refKey: directoryLeafRefKey(request.directoryPath, leaf.id),
         logicalPath: directoryLeafPath(request.directoryPath, leaf.id),
-        body: renderDirectoryLeafMarkdown({ directoryPath: request.directoryPath, leaf })
+        body: renderDirectoryLeafMarkdown({
+          directoryPath: request.directoryPath,
+          leaf,
+          ...(request.changedAt ? { changedAt: request.changedAt } : {})
+        })
       });
     }
     await writeReference(input, request, {
@@ -146,12 +152,6 @@ export function renderDirectoryRootMarkdown(input: {
   const title = directoryTitle(input.directoryPath);
   const parent = parentDirectoryIndex(input.directoryPath);
   return [
-    "---",
-    'type: "directory-index"',
-    `title: ${JSON.stringify(`${title} index`)}`,
-    'navigation_only: true',
-    `entry_count: ${input.entryCount}`,
-    "---",
     `# ${renderMarkdownIdentityLabel(title)}`,
     "",
     ...(parent ? [`[Parent directory](${toBundleMarkdownHref(parent)})`, ""] : []),
@@ -167,6 +167,7 @@ export function renderDirectoryRootMarkdown(input: {
 export function renderDirectoryLeafMarkdown(input: {
   directoryPath: string;
   leaf: PersistentDirectoryLeaf;
+  changedAt?: string;
 }): string {
   const navigation = [
     `[Directory index](${toBundleMarkdownHref(`${input.directoryPath}/index.md`)})`,
@@ -180,13 +181,29 @@ export function renderDirectoryLeafMarkdown(input: {
   const entries = input.leaf.entries.map((entry) =>
     `- [${renderMarkdownIdentityLabel(entry.name)}](${toBundleMarkdownHref(entry.targetPath)})`
   );
+  const baseMetadata = {
+    type: "directory-index-page",
+    title: `${directoryTitle(input.directoryPath)} entries`,
+    navigation_only: true,
+    leaf_id: input.leaf.id,
+    entry_count: input.leaf.entries.length
+  };
+  const metadata = input.changedAt
+    ? buildOkfPublicationMetadata({
+        ownership: "focowiki",
+        metadata: baseMetadata,
+        changedAt: input.changedAt
+      })
+    : input.leaf.changedAt
+      ? buildOkfPublicationMetadata({
+          ownership: "focowiki",
+          metadata: baseMetadata,
+          changedAt: input.leaf.changedAt
+        })
+      : baseMetadata;
   return [
     "---",
-    'type: "directory-index-page"',
-    `title: ${JSON.stringify(`${directoryTitle(input.directoryPath)} entries`)}`,
-    'navigation_only: true',
-    `leaf_id: ${JSON.stringify(input.leaf.id)}`,
-    `entry_count: ${input.leaf.entries.length}`,
+    ...frontmatterLines(metadata),
     "---",
     `# ${renderMarkdownIdentityLabel(directoryTitle(input.directoryPath))} entries`,
     "",
@@ -197,6 +214,11 @@ export function renderDirectoryLeafMarkdown(input: {
     ...entries,
     ""
   ].join("\n");
+}
+
+function frontmatterLines(metadata: Record<string, unknown>): string[] {
+  return Object.entries(metadata).flatMap(([key, value]) =>
+    value === undefined ? [] : [`${key}: ${JSON.stringify(value)}`]);
 }
 
 function globalNavigation(): string {

@@ -1,0 +1,224 @@
+{
+  "capturedAt": "2026-08-07",
+  "capturedFromRevision": "9867ddd87cb8ac4c3088497eb04a3a936ecc9c85",
+  "generatedArtifacts": {
+    "rootIndex": {
+      "logicalPath": "index.md",
+      "frontmatter": {
+        "okf_version": "0.1"
+      },
+      "headings": [
+        "# <knowledge-base-title>",
+        "## Explore"
+      ],
+      "requiredLinks": [
+        "/pages/index.md",
+        "/schema.md",
+        "/log.md",
+        "/_index/index.md",
+        "/_graph/index.md"
+      ]
+    },
+    "representativePage": {
+      "logicalPath": "pages/guide.md",
+      "frontmatterKeys": [
+        "type",
+        "title",
+        "description",
+        "tags",
+        "timestamp"
+      ],
+      "sourceBodyRemainsEvidence": true,
+      "legacyGeneratedCitationHeading": "# Citations"
+    },
+    "directoryNavigation": {
+      "rootPath": "pages/index.md",
+      "continuationPattern": "index-<stable-id>.md",
+      "deprecatedPattern": "index-map-<number>.md",
+      "reciprocalRootLinks": [
+        "/index.md",
+        "/_index/index.md",
+        "/_graph/index.md"
+      ]
+    },
+    "machineIndex": {
+      "rootPath": "_index/index.md",
+      "families": [
+        "manifest",
+        "search",
+        "links",
+        "tree"
+      ]
+    },
+    "graph": {
+      "rootPath": "_graph/index.md",
+      "families": [
+        "graph_node",
+        "graph_edge",
+        "by-file"
+      ],
+      "relatedFileTemplate": "_graph/by-file/{fileId}.json"
+    },
+    "schema": {
+      "rootPath": "schema.md",
+      "referencePaths": [
+        "schema-frontmatter.md",
+        "schema-navigation.md",
+        "schema-extensions.md"
+      ]
+    }
+  },
+  "searchProjection": {
+    "representativeKeys": [
+      "path",
+      "fileId",
+      "type",
+      "title",
+      "description",
+      "timestamp",
+      "tags",
+      "keywords",
+      "metadata"
+    ],
+    "providerNeutral": true
+  },
+  "developerOpenApi": {
+    "snapshotSha256": "5ff930b4ed82b380b4d098fb40775bf9f4a5c324e39554b8fbf01db96e928294",
+    "operationSignaturesSha256": "92db6782b8c524be1ce180bcaa67a307d70d73ded98fe4527e3c0091a664e03a",
+    "operationCount": 43,
+    "operationIds": [
+      "addUploadManifestEntries",
+      "cancelUploadSession",
+      "createKnowledgeBase",
+      "createUploadSession",
+      "createWebhook",
+      "deleteKnowledgeBase",
+      "deleteSourceDirectory",
+      "deleteSourceFile",
+      "deleteWebhook",
+      "expandGraph",
+      "finalizeUploadSession",
+      "getDeveloperOpenApiContract",
+      "getDeveloperOpenApiHealth",
+      "getDeveloperOpenApiVersion",
+      "getFileById",
+      "getFileContentById",
+      "getFileContentByPath",
+      "getGraphOverview",
+      "getKnowledgeBase",
+      "getKnowledgeBaseSourceFile",
+      "getResourceOperation",
+      "getSourceDirectory",
+      "getSourceFileContent",
+      "getUploadSession",
+      "listKnowledgeBaseSourceFileEvents",
+      "listKnowledgeBaseSourceFiles",
+      "listKnowledgeBaseTree",
+      "listKnowledgeBases",
+      "listRelatedFiles",
+      "listResourceOperations",
+      "listSourceDirectories",
+      "listWebhookDeliveries",
+      "listWebhooks",
+      "moveSourceDirectory",
+      "moveSourceFile",
+      "reconcileUploadSession",
+      "redeliverWebhook",
+      "replaceSourceFileContent",
+      "retryKnowledgeBaseSourceFile",
+      "sealUploadManifest",
+      "searchGeneratedFiles",
+      "updateKnowledgeBase",
+      "uploadSessionEntryContent"
+    ],
+    "generatedFileResponseKeys": [
+      "generationId",
+      "fileId",
+      "knowledgeBaseId",
+      "sourceFileId",
+      "path",
+      "fileKind",
+      "contentType",
+      "sizeBytes",
+      "okfType",
+      "title",
+      "description",
+      "tags",
+      "frontmatter",
+      "deletable",
+      "contentAvailable",
+      "readActions"
+    ],
+    "searchResultKeys": [
+      "generationId",
+      "nodeId",
+      "edgeId",
+      "fileId",
+      "generatedFileId",
+      "knowledgeBaseId",
+      "sourceFileId",
+      "path",
+      "generatedFilePath",
+      "fileKind",
+      "title",
+      "description",
+      "tags",
+      "frontmatter",
+      "matchedFields",
+      "score",
+      "contentAvailable",
+      "readActions",
+      "matchType",
+      "graphContext"
+    ],
+    "searchParameterNames": [
+      "knowledgeBaseId",
+      "query",
+      "scope",
+      "fileKind",
+      "mode",
+      "graphDepth",
+      "graphFanout",
+      "limit",
+      "cursor"
+    ],
+    "errorCodes": [
+      "UNAUTHORIZED",
+      "FORBIDDEN",
+      "NOT_FOUND",
+      "CONFLICT",
+      "PAYLOAD_TOO_LARGE",
+      "VALIDATION_ERROR",
+      "RATE_LIMITED",
+      "UNSUPPORTED_ROUTE",
+      "INTERNAL_ERROR",
+      "DATABASE_REPOSITORY_UNAVAILABLE",
+      "SEARCH_TIMEOUT",
+      "SEARCH_UNAVAILABLE",
+      "SEARCH_OVERLOADED"
+    ]
+  },
+  "modelAndGraph": {
+    "modelSourceViewPrefixes": [
+      "Markdown body:",
+      "Markdown source view:"
+    ],
+    "graphNodeMetadataKeys": [
+      "tags",
+      "presentationSuggestion",
+      "contentProfile"
+    ],
+    "graphRelationshipKeys": [
+      "fileId",
+      "path",
+      "title",
+      "relationType",
+      "direction",
+      "weight",
+      "reason",
+      "source",
+      "evidence"
+    ],
+    "graphReasonSemantics": "direction-aware durable relationship evidence"
+  }
+}

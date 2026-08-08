@@ -15,9 +15,18 @@ import type {
   StorageVnextSearchHydrationPort,
   StorageVnextSearchHydrationRecord
 } from "./search-hydration.js";
+import {
+  STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
+  STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION
+} from "./documents.js";
+import {
+  createOkfSearchSignals,
+  hasOkfSearchFilters,
+  matchesOkfSearchFilters,
+  normalizeOkfSearchFilterContract,
+  type OkfSearchFilters
+} from "./okf-signals.js";
 
-const CONTENT_SCHEMA_VERSION = "storage-vnext-content-v1";
-const GRAPH_SCHEMA_VERSION = "storage-vnext-graph-seed-v1";
 const SEARCH_ATTRIBUTES = ["title", "logicalPath", "searchText", "rankingTerms"];
 const RESULT_ATTRIBUTES = [
   "documentKind",
@@ -25,9 +34,11 @@ const RESULT_ATTRIBUTES = [
   "sourceRevisionPublicId",
   "logicalPath",
   "title",
-  "searchText"
+  "searchText",
+  "okfSignals"
 ];
 const MAX_QUERY_BYTES = 512;
+const MAX_REFILL_PAGES = 10;
 
 export class StorageVnextSearchUnavailableError extends SearchProviderError {
   public constructor() {
@@ -97,7 +108,8 @@ export function createStorageVnextActiveSearch(
         kinds: normalized.kinds,
         providerKind: config.provider.kind,
         projectionPublicId: projection.publicId,
-        providerIndexUid: projection.providerIndexUid
+        providerIndexUid: projection.providerIndexUid,
+        okfFilters: normalized.okfFilters
       });
       const cursor = decodeCursor(input.cursor, scopeHash);
       if (
@@ -114,39 +126,71 @@ export function createStorageVnextActiveSearch(
         1_000,
         Math.max(input.limit + 1, input.limit * runtimeSettings.overfetchFactor + 1)
       );
-      const result: SearchProviderQueryResult = await config.provider.query.query({
+      const visible: Array<{
+        candidate: ParsedHit;
+        source: StorageVnextSearchHydrationRecord;
+      }> = [];
+      const seenSources = new Set<string>();
+      const startedAt = Date.now();
+      let providerContinuation = cursor.providerContinuation;
+      let nextProviderContinuation: string | null = null;
+      for (let page = 0; page < MAX_REFILL_PAGES; page += 1) {
+        const remainingMs = runtimeSettings.requestTimeoutMs
+          - Math.max(0, Date.now() - startedAt);
+        if (remainingMs < 100) {
+          throw new SearchProviderError("SEARCH_ENGINE_TIMEOUT", true);
+        }
+        const result: SearchProviderQueryResult = await config.provider.query.query({
           indexUid: projection.providerIndexUid,
           query: normalized.query,
           evidenceFamilies: ["exact", "text", "phrase", "typo", "jieba", "graph"],
-          filters: createFilter(input.knowledgeBaseId, normalized.kinds),
+          filters: createFilter(
+            input.knowledgeBaseId,
+            normalized.kinds,
+            normalized.okfFilters
+          ),
           limit: providerLimit,
-          continuation: cursor.providerContinuation,
+          continuation: providerContinuation,
           searchFields: SEARCH_ATTRIBUTES,
           returnFields: RESULT_ATTRIBUTES,
           cropLength: runtimeSettings.cropLength,
           deadlineMs: Math.min(
-            runtimeSettings.requestTimeoutMs,
+            remainingMs,
             runtimeSettings.engineSearchCutoffMs
-              ?? runtimeSettings.requestTimeoutMs
+              ?? remainingMs
           ),
           matchingStrategy: "all",
           distinctBy: "sourceFilePublicId"
-      });
-      const parsed = result.hits.flatMap((hit) => {
-        const candidate = parseHit(hit);
-        return candidate ? [candidate] : [];
-      });
-      const hydrated = await config.hydration.hydrateCurrentSources({
-        knowledgeBaseId: input.knowledgeBaseId,
-        sourceFilePublicIds: parsed.map((item) => item.sourceFilePublicId)
-      });
-      const current = new Map(hydrated.map((item) => [item.sourceFilePublicId, item]));
-      const visible = parsed.flatMap((candidate) => {
-        const source = current.get(candidate.sourceFilePublicId);
-        return isCurrent(candidate, source)
-          ? [{ candidate, source }]
-          : [];
-      });
+        });
+        const parsed = result.hits.flatMap((hit) => {
+          const candidate = parseHit(hit);
+          return candidate ? [candidate] : [];
+        });
+        const hydrated = await config.hydration.hydrateCurrentSources({
+          knowledgeBaseId: input.knowledgeBaseId,
+          sourceFilePublicIds: parsed.map((item) => item.sourceFilePublicId)
+        });
+        const current = new Map(
+          hydrated.map((item) => [item.sourceFilePublicId, item])
+        );
+        for (const candidate of parsed) {
+          const source = current.get(candidate.sourceFilePublicId);
+          if (
+            !seenSources.has(candidate.sourceFilePublicId)
+            && isCurrent(candidate, source)
+            && matchesHydratedOkfFilters(source, normalized.okfFilters)
+          ) {
+            seenSources.add(candidate.sourceFilePublicId);
+            visible.push({ candidate, source });
+          }
+        }
+        nextProviderContinuation = result.continuation;
+        if (visible.length > input.limit || nextProviderContinuation === null) break;
+        if (nextProviderContinuation === providerContinuation) {
+          throw new SearchProviderError("SEARCH_ENGINE_REQUEST_FAILED", false);
+        }
+        providerContinuation = nextProviderContinuation;
+      }
       const selected = visible.slice(0, input.limit);
       return {
         items: selected.map(({ candidate, source }) => ({
@@ -156,10 +200,11 @@ export function createStorageVnextActiveSearch(
           title: source.title,
           snippet: candidate.snippet,
           score: candidate.normalizedScore,
-          kind: candidate.kind
+          kind: candidate.kind,
+          metadata: source.metadata
         })),
         nextCursor: createNextCursor({
-          result,
+          providerContinuation: nextProviderContinuation,
           visible,
           selectedCount: selected.length,
           pageLimit: input.limit,
@@ -187,36 +232,62 @@ function normalizeInput(
     || kinds.length < 1
     || kinds.some((kind) => kind !== "file" && kind !== "graph")
   ) throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_INPUT");
-  return { query, kinds: kinds as Array<"file" | "graph"> };
+  let okfFilters: OkfSearchFilters;
+  try {
+    okfFilters = normalizeOkfSearchFilterContract(input.okfFilters);
+  } catch {
+    throw new StorageVnextActiveSearchInputError("INVALID_SEARCH_INPUT");
+  }
+  return { query, kinds: kinds as Array<"file" | "graph">, okfFilters };
 }
 
 function createFilter(
   knowledgeBaseId: string,
-  kinds: readonly ("file" | "graph")[]
+  kinds: readonly ("file" | "graph")[],
+  okfFilters: OkfSearchFilters
 ): SearchFilterExpression {
   const clauses = kinds.map((kind) => kind === "file"
     ? {
         kind: "and" as const,
         operands: [
           { kind: "equals" as const, field: "documentKind" as const, value: "content" },
-          { kind: "equals" as const, field: "schemaVersion" as const, value: CONTENT_SCHEMA_VERSION }
+          { kind: "equals" as const, field: "schemaVersion" as const, value: STORAGE_VNEXT_CONTENT_SCHEMA_VERSION }
         ]
       }
     : {
         kind: "and" as const,
         operands: [
           { kind: "equals" as const, field: "documentKind" as const, value: "graph_seed" },
-          { kind: "equals" as const, field: "schemaVersion" as const, value: GRAPH_SCHEMA_VERSION }
+          { kind: "equals" as const, field: "schemaVersion" as const, value: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION }
         ]
       }
   );
+  const filterClauses: SearchFilterExpression[] = [{
+    kind: "equals",
+    field: "knowledgeBaseId",
+    value: knowledgeBaseId
+  }, { kind: "or", operands: clauses }];
+  if (okfFilters.status !== null) filterClauses.push({
+    kind: "equals",
+    field: "okfSignals.status",
+    value: okfFilters.status
+  });
+  if (okfFilters.trustTier !== null) filterClauses.push({
+    kind: "equals",
+    field: "okfSignals.trustTier",
+    value: okfFilters.trustTier
+  });
+  if (okfFilters.freshness !== null && okfFilters.requestEpochDay !== null) {
+    filterClauses.push({
+      kind: "range",
+      field: "okfSignals.staleAfterEpochDay",
+      operator: okfFilters.freshness === "stale" ? "lte" : "gt",
+      value: okfFilters.requestEpochDay
+    });
+  }
   return {
     kind: "and",
-    operands: [{
-      kind: "equals",
-      field: "knowledgeBaseId",
-      value: knowledgeBaseId
-    }, { kind: "or", operands: clauses }]
+    operands: filterClauses
   };
 }
 
@@ -253,19 +324,27 @@ function isCurrent(
   );
 }
 
+function matchesHydratedOkfFilters(
+  source: StorageVnextSearchHydrationRecord,
+  filters: OkfSearchFilters
+): boolean {
+  return !hasOkfSearchFilters(filters)
+    || matchesOkfSearchFilters(createOkfSearchSignals(source.metadata), filters);
+}
+
 function createNextCursor(input: {
-  result: SearchProviderQueryResult;
+  providerContinuation: string | null;
   visible: Array<{ candidate: ParsedHit }>;
   selectedCount: number;
   pageLimit: number;
   scopeHash: string;
 }) {
   const hasVisibleLookahead = input.visible.length > input.pageLimit;
-  const hasProviderMore = input.result.continuation !== null;
+  const hasProviderMore = input.providerContinuation !== null;
   if (!hasVisibleLookahead && !hasProviderMore) return null;
   const providerContinuation = input.selectedCount > 0
     ? input.visible[input.selectedCount - 1]!.candidate.continuationAfter
-    : input.result.continuation;
+    : input.providerContinuation;
   if (!providerContinuation) return null;
   return encodeCursor({
     version: 2,
@@ -281,6 +360,7 @@ function createScopeHash(input: {
   providerKind: string;
   projectionPublicId: string;
   providerIndexUid: string;
+  okfFilters: OkfSearchFilters;
 }) {
   return createHash("sha256")
     .update(JSON.stringify(input))

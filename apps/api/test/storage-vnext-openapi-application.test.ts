@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StorageVnextCatalogRepositoryError } from
   "../src/storage-vnext/catalog/postgres-repository.js";
 import { createPostgresStorageVnextOpenApiApplication } from
@@ -185,6 +185,59 @@ describe("storage vNext Developer OpenAPI application", () => {
       })).rejects.toMatchObject({ code, httpStatus });
     }
   );
+
+  it("does not return source-backed pages for an unrelated generated file kind", async () => {
+    const search = vi.fn(async () => ({
+      items: [{
+        publicId: "source-file-one",
+        sourceFilePublicId: "source-file-one",
+        logicalPath: "pages/guide.md",
+        title: "Guide",
+        snippet: "evidence",
+        score: 1,
+        kind: "file" as const,
+        metadata: {}
+      }],
+      nextCursor: null
+    }));
+    const application = createPostgresStorageVnextOpenApiApplication({
+      sql: null as never,
+      catalog: null as never,
+      releases: {
+        async getActiveRoot() {
+          return {
+            publicId: "root-file-kind",
+            knowledgeBaseId: "knowledge-base-file-kind",
+            role: "active",
+            manifestChecksum: "a".repeat(64),
+            revision: 1,
+            createdAt: "2026-08-07T00:00:00.000Z",
+            expiresAt: null
+          };
+        }
+      } as never,
+      adminRead: null as never,
+      adminCore: null as never,
+      resources: null as never,
+      sourceEvents: null as never,
+      source: null as never,
+      search: { search },
+      webhooks: null as never
+    });
+
+    await expect(application.searchFiles({
+      knowledgeBaseId: "knowledge-base-file-kind",
+      query: "evidence",
+      scope: "all",
+      fileKind: "index",
+      mode: "file",
+      graphDepth: 1,
+      graphFanout: 10,
+      limit: 20,
+      cursor: null
+    })).resolves.toMatchObject({ items: [], searchStatus: "no_candidates" });
+    expect(search).not.toHaveBeenCalled();
+  });
 });
 
 function sourceEvent(

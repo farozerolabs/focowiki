@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   OkfConformanceError,
+  inspectOkfBundleProfile,
   validateOkfBundle,
   validateOkfBundleProfile
 } from "../src/conformance.js";
@@ -11,6 +12,7 @@ import {
   OKF_PRODUCER_RULES,
   OKF_RECOMMENDED_RULES
 } from "../src/conformance-baseline.js";
+import { createConformanceIssue } from "../src/conformance-types.js";
 
 describe("validateOkfBundle", () => {
   it("accepts reserved root Markdown and valid concept Markdown", () => {
@@ -32,15 +34,27 @@ describe("validateOkfBundle", () => {
     ).not.toThrow();
   });
 
-  it("rejects non-reserved Markdown without required frontmatter", () => {
-    expect(() =>
-      validateOkfBundle([
-        {
-          path: "pages/missing-type.md",
-          content: "---\ntitle: Missing type\n---\n# Missing type"
-        }
-      ])
-    ).toThrow(/type/);
+  it("reports source conformance gaps without blocking safe Markdown", () => {
+    const missingType = {
+      path: "pages/missing-type.md",
+      content: "---\ntitle: Missing type\n---\n# Missing type"
+    };
+    expect(() => validateOkfBundle([missingType])).not.toThrow();
+    expect(inspectOkfBundleProfile([missingType], "normative"))
+      .toContainEqual(expect.objectContaining({
+        ruleId: "OKF-0.2-CONCEPT-TYPE",
+        disposition: "advisory"
+      }));
+    const missingFrontmatter = {
+      path: "pages/plain.md",
+      content: "# Plain Markdown\n\nStill readable."
+    };
+    expect(() => validateOkfBundle([missingFrontmatter])).not.toThrow();
+    expect(inspectOkfBundleProfile([missingFrontmatter], "normative"))
+      .toContainEqual(expect.objectContaining({
+        ruleId: "OKF-0.2-CONCEPT-FRONTMATTER",
+        disposition: "advisory"
+      }));
 
     expect(() =>
       validateOkfBundle([
@@ -74,17 +88,27 @@ describe("validateOkfBundle", () => {
     ).not.toThrow();
   });
 
+  it("keeps legacy root declarations readable but requires 0.2 from Focowiki", () => {
+    const legacy = [{
+      path: "index.md",
+      content: "---\nokf_version: \"0.1\"\n---\n# Knowledge base"
+    }];
+    expect(() => validateOkfBundle(legacy)).not.toThrow();
+    expect(() => validateOkfBundleProfile(legacy, "focowiki_quality"))
+      .toThrow(/okf_version 0\.2/iu);
+  });
+
   it("rejects frontmatter on nested index and log files", () => {
     expect(() =>
       validateOkfBundle([
         { path: "pages/index.md", content: "---\ntype: index\n---\n# Pages" }
       ])
-    ).toThrow(/OKF-0.1-INDEX-STRUCTURE.*Nested index/);
+    ).toThrow(/OKF-0.2-INDEX-STRUCTURE.*Nested index/);
     expect(() =>
       validateOkfBundle([
         { path: "pages/log.md", content: "---\ntype: log\n---\n# Directory Update Log" }
       ])
-    ).toThrow(/OKF-0.1-LOG-STRUCTURE.*Log files must not contain frontmatter/);
+    ).toThrow(/OKF-0.2-LOG-STRUCTURE.*Log files must not contain frontmatter/);
   });
 
   it("rejects non-standard wiki links", () => {
@@ -139,7 +163,7 @@ describe("validateOkfBundle", () => {
       expect(error).toMatchObject({
         issues: [
           expect.objectContaining({
-            ruleId: "OKF-0.1-CONCEPT-FRONTMATTER",
+            ruleId: "OKF-0.2-CONCEPT-FRONTMATTER",
             path: "pages/malformed.md"
           })
         ]
@@ -158,14 +182,14 @@ describe("validateOkfBundle", () => {
       .toThrow(/FOCOWIKI-EXTENSION-NAVIGATION/);
   });
 
-  it("reports title-equivalent descriptions as recommended quality issues", () => {
+  it("reports title-equivalent descriptions as Focowiki quality issues", () => {
     const file = {
       path: "pages/guide.md",
       content: "---\ntype: Guide\ntitle: Operations guide\ndescription: Operations guide.\n---\n# Operations guide"
     };
 
     expect(() => validateOkfBundle([file])).not.toThrow();
-    expect(() => validateOkfBundleProfile([file], "recommended"))
+    expect(() => validateOkfBundleProfile([file], "focowiki_quality"))
       .toThrow(/description should add information/i);
   });
 
@@ -173,7 +197,7 @@ describe("validateOkfBundle", () => {
     const files = [
       {
         path: "index.md",
-        content: "---\nokf_version: '0.1'\n---\n# Knowledge base\n\n* [Documents](/pages/index.md) - Browse files.\n* [Graph](/_graph/index.md) - Browse relationships."
+        content: "---\nokf_version: '0.2'\n---\n# Knowledge base\n\n* [Documents](/pages/index.md) - Browse files.\n* [Graph](/_graph/index.md) - Browse relationships."
       },
       {
         path: "pages/index.md",
@@ -211,8 +235,8 @@ describe("validateOkfBundle", () => {
       ...OKF_PRODUCER_RULES
     ];
     expect(OKF_CONFORMANCE_BASELINE).toMatchObject({
-      version: "0.1",
-      repositoryRevision: "ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a"
+      version: "0.2",
+      repositoryRevision: "930b65fc3f5619d5d0591f88c72ebae8b848d60d"
     });
     expect(OKF_CONFORMANCE_RULE_MATRIX.map((rule) => rule.ruleId).sort())
       .toEqual([...allRules].sort());
@@ -228,39 +252,22 @@ describe("validateOkfBundle", () => {
     )).toBe(true);
   });
 
-  it("runs one-rule negative fixtures against every pinned normative rule", () => {
-    const fixtures = [
-      {
-        ruleId: "OKF-0.1-CONCEPT-FRONTMATTER",
-        files: [{ path: "pages/invalid-alias.md", content: "---\ntype: *missing\n---\n# Invalid alias" }]
-      },
-      {
-        ruleId: "OKF-0.1-CONCEPT-TYPE",
-        files: [{ path: "pages/missing-type.md", content: "---\ntitle: Missing type\n---\n# Missing type" }]
-      },
-      {
-        ruleId: "OKF-0.1-INDEX-STRUCTURE",
-        files: [{ path: "pages/team/index.md", content: "---\ntype: index\n---\n# Team" }]
-      },
-      {
-        ruleId: "OKF-0.1-LOG-STRUCTURE",
-        files: [{ path: "pages/team/log.md", content: "---\ntype: log\n---\n# Directory Update Log" }]
-      }
-    ] as const;
-
-    expect(fixtures.map((fixture) => fixture.ruleId).sort()).toEqual(
-      [...OKF_NORMATIVE_RULES].sort()
-    );
-    for (const fixture of fixtures) {
-      try {
-        validateOkfBundle([...fixture.files]);
-        throw new Error(`Expected ${fixture.ruleId} fixture to fail`);
-      } catch (error) {
-        expect(error).toBeInstanceOf(OkfConformanceError);
-        expect((error as OkfConformanceError).issues.map((issue) => issue.ruleId)).toEqual([
-          fixture.ruleId
-        ]);
-      }
+  it("classifies every official rule as source advisory and owned blocking", () => {
+    const officialRules = [...OKF_NORMATIVE_RULES, ...OKF_RECOMMENDED_RULES];
+    expect(officialRules).toHaveLength(18);
+    for (const ruleId of officialRules) {
+      expect(createConformanceIssue(
+        ruleId,
+        "normative",
+        "pages/source.md",
+        "source gap"
+      )).toMatchObject({ disposition: "advisory" });
+      expect(createConformanceIssue(
+        ruleId,
+        "normative",
+        "schema.md",
+        "owned defect"
+      )).toMatchObject({ disposition: "blocking" });
     }
   });
 
@@ -268,7 +275,7 @@ describe("validateOkfBundle", () => {
     const files = [
       {
         path: "index.md",
-        content: "---\nokf_version: '0.1'\n---\n# Knowledge base\n\n- [Team](pages/team/index.md)"
+        content: "---\nokf_version: '0.2'\n---\n# Knowledge base\n\n- [Team](pages/team/index.md)"
       },
       { path: "log.md", content: "# Directory Update Log\n\n## 2026-07-10\n\n* **Update**: Added team guide." },
       { path: "pages/team/index.md", content: "# Team\n\n- [Guide](guide.md)\n- [More](index-000001.md)" },

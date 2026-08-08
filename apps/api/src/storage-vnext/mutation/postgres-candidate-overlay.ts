@@ -315,8 +315,8 @@ async function queryCandidateSources(
   const directoryMove = mutation.kind === "source_directory_move";
   const filePathChange = (mutation.kind === "source_file_move"
     || mutation.kind === "source_replace") && Boolean(mutation.candidateLogicalPath);
-  const metadataChange = mutation.kind === "source_file_metadata";
   const replacement = mutation.kind === "source_replace";
+  const metadataChange = mutation.kind === "source_file_metadata" || replacement;
   const currentLogicalPath = mutation.currentLogicalPath ?? "";
   const currentNormalizedPath = mutation.currentNormalizedPath ?? "";
   const candidateLogicalPath = mutation.candidateLogicalPath ?? "";
@@ -510,7 +510,10 @@ function overlaySourceFile(
     : filePathChange
       ? requiredString(mutation.normalizedCandidatePath)
       : fact.normalizedPath;
-  const metadataChange = targeted && mutation.kind === "source_file_metadata";
+  const metadataChange = targeted && (
+    mutation.kind === "source_file_metadata"
+    || mutation.kind === "source_replace"
+  );
   const replacement = targeted && mutation.kind === "source_replace";
   const changed = logicalPath !== fact.logicalPath
     || normalizedPath !== fact.normalizedPath
@@ -636,6 +639,12 @@ function assertMutation(mutation: StorageVnextMutationCandidateOverlay): void {
     requiredString(mutation.currentNormalizedPath);
     requiredString(mutation.candidateLogicalPath);
     requiredString(mutation.normalizedCandidatePath);
+  }
+  if (mutation.kind === "source_replace") {
+    requiredString(mutation.candidateTitle);
+    if (!mutation.candidateMetadata) {
+      throw candidateOverlayError("candidate_state_invalid");
+    }
   }
 }
 

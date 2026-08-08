@@ -2024,6 +2024,160 @@
           "nextCursor"
         ]
       },
+      "OkfSignals": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "effectiveStatus": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "stable",
+                  "deprecated"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF document status. An omitted status is `stable`; an invalid supplied status is null."
+          },
+          "trustTier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "unverified",
+                  "machine-confirmed",
+                  "human-reviewed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF verification tier. Omitted verification is `unverified`; malformed supplied verification is null."
+          },
+          "isStale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether `stale_after` is on or before the current request date. It is null without a valid stale date."
+          },
+          "staleAfter": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF stale date, or null when absent or invalid."
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized `generated.at`, or the legacy `timestamp` fallback when available."
+          },
+          "generatedAtSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "generated",
+                  "legacy_timestamp"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Field that supplied `generatedAt`, distinguishing native OKF 0.2 metadata from the legacy fallback."
+          },
+          "latestVerifiedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Latest valid OKF verification event time, or null when unavailable."
+          },
+          "sourceCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of normalized OKF sources. Omitted sources produce zero; malformed supplied sources produce null."
+          }
+        },
+        "required": [
+          "effectiveStatus",
+          "trustTier",
+          "isStale",
+          "staleAfter",
+          "generatedAt",
+          "generatedAtSource",
+          "latestVerifiedAt",
+          "sourceCount"
+        ],
+        "examples": [
+          {
+            "effectiveStatus": "stable",
+            "trustTier": "human-reviewed",
+            "isStale": false,
+            "staleAfter": "2026-12-31",
+            "generatedAt": "2026-06-17T00:00:00.000Z",
+            "generatedAtSource": "generated",
+            "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+            "sourceCount": 1
+          },
+          {
+            "effectiveStatus": "stable",
+            "trustTier": "unverified",
+            "isStale": null,
+            "staleAfter": null,
+            "generatedAt": "2026-06-17T00:00:00.000Z",
+            "generatedAtSource": "legacy_timestamp",
+            "latestVerifiedAt": null,
+            "sourceCount": 0
+          },
+          {
+            "effectiveStatus": null,
+            "trustTier": null,
+            "isStale": null,
+            "staleAfter": null,
+            "generatedAt": null,
+            "generatedAtSource": null,
+            "latestVerifiedAt": null,
+            "sourceCount": null
+          }
+        ]
+      },
       "GeneratedFile": {
         "type": "object",
         "additionalProperties": false,
@@ -2111,7 +2265,113 @@
           "frontmatter": {
             "type": "object",
             "additionalProperties": true,
+            "examples": [
+              {
+                "okf_version": "0.2",
+                "type": "Guide",
+                "title": "Verified guide",
+                "tags": [
+                  "guide",
+                  "policy"
+                ],
+                "sources": [
+                  {
+                    "id": "source-a",
+                    "resource": "references/source-a.md"
+                  }
+                ],
+                "generated": {
+                  "by": "publisher:example",
+                  "at": "2026-06-17T00:00:00Z"
+                },
+                "verified": [
+                  {
+                    "by": "human:reviewer",
+                    "at": "2026-06-17T01:00:00Z"
+                  }
+                ],
+                "status": "stable",
+                "stale_after": "2026-12-31"
+              },
+              {
+                "type": "Guide",
+                "title": "Legacy guide",
+                "timestamp": "2026-06-17T00:00:00Z"
+              },
+              {},
+              {
+                "type": "Guide",
+                "title": "Minimal guide"
+              },
+              {
+                "type": "Guide",
+                "status": [
+                  "stable"
+                ],
+                "stale_after": "next quarter"
+              },
+              {
+                "type": "Guide",
+                "verified": [
+                  {
+                    "by": 42,
+                    "at": "today"
+                  }
+                ]
+              },
+              {
+                "type": "Guide",
+                "sources": {
+                  "resource": "references/source-a.md"
+                }
+              },
+              {
+                "type": "Guide",
+                "generated": {
+                  "by": "publisher:example",
+                  "at": "today"
+                }
+              },
+              {
+                "okf_version": "0.2",
+                "type": "Attested Computation",
+                "title": "Risk score",
+                "runtime": "python",
+                "parameters": [
+                  {
+                    "name": "amount",
+                    "type": "number",
+                    "required": true
+                  }
+                ],
+                "computation": {
+                  "resource": "references/risk-score.py"
+                },
+                "executor": {
+                  "resource": "executor.md",
+                  "receipt": [
+                    "receipt.md"
+                  ]
+                },
+                "attester": {
+                  "resource": "attester.md"
+                }
+              },
+              {
+                "type": "Attested Computation",
+                "title": "Incomplete risk score",
+                "runtime": [
+                  "python"
+                ],
+                "parameters": "unknown",
+                "executor": 42,
+                "attester": false
+              }
+            ],
             "description": "Metadata parsed from the YAML front matter at the beginning of the Markdown file."
+          },
+          "okfSignals": {
+            "$ref": "#/components/schemas/OkfSignals"
           },
           "deletable": {
             "type": "boolean",
@@ -2222,6 +2482,7 @@
           "description",
           "tags",
           "frontmatter",
+          "okfSignals",
           "deletable",
           "contentAvailable",
           "readActions"
@@ -2324,7 +2585,113 @@
           "frontmatter": {
             "type": "object",
             "additionalProperties": true,
+            "examples": [
+              {
+                "okf_version": "0.2",
+                "type": "Guide",
+                "title": "Verified guide",
+                "tags": [
+                  "guide",
+                  "policy"
+                ],
+                "sources": [
+                  {
+                    "id": "source-a",
+                    "resource": "references/source-a.md"
+                  }
+                ],
+                "generated": {
+                  "by": "publisher:example",
+                  "at": "2026-06-17T00:00:00Z"
+                },
+                "verified": [
+                  {
+                    "by": "human:reviewer",
+                    "at": "2026-06-17T01:00:00Z"
+                  }
+                ],
+                "status": "stable",
+                "stale_after": "2026-12-31"
+              },
+              {
+                "type": "Guide",
+                "title": "Legacy guide",
+                "timestamp": "2026-06-17T00:00:00Z"
+              },
+              {},
+              {
+                "type": "Guide",
+                "title": "Minimal guide"
+              },
+              {
+                "type": "Guide",
+                "status": [
+                  "stable"
+                ],
+                "stale_after": "next quarter"
+              },
+              {
+                "type": "Guide",
+                "verified": [
+                  {
+                    "by": 42,
+                    "at": "today"
+                  }
+                ]
+              },
+              {
+                "type": "Guide",
+                "sources": {
+                  "resource": "references/source-a.md"
+                }
+              },
+              {
+                "type": "Guide",
+                "generated": {
+                  "by": "publisher:example",
+                  "at": "today"
+                }
+              },
+              {
+                "okf_version": "0.2",
+                "type": "Attested Computation",
+                "title": "Risk score",
+                "runtime": "python",
+                "parameters": [
+                  {
+                    "name": "amount",
+                    "type": "number",
+                    "required": true
+                  }
+                ],
+                "computation": {
+                  "resource": "references/risk-score.py"
+                },
+                "executor": {
+                  "resource": "executor.md",
+                  "receipt": [
+                    "receipt.md"
+                  ]
+                },
+                "attester": {
+                  "resource": "attester.md"
+                }
+              },
+              {
+                "type": "Attested Computation",
+                "title": "Incomplete risk score",
+                "runtime": [
+                  "python"
+                ],
+                "parameters": "unknown",
+                "executor": 42,
+                "attester": false
+              }
+            ],
             "description": "Metadata parsed from the YAML front matter at the beginning of the Markdown file."
+          },
+          "okfSignals": {
+            "$ref": "#/components/schemas/OkfSignals"
           },
           "matchedFields": {
             "type": "array",
@@ -2522,6 +2889,7 @@
           "description",
           "tags",
           "frontmatter",
+          "okfSignals",
           "matchedFields",
           "score",
           "contentAvailable",
@@ -2577,6 +2945,39 @@
             "minimum": 0,
             "description": "Maximum relationship records returned per graph item."
           },
+          "okfStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF document-status filter applied to this response."
+          },
+          "okfTrustTier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF verification-tier filter applied to this response."
+          },
+          "okfFreshness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Normalized OKF freshness filter applied to this response."
+          },
           "limit": {
             "type": "integer",
             "minimum": 1,
@@ -2595,6 +2996,9 @@
           "mode",
           "graphDepth",
           "graphFanout",
+          "okfStatus",
+          "okfTrustTier",
+          "okfFreshness",
           "limit",
           "cursorProvided"
         ]
@@ -5884,7 +6288,48 @@
           "required": true,
           "content": {
             "text/markdown": {
-              "example": "# Guide\n\nCurrent onboarding guidance.",
+              "examples": {
+                "nativeV02": {
+                  "summary": "Native OKF 0.2 metadata",
+                  "value": "---\nokf_version: '0.2'\ntype: Guide\ntitle: Verified guide\nsources:\n  - id: source-a\n    resource: references/source-a.md\ngenerated:\n  by: publisher:example\n  at: '2026-06-17T00:00:00Z'\nverified:\n  - by: human:reviewer\n    at: '2026-06-17T01:00:00Z'\nstatus: stable\nstale_after: '2026-12-31'\n---\n# Verified guide"
+                },
+                "legacyFallback": {
+                  "summary": "Legacy generated-time fallback",
+                  "value": "---\ntype: Guide\ntimestamp: '2026-06-17T00:00:00Z'\n---\n# Legacy guide"
+                },
+                "noFrontmatter": {
+                  "summary": "Markdown without frontmatter",
+                  "value": "# Plain Markdown guide\n\nFrontmatter is optional."
+                },
+                "missingOptionalSignals": {
+                  "summary": "Missing optional OKF signals",
+                  "value": "---\ntype: Guide\ntitle: Minimal guide\n---\n# Minimal guide"
+                },
+                "malformedStatus": {
+                  "summary": "Safely stored malformed document-status fields",
+                  "value": "---\ntype: Guide\nstatus: [stable]\nstale_after: next quarter\n---\n# Document status example"
+                },
+                "malformedVerification": {
+                  "summary": "Safely stored malformed verification fields",
+                  "value": "---\ntype: Guide\nverified:\n  - by: 42\n    at: today\n---\n# Verification example"
+                },
+                "malformedSources": {
+                  "summary": "Safely stored malformed sources",
+                  "value": "---\ntype: Guide\nsources:\n  resource: references/source-a.md\n---\n# Sources example"
+                },
+                "malformedGenerated": {
+                  "summary": "Safely stored malformed generation event",
+                  "value": "---\ntype: Guide\ngenerated:\n  by: publisher:example\n  at: today\n---\n# Generation example"
+                },
+                "completeAttestedComputation": {
+                  "summary": "Complete Attested Computation file contract",
+                  "value": "---\nokf_version: '0.2'\ntype: Attested Computation\ntitle: Risk score\nruntime: python\nparameters:\n  - name: amount\n    type: number\n    required: true\ncomputation:\n  resource: references/risk-score.py\nexecutor:\n  resource: executor.md\n  receipt: [receipt.md]\nattester:\n  resource: attester.md\n---\n# Risk score"
+                },
+                "incompleteAttestedComputation": {
+                  "summary": "Safely stored incomplete Attested Computation metadata",
+                  "value": "---\ntype: Attested Computation\nruntime: [python]\nparameters: unknown\nexecutor: 42\nattester: false\n---\n# Incomplete risk score"
+                }
+              },
               "schema": {
                 "type": "string",
                 "description": "Complete Markdown content for the selected upload entry."
@@ -8118,7 +8563,48 @@
                 "type": "string",
                 "description": "Complete Markdown content that will replace the current file."
               },
-              "example": "# Installation\n\nCurrent installation guidance."
+              "examples": {
+                "nativeV02": {
+                  "summary": "Native OKF 0.2 metadata",
+                  "value": "---\nokf_version: '0.2'\ntype: Guide\ntitle: Verified guide\nsources:\n  - id: source-a\n    resource: references/source-a.md\ngenerated:\n  by: publisher:example\n  at: '2026-06-17T00:00:00Z'\nverified:\n  - by: human:reviewer\n    at: '2026-06-17T01:00:00Z'\nstatus: stable\nstale_after: '2026-12-31'\n---\n# Verified guide"
+                },
+                "legacyFallback": {
+                  "summary": "Legacy generated-time fallback",
+                  "value": "---\ntype: Guide\ntimestamp: '2026-06-17T00:00:00Z'\n---\n# Legacy guide"
+                },
+                "noFrontmatter": {
+                  "summary": "Markdown without frontmatter",
+                  "value": "# Plain Markdown guide\n\nFrontmatter is optional."
+                },
+                "missingOptionalSignals": {
+                  "summary": "Missing optional OKF signals",
+                  "value": "---\ntype: Guide\ntitle: Minimal guide\n---\n# Minimal guide"
+                },
+                "malformedStatus": {
+                  "summary": "Safely stored malformed document-status fields",
+                  "value": "---\ntype: Guide\nstatus: [stable]\nstale_after: next quarter\n---\n# Document status example"
+                },
+                "malformedVerification": {
+                  "summary": "Safely stored malformed verification fields",
+                  "value": "---\ntype: Guide\nverified:\n  - by: 42\n    at: today\n---\n# Verification example"
+                },
+                "malformedSources": {
+                  "summary": "Safely stored malformed sources",
+                  "value": "---\ntype: Guide\nsources:\n  resource: references/source-a.md\n---\n# Sources example"
+                },
+                "malformedGenerated": {
+                  "summary": "Safely stored malformed generation event",
+                  "value": "---\ntype: Guide\ngenerated:\n  by: publisher:example\n  at: today\n---\n# Generation example"
+                },
+                "completeAttestedComputation": {
+                  "summary": "Complete Attested Computation file contract",
+                  "value": "---\nokf_version: '0.2'\ntype: Attested Computation\ntitle: Risk score\nruntime: python\nparameters:\n  - name: amount\n    type: number\n    required: true\ncomputation:\n  resource: references/risk-score.py\nexecutor:\n  resource: executor.md\n  receipt: [receipt.md]\nattester:\n  resource: attester.md\n---\n# Risk score"
+                },
+                "incompleteAttestedComputation": {
+                  "summary": "Safely stored incomplete Attested Computation metadata",
+                  "value": "---\ntype: Attested Computation\nruntime: [python]\nparameters: unknown\nexecutor: 42\nattester: false\n---\n# Incomplete risk score"
+                }
+              }
             }
           }
         },
@@ -10264,15 +10750,49 @@
                     "fileKind": "page",
                     "contentType": "text/markdown; charset=utf-8",
                     "sizeBytes": 2048,
-                    "okfType": "page",
-                    "title": "Guide",
-                    "description": "Short summary.",
+                    "okfType": "Guide",
+                    "title": "Verified guide",
+                    "description": null,
                     "tags": [
-                      "guide"
+                      "guide",
+                      "policy"
                     ],
                     "frontmatter": {
-                      "type": "page",
-                      "title": "Guide"
+                      "okf_version": "0.2",
+                      "type": "Guide",
+                      "title": "Verified guide",
+                      "tags": [
+                        "guide",
+                        "policy"
+                      ],
+                      "sources": [
+                        {
+                          "id": "source-a",
+                          "resource": "references/source-a.md"
+                        }
+                      ],
+                      "generated": {
+                        "by": "publisher:example",
+                        "at": "2026-06-17T00:00:00Z"
+                      },
+                      "verified": [
+                        {
+                          "by": "human:reviewer",
+                          "at": "2026-06-17T01:00:00Z"
+                        }
+                      ],
+                      "status": "stable",
+                      "stale_after": "2026-12-31"
+                    },
+                    "okfSignals": {
+                      "effectiveStatus": "stable",
+                      "trustTier": "human-reviewed",
+                      "isStale": false,
+                      "staleAfter": "2026-12-31",
+                      "generatedAt": "2026-06-17T00:00:00.000Z",
+                      "generatedAtSource": "generated",
+                      "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+                      "sourceCount": 1
                     },
                     "deletable": true,
                     "contentAvailable": true,
@@ -10449,6 +10969,9 @@
             "mode": "hybrid",
             "graphDepth": 1,
             "graphFanout": 10,
+            "okfStatus": "stable",
+            "okfTrustTier": "human-reviewed",
+            "okfFreshness": "fresh",
             "limit": 10
           }
         },
@@ -10559,6 +11082,47 @@
             }
           },
           {
+            "name": "okfStatus",
+            "in": "query",
+            "required": false,
+            "description": "Return only files whose normalized OKF document status matches this value. Files with an invalid status are excluded.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "stable",
+                "deprecated"
+              ]
+            }
+          },
+          {
+            "name": "okfTrustTier",
+            "in": "query",
+            "required": false,
+            "description": "Return only files whose normalized OKF verification tier matches this value. Files with invalid verification metadata are excluded.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "unverified",
+                "machine-confirmed",
+                "human-reviewed"
+              ]
+            }
+          },
+          {
+            "name": "okfFreshness",
+            "in": "query",
+            "required": false,
+            "description": "Return only files whose valid `stale_after` date is fresh or stale on the request date. Files without a valid stale date are excluded.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "fresh",
+                "stale"
+              ]
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -10596,6 +11160,9 @@
                     "mode": "hybrid",
                     "graphDepth": 1,
                     "graphFanout": 10,
+                    "okfStatus": "stable",
+                    "okfTrustTier": "human-reviewed",
+                    "okfFreshness": "fresh",
                     "limit": 10,
                     "cursorProvided": false
                   },
@@ -10611,14 +11178,48 @@
                       "path": "pages/guide.md",
                       "generatedFilePath": "pages/guide.md",
                       "fileKind": "page",
-                      "title": "Guide",
-                      "description": "Short summary.",
+                      "title": "Verified guide",
+                      "description": null,
                       "tags": [
-                        "guide"
+                        "guide",
+                        "policy"
                       ],
                       "frontmatter": {
-                        "type": "page",
-                        "title": "Guide"
+                        "okf_version": "0.2",
+                        "type": "Guide",
+                        "title": "Verified guide",
+                        "tags": [
+                          "guide",
+                          "policy"
+                        ],
+                        "sources": [
+                          {
+                            "id": "source-a",
+                            "resource": "references/source-a.md"
+                          }
+                        ],
+                        "generated": {
+                          "by": "publisher:example",
+                          "at": "2026-06-17T00:00:00Z"
+                        },
+                        "verified": [
+                          {
+                            "by": "human:reviewer",
+                            "at": "2026-06-17T01:00:00Z"
+                          }
+                        ],
+                        "status": "stable",
+                        "stale_after": "2026-12-31"
+                      },
+                      "okfSignals": {
+                        "effectiveStatus": "stable",
+                        "trustTier": "human-reviewed",
+                        "isStale": false,
+                        "staleAfter": "2026-12-31",
+                        "generatedAt": "2026-06-17T00:00:00.000Z",
+                        "generatedAtSource": "generated",
+                        "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+                        "sourceCount": 1
                       },
                       "matchedFields": [
                         "path",
@@ -11003,15 +11604,49 @@
                     "fileKind": "page",
                     "contentType": "text/markdown; charset=utf-8",
                     "sizeBytes": 2048,
-                    "okfType": "page",
-                    "title": "Guide",
-                    "description": "Short summary.",
+                    "okfType": "Guide",
+                    "title": "Verified guide",
+                    "description": null,
                     "tags": [
-                      "guide"
+                      "guide",
+                      "policy"
                     ],
                     "frontmatter": {
-                      "type": "page",
-                      "title": "Guide"
+                      "okf_version": "0.2",
+                      "type": "Guide",
+                      "title": "Verified guide",
+                      "tags": [
+                        "guide",
+                        "policy"
+                      ],
+                      "sources": [
+                        {
+                          "id": "source-a",
+                          "resource": "references/source-a.md"
+                        }
+                      ],
+                      "generated": {
+                        "by": "publisher:example",
+                        "at": "2026-06-17T00:00:00Z"
+                      },
+                      "verified": [
+                        {
+                          "by": "human:reviewer",
+                          "at": "2026-06-17T01:00:00Z"
+                        }
+                      ],
+                      "status": "stable",
+                      "stale_after": "2026-12-31"
+                    },
+                    "okfSignals": {
+                      "effectiveStatus": "stable",
+                      "trustTier": "human-reviewed",
+                      "isStale": false,
+                      "staleAfter": "2026-12-31",
+                      "generatedAt": "2026-06-17T00:00:00.000Z",
+                      "generatedAtSource": "generated",
+                      "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+                      "sourceCount": 1
                     },
                     "deletable": true,
                     "contentAvailable": true,
@@ -11428,15 +12063,49 @@
                     "fileKind": "page",
                     "contentType": "text/markdown; charset=utf-8",
                     "sizeBytes": 2048,
-                    "okfType": "page",
-                    "title": "Guide",
-                    "description": "Short summary.",
+                    "okfType": "Guide",
+                    "title": "Verified guide",
+                    "description": null,
                     "tags": [
-                      "guide"
+                      "guide",
+                      "policy"
                     ],
                     "frontmatter": {
-                      "type": "page",
-                      "title": "Guide"
+                      "okf_version": "0.2",
+                      "type": "Guide",
+                      "title": "Verified guide",
+                      "tags": [
+                        "guide",
+                        "policy"
+                      ],
+                      "sources": [
+                        {
+                          "id": "source-a",
+                          "resource": "references/source-a.md"
+                        }
+                      ],
+                      "generated": {
+                        "by": "publisher:example",
+                        "at": "2026-06-17T00:00:00Z"
+                      },
+                      "verified": [
+                        {
+                          "by": "human:reviewer",
+                          "at": "2026-06-17T01:00:00Z"
+                        }
+                      ],
+                      "status": "stable",
+                      "stale_after": "2026-12-31"
+                    },
+                    "okfSignals": {
+                      "effectiveStatus": "stable",
+                      "trustTier": "human-reviewed",
+                      "isStale": false,
+                      "staleAfter": "2026-12-31",
+                      "generatedAt": "2026-06-17T00:00:00.000Z",
+                      "generatedAtSource": "generated",
+                      "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+                      "sourceCount": 1
                     },
                     "deletable": true,
                     "contentAvailable": true,
@@ -11611,15 +12280,49 @@
                     "fileKind": "page",
                     "contentType": "text/markdown; charset=utf-8",
                     "sizeBytes": 2048,
-                    "okfType": "page",
-                    "title": "Guide",
-                    "description": "Short summary.",
+                    "okfType": "Guide",
+                    "title": "Verified guide",
+                    "description": null,
                     "tags": [
-                      "guide"
+                      "guide",
+                      "policy"
                     ],
                     "frontmatter": {
-                      "type": "page",
-                      "title": "Guide"
+                      "okf_version": "0.2",
+                      "type": "Guide",
+                      "title": "Verified guide",
+                      "tags": [
+                        "guide",
+                        "policy"
+                      ],
+                      "sources": [
+                        {
+                          "id": "source-a",
+                          "resource": "references/source-a.md"
+                        }
+                      ],
+                      "generated": {
+                        "by": "publisher:example",
+                        "at": "2026-06-17T00:00:00Z"
+                      },
+                      "verified": [
+                        {
+                          "by": "human:reviewer",
+                          "at": "2026-06-17T01:00:00Z"
+                        }
+                      ],
+                      "status": "stable",
+                      "stale_after": "2026-12-31"
+                    },
+                    "okfSignals": {
+                      "effectiveStatus": "stable",
+                      "trustTier": "human-reviewed",
+                      "isStale": false,
+                      "staleAfter": "2026-12-31",
+                      "generatedAt": "2026-06-17T00:00:00.000Z",
+                      "generatedAtSource": "generated",
+                      "latestVerifiedAt": "2026-06-17T01:00:00.000Z",
+                      "sourceCount": 1
                     },
                     "deletable": true,
                     "contentAvailable": true,

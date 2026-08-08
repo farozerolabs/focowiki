@@ -28,7 +28,10 @@ import {
   matchAdminSourceFilesToSamples,
   readUploadSourceFileId
 } from "./lib/source-file-contract.mjs";
-import { requiresSourceBodyComparison } from "./lib/okf-file-contract.mjs";
+import {
+  requiresSourceBodyComparison,
+  validateReservedMarkdownFrontmatter
+} from "./lib/okf-file-contract.mjs";
 import {
   assertPagesReachableFromRootIndex,
   hydrateReachableMarkdownBodies
@@ -3089,14 +3092,12 @@ export function validateOkfPublicArtifactBodies({ bodies, pagePaths, report, ind
   const search = indexes.search;
   const links = indexes.links;
   const parsedIndex = matter(index);
-  const indexFrontmatterKeys = Object.keys(parsedIndex.data ?? {});
 
   if (
-    parsedIndex.data?.okf_version !== "0.1" ||
-    indexFrontmatterKeys.some((key) => key !== "okf_version") ||
+    !validateReservedMarkdownFrontmatter("index.md", parsedIndex.data) ||
     !parsedIndex.content.startsWith("# ")
   ) {
-    throw new Error("Public index.md must declare only okf_version 0.1 and begin with a Markdown heading.");
+    throw new Error("Public index.md must declare only okf_version 0.2 and begin with a Markdown heading.");
   }
 
   if (/Focowiki knowledge base|placeholder/i.test(index)) {

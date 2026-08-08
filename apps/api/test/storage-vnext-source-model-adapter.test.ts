@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  MAXIMUM_SOURCE_METADATA_BYTES,
+  measureSourceMetadataBytes
+} from "@focowiki/okf";
+import {
   createStorageVnextSourceModelAdapter
 } from "../src/storage-vnext/source-processing/model-adapter.js";
 import type {
@@ -27,14 +31,17 @@ describe("storage vNext source model adapter", () => {
     const node = graphNode();
     const edges: StorageVnextGraphEdgeFact[] = [];
     const suggest = vi.fn(async () => ({
-      type: "guide",
-      title: "Ignored model title",
-      description: "Suggested description",
-      tags: ["suggested"],
-      related_links: [{ path: "pages/operations.md", title: "Operations" }],
-      keywords: ["operations"]
+      suggestions: {
+        type: "guide",
+        title: "Ignored model title",
+        description: "Suggested description",
+        tags: ["suggested"],
+        related_links: [{ path: "pages/operations.md", title: "Operations" }],
+        keywords: ["operations"]
+      },
+      warningCount: 2
     }));
-    const extractGraph = vi.fn(async () => ({ node, edges }));
+    const extractGraph = vi.fn(async () => ({ node, edges, modelWarningCount: 1 }));
     const adapter = createStorageVnextSourceModelAdapter({ suggest, extractGraph });
 
     await expect(adapter.extract({
@@ -74,8 +81,9 @@ describe("storage vNext source model adapter", () => {
         title: "Getting started",
         tags: ["onboarding"],
         owner: { team: "docs" },
-        milestones: ["2026-08-01T00:00:00.000Z"]
+        milestones: ["2026-08-01"]
       },
+      modelWarningCount: 3,
       node,
       edges
     });
@@ -114,6 +122,80 @@ describe("storage vNext source model adapter", () => {
     }));
   });
 
+  it("preserves safe irregular OKF fields and never persists model repairs", async () => {
+    const body = [
+      "---",
+      "type: [Guide]",
+      "title: 42",
+      "sources: invalid",
+      "generated: 42",
+      "verified: invalid",
+      "status: archived",
+      "stale_after: tomorrow",
+      "runtime: [python]",
+      "parameters: invalid",
+      "executor: 42",
+      "attester: false",
+      "future:",
+      "  release_date: 2026-08-07",
+      "---",
+      "# Safe fallback title"
+    ].join("\n");
+    const node = graphNode();
+    const suggest = vi.fn(async () => ({
+      suggestions: {
+        type: "model-type",
+        title: "Model title",
+        description: "Model description",
+        tags: ["model-tag"],
+        related_links: [],
+        keywords: []
+      },
+      warningCount: 0
+    }));
+    const extractGraph = vi.fn(async () => ({ node, edges: [] }));
+    const adapter = createStorageVnextSourceModelAdapter({ suggest, extractGraph });
+
+    const result = await adapter.extract({
+      knowledgeBaseId: "kb-1",
+      sourceFile: sourceFile(),
+      sourceRevision: {
+        ...sourceRevision(),
+        byteCount: Buffer.byteLength(body)
+      },
+      sourceRevisionPublicId: "revision-1",
+      attemptPublicId: "attempt-1",
+      body: chunks(body),
+      signal: new AbortController().signal
+    });
+
+    expect(result.metadata).toEqual({
+      type: ["Guide"],
+      title: 42,
+      sources: "invalid",
+      generated: 42,
+      verified: "invalid",
+      status: "archived",
+      stale_after: "tomorrow",
+      runtime: ["python"],
+      parameters: "invalid",
+      executor: 42,
+      attester: false,
+      future: { release_date: "2026-08-07" }
+    });
+    expect(suggest).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Safe fallback title",
+      type: "document"
+    }));
+    expect(extractGraph).toHaveBeenCalledWith(expect.objectContaining({
+      parsedMetadata: result.metadata,
+      resolvedMetadata: expect.objectContaining({
+        title: "Safe fallback title",
+        type: "document"
+      })
+    }));
+  });
+
   it("stops before model or graph work when the request is already aborted", async () => {
     const suggest = vi.fn();
     const extractGraph = vi.fn();
@@ -132,6 +214,67 @@ describe("storage vNext source model adapter", () => {
     })).rejects.toMatchObject({ name: "AbortError" });
     expect(suggest).not.toHaveBeenCalled();
     expect(extractGraph).not.toHaveBeenCalled();
+  });
+
+  it("stores canonical verification events and date-only values in bounded metadata", async () => {
+    const body = [
+      "---",
+      "type: Guide",
+      "verified: { by: human:reviewer, at: 2026-08-07T11:00:00Z }",
+      "stale_after: 2026-09-23",
+      "---",
+      "# Verified"
+    ].join("\n");
+    const adapter = createStorageVnextSourceModelAdapter({
+      extractGraph: vi.fn(async () => ({ node: graphNode(), edges: [] }))
+    });
+    const result = await adapter.extract({
+      knowledgeBaseId: "kb-1",
+      sourceFile: sourceFile(),
+      sourceRevision: { ...sourceRevision(), byteCount: Buffer.byteLength(body) },
+      sourceRevisionPublicId: "revision-1",
+      attemptPublicId: "attempt-1",
+      body: chunks(body),
+      signal: new AbortController().signal
+    });
+
+    expect(result.metadata).toMatchObject({
+      verified: [{ by: "human:reviewer", at: "2026-08-07T11:00:00.000Z" }],
+      stale_after: "2026-09-23"
+    });
+  });
+
+  it("accepts metadata whole at the shared bound and rejects it whole above the bound", async () => {
+    const fitPayload = "x".repeat(MAXIMUM_SOURCE_METADATA_BYTES - 64);
+    const fitMetadata = { payload: fitPayload };
+    expect(measureSourceMetadataBytes(fitMetadata)).toBeLessThanOrEqual(
+      MAXIMUM_SOURCE_METADATA_BYTES
+    );
+    const extractGraph = vi.fn(async () => ({ node: graphNode(), edges: [] }));
+    const adapter = createStorageVnextSourceModelAdapter({ extractGraph });
+    const fitBody = `---\npayload: ${fitPayload}\n---\n# Fits`;
+    const accepted = await adapter.extract({
+      knowledgeBaseId: "kb-1",
+      sourceFile: sourceFile(),
+      sourceRevision: { ...sourceRevision(), byteCount: Buffer.byteLength(fitBody) },
+      sourceRevisionPublicId: "revision-1",
+      attemptPublicId: "attempt-fit",
+      body: chunks(fitBody),
+      signal: new AbortController().signal
+    });
+    expect(accepted.metadata.payload).toBe(fitPayload);
+
+    const oversizedPayload = "x".repeat(MAXIMUM_SOURCE_METADATA_BYTES + 1);
+    const oversizedBody = `---\npayload: ${oversizedPayload}\n---\n# Too large`;
+    await expect(adapter.extract({
+      knowledgeBaseId: "kb-1",
+      sourceFile: sourceFile(),
+      sourceRevision: { ...sourceRevision(), byteCount: Buffer.byteLength(oversizedBody) },
+      sourceRevisionPublicId: "revision-1",
+      attemptPublicId: "attempt-oversized",
+      body: chunks(oversizedBody),
+      signal: new AbortController().signal
+    })).rejects.toMatchObject({ code: "metadata_too_large" });
   });
 });
 

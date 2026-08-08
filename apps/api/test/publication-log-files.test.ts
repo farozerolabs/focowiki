@@ -37,6 +37,9 @@ describe("renderLogFiles", () => {
     });
     expect(history[0]?.content).toContain('type: "Update History Page"');
     expect(history[0]?.content).toContain('title: "Update history page 1"');
+    expect(history[0]?.content).toContain(
+      'generated: {"by":"process:focowiki-publication","at":"2026-07-13T00:00:00.000Z"}'
+    );
     expect(history[0]?.content).toContain("[Next page](/log-000002.md)");
     expect(history[1]?.content).toContain("[Previous page](/log-000001.md)");
     expect(history.at(-1)?.content).not.toContain("Next page");

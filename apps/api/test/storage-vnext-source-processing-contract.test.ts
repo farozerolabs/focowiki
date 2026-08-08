@@ -15,6 +15,7 @@ type Worker = {
 };
 
 type WorkerFactory = (input: ReturnType<typeof createFixture>["ports"] & {
+  modelInvocation: { modelName: string } | null;
   limits: {
     maximumConcurrency: number;
     maximumSourceBytes: number;
@@ -89,7 +90,18 @@ describe("storage vNext source/model processing contract", () => {
     );
     expect(fixture.catalog.updateSourceFileState).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ status: "ready", revisionCheck: { expectedRevision: 2 } })
+      expect.objectContaining({
+        status: "processing",
+        revisionCheck: { expectedRevision: 2 },
+        modelInvocation: expect.objectContaining({
+          status: "running",
+          modelName: "deepseek-v4-flash"
+        })
+      })
+    );
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ status: "ready", revisionCheck: { expectedRevision: 3 } })
     );
     expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
       publicId: fixture.work.publicId,
@@ -102,10 +114,29 @@ describe("storage vNext source/model processing contract", () => {
           sourceFilePublicId: fixture.sourceFile.publicId,
           sourceRevisionPublicId: fixture.revision.publicId,
           candidatePublicId: "candidate-source-processing",
-          releaseOperationPublicId: "release-source-processing"
+          releaseOperationPublicId: "release-source-processing",
+          modelInvocationStatus: "completed",
+          modelInvocationModelName: "deepseek-v4-flash",
+          modelInvocationStartedAt: "2026-08-01T00:00:00.000Z",
+          modelInvocationEndedAt: "2026-08-01T00:00:00.000Z",
+          modelInvocationWarningCount: 0,
+          modelInvocationErrorCode: null
         }
       })
     }));
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelInvocation: {
+          sourceRevisionPublicId: fixture.revision.publicId,
+          status: "completed",
+          modelName: "deepseek-v4-flash",
+          startedAt: "2026-08-01T00:00:00.000Z",
+          endedAt: "2026-08-01T00:00:00.000Z",
+          warningCount: 0,
+          errorCode: null
+        }
+      })
+    );
     expect(fixture.persistedBodyWrites).toBe(0);
   });
 
@@ -260,15 +291,80 @@ describe("storage vNext source/model processing contract", () => {
         state: "failed",
         resultCode: "SOURCE_MODEL_FAILED",
         safeMessage: null,
-        summary: expect.not.objectContaining({ error: expect.anything() })
+        summary: expect.objectContaining({
+          modelInvocationStatus: "failed",
+          modelInvocationModelName: "deepseek-v4-flash",
+          modelInvocationErrorCode: "SOURCE_MODEL_FAILED"
+        })
       })
     }));
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelInvocation: expect.objectContaining({
+          status: "failed",
+          modelName: "deepseek-v4-flash",
+          errorCode: "SOURCE_MODEL_FAILED"
+        })
+      })
+    );
     expect(fixture.events.record).toHaveBeenLastCalledWith(expect.objectContaining({
       stageKey: "llm_suggestion",
       severity: "error",
       startedAt: "2026-08-01T00:00:00.000Z",
       endedAt: "2026-08-01T00:00:00.000Z"
     }));
+  });
+
+  it("does not record a model invocation when source content fails before model processing", async () => {
+    const fixture = createFixture();
+    fixture.work.attempt = 3;
+    fixture.bodyStore.readVerifiedStream.mockRejectedValueOnce(
+      new Error("private storage payload")
+    );
+    const worker = createWorker(fixture);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toMatchObject({
+      completed: 0,
+      retried: 0,
+      terminal: 1
+    });
+
+    expect(fixture.model.extract).not.toHaveBeenCalled();
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        modelInvocation: null
+      })
+    );
+    expect(fixture.workflow.complete).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({
+        state: "failed",
+        summary: {
+          sourceRevisionPublicId: fixture.revision.publicId
+        }
+      })
+    }));
+  });
+
+  it("records a skipped LLM invocation when source processing has no configured model", async () => {
+    const fixture = createFixture();
+    const worker = createWorker(fixture, undefined, undefined, null);
+
+    await expect(worker.runOnce(runRequest(1))).resolves.toMatchObject({ completed: 1 });
+
+    expect(fixture.catalog.updateSourceFileState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelInvocation: {
+          sourceRevisionPublicId: fixture.revision.publicId,
+          status: "skipped",
+          modelName: null,
+          startedAt: null,
+          endedAt: "2026-08-01T00:00:00.000Z",
+          warningCount: 0,
+          errorCode: null
+        }
+      })
+    );
   });
 
   it("closes and retries when a model returns before consuming the verified body", async () => {
@@ -326,12 +422,14 @@ describe("storage vNext source/model processing contract", () => {
 function createWorker(
   fixture: ReturnType<typeof createFixture>,
   onFailure?: NonNullable<Parameters<WorkerFactory>[0]["onFailure"]>,
-  webhooks?: NonNullable<Parameters<WorkerFactory>[0]["webhooks"]>
+  webhooks?: NonNullable<Parameters<WorkerFactory>[0]["webhooks"]>,
+  modelInvocation: { modelName: string } | null = { modelName: "deepseek-v4-flash" }
 ): Worker {
   expect(factory).toBeTypeOf("function");
   if (!factory) throw new Error("Storage vNext source processing worker is unavailable");
   return factory({
     ...fixture.ports,
+    modelInvocation,
     limits: {
       maximumConcurrency: 2,
       maximumSourceBytes: 1_048_576,
@@ -413,7 +511,7 @@ function createFixture() {
     getSourceFile: vi.fn(async () => sourceFile),
     getSourceRevision: vi.fn(async () => revision),
     getCurrentSourceRevision: vi.fn(async () => currentRevision),
-    updateSourceFileState: vi.fn(async (input: { status: string }) => {
+    updateSourceFileState: vi.fn(async (input: { status: string; modelInvocation?: unknown }) => {
       sourceFile.status = input.status;
       sourceFile.revision += 1;
       return { ...sourceFile };

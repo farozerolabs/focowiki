@@ -34,7 +34,8 @@ type ValidationInput = Parameters<
 const DOCUMENT_FIELDS = [
   "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
-  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms"
+  "title", "segmentOrdinal", "headingAncestors", "searchText", "rankingTerms",
+  "okfSignals"
 ] as const;
 
 export function createStorageVnextSearchCandidateValidator(

@@ -3,11 +3,17 @@ import type {
   StorageVnextKnowledgeBaseId,
   StorageVnextPublicId
 } from "../shared/types.js";
+import type { OkfSearchSignals } from "./okf-signals.js";
+export {
+  matchesOkfSearchFilters,
+  normalizeOkfSearchFilters
+} from "./okf-signals.js";
+export type { OkfSearchFilters, OkfSearchSignals } from "./okf-signals.js";
 
 export const STORAGE_VNEXT_CONTENT_SCHEMA_VERSION =
-  "storage-vnext-content-v1";
+  "storage-vnext-content-v2";
 export const STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION =
-  "storage-vnext-graph-seed-v1";
+  "storage-vnext-graph-seed-v2";
 
 export type StorageVnextContentDocument = {
   id: string;
@@ -23,6 +29,7 @@ export type StorageVnextContentDocument = {
   segmentOrdinal: number | null;
   headingAncestors: readonly string[];
   searchText: string;
+  okfSignals: OkfSearchSignals;
 };
 
 export type StorageVnextGraphSeedDocument = {
@@ -36,6 +43,7 @@ export type StorageVnextGraphSeedDocument = {
   title: string | null;
   searchText: string;
   rankingTerms: readonly string[];
+  okfSignals: OkfSearchSignals;
 };
 
 export type StorageVnextSearchDocument =
@@ -53,6 +61,7 @@ export function createStorageVnextContentDocument(input: {
   segmentOrdinal: number | null;
   headingAncestors: readonly string[];
   searchText: string;
+  okfSignals?: OkfSearchSignals;
 }): StorageVnextContentDocument {
   assertIdentity(input);
   if (input.contentKind === "file" && input.segmentOrdinal !== null) {
@@ -69,6 +78,7 @@ export function createStorageVnextContentDocument(input: {
     throw new Error("Segment search documents require a nonnegative ordinal");
   }
   const headingAncestors = input.headingAncestors.map((value) => value.trim());
+  const okfSignals = normalizeSignals(input.okfSignals);
   return {
     id: "content-" + digest([
       STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
@@ -81,7 +91,8 @@ export function createStorageVnextContentDocument(input: {
       input.contentKind,
       input.segmentOrdinal === null ? "" : String(input.segmentOrdinal),
       JSON.stringify(headingAncestors),
-      input.searchText
+      input.searchText,
+      JSON.stringify(okfSignals)
     ]),
     schemaVersion: STORAGE_VNEXT_CONTENT_SCHEMA_VERSION,
     documentKind: "content",
@@ -94,7 +105,8 @@ export function createStorageVnextContentDocument(input: {
     title: input.title,
     segmentOrdinal: input.segmentOrdinal,
     headingAncestors,
-    searchText: input.searchText
+    searchText: input.searchText,
+    okfSignals
   };
 }
 
@@ -106,11 +118,13 @@ export function createStorageVnextGraphSeedDocument(input: {
   title: string | null;
   searchText: string;
   rankingTerms: readonly string[];
+  okfSignals?: OkfSearchSignals;
 }): StorageVnextGraphSeedDocument {
   assertIdentity(input);
   const rankingTerms = [...new Set(
     input.rankingTerms.map((value) => value.trim()).filter(Boolean)
   )].sort();
+  const okfSignals = normalizeSignals(input.okfSignals);
   return {
     id: "graph-seed-" + digest([
       STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION,
@@ -120,7 +134,8 @@ export function createStorageVnextGraphSeedDocument(input: {
       input.logicalPath,
       input.title ?? "",
       input.searchText,
-      JSON.stringify(rankingTerms)
+      JSON.stringify(rankingTerms),
+      JSON.stringify(okfSignals)
     ]),
     schemaVersion: STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION,
     documentKind: "graph_seed",
@@ -130,8 +145,43 @@ export function createStorageVnextGraphSeedDocument(input: {
     logicalPath: input.logicalPath,
     title: input.title,
     searchText: input.searchText,
-    rankingTerms
+    rankingTerms,
+    okfSignals
   };
+}
+
+function normalizeSignals(value: OkfSearchSignals | undefined): OkfSearchSignals {
+  const signals = value ?? {
+    status: null,
+    trustTier: null,
+    staleAfterEpochDay: null,
+    generatedAtEpochMs: null,
+    latestVerifiedAtEpochMs: null,
+    sourceCount: null
+  };
+  if (
+    !nullableEnum(signals.status, ["draft", "stable", "deprecated"])
+    || !nullableEnum(signals.trustTier, [
+      "unverified", "machine-confirmed", "human-reviewed"
+    ])
+    || !nullableInteger(signals.staleAfterEpochDay)
+    || !nullableInteger(signals.generatedAtEpochMs)
+    || !nullableInteger(signals.latestVerifiedAtEpochMs)
+    || !nullableNonnegativeInteger(signals.sourceCount)
+  ) throw new Error("Search document OKF signals are invalid");
+  return structuredClone(signals);
+}
+
+function nullableEnum<T extends string>(value: unknown, allowed: readonly T[]): boolean {
+  return value === null || typeof value === "string" && allowed.includes(value as T);
+}
+
+function nullableInteger(value: unknown): boolean {
+  return value === null || Number.isSafeInteger(value);
+}
+
+function nullableNonnegativeInteger(value: unknown): boolean {
+  return value === null || Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 function assertIdentity(input: {

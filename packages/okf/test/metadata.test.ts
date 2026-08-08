@@ -70,7 +70,7 @@ describe("resolveSourceMetadata", () => {
     expect(result.body).toBe("# Body");
   });
 
-  it("normalizes YAML timestamps into JSON-compatible metadata", () => {
+  it("preserves YAML 1.2 core-schema date-like scalars as strings", () => {
     const result = parseUploadedMarkdownSource({
       fileName: "release.md",
       content: [
@@ -86,11 +86,11 @@ describe("resolveSourceMetadata", () => {
     });
 
     expect(result.metadata).toEqual({
-      updatedAt: "2026-06-20T00:00:00.000Z",
+      updatedAt: "2026-06-20",
       schedule: {
         publishedAt: "2026-06-21T10:30:00.000Z"
       },
-      milestones: ["2026-06-22T00:00:00.000Z"]
+      milestones: ["2026-06-22"]
     });
   });
 
@@ -223,11 +223,13 @@ describe("resolveSourceMetadata", () => {
     });
   });
 
-  it("rejects unsafe generated identity before publication", () => {
-    expect(() => resolveSourceMetadata({
+  it("falls back safely without rewriting an unsafe source heading", () => {
+    const result = resolveSourceMetadata({
       fileName: "unsafe.md",
       content: "# unsafe\u202etitle",
       metadata: {}
-    })).toThrow(/identity/i);
+    });
+    expect(result.metadata.title).toBe("unsafe");
+    expect(result.body).toBe("# unsafe\u202etitle");
   });
 });

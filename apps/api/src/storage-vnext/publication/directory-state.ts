@@ -133,6 +133,7 @@ function validateLeaves(input: readonly unknown[]): PersistentDirectoryLeaf[] {
       || !nullableId(value.nextLeafId)
       || !Number.isSafeInteger(value.revision)
       || Number(value.revision) < 1
+      || !optionalInstant(value.changedAt)
       || !Array.isArray(value.entries)
     ) throw directoryStateError("invalid_leaf");
     leafIds.add(value.id);
@@ -164,6 +165,7 @@ function validateLeaves(input: readonly unknown[]): PersistentDirectoryLeaf[] {
       previousLeafId: value.previousLeafId,
       nextLeafId: value.nextLeafId,
       revision: Number(value.revision),
+      ...(typeof value.changedAt === "string" ? { changedAt: value.changedAt } : {}),
       entries
     };
   });
@@ -182,6 +184,14 @@ function validId(value: unknown): value is string {
 
 function nullableId(value: unknown): value is string | null {
   return value === null || validId(value);
+}
+
+function optionalInstant(value: unknown): value is string | undefined {
+  return value === undefined || (
+    typeof value === "string"
+    && /^\d{4}-\d{2}-\d{2}T/u.test(value)
+    && Number.isFinite(Date.parse(value))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

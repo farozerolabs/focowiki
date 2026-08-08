@@ -4,14 +4,18 @@ import { REQUIRED_GENERATED_NAVIGATION_PATHS } from
   "../../okf/generated-graph-resources.js";
 import { INCREMENTAL_PUBLICATION_DEFAULTS } from
   "../../publication/incremental-defaults.js";
-import { STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT } from
+import {
+  STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT,
+  STORAGE_VNEXT_MINIMUM_EXTENSION_NAVIGATION_MARKDOWN_COUNT
+} from
   "../publication/profile.js";
 
 export const MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE = 5;
 export const MAX_STORAGE_VNEXT_CANDIDATE_ONLY_RATIO = 0.2;
 const MIN_STORAGE_VNEXT_RELEASED_OBJECTS =
   REQUIRED_GENERATED_NAVIGATION_PATHS.length + 2
-  + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT;
+  + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT
+  + STORAGE_VNEXT_MINIMUM_EXTENSION_NAVIGATION_MARKDOWN_COUNT;
 const MIN_STORAGE_VNEXT_FANOUT_SAMPLE_SOURCE_COUNT =
   REQUIRED_GENERATED_NAVIGATION_PATHS.length
   + Object.keys(INCREMENTAL_PUBLICATION_DEFAULTS.impactPlanner).length
@@ -33,12 +37,16 @@ export type StorageVnextObjectFanoutMeasurement = {
   activeGeneratedObjectCount: number;
   candidateGeneratedObjectCount: number;
   candidateOnlyObjectCount: number;
+  activeGeneratedEntryCount?: number;
+  candidateGeneratedEntryCount?: number;
+  maintenanceRebuild?: boolean;
 };
 
 export type StorageVnextObjectFanoutBudget = StorageVnextObjectFanoutMeasurement & {
   maximumActiveObjects: number;
   maximumCandidateOnlyObjects: number;
   candidateChangeAllowanceUsed: boolean;
+  candidateCompletenessAllowanceUsed: boolean;
   fileFirstCompletenessAllowanceUsed: boolean;
   activeFanoutPassed: boolean;
   candidateRatioPassed: boolean;
@@ -51,13 +59,17 @@ export function evaluateStorageVnextObjectFanoutBudget(
   const activeSourceFileCount = measurement.activeSourceFileCount
     ?? measurement.sourceFileCount;
   const changedSourceFileCount = measurement.changedSourceFileCount ?? 0;
+  const activeGeneratedEntryCount = measurement.activeGeneratedEntryCount ?? 0;
+  const candidateGeneratedEntryCount = measurement.candidateGeneratedEntryCount ?? 0;
   for (const value of [
     measurement.sourceFileCount,
     activeSourceFileCount,
     changedSourceFileCount,
     measurement.activeGeneratedObjectCount,
     measurement.candidateGeneratedObjectCount,
-    measurement.candidateOnlyObjectCount
+    measurement.candidateOnlyObjectCount,
+    activeGeneratedEntryCount,
+    candidateGeneratedEntryCount
   ]) {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw Object.assign(new Error("Storage vNext object fan-out input is invalid"), {
@@ -78,7 +90,7 @@ export function evaluateStorageVnextObjectFanoutBudget(
   const ratioBudget = Math.ceil(
     measurement.activeGeneratedObjectCount * MAX_STORAGE_VNEXT_CANDIDATE_ONLY_RATIO
   );
-  const maximumCandidateOnlyObjects = measurement.activeGeneratedObjectCount === 0
+  const ordinaryMaximumCandidateOnlyObjects = measurement.activeGeneratedObjectCount === 0
     ? measurement.candidateOnlyObjectCount
     : addedSourceFileCount > 0
       ? Math.max(
@@ -89,9 +101,18 @@ export function evaluateStorageVnextObjectFanoutBudget(
       : ratioBudget
         + changedSourceFileCount * MAX_STORAGE_VNEXT_ACTIVE_OBJECTS_PER_SOURCE
         + STORAGE_VNEXT_EXTENSION_NAVIGATION_STATE_DIRECTORY_COUNT;
+  const candidateCompletenessEligible = measurement.maintenanceRebuild === true
+    && measurement.sourceFileCount > 0
+    && candidateGeneratedEntryCount > activeGeneratedEntryCount
+    && maximumActiveObjects > scaleMaximumActiveObjects;
+  const maximumCandidateOnlyObjects = candidateCompletenessEligible
+    ? maximumActiveObjects
+    : ordinaryMaximumCandidateOnlyObjects;
   const candidateChangeAllowanceUsed = measurement.activeGeneratedObjectCount > 0
     && addedSourceFileCount === 0
     && changedSourceFileCount > 0;
+  const candidateCompletenessAllowanceUsed = candidateCompletenessEligible
+    && measurement.candidateOnlyObjectCount > ordinaryMaximumCandidateOnlyObjects;
   const fileFirstCompletenessAllowanceUsed = measurement.sourceFileCount > 0
     && maximumActiveObjects > scaleMaximumActiveObjects
     && (
@@ -106,9 +127,12 @@ export function evaluateStorageVnextObjectFanoutBudget(
     ...measurement,
     activeSourceFileCount,
     changedSourceFileCount,
+    activeGeneratedEntryCount,
+    candidateGeneratedEntryCount,
     maximumActiveObjects,
     maximumCandidateOnlyObjects,
     candidateChangeAllowanceUsed,
+    candidateCompletenessAllowanceUsed,
     fileFirstCompletenessAllowanceUsed,
     activeFanoutPassed,
     candidateRatioPassed,
@@ -143,6 +167,9 @@ export async function measureStorageVnextObjectFanout(
     active_object_count: number | string;
     candidate_object_count: number | string;
     candidate_only_count: number | string;
+    active_generated_entry_count: number | string;
+    candidate_generated_entry_count: number | string;
+    maintenance_rebuild: boolean;
   }>>`
     SELECT
       COALESCE(summary.source_file_count, 0) AS source_file_count,
@@ -205,7 +232,28 @@ export async function measureStorageVnextObjectFanout(
            WHERE retained.knowledge_base_id = ${input.knowledgeBaseId}
              AND retained.object_id = candidate.object_id
              AND retained.owner_kind IN ('active_root', 'rollback_root', 'shared_segment')
-         )) AS candidate_only_count
+         )) AS candidate_only_count,
+      COALESCE((
+        SELECT active_summary.generated_entry_count
+        FROM focowiki.release_roots active_root
+        JOIN focowiki.knowledge_base_summaries active_summary
+          ON active_summary.knowledge_base_id = active_root.knowledge_base_id
+         AND active_summary.release_root_public_id = active_root.public_id
+        WHERE active_root.knowledge_base_id = ${input.knowledgeBaseId}
+          AND active_root.root_role = 'active'
+        LIMIT 1
+      ), 0) AS active_generated_entry_count,
+      summary.generated_entry_count AS candidate_generated_entry_count,
+      EXISTS (
+        SELECT 1
+        FROM focowiki.release_candidates candidate
+        JOIN focowiki.operations operation
+          ON operation.knowledge_base_id = candidate.knowledge_base_id
+         AND operation.public_id = candidate.operation_public_id
+        WHERE candidate.knowledge_base_id = ${input.knowledgeBaseId}
+          AND candidate.candidate_root_public_id = ${input.candidateRootPublicId}
+          AND operation.operation_kind = 'maintenance'
+      ) AS maintenance_rebuild
     FROM focowiki.knowledge_base_summaries summary
     WHERE summary.knowledge_base_id = ${input.knowledgeBaseId}
       AND summary.release_root_public_id = ${input.candidateRootPublicId}
@@ -217,6 +265,9 @@ export async function measureStorageVnextObjectFanout(
     changedSourceFileCount: Number(row?.changed_source_file_count ?? 0),
     activeGeneratedObjectCount: Number(row?.active_object_count ?? 0),
     candidateGeneratedObjectCount: Number(row?.candidate_object_count ?? 0),
-    candidateOnlyObjectCount: Number(row?.candidate_only_count ?? 0)
+    candidateOnlyObjectCount: Number(row?.candidate_only_count ?? 0),
+    activeGeneratedEntryCount: Number(row?.active_generated_entry_count ?? 0),
+    candidateGeneratedEntryCount: Number(row?.candidate_generated_entry_count ?? 0),
+    maintenanceRebuild: row?.maintenance_rebuild === true
   };
 }

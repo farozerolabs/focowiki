@@ -5,6 +5,7 @@ import type {
   GraphSearchDepth,
   GraphSearchMode
 } from "../../search/graph-search-documents.js";
+import type { OkfSearchFilters } from "../search/okf-signals.js";
 
 export type DeveloperOpenApiApplication = {
   createKnowledgeBase(input: { name: string; description: string | null }): Promise<Record<string, unknown>>;
@@ -49,6 +50,7 @@ export type DeveloperOpenApiApplication = {
     mode: GraphSearchMode;
     graphDepth: GraphSearchDepth;
     graphFanout: number;
+    okfFilters?: OkfSearchFilters;
     limit: number;
     cursor: string | null;
   }): Promise<Record<string, unknown>>;

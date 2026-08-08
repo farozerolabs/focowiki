@@ -16,6 +16,10 @@ import type {
   StorageVnextSearchProjectionRecord,
   StorageVnextSearchProjectionRepository
 } from "../src/storage-vnext/search/projection-repository.js";
+import {
+  createStorageVnextContentDocument,
+  createStorageVnextGraphSeedDocument
+} from "../src/storage-vnext/search/documents.js";
 
 const settings: SearchProviderIndexDefinition = {
   primaryKey: "id",
@@ -251,24 +255,18 @@ function batch() {
     batchOrdinal: 0,
     payloadChecksum: "d".repeat(64),
     compressedBytes: 100,
-    documents: [{
-      id: "content-a",
-      schemaVersion: "storage-vnext-content-v1" as const,
-      documentKind: "content" as const,
-      contentKind: "file" as const,
+    documents: [createStorageVnextContentDocument({
       knowledgeBaseId: "kb-a",
       sourceFilePublicId: "file-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "a.md",
       fileKind: "markdown",
       title: "A",
+      contentKind: "file",
       segmentOrdinal: null,
       headingAncestors: [],
       searchText: "alpha"
-    }, {
-      id: "graph-seed-a",
-      schemaVersion: "storage-vnext-graph-seed-v1" as const,
-      documentKind: "graph_seed" as const,
+    }), createStorageVnextGraphSeedDocument({
       knowledgeBaseId: "kb-a",
       sourceFilePublicId: "file-a",
       sourceRevisionPublicId: "revision-a",
@@ -276,7 +274,7 @@ function batch() {
       title: "A",
       searchText: "alpha related",
       rankingTerms: ["alpha", "related"]
-    }]
+    })]
   };
 }
 

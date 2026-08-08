@@ -11,7 +11,7 @@ test("accepts the OKF version declaration on the bundle-root index", () => {
       "index.md",
       [
         "---",
-        'okf_version: "0.1"',
+        'okf_version: "0.2"',
         "---",
         "# Example knowledge base",
         "",

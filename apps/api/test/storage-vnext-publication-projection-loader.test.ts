@@ -120,6 +120,7 @@ describe("storage vNext publication projection loader", () => {
             previousLeafId: null,
             nextLeafId: null,
             revision: 4,
+            changedAt: "2026-07-31T00:00:00.000Z",
             entries: [{
               id: "source-setup",
               sortKey: "setup.md/source-setup",
@@ -211,6 +212,8 @@ describe("storage vNext publication projection loader", () => {
       kind: "file"
     });
     expect(projection.directories[1]?.leaves[0]?.id).toBe("directory-leaf-existing");
+    expect(projection.directories[1]?.leaves[0]?.changedAt)
+      .toBe("2026-07-31T00:00:00.000Z");
     expect(deletedLogicalPaths).toEqual([
       "pages/guides/index-directory-leaf-old.md",
       "pages/old.md"

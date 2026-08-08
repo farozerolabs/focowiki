@@ -100,6 +100,8 @@ function validateBaseRequest(request: StorageVnextMutationRequest): void {
     || !Number.isSafeInteger(request.byteCount)
     || request.byteCount < 0
     || request.contentType !== MARKDOWN_CONTENT_TYPE
+    || !request.candidateTitle
+    || !request.candidateMetadata
   )) throw mutationError("invalid_input");
 }
 

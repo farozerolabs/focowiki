@@ -1,6 +1,7 @@
 import {
   createStorageVnextContentDocument,
   createStorageVnextGraphSeedDocument,
+  type OkfSearchSignals,
   type StorageVnextSearchDocument
 } from "./documents.js";
 
@@ -15,7 +16,8 @@ export function parseStorageVnextSearchDocument(
     sourceRevisionPublicId: stringValue(value.sourceRevisionPublicId),
     logicalPath: stringValue(value.logicalPath),
     title: nullableString(value.title),
-    searchText: stringValue(value.searchText)
+    searchText: textValue(value.searchText),
+    okfSignals: okfSearchSignals(value.okfSignals)
   };
   const document = documentKind === "content"
     ? createStorageVnextContentDocument({
@@ -37,8 +39,30 @@ export function parseStorageVnextSearchDocument(
   return document;
 }
 
+function okfSearchSignals(value: unknown): OkfSearchSignals {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    invalidDocument();
+  }
+  const signals = value as Record<string, unknown>;
+  return {
+    status: nullableEnum(signals.status, ["draft", "stable", "deprecated"]),
+    trustTier: nullableEnum(signals.trustTier, [
+      "unverified", "machine-confirmed", "human-reviewed"
+    ]),
+    staleAfterEpochDay: nullableInteger(signals.staleAfterEpochDay),
+    generatedAtEpochMs: nullableInteger(signals.generatedAtEpochMs),
+    latestVerifiedAtEpochMs: nullableInteger(signals.latestVerifiedAtEpochMs),
+    sourceCount: nullableNonnegativeInteger(signals.sourceCount)
+  };
+}
+
 function stringValue(value: unknown): string {
   if (typeof value !== "string" || !value) invalidDocument();
+  return value;
+}
+
+function textValue(value: unknown): string {
+  if (typeof value !== "string") invalidDocument();
   return value;
 }
 
@@ -53,6 +77,18 @@ function nullableOrdinal(value: unknown): number | null {
   return value as number;
 }
 
+function nullableInteger(value: unknown): number | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value)) invalidDocument();
+  return value as number;
+}
+
+function nullableNonnegativeInteger(value: unknown): number | null {
+  const result = nullableInteger(value);
+  if (result !== null && result < 0) invalidDocument();
+  return result;
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     invalidDocument();
@@ -63,6 +99,14 @@ function stringArray(value: unknown): string[] {
 function enumValue<T extends string>(value: unknown, values: readonly T[]): T {
   if (typeof value !== "string" || !values.includes(value as T)) invalidDocument();
   return value as T;
+}
+
+function nullableEnum<T extends string>(
+  value: unknown,
+  values: readonly T[]
+): T | null {
+  if (value === null) return null;
+  return enumValue(value, values);
 }
 
 function invalidDocument(): never {

@@ -222,8 +222,14 @@ export function createStorageVnextPublicationProjectionLoader(input: {
       for (const path of effectivePlan.directoryPaths) {
         const fact = path === "pages" ? null : directoryFacts.get(path);
         if (path !== "pages" && !fact) continue;
-        directories.push(await loadDirectory(input, request, path, fact ?? null,
-          descendantCounts.get(path) ?? 0));
+        directories.push(await loadDirectory(
+          input,
+          request,
+          path,
+          fact ?? null,
+          descendantCounts.get(path) ?? 0,
+          knowledgeBase.updatedAt
+        ));
       }
       const currentDirectoryPaths = directories.map((directory) => directory.directoryPath);
       const deletedDirectoryPaths = effectivePlan.directoryPaths.filter((path) =>
@@ -237,7 +243,8 @@ export function createStorageVnextPublicationProjectionLoader(input: {
       const extensionNavigation = await loadExtensionNavigation(input, request, {
         profileUpgrade,
         projectionShards,
-        plan: effectivePlan
+        plan: effectivePlan,
+        changedAt: knowledgeBase.updatedAt
       });
       return {
         knowledgeBase: {
@@ -245,7 +252,8 @@ export function createStorageVnextPublicationProjectionLoader(input: {
           name: knowledgeBase.name,
           description: knowledgeBase.description,
           sourceFileCount: counts.sourceFileCount,
-          graphEdgeCount: counts.graphEdgeCount
+          graphEdgeCount: counts.graphEdgeCount,
+          changedAt: knowledgeBase.updatedAt
         },
         rootEntryCount: directories.find((directory) =>
           directory.directoryPath === "pages")?.entryCount ?? 0,
@@ -290,6 +298,7 @@ async function loadExtensionNavigation(
     profileUpgrade: boolean;
     projectionShards: readonly EffectiveProjectionShard[];
     plan: StorageVnextPublicationBatchPlan;
+    changedAt: string;
   }
 ): Promise<{
   navigation: StorageVnextExtensionNavigationInput;
@@ -334,6 +343,7 @@ async function loadExtensionNavigation(
       byFileLogicalPaths: paths.byFileLogicalPaths,
       existingMarkdownPaths: paths.markdownLogicalPaths,
       previousLeaves,
+      changedAt: context.changedAt,
       sources: context.profileUpgrade
         ? listExtensionSources(input, request)
         : emptyExtensionSources(),
@@ -919,7 +929,8 @@ async function loadDirectory(
   request: ProjectionRequest,
   directoryPath: string,
   directory: StorageVnextDirectoryFact | null,
-  descendantFileCount: number
+  descendantFileCount: number,
+  changedAt: string
 ): Promise<StorageVnextPublicationDirectoryInput> {
   const [directories, sources, previousLeaves] = await Promise.all([
     listAllDirectories(input, request, directory?.publicId ?? null),
@@ -966,6 +977,7 @@ async function loadDirectory(
       directoryPath,
       entries,
       previousLeaves,
+      changedAt,
       maxEntries: input.limits.directoryIndexMaxEntries,
       maxBytes: input.limits.directoryIndexMaxBytes
     })
@@ -1017,6 +1029,7 @@ function packLeaves(input: {
   directoryPath: string;
   entries: readonly OrderedDirectoryEntry[];
   previousLeaves: readonly PersistentDirectoryLeaf[];
+  changedAt: string;
   maxEntries: number;
   maxBytes: number;
 }): PersistentDirectoryLeaf[] {
@@ -1054,17 +1067,24 @@ function packLeaves(input: {
     }
   }).leaves;
   const previousById = new Map(input.previousLeaves.map((leaf) => [leaf.id, leaf]));
-  return leaves.map((leaf, index) => ({
-    ...leaf,
-    previousLeafId: leaves[index - 1]?.id ?? null,
-    nextLeafId: leaves[index + 1]?.id ?? null,
-    revision: nextLeafRevision({
+  return leaves.map((leaf, index) => {
+    const previous = previousById.get(leaf.id) ?? null;
+    const revision = nextLeafRevision({
       leaf,
-      previous: previousById.get(leaf.id) ?? null,
+      previous,
       previousLeafId: leaves[index - 1]?.id ?? null,
       nextLeafId: leaves[index + 1]?.id ?? null
-    })
-  }));
+    });
+    return {
+      ...leaf,
+      previousLeafId: leaves[index - 1]?.id ?? null,
+      nextLeafId: leaves[index + 1]?.id ?? null,
+      revision,
+      changedAt: previous && revision === previous.revision && previous.changedAt
+        ? previous.changedAt
+        : input.changedAt
+    };
+  });
 }
 
 function nextLeafRevision(input: {

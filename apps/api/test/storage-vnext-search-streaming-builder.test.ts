@@ -19,7 +19,8 @@ import {
   createStorageVnextCandidateQueryMatrix
 } from "../src/storage-vnext/search/candidate-query-matrix.js";
 import {
-  createStorageVnextContentDocument
+  createStorageVnextContentDocument,
+  createStorageVnextGraphSeedDocument
 } from "../src/storage-vnext/search/documents.js";
 import type {
   StorageVnextSearchProjectionPort
@@ -42,7 +43,16 @@ function currentSource(input: {
       logicalPath: input.logicalPath,
       normalizedPath: input.logicalPath.toLowerCase(),
       title: input.publicId === "file-a" ? "Alpha" : "Beta",
-      metadata: { owner: "platform", priority: 2 },
+      metadata: input.publicId === "file-a" ? {
+        type: "Guide",
+        tags: ["platform"],
+        status: "stable",
+        stale_after: "2026-09-23",
+        generated: { by: "process:indexer", at: "2026-08-07T10:00:00Z" },
+        verified: [{ by: "human:reviewer", at: "2026-08-07T11:00:00Z" }],
+        sources: [{ id: "source-policy", resource: "policy.md" }],
+        private_unknown: { must_not_be_indexed: "secret-value" }
+      } : {},
       currentRevisionPublicId: `revision-${input.publicId}`,
       status: "ready",
       safeErrorCode: null,
@@ -125,6 +135,9 @@ describe("storage vNext streamed search candidate builder", () => {
       events.push(`graph:${input.cursor ?? "first"}`);
       return { items: [graphNode], nextCursor: null };
     });
+    const listSourceFilesByPublicIds = vi.fn(async () =>
+      sources.map((source) => source.sourceFile)
+    );
     const written: Array<Parameters<
       StorageVnextSearchProjectionPort["writeDocumentBatch"]
     >[0]> = [];
@@ -139,7 +152,7 @@ describe("storage vNext streamed search candidate builder", () => {
       knowledgeBaseId: "kb-stream",
       candidatePublicId: "candidate-stream",
       operationPublicId: "operation-stream",
-      catalog: { listCurrentSources },
+      catalog: { listCurrentSources, listSourceFilesByPublicIds },
       sourceBodies: { readVerifiedStream },
       graph: { listNodes },
       projection: { writeDocumentBatch },
@@ -150,7 +163,7 @@ describe("storage vNext streamed search candidate builder", () => {
       maxSourceBytes: 1_000,
       maxSegmentBytes: 64,
       maxBatchDocuments: 2,
-      maxBatchCompressedBytes: 420
+      maxBatchCompressedBytes: 650
     });
 
     const documents = written.flatMap((batch) => batch.documents);
@@ -170,8 +183,17 @@ describe("storage vNext streamed search candidate builder", () => {
       && document.contentKind === "file"
       && document.sourceFilePublicId === "file-a"
     )).toMatchObject({
-      searchText: "owner: platform\npriority: 2"
+      searchText: "type: Guide\ntags: platform",
+      okfSignals: {
+        status: "stable",
+        trustTier: "human-reviewed",
+        staleAfterEpochDay: 20719,
+        generatedAtEpochMs: 1786096800000,
+        latestVerifiedAtEpochMs: 1786100400000,
+        sourceCount: 1
+      }
     });
+    expect(JSON.stringify(documents)).not.toContain("secret-value");
     expect(documents.filter((document) => document.documentKind === "graph_seed"))
       .toEqual([expect.objectContaining({
         sourceFilePublicId: "file-a",
@@ -208,7 +230,7 @@ describe("storage vNext streamed search candidate builder", () => {
       batch.compressedBytes === gzipSync(
         Buffer.from(JSON.stringify(batch.documents), "utf8")
       ).byteLength
-      && batch.compressedBytes <= 420
+      && batch.compressedBytes <= 650
     )).toBe(true);
     expect(written.map((batch) => batch.batchOrdinal))
       .toEqual(written.map((_, index) => index));
@@ -225,11 +247,14 @@ describe("storage vNext streamed search candidate builder", () => {
     });
     expect(result.queryCases.map((item) => item.kind)).toEqual([
       "exact", "title", "path", "content", "multi_term", "phrase", "typo",
-      "chinese", "mixed_script", "graph_seed", "ranking"
+      "chinese", "mixed_script", "graph_seed", "ranking",
+      "okf_omitted", "okf_malformed", "okf_status", "okf_trust",
+      "okf_fresh", "okf_stale", "okf_boundary", "okf_combined",
+      "okf_unrelated", "okf_no_match"
     ]);
-    expect(result.queryCases).toHaveLength(11);
-    expect(result.queryCases.every((item) => item.relevantSources.length === 1))
-      .toBe(true);
+    expect(result.queryCases).toHaveLength(21);
+    expect(result.queryCases.filter((item) => item.relevantSources.length === 0)
+      .map((item) => item.kind)).toEqual(["okf_malformed", "okf_no_match"]);
     const casesByKind = new Map(result.queryCases.map((item) => [item.kind, item]));
     expect(casesByKind.get("content")?.query).toBe("Alpha");
     expect(casesByKind.get("multi_term")?.query.split(" ")).toHaveLength(2);
@@ -242,6 +267,10 @@ describe("storage vNext streamed search candidate builder", () => {
       minimumRecall: 0,
       minimumNdcg: 0
     });
+    expect(casesByKind.get("graph_seed")).toMatchObject({
+      minimumRecall: 1,
+      minimumNdcg: 1
+    });
   });
 
   it("waits for each projection write before reading the next bounded page", async () => {
@@ -252,7 +281,7 @@ describe("storage vNext streamed search candidate builder", () => {
     let secondPageRead = false;
     const source = currentSource({
       publicId: "file-a",
-      logicalPath: "a.md",
+      logicalPath: "guides/a.md",
       body: "# A\nbody"
     });
     const writeDocumentBatch = vi.fn(async () => blockedWrite);
@@ -266,7 +295,8 @@ describe("storage vNext streamed search candidate builder", () => {
           return input.cursor === null
             ? { items: [source], nextCursor: "next" }
             : { items: [], nextCursor: null };
-        })
+        }),
+        listSourceFilesByPublicIds: vi.fn()
       },
       sourceBodies: {
         readVerifiedStream: vi.fn(async () => (async function* () {
@@ -284,7 +314,7 @@ describe("storage vNext streamed search candidate builder", () => {
       maxSourceBytes: 1_000,
       maxSegmentBytes: 64,
       maxBatchDocuments: 1,
-      maxBatchCompressedBytes: 420
+      maxBatchCompressedBytes: 900
     });
 
     await vi.waitFor(() => expect(writeDocumentBatch).toHaveBeenCalledTimes(1));
@@ -297,7 +327,7 @@ describe("storage vNext streamed search candidate builder", () => {
   it("resumes after persisted batches without changing deterministic ordinals or checksums", async () => {
     const source = currentSource({
       publicId: "file-a",
-      logicalPath: "a.md",
+      logicalPath: "guides/a.md",
       body: "# A\n" + "bounded content ".repeat(12)
     });
     const createInput = () => ({
@@ -308,7 +338,8 @@ describe("storage vNext streamed search candidate builder", () => {
         listCurrentSources: vi.fn(async () => ({
           items: [source],
           nextCursor: null
-        }))
+        })),
+        listSourceFilesByPublicIds: vi.fn(async () => [source.sourceFile])
       },
       sourceBodies: {
         readVerifiedStream: vi.fn(async () => (async function* () {
@@ -325,7 +356,7 @@ describe("storage vNext streamed search candidate builder", () => {
       maxSourceBytes: 1_000,
       maxSegmentBytes: 64,
       maxBatchDocuments: 1,
-      maxBatchCompressedBytes: 420
+      maxBatchCompressedBytes: 900
     });
     const completeBatches: Array<Parameters<
       StorageVnextSearchProjectionPort["writeDocumentBatch"]
@@ -362,7 +393,8 @@ describe("storage vNext streamed search candidate builder", () => {
       candidatePublicId: "candidate-stream",
       operationPublicId: "operation-stream",
       catalog: {
-        listCurrentSources: vi.fn(async () => ({ items: [], nextCursor: null }))
+        listCurrentSources: vi.fn(async () => ({ items: [], nextCursor: null })),
+        listSourceFilesByPublicIds: vi.fn()
       },
       sourceBodies: {
         readVerifiedStream: vi.fn()
@@ -405,6 +437,237 @@ describe("storage vNext streamed search candidate builder", () => {
         query: "source 非常明确的最长验证词语",
         minimumRecall: 1,
         minimumNdcg: 1
+      });
+  });
+
+  it("selects a source-unique title for exact ranking validation", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-a",
+        sourceRevisionPublicId: "revision-shared-a",
+        logicalPath: "pages/shared/a.md",
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-b",
+        sourceRevisionPublicId: "revision-shared-b",
+        logicalPath: "pages/shared/b.md",
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-unique",
+        sourceRevisionPublicId: "revision-unique",
+        logicalPath: "pages/unique.md",
+        fileKind: "page",
+        title: "Unique Provider Validation",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().filter((item) =>
+      item.kind === "exact" || item.kind === "title"
+    )).toEqual([
+      expect.objectContaining({
+        query: "Unique Provider Validation",
+        relevantSources: [{ sourceFilePublicId: "file-unique", relevance: 3 }],
+        minimumNdcg: 1
+      }),
+      expect.objectContaining({
+        query: "Unique Provider Validation",
+        relevantSources: [{ sourceFilePublicId: "file-unique", relevance: 3 }],
+        minimumNdcg: 1
+      })
+    ]);
+  });
+
+  it("keeps every duplicate-title source relevant for exact title and ranking validation", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-a",
+        sourceRevisionPublicId: "revision-shared-a",
+        logicalPath: "pages/shared/a.md",
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      }),
+      createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-b",
+        sourceRevisionPublicId: "revision-shared-b",
+        logicalPath: "pages/shared/b.md",
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      })
+    ]) matrix.observe(document);
+
+    const relevantSources = [
+      { sourceFilePublicId: "file-shared-a", relevance: 3 },
+      { sourceFilePublicId: "file-shared-b", relevance: 3 }
+    ];
+    expect(matrix.finish().filter((item) =>
+      item.kind === "exact" || item.kind === "title" || item.kind === "ranking"
+    )).toEqual([
+      expect.objectContaining({
+        query: "Knowledge Base",
+        relevantSources,
+        minimumRecall: 1,
+        minimumNdcg: 1
+      }),
+      expect.objectContaining({
+        query: "Knowledge Base",
+        relevantSources,
+        minimumRecall: 1,
+        minimumNdcg: 1
+      }),
+      expect.objectContaining({
+        query: "Knowledge Base",
+        relevantSources,
+        minimumRecall: 1,
+        minimumNdcg: 1
+      })
+    ]);
+  });
+
+  it("expands bounded duplicate-title probes to cover every relevant source", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (let index = 0; index < 11; index += 1) {
+      matrix.observe(createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: `file-shared-${index.toString().padStart(2, "0")}`,
+        sourceRevisionPublicId: `revision-shared-${index}`,
+        logicalPath: `pages/shared/${index}.md`,
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      }));
+    }
+
+    expect(matrix.finish().filter((item) =>
+      item.kind === "exact" || item.kind === "title" || item.kind === "ranking"
+    ).every((item) =>
+      item.limit === 11
+      && item.relevantSources.length === 11
+      && item.minimumRecall === 1
+      && item.minimumNdcg === 1
+    )).toBe(true);
+  });
+
+  it("keeps oversized duplicate-title probes bounded and non-quantitative", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (let index = 0; index < 101; index += 1) {
+      matrix.observe(createStorageVnextContentDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: `file-shared-${index.toString().padStart(3, "0")}`,
+        sourceRevisionPublicId: `revision-shared-${index}`,
+        logicalPath: `pages/shared/${index}.md`,
+        fileKind: "page",
+        title: "Knowledge Base",
+        contentKind: "file",
+        segmentOrdinal: null,
+        headingAncestors: [],
+        searchText: ""
+      }));
+    }
+
+    expect(matrix.finish().filter((item) =>
+      item.kind === "exact" || item.kind === "title" || item.kind === "ranking"
+    ).every((item) =>
+      item.limit === 100
+      && item.relevantSources.length === 100
+      && item.minimumRecall === 0
+      && item.minimumNdcg === 0
+    )).toBe(true);
+  });
+
+  it("selects a source-unique graph term for provider-neutral validation", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-a",
+        sourceRevisionPublicId: "revision-shared-a",
+        logicalPath: "pages/shared/a.md",
+        title: "Shared A",
+        searchText: "a-common-relationship z-graph-evidence-a",
+        rankingTerms: ["a-common-relationship", "z-graph-evidence-a"]
+      }),
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-b",
+        sourceRevisionPublicId: "revision-shared-b",
+        logicalPath: "pages/shared/b.md",
+        title: "Shared B",
+        searchText: "a-common-relationship z-graph-evidence-b",
+        rankingTerms: ["a-common-relationship", "z-graph-evidence-b"]
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "graph_seed"))
+      .toMatchObject({
+        query: "z-graph-evidence-a",
+        relevantSources: [{ sourceFilePublicId: "file-shared-a", relevance: 3 }],
+        minimumRecall: 1,
+        minimumNdcg: 1
+      });
+  });
+
+  it("keeps a shared graph fallback non-quantitative", () => {
+    const matrix = createStorageVnextCandidateQueryMatrix();
+    for (const document of [
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-a",
+        sourceRevisionPublicId: "revision-shared-a",
+        logicalPath: "pages/shared/a.md",
+        title: "Shared A",
+        searchText: "shared-relationship",
+        rankingTerms: ["shared-relationship"]
+      }),
+      createStorageVnextGraphSeedDocument({
+        knowledgeBaseId: "kb-stream",
+        sourceFilePublicId: "file-shared-b",
+        sourceRevisionPublicId: "revision-shared-b",
+        logicalPath: "pages/shared/b.md",
+        title: "Shared B",
+        searchText: "shared-relationship",
+        rankingTerms: ["shared-relationship"]
+      })
+    ]) matrix.observe(document);
+
+    expect(matrix.finish().find((item) => item.kind === "graph_seed"))
+      .toMatchObject({
+        query: "shared-relationship",
+        minimumRecall: 0,
+        minimumNdcg: 0
       });
   });
 

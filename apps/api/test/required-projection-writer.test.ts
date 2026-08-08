@@ -19,7 +19,9 @@ describe("required projection writer", () => {
       sourceFileId: "source-file-1"
     }));
     expect(immutableWrite).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining('description: "Deploy safely."')
+      body: expect.stringMatching(
+        /description: "Guide"[\s\S]*Approved in 2026\.[\s\S]*Deploy safely\./u
+      )
     }));
   });
 
@@ -57,7 +59,8 @@ describe("required projection writer", () => {
           resource: "https://docs.example.com/guide",
           timestamp: "2026-07-17T00:00:00Z",
           tags: ["operations", "current"],
-          metadata: expect.objectContaining({ description: "Deploy safely." })
+          description: "Deploy safely.",
+          metadata: expect.objectContaining({ description: "Guide" })
         })
       })]
     }));

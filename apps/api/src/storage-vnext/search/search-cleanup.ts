@@ -47,9 +47,11 @@ export function createStorageVnextSearchCleanup(config: CleanupConfig) {
     async cleanupFailedCandidate(input: {
       failedBefore: string;
       correlationPublicId: string;
+      candidatePublicId?: string;
     }) {
       assertTimestamp(input.failedBefore);
       assertId(input.correlationPublicId);
+      if (input.candidatePublicId !== undefined) assertId(input.candidatePublicId);
       const lease = await config.repository.claimFailedCandidate({
         ...input,
         providerKind: config.provider.kind

@@ -9,6 +9,8 @@ import type { StorageVnextGraphNodeFact } from
   "../src/storage-vnext/graph/ports.js";
 import { createMeilisearchProviderRuntime } from
   "../src/infrastructure/meilisearch/meilisearch-provider-runtime.js";
+import { STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION } from
+  "../src/storage-vnext/search/documents.js";
 
 describe("storage vNext graph candidate search", () => {
   it("hydrates current graph nodes from the knowledge-base unified active index", async () => {
@@ -57,7 +59,7 @@ describe("storage vNext graph candidate search", () => {
       filter: [
         "knowledgeBaseId = \"kb-1\"",
         "documentKind = \"graph_seed\"",
-        "schemaVersion = \"storage-vnext-graph-seed-v1\""
+        `schemaVersion = "${STORAGE_VNEXT_GRAPH_SEED_SCHEMA_VERSION}"`
       ].join(" AND "),
       limit: 21,
       attributesToSearchOn: ["title", "logicalPath", "searchText", "rankingTerms"],

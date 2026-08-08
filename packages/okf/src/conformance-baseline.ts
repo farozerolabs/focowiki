@@ -1,12 +1,51 @@
 export const OKF_CONFORMANCE_BASELINE = {
-  version: "0.1",
+  version: "0.2",
   announcementUrl:
-    "https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/",
+    "https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals",
   specificationUrl:
-    "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a/okf/SPEC.md",
-  repositoryRevision: "ee67a5ca27044ebe7c38385f5b6cffc2305a9c1a",
-  retrievedAt: "2026-07-13"
+    "https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/930b65fc3f5619d5d0591f88c72ebae8b848d60d/okf/SPEC.md",
+  repositoryRevision: "930b65fc3f5619d5d0591f88c72ebae8b848d60d",
+  retrievedAt: "2026-08-07"
 } as const;
+
+export const OKF_V02_AUDIT_BASELINE = OKF_CONFORMANCE_BASELINE;
+
+export const OKF_V02_REFERENCE_DIFFERENCES = [{
+  path: "okf/bundles/acme_retail/log.md",
+  ruleId: "OKF-0.2-LOG-STRUCTURE",
+  observation:
+    "The pinned sample uses concept frontmatter and a Bundle history heading although SPEC sections 9 and 11 require the reserved log structure."
+}] as const;
+
+export const OKF_V02_RULE_AUDIT_BASELINE = [
+  auditRule("OKF-0.2-CONCEPT-FRONTMATTER", "official_must", "4, 11", "concept-validation"),
+  auditRule("OKF-0.2-CONCEPT-TYPE", "official_must", "4.1, 11", "concept-validation"),
+  auditRule("OKF-0.2-RESERVED-FILENAME", "official_must", "3.1, 11", "reserved-file-validation"),
+  auditRule("OKF-0.2-INDEX-STRUCTURE", "official_must", "8, 11, 12", "reserved-file-validation"),
+  auditRule("OKF-0.2-LOG-STRUCTURE", "official_must", "9, 11", "reserved-file-validation"),
+  auditRule("OKF-0.2-UNKNOWN-FIELDS", "official_must", "4.1, 11", "v02/parsing"),
+  auditRule("OKF-0.2-VERIFIED-MAPPING", "official_must", "5.2, 11", "v02/verification"),
+  auditRule("OKF-0.2-MISSING-OPTIONAL", "official_must", "5.3, 11", "v02/parsing"),
+  auditRule("OKF-0.2-BROKEN-LINK-TOLERANCE", "official_must", "6.1, 11", "v02/provenance"),
+  auditRule("OKF-0.2-FUTURE-VERSION", "official_should", "12", "v02/profile"),
+  auditRule("OKF-0.2-SOURCES", "official_should", "5.1", "v02/provenance"),
+  auditRule("OKF-0.2-GENERATED", "official_should", "5.2", "v02/parsing"),
+  auditRule("OKF-0.2-TRUST-TIERS", "official_should", "5.3", "v02/verification"),
+  auditRule("OKF-0.2-LIFECYCLE", "official_should", "5.4, 5.5", "v02/lifecycle"),
+  auditRule("OKF-0.2-ACTOR-CONVENTION", "official_should", "7", "v02/actors"),
+  auditRule("OKF-0.2-ATTESTED-COMPUTATION", "official_should", "10", "v02/attested-computation"),
+  auditRule("OKF-0.2-LEGACY-TIMESTAMP", "official_should", "13.1", "v02/parsing"),
+  auditRule("OKF-0.2-LEGACY-CITATIONS", "official_should", "13.1", "markdown-appendix")
+] as const;
+
+function auditRule(
+  ruleId: string,
+  classification: "official_must" | "official_should",
+  specificationSection: string,
+  implementationBoundary: string
+) {
+  return { ruleId, classification, specificationSection, implementationBoundary } as const;
+}
 
 export const OKF_RESERVED_MARKDOWN_FILES = ["index.md", "log.md"] as const;
 export const OKF_CONCEPT_ROLES = [
@@ -16,22 +55,27 @@ export const OKF_CONCEPT_ROLES = [
 ] as const;
 
 export const OKF_NORMATIVE_RULES = [
-  "OKF-0.1-CONCEPT-FRONTMATTER",
-  "OKF-0.1-CONCEPT-TYPE",
-  "OKF-0.1-INDEX-STRUCTURE",
-  "OKF-0.1-LOG-STRUCTURE"
+  "OKF-0.2-CONCEPT-FRONTMATTER",
+  "OKF-0.2-CONCEPT-TYPE",
+  "OKF-0.2-RESERVED-FILENAME",
+  "OKF-0.2-INDEX-STRUCTURE",
+  "OKF-0.2-LOG-STRUCTURE",
+  "OKF-0.2-UNKNOWN-FIELDS",
+  "OKF-0.2-VERIFIED-MAPPING",
+  "OKF-0.2-MISSING-OPTIONAL",
+  "OKF-0.2-BROKEN-LINK-TOLERANCE"
 ] as const;
 
 export const OKF_RECOMMENDED_RULES = [
-  "OKF-0.1-RECOMMENDED-TITLE",
-  "OKF-0.1-RECOMMENDED-DESCRIPTION",
-  "OKF-0.1-RECOMMENDED-RESOURCE",
-  "OKF-0.1-RECOMMENDED-TAGS",
-  "OKF-0.1-RECOMMENDED-TIMESTAMP",
-  "OKF-0.1-RECOMMENDED-STRUCTURED-BODY",
-  "OKF-0.1-RECOMMENDED-BUNDLE-LINKS",
-  "OKF-0.1-RECOMMENDED-INDEX-DESCRIPTIONS",
-  "OKF-0.1-RECOMMENDED-NUMBERED-CITATIONS"
+  "OKF-0.2-FUTURE-VERSION",
+  "OKF-0.2-SOURCES",
+  "OKF-0.2-GENERATED",
+  "OKF-0.2-TRUST-TIERS",
+  "OKF-0.2-LIFECYCLE",
+  "OKF-0.2-ACTOR-CONVENTION",
+  "OKF-0.2-ATTESTED-COMPUTATION",
+  "OKF-0.2-LEGACY-TIMESTAMP",
+  "OKF-0.2-LEGACY-CITATIONS"
 ] as const;
 
 export const OKF_PRODUCER_RULES = [
@@ -50,7 +94,7 @@ export type OkfProducerRule = (typeof OKF_PRODUCER_RULES)[number];
 export type OkfRuleId = OkfNormativeRule | OkfRecommendedRule | OkfProducerRule;
 export type OkfRuleClassification = "official_must" | "official_should" | "producer";
 
-type OkfConformanceRuleMatrixEntry = {
+export type OkfConformanceRuleMatrixEntry = {
   ruleId: OkfRuleId;
   classification: OkfRuleClassification;
   specificationSection: string;
@@ -62,127 +106,44 @@ type OkfConformanceRuleMatrixEntry = {
   manualReviewEvidence: string;
 };
 
-const GENERATED_EXAMPLE = "apps/api/test/okf-publication.test.ts";
+const GENERATED_EXAMPLE = "apps/api/test/okf-v02-red.test.ts";
 
 export const OKF_CONFORMANCE_RULE_MATRIX = [
-  officialMust(
-    "OKF-0.1-CONCEPT-FRONTMATTER",
-    "4, 9",
-    "Every non-reserved Markdown concept begins with parseable YAML frontmatter.",
-    "concept with YAML frontmatter",
-    "concept without frontmatter or with invalid YAML",
-    "source-backed concept frontmatter comparison"
-  ),
-  officialMust(
-    "OKF-0.1-CONCEPT-TYPE",
-    "4.1, 9",
-    "Every concept frontmatter block contains a non-empty type.",
-    "concept with a non-empty type",
-    "concept with a missing or empty type",
-    "source-backed concept type comparison"
-  ),
-  officialMust(
-    "OKF-0.1-INDEX-STRUCTURE",
-    "3.1, 6, 9, 11",
-    "Reserved index files use headings and permitted frontmatter only.",
-    "root and nested index files",
-    "nested index frontmatter or malformed root declaration",
-    "root and nested directory index review"
-  ),
-  officialMust(
-    "OKF-0.1-LOG-STRUCTURE",
-    "3.1, 7, 9",
-    "Reserved log files use the official heading and descending ISO date groups.",
-    "date-grouped log without frontmatter",
-    "log frontmatter, wrong heading, non-ISO group, or ascending groups",
-    "root and retained log continuation review"
-  ),
-  officialShould("OKF-0.1-RECOMMENDED-TITLE", "4.1", "Generated concepts include a readable title."),
-  officialShould("OKF-0.1-RECOMMENDED-DESCRIPTION", "4.1, 6", "Generated concepts and index entries include concise descriptions."),
-  officialShould("OKF-0.1-RECOMMENDED-RESOURCE", "4.1", "Canonical resource URIs are preserved when evidence exists."),
-  officialShould("OKF-0.1-RECOMMENDED-TAGS", "4.1", "Safe source tags are preserved as a YAML list."),
-  officialShould("OKF-0.1-RECOMMENDED-TIMESTAMP", "4.1", "Meaningful timestamps use ISO 8601 values."),
-  officialShould("OKF-0.1-RECOMMENDED-STRUCTURED-BODY", "4.2", "Generated guidance favors structured Markdown."),
-  officialShould("OKF-0.1-RECOMMENDED-BUNDLE-LINKS", "5", "Generated internal links use bundle-relative Markdown paths."),
-  officialShould("OKF-0.1-RECOMMENDED-INDEX-DESCRIPTIONS", "6", "Generated index entries include target descriptions."),
-  officialShould("OKF-0.1-RECOMMENDED-NUMBERED-CITATIONS", "8", "Generated citation appendices use numbered Markdown links."),
-  producer("FOCOWIKI-QUALITY-STANDARD-MARKDOWN-LINKS", "Generated content excludes wiki-link syntax."),
-  producer("FOCOWIKI-QUALITY-TITLE", "Generated concepts expose one shared display identity."),
-  producer("FOCOWIKI-QUALITY-NAVIGATION", "Generated navigation is complete and descriptive."),
-  producer("FOCOWIKI-QUALITY-GENERATED-TARGET", "Every producer-generated target exists in the candidate release."),
-  producer("FOCOWIKI-QUALITY-GENERATED-IDENTITY", "Generated labels and target identities agree."),
-  producer("FOCOWIKI-QUALITY-PROGRESSIVE-DISCLOSURE", "Large directory navigation remains bounded and complete."),
-  producer("FOCOWIKI-EXTENSION-NAVIGATION", "Continuation concepts declare their navigation-only role.")
-] as const satisfies readonly OkfConformanceRuleMatrixEntry[];
-
-function officialMust(
-  ruleId: OkfNormativeRule,
-  specificationSection: string,
-  validatorAssertion: string,
-  positiveFixture: string,
-  negativeFixture: string,
-  manualReviewEvidence: string
-): OkfConformanceRuleMatrixEntry {
-  return {
-    ruleId,
-    classification: "official_must",
-    specificationSection,
-    implementation: implementationForRule(ruleId),
-    validatorAssertion,
-    positiveFixture,
-    negativeFixture,
+  ...OKF_V02_RULE_AUDIT_BASELINE.map((rule) => ({
+    ruleId: rule.ruleId as OkfNormativeRule | OkfRecommendedRule,
+    classification: rule.classification,
+    specificationSection: rule.specificationSection,
+    implementation: `packages/okf/src/${rule.implementationBoundary}.ts`,
+    validatorAssertion: assertionForRule(rule.ruleId),
+    positiveFixture: "pinned official OKF 0.2 bundle or generated concept fixture",
+    negativeFixture: "table-driven source advisory and Focowiki-owned blocking fixture",
     generatedExample: GENERATED_EXAMPLE,
-    manualReviewEvidence
-  };
-}
-
-function officialShould(
-  ruleId: OkfRecommendedRule,
-  specificationSection: string,
-  validatorAssertion: string
-): OkfConformanceRuleMatrixEntry {
-  return {
+    manualReviewEvidence: "pinned official bundle and generated release comparison"
+  })),
+  ...OKF_PRODUCER_RULES.map((ruleId) => ({
     ruleId,
-    classification: "official_should",
-    specificationSection,
-    implementation: implementationForRule(ruleId),
-    validatorAssertion,
-    positiveFixture: "generated concept or reserved navigation fixture",
-    negativeFixture: "advisory fixture without safe recommendation evidence",
-    generatedExample: GENERATED_EXAMPLE,
-    manualReviewEvidence: "generated metadata and Markdown structure comparison"
-  };
-}
-
-function producer(ruleId: OkfProducerRule, validatorAssertion: string): OkfConformanceRuleMatrixEntry {
-  return {
-    ruleId,
-    classification: "producer",
+    classification: "producer" as const,
     specificationSection: "Focowiki producer profile",
-    implementation: implementationForRule(ruleId),
-    validatorAssertion,
-    positiveFixture: "canonical generated bundle fixture",
-    negativeFixture: "generated-output defect fixture",
+    implementation: implementationForProducerRule(ruleId),
+    validatorAssertion: assertionForRule(ruleId),
+    positiveFixture: "canonical generated OKF 0.2 release",
+    negativeFixture: "generated-output ownership or navigation defect fixture",
     generatedExample: GENERATED_EXAMPLE,
     manualReviewEvidence: "Focowiki generated-output review"
-  };
+  }))
+] as const satisfies readonly OkfConformanceRuleMatrixEntry[];
+
+function assertionForRule(ruleId: string): string {
+  if (ruleId.includes("INDEX-STRUCTURE")) return "Reserved index files follow OKF 0.2 structure.";
+  if (ruleId.includes("LOG-STRUCTURE")) return "Reserved log files follow OKF 0.2 structure.";
+  if (ruleId.includes("CONCEPT-FRONTMATTER")) return "Concept YAML is parseable when present.";
+  if (ruleId.includes("CONCEPT-TYPE")) return "Conforming concepts use a non-empty type.";
+  if (ruleId.startsWith("FOCOWIKI-")) return "Focowiki-owned output satisfies its producer-quality gate.";
+  return "Safe source gaps remain advisory while Focowiki-owned producer defects block activation.";
 }
 
-function implementationForRule(ruleId: OkfRuleId): string {
-  if (ruleId.includes("INDEX-STRUCTURE") || ruleId.includes("LOG-STRUCTURE")) {
-    return "packages/okf/src/reserved-file-validation.ts";
-  }
-  if (ruleId.includes("CITATION")) {
-    return "packages/okf/src/citation-validation.ts";
-  }
-  if (
-    ruleId.includes("LINK")
-    || ruleId.includes("NAVIGATION")
-    || ruleId.includes("TARGET")
-    || ruleId.includes("IDENTITY")
-    || ruleId.includes("DISCLOSURE")
-  ) {
-    return "packages/okf/src/generated-link-validation.ts";
-  }
-  return "packages/okf/src/concept-validation.ts";
+function implementationForProducerRule(ruleId: OkfProducerRule): string {
+  return ruleId.includes("TITLE")
+    ? "packages/okf/src/concept-validation.ts"
+    : "packages/okf/src/generated-link-validation.ts";
 }

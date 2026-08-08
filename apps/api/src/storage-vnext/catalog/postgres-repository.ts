@@ -11,6 +11,7 @@ import type {
   StorageVnextCurrentSourceFact,
   StorageVnextDirectoryFact,
   StorageVnextKnowledgeBaseFact,
+  StorageVnextModelInvocationFact,
   StorageVnextSourceFileFact,
   StorageVnextSourceFileStatus,
   StorageVnextSourceRevisionFact
@@ -70,6 +71,13 @@ type SourceFileRow = {
   status: StorageVnextSourceFileStatus;
   safe_error_code: string | null;
   safe_error_message: string | null;
+  model_invocation_source_revision_public_id: string | null;
+  model_invocation_status: StorageVnextModelInvocationFact["status"] | null;
+  model_invocation_model_name: string | null;
+  model_invocation_started_at: Date | null;
+  model_invocation_ended_at: Date | null;
+  model_invocation_warning_count: number | string | null;
+  model_invocation_error_code: string | null;
   revision: number | string;
   deleted_at: Date | null;
 };
@@ -101,6 +109,10 @@ const SOURCE_FILE_COLUMNS = `
   source.logical_path, source.normalized_path, source.title, source.metadata,
   current_revision.source_revision_public_id AS current_revision_public_id,
   source.status, source.safe_error_code, source.safe_error_message,
+  source.model_invocation_source_revision_public_id,
+  source.model_invocation_status, source.model_invocation_model_name,
+  source.model_invocation_started_at, source.model_invocation_ended_at,
+  source.model_invocation_warning_count, source.model_invocation_error_code,
   source.revision, source.deleted_at
 `;
 
@@ -442,6 +454,9 @@ export function createPostgresStorageVnextCatalogRepository(
     },
 
     async updateSourceFileState(input) {
+      validateModelInvocation(input.modelInvocation);
+      const updateModelInvocation = input.modelInvocation !== undefined;
+      const modelInvocation = input.modelInvocation ?? null;
       const rows = await sql<SourceFileRow[]>`
         WITH updated AS (
           UPDATE focowiki.source_files
@@ -449,6 +464,28 @@ export function createPostgresStorageVnextCatalogRepository(
               status = ${input.status},
               safe_error_code = ${input.safeErrorCode},
               safe_error_message = ${input.safeErrorMessage},
+              model_invocation_source_revision_public_id = CASE
+                WHEN ${updateModelInvocation}
+                  THEN ${modelInvocation?.sourceRevisionPublicId ?? null}
+                ELSE model_invocation_source_revision_public_id END,
+              model_invocation_status = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.status ?? null}
+                ELSE model_invocation_status END,
+              model_invocation_model_name = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.modelName ?? null}
+                ELSE model_invocation_model_name END,
+              model_invocation_started_at = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.startedAt ?? null}
+                ELSE model_invocation_started_at END,
+              model_invocation_ended_at = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.endedAt ?? null}
+                ELSE model_invocation_ended_at END,
+              model_invocation_warning_count = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.warningCount ?? null}
+                ELSE model_invocation_warning_count END,
+              model_invocation_error_code = CASE WHEN ${updateModelInvocation}
+                THEN ${modelInvocation?.errorCode ?? null}
+                ELSE model_invocation_error_code END,
               revision = revision + 1,
               updated_at = now()
           WHERE knowledge_base_id = ${input.knowledgeBaseId}
@@ -462,6 +499,10 @@ export function createPostgresStorageVnextCatalogRepository(
                updated.normalized_path, updated.title, updated.metadata,
                current_revision.source_revision_public_id AS current_revision_public_id,
                updated.status, updated.safe_error_code, updated.safe_error_message,
+               updated.model_invocation_source_revision_public_id,
+               updated.model_invocation_status, updated.model_invocation_model_name,
+               updated.model_invocation_started_at, updated.model_invocation_ended_at,
+               updated.model_invocation_warning_count, updated.model_invocation_error_code,
                updated.revision, updated.deleted_at
         FROM updated
         LEFT JOIN focowiki.source_file_current_revisions current_revision
@@ -597,6 +638,10 @@ export function createPostgresStorageVnextCatalogRepository(
                    updated.normalized_path, updated.title, updated.metadata,
                    current_revision.source_revision_public_id AS current_revision_public_id,
                    updated.status, updated.safe_error_code, updated.safe_error_message,
+                   updated.model_invocation_source_revision_public_id,
+                   updated.model_invocation_status, updated.model_invocation_model_name,
+                   updated.model_invocation_started_at, updated.model_invocation_ended_at,
+                   updated.model_invocation_warning_count, updated.model_invocation_error_code,
                    updated.revision, updated.deleted_at
             FROM updated
             LEFT JOIN focowiki.source_file_current_revisions current_revision
@@ -651,6 +696,10 @@ export function createPostgresStorageVnextCatalogRepository(
                    updated.normalized_path, updated.title, updated.metadata,
                    current_revision.source_revision_public_id AS current_revision_public_id,
                    updated.status, updated.safe_error_code, updated.safe_error_message,
+                   updated.model_invocation_source_revision_public_id,
+                   updated.model_invocation_status, updated.model_invocation_model_name,
+                   updated.model_invocation_started_at, updated.model_invocation_ended_at,
+                   updated.model_invocation_warning_count, updated.model_invocation_error_code,
                    updated.revision, updated.deleted_at
             FROM updated
             LEFT JOIN focowiki.source_file_current_revisions current_revision
@@ -991,9 +1040,67 @@ function mapSourceFile(row: SourceFileRow): StorageVnextSourceFileFact {
     status: row.status,
     safeErrorCode: row.safe_error_code,
     safeErrorMessage: row.safe_error_message,
+    modelInvocation: mapModelInvocation(row),
     revision: Number(row.revision),
     visibility: row.deleted_at ? "deleted" : "current"
   };
+}
+
+function mapModelInvocation(row: SourceFileRow): StorageVnextModelInvocationFact | null {
+  if (!row.model_invocation_status) return null;
+  if (!row.model_invocation_source_revision_public_id) {
+    throw new StorageVnextCatalogRepositoryError("scope_conflict");
+  }
+  const warningCount = Number(row.model_invocation_warning_count);
+  if (!Number.isSafeInteger(warningCount) || warningCount < 0) {
+    throw new StorageVnextCatalogRepositoryError("scope_conflict");
+  }
+  return {
+    sourceRevisionPublicId: row.model_invocation_source_revision_public_id,
+    status: row.model_invocation_status,
+    modelName: row.model_invocation_model_name,
+    startedAt: row.model_invocation_started_at?.toISOString() ?? null,
+    endedAt: row.model_invocation_ended_at?.toISOString() ?? null,
+    warningCount,
+    errorCode: row.model_invocation_error_code
+  };
+}
+
+function validateModelInvocation(value: StorageVnextModelInvocationFact | null | undefined): void {
+  if (value === undefined || value === null) return;
+  const validTimestamp = (timestamp: string | null) =>
+    timestamp === null || Number.isFinite(Date.parse(timestamp));
+  const named = typeof value.modelName === "string"
+    && value.modelName.length > 0 && Buffer.byteLength(value.modelName, "utf8") <= 255;
+  const validError = value.errorCode === null || (
+    value.errorCode.length > 0 && Buffer.byteLength(value.errorCode, "utf8") <= 128
+  );
+  if (
+    !["running", "completed", "failed", "skipped"].includes(value.status)
+    || value.sourceRevisionPublicId.length === 0
+    || Buffer.byteLength(value.sourceRevisionPublicId, "utf8") > 255
+    || !validTimestamp(value.startedAt)
+    || !validTimestamp(value.endedAt)
+    || !Number.isSafeInteger(value.warningCount)
+    || value.warningCount < 0
+    || value.warningCount > 1_000
+    || !validError
+    || value.status === "skipped" && (
+      value.modelName !== null || value.startedAt !== null
+      || value.endedAt === null || value.errorCode !== null
+    )
+    || value.status !== "skipped" && !named
+    || value.status === "running" && (
+      value.startedAt === null || value.endedAt !== null || value.errorCode !== null
+    )
+    || ["completed", "failed"].includes(value.status) && (
+      value.startedAt === null || value.endedAt === null
+    )
+    || value.startedAt !== null && value.endedAt !== null
+      && Date.parse(value.endedAt) < Date.parse(value.startedAt)
+    || value.status === "completed" && value.errorCode !== null
+    || value.status === "failed" && value.errorCode === null
+  ) throw new StorageVnextCatalogRepositoryError("invalid_input");
 }
 
 function mapSourceRevision(row: SourceRevisionRow): StorageVnextSourceRevisionFact {

@@ -159,6 +159,7 @@ describe("storage vNext publication page artifact", () => {
         title: "Setup",
         description: "Install and configure the service."
       },
+      sourceMetadata: current.sourceFile.metadata as never,
       suggestions: null,
       graphLinks: [outgoingLink, incomingLink]
     }, sourceBody);
@@ -178,6 +179,129 @@ describe("storage vNext publication page artifact", () => {
     expect(expected).toContain(
       "Incoming from \"Overview\" to \"Setup\": Overview introduces setup as the next step."
     );
+  });
+
+  it("publishes irregular source metadata without repair or generated citations", () => {
+    const current = currentSource();
+    current.sourceFile.metadata = {
+      type: "Attested Computation",
+      title: "Incomplete computation",
+      resource: "https://example.com/concept",
+      timestamp: "2026-06-20T22:53:05Z",
+      runtime: ["python"],
+      parameters: "invalid",
+      executor: 42,
+      attester: false
+    };
+    const sourceBody = [
+      "---",
+      'type: "Attested Computation"',
+      'title: "Incomplete computation"',
+      "runtime: [python]",
+      "---",
+      "# Incomplete computation",
+      "",
+      "Body remains readable.",
+      "",
+      "# Citations",
+      "",
+      "[1] [Legacy](https://example.com/legacy)"
+    ].join("\n");
+    const node = graphNode({
+      publicId: "node-incomplete",
+      sourceFilePublicId: current.sourceFile.publicId,
+      sourceRevisionPublicId: current.sourceRevision.publicId,
+      logicalPath: "pages/guides/setup.md",
+      label: "Incomplete computation"
+    });
+
+    const artifact = assembleStorageVnextPageArtifact({
+      current,
+      node,
+      neighborhood: [],
+      endpointNodes: [node],
+      sourceBody,
+      ordinal: 8,
+      relatedFileLimit: 10
+    });
+    const content = Buffer.from(artifact.bytes).toString("utf8");
+
+    expect(content.match(/^---$/gmu)).toHaveLength(2);
+    expect(content).toContain('runtime:\n  - "python"');
+    expect(content).toContain("parameters: \"invalid\"");
+    expect(content).toContain("executor: 42");
+    expect(content).toContain("attester: false");
+    expect(content).toContain('timestamp: "2026-06-20T22:53:05Z"');
+    expect(content).not.toContain("[1] [Source]");
+    expect(content).toContain("[1] [Legacy](https://example.com/legacy)");
+  });
+
+  it.each([
+    {
+      label: "valid",
+      metadata: {
+        type: "Attested Computation",
+        title: "Verified computation",
+        sources: [{ id: "source-a", resource: "https://example.com/evidence" }],
+        generated: { by: "human:author", at: "2026-08-01T00:00:00Z" },
+        verified: [{ by: "human:reviewer", at: "2026-08-02T00:00:00Z" }],
+        status: "stable",
+        stale_after: "2026-12-31",
+        runtime: ["python"],
+        parameters: { region: "global" },
+        computation: "print('ok')",
+        executor: { by: "process:runner" },
+        attester: { by: "human:reviewer" }
+      },
+      expected: 'generated: {"by":"human:author","at":"2026-08-01T00:00:00Z"}'
+    },
+    {
+      label: "missing",
+      metadata: {},
+      expected: "# Setup"
+    },
+    {
+      label: "malformed",
+      metadata: {
+        type: ["Guide"],
+        sources: "unknown",
+        generated: 42,
+        verified: "unknown",
+        status: ["stable"],
+        runtime: "python",
+        parameters: false,
+        executor: 42,
+        attester: false
+      },
+      expected: 'sources: "unknown"'
+    }
+  ])("keeps $label metadata stable across retry publication", ({ metadata, expected }) => {
+    const current = currentSource();
+    current.sourceFile.metadata = metadata;
+    const node = graphNode({
+      publicId: "node-setup",
+      sourceFilePublicId: current.sourceFile.publicId,
+      sourceRevisionPublicId: current.sourceRevision.publicId,
+      logicalPath: "pages/guides/setup.md",
+      label: "Setup"
+    });
+    const request = {
+      current,
+      node,
+      neighborhood: [],
+      endpointNodes: [node],
+      sourceBody: "# Setup\n\nBody remains readable.",
+      ordinal: 9,
+      relatedFileLimit: 10
+    };
+
+    const first = assembleStorageVnextPageArtifact(request);
+    const retry = assembleStorageVnextPageArtifact(request);
+    const content = Buffer.from(first.bytes).toString("utf8");
+
+    expect(content).toContain(expected);
+    expect(retry.bytes).toEqual(first.bytes);
+    expect(retry.logicalPath).toBe(first.logicalPath);
   });
 });
 

@@ -94,7 +94,13 @@ describe("Developer OpenAPI released reads", () => {
     expect(fixture.lastSearchInput).toMatchObject({
       scope: "all",
       fileKind: "page",
-      graphDepth: 1
+      graphDepth: 1,
+      okfFilters: {
+        status: null,
+        trustTier: null,
+        freshness: null,
+        requestEpochDay: null
+      }
     });
 
     const file = await getJson(
@@ -159,6 +165,58 @@ describe("Developer OpenAPI released reads", () => {
         }]
       }
     });
+  });
+
+  it("threads normalized OKF filters and rejects each invalid value at the HTTP boundary", async () => {
+    const fixture = createFixture();
+    const response = await getJson(
+      fixture.app,
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&okfStatus=stable&okfTrustTier=human-reviewed&okfFreshness=fresh`
+    );
+    expect(response.status).toBe(200);
+    expect(fixture.lastSearchInput).toMatchObject({
+      okfFilters: {
+        status: "stable",
+        trustTier: "human-reviewed",
+        freshness: "fresh"
+      }
+    });
+    expect((fixture.lastSearchInput as {
+      okfFilters: { requestEpochDay: number | null };
+    }).okfFilters.requestEpochDay).toEqual(expect.any(Number));
+
+    for (const [field, value, code] of [
+      ["okfStatus", "unknown", "INVALID_FILE_SEARCH_OKF_STATUS"],
+      ["okfTrustTier", "trusted", "INVALID_FILE_SEARCH_OKF_TRUST_TIER"],
+      ["okfFreshness", "current", "INVALID_FILE_SEARCH_OKF_FRESHNESS"]
+    ]) {
+      const invalid = await getJson(
+        fixture.app,
+        `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&${field}=${value}`
+      );
+      expect(invalid).toMatchObject({
+        status: 422,
+        body: {
+          error: {
+            code: "VALIDATION_ERROR",
+            details: { code }
+          }
+        }
+      });
+    }
+  });
+
+  it("requires authorization before OKF search filters reach the application", async () => {
+    const fixture = createFixture();
+    const response = await fixture.app.request(
+      `/openapi/v2/knowledge-bases/${knowledgeBaseId}/files/search?query=shared&okfStatus=stable`
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "UNAUTHORIZED", httpStatus: 401 }
+    });
+    expect(fixture.lastSearchInput).toBeNull();
   });
 
   it("returns ancestor chains for tree searches", async () => {

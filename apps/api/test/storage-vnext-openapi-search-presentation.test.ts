@@ -51,7 +51,12 @@ describe("storage vNext OpenAPI search presentation", () => {
         title: "Alpha",
         snippet: "alpha graph evidence",
         score: 1,
-        kind: "graph"
+        kind: "graph",
+        metadata: {
+          type: "Guide",
+          tags: ["graph"],
+          status: "stable"
+        }
       },
       relationships: [{
         public_id: "edge-a-b",
@@ -70,6 +75,16 @@ describe("storage vNext OpenAPI search presentation", () => {
       edgeId: null,
       matchType: "graph_node",
       matchedFields: ["description"],
+      tags: ["graph"],
+      frontmatter: {
+        type: "Guide",
+        tags: ["graph"],
+        status: "stable"
+      },
+      okfSignals: {
+        effectiveStatus: "stable",
+        trustTier: "unverified"
+      },
       graphContext: {
         graphRef: "_graph/by-file/file-a.json",
         depth: 1,
@@ -106,5 +121,25 @@ describe("storage vNext OpenAPI search presentation", () => {
       sourceFileStatusById: null,
       sourceFileEventsById: null
     });
+  });
+
+  it("keeps excluded source runtime assets as metadata without readable-file actions", () => {
+    const result = presentOpenApiGeneratedFile("kb-a", "root-a", {
+      id: "generated-computation",
+      logicalPath: "pages/computation.md",
+      frontmatter: {
+        type: "Attested Computation",
+        runtime: "python",
+        computation: { resource: "references/runtime.py" },
+        attester: { resource: "references/attester.py" }
+      }
+    });
+
+    expect(result.frontmatter).toMatchObject({
+      computation: { resource: "references/runtime.py" },
+      attester: { resource: "references/attester.py" }
+    });
+    expect(JSON.stringify(result.readActions)).not.toContain("runtime.py");
+    expect(JSON.stringify(result.readActions)).not.toContain("attester.py");
   });
 });

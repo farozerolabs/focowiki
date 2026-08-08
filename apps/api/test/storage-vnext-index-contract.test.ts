@@ -10,6 +10,7 @@ const bootstrap = readFileSync(
 const INDEX_EVIDENCE = {
   source_directories_active_parent_path_idx: "catalog:listDirectories",
   source_files_active_directory_path_idx: "catalog:listSourceFiles",
+  source_files_active_model_invocation_idx: "admin:listSourceFiles by LLM status",
   source_file_current_revisions_revision_idx: "catalog:revision replacement cleanup",
   source_revisions_object_idx: "ownership:object registration inverse",
   source_event_summaries_scope_time_idx: "source-events:list",
@@ -84,6 +85,9 @@ describe("storage vNext minimal index contract", () => {
     );
     expect(bootstrap).toContain(
       "source_files_active_directory_path_idx on focowiki.source_files (knowledge_base_id, directory_public_id, normalized_path, public_id) where deleted_at is null"
+    );
+    expect(bootstrap).toContain(
+      "source_files_active_model_invocation_idx on focowiki.source_files (knowledge_base_id, model_invocation_status, logical_path, public_id) where deleted_at is null"
     );
     expect(bootstrap).toContain(
       "source_file_current_revisions_revision_idx on focowiki.source_file_current_revisions (knowledge_base_id, source_revision_public_id, source_file_public_id)"

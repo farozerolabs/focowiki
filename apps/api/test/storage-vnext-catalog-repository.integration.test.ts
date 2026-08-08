@@ -86,13 +86,85 @@ describeOwnedDatabase("storage vNext current catalog repository", () => {
       status: "ready",
       safeErrorCode: null,
       safeErrorMessage: null,
+      modelInvocation: {
+        sourceRevisionPublicId: "revision-current",
+        status: "completed",
+        modelName: "deepseek-v4-flash",
+        startedAt: "2026-08-01T00:00:00.000Z",
+        endedAt: "2026-08-01T00:00:02.000Z",
+        warningCount: 1,
+        errorCode: null
+      },
       revisionCheck: { expectedRevision: source.revision }
     });
     expect(updated.revision).toBe(source.revision + 1);
     expect(updated.status).toBe("ready");
     expect(updated.metadata).toEqual({ language: "en", priority: 2 });
+    expect(updated.modelInvocation).toEqual({
+      sourceRevisionPublicId: "revision-current",
+      status: "completed",
+      modelName: "deepseek-v4-flash",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      endedAt: "2026-08-01T00:00:02.000Z",
+      warningCount: 1,
+      errorCode: null
+    });
     await expect(repository.getKnowledgeBase({ knowledgeBaseId: "kb-current" }))
       .resolves.toMatchObject({ publicId: "kb-current", visibility: "current" });
+  });
+
+  it("round-trips native, legacy, malformed, and incomplete OKF metadata through JSONB", async () => {
+    await createKnowledgeBase(repository, "kb-okf-v02");
+    const metadataCases = [
+      {
+        type: "Guide",
+        sources: [{
+          id: "source-a",
+          resource: "https://example.com/source",
+          last_modified: "2026-08-07"
+        }],
+        generated: { by: "process:publisher", at: "2026-08-07T10:00:00.000Z" },
+        verified: [{ by: "human:reviewer", at: "2026-08-07T11:00:00.000Z" }],
+        status: "stable",
+        stale_after: "2026-09-23"
+      },
+      {
+        type: "Guide",
+        timestamp: "2026-06-20T22:53:05Z",
+        future: { release_date: "2026-08-07" }
+      },
+      {
+        type: ["Guide"],
+        sources: "invalid",
+        generated: 42,
+        verified: "invalid",
+        status: "archived",
+        stale_after: "tomorrow"
+      },
+      {
+        type: "Attested Computation",
+        runtime: ["python"],
+        parameters: "invalid",
+        executor: 42,
+        attester: false
+      }
+    ];
+
+    for (const [index, metadata] of metadataCases.entries()) {
+      const source = await repository.createSourceFile({
+        publicId: `file-okf-v02-${index}`,
+        knowledgeBaseId: "kb-okf-v02",
+        directoryPublicId: null,
+        logicalPath: `case-${index}.md`,
+        title: `Case ${index}`,
+        metadata,
+        status: "ready"
+      });
+      await expect(repository.getSourceFile({
+        knowledgeBaseId: "kb-okf-v02",
+        publicId: source.publicId
+      })).resolves.toMatchObject({ metadata });
+    }
   });
 
   it("creates immutable revisions only for verified objects and selects one current pointer", async () => {

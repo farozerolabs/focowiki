@@ -174,9 +174,63 @@ test("allows only the exact approved OpenSearch cross-scope files", () => {
   for (const path of [
     ".gitignore.local",
     "README.ja.md",
-    "apps/admin/package.json",
+    "apps/admin/package-lock.json",
     "docs/search-internals.md"
   ]) assert.equal(classifyStorageVnextPath(path).policy, "deny");
+});
+
+test("allows only the exact approved OKF 0.2 cross-scope files", () => {
+  const approvedPaths = [
+    "apps/admin/package.json",
+    "apps/api/src/developer-openapi/file-search-filters.ts",
+    "apps/api/src/developer-openapi/file-search-routes.ts",
+    "apps/api/src/developer-openapi/openapi-examples.ts",
+    "apps/api/src/developer-openapi/openapi-paths.ts",
+    "apps/api/src/developer-openapi/openapi-schemas.ts",
+    "apps/api/src/developer-openapi/openapi-shared.ts",
+    "apps/api/src/publication/required-projection-writer.ts",
+    "docs/public/openapi/focowiki-openapi.json",
+    "packages/okf/package.json",
+    "packages/okf/src/conformance-baseline.ts",
+    "packages/okf/src/conformance-types.ts",
+    "packages/okf/src/conformance.ts",
+    "packages/okf/src/generated-citations.ts",
+    "packages/okf/src/index.ts",
+    "packages/okf/src/reserved-file-validation.ts",
+    "packages/okf/src/v02/actors.ts",
+    "packages/okf/src/v02/attested-computation.ts",
+    "packages/okf/src/v02/dates.ts",
+    "packages/okf/src/v02/lifecycle.ts",
+    "packages/okf/src/v02/parsing.ts",
+    "packages/okf/src/v02/profile.ts",
+    "packages/okf/src/v02/provenance.ts",
+    "packages/okf/src/v02/publication-metadata.ts",
+    "packages/okf/src/v02/types.ts",
+    "packages/okf/src/v02/verification.ts",
+    "packages/okf/test/conformance.test.ts",
+    "packages/okf/test/generated-citations.test.ts",
+    "packages/okf/test/v02-domain.test.ts",
+    "packages/okf/test/v02-official-fixtures.test.ts",
+    "packages/okf/test/v02-red.test.ts"
+  ];
+
+  for (const path of approvedPaths) {
+    const classification = classifyStorageVnextPath(path);
+    assert.equal(classification.policy, "allow", path);
+    assert.equal(classification.category, "explicit-task-exception", path);
+    assert.match(
+      classification.exception.approvalReference,
+      /OpenSpec align-google-okf-v0-2-trust-signals task/u,
+      path
+    );
+  }
+
+  for (const path of [
+    "apps/admin/package-lock.json",
+    "apps/api/src/developer-openapi/unrelated-okf-route.ts",
+    "docs/public/openapi/okf-internals.json",
+    "packages/okf/src/v02/unrelated.ts"
+  ]) assert.equal(classifyStorageVnextPath(path).policy, "deny", path);
 });
 
 test("allows an existing settings field-list edit", () => {

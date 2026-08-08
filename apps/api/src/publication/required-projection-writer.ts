@@ -122,6 +122,7 @@ async function writePage(
     pagePath: source.generatedPath,
     fileId: source.sourceFileId,
     metadata,
+    sourceMetadata: source.metadata,
     suggestions: source.suggestions,
     graphLinks: relationships
   }, resolved.body);
@@ -421,7 +422,7 @@ async function buildMachineRecord(
       headings: node?.headings ?? [],
       keywords: node?.keywords ?? source.suggestions?.keywords ?? [],
       language: node?.language ?? null,
-      metadata: presentationMetadata
+      metadata: source.metadata
     };
   } else if (impact.projectionKind === "manifest") {
     record = {
@@ -430,7 +431,7 @@ async function buildMachineRecord(
       sourceRevisionId: source.sourceRevisionId,
       resourceRevision: source.resourceRevision,
       checksumSha256: source.checksumSha256,
-      metadata: presentationMetadata
+      metadata: source.metadata
     };
   } else if (impact.projectionKind === "tree") {
     record = {

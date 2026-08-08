@@ -24,7 +24,7 @@ describe("bounded root writer", () => {
     expect(result.body).toContain("[Browse documents](/pages/index.md)");
     expect(result.body).toContain("[Relationship graph](/_graph/index.md)");
     expect(result.body).not.toContain("100000 source files");
-    expect(result.body).toMatch(/^---\nokf_version: "0\.1"\n---\n#/u);
+    expect(result.body).toMatch(/^---\nokf_version: "0\.2"\n---\n#/u);
     expect(result.body).not.toContain("knowledge_base_id:");
     expect(result.body).not.toContain("generation_id:");
   });
@@ -63,6 +63,10 @@ describe("bounded root writer", () => {
     expect(schema.body).toMatch(
       /^---\ntype: "Schema Reference"\ntitle: "Metadata and navigation schema"\n/u
     );
+    expect(schema.body).toContain("## Recommended user metadata");
+    expect(schema.body).toContain("recommended and optional for upload");
+    expect(schema.body).toContain("## Focowiki-owned artifacts");
+    expect(schema.body).toContain("strictly validated before publication");
   });
 
   it("writes a repeated root path once from the latest resource revision", async () => {

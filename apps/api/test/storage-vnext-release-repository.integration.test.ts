@@ -789,7 +789,7 @@ describeOwnedDatabase("storage vNext bounded release repository", () => {
       idempotency: { key: "fanout-key", requestHash: "7".repeat(64) },
       createdAt: "2026-08-01T03:00:00.000Z"
     });
-    const overBudgetObjectCount = 465;
+    const overBudgetObjectCount = 468;
     const shards = [];
     for (let index = 0; index < overBudgetObjectCount; index += 1) {
       const checksum = index.toString(16).padStart(64, "0");

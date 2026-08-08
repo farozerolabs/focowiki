@@ -7,6 +7,8 @@ import type {
 import type {
   StorageVnextSearchDocument
 } from "./documents.js";
+import type { OkfSearchFilters } from "./okf-signals.js";
+import type { StorageVnextStructuredMetadata } from "../shared/types.js";
 
 export type {
   StorageVnextContentDocument,
@@ -24,6 +26,7 @@ export type StorageVnextSearchResult = {
   snippet: string | null;
   score: number;
   kind: StorageVnextSearchKind;
+  metadata: StorageVnextStructuredMetadata;
 };
 
 export type StorageVnextSearchValidationKind =
@@ -37,7 +40,17 @@ export type StorageVnextSearchValidationKind =
   | "chinese"
   | "mixed_script"
   | "graph_seed"
-  | "ranking";
+  | "ranking"
+  | "okf_omitted"
+  | "okf_malformed"
+  | "okf_status"
+  | "okf_trust"
+  | "okf_fresh"
+  | "okf_stale"
+  | "okf_combined"
+  | "okf_unrelated"
+  | "okf_no_match"
+  | "okf_boundary";
 
 export type StorageVnextSearchValidationCase = {
   kind: StorageVnextSearchValidationKind;
@@ -51,6 +64,7 @@ export type StorageVnextSearchValidationCase = {
   }[];
   minimumRecall: number;
   minimumNdcg: number;
+  okfFilters?: OkfSearchFilters;
 };
 
 export type StorageVnextSearchQueryPort = {
@@ -60,6 +74,7 @@ export type StorageVnextSearchQueryPort = {
     kinds: readonly StorageVnextSearchKind[];
     limit: number;
     cursor: StorageVnextOpaqueCursor | null;
+    okfFilters?: OkfSearchFilters;
   }): Promise<StorageVnextPage<StorageVnextSearchResult>>;
 };
 

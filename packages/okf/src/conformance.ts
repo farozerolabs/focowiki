@@ -31,16 +31,24 @@ export function validateOkfBundleProfile(
   files: OkfBundleFile[],
   profile: OkfValidationProfile
 ): void {
-  const issues = [
-    ...files.flatMap((file) => validateBundleFile(file, profile)),
-    ...validateBundleNavigation(files, profile)
-  ];
-  if (issues.length > 0) {
-    throw new OkfConformanceError(issues);
+  const issues = inspectOkfBundleProfile(files, profile);
+  const blocking = issues.filter((issue) => issue.disposition === "blocking");
+  if (blocking.length > 0) {
+    throw new OkfConformanceError(blocking);
   }
 }
 
-function validateBundleFile(
+export function inspectOkfBundleProfile(
+  files: OkfBundleFile[],
+  profile: OkfValidationProfile
+): OkfConformanceIssue[] {
+  return [
+    ...files.flatMap((file) => inspectOkfMarkdownFile(file, profile)),
+    ...validateBundleNavigation(files, profile)
+  ];
+}
+
+export function inspectOkfMarkdownFile(
   file: OkfBundleFile,
   profile: OkfValidationProfile
 ): OkfConformanceIssue[] {

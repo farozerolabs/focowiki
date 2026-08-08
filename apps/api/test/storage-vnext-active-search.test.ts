@@ -35,7 +35,8 @@ describe("storage vNext active unified search", () => {
       sourceFilePublicId: "file-a",
       sourceRevisionPublicId: "revision-a",
       logicalPath: "pages/a.md",
-      title: "Alpha current"
+      title: "Alpha current",
+      metadata: { type: "Guide", tags: ["policy"] }
     }]);
     const search = createSearch(transport, hydration);
 
@@ -53,7 +54,8 @@ describe("storage vNext active unified search", () => {
         title: "Alpha current",
         snippet: "alpha snippet",
         score: 1,
-        kind: "file"
+        kind: "file",
+        metadata: { type: "Guide", tags: ["policy"] }
       }],
       nextCursor: null
     });
@@ -260,6 +262,135 @@ describe("storage vNext active unified search", () => {
       limit: 1,
       cursor: first.nextCursor
     })).rejects.toMatchObject({ code: "INVALID_SEARCH_CURSOR" });
+    await expect(search.search({
+      knowledgeBaseId: "kb-a",
+      query: "query",
+      kinds: ["file"],
+      limit: 1,
+      cursor: first.nextCursor,
+      okfFilters: {
+        status: "stable",
+        trustTier: null,
+        freshness: null,
+        requestEpochDay: null
+      }
+    })).rejects.toMatchObject({ code: "INVALID_SEARCH_CURSOR" });
+  });
+
+  it("applies native OKF filters and rechecks hydrated metadata before returning files", async () => {
+    const transport = createTransport({
+      search: vi.fn(async () => ({
+        hits: [
+          hit("file-match", "revision-match", "pages/match.md", "Match", null),
+          hit("file-unknown", "revision-unknown", "pages/unknown.md", "Unknown", null)
+        ],
+        estimatedTotalHits: 2,
+        processingTimeMs: 1
+      }))
+    });
+    const search = createSearch(transport, createHydration([
+      {
+        ...current("file-match", "revision-match", "pages/match.md", "Match"),
+        metadata: {
+          status: "stable",
+          stale_after: "2026-09-24",
+          verified: [{ by: "human:reviewer", at: "2026-08-07T11:00:00Z" }]
+        }
+      },
+      {
+        ...current("file-unknown", "revision-unknown", "pages/unknown.md", "Unknown"),
+        metadata: { status: ["invalid"] }
+      }
+    ] as never));
+
+    const result = await search.search({
+      knowledgeBaseId: "kb-a",
+      query: "policy",
+      kinds: ["file"],
+      limit: 10,
+      cursor: null,
+      okfFilters: {
+        status: "stable",
+        trustTier: "human-reviewed",
+        freshness: "fresh",
+        requestEpochDay: 20_719
+      }
+    } as never);
+
+    expect(result.items.map((item) => item.sourceFilePublicId)).toEqual(["file-match"]);
+    expect(transport.search).toHaveBeenCalledWith(expect.objectContaining({
+      filter: expect.stringContaining('okfSignals.status = "stable"')
+    }));
+    expect((transport.search as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].filter)
+      .toContain('okfSignals.trustTier = "human-reviewed"');
+    expect((transport.search as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].filter)
+      .toContain("okfSignals.staleAfterEpochDay > 20719");
+  });
+
+  it("boundedly refills provider pages when hydrated signals reject indexed hits", async () => {
+    const transport = createTransport({
+      search: vi.fn()
+        .mockResolvedValueOnce({
+          hits: [hit("file-stale", "revision-stale", "pages/stale.md", "Stale", null)],
+          estimatedTotalHits: 2,
+          processingTimeMs: 1
+        })
+        .mockResolvedValueOnce({
+          hits: [hit("file-fresh", "revision-fresh", "pages/fresh.md", "Fresh", null)],
+          estimatedTotalHits: 2,
+          processingTimeMs: 1
+        })
+    });
+    const search = createSearch(transport, createHydration([
+      {
+        ...current("file-stale", "revision-stale", "pages/stale.md", "Stale"),
+        metadata: { stale_after: "2026-08-07" }
+      },
+      {
+        ...current("file-fresh", "revision-fresh", "pages/fresh.md", "Fresh"),
+        metadata: { stale_after: "2026-08-08" }
+      }
+    ] as never));
+
+    const result = await search.search({
+      knowledgeBaseId: "kb-a",
+      query: "policy",
+      kinds: ["file"],
+      limit: 1,
+      cursor: null,
+      okfFilters: {
+        status: null,
+        trustTier: null,
+        freshness: "fresh",
+        requestEpochDay: 20_672
+      }
+    } as never);
+
+    expect(result.items.map((item) => item.sourceFilePublicId)).toEqual(["file-fresh"]);
+    expect(transport.search).toHaveBeenCalledTimes(2);
+    expect(transport.search).toHaveBeenLastCalledWith(expect.objectContaining({
+      offset: 1
+    }));
+  });
+
+  it("rejects invalid normalized OKF filters before querying the provider", async () => {
+    const transport = createTransport();
+    const search = createSearch(transport, createHydration([]));
+
+    await expect(search.search({
+      knowledgeBaseId: "kb-a",
+      query: "policy",
+      kinds: ["file"],
+      limit: 10,
+      cursor: null,
+      okfFilters: {
+        status: "unsupported",
+        trustTier: null,
+        freshness: null,
+        requestEpochDay: null
+      }
+    } as never)).rejects.toMatchObject({ code: "INVALID_SEARCH_INPUT" });
+    expect(transport.search).not.toHaveBeenCalled();
   });
 
   it("returns one stable safe error and leaves file-first reads independent", async () => {
@@ -536,5 +667,11 @@ function current(
   logicalPath: string,
   title: string
 ) {
-  return { sourceFilePublicId, sourceRevisionPublicId, logicalPath, title };
+  return {
+    sourceFilePublicId,
+    sourceRevisionPublicId,
+    logicalPath,
+    title,
+    metadata: {}
+  };
 }

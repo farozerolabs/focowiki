@@ -16,7 +16,7 @@ export function validateReservedMarkdownFrontmatter(logicalPath, data) {
   if (logicalPath === "index.md") {
     return keys.length === 1
       && keys[0] === "okf_version"
-      && data.okf_version === "0.1";
+      && data.okf_version === "0.2";
   }
   if (logicalPath === "schema.md") {
     return typeof data?.type === "string"

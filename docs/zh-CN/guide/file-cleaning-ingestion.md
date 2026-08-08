@@ -49,7 +49,7 @@ Admin 上传弹窗支持选择零散 Markdown 文件，也支持选择包含多�
 
 ## Markdown 结构
 
-清洗后的 Markdown 文件应从 YAML frontmatter 开始。
+存在可靠 metadata 时，清洗后的 Markdown 文件可以从 YAML frontmatter 开始；普通 Markdown 仍然可以上传。
 
 ```md
 ---
@@ -94,6 +94,8 @@ This policy applies to support, operations, and account management teams.
 常见元数据字段：
 
 这些字段是推荐示例，用于提升 Markdown 文件的互操作性。上传文件可以包含领域专有元数据。Focowiki 会保留安全且合法的 frontmatter 字段，并透传到生成结果中。
+
+OKF 0.2 还定义了可选的 `sources`、`usage_window`、`generated`、`verified`、`status`、`stale_after` 和 Attested Computation 字段。来源存在证据时应保留这些字段，不要编造缺失的来源或验证信息。安全值即使不符合推荐的 OKF 结构仍可上传和读取，但对应派生信号可能为 `null`。
 
 | 字段 | 用途 |
 | --- | --- |

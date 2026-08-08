@@ -19,12 +19,12 @@ const MAXIMUM_JIEBA_TERMS = 2_000;
 const CONTENT_DOCUMENT_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "contentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "fileKind",
-  "title", "segmentOrdinal", "headingAncestors", "searchText"
+  "title", "segmentOrdinal", "headingAncestors", "searchText", "okfSignals"
 ]);
 const GRAPH_DOCUMENT_FIELDS = new Set([
   "id", "schemaVersion", "documentKind", "knowledgeBaseId",
   "sourceFilePublicId", "sourceRevisionPublicId", "logicalPath", "title",
-  "searchText", "rankingTerms"
+  "searchText", "rankingTerms", "okfSignals"
 ]);
 
 export function createOpenSearchIndexBody(input: {
@@ -70,6 +70,18 @@ export function createOpenSearchIndexBody(input: {
         headingAncestors: standardText(),
         searchText: standardText(),
         rankingTerms: standardText(),
+        okfSignals: {
+          type: "object",
+          dynamic: "strict",
+          properties: {
+            status: keyword(),
+            trustTier: keyword(),
+            staleAfterEpochDay: { type: "long" },
+            generatedAtEpochMs: { type: "long" },
+            latestVerifiedAtEpochMs: { type: "long" },
+            sourceCount: { type: "integer" }
+          }
+        },
         visible: { type: "boolean" },
         _focowikiJiebaText: {
           type: "text",

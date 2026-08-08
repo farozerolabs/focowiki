@@ -18,6 +18,7 @@ import {
   createStorageVnextGraphSeedDocument,
   type StorageVnextSearchDocument
 } from "./documents.js";
+import { createOkfSearchSignals } from "./okf-signals.js";
 import { segmentStorageVnextMarkdown } from "./markdown-segmentation.js";
 import {
   createStorageVnextSearchDocumentSetAccumulator
@@ -45,7 +46,10 @@ export async function buildStorageVnextSearchCandidate(input: {
   knowledgeBaseId: string;
   candidatePublicId: string;
   operationPublicId: string;
-  catalog: Pick<StorageVnextCatalogReadPort, "listCurrentSources">;
+  catalog: Pick<
+    StorageVnextCatalogReadPort,
+    "listCurrentSources" | "listSourceFilesByPublicIds"
+  >;
   sourceBodies: StorageVnextSourceBodyReadPort;
   graph: Pick<StorageVnextGraphReadPort, "listNodes">;
   projection: Pick<StorageVnextSearchProjectionPort, "writeDocumentBatch">;
@@ -156,7 +160,10 @@ export async function buildStorageVnextSearchCandidate(input: {
 async function* iterateCandidateDocuments(
   input: {
     knowledgeBaseId: string;
-    catalog: Pick<StorageVnextCatalogReadPort, "listCurrentSources">;
+    catalog: Pick<
+      StorageVnextCatalogReadPort,
+      "listCurrentSources" | "listSourceFilesByPublicIds"
+    >;
     sourceBodies: StorageVnextSourceBodyReadPort;
     graph: Pick<StorageVnextGraphReadPort, "listNodes">;
     sourcePageSize: number;
@@ -201,8 +208,21 @@ async function* iterateCandidateDocuments(
       limit: input.graphPageSize,
       cursor: graphCursor
     });
+    const sourceFiles = page.items.length === 0
+      ? []
+      : await input.catalog.listSourceFilesByPublicIds({
+          knowledgeBaseId: input.knowledgeBaseId,
+          publicIds: [...new Set(page.items.map((node) => node.sourceFilePublicId))],
+          limit: page.items.length
+        });
+    const sourceFilesByPublicId = new Map(
+      sourceFiles.map((sourceFile) => [sourceFile.publicId, sourceFile])
+    );
     for (const node of page.items) {
       assertCurrentGraphNode(input.knowledgeBaseId, node);
+      const sourceFile = sourceFilesByPublicId.get(node.sourceFilePublicId);
+      if (!sourceFile) throw new Error("Current graph seed source is unavailable");
+      assertCurrentGraphSource(node, sourceFile);
       const profile = readStorageVnextGraphSeedProfile(node);
       yield createStorageVnextGraphSeedDocument({
         knowledgeBaseId: input.knowledgeBaseId,
@@ -211,7 +231,8 @@ async function* iterateCandidateDocuments(
         logicalPath: node.logicalPath,
         title: node.label,
         searchText: profile.searchText,
-        rankingTerms: profile.rankingTerms
+        rankingTerms: profile.rankingTerms,
+        okfSignals: createOkfSearchSignals(sourceFile.metadata)
       });
       result.graphSeedCount += 1;
     }
@@ -231,6 +252,7 @@ async function readCurrentSourceDocuments(
 ): Promise<StorageVnextSearchDocument[]> {
   assertCurrentSource(input.knowledgeBaseId, current);
   const logicalPath = generatedPagePath(current.sourceFile.logicalPath);
+  const okfSignals = createOkfSearchSignals(current.sourceFile.metadata);
   const documents: StorageVnextSearchDocument[] = [
     createStorageVnextContentDocument({
       knowledgeBaseId: input.knowledgeBaseId,
@@ -242,7 +264,8 @@ async function readCurrentSourceDocuments(
       contentKind: "file",
       segmentOrdinal: null,
       headingAncestors: [],
-      searchText: stableMetadataText(current.sourceFile.metadata)
+      searchText: stableMetadataText(current.sourceFile.metadata),
+      okfSignals
     })
   ];
   const chunks = await input.sourceBodies.readVerifiedStream({
@@ -269,7 +292,8 @@ async function readCurrentSourceDocuments(
       contentKind: "segment",
       segmentOrdinal: segment.ordinal,
       headingAncestors: segment.headingAncestors,
-      searchText: segment.searchText
+      searchText: segment.searchText,
+      okfSignals
     }));
   }
   return documents;
@@ -335,33 +359,28 @@ function stableMetadataText(
   metadata: StorageVnextStructuredMetadata
 ): string {
   const lines: string[] = [];
-  appendMetadataLines(lines, "", metadata);
+  for (const key of ["type", "title", "description", "tags"] as const) {
+    appendSearchableMetadataValue(lines, key, metadata[key]);
+  }
   return lines.join("\n");
 }
 
-function appendMetadataLines(
+function appendSearchableMetadataValue(
   lines: string[],
-  path: string,
+  key: string,
   value: StorageVnextStructuredMetadata[string] | undefined
 ): void {
   if (value === null || value === undefined) return;
   if (Array.isArray(value)) {
-    for (const item of value) appendMetadataLines(lines, path, item);
+    for (const item of value) appendSearchableMetadataValue(lines, key, item);
     return;
   }
-  if (typeof value === "object") {
-    for (const [key, item] of Object.entries(value).sort(([left], [right]) =>
-      left.localeCompare(right)
-    )) {
-      appendMetadataLines(lines, path ? `${path}.${key}` : key, item);
-    }
-    return;
-  }
+  if (typeof value === "object") return;
   const text = typeof value === "string"
     ? value.trim().replace(/\s+/gu, " ")
     : String(value);
-  if (!path || !text) return;
-  lines.push(`${path}: ${text}`);
+  if (!text) return;
+  lines.push(`${key}: ${text}`);
 }
 
 function assertCurrentSource(
@@ -385,6 +404,21 @@ function assertCurrentGraphNode(
 ): void {
   if (node.knowledgeBaseId !== knowledgeBaseId) {
     throw new Error("Current graph seed fact is outside the search scope");
+  }
+}
+
+function assertCurrentGraphSource(
+  node: StorageVnextGraphNodeFact,
+  sourceFile: StorageVnextCurrentSourceFact["sourceFile"]
+): void {
+  if (
+    sourceFile.knowledgeBaseId !== node.knowledgeBaseId
+    || sourceFile.publicId !== node.sourceFilePublicId
+    || sourceFile.currentRevisionPublicId !== node.sourceRevisionPublicId
+    || sourceFile.visibility !== "current"
+    || generatedPagePath(sourceFile.logicalPath) !== node.logicalPath
+  ) {
+    throw new Error("Current graph seed source fact is inconsistent");
   }
 }
 

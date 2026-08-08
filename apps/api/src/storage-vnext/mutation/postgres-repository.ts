@@ -452,6 +452,8 @@ async function createCandidateCheckpoint(
   }
   return {
     ...base,
+    currentTitle: source.title,
+    currentMetadata: source.metadata,
     currentDirectoryPublicId: source.directory_public_id,
     currentLogicalPath: source.logical_path,
     currentNormalizedPath: source.normalized_path,
@@ -459,6 +461,8 @@ async function createCandidateCheckpoint(
     candidateDirectoryPublicId: input.destinationDirectoryPublicId
       ?? source.directory_public_id,
     candidateRevisionPublicId: input.candidateRevisionPublicId,
+    candidateTitle: input.candidateTitle,
+    candidateMetadata: input.candidateMetadata,
     objectId: input.objectId,
     checksumSha256: input.checksumSha256,
     byteCount: input.byteCount,

@@ -9,6 +9,10 @@ import {
   type GraphSearchMode
 } from "../search/graph-search-documents.js";
 import type { RuntimeGraphSettings } from "../runtime-settings/types.js";
+import {
+  normalizeOkfSearchFilters,
+  type OkfSearchFilters
+} from "../storage-vnext/search/okf-signals.js";
 
 export type DeveloperFileSearchErrorCode =
   | "FILE_SEARCH_QUERY_REQUIRED"
@@ -19,7 +23,10 @@ export type DeveloperFileSearchErrorCode =
   | "INVALID_FILE_SEARCH_KIND"
   | "INVALID_FILE_SEARCH_MODE"
   | "INVALID_FILE_SEARCH_GRAPH_DEPTH"
-  | "INVALID_FILE_SEARCH_GRAPH_FANOUT";
+  | "INVALID_FILE_SEARCH_GRAPH_FANOUT"
+  | "INVALID_FILE_SEARCH_OKF_STATUS"
+  | "INVALID_FILE_SEARCH_OKF_TRUST_TIER"
+  | "INVALID_FILE_SEARCH_OKF_FRESHNESS";
 
 export type DeveloperFileSearchFilterResult =
   | {
@@ -30,6 +37,7 @@ export type DeveloperFileSearchFilterResult =
       mode: GraphSearchMode;
       graphDepth: GraphSearchDepth;
       graphFanout: number;
+      okfFilters: OkfSearchFilters;
     }
   | { ok: false; code: DeveloperFileSearchErrorCode };
 
@@ -37,6 +45,11 @@ const SEARCH_QUERY_MIN_LENGTH = 2;
 const SEARCH_QUERY_MAX_LENGTH = 160;
 const SEARCH_SCOPES = new Set<GeneratedFileSearchScope>(["all", "path", "metadata"]);
 const SEARCH_MODES = new Set<GraphSearchMode>(["file", "graph", "hybrid"]);
+const OKF_STATUSES = new Set(["draft", "stable", "deprecated"]);
+const OKF_TRUST_TIERS = new Set([
+  "unverified", "machine-confirmed", "human-reviewed"
+]);
+const OKF_FRESHNESS_VALUES = new Set(["fresh", "stale"]);
 const SEARCH_FILE_KINDS = new Set<GeneratedFileKind | "all">([
   "all",
   "page",
@@ -66,6 +79,10 @@ export function readDeveloperFileSearchFilters(input: {
   graphDepth?: string | undefined;
   graphFanout?: string | undefined;
   graphSettings?: RuntimeGraphSettings | undefined;
+  okfStatus?: string | undefined;
+  okfTrustTier?: string | undefined;
+  okfFreshness?: string | undefined;
+  requestDate?: string | undefined;
 }): DeveloperFileSearchFilterResult {
   const query = input.query?.trim() ?? "";
 
@@ -115,6 +132,30 @@ export function readDeveloperFileSearchFilters(input: {
     return { ok: false, code: "INVALID_FILE_SEARCH_GRAPH_FANOUT" };
   }
 
+  const okfStatus = optionalValue(input.okfStatus);
+  if (okfStatus !== null && !OKF_STATUSES.has(okfStatus)) {
+    return { ok: false, code: "INVALID_FILE_SEARCH_OKF_STATUS" };
+  }
+  const okfTrustTier = optionalValue(input.okfTrustTier);
+  if (okfTrustTier !== null && !OKF_TRUST_TIERS.has(okfTrustTier)) {
+    return { ok: false, code: "INVALID_FILE_SEARCH_OKF_TRUST_TIER" };
+  }
+  const okfFreshness = optionalValue(input.okfFreshness);
+  if (okfFreshness !== null && !OKF_FRESHNESS_VALUES.has(okfFreshness)) {
+    return { ok: false, code: "INVALID_FILE_SEARCH_OKF_FRESHNESS" };
+  }
+  let okfFilters: OkfSearchFilters;
+  try {
+    okfFilters = normalizeOkfSearchFilters({
+      okfStatus,
+      okfTrustTier,
+      okfFreshness,
+      requestDate: input.requestDate ?? currentUtcDate()
+    });
+  } catch {
+    return { ok: false, code: "INVALID_FILE_SEARCH_OKF_FRESHNESS" };
+  }
+
   return {
     ok: true,
     query,
@@ -122,8 +163,18 @@ export function readDeveloperFileSearchFilters(input: {
     fileKind: fileKind === "all" ? null : (fileKind as GeneratedFileKind),
     mode: mode as GraphSearchMode,
     graphDepth,
-    graphFanout
+    graphFanout,
+    okfFilters
   };
+}
+
+function optionalValue(value: string | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized || null;
+}
+
+function currentUtcDate(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function containsUnsafeControlCharacter(value: string): boolean {

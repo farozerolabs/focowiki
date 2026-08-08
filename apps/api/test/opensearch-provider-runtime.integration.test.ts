@@ -377,6 +377,68 @@ describeProviderParity("real search provider retrieval parity", () => {
         .toBeGreaterThanOrEqual(0.5);
     }
 
+    const okfCases: Array<{
+      family: string;
+      clause: SearchProviderQueryRequest["filters"];
+      expected: readonly string[];
+    }> = [{
+      family: "okf-status",
+      clause: { kind: "equals", field: "okfSignals.status", value: "stable" },
+      expected: ["file-contract"]
+    }, {
+      family: "okf-trust",
+      clause: {
+        kind: "equals",
+        field: "okfSignals.trustTier",
+        value: "human-reviewed"
+      },
+      expected: ["file-contract"]
+    }, {
+      family: "okf-fresh",
+      clause: {
+        kind: "range",
+        field: "okfSignals.staleAfterEpochDay",
+        operator: "gt",
+        value: 20_672
+      },
+      expected: ["file-policy"]
+    }, {
+      family: "okf-stale-boundary",
+      clause: {
+        kind: "range",
+        field: "okfSignals.staleAfterEpochDay",
+        operator: "lte",
+        value: 20_672
+      },
+      expected: ["file-contract"]
+    }, {
+      family: "okf-null-exclusion",
+      clause: { kind: "equals", field: "okfSignals.status", value: "deprecated" },
+      expected: []
+    }];
+    for (const okfCase of okfCases) {
+      const results = await Promise.all([
+        [openSearch, openSearchIndexUid] as const,
+        [meilisearch, meilisearchIndexUid] as const
+      ].map(([provider, indexUid]) => provider.query.query({
+        ...parityQueryRequest({ indexUid, query: "employment", limit: 5 }),
+        filters: {
+          kind: "and",
+          operands: [{
+            kind: "equals",
+            field: "knowledgeBaseId",
+            value: "kb-opensearch-integration"
+          }, okfCase.clause]
+        }
+      })));
+      for (const result of results) {
+        expect(
+          result.hits.map((hit) => hit.sourceFilePublicId),
+          okfCase.family
+        ).toEqual(okfCase.expected);
+      }
+    }
+
     for (const [provider, indexUid] of [
       [openSearch, openSearchIndexUid],
       [meilisearch, meilisearchIndexUid]
@@ -497,7 +559,7 @@ function queryRequest(input: {
       "id", "schemaVersion", "documentKind", "contentKind",
       "knowledgeBaseId", "sourceFilePublicId", "sourceRevisionPublicId",
       "logicalPath", "fileKind", "title", "segmentOrdinal",
-      "headingAncestors", "searchText", "rankingTerms"
+      "headingAncestors", "searchText", "rankingTerms", "okfSignals"
     ],
     limit: input.limit,
     continuation: input.continuation ?? null,
@@ -520,7 +582,8 @@ function integrationDocuments() {
       contentKind: "file",
       segmentOrdinal: null,
       headingAncestors: [],
-      searchText: "劳动合同解除规则与 employment policy evidence"
+      searchText: "劳动合同解除规则与 employment policy evidence",
+      okfSignals: contractSignals()
     }),
     createStorageVnextContentDocument({
       knowledgeBaseId: "kb-opensearch-integration",
@@ -532,7 +595,8 @@ function integrationDocuments() {
       contentKind: "segment",
       segmentOrdinal: 0,
       headingAncestors: ["解除"],
-      searchText: "用人单位解除劳动合同需要符合程序"
+      searchText: "用人单位解除劳动合同需要符合程序",
+      okfSignals: contractSignals()
     }),
     createStorageVnextContentDocument({
       knowledgeBaseId: "kb-opensearch-integration",
@@ -544,7 +608,15 @@ function integrationDocuments() {
       contentKind: "file",
       segmentOrdinal: null,
       headingAncestors: [],
-      searchText: "employment policy and workplace evidence"
+      searchText: "employment policy and workplace evidence",
+      okfSignals: {
+        status: "draft",
+        trustTier: "machine-confirmed",
+        staleAfterEpochDay: 20_673,
+        generatedAtEpochMs: 1_786_096_800_000,
+        latestVerifiedAtEpochMs: 1_786_100_400_000,
+        sourceCount: 2
+      }
     }),
     createStorageVnextGraphSeedDocument({
       knowledgeBaseId: "kb-opensearch-integration",
@@ -556,4 +628,15 @@ function integrationDocuments() {
       rankingTerms: ["employment", "contract"]
     })
   ];
+}
+
+function contractSignals() {
+  return {
+    status: "stable" as const,
+    trustTier: "human-reviewed" as const,
+    staleAfterEpochDay: 20_672,
+    generatedAtEpochMs: 1_786_096_800_000,
+    latestVerifiedAtEpochMs: 1_786_100_400_000,
+    sourceCount: 1
+  };
 }

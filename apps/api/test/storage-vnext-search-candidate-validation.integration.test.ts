@@ -372,12 +372,14 @@ function currentSources() {
     sourceFilePublicId: "file-alpha",
     sourceRevisionPublicId: "revision-alpha",
     logicalPath: "pages/guides/alpha.md",
-    title: "Employment Contract Master Guide"
+    title: "Employment Contract Master Guide",
+    metadata: {}
   }, {
     sourceFilePublicId: "file-beta",
     sourceRevisionPublicId: "revision-beta",
     logicalPath: "pages/guides/beta.md",
-    title: "Contract Employment Overview"
+    title: "Contract Employment Overview",
+    metadata: {}
   }];
 }
 

@@ -204,9 +204,9 @@ describe("storage vNext public continuity Red contract", () => {
 
     expect(Object.keys(document.paths)).toHaveLength(33);
     expect(operations).toHaveLength(43);
-    expect(Object.keys(document.components.schemas)).toHaveLength(57);
+    expect(Object.keys(document.components.schemas)).toHaveLength(58);
     expect(sha256(JSON.stringify(normalized))).toBe(
-      "6d4c323037cf25247c9383e78d1e0ba63d6016d3b2106422a35086d2734397ae"
+      "599e24350cb2fd84b7d7a32507a6bbc439423e9476a6364485141cea6f4ea0c5"
     );
     expect(document.security).toEqual([{ bearerAuth: [] }]);
 

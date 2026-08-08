@@ -97,6 +97,7 @@ describe("storage vNext schema constraints", () => {
   it("types all live and terminal states with explicit checks", () => {
     for (const constraint of [
       "source_files_status_check",
+      "source_files_model_invocation_check",
       "object_registrations_state_check",
       "source_revisions_role_check",
       "search_projections_role_check",

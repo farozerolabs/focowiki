@@ -183,7 +183,10 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
                     modelAssistance
                   });
                   throwIfAborted(request.signal);
-                  return result.suggestionsBySourceId.get(request.sourceFilePublicId) ?? null;
+                  return {
+                    suggestions: result.suggestionsBySourceId.get(request.sourceFilePublicId) ?? null,
+                    warningCount: result.warnings.length
+                  };
                 }
               }
             : {}),
@@ -206,6 +209,9 @@ export async function runStorageVnextSourceWorker(config: RuntimeConfig): Promis
           catalog,
           bodyStore,
           model,
+          modelInvocation: modelAssistance
+            ? { modelName: modelAssistance.modelName }
+            : null,
           handoff,
           events: sourceEvents,
           webhooks: createStorageVnextWebhookOutbox({
