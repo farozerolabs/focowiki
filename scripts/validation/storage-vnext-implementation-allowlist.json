@@ -502,6 +502,223 @@
       "approvalReference": "OpenSpec add-opensearch-search-provider task 10.2 approved by the user",
       "reason": "Keep the Chinese documentation landing page aligned with the supported search provider choices",
       "preservedContract": "Chinese and English documentation describe the same public deployment behavior without exposing internal implementation details"
+    },
+    {
+      "path": "apps/admin/package.json",
+      "taskId": "13.4",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 13.4 approved by the user",
+      "reason": "Apply the audited DOMPurify patch dependency used by the existing Admin Markdown rendering boundary",
+      "preservedContract": "Admin components, layout, styles, navigation, product copy, and runtime API behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/file-search-filters.ts",
+      "taskId": "7.5",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.5 approved by the user",
+      "reason": "Parse the three approved provider-neutral OKF search filters and return stable validation codes",
+      "preservedContract": "Existing search operation identity, authentication, pagination, ranking, and unrelated filters remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/file-search-routes.ts",
+      "taskId": "7.6",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.6 approved by the user",
+      "reason": "Thread normalized OKF filters through the existing generated-file search route",
+      "preservedContract": "The released route, operation identifier, response envelope, cursor behavior, and generated file paths remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/openapi-examples.ts",
+      "taskId": "7.8",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.8 approved by the user",
+      "reason": "Document native, legacy, missing, malformed, and Attested Computation OKF request and response examples",
+      "preservedContract": "Examples describe released runtime behavior and do not add endpoints or change response semantics"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/openapi-paths.ts",
+      "taskId": "7.7",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.7 approved by the user",
+      "reason": "Expose the approved additive OKF search parameters and Markdown examples in existing operations",
+      "preservedContract": "Existing paths, methods, operation identifiers, authentication, and non-OKF request behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/openapi-schemas.ts",
+      "taskId": "7.7",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.7 approved by the user",
+      "reason": "Add the nullable OKF signal schema and approved additive search filter contract",
+      "preservedContract": "Existing response fields, errors, identifiers, paths, and optional-field behavior remain unchanged"
+    },
+    {
+      "path": "apps/api/src/developer-openapi/openapi-shared.ts",
+      "taskId": "7.7",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 7.7 approved by the user",
+      "reason": "Define the bounded shared parameter objects for the approved OKF filters",
+      "preservedContract": "Existing shared OpenAPI parameters and all released operation identities remain unchanged"
+    },
+    {
+      "path": "apps/api/src/publication/required-projection-writer.ts",
+      "taskId": "4.3",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 4.3 approved by the user",
+      "reason": "Write the OKF 0.2 root declaration and matching generated schema guidance through the active projection writer",
+      "preservedContract": "Root, pages, index, graph, navigation, continuation, manifest, and object-key structure remain unchanged"
+    },
+    {
+      "path": "docs/public/openapi/focowiki-openapi.json",
+      "taskId": "8.2",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 8.2 approved by the user",
+      "reason": "Regenerate the canonical Developer OpenAPI snapshot after the approved additive OKF contract changes",
+      "preservedContract": "The snapshot remains generated from reviewed source and contains no undocumented route or internal implementation detail"
+    },
+    {
+      "path": "packages/okf/package.json",
+      "taskId": "2.1",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.1 approved by the user",
+      "reason": "Declare the workspace-pinned YAML parser required for cache-free core-schema frontmatter parsing",
+      "preservedContract": "The OKF package remains a pure domain package without database, storage, search, HTTP, graph, or model dependencies"
+    },
+    {
+      "path": "packages/okf/src/conformance-baseline.ts",
+      "taskId": "5.1",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.1 approved by the user",
+      "reason": "Replace the legacy OKF 0.1 audit baseline with the pinned official OKF 0.2 rule matrix",
+      "preservedContract": "Source-authored conformance gaps remain advisory while Focowiki-owned producer defects remain blocking"
+    },
+    {
+      "path": "packages/okf/src/conformance-types.ts",
+      "taskId": "5.1",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.1 approved by the user",
+      "reason": "Represent the OKF 0.2 conformance classifications and ownership dispositions",
+      "preservedContract": "Validation remains deterministic, bounded, and separate from upload authentication and resource safety gates"
+    },
+    {
+      "path": "packages/okf/src/conformance.ts",
+      "taskId": "5.2",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.2 approved by the user",
+      "reason": "Accept native 0.2, legacy 0.1, undeclared, and safe future declarations according to producer and consumer policy",
+      "preservedContract": "User-authored optional-field gaps do not block readable uploads and strict generated-artifact ownership checks remain enforced"
+    },
+    {
+      "path": "packages/okf/src/generated-citations.ts",
+      "taskId": "4.6",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 4.6 approved by the user",
+      "reason": "Remove the active generated numbered-citation path after structured provenance replacement coverage passed",
+      "preservedContract": "Source-authored trailing citation sections remain byte-preserved and no provenance is fabricated"
+    },
+    {
+      "path": "packages/okf/src/index.ts",
+      "taskId": "2.11",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.11 approved by the user",
+      "reason": "Export only the required OKF 0.2 domain contracts and pure functions",
+      "preservedContract": "Existing public package exports remain available except the explicitly removed dead generated-citation API"
+    },
+    {
+      "path": "packages/okf/src/reserved-file-validation.ts",
+      "taskId": "5.5",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.5 approved by the user",
+      "reason": "Apply blocking OKF 0.2 validation only to Focowiki-owned reserved artifacts and generated targets",
+      "preservedContract": "Reserved filenames, generated logical paths, navigation structure, and source upload eligibility remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/v02/actors.ts",
+      "taskId": "2.4",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.4 approved by the user",
+      "reason": "Add pure OKF 0.2 actor parsing and human-prefix classification",
+      "preservedContract": "Unknown actors remain preserved and actor classification grants no authorization semantics"
+    },
+    {
+      "path": "packages/okf/src/v02/attested-computation.ts",
+      "taskId": "2.8",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.8 approved by the user",
+      "reason": "Analyze complete and incomplete OKF 0.2 Attested Computation metadata without repairing source facts",
+      "preservedContract": "Incomplete user-authored computation metadata remains readable and advisory while missing generated targets remain blocking"
+    },
+    {
+      "path": "packages/okf/src/v02/dates.ts",
+      "taskId": "2.3",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.3 approved by the user",
+      "reason": "Add exact date-only, datetime, and UTC epoch-day normalization for OKF 0.2 signals",
+      "preservedContract": "Date-only source scalars remain strings and invalid optional dates remain preserved without invented values"
+    },
+    {
+      "path": "packages/okf/src/v02/lifecycle.ts",
+      "taskId": "2.7",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.7 approved by the user",
+      "reason": "Derive nullable OKF 0.2 status and freshness signals with exact date boundaries",
+      "preservedContract": "Missing or malformed source lifecycle metadata remains readable and cannot become an upload gate"
+    },
+    {
+      "path": "packages/okf/src/v02/parsing.ts",
+      "taskId": "2.9",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.9 approved by the user",
+      "reason": "Compose lossless raw metadata, independent normalized fields, nullable signals, and bounded diagnostics",
+      "preservedContract": "Safe unknown nested metadata and malformed optional fields remain preserved without consumer policy duplication"
+    },
+    {
+      "path": "packages/okf/src/v02/profile.ts",
+      "taskId": "2.10",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.10 approved by the user",
+      "reason": "Record the pinned OKF 0.2 profile, rule classifications, and product ownership disposition",
+      "preservedContract": "The profile is local deterministic evidence and introduces no runtime network dependency"
+    },
+    {
+      "path": "packages/okf/src/v02/provenance.ts",
+      "taskId": "2.5",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.5 approved by the user",
+      "reason": "Normalize structured sources, usage windows, stable identifiers, and ownership-aware footnote diagnostics",
+      "preservedContract": "Source-authored mismatches remain advisory and no legacy resource value is inferred as provenance"
+    },
+    {
+      "path": "packages/okf/src/v02/publication-metadata.ts",
+      "taskId": "4.1",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 4.1 approved by the user",
+      "reason": "Build canonical source-backed and Focowiki-owned OKF 0.2 publication metadata through one domain boundary",
+      "preservedContract": "Generated file paths, hierarchy, ordering, navigation, graph links, model output, and storage layout remain unchanged"
+    },
+    {
+      "path": "packages/okf/src/v02/types.ts",
+      "taskId": "2.2",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.2 approved by the user",
+      "reason": "Define the lossless raw, normalized, nullable signal, computation, publication, and diagnostic OKF 0.2 contracts",
+      "preservedContract": "The types remain pure domain contracts and do not expose internal storage or provider identities"
+    },
+    {
+      "path": "packages/okf/src/v02/verification.ts",
+      "taskId": "2.6",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.6 approved by the user",
+      "reason": "Normalize OKF 0.2 verification events and derive the three nullable trust tiers",
+      "preservedContract": "Unknown event fields remain safe and preserved while malformed verification does not become trusted evidence"
+    },
+    {
+      "path": "packages/okf/test/conformance.test.ts",
+      "taskId": "5.8",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.8 approved by the user",
+      "reason": "Verify OKF 0.2 conformance, generated bundle, schema guidance, and permissive consumer outcomes",
+      "preservedContract": "Tests cover the approved standard alignment without changing generated knowledge-base structure"
+    },
+    {
+      "path": "packages/okf/test/generated-citations.test.ts",
+      "taskId": "4.6",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 4.6 approved by the user",
+      "reason": "Prove generated numbered citations are removed while source-authored legacy citations remain preserved",
+      "preservedContract": "The test does not change source body presentation or generated navigation behavior"
+    },
+    {
+      "path": "packages/okf/test/v02-domain.test.ts",
+      "taskId": "2.13",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 2.13 approved by the user",
+      "reason": "Verify the complete layered OKF 0.2 domain behavior and module boundaries",
+      "preservedContract": "Tests exercise pure domain behavior without coupling the package to application infrastructure"
+    },
+    {
+      "path": "packages/okf/test/v02-official-fixtures.test.ts",
+      "taskId": "5.6",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 5.6 approved by the user",
+      "reason": "Validate the pinned official OKF 0.2 bundle files directly from a verified temporary checkout",
+      "preservedContract": "No official repository file is copied into the product repository or executed at runtime"
+    },
+    {
+      "path": "packages/okf/test/v02-red.test.ts",
+      "taskId": "1.13",
+      "approvalReference": "OpenSpec align-google-okf-v0-2-trust-signals task 1.13 approved by the user",
+      "reason": "Retain the focused OKF 0.2 regression suite created from the approved Red evidence",
+      "preservedContract": "The regression suite covers only the approved OKF 0.2 behavior and existing compatibility boundaries"
     }
   ]
 }
