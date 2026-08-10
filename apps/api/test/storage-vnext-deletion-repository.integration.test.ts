@@ -727,7 +727,7 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
         extraction_contract_version,
         embedding_configuration_revision_public_id, settings_snapshot,
         state, attempt_count, maximum_attempts, lease_owner,
-        lease_expires_at
+        lease_expires_at, execution_started_at
       ) VALUES
         (
           ${`semantic-stage-running-${input.knowledgeBaseId}`},
@@ -736,7 +736,7 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
           ${input.sourceRevisionPublicId}, 'extraction', 'source',
           'extract-v1', ${revisionPublicId}, '{}'::jsonb,
           'running', 1, 3, 'semantic-worker-delete',
-          '2099-01-01T00:00:00.000Z'
+          '2099-01-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
         ),
         (
           ${`semantic-stage-queued-${input.knowledgeBaseId}`},
@@ -744,7 +744,7 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
           ${generationPublicId}, ${input.sourceFilePublicId},
           ${input.sourceRevisionPublicId}, 'reconciliation', 'source',
           'extract-v1', ${revisionPublicId}, '{}'::jsonb,
-          'queued', 0, 3, NULL, NULL
+          'queued', 0, 3, NULL, NULL, NULL
         ),
         (
           ${`semantic-stage-completed-operation-${input.knowledgeBaseId}`},
@@ -753,7 +753,7 @@ describeOwnedDatabase("storage vNext deletion PostgreSQL repository", () => {
           ${input.sourceRevisionPublicId}, 'embedding', 'completed-operation',
           'extract-v1', ${revisionPublicId}, '{}'::jsonb,
           'running', 1, 3, 'semantic-worker-completed-operation',
-          '2099-01-01T00:00:00.000Z'
+          '2099-01-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
         )
     `;
   }

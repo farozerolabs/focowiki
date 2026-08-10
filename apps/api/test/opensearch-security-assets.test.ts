@@ -188,7 +188,7 @@ describe("bundled OpenSearch security assets", () => {
         join(fixture.runtimeSecretDirectory, "opensearch-password")
       )).toEqual(runtimePasswordBefore);
     }
-  });
+  }, SECURITY_ASSET_TEST_TIMEOUT_MS);
 
   it("rejects partial state without silently replacing identity", () => {
     const fixture = createFixture();
@@ -241,7 +241,7 @@ describe("bundled OpenSearch security assets", () => {
       ...expiring,
       minimumValiditySeconds: 1_000 * 24 * 60 * 60
     })).toThrow("OpenSearch security assets are incomplete or invalid");
-  });
+  }, SECURITY_ASSET_TEST_TIMEOUT_MS);
 });
 
 function createFixture() {

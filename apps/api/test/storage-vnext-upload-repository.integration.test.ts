@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../src/db/client.js";
@@ -14,6 +12,8 @@ import { createPostgresStorageVnextWorkflowRepository } from
   "../src/storage-vnext/workflow/postgres-repository.js";
 import { findIdempotentUploadSession } from
   "../src/storage-vnext/api/postgres-admin-upload-session-store.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -53,10 +53,7 @@ describeOwnedDatabase("storage vNext upload PostgreSQL repository", () => {
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(readFileSync(
-      resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-      "utf8"
-    ));
+    await applyStorageVnextTestMigrations(sql);
     await sql`
       INSERT INTO focowiki.runtime_setting_revisions
         (public_id, checksum_sha256, settings_values)

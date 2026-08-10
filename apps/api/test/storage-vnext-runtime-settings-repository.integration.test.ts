@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRuntimeSettingsRepository } from
   "../src/runtime-settings/repository.js";
 import { createPostgresStorageVnextWorkflowRepository } from
   "../src/storage-vnext/workflow/postgres-repository.js";
+import { applyStorageVnextTestMigrations } from
+  "./helpers/storage-vnext-test-migrations.js";
 
 const databaseUrl = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_DATABASE_URL;
 const runOwner = process.env.FOCOWIKI_STORAGE_VNEXT_TEST_RUN_OWNER;
@@ -16,10 +16,6 @@ const hasOwnedTarget = Boolean(
   && /^svnext-[a-z0-9]{8,16}$/u.test(runOwner)
 );
 const describeOwnedDatabase = hasOwnedTarget ? describe : describe.skip;
-const bootstrap = readFileSync(
-  resolve(import.meta.dirname, "../migrations/001_storage_vnext.sql"),
-  "utf8"
-);
 
 describeOwnedDatabase("storage vNext runtime settings revision repository", () => {
   const connectionUrl = databaseUrl
@@ -36,7 +32,7 @@ describeOwnedDatabase("storage vNext runtime settings revision repository", () =
   beforeAll(async () => {
     await admin.unsafe(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
     databaseCreated = true;
-    await sql.unsafe(bootstrap);
+    await applyStorageVnextTestMigrations(sql);
   }, 120_000);
 
   afterAll(async () => {
