@@ -29,7 +29,10 @@ FROM node:24-bookworm-slim AS source-worker-dependencies
 ENV CI=true
 ENV PNPM_HOME="/pnpm"
 ENV PATH="${PNPM_HOME}:${PATH}"
-ENV npm_config_build_from_source=false
+ENV npm_config_build_from_source=true
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ make python3 \
+    && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 WORKDIR /app
 
