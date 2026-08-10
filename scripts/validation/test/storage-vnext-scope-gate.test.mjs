@@ -233,6 +233,69 @@ test("allows only the exact approved OKF 0.2 cross-scope files", () => {
   ]) assert.equal(classifyStorageVnextPath(path).policy, "deny", path);
 });
 
+test("allows only the exact approved general-purpose GraphRAG cross-scope files", () => {
+  const approvedPaths = [
+    "apps/admin/src/components/embedding-settings-panel.tsx",
+    "apps/admin/src/components/knowledge-base-maintenance-panel.tsx",
+    "apps/admin/src/components/reranker-settings-panel.tsx",
+    "apps/admin/src/i18n/resources.ts",
+    "apps/admin/src/lib/source-file-list-filters.ts",
+    "apps/admin/src/lib/upload-session-client.ts",
+    "apps/admin/test/embedding-settings-panel.test.tsx",
+    "apps/admin/test/reranker-settings-panel.test.tsx",
+    "apps/admin/test/upload-session-client.test.ts",
+    "apps/api/python/THIRD_PARTY.md",
+    "apps/api/python/graphrag_adapter/__init__.py",
+    "apps/api/python/graphrag_adapter/__main__.py",
+    "apps/api/python/graphrag_adapter/compatibility.py",
+    "apps/api/python/graphrag_adapter/contracts.py",
+    "apps/api/python/graphrag_adapter/normalize.py",
+    "apps/api/python/graphrag_adapter/prompt.py",
+    "apps/api/python/graphrag_adapter/protocol.py",
+    "apps/api/python/graphrag_adapter/runtime.py",
+    "apps/api/python/graphrag_adapter_check.py",
+    "apps/api/python/requirements.in",
+    "apps/api/python/requirements.lock",
+    "apps/api/python/tests/test_normalize.py",
+    "apps/api/python/tests/test_protocol.py",
+    "apps/api/python/tests/test_runtime.py",
+    "apps/api/src/developer-openapi/graph-expansion-filters.ts",
+    "apps/api/src/developer-openapi/search-query-contract.ts",
+    "docs/.vitepress/config.ts",
+    "docs/agent-integration/backend-adapter.md",
+    "docs/agent-integration/index.md",
+    "docs/agent-integration/own-agent-client/skill-design.md",
+    "docs/agent-integration/own-agent-client/tools-design.md",
+    "docs/agent-integration/third-party-agent-client/skill-design.md",
+    "docs/guide/file-first-graph.md",
+    "docs/zh-CN/agent-integration/backend-adapter.md",
+    "docs/zh-CN/agent-integration/index.md",
+    "docs/zh-CN/agent-integration/own-agent-client/skill-design.md",
+    "docs/zh-CN/agent-integration/own-agent-client/tools-design.md",
+    "docs/zh-CN/agent-integration/third-party-agent-client/skill-design.md",
+    "docs/zh-CN/guide/file-first-graph.md",
+    "scripts/docs/test/swagger-api-explorer.test.ts"
+  ];
+
+  for (const path of approvedPaths) {
+    const classification = classifyStorageVnextPath(path);
+    assert.equal(classification.policy, "allow", path);
+    assert.equal(classification.category, "explicit-task-exception", path);
+    assert.match(
+      classification.exception.approvalReference,
+      /OpenSpec add-general-purpose-graphrag-search task/u,
+      path
+    );
+  }
+
+  for (const path of [
+    "apps/admin/src/components/entity-console.tsx",
+    "apps/api/python/graphrag_adapter/provider_client.py",
+    "apps/api/src/developer-openapi/graphrag-internals.ts",
+    "docs/guide/graphrag-internals.md"
+  ]) assert.equal(classifyStorageVnextPath(path).policy, "deny", path);
+});
+
 test("allows an existing settings field-list edit", () => {
   const before = [
     "const workerNumberFields = [",
